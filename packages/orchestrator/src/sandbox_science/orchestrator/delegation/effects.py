@@ -6,18 +6,19 @@ The fence gates outward effects only. A tool named here changes nothing outside 
 session's sandbox and files: computation, the session's own files, kernels, background
 jobs and installs through the package cache. Outward HTTP from that code is gated where
 it leaves the sandbox, by the policy middleware's escalations, not here. Every other
-tool of the ``effect`` class is outward for the fence: connector tools (the proxy holds
-the ones the policy escalates), host admissions, publishing, delegating, and the
+tool of the ``effect`` class is outward for the fence: connector tools (the policy
+middleware holds the ones the policy escalates), host admissions, publishing, delegating, and the
 ledger's and documents' writes.
 
 This is the interim classification of built-in tools; a new built-in tool is outward unless
 it is named here, so it is gated until someone classes it. Connector tools take D96's
-effect classes instead (``connector_reach``): the MCP proxy, which classifies each call
-under the project's policy, tells its callers each listed tool's class, and only a tool
-whose every call is a ``read`` stays in the session. Delegated runs are offered connector
-tools (DA-3): the fence passes their reads, and lets a call the proxy holds for the user
-reach it whatever the plan (``fence.ChildFence``); the harness records each connector
-call's class and reach.
+effect classes instead (``connector_reach``), as a classifying client gives each listed
+tool's class, and only a tool whose every call is a ``read`` stays in the session.
+Delegated runs are offered connector tools (DA-3): the fence passes their reads, and lets a
+call held for the user through whatever the plan (``fence.ChildFence``); the harness
+records each connector call's class and reach. The MCP proxy classified its listings; the
+agent runtime's client, the only one since the proxy retired (D98, 2026-10-26), passes the
+server's own listing, whose classes are not taken, so every connector call is outward.
 """
 
 from __future__ import annotations
@@ -48,7 +49,7 @@ SESSION_TOOLS: Final = frozenset(
 EFFECT_CLASSES: Final = frozenset(
     {"read", "write", "communicate", "browse", "admin", "unclassified"}
 )
-"""D96's effect classes, as the MCP proxy names them (``sandbox-science/effect``)."""
+"""D96's effect classes, as the policy library names them (``sandbox-science/effect``)."""
 
 
 def reach(tool: str) -> Reach:

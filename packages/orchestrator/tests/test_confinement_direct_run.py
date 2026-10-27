@@ -1,13 +1,11 @@
 # SPDX-License-Identifier: MIT
-"""A confined run's connector calls take the deployment's MCP path (D98): on the direct path
-the host's toolbox admits each call and the runtime's client makes it, through a fake
-OpenShell with the real policy middleware, and the result's image comes back to the host
-over ``publish_mcp_binary`` as an artifact of the run; through the proxy the host's client
-makes it and the runtime is never asked."""
+"""A confined run's connector calls (D98): the host's toolbox admits each call and the
+runtime's client makes it, through a fake OpenShell with the real policy middleware, and the
+result's image comes back to the host over ``publish_mcp_binary`` as an artifact of the
+run."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
 
@@ -43,29 +41,12 @@ from .test_run_service import records, serving
 pytestmark = pytest.mark.slow
 
 
-class ProxyStandIn:
-    """The host's client on the proxy path: it answers a listing and a call itself."""
-
-    classifies = False
-
-    def __init__(self) -> None:
-        self.asked: list[str] = []
-
-    async def request(
-        self, server: str, method: str, params: Mapping[str, object], **_: object
-    ) -> dict[str, Any]:
-        self.asked.append(method)
-        if method == "tools/list":
-            return {"tools": [{"name": READ_TOOL, "inputSchema": {"type": "object"}}]}
-        return {"content": [{"type": "text", "text": "through the proxy"}]}
-
-
 async def confined_run(
-    harness: Harness, tmp_path: Path, access: McpAccess | None, direct: DirectSettings | None
+    harness: Harness, tmp_path: Path, direct: DirectSettings
 ) -> tuple[Any, list[Capability]]:
-    """One confined run that calls ``READ_TOOL``, with ``access`` as its connectors; the
-    runtime makes MCP requests with ``direct``'s client, when given. Its record, and the
-    capabilities the host asked of the runtime."""
+    """One confined run that calls ``READ_TOOL`` on ``SERVER``, whose requests the runtime
+    makes with ``direct``'s client. Its record, and the capabilities the host asked of the
+    runtime."""
     asked: list[Capability] = []
     async with serving(
         harness, Reply(calls=[call(READ_TOOL, query="SNOVA")]), Reply("Done."), serve=False
@@ -85,7 +66,7 @@ async def confined_run(
                 return await vm_models.complete(value)
             if kind is Capability.MODEL_INFO:
                 return await vm_models.info(value)
-            if kind is Capability.MCP_REQUEST and calls is not None:
+            if kind is Capability.MCP_REQUEST:
                 return await calls.request(value)
             raise TransportError("denied", "fixture refused capability")
 
@@ -98,23 +79,14 @@ async def confined_run(
             listings=cast(WorkerListings, Reports()),
             mcp_servers=(SERVER,),
         )
-        calls = RuntimeConnectorCalls(direct, vm_channel) if direct is not None else None
-        runtime = RuntimeLoops(
-            vm_channel,
-            models,
-            tmp_path / "scratch",
-            released=calls.release if calls is not None else None,
-        )
+        calls = RuntimeConnectorCalls(direct, vm_channel)
+        runtime = RuntimeLoops(vm_channel, models, tmp_path / "scratch", released=calls.release)
         runtime.scratch.mkdir()
         service.harness.main = Role(
             CallbackModel(host_channel, "main", role="main", profile=ModelProfile(alias="main")),
             "main",
         )
-        if access is not None and access.path == "direct":
-            access = McpAccess(
-                RuntimeMcpClient(host), access.servers, access.project, path="direct"
-            )
-        service.harness.mcp = access
+        service.harness.mcp = McpAccess(RuntimeMcpClient(host), (SERVER,), PROJECT)
 
         async def runner(
             model: ChatModel, toolbox: Toolbox, task: str | None, **options: Any
@@ -133,8 +105,7 @@ async def confined_run(
             return record, asked
         finally:
             await runtime.close()
-            if calls is not None:
-                await calls.close()
+            await calls.close()
             await host_channel.close()
             await vm_channel.close()
             await models.close()
@@ -160,12 +131,9 @@ async def test_on_the_direct_path_the_runtime_makes_the_call_and_the_host_keeps_
                 )
             },
         )
-        stand_in = cast(Any, ProxyStandIn())
-        access = McpAccess(stand_in, (SERVER,), PROJECT, path="direct")
-        record, asked = await confined_run(harness, tmp_path, access, direct)
+        record, asked = await confined_run(harness, tmp_path, direct)
     # The call left from the runtime, through OpenShell's rules and the middleware.
     assert openshell.reached == [READ_TOOL]
-    assert stand_in.asked == []
     assert asked.count(Capability.MCP_REQUEST) == 2  # the run's listing, then the call
     assert record.failure is None
     (tool,) = record.tools
@@ -180,16 +148,3 @@ async def test_on_the_direct_path_the_runtime_makes_the_call_and_the_host_keeps_
     text = str(record.tools)
     assert PNG not in text
     assert openshell.records("mcp-call")
-
-
-async def test_through_the_proxy_the_host_makes_the_call_and_never_asks_the_runtime(
-    harness: Harness, tmp_path: Path
-) -> None:
-    stand_in = ProxyStandIn()
-    access = McpAccess(stand_in, (SERVER,), PROJECT)
-    record, asked = await confined_run(harness, tmp_path, access, None)
-    assert stand_in.asked == ["tools/list", "tools/call"]
-    assert Capability.MCP_REQUEST not in asked
-    (tool,) = record.tools
-    assert tool["connector"] == SERVER
-    assert "mcp_binaries" not in tool

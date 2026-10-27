@@ -1,12 +1,11 @@
 # SPDX-License-Identifier: MIT
 """Binary MCP results kept as artifacts by control, never passed to the model (D67, D98).
 
-The MCP proxy withholds image and audio blocks and blob resources from its answers, and
-cannot keep them: it has no route to control's stores. An MCP client that reaches servers
-straight through OpenShell (``mcp_direct``) gets them as the server sent them, as base64.
-``Connectors`` then withholds them by the same rule as the proxy
-(``sandbox_science.policy.mcp_answers``) and hands each to a ``BinarySink``, whose note
-replaces it in the text the model sees.
+The MCP client that reaches servers straight through OpenShell (``mcp_direct``) gets image
+and audio blocks and blob resources as the server sent them, as base64. ``Connectors``
+withholds them (``sandbox_science.policy.mcp_answers``, the rule the retired MCP proxy
+applied, which dropped them) and hands each to a ``BinarySink``, whose note replaces it in
+the text the model sees.
 
 ``ArtifactBinaries`` is the harness's sink: it writes the decoded bytes into the session's
 workspace through the worker, at a path named by their digest under ``mcp-results/``,
@@ -106,9 +105,9 @@ class ArtifactBinaries:
     async def keep_bytes(
         self, server: str, tool: str, data: bytes, mime: str | None, *, origin: str = "mcp"
     ) -> Kept:
-        """Keep ``data``, a binary item of ``tool``'s result from ``server``, decoded: the
-        proxy path's items through ``keep``, and the confined runtime's direct-path items,
-        which it sends over ``publish_mcp_binary`` (``confinement.binaries``) and whose
+        """Keep ``data``, a binary item of ``tool``'s result from ``server``, decoded: a
+        client's items in this process through ``keep``, and the confined runtime's, which
+        it sends over ``publish_mcp_binary`` (``confinement.binaries``) and whose
         publication names them as the runtime's (``origin`` ``runtime-mcp``)."""
         digest = hashlib.sha256(data).hexdigest()
         name = server if _SAFE.fullmatch(server) else "server"

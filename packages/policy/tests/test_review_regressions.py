@@ -452,7 +452,8 @@ def test_lowercase_methods_are_denied(method: str) -> None:
     assert decide(method, "https://example.org/") is Action.DENY
 
 
-# Finding 12: MCP servers are reachable only through the MCP proxy.
+# Finding 12: MCP servers are reachable only by the agent's MCP client (the MCP proxy's,
+# until it retired).
 
 
 def test_declared_mcp_endpoints_cannot_be_reached_as_plain_http() -> None:

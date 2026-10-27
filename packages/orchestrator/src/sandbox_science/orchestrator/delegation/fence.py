@@ -12,12 +12,13 @@ task's progress on its track is refused once the plan is no longer the version i
 started under (PD-9). The first refusal is kept, and the delegation's outcome reports it,
 so the parent learns why the run stopped.
 
-Connector tools are judged by the class the MCP proxy gives each listed tool (D96, D99;
-delegated agents spec DA-7). A ``read`` stays in the session and passes as computation
-does. Another class is outward. Under a draft or user-edited plan, such a call still
-reaches the proxy when the proxy says a call of the tool asks a person first: the proxy
-holds it, and the user decides it from a card attributed to the child (DA-9). One the
-policy would let through unasked is refused, since nobody would see it.
+Connector tools are judged by the class a classifying client gives each listed tool (D96,
+D99; delegated agents spec DA-7). A ``read`` stays in the session and passes as computation
+does. Another class is outward. Under a draft or user-edited plan, such a call still goes
+out when the client says a call of the tool asks a person first: it is held, and the user
+decides it from a card attributed to the child (DA-9). One the policy would let through
+unasked is refused, since nobody would see it. No client classifies since the MCP proxy
+retired (D98): every connector call is outward, and fenced.
 """
 
 from __future__ import annotations
@@ -101,8 +102,8 @@ class ChildFence(TurnHook):
                 return None
             refusal = await threaded(self._progress)
         elif (listed := self._connector(tool)) is not None:
-            # A read stays in the session; a call the proxy holds for the user is the
-            # user's to decide, whatever the plan (D99).
+            # A read stays in the session; a call held for the user is the user's to
+            # decide, whatever the plan (D99).
             unfenced = listed.effect_class == "read" or listed.escalates
             refusal = await threaded(self._held if unfenced else self._check)
         elif reach(tool) == "session":

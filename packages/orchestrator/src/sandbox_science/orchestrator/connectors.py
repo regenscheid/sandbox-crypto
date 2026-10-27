@@ -1,13 +1,12 @@
 # SPDX-License-Identifier: MIT
-"""MCP connectors for the agent: the harness as a caller of the MCP proxy (D67, D-08), or on
-the direct path of the confined runtime (D98, ``confinement.connector_calls``).
+"""MCP connectors for the agent: one run's connector tools, admitted by the host and made
+by the confined runtime's own client (D98, ``confinement.connector_calls``, D-08).
 
-The orchestrator reaches MCP servers only through the MCP proxy
-(docs/MCP-CONNECTORS.md), which authenticates it by its bearer token, applies the
-project's policy, holds escalated calls for the operator, and alone holds the
-servers' credential placeholders. ``ProxyClient`` is a small Streamable HTTP client
-for the proxy, which answers JSON only. A token names one project at the proxy, so
-connectors are offered only to runs of that project.
+The agent runtime's client reaches each declared server through OpenShell's proxy, whose
+native ``protocol: mcp`` rules and the policy middleware decide each request for the
+project; the client, the provider's placeholders and the compiled endpoints are in the
+runtime's sandbox (``mcp_direct``). The MCP proxy that stood there before retired on
+2026-10-26 (docs/MCP-CONNECTORS.md). ``Connectors`` takes any ``McpClient``.
 
 ``Connectors`` are one run's connector tools (the decisions of 2026-10-14):
 
@@ -28,31 +27,31 @@ connectors are offered only to runs of that project.
   the reason, the first ``mcp_tools`` call lists it once more, and the run's record and
   its ``started`` event keep it (lab 41, B4: one failed listing left a run without
   connectors, and nothing said so);
-- each with the effect class ``effect``, so the plan fence applies. The MCP proxy also
-  says each listed tool's D96 class (``sandbox-science/effect`` in its ``_meta``) and
-  whether a call of it asks a person first (``sandbox-science/escalates``), which the tool
-  keeps and each call's record names with its reach (``delegation.effects.connector_reach``);
-  a delegated run's fence reads them (D99). A client that reaches servers directly passes
-  the server's own listing, whose word on that is not taken;
+- each with the effect class ``effect``, so the plan fence applies. A client whose
+  listings carry classes the host trusts (``classifies``) gives each listed tool its D96
+  class (``sandbox-science/effect`` in its ``_meta``) and whether a call of it asks a
+  person first (``sandbox-science/escalates``), which the tool keeps and each call's
+  record names with its reach (``delegation.effects.connector_reach``); a delegated run's
+  fence reads them (D99). The runtime's client passes the server's own listing, whose
+  word on that is not taken, so no client classifies since the MCP proxy, which did,
+  retired: a delegated check gets no connector tool, and the child fence treats every
+  connector call as outward;
 - offered to main and delegated runs alike (DA-3, DA-7), through one client: every
   request names the session in ``Sandbox-Science-Session`` and the run that made it in
-  ``Sandbox-Science-Run`` (DA-4), which the proxy records as attribution only. A delegated
-  check is offered only the tools the proxy classes ``read`` (DA-1, PD-33);
+  ``Sandbox-Science-Run`` (DA-4), which the policy middleware records as attribution
+  only. A delegated check is offered only the tools classed ``read`` (DA-1, PD-33);
 - what a server says about a tool is untrusted. Its description loses control and
   invisible characters, is bounded and is framed as the server's. Its input schema is
   rebuilt from structural keywords only, with no text but property names and bounded
   enum values; a schema that does not fit falls back to an empty object schema;
-- a refusal comes back as the tool's error with the proxy's reason. ``approval_required``
-  says the call waits for the operator (``sandbox-science-mcp-proxy pending`` and
-  ``approve``), and the agent calls again later, with the same arguments, which the
-  harness sends in one order;
+- a refusal comes back as the tool's error with its reason. ``approval_required``
+  says the call waits for the user's answer in the workspace, and the agent calls again
+  later, with the same arguments, which the client sends in one order;
 - a call sent whose answer cannot be read is ``no_usable_answer``: the server may have
   done the work, so the harness leaves its intent pending for reconciliation;
-- text results only: the proxy withholds binary content, and the toolbox bounds the
-  text as it bounds any tool result. A client that reaches servers directly (D98) gets
-  the binary content itself: with a ``BinarySink`` (``mcp_binaries``), each image, audio
-  block or blob is withheld by the proxy's rule and kept as an artifact, and the model
-  sees the sink's note naming it instead.
+- with a ``BinarySink`` (``mcp_binaries``), each image, audio block or blob of a result
+  is withheld (``policy.mcp_answers``) and kept as an artifact, and the model sees the
+  sink's note naming it instead; the toolbox bounds the text as it bounds any tool result.
 """
 
 from __future__ import annotations
@@ -66,10 +65,7 @@ import re
 from collections import Counter
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Final, Literal, Protocol, cast
-from urllib.parse import urlsplit
-
-import aiohttp
+from typing import Any, Final, Protocol, cast
 
 from sandbox_science.policy.mcp_answers import binary_contents, withhold_binary
 
@@ -84,20 +80,19 @@ from .worker_client import dump
 _log = logging.getLogger(__name__)
 
 PROTOCOL: Final = "2025-11-25"
-"""The MCP revision the harness speaks to the proxy."""
+"""The MCP revision the client speaks to servers."""
 SESSION_HEADER: Final = "Sandbox-Science-Session"
-"""Names the session whose agent made a call, which the proxy records (docs/MCP-CONNECTORS.md)."""
+"""Names the session whose agent made a call, which the policy middleware records
+(docs/MCP-CONNECTORS.md)."""
 RUN_HEADER: Final = "Sandbox-Science-Run"
 """Names the run whose agent made a call (DA-4): a main run's or a delegated run's name, as
-its record is kept. The proxy and the middleware record it; it is never part of a key."""
-REFUSED: Final = -31001
-"""The proxy's own JSON-RPC error code: it refused the call (its ``data.reason`` says why)."""
-UPSTREAM_FAILED: Final = -31002
+its record is kept. The middleware records it; it is never part of a key."""
 EFFECT_META: Final = "sandbox-science/effect"
-"""Where the MCP proxy puts a listed tool's D96 class (the policy library's ``EFFECT_META``)."""
+"""Where a classifying client's listing puts a tool's D96 class (the policy library's
+``EFFECT_META``)."""
 ESCALATES_META: Final = "sandbox-science/escalates"
-"""Where the MCP proxy marks a listed tool whose call by name asks a person first (the
-policy library's ``ESCALATES_META``)."""
+"""Where a classifying client's listing marks a tool whose call by name asks a person
+first (the policy library's ``ESCALATES_META``)."""
 MAX_ANSWER_BYTES: Final = 8 * 1024 * 1024
 MAX_DESCRIPTION: Final = 2000
 MAX_SCHEMA_BYTES: Final = 16 * 1024
@@ -138,223 +133,17 @@ LIST_BACKOFF: Final = 1.0
 MAX_FAILURE: Final = 300
 """Characters of the reason a server's listing failed."""
 CALL_SECONDS: Final = 330.0
-"""How long one call may take: longer than the proxy's default ``upstream_timeout``
-(5 minutes), so the proxy's own answer arrives first."""
+"""How long one call may take, from start to end."""
 NAME: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 """A tool name a model can call, and that a run's records can hold."""
-_TOKEN: Final = re.compile(r"[\x21-\x7e]{16,512}")
-_PLAIN_HTTP: Final = frozenset(
-    {"127.0.0.1", "localhost", "::1", "[::1]", "host.openshell.internal"}
-)
-"""Hosts reached over plain http: loopback, and OpenShell's route from a sandbox to
-its own host (``host.openshell.internal``), whose traffic stays on that host."""
 
 
 class ConnectorError(Exception):
-    """The proxy refused a request, or could not be reached; ``kind`` is its reason."""
+    """A request was refused, or the server could not be reached; ``kind`` is its reason."""
 
     def __init__(self, kind: str, message: str, data: Mapping[str, object] | None = None) -> None:
         super().__init__(f"{kind}: {message}")
         self.kind, self.message, self.data = kind, message, dict(data or {})
-
-
-def check_proxy(url: str, token: str) -> None:
-    """Refuse a proxy address or token the client should not use (ValueError).
-
-    The address is ``https``, or ``http`` on loopback only, where the proxy's forward
-    listens on one host; the token is one line of visible ASCII."""
-    parts = urlsplit(url)
-    host = parts.hostname
-    if parts.scheme not in ("http", "https") or not host:
-        raise ValueError("the MCP proxy's address is an http or https URL")
-    if parts.scheme == "http" and host not in _PLAIN_HTTP:
-        raise ValueError(
-            "the MCP proxy is reached over https, or over http on loopback or "
-            "host.openshell.internal only"
-        )
-    if parts.username is not None or parts.query or parts.fragment:
-        raise ValueError("the MCP proxy's address has no credentials, query or fragment")
-    if not _TOKEN.fullmatch(token):
-        raise ValueError("the MCP proxy token is one line of 16 to 512 visible ASCII characters")
-
-
-class ProxyClient:
-    """One caller's connection to the MCP proxy at ``url``, with its ``token``.
-
-    It keeps one MCP session per server, started on first use and shared by concurrent
-    callers, and starts it again once if the proxy no longer knows it (a restart). It
-    never follows a redirect.
-    """
-
-    classifies: Final = True
-    """Its listings carry the proxy's class of each tool (``EFFECT_META``)."""
-
-    def __init__(self, url: str, token: str, *, timeout: float = CALL_SECONDS) -> None:
-        self.url = url.rstrip("/")
-        self._token = token
-        self._timeout = aiohttp.ClientTimeout(total=timeout)
-        self._http: aiohttp.ClientSession | None = None
-        self._sessions: dict[str, asyncio.Task[str]] = {}
-        self._ids = 0
-
-    async def close(self) -> None:
-        for task in self._sessions.values():
-            task.cancel()
-        if self._http is not None:
-            await self._http.close()
-            self._http = None
-
-    async def request(
-        self,
-        server: str,
-        method: str,
-        params: Mapping[str, object],
-        *,
-        session: str,
-        run: str | None = None,
-    ) -> dict[str, Any]:
-        """``method``'s result from ``server``; ``session`` names the asking session and
-        ``run`` the run in it (DA-4). The MCP session with a server is shared by the runs
-        of this client, each request naming its own run."""
-        message = encode_message(
-            {"jsonrpc": "2.0", "id": self._next(), "method": method, "params": dict(params)}
-        )
-        for attempt in (1, 2):
-            task, mcp_session = await self._session(server, session, run)
-            status, body = await self._post(server, message, session, mcp_session, run)
-            if status == 404 and attempt == 1:
-                self._forget(server, task)  # the proxy forgot it: start again, once
-                continue
-            return _result(status, body)
-        raise AssertionError("unreachable")  # pragma: no cover
-
-    async def end(self, server: str, *, session: str) -> None:
-        """End this client's MCP session with ``server``, if it started one: the proxy's
-        ``DELETE``, so the session does not hold one of the caller's places until the
-        proxy's idle limit. A failure is logged and left to that limit; the next request
-        starts a new session either way."""
-        task = self._sessions.pop(server, None)
-        if task is None:
-            return
-        if not task.done():
-            task.cancel()
-            return
-        if task.cancelled() or task.exception() is not None:
-            return
-        try:
-            async with self._client().delete(
-                f"{self.url}/mcp/{server}",
-                headers=self._headers(session, task.result(), None),
-                allow_redirects=False,
-            ) as response:
-                await response.read()
-        except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
-            _log.info("could not end the MCP session with %s: %s", server, type(exc).__name__)
-
-    def _forget(self, server: str, task: asyncio.Task[str]) -> None:
-        """Forget the session ``task`` started, unless another caller already started a
-        new one, which is never cancelled: others may be waiting on it."""
-        if self._sessions.get(server) is task:
-            del self._sessions[server]
-
-    async def _session(
-        self, server: str, session: str, run: str | None
-    ) -> tuple[asyncio.Task[str], str]:
-        """The server's MCP session, and the start that made it: callers wait on one
-        start, and no lock is held."""
-        task = self._sessions.get(server)
-        if task is None or (task.done() and (task.cancelled() or task.exception() is not None)):
-            task = self._sessions[server] = asyncio.ensure_future(self._start(server, session, run))
-        try:
-            return task, await asyncio.shield(task)
-        except ConnectorError:
-            self._forget(server, task)
-            raise
-
-    async def _start(self, server: str, session: str, run: str | None) -> str:
-        """Start an MCP session with ``server`` through the proxy; its ID."""
-        params = {
-            "protocolVersion": PROTOCOL,
-            "capabilities": {},
-            "clientInfo": {"name": "sandbox-science-harness", "version": "0.1"},
-        }
-        message = {"jsonrpc": "2.0", "id": self._next(), "method": "initialize", "params": params}
-        try:
-            async with self._client().post(
-                f"{self.url}/mcp/{server}",
-                data=encode_message(message),
-                headers=self._headers(session, None, run),
-                allow_redirects=False,
-            ) as response:
-                body = await _read(response)
-                found = response.headers.get("Mcp-Session-Id")
-                status = response.status
-            _result(status, body)
-            if not found:
-                raise ConnectorError("unavailable", f"the proxy started no session for {server}")
-            async with self._client().post(
-                f"{self.url}/mcp/{server}",
-                data=encode_message({"jsonrpc": "2.0", "method": "notifications/initialized"}),
-                headers=self._headers(session, found, run),
-                allow_redirects=False,
-            ) as response:
-                await _read(response)
-                if response.status != 202:
-                    raise ConnectorError(
-                        "unavailable", f"the proxy answered initialized with {response.status}"
-                    )
-        except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
-            raise ConnectorError(
-                "unavailable", f"the MCP proxy cannot be reached: {type(exc).__name__}"
-            ) from None
-        return found
-
-    async def _post(
-        self, server: str, message: bytes, session: str, mcp_session: str, run: str | None
-    ) -> tuple[int, object]:
-        try:
-            response = await self._client().post(
-                f"{self.url}/mcp/{server}",
-                data=message,
-                headers=self._headers(session, mcp_session, run),
-                allow_redirects=False,
-            )
-        except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
-            # Nothing was answered: the call may or may not have left.
-            raise ConnectorError(
-                "no_usable_answer", f"the MCP proxy gave no answer ({type(exc).__name__})"
-            ) from None
-        async with response:
-            try:
-                return response.status, await _read(response)
-            except (aiohttp.ClientError, TimeoutError) as exc:
-                raise ConnectorError(
-                    "no_usable_answer",
-                    f"the MCP proxy's answer could not be read ({type(exc).__name__})",
-                ) from None
-
-    def _client(self) -> aiohttp.ClientSession:
-        if self._http is None:
-            self._http = aiohttp.ClientSession(timeout=self._timeout)
-        return self._http
-
-    def _headers(self, session: str, mcp_session: str | None, run: str | None) -> dict[str, str]:
-        headers = {
-            "Authorization": f"Bearer {self._token}",
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            SESSION_HEADER: session,
-        }
-        if run is not None:
-            headers[RUN_HEADER] = run
-        if mcp_session is not None:
-            headers["Mcp-Session-Id"] = mcp_session
-            headers["MCP-Protocol-Version"] = PROTOCOL
-        return headers
-
-    def _next(self) -> int:
-        self._ids += 1
-        return self._ids
 
 
 def encode_message(message: Mapping[str, object]) -> bytes:
@@ -369,47 +158,6 @@ def encode_message(message: Mapping[str, object]) -> bytes:
         ) from None
 
 
-async def _read(response: aiohttp.ClientResponse) -> object:
-    """The whole answer, up to ``MAX_ANSWER_BYTES``, as JSON; ``None`` if it is not."""
-    data = bytearray()
-    while chunk := await response.content.read(64 * 1024):
-        data += chunk
-        if len(data) > MAX_ANSWER_BYTES:
-            raise ConnectorError(
-                "no_usable_answer", f"the proxy's answer exceeds {MAX_ANSWER_BYTES} bytes"
-            )
-    if not data:
-        return None
-    try:
-        return json.loads(data)
-    except (ValueError, RecursionError):
-        return None
-
-
-def _result(status: int, body: object) -> dict[str, Any]:
-    """A JSON-RPC answer's result, or the proxy's refusal as a ``ConnectorError``."""
-    message = cast(dict[str, Any], body) if isinstance(body, dict) else {}
-    error = message.get("error")
-    if isinstance(error, dict):
-        error = cast(dict[str, Any], error)
-        data = error.get("data")
-        data = cast(dict[str, object], data) if isinstance(data, dict) else {}
-        code = error.get("code")
-        reason = data.get("reason")
-        if code in (REFUSED, UPSTREAM_FAILED) and isinstance(reason, str):
-            raise ConnectorError(reason, clean(str(error.get("message", "")))[:500], data)
-        said = clean(str(error.get("message", "")))[:2000]
-        raise ConnectorError(
-            "server_error", f"the MCP server answered an error (untrusted): {said}"
-        )
-    result = message.get("result")
-    if status != 200 or not isinstance(result, dict):
-        raise ConnectorError(
-            "no_usable_answer", f"the MCP proxy answered {status} without a usable result"
-        )
-    return cast(dict[str, Any], result)
-
-
 def clean(text: str) -> str:
     """``text`` a server wrote without any character a person may not see, stripped
     rather than refused: controls but line breaks and tabs, format, private-use and
@@ -421,18 +169,18 @@ def clean(text: str) -> str:
 
 @dataclass(frozen=True)
 class ConnectorTool:
-    """A tool of a server behind the proxy, as offered to the model."""
+    """A tool of a configured server, as offered to the model."""
 
     server: str
     spec: ToolSpec
     purpose: str = ""
     """The first line of what the server says it does, bounded: the index shows it."""
     effect_class: str | None = None
-    """The tool's D96 class as the MCP proxy says it, or None when no proxy said one."""
+    """The tool's D96 class as a classifying client says it, or None when none said one."""
     escalates: bool = False
-    """The MCP proxy says a call of it by name asks a person first; False when no proxy
-    said so. A delegated run's fence lets such a call reach the proxy, which holds it for
-    the user, under a draft plan (D99)."""
+    """A classifying client says a call of it by name asks a person first; False when none
+    said so. A delegated run's fence lets such a call through, to be held for the user,
+    under a draft plan (D99)."""
 
     @property
     def group(self) -> str:
@@ -486,10 +234,11 @@ def purpose(description: object) -> str:
 
 
 class McpClient(Protocol):
-    """What ``Connectors`` asks of its client: the MCP proxy's (``ProxyClient``), or one that
-    reaches declared servers straight through OpenShell (``mcp_direct``, the D98 prototype).
-    A refusal is a ``ConnectorError`` whose kind is its reason, and a held call's names its
-    permission request in ``data["request"]``."""
+    """What ``Connectors`` asks of its client: one that reaches declared servers through
+    OpenShell (``mcp_direct``), or, on the host, the relay to the runtime's
+    (``confinement.connector_calls``). A refusal is a ``ConnectorError`` whose kind is its
+    reason, and a held call's names its permission request in ``data["request"]``. A client
+    whose listings carry classes the host trusts sets ``classifies``."""
 
     async def request(
         self,
@@ -506,7 +255,7 @@ class McpClient(Protocol):
 
 
 class Connectors:
-    """One run's connector tools, from ``servers`` behind the proxy (see the module)."""
+    """One run's connector tools, from the configured ``servers`` (see the module)."""
 
     def __init__(
         self,
@@ -522,20 +271,14 @@ class Connectors:
         disabled: Callable[[], frozenset[str]] | None = None,
         on_approval: Callable[[dict[str, object] | None], Awaitable[None]] | None = None,
         binaries: BinarySink | None = None,
-        path: Literal["proxy", "direct"] = "proxy",
     ) -> None:
         self.client, self.servers, self.session = client, tuple(dict.fromkeys(servers)), session
         self.run = run
         """The run whose calls these are, named on every request (DA-4)."""
         self.reads_only = reads_only
-        """Offer only the tools the proxy classes ``read``: a delegated check's (DA-1)."""
+        """Offer only the tools classed ``read``: a delegated check's (DA-1)."""
         self.disabled = disabled
         self.on_approval = on_approval
-        self.path = path
-        """The path the run's connector calls take: through the MCP proxy, from the host's
-        harness, or ``direct`` (``[mcp_direct]``, D98), admitted here and made by the agent
-        runtime's own client (``confinement.connector_calls``), which hands binary results
-        to the host over ``publish_mcp_binary``: that capability is on only on this path."""
         self.binaries = binaries
         """Keeps a result's binary items (as artifacts) and words the note that replaces
         each; without it, they are not shown and not kept."""
@@ -697,7 +440,8 @@ class Connectors:
             )
 
     def _effect_class(self, tool: Mapping[str, Any]) -> str | None:
-        """The class the MCP proxy gives a listed tool; a server's own word is not taken."""
+        """The class a classifying client gives a listed tool; a server's own word is not
+        taken."""
         if not getattr(self.client, "classifies", False):
             return None
         meta = tool.get("_meta")
@@ -705,7 +449,7 @@ class Connectors:
         return said if isinstance(said, str) and said in EFFECT_CLASSES else None
 
     def _escalates(self, tool: Mapping[str, Any]) -> bool:
-        """Whether the MCP proxy marks a listed tool as asking a person first."""
+        """Whether a classifying client marks a listed tool as asking a person first."""
         if not getattr(self.client, "classifies", False):
             return False
         meta = tool.get("_meta")
@@ -921,8 +665,8 @@ class Connectors:
     async def _keep_binaries(
         self, server: str, name: str, result: dict[str, Any], record: dict[str, Any]
     ) -> dict[str, Any]:
-        """``result`` with each binary item replaced by the sink's note, as the MCP proxy
-        replaces it (``mcp_answers.withhold_binary``); the record counts them."""
+        """``result`` with each binary item replaced by the sink's note
+        (``mcp_answers.withhold_binary``); the record counts them."""
         assert self.binaries is not None  # noqa: S101 - called only with a sink
         found = binary_contents("tools/call", result)
         if not found:
@@ -935,7 +679,7 @@ class Connectors:
 
 APPROVAL_POLL: Final = (3.0, 10.0)
 """Seconds between retries of a call that waits for approval: in its first minute, then
-after. Each retry is one more audited call at the proxy."""
+after. Each retry is one more audited request at the policy middleware."""
 MAX_APPROVAL_WAIT: Final = 2 * 3600.0
 """The longest a call waits for an answer; the policy's timeout usually ends it first."""
 _ANSWERED: Final = frozenset({"approval_required", "approval_denied", "escalation_timed_out"})
@@ -945,7 +689,7 @@ def _explain(error: ConnectorError) -> str:
     if error.kind == "approval_required":
         request = error.data.get("request")
         return (
-            f"{error.message}. The MCP proxy holds this call until the user approves "
+            f"{error.message}. This call is held until the user approves "
             f"permission request {request}; call it again later with the same arguments."
         )
     if error.kind == "approval_denied":
@@ -974,7 +718,7 @@ def _spec(server: str, name: str, tool: Mapping[str, Any]) -> ToolSpec:
             parameters = rebuilt if _value_text(rebuilt) <= MAX_VALUE_TEXT else _bare(rebuilt)
     return ToolSpec(
         name,
-        f"A tool of the MCP server {server}, through the MCP proxy. "
+        f"A tool of the MCP server {server}, through the platform. "
         f"The server describes it (untrusted): {said}",
         parameters,
     )

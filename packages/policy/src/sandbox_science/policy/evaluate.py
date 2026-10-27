@@ -505,7 +505,10 @@ def reserved_host_reason(host: str, policy: LoadedPolicy) -> str | None:
         return reason
     for name, server in policy.policy.mcp.servers.items():
         if server.host == host:
-            return f"{host} hosts MCP server {name!r}, reachable only through the MCP proxy"
+            return (
+                f"{host} hosts MCP server {name!r}, reachable only by the agent runtime's "
+                "MCP client"
+            )
     return None
 
 
@@ -543,8 +546,8 @@ def _evaluate_network(
     if server is not None:
         return _deny(
             "floor",
-            f"{operation.host} hosts MCP server {server!r}, which is reachable only through "
-            "the MCP proxy (D67)",
+            f"{operation.host} hosts MCP server {server!r}, which is reachable only by the "
+            "agent runtime's MCP client (D98)",
             policy,
         )
     # Otherwise a read rule would let workers fetch packages around the package

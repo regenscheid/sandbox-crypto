@@ -426,9 +426,6 @@ async def test_actual_cli_keeps_selected_input_and_safe_failed_record(
         task=INJECTION,
         max_turns=1,
         max_input_chars=400_000,
-        mcp_proxy=None,
-        mcp_token_file=None,
-        mcp_server=[],
         transcript=None,
         research_template="report",
     )

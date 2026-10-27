@@ -17,7 +17,7 @@ import pytest_asyncio
 
 from sandbox_science.contracts import ErrorKind
 from sandbox_science.orchestrator.chat import shown_call
-from sandbox_science.orchestrator.connectors import Connectors, ConnectorTool, ProxyClient
+from sandbox_science.orchestrator.connectors import Connectors, ConnectorTool
 from sandbox_science.orchestrator.consistency.prompt_bundle import (
     PURPOSE,
     PURPOSE_ASSEMBLY,
@@ -38,6 +38,7 @@ from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.delegation.prompt import CHECK_PROMPT, TASK_PROMPT
 from sandbox_science.orchestrator.hooks import Appended, Effect, Refusal, TurnHook
 from sandbox_science.orchestrator.loop import SYSTEM_PROMPT
+from sandbox_science.orchestrator.mcp_direct import DirectClient, DirectServer
 from sandbox_science.orchestrator.model import ToolCall, ToolSpec
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.purpose import (
@@ -271,9 +272,8 @@ async def test_a_refusal_for_its_purpose_is_a_failed_call_the_guard_counts() -> 
 
 
 def connectors_of(*tools: ConnectorTool) -> Connectors:
-    found = Connectors(
-        ProxyClient("http://127.0.0.1:9", "test-secret-proxy"), ["papers"], session="s-1"
-    )
+    client = DirectClient({"papers": DirectServer("http://127.0.0.1:9/mcp")}, project="p")
+    found = Connectors(client, ["papers"], session="s-1")
     for tool in tools:
         found.tools[tool.spec.name] = tool
     return found

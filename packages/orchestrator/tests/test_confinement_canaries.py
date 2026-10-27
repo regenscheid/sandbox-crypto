@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: MIT
 """MCP canaries on the direct path (D98, D103): the control service asks the runtime to list
-a server's tools through its direct client (``list_mcp_tools``), bounded as the proxy's
-canary, never calling a tool, and stores the outcome as any canary's."""
+a server's tools through its direct client (``list_mcp_tools``), bounded, never calling a
+tool, and stores the outcome as any canary's; the workspace user's availability check asks
+the same of one server (``POST /mcp-check``) and stores nothing."""
 
 from __future__ import annotations
 
@@ -276,3 +277,99 @@ async def test_the_control_service_runs_them_over_the_runtimes_connection(
                     assert (row.status, row.tool_count, row.digest) == ("listed", 3, "d" * 64)
                 finally:
                     control.close()
+
+
+async def test_the_users_check_lists_one_server_through_the_runtime(tmp_path: Path) -> None:
+    """The workspace's "Check availability" (D98): with the workspace's token, one listing
+    of a configured server by the connected runtime's client; anything else is 404."""
+    import hashlib
+
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from sandbox_science.contracts.worker import PROTOCOL_HEADER, PROTOCOL_VERSION
+    from sandbox_science.orchestrator.confinement.server import (
+        DirectAccessSettings,
+        create_app,
+    )
+    from sandbox_science.orchestrator.confinement.transport import (
+        CONTROL_HEADER,
+        CONTROL_PROTOCOL,
+        Reply,
+        Request,
+    )
+
+    from .test_confinement_control import TOKEN, WORKER, private
+
+    async def ready(request: web.Request) -> web.Response:
+        return web.json_response(
+            {"protocol": PROTOCOL_VERSION, "ready": True},
+            headers={PROTOCOL_HEADER: str(PROTOCOL_VERSION)},
+        )
+
+    worker = web.Application()
+    worker.router.add_get("/v1/ready", ready)
+    backend = TestServer(worker)
+    await backend.start_server()
+    check = "test-secret-workspace-check-0123456789abcdef"
+    digest = private(tmp_path / "check.sha256", hashlib.sha256(check.encode()).hexdigest())
+    base: dict[str, Any] = {
+        "state_dir": tmp_path / "state",
+        "worker": str(backend.make_url("")),
+        "worker_token_file": private(tmp_path / "worker.token", WORKER),
+        "runtime_token_file": private(tmp_path / "runtime.token", TOKEN),
+        "generation": "runtime-test",
+        "projects": ("p",),
+        "main": "main",
+        "image_revision": "a" * 40,
+        "direct": DirectAccessSettings(project="p", servers=("papers",)),
+    }
+    allowed = {"Authorization": "Bearer " + check}
+    # Without the workspace's token digest the route does not exist.
+    async with TestClient(TestServer(create_app(ControlSettings(**base)))) as client:
+        answer = await client.post("/mcp-check", json={"server": "papers"}, headers=allowed)
+        assert answer.status == 404
+    settings = ControlSettings(**base, check_token_sha256_file=digest)
+    async with TestClient(TestServer(create_app(settings))) as client:
+        wrong = {"Authorization": "Bearer test-secret-not-the-workspace-0123456789"}
+        answer = await client.post("/mcp-check", json={"server": "papers"}, headers=wrong)
+        assert answer.status == 404
+        answer = await client.post("/mcp-check", json={"server": "other"}, headers=allowed)
+        assert answer.status == 404
+        answer = await client.post("/mcp-check", json={"tool": "papers"}, headers=allowed)
+        assert answer.status == 400
+        # No runtime connected: unavailable, said as a canary says it.
+        answer = await client.post("/mcp-check", json={"server": "papers"}, headers=allowed)
+        assert answer.status == 200
+        assert await answer.json() == {
+            "status": "unavailable",
+            "tool_count": None,
+            "digest": None,
+            "error_kind": "runtime_unavailable",
+        }
+        headers = {"Authorization": "Bearer " + TOKEN, CONTROL_HEADER: str(CONTROL_PROTOCOL)}
+        async with client.ws_connect("/control", headers=headers) as socket:
+            hello = Request(
+                id=1, capability=Capability.HANDSHAKE, payload={"image_revision": "a" * 40}
+            )
+            await socket.send_str(hello.model_dump_json())
+            await socket.receive(timeout=5)  # the handshake's reply
+            asked = asyncio.create_task(
+                client.post("/mcp-check", json={"server": "papers"}, headers=allowed)
+            )
+            request = Request.model_validate_json((await socket.receive(timeout=5)).data)
+            assert request.capability is Capability.LIST_MCP_TOOLS
+            assert request.payload == {"server": "papers"}
+            listed = ToolsListed(status="listed", tool_count=3, digest="d" * 64)
+            reply = Reply(id=request.id, payload=listed.model_dump(mode="json"))
+            await socket.send_str(reply.model_dump_json())
+            answer = await asked
+            assert answer.status == 200
+            assert (await answer.json())["tool_count"] == 3
+    await backend.close()
+    # A check is not a canary: nothing was stored.
+    control = ControlStore(store_path(tmp_path / "state"), readonly=True)
+    try:
+        assert CanaryStore(control).latest(["papers"]) == {}
+    finally:
+        control.close()

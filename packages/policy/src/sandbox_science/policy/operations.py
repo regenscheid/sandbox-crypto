@@ -174,7 +174,8 @@ class GitOperation:
 
 @dataclass(frozen=True, slots=True)
 class McpOperation:
-    """One JSON-RPC request or notification sent to an MCP server through the MCP proxy."""
+    """One JSON-RPC request or notification sent to an MCP server (D98: the agent runtime's
+    client, through OpenShell's native rules and the policy middleware)."""
 
     server: str
     method: str

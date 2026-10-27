@@ -74,7 +74,7 @@ class GrantListing(Contract):
 @dataclass(frozen=True, slots=True)
 class Asked:
     """What a held request asks for, as grants compare it. The workspace builds it from
-    the proxy's or the worker's record of the request, never from the agent's words."""
+    the worker's record of the request, never from the agent's words."""
 
     kind: GrantKind
     caller_kind: str

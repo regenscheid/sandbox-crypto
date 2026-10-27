@@ -498,7 +498,7 @@ _MCP_PATH_RE: Final = re.compile(r"/[A-Za-z0-9._~!$&'()+,=:@/-]*")
 
 
 class McpServer(StrictModel):
-    """One MCP server reached through the MCP proxy (D67).
+    """One MCP server, reached by the agent runtime's own client (D98).
 
     ``tool_prefix`` names a namespace prefix the server puts on every tool name,
     such as a portal's ``crypto_research_mcp-``. Tool patterns then match the

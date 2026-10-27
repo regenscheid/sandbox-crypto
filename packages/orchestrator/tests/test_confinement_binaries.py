@@ -96,9 +96,7 @@ class Host:
 async def linked() -> AsyncIterator[Host]:
     worker, publisher = FakeWorker(), FakePublisher()
     sink = ArtifactBinaries(cast(WorkerClient, worker), CONTEXT, cast(ArtifactPublisher, publisher))
-    connectors = SimpleNamespace(
-        tools={"render": SimpleNamespace(server="charts")}, binaries=sink, path="direct"
-    )
+    connectors = SimpleNamespace(tools={"render": SimpleNamespace(server="charts")}, binaries=sink)
     host: Host | None = None
 
     async def host_handle(kind: Capability, value: JsonValue) -> JsonValue:
@@ -139,7 +137,7 @@ async def send(host: Host, value: Any) -> Any:
     return await host.vm.request(Capability.PUBLISH_MCP_BINARY, value)
 
 
-async def test_an_item_becomes_a_revision_of_the_runs_artifact_as_on_the_proxy_path(
+async def test_an_item_becomes_a_revision_of_the_runs_artifact(
     linked: Host,
 ) -> None:
     note = await ControlBinaries(linked.vm, ATTEMPT, "call-1").keep("charts", "render", item(PNG))
@@ -148,13 +146,13 @@ async def test_an_item_becomes_a_revision_of_the_runs_artifact_as_on_the_proxy_p
     assert write.path == f"mcp-results/charts/{digest[:24]}.png"
     assert base64.b64decode(write.content_b64) == PNG
     (request, operation, tool_call), = linked.publisher.published  # fmt: skip
-    # Published as the runtime's: its client made the call, not the host's proxy client.
+    # Published as the runtime's: its client made the call.
     assert (request.path, request.media_type, tool_call) == (
         write.path,
         "image/png",
         "runtime-mcp:render",
     )
-    # The operation is the proxy path's: one per run and content.
+    # One operation per run and content, as for any client's items.
     assert operation == "mcp-" + hashlib.sha256(f"main-1:{digest}".encode()).hexdigest()[:40]
     assert "artifact art-control revision 1" in note
     assert digest in note
@@ -289,16 +287,3 @@ async def test_a_host_attempt_that_does_not_exist_is_refused() -> None:
     finally:
         await vm_channel.close()
         await host_channel.close()
-
-
-async def test_nothing_is_published_while_the_runs_calls_take_the_proxy_path(
-    linked: Host,
-) -> None:
-    linked.connectors.path = "proxy"
-    with pytest.raises(TransportError) as error:
-        await send(linked, asked(PNG))
-    assert (error.value.kind, str(error.value)) == (
-        "denied",
-        "this run's connector calls are not on the direct path",
-    )
-    assert linked.worker.writes == []
