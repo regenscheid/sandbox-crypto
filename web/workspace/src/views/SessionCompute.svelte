@@ -1,7 +1,8 @@
 <!-- SPDX-License-Identifier: MIT -->
 <!-- What computes for the session now, in one place for the main agent and every subagent:
      the tool calls each running agent has made and has no result for yet (a shell or
-     Python call still executing), the session's background jobs, and its kernels. The
+     Python call still executing), the session's background jobs, its kernels, and each
+     child environment a subagent works in, with that environment's kernels (CE-8). The
      calls are read from each running agent's events; their text is agents' text, shown
      with what a person may not see as its code point. -->
 <script lang="ts">
@@ -21,6 +22,7 @@
   import { initialPoll, Poller, type PollState } from '../lib/poller';
   import { agentName } from '../lib/runTree';
   import { visible } from '../lib/text';
+  import ChildEnvironments from './ChildEnvironments.svelte';
   import JobsPanel from './JobsPanel.svelte';
   import KernelPanel from './KernelPanel.svelte';
   import PollStatus from './PollStatus.svelte';
@@ -45,6 +47,8 @@
   let now = $state(Date.now());
   /** The kernel panel's latest observation, which each kernel's current cell is joined to. */
   let observation = $state<PollState<KernelObservation> | null>(null);
+  /** Each child environment's latest kernel observation, by its ID (CE-8). */
+  let childObservations = $state<Record<string, PollState<KernelObservation>>>({});
 
   /** The calls of a run's events that have no result yet, with when each was made. */
   function pending(events: readonly RunEvent[]): Running['calls'] {
@@ -100,7 +104,12 @@
   const calls = $derived<PendingCall[]>(
     (view.data ?? []).flatMap(({ run, calls }) => calls.map((item) => ({ ...item, run }))),
   );
-  const kernels = $derived(observation?.data?.kernels ?? null);
+  /** The session's kernels and its child environments', as far as each was observed. */
+  const kernels = $derived.by(() => {
+    const children = Object.values(childObservations).flatMap((state) => state.data?.kernels ?? []);
+    const own = observation?.data?.kernels ?? null;
+    return own === null && children.length === 0 ? null : [...(own ?? []), ...children];
+  });
   /** Each observed kernel's current cell: its owner's oldest cell call without a result. */
   const cells = $derived(kernelCells(kernels ?? [], calls));
 </script>
@@ -141,7 +150,7 @@
       {#if kernelNotObserved({ call, at, run }, kernels)}
         <p class="muted">
           Its kernel was not observed (the observation is missing, stale or lacks it), so it is not
-          listed under the session kernels.
+          listed under the session's or a child environment's kernels.
         </p>
       {/if}
     </article>
@@ -155,6 +164,16 @@
       environmentId={kernelScope.environmentId}
       onobserve={(state) => {
         observation = state;
+      }}
+      {detail}
+    />{/if}
+  {#if kernelScope}<ChildEnvironments
+      {projectId}
+      {sessionId}
+      kernels
+      heading="Subagents' own environments"
+      onobserve={(environment, state) => {
+        childObservations = { ...childObservations, [environment]: state };
       }}
       {detail}
     />{/if}

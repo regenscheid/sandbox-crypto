@@ -73,6 +73,7 @@ from sandbox_science.workspace.chat import (
     QuestionListing,
     Requested,
 )
+from sandbox_science.workspace.child_environments import ChildEnvironmentListing
 from sandbox_science.workspace.classifications import (
     ClassificationListing,
     ClassificationView,
@@ -152,6 +153,7 @@ MODELS: tuple[type[BaseModel], ...] = (
     RunTree,
     AgentMessagePage,
     WorkspaceObservation,
+    ChildEnvironmentListing,
     WorkspacePlan,
     BodyChange,
     EditReceipt,

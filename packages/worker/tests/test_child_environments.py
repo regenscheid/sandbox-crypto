@@ -31,10 +31,12 @@ from sandbox_science.contracts import (
     EnvironmentState,
     ErrorKind,
     ExecutionContext,
+    FileContent,
     FileListing,
     IsolationEvidence,
     ListFilesRequest,
     Location,
+    ReadFileRequest,
     SessionCloseRequest,
 )
 from sandbox_science.contracts.child_environments import (
@@ -476,6 +478,40 @@ async def test_an_incomplete_hand_back_retains_two_a_project(tmp_path: Path) -> 
         assert await pool.children.sweep() == [second.environment_id]
     finally:
         await pool.close()
+
+
+async def test_a_file_over_100_mib_is_refused_by_its_size_and_the_limit(pool: Pool) -> None:
+    """CE-F1's 1.5 GiB file: a write into a sandbox takes 100 MiB at most, so the
+    hand-back leaves it in the child environment, which is retained; the reason names its
+    size and the limit, and the environment's message the largest files left out."""
+    made = await pool.ready()
+    child = made.environment_id
+    for name in ("small.txt", "huge.bin", "big.bin"):
+        pool.port.files[child, name] = b"x"
+    sizes = {"huge.bin": 1536 * 1024**2, "big.bin": 200 * 1024**2}
+    read = pool.port.read_file
+
+    async def sized(request: ReadFileRequest) -> FileContent:
+        found = await read(request)
+        size = sizes.get(request.path) if request.context.environment_id == child else None
+        return found if size is None else found.model_copy(update={"size": size})
+
+    pool.port.read_file = sized
+    back = await pool.children.hand_back(child, pool.back(("small.txt", "huge.bin", "big.bin")))
+    assert not back.complete
+    assert [f.path for f in back.collected] == [f"work/{DELEGATION}/small.txt"]
+    reasons = {f.path: f.reason for f in back.not_collected}
+    assert reasons["huge.bin"] == (
+        "1.5 GiB (1610612736 bytes) is over the 100 MiB (104857600 bytes) a hand-back "
+        "copies per file; it stays in the child environment while that is retained"
+    )
+    assert reasons["big.bin"].startswith("200 MiB (209715200 bytes) is over the 100 MiB")
+    ended = await pool.children.end(child, pool.end())
+    assert ended.phase == "retained"
+    assert ended.message == (
+        "its hand-back left 2 files behind; 2 too large to copy (over 100 MiB a file, or "
+        "past the hand-back's bytes), the largest huge.bin (1.5 GiB), big.bin (200 MiB)"
+    )
 
 
 async def test_a_hand_back_must_stay_the_same(pool: Pool) -> None:

@@ -1239,7 +1239,12 @@ class JobSandboxes:
 
 
 class TooLargeError(Exception):
-    """A file over the bytes a copy may take."""
+    """A file over the bytes a copy may take: its ``size``, and the ``limit`` it passed,
+    100 MiB a file (``per_file``) or the bytes left of the copy's budget."""
+
+    def __init__(self, message: str, *, size: int, limit: int, per_file: bool) -> None:
+        super().__init__(message)
+        self.size, self.limit, self.per_file = size, limit, per_file
 
 
 async def replay(
@@ -1319,9 +1324,19 @@ async def read_whole(
     for a file over either."""
     first = await port.read_file(ReadFileRequest(context=context, path=path))
     if first.size > MAX_FILE_WRITE_BYTES:
-        raise TooLargeError(f"{first.size} bytes is over the 100 MiB a file copy takes")
+        raise TooLargeError(
+            f"{first.size} bytes is over the 100 MiB a file copy takes",
+            size=first.size,
+            limit=MAX_FILE_WRITE_BYTES,
+            per_file=True,
+        )
     if first.size > budget:
-        raise TooLargeError(f"{first.size} bytes is over the remaining byte limit")
+        raise TooLargeError(
+            f"{first.size} bytes is over the remaining byte limit",
+            size=first.size,
+            limit=max(0, budget),
+            per_file=False,
+        )
     data = bytearray(base64.b64decode(first.content_b64))
     while len(data) < first.size:
         part = await port.read_file(

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 /** Passive observations only; these helpers never start, reconnect or restart a kernel. */
 import type { KernelInfo, WorkspaceObservation } from './api-types';
+import { childKernelsPath } from './childEnvironments';
 import { get, inScope } from './http';
 import type { PollOptions } from './poller';
 
@@ -12,6 +13,8 @@ export interface KernelScope {
   projectId: string;
   sessionId: string;
   environmentId: string;
+  /** One of the session's child environments (CE-8), read through its own route. */
+  child?: boolean;
 }
 
 /** Only the exact loaded, open session mounts the panel. */
@@ -52,7 +55,9 @@ export async function readKernels(
   scope: KernelScope,
   signal: AbortSignal,
 ): Promise<KernelObservation> {
-  const path = `/projects/${encodeURIComponent(scope.projectId)}/sessions/${encodeURIComponent(scope.sessionId)}/kernels`;
+  const path = scope.child
+    ? childKernelsPath(scope.projectId, scope.sessionId, scope.environmentId)
+    : `/projects/${encodeURIComponent(scope.projectId)}/sessions/${encodeURIComponent(scope.sessionId)}/kernels`;
   return inScope(
     await get<KernelObservation>(path, { signal, maxBytes: KERNEL_OBSERVATION_MAX_BYTES }),
     {

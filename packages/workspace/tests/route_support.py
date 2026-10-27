@@ -36,6 +36,7 @@ from sandbox_science.contracts import (
     KernelStatusRequest,
     StreamOutput,
 )
+from sandbox_science.contracts.child_environments import ChildEnvironment, ChildEnvironmentList
 from sandbox_science.contracts.worker import KERNEL_OBSERVATION_BUSY
 from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.projects import ProjectStore
@@ -151,6 +152,8 @@ class FakeWorker:
         self.manifests: dict[str, JobResultManifest] = {}
         self.released: list[tuple[str, str]] = []
         """(job, operation ID) of each early release of a job sandbox that was accepted."""
+        self.children: dict[str, ChildEnvironment] = {}
+        """Child environments by ID; each is listed and found for its own session only."""
 
     def application(self) -> web.Application:
         app = fake_worker_app(middlewares=[self._record])
@@ -160,6 +163,8 @@ class FakeWorker:
         app.router.add_get("/v1/jobs/{job}", self._job)
         app.router.add_post("/v1/executions/{job}/cancel", self._cancel)
         app.router.add_post("/v1/job-sandboxes/{job}/release", self._release)
+        app.router.add_get("/v1/child-environments", self._children)
+        app.router.add_get("/v1/child-environments/{environment}", self._child)
         app.router.add_get(
             "/v1/environments/{environment}/provisioning/observations{tail:.*}", self._provisioning
         )
@@ -179,6 +184,28 @@ class FakeWorker:
                 status=status,
             )
         return await handler(request)
+
+    def _of_session(self, request: web.Request) -> list[ChildEnvironment]:
+        query = request.query
+        return [
+            child
+            for child in self.children.values()
+            if (child.project_id, child.session_id, child.session_environment)
+            == (query["project_id"], query["session_id"], query["environment_id"])
+        ]
+
+    async def _children(self, request: web.Request) -> web.Response:
+        listing = ChildEnvironmentList(environments=tuple(self._of_session(request)))
+        return web.Response(text=listing.model_dump_json(), content_type="application/json")
+
+    async def _child(self, request: web.Request) -> web.Response:
+        wanted = request.match_info["environment"]
+        for child in self._of_session(request):
+            if child.environment_id == wanted:
+                return web.Response(text=child.model_dump_json(), content_type="application/json")
+        return web.json_response(
+            {"error": {"kind": "not_found", "message": "no such child environment"}}, status=404
+        )
 
     async def _environment(self, request: web.Request) -> web.Response:
         await asyncio.sleep(self.environment_delay)

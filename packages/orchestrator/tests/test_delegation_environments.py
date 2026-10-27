@@ -55,6 +55,7 @@ from sandbox_science.contracts.worker import (
     ManifestFile,
     UncollectedFile,
 )
+from sandbox_science.orchestrator.context.agent import AgentContext
 from sandbox_science.orchestrator.delegation.environments import (
     NOT_OFFERED,
     OWN_UNDER_OFF,
@@ -65,12 +66,15 @@ from sandbox_science.orchestrator.delegation.environments import (
     placement,
 )
 from sandbox_science.orchestrator.delegation.hook import Child, ChildEnd, observed
+from sandbox_science.orchestrator.delegation.prompt import TASK_PROMPT
 from sandbox_science.orchestrator.delegation.records import (
     Delegation,
     DelegationRecords,
     Ending,
     reopen_in,
 )
+from sandbox_science.orchestrator.delegation.specs import SPECS
+from sandbox_science.orchestrator.loop import SYSTEM_PROMPT, Transcript
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.worker_client import WorkerAPIError
 from sandbox_science.testing import FakeClock
@@ -805,6 +809,79 @@ async def test_orphans_and_idle_environments_are_released(
     finally:
         documents.close()
         projects.close()
+
+
+async def test_child_idle_max_releases_a_settled_environment_during_a_run(
+    tmp_path: Path, service: ChildService
+) -> None:
+    """``child_idle_max`` (CE-4, question 4) passes during a long main run, at a turn, as
+    ``review_max`` does: a settled task's environment idle past it is released; one whose
+    task awaits its parent's review is kept, however long it waits (PD-46). Unset, the
+    bound is ``child_orphan_idle``, 24 hours."""
+
+    async def runner(child: Child, stop: asyncio.Event) -> ChildEnd:
+        raise AssertionError("no child starts")
+
+    made, records, projects, documents = _placed(tmp_path, runner, service, "tasks")
+    assert made.limits.child_idle_max is None
+    assert made.limits.child_orphan_idle == 86_400
+    made.limits = records.configure(PROJECT, child_idle_max=600)
+    assert made.placement is not None
+    clock = FakeClock(datetime.now(UTC))
+    made.placement.clock = made.clock = clock
+    turn = Transcript(context=AgentContext(messages=[]))
+    try:
+        settled, awaiting = made_delegation(7), made_delegation(8)
+        environments: dict[str, str] = {}
+        async with made.lease():
+            # Both end during this run: a main run's start accepts what a stopped one left.
+            for delegation, ending in (
+                (settled, Ending("interrupted", "interrupted")),
+                (awaiting, Ending("returned", "answered", result={"status": "partial"})),
+            ):
+                records.start(PROJECT, SESSION, delegation)
+                found = await made.placement.admit(delegation.delegation_id, [])
+                environments[delegation.delegation_id] = found.environment_id
+                records.place(PROJECT, SESSION, delegation.delegation_id, found.environment_id)
+                records.end(PROJECT, SESSION, delegation.delegation_id, ending)
+            assert records.get(PROJECT, SESSION, awaiting.delegation_id).review == "awaiting"
+            clock.advance(400)  # past the sweep's interval, within child_idle_max
+            await made.notices("turn", turn)
+            assert service.ended == []  # neither is idle past the bound yet
+            clock.advance(300)
+            await made.notices("turn", turn)
+            assert service.ended == [environments[settled.delegation_id]]
+            assert service.reasons == ["abandoned"]
+            clock.advance(20 * 3600)
+            await made.notices("turn", turn)
+            # Within review_max (24 hours), the task awaiting review still holds its
+            # environment, however far past child_idle_max.
+            assert service.ended == [environments[settled.delegation_id]]
+            assert records.get(PROJECT, SESSION, awaiting.delegation_id).review == "awaiting"
+    finally:
+        documents.close()
+        projects.close()
+
+
+def test_the_prompts_say_when_to_ask_for_an_environment_and_what_comes_back() -> None:
+    """CE-13 and CE-5: the MAIN prompt says when a task gets an environment of its own and
+    that a returned task keeps it until acceptance hands its files back (PD-46); the
+    task prompt, that its own environment is working memory; ``delegate``, what one
+    costs in time and that a small task shares."""
+    main = " ".join(SYSTEM_PROMPT.split())
+    assert "heavy in compute, memory or disk" in main
+    assert "keep short tasks shared (environment: shared)" in main
+    assert "A returned task keeps its environment; accepting it copies" in main
+    assert "work/<delegation_id>/" in main
+    assert "A returned task awaits your review" in main
+    task = " ".join(TASK_PROMPT.split())
+    assert "its disk is working memory, gone once your task closes" in task
+    assert "name your results in result_files" in task
+    # The connectors narrowing of DA-6, in the same version.
+    assert "Your brief may narrow your connectors: mcp_tools then lists only" in task
+    (delegate,) = [spec for spec in SPECS if spec.name == "delegate"]
+    assert "about one to five minutes" in delegate.description
+    assert "give a small task environment: shared" in delegate.description
 
 
 async def test_a_resume_finishes_a_hand_back_cut_short(service: ChildService) -> None:
