@@ -12,7 +12,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient
 
-from sandbox_science.workspace.mcp_metadata import AvailabilityClient
+from sandbox_science.workspace.mcp_metadata import CHECK_INTERVAL, AvailabilityClient
 
 ClientFactory = Callable[..., Awaitable[TestClient[Any, Any]]]
 TOKEN = "test-secret-workspace-check-0123456789abcdef"
@@ -44,7 +44,31 @@ async def test_a_check_asks_the_control_service_and_keeps_the_status(
     assert client.checks["papers"] == found
     assert "digest" not in found.model_dump()  # only the status and the count are kept
     answer = {"status": "timeout", "tool_count": None, "digest": None, "error_kind": "timeout"}
-    assert (await client.check("papers")).status == "timeout"
+    assert (await client.check("papers")).status == "listed"  # within 30 s: the kept outcome
+    assert len(asked) == 1
+
+
+async def test_a_server_is_checked_at_most_once_in_the_interval(
+    aiohttp_client: ClientFactory,
+) -> None:
+    asked: list[str] = []
+
+    async def check(request: web.Request) -> web.Response:
+        asked.append((await request.json())["server"])
+        return web.json_response({"status": "listed", "tool_count": len(asked)})
+
+    app = web.Application()
+    app.router.add_post("/mcp-check", check)
+    control = await aiohttp_client(app)
+    now = [1000.0]
+    client = AvailabilityClient(str(control.make_url("")), TOKEN, clock=lambda: now[0])
+    first = await client.check("papers")
+    now[0] += CHECK_INTERVAL - 1
+    assert await client.check("papers") == first  # too soon: nothing is asked
+    assert (await client.check("notes")).tool_count == 2  # another server is its own
+    now[0] += 1
+    assert (await client.check("papers")).tool_count == 3
+    assert asked == ["papers", "notes", "papers"]
 
 
 @pytest.mark.parametrize(

@@ -609,6 +609,13 @@ async def test_every_report_taken_is_recorded_and_reports_are_rate_limited(api: 
     # The rate is per caller: another client of the project still reports.
     status, _ = await report(api, reported(), who="workspace")
     assert status == 200
+    # Checks' listings, which name no session or run (the canaries', the user's availability
+    # check), have a budget of their own: they never spend the runs'.
+    check = {**reported(), "session": None, "run": None}
+    for _ in range(10):
+        assert (await report(api, check))[0] == 200
+    status, refused = await report(api, check)
+    assert (status, refused["error"]["kind"]) == (409, "conflict")
 
 
 async def test_a_newer_drift_never_hides_an_older_one_from_review_or_acceptance(api: Api) -> None:

@@ -206,7 +206,7 @@ async def test_the_users_check_is_same_origin_and_asks_the_control_service(
     app = web.Application()
     app.router.add_post("/mcp-check", check)
     control = await aiohttp_client(app)
-    checks = AvailabilityClient(str(control.make_url("")).rstrip("/"), token)
+    checks = AvailabilityClient(str(control.make_url("")).rstrip("/"), token, interval=0)
     client = await workspace(
         aiohttp_client,
         state_dir,

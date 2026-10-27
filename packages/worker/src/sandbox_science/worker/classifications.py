@@ -107,7 +107,10 @@ from .permissions import Permissions, PermissionStoreError
 _log = logging.getLogger(__name__)
 
 MAX_REPORTS: Final = 10
-"""Listing reports one caller may make of one project's server a minute."""
+"""Listing reports one caller may make of one project's server a minute, counted apart for
+runs' listings (a report naming a session or run) and for those naming neither, the
+canaries' and the workspace user's availability checks, so that checks never spend the
+runs' budget."""
 REPORT_WINDOW: Final = timedelta(minutes=1)
 MAX_REPORTERS: Final = 4096
 """Callers, projects and servers whose recent reports are counted, the oldest forgotten."""
@@ -157,7 +160,7 @@ class ClassificationDesk:
         it drifted."""
         self._reports = threading.RLock()
         """One report's check of the drifts and its records at a time."""
-        self._recent: dict[tuple[str, str, str], deque[datetime]] = {}
+        self._recent: dict[tuple[str, str, str, str], deque[datetime]] = {}
         """Each caller's recent reports by project and server, for the rate."""
 
     # Reads.
@@ -357,7 +360,7 @@ class ClassificationDesk:
         own; the server must be one of the project's policy. A report may start or keep a
         hold, never end one: one whose listing the project accepted while another drift of
         the server holds it is refused. At most ``MAX_REPORTS`` a minute per caller, project
-        and server. Blocking."""
+        and server, for runs and for checks apart. Blocking."""
         _, entry = self._server(report.project_id, report.server)
         seen = {
             tool.name: ListedTool(tool.name, tool.digest, EffectClass(tool.hint))
@@ -367,7 +370,8 @@ class ClassificationDesk:
             raise ClassificationReviewError("a reported listing names a tool twice", "invalid")
         if listing_digest(seen) != report.listing:
             raise ClassificationReviewError("the listing's digest is not its tools'", "invalid")
-        self._admit(caller, report.project_id, report.server)
+        scope = "check" if report.session is None and report.run is None else "run"
+        self._admit(caller, report.project_id, report.server, scope)
         current = self._current(report.project_id, report.server, entry)
         pin = pin_digest(current.pins) if current is not None else None
         drift = listing_drift(report.server, current.pins, seen) if current is not None else None
@@ -490,11 +494,12 @@ class ClassificationDesk:
             action=action,
         )
 
-    def _admit(self, caller: str, project: str, server: str) -> None:
-        """Count one report of the caller's for the project's server; refuse past the rate."""
+    def _admit(self, caller: str, project: str, server: str, scope: str) -> None:
+        """Count one report of the caller's for the project's server, of runs' or checks'
+        listings (``scope``); refuse past the rate."""
         now = self.clock.now()
         with self._reports:
-            recent = self._recent.setdefault((caller, project, server), deque())
+            recent = self._recent.setdefault((caller, project, server, scope), deque())
             while recent and now - recent[0] >= REPORT_WINDOW:
                 recent.popleft()
             if len(recent) >= MAX_REPORTS:
