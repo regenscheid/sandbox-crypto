@@ -39,7 +39,7 @@ a warning; the middleware refuses that server's calls until it can be read.
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -51,7 +51,7 @@ from sandbox_science.policy.errors import PolicyLoadError
 from sandbox_science.policy.model import McpServer
 from sandbox_science.policy.openshell import (
     AgentMcpTarget,
-    CompileError,
+    Compiled,
     Finding,
     MiddlewareSelector,
     NetworkPolicy,
@@ -130,27 +130,44 @@ def compile_direct(
         middleware=middleware, project=project, caller=CALLER, binaries=(python + "*",)
     )
     revisions, notes = _classifications(classifications, servers, declared)
+
+    def build(
+        chosen: Mapping[str, ServerClassification],
+    ) -> tuple[Compiled, dict[str, NetworkPolicy], dict[str, dict[str, Any]]]:
+        compiled = compile_agent_mcp(loaded, target, ceiling=pool, classifications=chosen)
+        network: dict[str, NetworkPolicy] = {}
+        runtime: dict[str, dict[str, Any]] = {}
+        for name, server in servers.items():
+            entry = compiled.policy.network_policies.get(f"mcp-{name}")
+            if entry is None:
+                why = next(
+                    (f.message for f in compiled.findings if f.subject == f"mcp.servers.{name}"),
+                    "not compiled",
+                )
+                raise LauncherError(f"mcp_direct.servers.{name}: {why}")
+            network[f"mcp-{name}"] = entry
+            (endpoint,) = entry.endpoints
+            runtime[name] = {
+                "url": declared[name].url,
+                "credentials": dict(server.credentials),
+                "tools": tool_admission(endpoint).model_dump(mode="json"),
+            }
+        return compiled, network, runtime
+
     try:
-        compiled = compile_agent_mcp(loaded, target, ceiling=pool, classifications=revisions)
-    except CompileError as exc:
-        raise LauncherError(f"the direct MCP path does not compile: {exc}") from None
-    network: dict[str, NetworkPolicy] = {}
-    runtime: dict[str, dict[str, Any]] = {}
-    for name, server in servers.items():
-        entry = compiled.policy.network_policies.get(f"mcp-{name}")
-        if entry is None:
-            why = next(
-                (f.message for f in compiled.findings if f.subject == f"mcp.servers.{name}"),
-                "not compiled",
-            )
-            raise LauncherError(f"mcp_direct.servers.{name}: {why}")
-        network[f"mcp-{name}"] = entry
-        (endpoint,) = entry.endpoints
-        runtime[name] = {
-            "url": declared[name].url,
-            "credentials": dict(server.credentials),
-            "tools": tool_admission(endpoint).model_dump(mode="json"),
-        }
+        compiled, network, runtime = build(revisions)
+    except ValueError as exc:  # CompileError, or a fence pydantic refuses
+        if not revisions:
+            raise LauncherError(f"the direct MCP path does not compile: {exc}") from None
+        # A revision that loads but does not compile leaves its server's fence on the
+        # catalog's, as an unreadable one does, rather than failing the runtime's creation.
+        failing = _failing(revisions, build) or {name: str(exc) for name in revisions}
+        revisions = {name: rev for name, rev in revisions.items() if name not in failing}
+        notes.extend(_uncompiled(name, why) for name, why in sorted(failing.items()))
+        try:
+            compiled, network, runtime = build(revisions)
+        except ValueError as again:
+            raise LauncherError(f"the direct MCP path does not compile: {again}") from None
     hosts = sorted({e.host for entry in network.values() for e in entry.endpoints if e.host})
     middlewares = {
         key: value.model_copy(update={"endpoints": MiddlewareSelector(include=tuple(hosts))})
@@ -163,6 +180,30 @@ def compile_direct(
         runtime,
         (*compiled.findings, *notes),
         {name: found.revision for name, found in revisions.items() if found.revision},
+    )
+
+
+def _failing(
+    revisions: Mapping[str, ServerClassification],
+    build: Callable[[Mapping[str, ServerClassification]], object],
+) -> dict[str, str]:
+    """The servers whose revision alone does not compile, with why."""
+    failing: dict[str, str] = {}
+    for name, revision in revisions.items():
+        try:
+            build({name: revision})
+        except ValueError as exc:
+            failing[name] = str(exc)
+    return failing
+
+
+def _uncompiled(name: str, why: str) -> Finding:
+    return Finding(
+        Severity.WARNING,
+        f"mcp.servers.{name}.classification",
+        f"the project's accepted classification revision does not compile into the fence "
+        f"({why[:300]}); the fence admits tools by the checked-in classification, and the "
+        "policy middleware decides each call by the revision",
     )
 
 
@@ -179,7 +220,6 @@ def _classifications(
     # (``server_classification``), so only those servers' are taken.
     classified = {name for name in servers if declared[name].classification is not None}
     revisions = {name: rev for name, rev in found.revisions.items() if name in classified}
-    unreadable = {name: why for name, why in found.unreadable.items() if name in classified}
     notes: list[Finding] = []
     for name, revision in sorted(revisions.items()):
         notes.append(
@@ -189,16 +229,31 @@ def _classifications(
                 f"the fence admits tools by the project's accepted revision {revision.revision}",
             )
         )
-    for name, why in sorted(unreadable.items()):
-        notes.append(
-            Finding(
-                Severity.WARNING,
-                f"mcp.servers.{name}.classification",
-                f"the project's classification binding cannot be read ({why}); the fence "
-                "admits tools by the catalog's, and the policy middleware refuses the "
-                "server's calls until the binding can be read",
+    for name, why in sorted(found.unreadable.items()):
+        if name in classified:
+            # The middleware reads the same binding at every call, and fails the same way.
+            notes.append(
+                Finding(
+                    Severity.WARNING,
+                    f"mcp.servers.{name}.classification",
+                    f"the project's classification binding cannot be read ({why}); the fence "
+                    "admits tools by the checked-in classification, and the policy "
+                    "middleware refuses the server's calls until the binding can be read",
+                )
             )
-        )
+    for name, why in sorted(found.unread.items()):
+        if name in classified:
+            # Only this reader failed: the binding itself may be sound.
+            notes.append(
+                Finding(
+                    Severity.WARNING,
+                    f"mcp.servers.{name}.classification",
+                    f"the project's classification in force could not be read for the fence "
+                    f"({why}); the fence admits tools by the checked-in classification until "
+                    "the runtime is next replaced, and the policy middleware decides each "
+                    "call by the classification in force",
+                )
+            )
     return revisions, notes
 
 
@@ -221,23 +276,26 @@ def merged(base: OpenShellPolicy, fragment: OpenShellPolicy) -> OpenShellPolicy:
 
 def worker_classifications(answer: RuntimeClassifications) -> FenceClassifications:
     """The revisions in force the worker answered (``GET /v1/runtime-classifications``),
-    each checked as the policy store checks its own: a file that does not digest to its
-    revision or does not load as that server's classification is unreadable, as is one
-    the worker could not read, and its server's fence takes the catalog's."""
+    each checked as the policy store checks its own. A binding or revision the worker
+    could not read, or a file that does not load as the server's classification, is
+    unreadable (the middleware refuses those calls too); a file that does not digest to its
+    revision is unread here alone. Either way its server's fence takes the catalog's."""
     revisions: dict[str, ServerClassification] = {}
     unreadable: dict[str, str] = {}
+    unread: dict[str, str] = {}
     for entry in answer.servers:
-        if entry.error is not None:
-            unreadable[entry.server] = entry.error
+        if entry.error_kind is not None:
+            unreadable[entry.server] = entry.error or f"the {entry.error_kind} cannot be read"
             continue
         if entry.revision is None:
             continue
         data = (entry.classification or "").encode()
         if hashlib.sha256(data).hexdigest() != entry.revision:
-            unreadable[entry.server] = f"the file does not hold revision {entry.revision}"
+            unread[entry.server] = f"the file the worker sent is not revision {entry.revision}"
             continue
         try:
             revisions[entry.server] = revision_classification(data, entry.server)
         except PolicyLoadError as exc:
+            # The middleware loads the same file the same way, and refuses.
             unreadable[entry.server] = f"revision {entry.revision} cannot be loaded: {exc}"
-    return FenceClassifications(revisions, unreadable)
+    return FenceClassifications(revisions, unreadable, unread)

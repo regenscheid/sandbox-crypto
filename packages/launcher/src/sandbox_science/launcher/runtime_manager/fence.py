@@ -11,9 +11,11 @@ a runtime runs therefore reaches its fence at the next replacement; the policy m
 decides by it from the next call meanwhile, so a stale fence refuses a widening and never
 admits more than the middleware allows.
 
-A binding the worker cannot read, a revision that does not check, or a worker that does
-not answer leaves the servers concerned on the checked-in file, with a warning: the
-middleware refuses those servers' calls while their binding cannot be read.
+A binding the worker cannot read leaves the servers concerned on the checked-in file, with
+a warning, and the middleware refuses their calls while it stays unreadable. A worker that
+does not answer, or a file that arrives changed, leaves them on the checked-in file too,
+with a warning that says so, while the middleware goes on deciding by the classification
+in force; so does a revision that does not compile into the fence.
 """
 
 from __future__ import annotations
@@ -59,7 +61,7 @@ async def compile_egress(
         try:
             found = worker_classifications(await read(link.project, sorted(mcp.servers)))
         except LauncherError as exc:
-            found = FenceClassifications({}, dict.fromkeys(mcp.servers, str(exc)))
+            found = FenceClassifications({}, {}, dict.fromkeys(mcp.servers, str(exc)[:300]))
     egress = await asyncio.to_thread(
         compile_direct,
         policy=mcp.project_policy_file,

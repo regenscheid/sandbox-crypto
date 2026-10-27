@@ -188,8 +188,11 @@ def direct_egress(config: LauncherConfig) -> direct_mcp.DirectEgress | None:
     )
 
 
-def prepare(config: LauncherConfig, layout: Layout) -> tuple[Path, Path]:
-    """Write scoped configuration and generated capability tokens, never read model keys."""
+def prepare(
+    config: LauncherConfig, layout: Layout, egress: direct_mcp.DirectEgress | None = None
+) -> tuple[Path, Path]:
+    """Write scoped configuration and generated capability tokens, never read model keys;
+    ``egress`` is the direct path's, when the caller compiled it already."""
     runtime, directory = configured(config), _directory(layout)
     upload = private_dir(directory / "upload")
     generation = "runtime-" + secrets.token_hex(12)
@@ -203,7 +206,7 @@ def prepare(config: LauncherConfig, layout: Layout) -> tuple[Path, Path]:
         python=runtime.python,
     )
     policy = compile_orchestrator(target)
-    egress = direct_egress(config)
+    egress = egress or direct_egress(config)
     if egress is not None:
         # The direct path's servers, decided by OpenShell's native rules and the policy
         # middleware, beside the platform services (D98).
@@ -313,13 +316,16 @@ async def start(config: LauncherConfig, layout: Layout, supervisor: Supervisor) 
 
 
 async def replace(config: LauncherConfig, layout: Layout, supervisor: Supervisor) -> None:
-    """Explicit runtime replacement preserves control/UI and never creates Resume intent."""
+    """Explicit runtime replacement preserves control/UI and never creates Resume intent.
+    The direct path's egress is compiled first, so that files that do not compile leave
+    the running runtime alone."""
+    egress = direct_egress(config)
     await supervisor.stop_part("agent-runtime")
     await delete_recorded(config, layout)
     await runtime_owner.wait_unoccupied(
         f"http://{configured(config).control_listen}/health", timeout=config.stop_timeout
     )
-    directory, upload = prepare(config, layout)
+    directory, upload = prepare(config, layout, egress)
     await _agent(config, layout, supervisor, directory, upload)
 
 

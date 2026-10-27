@@ -379,6 +379,23 @@ async def test_the_manager_falls_back_when_the_worker_does_not_answer(site: Site
         assert NEW_TOOL not in allowed
 
 
+async def test_a_revision_that_does_not_compile_blocks_no_creation(site: Site) -> None:
+    site.set_fake(providers=[SERVER])
+    reader = StoreClassifications(site.tmp_path / "policy-store")
+    async with serving(site.manager(Bindings(), reader, **direct_files(site))) as manager:
+        assert await site.ask(manager, "bootstrap") is None
+        first = site.record()
+        assert first is not None
+        catalog = fence(site, first["name"])
+        # More tools than a fence may name: it loads, and does not compile.
+        reader.accept({f"attack-catalog-mcp_t{i}": "read" for i in range(5000)})
+        assert await site.ask(manager, "replace") is None
+        second = site.record()
+        assert second is not None
+        assert second["name"] != first["name"]
+        assert fence(site, second["name"]) == catalog
+
+
 async def test_the_manager_recompiles_the_fence_at_replace_after_an_acceptance(
     site: Site,
 ) -> None:

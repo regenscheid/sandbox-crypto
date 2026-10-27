@@ -32,7 +32,7 @@ import re
 import tempfile
 import threading
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Final, Literal, cast
@@ -109,7 +109,12 @@ class FenceClassifications:
     revisions: Mapping[str, ServerClassification]
     """The accepted revision in force, by server; a server without one takes the catalog's."""
     unreadable: Mapping[str, str]
-    """Servers whose binding or revision cannot be read, with why; they take the catalog's."""
+    """Servers whose binding or revision cannot be read, with why; they take the catalog's.
+    The middleware, reading the same binding, refuses their calls."""
+    unread: Mapping[str, str] = field(default_factory=dict[str, str])
+    """Servers whose classification in force a reader other than the store could not
+    fetch or check (the worker did not answer, a file arrived changed), with why; they take
+    the catalog's, while the middleware decides by the classification in force."""
 
 
 @dataclass(frozen=True, slots=True)

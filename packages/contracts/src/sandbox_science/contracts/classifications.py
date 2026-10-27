@@ -316,7 +316,11 @@ class RuntimeClassification(Contract):
     revision: Sha256 | None = None
     classification: str | None = Field(default=None, max_length=MAX_YAML_CHARS)
     """The revision's YAML; the reader checks that it digests to ``revision``."""
+    error_kind: Literal["binding", "revision"] | None = None
+    """Why nothing is answered: the binding (``current.json``) or the revision it names
+    cannot be read. The policy middleware, reading the same, refuses the server's calls."""
     error: Text | None = None
+    """A short reason, without the worker's paths; the worker logs the details."""
 
 
 class RuntimeClassifications(Contract):

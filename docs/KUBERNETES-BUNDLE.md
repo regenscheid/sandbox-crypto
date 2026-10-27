@@ -486,9 +486,11 @@ Secrets anew. A classification revision accepted while the runtime runs reaches 
 the next replacement (`sandbox-science-runtime-manager request replace`, or an automatic one);
 the middleware decides each call by the revision in force meanwhile, so the stale fence
 refuses a widening and never admits more than the middleware allows. A binding the worker
-cannot read, a revision that does not check against its digest, or a worker that does not
-answer leaves the servers concerned on the checked-in file with a warning in the manager's
-log, while the middleware refuses those servers' calls
+cannot read leaves the servers concerned on the checked-in file with a warning in the
+manager's log, and the middleware refuses their calls; a worker that does not answer, a file
+that does not check against its digest, or a revision that does not compile into a fence
+leaves them on the checked-in file too, while the middleware decides by the classification
+in force. The manager compiles before it deletes the old sandbox
 ([project revisions](MCP-CONNECTORS.md#project-revisions)).
 
 ## Job sandboxes and node drains

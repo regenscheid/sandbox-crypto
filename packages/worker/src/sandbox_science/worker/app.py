@@ -197,7 +197,8 @@ class Client:
     operator: bool = False
     artifact_retention: bool = False
     binding_only: bool = False
-    """Only the runtime sandbox's bind and unbind routes (``ClientSettings.binding_only``)."""
+    """Only the runtime sandbox's bind and unbind routes and the read of its project's
+    classification revisions in force (``ClientSettings.binding_only``)."""
 
     def allows(self, project_id: str) -> bool:
         return self.projects is None or project_id in self.projects
@@ -313,7 +314,9 @@ def create_app(
         request[_CLIENT] = client
         if client.binding_only and not _binding_route(request):
             response = _error(
-                ErrorKind.POLICY_DENIED, "this client may only bind the runtime's sandbox", 403
+                ErrorKind.POLICY_DENIED,
+                "this client may only bind the runtime's sandbox and read its classifications",
+                403,
             )
             _audit(request, client, response.status)
             return response

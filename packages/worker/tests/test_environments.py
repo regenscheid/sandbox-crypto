@@ -2182,17 +2182,32 @@ async def test_a_binding_only_client_reads_its_projects_classifications_in_force
                     "server": "papers",
                     "revision": accepted.revision,
                     "classification": data.decode(),
+                    "error_kind": None,
                     "error": None,
                 },
-                {"server": "other", "revision": None, "classification": None, "error": None},
+                {
+                    "server": "other",
+                    "revision": None,
+                    "classification": None,
+                    "error_kind": None,
+                    "error": None,
+                },
             ],
         }
         # An unreadable binding is reported with why, never as none.
         current = setup.environments.settings.policy_store / "classifications/p1/papers"
         (current / "current.json").write_text("not json")
         status, reply = await api.call("GET", path, BINDER_TOKEN)
-        assert reply["servers"][0]["revision"] is None
-        assert "not JSON" in reply["servers"][0]["error"]
+        first = reply["servers"][0]
+        assert (first["revision"], first["error_kind"]) == (None, "binding")
+        assert str(setup.environments.settings.policy_store) not in first["error"]  # no paths
+        assert "/" not in first["error"]
+        # A revision the binding names but the store lacks is the revision's error.
+        (current / "current.json").write_text('{"revision": "' + "e" * 64 + '"}')
+        status, reply = await api.call("GET", path, BINDER_TOKEN)
+        first = reply["servers"][0]
+        assert (first["revision"], first["error_kind"]) == (None, "revision")
+        assert "/" not in first["error"]
         # Its own project only, and named servers only; an execution client reads none.
         other = "/v1/runtime-classifications?project=p2&server=papers"
         assert await api.refused("GET", other, BINDER_TOKEN) == (403, "policy_denied")

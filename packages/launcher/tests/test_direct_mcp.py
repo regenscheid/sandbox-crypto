@@ -15,10 +15,10 @@ from typing import Any
 import pytest
 import yaml
 
-from sandbox_science.launcher import orchestrator, parts
-from sandbox_science.launcher.config import LauncherError, load_config
+from sandbox_science.launcher import direct_mcp, orchestrator, parts
+from sandbox_science.launcher.config import LauncherError, McpDirectServer, load_config
 from sandbox_science.launcher.state import Layout
-from sandbox_science.policy.store import Acceptance, PolicyStore
+from sandbox_science.policy.store import Acceptance, FenceClassifications, PolicyStore
 
 ROOT = Path(__file__).parents[3]
 SERVER = "crypto-research-mcp"
@@ -213,6 +213,60 @@ def test_an_unreadable_binding_leaves_the_fence_on_the_checked_in_file(
     out = capsys.readouterr().out
     assert "classification binding cannot be read" in out
     assert "the policy middleware refuses the server's calls" in out
+
+
+def many_tools() -> dict[str, str]:
+    """A revision that loads but does not compile into a fence: more tools than a tool
+    admission may name."""
+    return {f"attack-catalog-mcp_t{i}": "read" for i in range(5000)}
+
+
+def test_a_revision_that_does_not_compile_leaves_the_fence_on_the_checked_in_file(
+    make_config: Any, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    direct_files(tmp_path)
+    config = load_config(make_config({"mcp_direct": DIRECT}))
+    layout = parts.prepare(config)
+    catalog = admitted(*orchestrator.prepare(config, layout))
+    accept_revision(tmp_path, many_tools())
+    capsys.readouterr()
+    # Neither up nor a replacement fails: the server's fence takes the checked-in file.
+    assert admitted(*orchestrator.prepare(config, layout)) == catalog
+    out = capsys.readouterr().out
+    assert "does not compile into the fence" in out
+    assert "the policy middleware decides each call by the revision" in out
+    egress = orchestrator.direct_egress(config)
+    assert egress is not None
+    assert egress.revisions == {}
+
+
+@pytest.mark.parametrize(
+    ("found", "said", "unsaid"),
+    [
+        (FenceClassifications({}, {SERVER: "not JSON"}), "refuses the server's calls", "decides"),
+        (
+            FenceClassifications({}, {}, {SERVER: "the worker did not answer"}),
+            "decides each call by the classification in force",
+            "refuses",
+        ),
+    ],
+)
+def test_a_fallback_warning_says_what_the_middleware_does(
+    tmp_path: Path, found: FenceClassifications, said: str, unsaid: str
+) -> None:
+    site = direct_files(tmp_path)
+    egress = direct_mcp.compile_direct(
+        policy=site / "policy.yaml",
+        ceiling=site / "pool-ceiling.yaml",
+        targets=site / "targets.yaml",
+        project="crypto",
+        servers={SERVER: McpDirectServer()},
+        python="/opt/sandbox-science/bin/python",
+        classifications=found,
+    )
+    (warning,) = [w for w in egress.warnings() if ".classification:" in w]
+    assert said in warning
+    assert unsaid not in warning
 
 
 @pytest.mark.slow

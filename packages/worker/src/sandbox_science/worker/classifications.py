@@ -663,14 +663,33 @@ def runtime_classifications(
     for server in servers:
         try:
             revision = store.classification_binding(project, server)
-            text = (
-                store.classification_revision_bytes(project, server, revision).decode()
-                if revision is not None
-                else None
+        except StoreError as exc:
+            _log.warning(
+                "the classification binding of %s/%s cannot be read: %s", project, server, exc
             )
-        except (StoreError, UnicodeDecodeError) as exc:
-            found.append(RuntimeClassification(server=server, error=str(exc)[:600]))
+            found.append(
+                RuntimeClassification(
+                    server=server, error_kind="binding", error="the binding cannot be read"
+                )
+            )
             continue
+        text: str | None = None
+        if revision is not None:
+            try:
+                text = store.classification_revision_bytes(project, server, revision).decode()
+            except (StoreError, UnicodeDecodeError) as exc:
+                _log.warning(
+                    "classification revision %s of %s/%s cannot be read: %s",
+                    revision, project, server, exc,
+                )  # fmt: skip
+                found.append(
+                    RuntimeClassification(
+                        server=server,
+                        error_kind="revision",
+                        error=f"the bound revision {revision} cannot be read",
+                    )
+                )
+                continue
         found.append(RuntimeClassification(server=server, revision=revision, classification=text))
     return RuntimeClassifications(project_id=project, servers=found)
 
