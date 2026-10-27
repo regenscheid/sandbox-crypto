@@ -96,6 +96,7 @@ from sandbox_science.contracts.documents import (
 from sandbox_science.contracts.environment_claims import EnvironmentClaim, EnvironmentClaimResult
 from sandbox_science.contracts.lockfile_diffs import LockfileDiffPage, LockfileSelection
 from sandbox_science.contracts.logs import log_context
+from sandbox_science.contracts.mcp_traffic import WorkerMcpTraffic
 from sandbox_science.contracts.monitor import WINDOWS, MonitorWindow
 from sandbox_science.contracts.permission_requests import (
     PermissionConfirmation,
@@ -127,6 +128,7 @@ from .job_sandboxes import RESERVED_OPERATION as RESERVED_JOB_OPERATION
 from .job_sandboxes import offers
 from .lockfile_diffs import LockfileDiffs, Pair
 from .manager import ExecutionManager
+from .mcp_traffic import TrafficQuery, read_traffic
 from .monitor import MonitorDesk
 from .operation_lookup import lookup
 from .permission_requests import PermissionDesk, PermissionRequestError
@@ -393,7 +395,7 @@ def create_app(
     if monitor_desk is not None:
         # A project's monitor figures, counted from the records (D103).
         app[MONITOR_DESK] = monitor_desk
-        app.add_routes([web.get("/v1/monitor", monitor)])
+        app.add_routes([web.get("/v1/monitor", monitor), web.get("/v1/mcp-traffic", mcp_traffic)])
     app.add_routes(
         [
             web.get("/v1/ready", readiness),
@@ -1189,6 +1191,51 @@ async def monitor(request: web.Request) -> web.Response:
     _allowed(request, project_id)
     desk = request.app[MONITOR_DESK]
     found = await asyncio.to_thread(desk.figures, project_id, cast(MonitorWindow, window))
+    return _json(found)
+
+
+_TRAFFIC_QUERY: Final = frozenset({"project", "session", "run", "tool", "after"})
+_TOOL_RE: Final = re.compile(r"[A-Za-z0-9_./-]{1,256}")
+
+
+async def mcp_traffic(request: web.Request) -> web.Response:
+    """A page of one project's inspected MCP calls with their arguments and answers: an
+    operator client's only, like the permission requests, since they hold other clients'
+    calls and the servers' words."""
+    if not _client(request).operator:
+        raise WorkerError(ErrorKind.POLICY_DENIED, "MCP traffic needs an operator client")
+    query = request.query
+    if "project" not in query or set(query) - _TRAFFIC_QUERY or len(query) != len(set(query)):
+        raise WorkerError(
+            ErrorKind.INVALID_REQUEST, "name a project, and at most a session, run, tool, after"
+        )
+    project_id = _identifier(query["project"], "project")
+    session = _identifier(query["session"], "session") if "session" in query else None
+    run = _identifier(query["run"], "run") if "run" in query else None
+    tool = query.get("tool")
+    if tool is not None and not _TOOL_RE.fullmatch(tool):
+        raise WorkerError(ErrorKind.INVALID_REQUEST, "invalid tool name")
+    raw = query.get("after", "0")
+    if not raw.isascii() or not raw.isdigit() or len(raw) > 18:
+        raise WorkerError(ErrorKind.INVALID_REQUEST, "after is a record number")
+    _allowed(request, project_id)
+    desk = request.app[MONITOR_DESK]
+    if desk.permissions is None:
+        return _json(
+            WorkerMcpTraffic(
+                project_id=project_id,
+                calls=[],
+                scanned=0,
+                unavailable="the worker has no policy middleware event store",
+            )
+        )
+    found_query = TrafficQuery(project_id, session, run, tool, int(raw))
+    try:
+        found = await asyncio.to_thread(read_traffic, desk.permissions.path, found_query)
+    except PermissionStoreError as exc:
+        found = WorkerMcpTraffic(
+            project_id=project_id, calls=[], scanned=0, unavailable=str(exc)[:300]
+        )
     return _json(found)
 
 

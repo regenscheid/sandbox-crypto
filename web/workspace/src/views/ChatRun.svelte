@@ -160,6 +160,7 @@
           {now}
           {subagents}
           {showAgents}
+          traffic={projectId && sessionId ? { projectId, sessionId, run: run.run } : null}
         />
         {#if artifacts && projectId && sessionId}<ArtifactStrip
             {projectId}

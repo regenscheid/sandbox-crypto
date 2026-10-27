@@ -459,22 +459,29 @@ async def _read(response: aiohttp.ClientResponse) -> bytes:
 
 def _messages(kind: str, body: bytes) -> list[object]:
     """The JSON messages of an answer: one JSON body, or an event stream's message events.
-    Any other media holds none: the middleware reads listings of these two only."""
+    Any other media holds none: the middleware reads listings of these two only. An event
+    that is not JSON is skipped, not the stream: the middleware cuts a stream whose answer
+    a pattern blocks inside an event, ends that event short and sends an error naming the
+    finding after it (MCP traffic inspection)."""
     try:
         if kind == "application/json":
             return [json.loads(body)]
         if kind != "text/event-stream":
             return []
-        found: list[object] = []
-        for block in re.split(r"\r?\n\r?\n", body.decode("utf-8")):
-            lines = block.splitlines()
-            event = next((line[6:].strip() for line in lines if line.startswith("event:")), "")
-            data = [line[5:].removeprefix(" ") for line in lines if line.startswith("data:")]
-            if data and event in ("", "message"):
-                found.append(json.loads("\n".join(data)))
-        return found
+        text = body.decode("utf-8")
     except (ValueError, RecursionError):
         return []
+    found: list[object] = []
+    for block in re.split(r"\r?\n\r?\n", text):
+        lines = block.splitlines()
+        event = next((line[6:].strip() for line in lines if line.startswith("event:")), "")
+        data = [line[5:].removeprefix(" ") for line in lines if line.startswith("data:")]
+        if data and event in ("", "message"):
+            try:
+                found.append(json.loads("\n".join(data)))
+            except (ValueError, RecursionError):
+                continue
+    return found
 
 
 def _result(status: int, kind: str, body: bytes, request_id: int) -> dict[str, Any]:

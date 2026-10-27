@@ -57,6 +57,13 @@ export interface Answer {
   text: string | null;
 }
 
+/** What inspection did with the answer: passed it on as it came, refused it whole (``blocked``) or cut its stream (``cut``), naming the pattern. */
+export interface AnswerDecision {
+  action: "passed" | "blocked" | "cut";
+  pattern: string | null;
+  reason_code: string | null;
+}
+
 export interface AnswerResult {
   seq: number;
   decision: string;
@@ -1459,6 +1466,14 @@ export interface IndexStatus {
   pending: boolean;
 }
 
+/** One MCP server's answers in which inspection found a pattern within the window: those passed on with an alert, and those blocked or cut (docs/POLICY-MIDDLEWARE.md, "MCP traffic inspection"). */
+export interface InspectionRow {
+  server: string;
+  alerts: number;
+  blocks: number;
+  uninspected: number;
+}
+
 export interface JobCancellation {
   job_id: string;
   state: string;
@@ -1857,6 +1872,9 @@ export interface MonitorRecords {
   approvals: ApprovalCounts[];
   holds: OpenHolds[];
   drift: DriftedServer[];
+  inspection: InspectionRow[];
+  inspection_dropped: number;
+  inspection_enabled: boolean | null;
 }
 
 export interface MonitorSpend {
@@ -2102,6 +2120,13 @@ export interface ProjectGrant {
 
 export interface ProjectListing {
   projects: (ProjectSummary | DamagedProject)[];
+}
+
+/** ``GET …/mcp-traffic``: a page of inspected calls, or why there is none. */
+export interface ProjectMcpTraffic {
+  project_id: string;
+  traffic: WorkerMcpTraffic | null;
+  unavailable: string | null;
 }
 
 /** ``GET …/monitor``: the Monitor view's figures. */
@@ -2733,6 +2758,71 @@ export interface ToolRule {
   effect: "read" | "write" | "communicate" | "browse" | "admin" | "unclassified";
 }
 
+/** An answer as the middleware recorded it. */
+export interface TrafficAnswer {
+  seq: number;
+  at: string;
+  request_id: string;
+  status: number;
+  inspected: boolean;
+  reason: string | null;
+  content_type: string | null;
+  mode: "whole" | "stream" | "headers";
+  bytes: number;
+  complete: boolean;
+  sha256: string | null;
+  excerpt: string | null;
+  excerpt_truncated: boolean;
+  note: string | null;
+  events: number | null;
+  findings: TrafficFinding[];
+  more_findings: number;
+  cut_after_result: boolean;
+  decision: AnswerDecision;
+}
+
+/** A call's parameters as recorded: redacted JSON text, cut at the deployment's bound. */
+export interface TrafficArguments {
+  text: string;
+  truncated: boolean;
+  bytes: number;
+  sha256: string;
+}
+
+/** One MCP call with its arguments, decision and answer. */
+export interface TrafficCall {
+  seq: number;
+  at: string;
+  request_id: string;
+  session: string | null;
+  run: string | null;
+  server: string | null;
+  method: string | null;
+  tool: string | null;
+  decision: TrafficDecision;
+  arguments: TrafficArguments | null;
+  answer: TrafficAnswer | null;
+}
+
+/** How the middleware decided the call. */
+export interface TrafficDecision {
+  outcome: "admitted" | "refused";
+  action: string | null;
+  layer: string | null;
+  rule: string | null;
+  effect: string | null;
+  reason_code: string | null;
+  permission_request: number | null;
+}
+
+/** A pattern found in an answer: where, and the redacted text around it. */
+export interface TrafficFinding {
+  name: string;
+  action: "alert" | "block";
+  offset: number;
+  excerpt: string;
+}
+
 /** One run of the session's tree. */
 export interface TreeRun {
   name: string;
@@ -2833,6 +2923,16 @@ export interface WorkRecord {
   decision: string | null;
   basis: "user" | "user_quoted" | "observed" | "interpreted" | null;
   anchors: Record<string, unknown>[];
+}
+
+/** ``GET /v1/mcp-traffic``: a page of a project's inspected MCP calls, oldest first. */
+export interface WorkerMcpTraffic {
+  project_id: string;
+  calls: TrafficCall[];
+  late_answers: TrafficAnswer[];
+  next_after: number | null;
+  scanned: number;
+  unavailable: string | null;
 }
 
 /** ``GET /v1/monitor?project=P&window=24h|7d``: one project's monitor figures. */

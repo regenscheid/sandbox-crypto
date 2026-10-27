@@ -107,6 +107,7 @@ from sandbox_science.contracts.classifications import (
     ReportedListings,
 )
 from sandbox_science.contracts.environment_claims import EnvironmentClaim, EnvironmentClaimResult
+from sandbox_science.contracts.mcp_traffic import WorkerMcpTraffic
 from sandbox_science.contracts.monitor import MonitorWindow, WorkerMonitor
 from sandbox_science.contracts.permission_requests import (
     PermissionConfirmation,
@@ -600,6 +601,27 @@ class WorkerClient:
             WorkerMonitor,
             params={"project": project_id, "window": window},
             max_bytes=4 * 1024 * 1024,
+        )
+
+    async def mcp_traffic(
+        self,
+        project_id: str,
+        *,
+        session: str | None = None,
+        run: str | None = None,
+        tool: str | None = None,
+        after: int = 0,
+    ) -> WorkerMcpTraffic:
+        """A page of the project's inspected MCP calls, oldest first after ``after``: an
+        operator client's read."""
+        params: dict[str, str] = {"project": project_id}
+        for name, value in (("session", session), ("run", run), ("tool", tool)):
+            if value is not None:
+                params[name] = value
+        if after:
+            params["after"] = str(after)
+        return await self._call(
+            "GET", "/v1/mcp-traffic", WorkerMcpTraffic, params=params, max_bytes=16 * 1024 * 1024
         )
 
     # MCP servers' classifications, for the workspace's review view (D96, CL-6).

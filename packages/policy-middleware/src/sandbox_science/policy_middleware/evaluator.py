@@ -101,6 +101,7 @@ from .archives import MAX_PACKAGES, ArchiveLookup
 from .errors import MiddlewareError, StoreError
 from .events import EventSink
 from .gitproto import GitRequestError, check_upload_pack_request
+from .inspection import AnswerInspection, Inspection, Tracked, run_key
 from .mcp import (
     LISTINGS_OFF,
     Listing,
@@ -363,6 +364,7 @@ class PolicyMiddleware:
         listings: ToolListings | None = None,
         response_statuses: bool = False,
         listing_report_grace: timedelta = LISTING_REPORT_GRACE,
+        inspection: Inspection | None = None,
     ) -> None:
         """``archives``, when given, names the opam packages of escalated opam archives.
 
@@ -375,9 +377,13 @@ class PolicyMiddleware:
         ``response_statuses``, the service reads every response's status, and failures
         count towards the detection rules (``host-failures``). ``listing_report_grace`` is
         how long the agent runtime has to report a listing this service let pass unread
-        before the server's non-read calls ask (D98).
+        before the server's non-read calls ask (D98). ``inspection``, when given, records
+        the arguments and answers of the MCP calls sandboxes send servers directly, and
+        checks the answers for the policy's patterns (it needs ``listings``, whose response
+        binding it uses).
         """
         self.listings = listings
+        self.inspection = inspection if listings is not None else None
         self._store = store
         self._ceiling = ceiling
         self._floor = floor
@@ -782,6 +788,7 @@ class PolicyMiddleware:
         the proxy keys them, and a refusal that concerns one names it in its reason code.
         """
         call: McpCall | None = None
+        refused: bytes | None = None
         try:
             server = declared_server(loaded, normalize_host(facts.host), facts.port, facts.path)
             if server is None or facts.scheme.lower() != "https":
@@ -799,6 +806,7 @@ class PolicyMiddleware:
             )
         except McpRequestError as exc:
             verdict = _deny(exc.code, str(exc))
+            refused = exc.params
         except ValueError as exc:
             verdict = _deny(REQUEST_UNCLASSIFIABLE, f"malformed destination host: {exc}")
         else:
@@ -817,8 +825,30 @@ class PolicyMiddleware:
                 self._mcp_verdict(facts, ref, loaded, call),
                 "agent",
             )
-        self._record_mcp_call(facts, ref, loaded, call, verdict)
+        self._record_mcp_call(facts, ref, loaded, call, verdict, refused)
+        if verdict.allowed and call is not None and self.inspection is not None:
+            subject = call.subject(ref, facts.sandbox_id)
+            rpc_id = call.message.get("id")
+            self.inspection.expect(
+                facts.request_id,
+                Tracked(
+                    facts.sandbox_id,
+                    subject,
+                    rpc_id if isinstance(rpc_id, str | int) else None,
+                    self.inspection.patterns(loaded, call.server),
+                    run_key(subject),
+                ),
+            )
         return verdict
+
+    def inspect_answer(
+        self, request_id: str, sandbox_id: str, *, status: int, media: str | None
+    ) -> AnswerInspection | None:
+        """The inspection of the answer to an admitted MCP call of ``sandbox_id``'s, or
+        None for any other response."""
+        if self.inspection is None:
+            return None
+        return self.inspection.answer(request_id, sandbox_id, status=status, media=media)
 
     def _mcp_verdict(
         self, facts: HttpRequestFacts, ref: McpRef, loaded: LoadedPolicy, call: McpCall
@@ -906,9 +936,11 @@ class PolicyMiddleware:
         loaded: LoadedPolicy,
         call: McpCall | None,
         verdict: Verdict,
+        refused: bytes | None = None,
     ) -> None:
         """One ``mcp-call`` record for every request, on a best-effort basis, as the MCP
-        proxy writes one: never the arguments, only their size."""
+        proxy writes one. With inspection, it carries the call's parameters, redacted and
+        bounded (``arguments``); without, only their size."""
         decision = verdict.decision
         subject = (
             call.subject(ref, facts.sandbox_id)
@@ -942,6 +974,9 @@ class PolicyMiddleware:
         }
         if verdict.request is not None:
             payload["permission_request"] = verdict.request
+        params = call.params if call is not None else refused
+        if params is not None and self.inspection is not None:
+            payload["arguments"] = self.inspection.arguments(params)
         try:
             self._events.record("mcp-call", payload)
         except Exception:
