@@ -130,9 +130,10 @@ outcome is reconciled.
 ## Launcher and replacement
 
 The launcher starts the worker and control service first. It compiles the sandbox
-policy with only model gateway, worker, MCP proxy and scoped state-service egress, or,
-with `[mcp_direct]` instead of the proxy, the direct path's `protocol: mcp` endpoints and
-the policy middleware for their hosts (D98), with their provider attached.
+policy with only model gateway, worker and scoped state-service egress and, with
+`[mcp_direct]`, the direct path's `protocol: mcp` endpoints and the policy middleware for
+their hosts (D98), with their provider attached; the MCP proxy, an alternative before,
+retired on 2026-10-26.
 It records a fresh sandbox name before create and its first observed immutable ID
 before phase validation. An uncertain create retains its record; observed absence
 without an identity is not deletion proof. Replacement waits for identity-checked,

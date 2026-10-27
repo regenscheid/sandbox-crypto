@@ -93,7 +93,7 @@ Progress and history are not kept here: current state is in [STATUS](../.agents/
 | [Research workspace](RESEARCH-WORKSPACE.md) | Requirements for documents, the ledger, Sage and PDFs |
 | [External skills](EXTERNAL-SKILLS.md) | Platform requirements from the crypto-analysis-skills pack |
 | [Monitoring](MONITORING.md) | Trusted monitoring and automatic provisioning |
-| [MCP connectors](MCP-CONNECTORS.md) | MCP authentication and the MCP proxy |
+| [MCP connectors](MCP-CONNECTORS.md) | MCP authentication, the agent's MCP client and the direct path (the MCP proxy retired 2026-10-26) |
 | [Orchestrator prompts](ORCHESTRATOR-PROMPTS.md) | The prompt inventory, and proposed prompts and planning design |
 | [Attempt finalization](ATTEMPT-FINALIZATION.md) | Shared checkpoint, persistence, settlement and cleanup protocol |
 | [Agent context ownership](specs/agent-context-refactor.md) | Shared context preparation, state, history, folding and retrieval |

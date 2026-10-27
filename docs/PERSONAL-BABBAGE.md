@@ -21,7 +21,7 @@ Like the labs' scripts, this is babbage's setup: it assumes OpenShell 0.1.5 at `
 | `ss-personal-launcher` | `sandbox-science up` and its parts: | |
 | | the GUI | 127.0.0.1:8300 |
 | | the PDF viewer's origin, given by `localhost` (another site from the GUI's) | 127.0.0.1:8301 and [::1]:8301 |
-| | the forward to the MCP proxy's sandbox | 127.0.0.1:18300 |
+| | the control capability service, which the workspace's MCP availability check asks too | 127.0.0.1:8202 (the `[orchestrator]` default) |
 
 The unit is healthy when all three of its addresses take connections (`.venv/bin/sandbox-science-unit status --config ~/.local/state/sandbox-science-personal/openshell/unit.toml`, and the unit's lines in `sandbox-science status`). If one of the three stops, the unit stops the other two and exits, and the launcher stops with "the unit is no longer healthy"; run `personal_down.sh` and `personal_up.sh` again.
 
@@ -94,12 +94,13 @@ package_cache = "http://host.openshell.internal:8390"
 minimal = "sandbox-science/minimal:<tag>"
 crypto-base = "sandbox-science/crypto-base:<tag>"
 
-[mcp_proxy]                          # the rest as the example's commented [mcp_proxy]
-image = "sandbox-science/mcp-proxy:<tag>"
-sandbox = "ss-pers-mcp"
-listen = "127.0.0.1:18300"
+[mcp_direct]                         # the rest as the example's commented [mcp_direct]
+providers = ["crypto-research-mcp"]
 provider_env_file = "<the owner's Cloudflare Access file>"
 provider_profile = "<the repository>/examples/openshell/profiles/cloudflare-access.yaml"
+
+[mcp_direct.servers.crypto-research-mcp]
+credentials = { "CF-Access-Client-Id" = "CF_ACCESS_CLIENT_ID", "CF-Access-Client-Secret" = "CF_ACCESS_CLIENT_SECRET" }
 ```
 
 - **The context ceiling** defaults to 600,000 tokens ([context management](specs/context-management.md), CM-27). `[run_service] context_ceiling` sets a positive token ceiling, capped by the gateway's model input limit when reported. The folds' narratives are written by the main agent's own alias. This is context occupancy, not a cumulative research token budget.
@@ -124,11 +125,11 @@ scripts/personal_down.sh      # sandbox-science down, then the unit and the gate
 ```
 
 - **Logging in.** The workspace makes a new login address at each start, in the state directory's `workspace-login` (mode 600), never on the screen or in a log: `xdg-open "$(cat ~/.local/state/sandbox-science-personal/launcher/workspace-login)"`. It works until the instance stops. Use the GUI at `http://127.0.0.1:8300/`, not `localhost`, so the PDF viewer works and stays another site (`http://localhost:8301`). A config that still sets `preview_listen = "127.0.0.2:8301"` works too, as another site; drop it to use the default.
-- **Stopping** suspends the research sandboxes, which keep their files and packages, and deletes the MCP proxy's sandbox, which the next start makes again. `personal_down.sh --keep-sandboxes` leaves the sandboxes, the unit and OpenShell running, so their kernels are there for the next `personal_up.sh`; it refuses to reuse a kept unit if the launcher's config now gives the worker other settings (stop everything, then start).
+- **Stopping** suspends the research sandboxes, which keep their files and packages, and deletes the agent runtime's sandbox, which the next start makes again. `personal_down.sh --keep-sandboxes` leaves the sandboxes, the unit and OpenShell running, so their kernels are there for the next `personal_up.sh`; it refuses to reuse a kept unit if the launcher's config now gives the worker other settings (stop everything, then start).
 - **A snapshot before a migration.** Before it starts anything, `personal_up.sh` asks `personal_backup.sh --versions` whether the checkout would migrate a store. If so it takes a snapshot first (`--label before-migration`) and starts nothing if that fails; it also starts nothing when a store is newer than the checkout. `personal_up.sh --skip-snapshot`, or `SS_PERSONAL_SKIP_SNAPSHOT=1`, skips the check and the snapshot. See [before an update](BACKUP-RESTORE.md#before-an-update).
 - **Only OpenShell**: `personal_up.sh --openshell-only` starts the unit and the gateway without the launcher. It still reads `personal.toml`, since the unit's worker takes its settings from it.
 - **The OpenShell CLI** for this instance: `source ~/.local/state/sandbox-science-personal/openshell/env.sh`, then `openshell sandbox list`. It points the XDG directories at the instance, so `gh` does not work in that shell.
-- **Logs.** The parts' own logs are in `~/.local/state/sandbox-science-personal/launcher/logs/` (`worker.log`, `run-service.log`, `workspace.log`, `mcp-forward.log`, `launcher.log`); the launcher's output is in `journalctl --user -u ss-personal-launcher`, the gateway's in `-u ss-personal-gateway`, and the unit's, one stream for the cache, the middleware and the worker with each line prefixed by its service, in `-u ss-personal-unit`. Set `SS_LOG_FORMAT=json` in the launcher's or the unit's environment for JSON lines (the Kubernetes deployment's format); the default is the text line.
+- **Logs.** The parts' own logs are in `~/.local/state/sandbox-science-personal/launcher/logs/` (`worker.log`, `control-service.log`, `workspace.log`, `launcher.log`, …); the launcher's output is in `journalctl --user -u ss-personal-launcher`, the gateway's in `-u ss-personal-gateway`, and the unit's, one stream for the cache, the middleware and the worker with each line prefixed by its service, in `-u ss-personal-unit`. Set `SS_LOG_FORMAT=json` in the launcher's or the unit's environment for JSON lines (the Kubernetes deployment's format); the default is the text line.
 
 The scripts take their settings from the environment: `SS_PERSONAL_ROOT`, `SS_PERSONAL_CONFIG`, `SS_PERSONAL_UNIT`, `SS_PERSONAL_SKIP_SNAPSHOT` (`personal_up.sh` only), the ports, the VMs' size (`VM_VCPUS`, `VM_MEM_MIB`, `VM_DISK_MIB`; 8, 16,384 and 32,768 by default) and `R`, the repository. The defaults are the instance above. They refuse a unit prefix or a root that is the labs'. `personal_up.sh` also refuses to start while `ss-personal-middleware` or `ss-personal-cache` of the earlier layout runs; `personal_down.sh` stops them too.
 
@@ -140,8 +141,9 @@ The instance runs from the repository's checkout of `main`, its `.venv` and its 
 
 1. Stop it: `scripts/personal_down.sh`.
 2. Update the checkout: `git pull --ff-only`, then `uv sync --locked`, and in `web/workspace`, `npm ci --ignore-scripts && npm run build && npm run build:math`.
-3. Rebuild the images whose inputs changed ([images](IMAGES.md)): `images/build.sh minimal`, `crypto-base`, `mcp-proxy`, then `images/test.sh` for each. Start nothing on an image whose checks fail. Only create or tag `sandbox-science/*` images; the Docker store is never pruned.
-4. Put the new tags in `personal.toml`: `[openshell.environments.profiles]` and `[mcp_proxy] image`. A project keeps the sandbox it has: a new profile image reaches new environments only.
+3. Rebuild the images whose inputs changed ([images](IMAGES.md)): `images/build.sh minimal`, `crypto-base`, `orchestrator`, then `images/test.sh` for each. Start nothing on an image whose checks fail. Only create or tag `sandbox-science/*` images; the Docker store is never pruned.
+4. Put the new tags in `personal.toml`: `[openshell.environments.profiles]` and `[orchestrator] image` and `revision`. A project keeps the sandbox it has: a new profile image reaches new environments only.
+   - **Once, on the update that retires the MCP proxy (2026-10-26):** `personal.toml` still has `[mcp_proxy]`, which the launcher now refuses (and `personal_up.sh` stops before starting it, saying so). Rewrite it with `.venv/bin/sandbox-science migrate-mcp-config ~/.config/sandbox-science/personal.toml` (`--print` shows the result first; the original stays as `personal.toml.mcp-proxy.bak`), check that `personal-policy.yaml` sets neither `mcp.proxy.worker_access: true` nor a `worker_tools` list (now refused), ([MCP connectors](MCP-CONNECTORS.md#migrating-from-mcp_proxy)); `personal_up.sh` now writes the unit's middleware settings with `mcp_listings = true`, which the direct path needs. The proxy's sandbox (`ss-pers-mcp-*`) is deleted by `personal_down.sh` before the update, or by the next start.
 5. Start it: `scripts/personal_up.sh`. Skill packs are fetched only when asked: `.venv/bin/sandbox-science skills update --config ~/.config/sandbox-science/personal.toml`.
 
 If the protocol between the parts changed, the worker, run service and workspace from the new checkout must all restart together, which steps 1 and 5 do.

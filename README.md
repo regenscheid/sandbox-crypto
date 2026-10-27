@@ -57,9 +57,9 @@ Evaluate NVIDIA OpenShell as the execution backend behind an adapter. Its docume
 | [Decisions](docs/DECISIONS.md) | Confirmed requirements, recommendations, and open choices |
 | [Threat model](docs/THREAT-MODEL.md) | Assets, threat sources, trust zones, isolation tiers and data classes (D43) |
 | [Policy file](docs/POLICY.md) | Permissive-by-default YAML project policy, precedence, escalation timeout ([example](examples/policy.yaml)) |
-| [MCP connectors](docs/MCP-CONNECTORS.md) | OAuth (primary), bearer and custom-header auth for MCP servers; connector auth service and the MCP proxy that all MCP traffic goes through |
+| [MCP connectors](docs/MCP-CONNECTORS.md) | OAuth (primary), bearer and custom-header auth for MCP servers; the agent runtime's own client, decided by OpenShell's native rules and the policy middleware (the MCP proxy retired 2026-10-26); connector auth service |
 | [Licensing](docs/LICENSING.md) | MIT goal, dependency tiers, runtime-installed GPL tools, components to avoid |
-| [Base profile images](docs/IMAGES.md) | The `minimal` and `crypto-base` images, and the `orchestrator` and `mcp-proxy` images of the harness and the MCP proxy: contract, pinned sources, building and tests |
+| [Base profile images](docs/IMAGES.md) | The `minimal` and `crypto-base` images, and the `orchestrator` image of the harness: contract, pinned sources, building and tests |
 | [Deployment examples](examples/deployment-profiles.json) | Illustrative placements; not executable manifests |
 | [Kubernetes work](docs/KUBERNETES.md) | Mixed-architecture placement, object-store/PVC lifecycle and remaining cluster acceptance gates |
 | [S3 artifact backing](docs/ARTIFACT-S3.md) | Optional verified artifact retention and explicit local archive/eviction |

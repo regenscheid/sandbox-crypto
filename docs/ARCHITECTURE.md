@@ -11,7 +11,7 @@ Confirmed by the owner; mostly not built. The [decisions](DECISIONS.md) hold the
 - **Effect classes (D96):** `read`, `write`, `communicate`, `browse`, `admin`, `unclassified`, from tool names, argument rules and, for unmentioned tools, MCP hints; browser automation off unless an admin enables it; admin-reviewed, model-drafted classifications with a drift test.
 - **Approvals and grants (D97):** admin ceilings per class and server; persistent, revocable user grants per class, server and project; cards built from a call's significant arguments.
 - **Research-code egress (D97, amended 2026-10-24):** packages through the cache; git and downloads from listed source hosts, by host, since OpenShell cannot attribute them by binary; everything else escalates.
-- **MCP enforcement (D98):** OpenShell native `protocol: mcp` rules and the supervisor middleware; the MCP proxy retires if the prototype passes.
+- **MCP enforcement (D98):** the agent runtime's own client, through OpenShell native `protocol: mcp` rules and the supervisor middleware; the MCP proxy retired on 2026-10-26, and research code has no MCP access.
 - **Delegated agents (D99):** fenced for outward effects only; their effect requests are cards in the session chat that the parent can withdraw.
 - **Recovery (D100):** automatic bounded retries for transient failures; one Resume restarts the whole tree; only Stop, budget refusal, policy denial, an irreconcilable effect or a real context limit keeps a run stopped.
 - **Deployment unit (D101):** worker, policy middleware and package cache run as one supervised unit with one configuration file; control and workspace stay separate for now.
@@ -42,7 +42,7 @@ flowchart LR
   O --> V
 ```
 
-**MCP enforcement (D98, decided 2026-10-23):** MCP calls move to OpenShell's native `protocol: mcp` rules and the supervisor middleware, with the tool index on the control side. The MCP proxy that this page and [MCP connectors](MCP-CONNECTORS.md) describe remains until the prototype's outcome, which retires it or slims it to MCP only.
+**MCP enforcement (D98, decided 2026-10-23; the proxy retired 2026-10-26):** the agent's MCP calls are made by the agent runtime's own client, from its sandbox, and decided by OpenShell's native `protocol: mcp` rules and the supervisor middleware, with the tool index, gates and approval waits on the control side ([MCP connectors](MCP-CONNECTORS.md#the-direct-path)). The MCP proxy, a service in a sandbox of its own that carried every MCP call before, is retired, and research code has no MCP access. Where this page names the proxy, read that history.
 
 The GUI, orchestrator/harness, and compute pools have independent packaging and endpoint configuration. The harness initially remains with orchestration. Splitting the model loop into another service is not required to achieve execution isolation.
 
@@ -56,7 +56,7 @@ Generated scientific code, shell commands, parsers, compilers, package operation
 
 ## Reimplemented harness
 
-The harness is new code (D11). CScience is the behavior reference; no Claude Science code, prompts, schemas or assets are used (D03, D56). Build it from MIT-compatible components (D55): a model-access library or gateway, the project's own small MCP client (for the MCP proxy as built; D98 sets the direction), and own code for skills, plans, delegation, review scheduling and findings. OpenScience Desktop upstream (MIT) and OpenCode (MIT) are reuse candidates. The Claude Agent SDK is not, because it drives the proprietary Claude Code CLI.
+The harness is new code (D11). CScience is the behavior reference; no Claude Science code, prompts, schemas or assets are used (D03, D56). Build it from MIT-compatible components (D55): a model-access library or gateway, the project's own small MCP client (the agent runtime's direct client, D98), and own code for skills, plans, delegation, review scheduling and findings. OpenScience Desktop upstream (MIT) and OpenCode (MIT) are reuse candidates. The Claude Agent SDK is not, because it drives the proprietary Claude Code CLI.
 
 Because the harness is written against the worker API from the start, it has **no local execution path**. Shell, kernel, package-manager, parser, renderer and execution-bearing MCP tools are worker API calls. This removes the main risk of the adaptation approach, which was a forgotten code path still running beside the orchestrator.
 
@@ -180,7 +180,7 @@ The confirmed monitor response model is policy-based blocking, permission escala
 
 Keep model/provider keys, worker enrollment authority, gateway administration, and engine/cluster credentials on their appropriate trusted services. Workloads receive only explicit data and endpoint-scoped access needed for the task. Credentials reach workers as OpenShell provider placeholders that resolve only at bound endpoints (D57), and external services are mostly MCP endpoints with per-project tool allowlists (D58); see [monitoring](MONITORING.md#credentials-and-mcp-access). Reusable project grants should let ordinary research proceed without repeated command approvals.
 
-The agent runtime is **semi-trusted** (D47): it reads untrusted papers and web content and acts on model output. Its OpenShell sandbox permits only the configured model gateway and scoped state transport. Trusted handlers validate tool requests and reach workers and the policy-governed MCP proxy; no engine, cluster or worker administrative credential enters the runtime. Durable state stays in the trusted control service. The current launcher uploads the model gateway key into the sandbox by its configured file path; provider-injected placeholders are a future credential-hardening option. Connector fetches remain subject to their worker/proxy egress policies.
+The agent runtime is **semi-trusted** (D47): it reads untrusted papers and web content and acts on model output. Its OpenShell sandbox permits only the configured model gateway and scoped state transport. Trusted handlers validate tool requests and reach workers; the runtime's own MCP client reaches declared servers only through OpenShell's native rules and the policy middleware, with the providers' placeholders; no engine, cluster or worker administrative credential enters the runtime. Durable state stays in the trusted control service. The current launcher uploads the model gateway key into the sandbox by its configured file path; provider-injected placeholders are a future credential-hardening option. Connector fetches remain subject to their worker/proxy egress policies.
 
 Each pool has a locally configured **policy ceiling** (D49): maximum egress destinations, mounts, resources and data classes. Remote control can narrow it but never raise it. Enrolling a local pool, or raising its ceiling, requires local user action. This bounds what a compromised hosted orchestrator can do on the user's machine in the hosted-control/local-compute profile.
 

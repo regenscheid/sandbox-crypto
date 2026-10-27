@@ -111,8 +111,8 @@ Use Recreate strategy, one replica and the existing process/state locks. Applica
 and worker Pods have no Kubernetes service-account token or administrative RBAC.
 Only the separately installed OpenShell gateway has its required cluster authority.
 
-The orchestrator runtime, research workloads and MCP proxy remain separate OpenShell
-sandboxes. Do not run an agent loop or research code inside a trusted service Pod.
+The orchestrator runtime and research workloads remain separate OpenShell
+sandboxes (the MCP proxy, a third, retired on 2026-10-26). Do not run an agent loop or research code inside a trusted service Pod.
 Runtime creation requires recorded original ownership and trusted placement; never
 use a failed readiness probe or process restart as permission for a replacement.
 

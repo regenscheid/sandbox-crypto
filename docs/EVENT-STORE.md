@@ -2,7 +2,7 @@
 
 The event store keeps monitor evidence in an append-only SQLite database. Each record carries the hash of the record before it, so a record changed, removed, inserted or moved later breaks the chain, and checkpoints kept elsewhere also show records removed from its end (D74). The code is in `packages/event-store` (`sandbox_science.event_store`), standard library only, with the command `sandbox-science-events`.
 
-Three components write to a store: the [policy middleware](POLICY-MIDDLEWARE.md), the worker service (into the middleware's store) and the [MCP proxy](MCP-CONNECTORS.md#the-mcp-proxy-as-built) (into its own). Operators' answers to permission requests go into the same stores. [Record kinds](#record-kinds) lists every kind and its writer.
+Two components write to a store: the [policy middleware](POLICY-MIDDLEWARE.md) and the worker service (into the middleware's store). The [MCP proxy](MCP-CONNECTORS.md#the-mcp-proxy-retired-2026-10-26) wrote into its own until it retired on 2026-10-26 (D98): its record kinds below, source `mcp-proxy`, are historical, written by nothing now, and an older store keeps them. Operators' answers to permission requests go into the same stores. [Record kinds](#record-kinds) lists every kind and its writer.
 
 ## Records
 
@@ -20,23 +20,23 @@ Kinds and sources are 1 to 64 lowercase ASCII letters, digits, `.`, `_` or `-`, 
 
 ## Record kinds
 
-There are two stores in a deployment: the middleware's (`events.db` in its state directory, which the worker's `event_store` setting also names, by default `events.db` in its `policy_store`) and the MCP proxy's (`events.db` in the proxy's state directory, inside its sandbox). These are all the kinds written to them:
+A deployment has one store, the middleware's (`events.db` in its state directory, which the worker's `event_store` setting also names, by default `events.db` in its `policy_store`); until 2026-10-26 the MCP proxy kept a second one (`events.db` in the proxy's state directory, inside its sandbox). These are all the kinds written to them, the proxy's marked historical:
 
 | Kind | Source | Written by | Store | Described in |
 | --- | --- | --- | --- | --- |
 | `escalation` | `policy-middleware` | `policy_middleware.evaluator`: the first occurrence of an escalated request | Middleware | [Policy middleware](POLICY-MIDDLEWARE.md#permission-requests) |
 | `escalation` | `worker` | `worker.permissions`: a provisioning operation's request for a package file set | Middleware | [Policy middleware](POLICY-MIDDLEWARE.md#permission-requests), [worker](WORKER.md#provisioning-operations) |
-| `escalation` | `mcp-proxy` | `mcp_proxy.proxy`: the first occurrence of an escalated call | MCP proxy | [MCP connectors](MCP-CONNECTORS.md#the-mcp-proxy-as-built) |
-| `approval` | `operator` | The `approve` command of `sandbox-science-policy-middleware` or `sandbox-science-mcp-proxy` (`policy.approvals.prepare_answer`) | Either | [Policy middleware](POLICY-MIDDLEWARE.md#permission-requests) |
+| `escalation` | `mcp-proxy` | Historical (the MCP proxy, retired 2026-10-26): the first occurrence of an escalated call | MCP proxy | [MCP connectors](MCP-CONNECTORS.md#the-mcp-proxy-retired-2026-10-26) |
+| `approval` | `operator` | The `approve` command of `sandbox-science-policy-middleware` (`policy.approvals.prepare_answer`; the retired `sandbox-science-mcp-proxy` wrote it too) | Middleware | [Policy middleware](POLICY-MIDDLEWARE.md#permission-requests) |
 | `denial` | `operator` | The `deny` command of either | Either | [Policy middleware](POLICY-MIDDLEWARE.md#permission-requests) |
 | `approval`, `denial` | `workspace` | `worker.permissions`: the user's answer to a network or package request, or to an MCP call the middleware holds (D98), which the workspace relays through the worker (D97) | Middleware | [Policy middleware](POLICY-MIDDLEWARE.md#permission-requests) |
 | `denial` | `worker` | `worker.permissions`: a withdrawal (`withdrawn`) of a file-set request once its operation ends | Middleware | [Policy middleware](POLICY-MIDDLEWARE.md#permission-requests) |
 | `approved` | `policy-middleware` | `policy_middleware.evaluator`: a request allowed by an approval or a file-set grant | Middleware | [Policy middleware](POLICY-MIDDLEWARE.md#permission-requests) |
-| `approved` | `mcp-proxy` | `mcp_proxy.proxy`: a call allowed by an approval | MCP proxy | [MCP connectors](MCP-CONNECTORS.md#the-mcp-proxy-as-built) |
+| `approved` | `mcp-proxy` | Historical (the MCP proxy, retired 2026-10-26): a call allowed by an approval | MCP proxy | [MCP connectors](MCP-CONNECTORS.md#the-mcp-proxy-retired-2026-10-26) |
 | `alert` | `policy-middleware` | `policy_middleware.evaluator`: an `alert` decision, or an escalation that timed out into one | Middleware | [Policy middleware](POLICY-MIDDLEWARE.md#results) |
-| `alert` | `mcp-proxy` | `mcp_proxy.proxy`: the same for a call | MCP proxy | [MCP connectors](MCP-CONNECTORS.md#the-mcp-proxy-as-built) |
+| `alert` | `mcp-proxy` | Historical (the MCP proxy, retired 2026-10-26): the same for a call | MCP proxy | [MCP connectors](MCP-CONNECTORS.md#the-mcp-proxy-retired-2026-10-26) |
 | `monitor` | `policy-middleware` | `policy_middleware.evaluator`: a monitor threshold crossed | Middleware | [Policy middleware](POLICY-MIDDLEWARE.md#results) |
-| `mcp-call` | `mcp-proxy` | `mcp_proxy.proxy`: every message an authenticated caller sends | MCP proxy | [MCP connectors](MCP-CONNECTORS.md#the-mcp-proxy-as-built) |
+| `mcp-call` | `mcp-proxy` | Historical (the MCP proxy, retired 2026-10-26): every message an authenticated caller sends | MCP proxy | [MCP connectors](MCP-CONNECTORS.md#the-mcp-proxy-retired-2026-10-26) |
 | `provision.requested`, `provision.awaiting_permission`, `provision.finished` | `worker` | `worker.provision_events`, through `worker.permissions` | Middleware | [Provisioning events](PROVISION-EVENTS.md) |
 
 Payloads are each writer's own; the pages in the last column describe them. The permission logic (`sandbox_science.policy.approvals`) reads only `escalation`, `approval` and `denial` records, whatever their source; other kinds are never requests or answers, and the worker's writer for provisioning observations refuses any kind but the three `provision.*` ones.
@@ -147,7 +147,7 @@ To back up a running store, export it or use SQLite's backup; a copy of `events.
 
 ## Not yet done
 
-- **Other writers.** The behavior monitor and the orchestrator's own model and fetch requests (D47) write nothing yet. The orchestrator's MCP calls are recorded by the MCP proxy, with the orchestrator as their caller.
-- **Checkpoints** go to the journal only where someone installs the timer; nothing sends them off the host. The MCP proxy's store, in its sandbox, has no timer; its records leave the sandbox only through `export`.
+- **Other writers.** The behavior monitor and the orchestrator's own model and fetch requests (D47) write nothing yet. The agent's MCP calls are recorded by the policy middleware (`mcp-call`, source `policy-middleware`), with the agent runtime as their caller (D98).
+- **Checkpoints** go to the journal only where someone installs the timer; nothing sends them off the host. The retired MCP proxy's store was in its sandbox, which the launcher deleted on stopping, so its records are gone unless they were exported.
 - **Retention.** The store only grows. Rotating to a new file that starts from the old one's final checkpoint is a possible later step.
 - **Several hosts.** A store is one file on one host; the worker writes to the middleware's store through a shared filesystem, and components on other hosts would need a store service.
