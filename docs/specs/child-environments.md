@@ -6,11 +6,13 @@ admission, preparation, hand-back, retention, release and restart rules
 ([worker](../WORKER.md#child-environments)), the delegation's setting, placement, records
 and outcome, the run in its own environment, and a Resume's choice of environment; the
 parent's review (PD-46, built 2026-10-26): a returned task keeps its environment until it
-closes. Open:
-the Compute tab's children's kernels (CE-8), the workspace's environment views (CE-11's
-GUI part), the prompts' guidance (CE-13), inputs from control's retained content
-(CE-7), files over 100 MiB in a hand-back (as JS's delivery step 4: CE-F1's 1.5 GiB
-file is left out and the environment retained), and read-only `inputs/` and
+closes. Built 2026-10-27, against the fake CLI: the Compute tab's children's kernels
+(CE-8), the workspace's environment views (CE-11's GUI part), the prompts' guidance
+(CE-13), `child_idle_max` checked during a main run as well as at its start (CE-4), and a
+hand-back's refusal of a file over 100 MiB by its size and the limit (CE-6). Open:
+inputs from control's retained content (CE-7), copying files over 100 MiB in a
+hand-back (as JS's delivery step 4: CE-F1's 1.5 GiB file is left out, named with its
+size, and the environment retained), and read-only `inputs/` and
 `work/<id>/`: the worker's file calls set no file mode, and a sandbox's agent code runs
 as the user who owns its files and could change one back, so it needs per-run mounts
 (DA-20's open question 1). Reviewed 2026-10-26; the review's fixes are built. It designs
@@ -117,6 +119,13 @@ platform places a child by the project's settings. No change to checks' evidence
   written (the orchestrator stopped in between) is released past `child_orphan_grace`
   (15 minutes). A pool without child profiles, or a policy whose `child_environments_max`
   is 0, gives no environments: tasks run in the session's, with a notice.
+
+  *As built 2026-10-27:* the sweep runs at a main run's start and at its turns, at most
+  every five minutes, so `child_idle_max` (off by default, then `child_orphan_idle`, 24
+  hours) passes during a long run as `review_max` does. An environment whose task awaits
+  its parent's review is never idle (PD-46); one whose task was accepted, or accepted for
+  the parent, is handed back and released at once. A session with no run keeps an idle
+  one until its next main run or its close.
 - CE-5. **Working memory, durable records.** Nothing on a child environment's disk
   survives its release. The durable records are the ones the platform already keeps,
   owned by control and visible to the parent: the child's archive (its messages, tool
@@ -135,7 +144,11 @@ platform places a child by the project's settings. No change to checks' evidence
   Files already retained in control are not copied twice: the manifest names their
   artifact revisions. A collection past its bounds is incomplete: the delegation's
   outcome lists what was left behind, the environment is retained (CE-4), and the
-  parent's outcome notice says so. The parent reads handed-back files with its ordinary
+  parent's outcome notice says so. *As built 2026-10-27:* a file over 100 MiB (one
+  sandbox write), or past the bytes left of the profile's `collect_max_bytes`, is left
+  out with a reason that gives its size and the limit, and the retained environment's
+  message names the files left out for their size, the five largest first; copying them
+  waits for a ranged write (JS's delivery step 4). The parent reads handed-back files with its ordinary
   file tools, at that path; the recorder records them as the parent's files, so they
   are artifacts of the session like any other.
 - CE-7. **Inputs.** The brief's `inputs` (file grants, DA-17) are copied into the child
@@ -172,7 +185,11 @@ platform places a child by the project's settings. No change to checks' evidence
   record names its `environment_id`; the outcome names it with the environment's end
   (released, retained with the reason, failed). The run tree and the Agents panel show
   each child's environment and state; the workspace's environment views list child
-  environments under their session with their profile, node and age. The events of the
+  environments under their session with their profile, node and age. *As built
+  2026-10-27:* the Settings page's environment views and the Compute tab list them
+  through a read-only route, with the owning delegation, state, what holds the
+  environment, the hand-back and retention or idle release; the worker's record names no
+  node, so none is shown ([workspace](../WORKSPACE.md#child-environments)). The events of the
   environment's life (created, ready, collecting, released, retained) are the worker's
   events, as job sandboxes' are.
 - CE-12. **Recovery.** After a worker restart, a child environment is reattached by its
@@ -187,6 +204,8 @@ platform places a child by the project's settings. No change to checks' evidence
   says: delegate into an own environment for work that is heavy in compute, memory or
   disk, or that must not disturb the session's environment; keep short tasks shared.
   The project's cost view counts child environments' seeding as the worker reports it.
+  *As built 2026-10-27:* `sandbox-main-19` and `sandbox-delegated-task-17` (CE-5's
+  working memory), with the `delegate` description; the cost view's count is not built.
   Many short children in own environments are a cost the owner has named; B11 (option C,
   the Python environment out of the workspace) cuts each seed to seconds, this design's
   natural prerequisite for `all`.
