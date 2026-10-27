@@ -98,6 +98,16 @@ class DriftedServer(Contract):
     at: AwareDatetime | None = None
 
 
+class InspectionRow(Contract):
+    """One MCP server's answers in which inspection found a pattern within the window:
+    those passed on with an alert, and those blocked or cut (docs/POLICY-MIDDLEWARE.md,
+    "MCP traffic inspection")."""
+
+    server: Name
+    alerts: Counter = 0
+    blocks: Counter = 0
+
+
 class MonitorRecords(Contract):
     """What the event store's records say for the window."""
 
@@ -114,6 +124,10 @@ class MonitorRecords(Contract):
     """Every kind, in the order mcp, network, packages, hold."""
     holds: list[OpenHolds] = Field(max_length=64)
     drift: list[DriftedServer] = Field(max_length=MAX_SERVERS)
+    inspection: list[InspectionRow] = Field(
+        default_factory=list[InspectionRow], max_length=MAX_SERVERS
+    )
+    """Alerts and blocks of MCP answers by server, the busiest first."""
 
 
 class EnvironmentTier(Contract):

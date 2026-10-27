@@ -413,3 +413,24 @@ async def test_the_route_refuses_other_clients_projects_and_windows(
     client, _ = api
     answered = await client.get(f"/v1/monitor?{query}", headers=headers(who))
     assert answered.status == status, await answered.text()
+
+
+def test_answer_alerts_and_blocks_are_counted_by_server(tmp_path: Path) -> None:
+    events = Clocked(tmp_path / "events.db")
+    alert: dict[str, object] = {
+        "project": "p1",
+        "server": "papers",
+        "request_id": "r",
+        "action": "alert",
+    }
+    events.add("mcp-answer-alert", alert)
+    events.add("mcp-answer-alert", alert)
+    events.add("mcp-answer-alert", {**alert, "action": "block"})
+    events.add("mcp-answer-alert", {**alert, "server": "web", "action": "block"})
+    events.add("mcp-answer-alert", {**alert, "project": "p2"})
+    found = desk(events.store.path).figures("p1", "24h")
+    assert found.records is not None
+    assert [(row.server, row.alerts, row.blocks) for row in found.records.inspection] == [
+        ("papers", 2, 1),
+        ("web", 0, 1),
+    ]

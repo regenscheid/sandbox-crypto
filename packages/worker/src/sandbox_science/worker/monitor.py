@@ -15,7 +15,9 @@ than the window, and counts:
   now, and the median wait for an answer;
 - **holds** nobody has answered, by rule, however old (the ledger's own fold);
 - **drift**: servers whose tool list drifted and is not accepted again for the project
-  (the classification review's own reading).
+  (the classification review's own reading);
+- **inspection**: by server, MCP answers in which traffic inspection found a pattern,
+  passed with an alert or blocked (``mcp-answer-alert``).
 
 A record whose project is not the one asked for, or that cannot be read as its kind, is
 skipped. Research code's requests name a sandbox, not a project: they count for the
@@ -37,12 +39,14 @@ from sandbox_science.contracts.monitor import (
     MAX_CALL_ROWS,
     MAX_HOLD_SESSIONS,
     MAX_SCANNED,
+    MAX_SERVERS,
     WINDOWS,
     ApprovalCounts,
     ApprovalKind,
     CallRow,
     DriftedServer,
     EnvironmentTier,
+    InspectionRow,
     MonitorRecords,
     MonitorWindow,
     OpenHolds,
@@ -59,7 +63,8 @@ from .permissions import STORE_TIMEOUT, Permissions, PermissionStoreError
 MCP_CALL: Final = "mcp-call"
 APPROVED: Final = "approved"
 ALERT: Final = "alert"
-KINDS: Final = (MCP_CALL, ESCALATION, APPROVAL, DENIAL, APPROVED, ALERT)
+ANSWER_ALERT: Final = "mcp-answer-alert"
+KINDS: Final = (MCP_CALL, ESCALATION, APPROVAL, DENIAL, APPROVED, ALERT, ANSWER_ALERT)
 """The record kinds the figures count."""
 SOURCES: Final[tuple[RecordSource, ...]] = ("policy-middleware", "mcp-proxy")
 DETECTION: Final = "detect."
@@ -117,6 +122,8 @@ class _Tally:
     )
     """Each request's earliest answer seen: its kind, time and whether it is a withdrawal."""
     sources: set[RecordSource] = field(default_factory=set[RecordSource])
+    inspected: dict[str, list[int]] = field(default_factory=dict[str, list[int]])
+    """Each server's answers with an alert, and those blocked or cut."""
 
     def row(self, effect: str, server: str | None = None, host: str | None = None) -> _Row:
         return self.rows.setdefault((effect, server, host), _Row())
@@ -143,6 +150,8 @@ class _Tally:
             counted = self._escalation(record.seq, data, at)
         elif record.kind in (APPROVED, ALERT):
             counted = self._passed(data)
+        elif record.kind == ANSWER_ALERT:
+            counted = self._answer_alert(data)
         if counted and source is not None:
             self.sources.add(source)
 
@@ -165,6 +174,23 @@ class _Tally:
             # A request waiting for its answer is counted once, by its escalation.
             row.denied += 1
         return True
+
+    def _answer_alert(self, data: Mapping[str, object]) -> bool:
+        """An MCP answer in which inspection found a pattern: alerted, or blocked."""
+        server = _text(data.get("server"))
+        if data.get("project") != self.project or server is None:
+            return False
+        counts = self.inspected.setdefault(server, [0, 0])
+        counts[1 if data.get("action") == "block" else 0] += 1
+        return True
+
+    def inspection(self) -> list[InspectionRow]:
+        rows = [
+            InspectionRow(server=server, alerts=alerts, blocks=blocks)
+            for server, (alerts, blocks) in self.inspected.items()
+        ]
+        rows.sort(key=lambda row: (-(row.alerts + row.blocks), row.server))
+        return rows[:MAX_SERVERS]
 
     def _escalation(self, seq: int, data: Mapping[str, object], at: datetime) -> bool:
         key = RequestKey.from_payload(_object(data.get("target")))
@@ -354,6 +380,7 @@ class MonitorDesk:
             approvals=counted.approvals(now),
             holds=self._holds(permissions, project, owners),
             drift=self._drift(project),
+            inspection=counted.inspection(),
         )
 
     @staticmethod
