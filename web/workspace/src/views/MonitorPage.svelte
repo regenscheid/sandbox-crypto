@@ -1,6 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 <!-- The project's Monitor view (D103, built into the GUI since Grafana is avoided): calls
-     by effect class and destination, approvals, holds and drift, spend and tokens, sandbox
+     by effect class and destination, approvals, holds and drift, inspected MCP answers'
+     alerts and blocks by server, spend and tokens, sandbox
      tiers and MCP canaries for the last 24 hours or 7 days. Every figure is the platform's
      count; names from records are shown through visible(). It polls while the page is
      visible, at the chat's cadence, and says which part is unavailable. -->
@@ -246,6 +247,32 @@
             </li>
           {/each}
         </ul>
+      {/if}
+    {/if}
+  </section>
+
+  <section aria-labelledby="monitor-inspection">
+    <h2 id="monitor-inspection">Inspected answers</h2>
+    {#if records}
+      {#if records.inspection.length === 0}
+        <p class="muted">No MCP answer matched an inspection pattern in this window.</p>
+      {:else}
+        <table>
+          <thead><tr><th>Server</th><th>Alerts</th><th>Blocked or cut</th></tr></thead>
+          <tbody>
+            {#each records.inspection as item (item.server)}
+              <tr class="inspection-row">
+                <td><code>{visible(item.server)}</code></td>
+                <td>{item.alerts}</td>
+                <td>{item.blocks}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+        <p class="muted">
+          Answers the policy middleware passed on with an alert, and those it refused or cut, for a
+          pattern found in them. Each run's page shows them under Inspected traffic.
+        </p>
       {/if}
     {/if}
   </section>
