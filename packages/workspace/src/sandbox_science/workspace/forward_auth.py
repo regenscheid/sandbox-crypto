@@ -118,7 +118,8 @@ class Claimed:
     user: str
     admin: bool
     expires: float
-    """When the token expires, in seconds since the epoch."""
+    """Until when the token is believed, in seconds since the epoch: its ``exp`` with the
+    leeway verification allows, so that a session opened from it lasts exactly as long."""
 
 
 def _name(value: object) -> bool:
@@ -284,4 +285,5 @@ class Verifier:
         if not isinstance(expires, int | float) or isinstance(expires, bool):
             raise TokenRefusedError("the token's expiry is not a time")
         admin = settings.admin_group is None or settings.admin_group in names
-        return Claimed(user=cast(str, user), admin=admin, expires=float(expires))
+        believed = float(expires) + LEEWAY_SECONDS
+        return Claimed(user=cast(str, user), admin=admin, expires=believed)

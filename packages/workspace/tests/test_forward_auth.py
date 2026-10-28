@@ -5,7 +5,6 @@ never do, and the login link keeps working as the operator's own login."""
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import json
 import time
@@ -14,21 +13,23 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from aiohttp.test_utils import TestClient
+from aiohttp.test_utils import TestClient, make_mocked_request
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from jwt.algorithms import ECAlgorithm
 
+from sandbox_science.orchestrator.documents import USER, Author
 from sandbox_science.workspace import forward_auth
-from sandbox_science.workspace.app import SESSION_COOKIE
+from sandbox_science.workspace.app import SESSION_COOKIE, Sessions
 from sandbox_science.workspace.forward_auth import (
     ForwardAuthSettings,
     KeySet,
     TokenRefusedError,
     parse_keys,
 )
+from sandbox_science.workspace.identity import IDENTITY, OPERATOR, Identity, author, operator
 
 from .authentik_support import ADMINS, AUDIENCE, ISSUER, JWKS_URL, USERS, Authentik, as_user
-from .route_support import log_in, origin, workspace
+from .route_support import TOKEN, log_in, origin, workspace
 
 ClientFactory = Callable[..., Awaitable[TestClient[Any, Any]]]
 PROJECTS = "/api/v0/projects"
@@ -124,15 +125,45 @@ async def test_another_token_replaces_the_session(
 
 
 @pytest.mark.asyncio
-async def test_a_session_ends_when_its_token_expires(
+async def test_a_session_lasts_exactly_as_long_as_its_token_is_believed(
     aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path, authentik: Authentik
 ) -> None:
+    """A token past ``exp`` but within the leeway is still believed; its session lasts as
+    long, so requests then reuse it rather than open one each (the 64-session cap)."""
+    exp = int(time.time()) - 5
+    claimed = await authentik.verifier().verify(authentik.token(exp=exp))
+    assert claimed.expires == exp + forward_auth.LEEWAY_SECONDS
     client = await forwarded(aiohttp_client, state_dir, static_dir, authentik)
-    now = int(time.time())
-    token = authentik.token(exp=now + 2)
-    assert (await client.get(PROJECTS, headers=as_user(token))).status == 200
-    await asyncio.sleep(2.1)
-    assert (await client.get(PROJECTS)).status == 401
+    token = authentik.token(exp=exp)
+    first = await client.get(PROJECTS, headers=as_user(token))
+    assert first.status == 200
+    assert cookie(client) in first.cookies
+    for _ in range(3):
+        again = await client.get(PROJECTS, headers=as_user(token))
+        assert again.status == 200
+        assert cookie(client) not in again.cookies
+    # Past the leeway, the session has ended with the token.
+    sessions = Sessions(TOKEN, clock=lambda: now[0])
+    now = [1000.0]
+    opened = sessions.open(Identity("alice", "forward", True, expires=1030.0, token=b"t"))
+    now[0] = 1029.9
+    assert sessions.valid(opened)
+    now[0] = 1030.0
+    assert not sessions.valid(opened)
+
+
+def test_an_authentik_user_is_never_recorded_as_the_operator() -> None:
+    """D104: a record's author for an Authentik user is ``authentik:<name>``, whatever the
+    name; only the login link's session is ``USER``."""
+    request = make_mocked_request("GET", "/api/v0/me")
+    request[IDENTITY] = Identity("user", "forward", True)
+    assert author(request) == Author(kind="user", user="authentik:user")
+    assert author(request) != USER
+    assert operator(request) == "authentik:user"
+    request = make_mocked_request("GET", "/api/v0/me")
+    request[IDENTITY] = OPERATOR
+    assert author(request) == USER
+    assert operator(request) == "user"
 
 
 def _other_rsa() -> rsa.RSAPrivateKey:
