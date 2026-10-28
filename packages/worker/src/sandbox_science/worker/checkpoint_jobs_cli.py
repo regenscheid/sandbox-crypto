@@ -10,7 +10,8 @@ checkpoint verify --settings S --checkpoint-id ID --manifest H --storage F \
 checkpoint promote --from F --to F --manifest H                           # operator, keeper key
 checkpoint delete-objects --storage F --manifest H                        # operator, keeper key
 checkpoint inventory --settings S [--keep 2]
-checkpoint forget --settings S --manifest H --by WHO [--volume-gone] [--done --detail JSON]
+checkpoint forget --settings S --manifest H --by WHO [--volume-gone [--retire ENV]] \
+    [--done --detail JSON]
 checkpoint record-volume --settings S --phase intent|done|failed --volume PV [--sandbox S] --by WHO
 checkpoint release-hold --settings S --checkpoint-id ID --by WHO --reason TEXT
 ```
@@ -86,6 +87,11 @@ def parser(command: argparse.ArgumentParser) -> None:
     forget = actions.add_parser("forget", help="journal a checkpoint's deletion")
     forget.add_argument("--manifest", required=True)
     forget.add_argument("--volume-gone", action="store_true")
+    forget.add_argument(
+        "--retire",
+        metavar="ENVIRONMENT",
+        help="one of the latest checkpoints of this deleted environment, whose volume is gone",
+    )
     forget.add_argument("--done", action="store_true")
     forget.add_argument("--detail", default="{}")
     volume = actions.add_parser("record-volume", help="journal a volume's deletion")
@@ -246,7 +252,13 @@ def run(args: argparse.Namespace) -> int:
                 records.deleted(args.manifest, now, args.actor, _detail(args.detail))
                 print(f"journaled checkpoint={args.manifest} phase=done")
             else:
-                records.forget(args.manifest, now, args.actor, volume_gone=args.volume_gone)
+                checkpoint_jobs.forget(
+                    settings,
+                    args.manifest,
+                    args.actor,
+                    volume_gone=args.volume_gone,
+                    retire=args.retire,
+                )
                 print(f"journaled checkpoint={args.manifest} phase=intent")
         finally:
             records.close()

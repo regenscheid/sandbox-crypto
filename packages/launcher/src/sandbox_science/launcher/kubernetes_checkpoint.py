@@ -26,8 +26,6 @@ PLAN_VARIABLE = "SS_CHECKPOINT_PLAN"
 STORAGE_VARIABLE = "SS_CHECKPOINT_STORAGE"
 """The variables ``checkpoint_jobs_cli`` reads (a test compares them; the launcher never
 imports the worker)."""
-KEEP_FINISHED = 7 * 86400
-"""How long a finished Job, and its log with the manifest's hash, stays for the operator."""
 CHECKPOINT_LABEL = "sandbox-science.io/checkpoint-id"
 _DNS_NAME = re.compile(r"^[a-z0-9](?:[-a-z0-9.]{0,251}[a-z0-9])?$")
 
@@ -246,7 +244,9 @@ def checkpoint_job(
         "spec": {
             "backoffLimit": 0,
             "activeDeadlineSeconds": checkpoint.deadline_seconds,
-            "ttlSecondsAfterFinished": KEEP_FINISHED,
+            # A finished Job's Pod still names the claim, which keeps a deleted claim
+            # Terminating; ``checkpoint`` deletes its Job once verified, this the rest.
+            "ttlSecondsAfterFinished": checkpoint.job_ttl_seconds,
             "template": {"metadata": {"labels": labels}, "spec": spec},
         },
     }

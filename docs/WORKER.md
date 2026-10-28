@@ -1090,7 +1090,7 @@ the worker's part in its container, beside the serving worker, with
 | `delete-objects --storage F --manifest H [--chunks-file F]` | operator's machine | Removes the chunks no other manifest in the bucket names, then the manifest last; with the worker's recorded list it finishes even once the manifest is gone |
 | `chunks --manifest H` | worker container | Prints the chunk list the worker recorded when it verified the checkpoint |
 | `inventory [--keep N]` | worker container | JSON: every environment the worker has a record of (deleted ones too), hand-backs, checkpoints, holds |
-| `forget --manifest H --by WHO [--volume-gone] [--done]` | worker container | Journals a checkpoint's deletion; refuses the last kept checkpoint of a workspace unless its volume is gone |
+| `forget --manifest H --by WHO [--volume-gone [--retire ENV]] [--done]` | worker container | Journals a checkpoint's deletion; refuses the last kept checkpoint of a workspace unless its volume is gone. With `--retire`, one of the latest checkpoints of that environment, refused unless the worker records it deleted with no hand-back or hold; the journal's detail names it |
 | `record-volume --phase intent\|done\|failed --volume PV [--sandbox S] --by WHO` | worker container | Journals a volume's deletion; the intent is refused for a live or paused environment, a hand-back, a hold, or without a kept checkpoint unless `--without-checkpoint` |
 | `release-hold --checkpoint-id ID --reason R --by WHO` | worker container | Lifts a hold early |
 
@@ -1108,7 +1108,8 @@ finished within the hold (and before an early release) (five minutes' clock skew
 environment's. A Job's word is only the manifest's name. The upload key cannot touch the
 kept bucket, and the worker's key only reads; the operator's keeper key, which writes the
 kept bucket, stays off the cluster. The latest two kept checkpoints per workspace stay
-(`keep`), and nothing is removed automatically.
+(`keep`) until the operator retires a deleted environment's, and nothing is removed
+automatically.
 
 ## Conformance suite
 

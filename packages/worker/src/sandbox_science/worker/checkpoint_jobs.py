@@ -10,8 +10,9 @@ worker, which keeps no Kubernetes rights:
   records it: ``verified`` in the upload bucket, ``kept`` (counted) in the kept bucket;
 * ``inventory`` lists what a cleanup decides with: environments, hand-backs, checkpoints
   and holds;
-* ``record_volume`` and the records' ``forget`` journal every deletion, intent first, and
-  refuse what the worker's records forbid.
+* ``record_volume`` and ``forget`` journal every deletion, intent first, and refuse what the
+  worker's records forbid; ``forget --retire`` removes the last checkpoints of a deleted
+  environment whose volume is gone.
 """
 
 from __future__ import annotations
@@ -42,6 +43,7 @@ from sandbox_science.contracts.workspace_checkpoint import (
     CheckpointInventory,
     CheckpointPlan,
     CheckpointReceipt,
+    InventoryCheckpoint,
     InventoryEnvironment,
 )
 
@@ -325,6 +327,62 @@ def volume_refusals(
     if not without_checkpoint and (missing := checkpoint_cover(found, sandbox)) is not None:
         reasons.append(f"{missing} (pass --without-checkpoint for this volume to delete anyway)")
     return reasons
+
+
+def retire_refusals(
+    found: CheckpointInventory, checkpoint: InventoryCheckpoint, environment_id: str
+) -> list[str]:
+    """Why the worker's records forbid retiring ``checkpoint``, one of the latest kept
+    checkpoints of ``environment_id``; empty if none. Retiring needs the environment
+    recorded deleted and nothing referencing its workspace: no hand-back and no hold (no
+    other environment can record its sandbox). Whether the volume is gone is the operator's survey
+    (``--volume-gone``): the worker holds no Kubernetes right to look."""
+    reasons: list[str] = []
+    if checkpoint.environment_id != environment_id:
+        reasons.append(
+            f"it is a checkpoint of environment {checkpoint.environment_id}, not {environment_id}"
+        )
+    info = next((e for e in found.environments if e.environment_id == environment_id), None)
+    if info is None:
+        reasons.append(f"the worker has no record of environment {environment_id}")
+    elif info.state != EnvironmentState.DELETED.value:
+        reasons.append(f"environment {environment_id} is {info.state}")
+    if info is not None and info.hand_back is not None:
+        reasons.append(f"environment {environment_id}'s hand-back is {info.hand_back}")
+    if any(
+        hold.environment_id == environment_id or hold.sandbox == checkpoint.sandbox
+        for hold in found.holds
+    ):
+        reasons.append("a checkpoint holds it")
+    return reasons
+
+
+def forget(
+    settings: Settings,
+    manifest: str,
+    actor: str,
+    *,
+    volume_gone: bool,
+    retire: str | None = None,
+    clock: Clock = SYSTEM_CLOCK,
+) -> InventoryCheckpoint:
+    """Journal a checkpoint's deletion (``CheckpointRecords.forget``). With ``retire``,
+    one of the latest kept checkpoints of that deleted environment, refused unless the
+    operator found its volume gone and ``retire_refusals`` finds nothing."""
+    if retire is not None:
+        if not volume_gone:
+            raise RecordError("retiring a checkpoint needs its volume gone (--volume-gone)")
+        found = inventory(settings, clock=clock)
+        checkpoint = next((c for c in found.checkpoints if c.manifest_sha256 == manifest), None)
+        if checkpoint is None:
+            raise RecordError("no checkpoint with that manifest")
+        if reasons := retire_refusals(found, checkpoint, retire):
+            raise RecordError("; ".join(reasons))
+    records = CheckpointRecords(settings.state_dir)
+    try:
+        return records.forget(manifest, clock.now(), actor, volume_gone=volume_gone, retire=retire)
+    finally:
+        records.close()
 
 
 def record_volume(

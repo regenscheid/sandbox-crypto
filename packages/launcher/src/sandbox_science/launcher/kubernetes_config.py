@@ -630,6 +630,10 @@ class Checkpoint(Model):
     automatically."""
     hold_seconds: Annotated[int, Field(strict=True, ge=600, le=7 * 86400)] = 21600
     """How long a plan holds the sandbox stopped: longer than the Job's deadline."""
+    job_ttl_seconds: Annotated[int, Field(strict=True, ge=0, le=7 * 86400)] = 600
+    """How long Kubernetes keeps a finished checkpoint Job (``ttlSecondsAfterFinished``).
+    Its Pod names the workspace claim, so until it goes a deleted claim stays
+    ``Terminating``; ``checkpoint`` deletes its Job itself once verified."""
     job: CheckpointJob = Field(default_factory=CheckpointJob)
 
     @model_validator(mode="after")
