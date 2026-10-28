@@ -16,11 +16,12 @@ canary has listed the server since the worker started) or the worker could not b
 asked of the control service (``mcp_metadata``). The MCP proxy, whose metadata route the
 view read until it retired (2026-10-26), is no source.
 
-``GET …/mcp-services/settings`` and ``POST …/mcp-services/settings`` with
-``{"expected", "disabled", "operation_id"}`` read and change which configured services the
-project's user turned off (``connector_settings.py``): narrowing only, since a name the
-launcher does not configure is refused. A run does not offer a service turned off, and a
-running run's calls to it are refused.
+``GET …/mcp-services/settings`` and ``POST …/mcp-services/settings`` with ``{"expected",
+"disabled", "operation_id"}`` read and change which configured services the project's
+user turned off (``connector_settings.py``): narrowing only, since a name the launcher
+does not configure is refused. Turning a service back on widens what agents may reach,
+and is an admin-only action (identity.py, D104); turning one off is every user's. A run
+does not offer a service turned off, and a running run's calls to it are refused.
 
 Each service also shows its latest scheduled canary (``canary``), read from the control
 store, where the launcher's canary runner records one bounded listing per server every
@@ -42,12 +43,13 @@ from pydantic import Field
 from sandbox_science.contracts import Contract, ErrorKind, Identifier
 from sandbox_science.contracts.classifications import ReportedListing
 from sandbox_science.orchestrator.connector_settings import ProjectConnectors
-from sandbox_science.orchestrator.documents import USER, DocumentStore
+from sandbox_science.orchestrator.documents import DocumentStore
 from sandbox_science.orchestrator.mcp_canaries import CanaryResult, CanaryStore
 from sandbox_science.orchestrator.projects import ProjectError, ProjectStore
 from sandbox_science.orchestrator.worker_client import WorkerAPIError
 
 from .context import CONTEXT, identifier, json_answer, json_body, no_query
+from .identity import author, identity
 from .mcp_metadata import AvailabilityCheck, AvailabilityClient
 from .requests import document_answer, dumps
 
@@ -160,10 +162,11 @@ async def change_settings(request: web.Request) -> web.Response:
     project = identifier(request, "project")
     configured = _configured(request, project)
     value = await json_body(request, "connector settings")
+    by, admin = author(request), identity(request).admin
 
     def write(store: DocumentStore) -> dict[str, object]:
         answer, replayed = ProjectConnectors(store).change(
-            project, value, USER, configured=configured
+            project, value, by, configured=configured, widen=admin
         )
         return {**answer.model_dump(mode="json"), "replayed": replayed}
 

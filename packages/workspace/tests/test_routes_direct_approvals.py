@@ -44,6 +44,7 @@ from sandbox_science.worker.settings import ClientSettings, LocalBackendSettings
 from sandbox_science.worker.store import Store
 from sandbox_science.workspace import approvals
 
+from .authentik_support import ADMINS, USERS, Authentik, as_user
 from .route_support import WORKER_TOKEN, workspace
 
 ClientFactory = Callable[..., Awaitable[TestClient[Any, Any]]]
@@ -422,3 +423,73 @@ async def test_a_hold_is_a_card_the_user_clears_or_stops(
     await post(client, ANSWER.format(again), {"decision": "stop", "kind": "hold"})
     assert state.cancelled("p1", "a", "run-x")
     assert again not in await shown(client)
+
+
+async def _answer(
+    client: TestClient[Any, Any], seq: int, decision: str, kind: str, who: dict[str, str],
+    status: int,
+) -> Any:  # fmt: skip
+    response = await client.post(
+        ANSWER.format(seq),
+        json={"decision": decision, "kind": kind},
+        headers={**who, "Origin": str(client.make_url("/")).rstrip("/")},
+    )
+    assert response.status == status, await response.text()
+    return await response.json()
+
+
+async def test_with_an_admin_group_a_project_grant_is_the_admins(
+    aiohttp_client: ClientFactory,
+    state_dir: Path,
+    static_dir: Path,
+    middleware: Middleware,
+    worker_url: str,
+) -> None:
+    """D104: a member allows once or for the session; a project grant needs the admin
+    group, and every grant names the user who gave it."""
+    authentik = Authentik()
+    client = await workspace(
+        aiohttp_client, state_dir, static_dir, worker_url=worker_url, login=False,
+        forward_auth=authentik.verifier(ADMINS),
+    )  # fmt: skip
+    member = as_user(authentik.token("bob"))
+    admin = as_user(authentik.token("carol", (USERS, ADMINS)))
+    seq = request_of(middleware.call({"id": "monitor-9"}))
+    refused = await _answer(client, seq, "project", "mcp", member, 403)
+    assert refused["error"]["kind"] == "policy_denied"
+    assert ADMINS in refused["error"]["message"]
+    [session_grant] = (await _answer(client, seq, "session", "mcp", member, 200))["granted"]
+    assert session_grant["scope"] == "session"
+    other = request_of(middleware.call({"id": "monitor-10"}, session="c"))
+    [project_grant] = (await _answer(client, other, "project", "mcp", admin, 200))["granted"]
+    assert project_grant["scope"] == "project"
+    with ProjectStore(state_dir).control.read() as tx:
+        rows = dict(tx.sql.execute("SELECT grant_id, author FROM project_grants").fetchall())
+    assert json.loads(rows[session_grant["grant_id"]])["user"] == "bob"
+    assert json.loads(rows[project_grant["grant_id"]])["user"] == "carol"
+
+
+async def test_with_an_admin_group_clearing_a_hold_is_the_admins(
+    aiohttp_client: ClientFactory,
+    state_dir: Path,
+    static_dir: Path,
+    hammered: Middleware,
+    worker_url: str,
+) -> None:
+    """D104: a member may stop a held session but not clear the hold; an admin may."""
+    authentik = Authentik()
+    client = await workspace(
+        aiohttp_client, state_dir, static_dir, worker_url=worker_url, login=False,
+        forward_auth=authentik.verifier(ADMINS),
+    )  # fmt: skip
+    member = as_user(authentik.token("bob"))
+    admin = as_user(authentik.token("carol", (USERS, ADMINS)))
+    assert search(hammered) == ""
+    assert search(hammered) == ""
+    held = held_seq(search(hammered))
+    await _answer(client, held, "clear", "hold", member, 403)
+    await _answer(client, held, "clear", "hold", admin, 200)
+    await until(lambda: search(hammered) == "")
+    assert search(hammered) == ""
+    again = held_seq(search(hammered))
+    await _answer(client, again, "stop", "hold", member, 200)

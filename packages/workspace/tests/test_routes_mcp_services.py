@@ -15,6 +15,7 @@ from sandbox_science.contracts.classifications import ListedToolView, ReportedLi
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.workspace.mcp_services import McpInventory, ServiceConfig
 
+from .authentik_support import ADMINS, USERS, Authentik, as_user
 from .route_support import workspace
 
 ClientFactory = Callable[..., Awaitable[TestClient[Any, Any]]]
@@ -389,3 +390,41 @@ async def test_the_user_turns_a_configured_connector_off_and_back_on(
     # Another project has no configured connectors to turn off.
     other = await (await client.get("/api/v0/projects/p2/mcp-services/settings")).json()
     assert other["configured"] == []
+
+
+async def test_with_an_admin_group_turning_a_connector_back_on_is_the_admins(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
+) -> None:
+    """D104: turning a configured service off narrows and is every user's; turning one
+    back on widens what agents may reach, and needs the admin group."""
+    authentik = Authentik()
+    client = await workspace(
+        aiohttp_client,
+        state_dir,
+        static_dir,
+        login=False,
+        mcp_project="p1",
+        mcp_inventory=(
+            ServiceConfig(name="papers", purpose="Retrieve research papers"),
+            ServiceConfig(name="web", purpose="Fetch web pages"),
+        ),
+        forward_auth=authentik.verifier(ADMINS),
+    )
+    path = "/api/v0/projects/p1/mcp-services/settings"
+    member = {**as_user(authentik.token("bob")), "Origin": str(client.make_url("/")).rstrip("/")}
+    admin = {**member, **as_user(authentik.token("carol", (USERS, ADMINS)))}
+
+    async def change(body: dict[str, object], who: dict[str, str], status: int = 200) -> Any:
+        response = await client.post(path, json=body, headers=who)
+        assert response.status == status, await response.text()
+        return await response.json()
+
+    off = await change({"expected": 0, "disabled": ["papers", "web"], "operation_id": "o"}, member)
+    assert off["disabled"] == ["papers", "web"]
+    refused = await change({"expected": 1, "disabled": ["web"], "operation_id": "p"}, member, 403)
+    assert refused["error"]["kind"] == "policy_denied"
+    # Keeping what is off and the same again: no widening, every user's.
+    same = await change({"expected": 1, "disabled": ["web", "papers"], "operation_id": "q"}, member)
+    assert same["revision"] == 1
+    on = await change({"expected": 1, "disabled": ["web"], "operation_id": "r"}, admin)
+    assert (on["revision"], on["disabled"]) == (2, ["web"])
