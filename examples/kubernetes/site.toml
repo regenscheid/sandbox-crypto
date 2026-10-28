@@ -100,6 +100,12 @@ key = "secure/worker/tls.key"
 # s3-credentials = "secure/control-s3-credentials"
 # s3-config = "secure/control-s3-config"
 
+# With the bundle's HS256 [ingress.forward_auth] (D104): the Authentik proxy provider's client
+# secret, mode 600, written once from `ak shell` without printing it
+# (docs/KUBERNETES-BUNDLE.md#login-through-authentik-opt-in). It goes into the workspace's
+# Secret only.
+# forward_auth_secret = "secure/authentik-forward-auth-client-secret"
+
 # With the bundle's [checkpoint]: the SDK credential and config files of the checkpoint keys
 # (docs/KUBERNETES-PREP.md, step 6). upload_* goes into the Jobs' Secret in the sandbox
 # namespace, verify_* into the worker's Secret; the keeper key never enters the cluster.

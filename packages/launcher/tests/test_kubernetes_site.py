@@ -891,6 +891,7 @@ def test_the_readme_names_what_login_through_authentik_needs(tmp_path):
             }
         ],
         "forward_auth": {
+            "algorithm": "RS256",
             "jwks_url": "http://authentik-server.authentik.svc/application/o/atlas/jwks/",
             "issuer": "https://auth.research.test/application/o/atlas/",
             "audience": "test-client-id",
@@ -914,3 +915,87 @@ def test_the_readme_names_what_login_through_authentik_needs(tmp_path):
     # Without it, the README says nothing of it.
     (tmp_path / "plain").mkdir()
     assert "Signing Key" not in (generate(tmp_path / "plain") / "README.md").read_text()
+
+
+CLIENT_SECRET = "test-secret-authentik-client-secret-0123456789abcdefghijklmnopqrstuv"
+
+
+def _hs256_bundle(tmp_path: Path) -> None:
+    bundle = bundle_values()
+    bundle["workspace"] = {**bundle.get("workspace", {}), "allow_remote": True}
+    bundle["ingress"] = {
+        "workspace_host": "workspace.research.test",
+        "preview_host": "preview.research.test",
+        "issuer": "test-issuer",
+        "authentik_middleware": "test-authentik",
+        "traefik": [
+            {
+                "namespace_labels": {"kubernetes.io/metadata.name": "traefik"},
+                "pod_labels": {"app.kubernetes.io/name": "traefik"},
+            }
+        ],
+        "forward_auth": {
+            "algorithm": "HS256",
+            "issuer": "https://auth.research.test/application/o/atlas/",
+            "audience": "test-client-id",
+            "user_group": "atlas-users",
+        },
+    }
+    (tmp_path / "inputs/bundle.toml").write_text(toml.dumps(bundle))
+
+
+def _client_secret(tmp_path: Path, value: str = CLIENT_SECRET, mode: int = 0o600) -> Path:
+    secure = tmp_path / "secure"
+    secure.mkdir(exist_ok=True)
+    path = secure / "authentik-forward-auth-client-secret"
+    path.write_text(value)
+    path.chmod(mode)
+    return path
+
+
+def test_hs256_puts_the_client_secret_in_the_workspaces_secret_only(tmp_path):
+    values = site_values(tmp_path)
+    _hs256_bundle(tmp_path)
+    _client_secret(tmp_path)
+    values["forward_auth_secret"] = "secure/authentik-forward-auth-client-secret"
+    files = plan(*load(site_file(tmp_path, values)))
+    assert files["secrets/workspace/authentik-client-secret"] == CLIENT_SECRET.encode()
+    holding = [name for name, content in files.items() if CLIENT_SECRET.encode() in content]
+    assert holding == ["secrets/workspace/authentik-client-secret"]
+    write(tmp_path / "out", files)
+    script = (tmp_path / "out" / "secrets.sh").read_text()
+    assert "--from-file=authentik-client-secret=secrets/workspace/authentik-client-secret" in script
+    readme = (tmp_path / "out" / "README.md").read_text()
+    assert "can mint a login" in readme
+    assert "Signing Key" not in readme
+
+
+@pytest.mark.parametrize(
+    ("setup", "message"),
+    [
+        ("unset", "set forward_auth_secret"),
+        ("missing", "is missing"),
+        ("open", "open to other users"),
+        ("short", "at least 32 bytes"),
+    ],
+)
+def test_hs256_needs_a_private_client_secret_file(tmp_path, setup, message):
+    values = site_values(tmp_path)
+    _hs256_bundle(tmp_path)
+    if setup != "unset":
+        values["forward_auth_secret"] = "secure/authentik-forward-auth-client-secret"
+    if setup == "open":
+        _client_secret(tmp_path, mode=0o644)
+    elif setup == "short":
+        _client_secret(tmp_path, "short")
+    with pytest.raises(BundleError, match=message) as refused:
+        plan(*load(site_file(tmp_path, values)))
+    assert CLIENT_SECRET not in str(refused.value)
+
+
+def test_a_client_secret_without_hs256_is_refused(tmp_path):
+    values = site_values(tmp_path)
+    _client_secret(tmp_path)
+    values["forward_auth_secret"] = "secure/authentik-forward-auth-client-secret"
+    with pytest.raises(BundleError, match="HS256"):
+        plan(*load(site_file(tmp_path, values)))
