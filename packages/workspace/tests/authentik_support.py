@@ -10,6 +10,7 @@ from typing import Any
 
 import jwt
 from cryptography.hazmat.primitives.asymmetric import rsa
+from jwt.algorithms import RSAAlgorithm
 
 from sandbox_science.workspace.forward_auth import ForwardAuthSettings, KeySet, Verifier
 
@@ -31,7 +32,7 @@ class Authentik:
         self.down = False
 
     def jwks(self) -> dict[str, Any]:
-        public = json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(self.key.public_key()))
+        public = json.loads(RSAAlgorithm.to_jwk(self.key.public_key()))
         return {"keys": [{**public, "kid": self.kid, "use": "sig", "alg": "RS256"}]}
 
     async def fetch(self, url: str) -> bytes:

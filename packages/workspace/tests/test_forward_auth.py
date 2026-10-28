@@ -6,16 +6,17 @@ never do, and the login link keeps working as the operator's own login."""
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-import jwt
 import pytest
 from aiohttp.test_utils import TestClient
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
+from jwt.algorithms import ECAlgorithm
 
 from sandbox_science.workspace import forward_auth
 from sandbox_science.workspace.app import SESSION_COOKIE
@@ -28,7 +29,6 @@ from sandbox_science.workspace.forward_auth import (
 
 from .authentik_support import ADMINS, AUDIENCE, ISSUER, JWKS_URL, USERS, Authentik, as_user
 from .route_support import log_in, origin, workspace
-
 
 ClientFactory = Callable[..., Awaitable[TestClient[Any, Any]]]
 PROJECTS = "/api/v0/projects"
@@ -200,12 +200,13 @@ async def test_a_token_that_is_not_believed_opens_nothing(
 
 
 def _none_token() -> str:
-    return jwt.encode(
-        {"iss": ISSUER, "aud": AUDIENCE, "preferred_username": "mallory", "groups": [USERS]},
-        None,
-        algorithm="none",
-        headers={"kid": "test-kid-provider"},
-    )
+    """An unsigned token (``alg: none``), which PyJWT will not make."""
+
+    def part(value: object) -> str:
+        return base64.urlsafe_b64encode(json.dumps(value).encode()).rstrip(b"=").decode()
+
+    claims = {"iss": ISSUER, "aud": AUDIENCE, "preferred_username": "mallory", "groups": [USERS]}
+    return f"{part({'alg': 'none', 'kid': 'test-kid-provider'})}.{part(claims)}."
 
 
 @pytest.mark.asyncio
@@ -324,9 +325,7 @@ async def test_keys_refresh_within_bounds() -> None:
 def test_the_jwks_keeps_only_signing_keys() -> None:
     authentik = Authentik()
     rsa_key = authentik.jwks()["keys"][0]
-    ec_key = jwt.algorithms.ECAlgorithm.to_jwk(
-        ec.generate_private_key(ec.SECP256R1()).public_key(), as_dict=True
-    )
+    ec_key = ECAlgorithm.to_jwk(ec.generate_private_key(ec.SECP256R1()).public_key(), as_dict=True)
     body = {
         "keys": [
             rsa_key,
@@ -347,14 +346,14 @@ def test_the_jwks_keeps_only_signing_keys() -> None:
 def test_settings_are_checked() -> None:
     good = {"jwks_url": JWKS_URL, "issuer": ISSUER, "audience": AUDIENCE, "user_group": USERS}
     ForwardAuthSettings(**good)
-    for bad in (
-        {"jwks_url": "file:///etc/keys"},
-        {"jwks_url": "https://user:pass@auth.example.org/jwks/"},
-        {"issuer": ""},
-        {"audience": ""},
-        {"user_group": ""},
-        {"admin_group": " padded "},
-        {"header": "X-Bad Header"},
+    for bad, reason in (
+        ({"jwks_url": "file:///etc/keys"}, "http or https"),
+        ({"jwks_url": "https://user:pass@auth.example.org/jwks/"}, "credentials"),
+        ({"issuer": ""}, "issuer"),
+        ({"audience": ""}, "audience"),
+        ({"user_group": ""}, "group"),
+        ({"admin_group": " padded "}, "group"),
+        ({"header": "X-Bad Header"}, "header"),
     ):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match=reason):
             ForwardAuthSettings(**{**good, **bad})
