@@ -487,7 +487,7 @@ def test_one_checkpoint_command_plans_creates_waits_and_has_the_worker_verify():
     assert not kubectl.ran("release-hold")
 
 
-@pytest.mark.parametrize("failure", ["mounted", "job-failed"])
+@pytest.mark.parametrize("failure", ["mounted", "job-failed", "verify-refused"])
 def test_a_failed_checkpoint_lifts_its_hold(failure):
     claim = "workspace-default--ss-0123456789abcdef"
     kubectl = Kubectl(
@@ -496,15 +496,35 @@ def test_a_failed_checkpoint_lifts_its_hold(failure):
             "get pvc": listing(pvc(claim, "ss-0123456789abcdef", "pv-1")),
             "get pods": listing(pod(claim if failure == "mounted" else "other")),
             "create -f -": b"job.batch/research-checkpoint-x1\n",
-            "get job": json.dumps({"status": {"failed": 1}}).encode(),
+            "get job": json.dumps(
+                {"status": {"failed": 1} if failure == "job-failed" else {"succeeded": 1}}
+            ).encode(),
+            "logs job/": f"checkpoint_manifest={MANIFEST}\n".encode(),
+            "--stage upload": OperationError("the checkpoint archive differs"),
         }
     )
-    with pytest.raises(OperationError, match="mounts" if failure == "mounted" else "failed"):
+    expected = {"mounted": "mounts", "job-failed": "failed", "verify-refused": "differs"}
+    with pytest.raises(OperationError, match=expected[failure]):
         operator(kubectl).run_checkpoint("crypto-main", "amd64", None)
     assert len(kubectl.ran("release-hold")) == 1
-    assert not kubectl.ran("--stage")
+    assert not kubectl.ran("--stage kept")
+    assert not kubectl.ran("checkpoint promote")
     if failure == "mounted":
         assert not kubectl.ran("create")
+
+
+def test_an_orphaned_claim_is_released_to_its_provisioner_then_deleted():
+    pvs = [pv("pv-orphan", "workspace-default--ss-gone", "Bound")]
+    pvcs = [pvc("workspace-default--ss-gone", "ss-gone", "pv-orphan")]
+    found = survey(pvs, pvcs, [], [], inventory(), SANDBOXES, NOW)
+    steps = operator(Kubectl({})).delete(
+        found, ["pv-orphan"], [], without_checkpoint=False, keeper_kept=None
+    )
+    words = [" ".join(step.command) for step in steps]
+    assert "record-volume --phase intent" in words[0]
+    assert words[1].startswith("kubectl patch pv pv-orphan")
+    assert words[2] == f"kubectl -n {SANDBOXES} delete pvc workspace-default--ss-gone"
+    assert "record-volume --phase done" in words[3]
 
 
 def test_without_apply_the_checkpoint_steps_are_printed(tmp_path, capsys, monkeypatch):

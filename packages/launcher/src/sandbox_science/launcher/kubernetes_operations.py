@@ -300,6 +300,12 @@ class Operator:
             if match is None:
                 raise OperationError(f"job {name} printed no checkpoint manifest")
             manifest = match[1]
+            # The worker's own check; a failure lifts the hold too, so research goes on.
+            self.out(
+                self.run(self._verify(plan.checkpoint_id, manifest, "upload"), None)
+                .decode()
+                .strip()
+            )
         except BaseException as error:
             self.run(
                 self.exec_worker(
@@ -314,9 +320,6 @@ class Operator:
                 None,
             )
             raise
-        self.out(
-            self.run(self._verify(plan.checkpoint_id, manifest, "upload"), None).decode().strip()
-        )
         if keeper is None:
             self.out("not promoted (no keeper storage files); run these with the keeper key:")
             self.out(
@@ -424,16 +427,10 @@ class Operator:
             )
 
         # The worker journals the intent first, and refuses it if its records forbid it.
-        steps = [Step(journal("intent"))]
-        if row.claim_exists and row.claim is not None:
-            steps.append(
-                Step(
-                    [*self.kubectl, "-n", self.sandbox_namespace, "delete", "pvc", row.claim],
-                    journal("failed"),
-                )
-            )
-        # Released with Retain, the PV keeps its storage; Delete has its provisioner free it.
-        steps.append(
+        # Then the PV's reclaim policy becomes Delete, so its provisioner frees the storage
+        # once no claim holds it (at once for a Released PV); then the claim, if any, goes.
+        steps = [
+            Step(journal("intent")),
             Step(
                 [
                     *self.kubectl,
@@ -445,8 +442,15 @@ class Operator:
                     '{"spec":{"persistentVolumeReclaimPolicy":"Delete"}}',
                 ],
                 journal("failed"),
+            ),
+        ]
+        if row.claim_exists and row.claim is not None:
+            steps.append(
+                Step(
+                    [*self.kubectl, "-n", self.sandbox_namespace, "delete", "pvc", row.claim],
+                    journal("failed"),
+                )
             )
-        )
         steps.append(Step(journal("done")))
         return steps
 

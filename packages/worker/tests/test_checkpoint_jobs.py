@@ -525,7 +525,7 @@ def test_the_local_suspend_accepts_only_the_workers_own_certificate(tmp_path, re
             self.end_headers()
             self.wfile.write(body.encode())
 
-        def log_message(self, *_args: object) -> None:
+        def log_message(self, format: str, *args: object) -> None:
             pass
 
     server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
