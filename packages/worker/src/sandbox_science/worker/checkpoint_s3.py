@@ -177,6 +177,20 @@ def connect(
         raise OSError("checkpoint object-store connection failed") from None
 
 
+class MissingObjectError(OSError):
+    """The store answered that the object does not exist (NoSuchKey, 404)."""
+
+
+def _missing(error: Exception) -> bool:
+    response: object = getattr(error, "response", None)
+    if not isinstance(response, dict):
+        return False
+    detail = cast(dict[str, object], response).get("Error")
+    if not isinstance(detail, dict):
+        return False
+    return cast(dict[str, object], detail).get("Code") in ("NoSuchKey", "404", "NotFound")
+
+
 class Objects:
     """One attempt per PUT; an uncertain write is reconciled through an exact GET."""
 
@@ -217,7 +231,9 @@ class Objects:
         client, errors = self.connection
         try:
             yield client, errors
-        except errors:
+        except errors as error:
+            if _missing(error):
+                raise MissingObjectError("checkpoint object is not in the store") from None
             raise OSError("checkpoint object-store request failed") from None
 
     def copy(
@@ -291,10 +307,15 @@ class Objects:
         return False
 
     def verified(self, kind: Literal["chunks", "manifests"], digest: str, size: int) -> bool:
-        """Whether an object of that name already reads back with exactly its hash."""
+        """Whether an object of that name already reads back with exactly its hash.
+
+        Only a missing object or one whose bytes differ counts as absent; any other error
+        (a timeout, a refused or failed request) raises, so a caller never overwrites a
+        kept object it merely could not read.
+        """
         try:
             self.copy(kind, digest, size, expected=size)
-        except (OSError, ValueError):
+        except (MissingObjectError, ValueError):
             return False
         return True
 

@@ -46,7 +46,11 @@ POLICY = "sha256:" + "2" * 64
 
 
 class FakeSdkError(Exception):
-    pass
+    """botocore's ClientError carries the store's code in ``response``."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.response = {"Error": {"Code": code}}
 
 
 def etag(data: bytes) -> str:
@@ -60,6 +64,7 @@ class Garage:
         self.objects: dict[tuple[str, str], bytes] = {}
         self.calls: list[tuple[str, str, str]] = []
         self.before_copy: Any = None
+        self.unavailable: set[str] = set()
         self.fail_delete: set[str] = set()
 
     def put_object(self, **arguments: Any) -> None:
@@ -71,6 +76,8 @@ class Garage:
     def get_object(self, **arguments: Any) -> dict[str, Any]:
         location = (arguments["Bucket"], arguments["Key"])
         self.calls.append(("get", *location))
+        if any(location[1].endswith(name) for name in self.unavailable):
+            raise FakeSdkError("SlowDown")
         if location not in self.objects:
             raise FakeSdkError("NoSuchKey")
         data = self.objects[location]
@@ -738,3 +745,21 @@ def test_a_start_after_the_newest_checkpoint_needs_the_flag(tmp_path, garage, re
     reasons = checkpoint_jobs.volume_refusals(found, "ss-checkpoint-test", without_checkpoint=False)
     assert any("after its newest verified checkpoint" in reason for reason in reasons)
     assert not checkpoint_jobs.volume_refusals(found, "ss-checkpoint-test", without_checkpoint=True)
+
+
+def test_a_kept_chunk_that_cannot_be_read_is_never_overwritten(tmp_path, garage, retained, stopped):
+    """Only a missing object or one whose bytes differ counts as absent: a transient error
+    reading a good kept chunk stops the promotion, retryably, and copies nothing over it."""
+    first = checkpointed(tmp_path, retained, "one")[1]
+    _, identity = second_upload(tmp_path, retained)
+    shared = sorted(garage.keys(KEPT.bucket, "chunks") & garage.keys(UPLOAD.bucket, "chunks"))
+    garage.unavailable = {shared[0]}
+    seen = len(garage.calls)
+    with pytest.raises(OSError, match="request failed"):
+        checkpoint_remote.promote(UPLOAD, KEPT, identity)
+    assert not any(
+        call[0] == "copy" and call[2].endswith(shared[0]) for call in garage.calls[seen:]
+    )
+    garage.unavailable = set()
+    checkpoint_remote.promote(UPLOAD, KEPT, identity)  # the retry finishes
+    assert checkpoint_remote.verify(KEPT, first, source_of(retained, first)).members > 1
