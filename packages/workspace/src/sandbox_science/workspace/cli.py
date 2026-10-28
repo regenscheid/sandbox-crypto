@@ -24,7 +24,13 @@ standard output. Behind Authentik's forward auth, the ``--forward-auth-*`` optio
 believes the signed token Authentik's proxy outpost sends, checked against the provider's
 JWKS, issuer and audience and the user group (forward_auth.py, D104); with an admin group,
 only its members may take the admin-only actions (identity.py). The login URL keeps
-working, as the operator's own login.
+working, as the operator's own login, which counts as an admin: with forward auth on it
+is not printed, since the log reaches whoever reads the logs, but written to
+``LOGIN_URL_FILE`` in the state directory (mode 600) for ``login-url`` to print:
+
+```
+sandbox-science-workspace login-url --state-dir DIR
+```
 
 With ``--model-url``, ``--reviewer-model`` and ``--api-key-file``, the page may ask the
 reviewer model, through the model gateway, to repair math that KaTeX rejects
@@ -40,6 +46,7 @@ import asyncio
 import errno
 import ipaddress
 import logging
+import os
 import re
 import secrets
 import signal
@@ -71,6 +78,41 @@ from .proxy import Exposure, Network, PublicOrigin, parse_network
 
 _log = logging.getLogger("sandbox_science.workspace")
 DEFAULT_LISTEN: Final = "127.0.0.1:8200"
+LOGIN_URL_FILE: Final = "workspace-login-url"
+"""With forward auth on, where in the state directory ``serve`` writes the login URL."""
+
+
+def write_private(path: Path, text: str) -> None:
+    """Replace ``path`` with ``text``, readable by this user only (mode 600) from the start:
+    written to a new file beside it, never through a link, then renamed over it."""
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+    descriptor = os.open(temporary, flags, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(text)
+        os.replace(temporary, path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def print_login_url(state_dir: Path) -> int:
+    """``login-url``: print the login URL the running server wrote, or say why not."""
+    path = state_dir / LOGIN_URL_FILE
+    try:
+        print(path.read_text(encoding="utf-8").strip())
+    except FileNotFoundError:
+        print(
+            f"error: no login URL in {path}: the server is not running with forward auth",
+            file=sys.stderr,
+        )
+        return 1
+    except OSError as exc:
+        print(f"error: cannot read {path}: {exc.strerror}", file=sys.stderr)
+        return 1
+    return 0
 
 
 def _agent_model(value: str) -> tuple[AgentModelRole, str]:
@@ -284,12 +326,14 @@ async def serve(
     login_token: str,
     preview: tuple[web.Application, Preview, str, int, str] | None = None,
     public: tuple[PublicOrigin, PublicOrigin] | None = None,
+    login_file: Path | None = None,
 ) -> None:
-    """Serve until SIGTERM or SIGINT, after printing the login URL once. With ``preview``
-    (its application, its state, host, port and the name it is given by), the PDF
-    viewer's origin is served too. With ``public`` (the workspace's and the preview's
-    public origins), those are the origins announced and printed, with the addresses
-    served at beside them."""
+    """Serve until SIGTERM or SIGINT, after printing the login URL once, or with
+    ``login_file`` writing it there (mode 600) instead, removed when the server stops.
+    With ``preview`` (its application, its state, host, port and the name it is given
+    by), the PDF viewer's origin is served too. With ``public`` (the workspace's and the
+    preview's public origins), those are the origins announced and printed, with the
+    addresses served at beside them."""
     stopping = asyncio.Event()
     loop = asyncio.get_running_loop()
     for signum in (signal.SIGTERM, signal.SIGINT):
@@ -325,14 +369,25 @@ async def serve(
                 flush=True,
             )
             url = public[0].origin
-        print(
-            "Log in by opening this URL; it works until the server stops:\n"
-            f"    {url}/login?token={login_token}",
-            flush=True,
-        )
+        login_url = f"{url}/login?token={login_token}"
+        if login_file is None:
+            print(
+                f"Log in by opening this URL; it works until the server stops:\n    {login_url}",
+                flush=True,
+            )
+        else:
+            # The link logs in as the operator, an admin: it stays out of the log.
+            write_private(login_file, login_url + "\n")
+            print(
+                f"Log in through Authentik; the operator's login URL is in {login_file} "
+                f"(sandbox-science-workspace login-url --state-dir {login_file.parent})",
+                flush=True,
+            )
         await stopping.wait()
         _log.info("stopping")
     finally:
+        if login_file is not None:
+            login_file.unlink(missing_ok=True)
         if viewer is not None:
             await viewer.cleanup()
         await runner.cleanup()
@@ -360,6 +415,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Entry point of ``sandbox-science-workspace``."""
     parser = argparse.ArgumentParser(prog="sandbox-science-workspace", allow_abbrev=False)
     commands = parser.add_subparsers(dest="command", required=True)
+    reading = commands.add_parser(
+        "login-url",
+        help="print the operator's login URL, which serve writes with forward auth on",
+        allow_abbrev=False,
+    )
+    reading.add_argument("--state-dir", type=Path, required=True, help="serve's --state-dir")
     command = commands.add_parser(
         "serve", help="serve the workspace GUI and its API", allow_abbrev=False
     )
@@ -492,6 +553,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     repairs.add_argument("--reviewer-effort")
     args = parser.parse_args(argv)
+    if args.command == "login-url":
+        return print_login_url(args.state_dir)
     configure_logging("workspace", level=args.log_level)
     try:
         host, port = parse_listen(args.listen)
@@ -749,6 +812,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 login_token,
                 (viewer_app, preview, preview_host, preview_port, name),
                 public,
+                args.state_dir / LOGIN_URL_FILE if forward_settings is not None else None,
             )
         )
     except KeyboardInterrupt:  # before the signal handlers are in place

@@ -6,10 +6,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import re
 import signal
 import socket
 import sqlite3
+import stat
 import sys
 from pathlib import Path
 
@@ -601,3 +603,49 @@ async def test_behind_a_proxy_the_public_origins_are_announced_and_used(
             process.send_signal(signal.SIGTERM)
         status = await asyncio.wait_for(process.wait(), 30)
     assert status == 0
+
+
+@pytest.mark.asyncio
+async def test_with_forward_auth_the_login_url_stays_out_of_the_log(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """D104: the login link is the operator's, an admin; with forward auth it is written
+    to a private file for ``login-url``, never to standard output (the Pod's log)."""
+    token = "test-secret-login-token-not-for-the-log-0123456789"
+    login_file = tmp_path / cli.LOGIN_URL_FILE
+    login_file.write_text("an old URL\n")
+    login_file.chmod(0o644)
+    server = asyncio.create_task(
+        cli.serve(web.Application(), "127.0.0.1", 0, token, None, None, login_file)
+    )
+    for _ in range(200):
+        if "token=" in login_file.read_text():
+            break
+        await asyncio.sleep(0.02)
+    assert stat.S_IMODE(login_file.stat().st_mode) == 0o600
+    url = login_file.read_text().strip()
+    assert re.fullmatch(rf"http://127\.0\.0\.1:\d+/login\?token={token}", url)
+    printed = capsys.readouterr()
+    assert token not in printed.out + printed.err
+    assert str(login_file) in printed.out
+    assert cli.main(["login-url", "--state-dir", str(tmp_path)]) == 0
+    assert capsys.readouterr().out.strip() == url
+    os.kill(os.getpid(), signal.SIGTERM)
+    await asyncio.wait_for(server, 10)
+    assert not login_file.exists()  # the token died with the server
+    assert cli.main(["login-url", "--state-dir", str(tmp_path)]) == 1
+    assert "not running with forward auth" in capsys.readouterr().err
+
+
+def test_forward_auth_passes_the_login_file_to_serve(
+    state_dir: Path, static_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, served = captured_app(monkeypatch)
+    flags = [*REMOTE, *PUBLIC, *PREVIEW_PUBLIC, *FORWARD]
+    assert (
+        cli.main(["serve", "--state-dir", str(state_dir), "--static", str(static_dir), *flags]) == 0
+    )
+    assert served[6] == state_dir / cli.LOGIN_URL_FILE
+    served.clear()
+    assert cli.main(["serve", "--state-dir", str(state_dir), "--static", str(static_dir)]) == 0
+    assert served[6] is None  # without forward auth the URL is printed, as before
