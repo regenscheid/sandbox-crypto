@@ -54,9 +54,11 @@ from .kubernetes_bundle import (
     PRIVATE,
     RUNTIME_CREDENTIALS,
 )
+from .kubernetes_checkpoint import storage_settings
 from .kubernetes_config import (
     CHECK_DIGEST,
     CHECK_TOKEN,
+    CHECKPOINT_UPLOAD_KEYS,
     GATEWAY_PROFILE,
     BundleConfig,
     BundleError,
@@ -590,6 +592,15 @@ def plan(site: Site, bundle: BundleConfig) -> dict[str, bytes]:
     }
     if bundle.secrets.cache is not None:
         content["cache"] = {"cache.toml": toml.dumps(cache_settings(site, bundle)).encode()}
+    if (site.checkpoint is None) != (bundle.checkpoint is None):
+        raise BundleError("give [checkpoint] exactly when the bundle has [checkpoint]")
+    upload: dict[str, bytes] = {}
+    if site.checkpoint is not None and bundle.checkpoint is not None:
+        content["worker"].update(checkpoint_worker_files(site, bundle))
+        upload = {
+            "credentials": _read(site.checkpoint.upload_credentials, private=True),
+            "config": _read(site.checkpoint.upload_config, private=True),
+        }
     if site.extra_files.keys() - content.keys():
         raise BundleError("extra_files names a service the bundle does not run")
     files: dict[str, bytes] = {}
@@ -609,8 +620,43 @@ def plan(site: Site, bundle: BundleConfig) -> dict[str, bytes]:
     files["gateway/middleware-ca.crt"] = authority.pem
     files[GATEWAY_VALUES] = _gateway_values(site, bundle).encode()
     files["bootstrap/policy.yaml"] = _read(site.worker_policy)
+    files.update({f"secrets/checkpoint-upload/{key}": value for key, value in upload.items()})
+    files.update(keeper_files(site, bundle))
     files["secrets.sh"] = _script(bundle, content).encode()
     files["README.md"] = _readme(site, bundle).encode()
+    return files
+
+
+def checkpoint_worker_files(site: Site, bundle: BundleConfig) -> dict[str, bytes]:
+    """The worker's checkpoint keys: both buckets' destinations and its read-only key."""
+    checkpoint = bundle.checkpoint
+    if checkpoint is None or site.checkpoint is None:
+        raise BundleError("give [checkpoint] exactly when the bundle has [checkpoint]")
+    return {
+        "checkpoint-upload.toml": toml.dumps(
+            storage_settings(checkpoint, checkpoint.upload_bucket)
+        ).encode(),
+        "checkpoint-kept.toml": toml.dumps(
+            storage_settings(checkpoint, checkpoint.kept_bucket)
+        ).encode(),
+        "checkpoint-s3-credentials": _read(site.checkpoint.verify_credentials, private=True),
+        "checkpoint-s3-config": _read(site.checkpoint.verify_config, private=True),
+    }
+
+
+def keeper_files(site: Site, bundle: BundleConfig) -> dict[str, bytes]:
+    """The operator's storage files for promotion and deletion, with the keeper key's
+    endpoint: no credential, which stays in the operator's own SDK profile."""
+    checkpoint = bundle.checkpoint
+    if checkpoint is None or site.checkpoint is None:
+        return {}
+    endpoint = site.checkpoint.keeper_endpoint or (
+        f"http://127.0.0.1:{checkpoint.object_store.ports[0]}"
+    )
+    files: dict[str, bytes] = {}
+    for name, bucket in (("upload", checkpoint.upload_bucket), ("kept", checkpoint.kept_bucket)):
+        settings = {**storage_settings(checkpoint, bucket), "endpoint": endpoint}
+        files[f"operator/checkpoint-{name}.toml"] = toml.dumps(settings).encode()
     return files
 
 
@@ -720,6 +766,18 @@ def _script(bundle: BundleConfig, content: dict[str, dict[str, bytes]]) -> str:
                 [" ".join(shlex.quote(part) for part in command), *map(shlex.quote, files)]
             )
         )
+    if bundle.checkpoint is not None and bundle.sandboxes is not None:
+        # The upload key lives beside the volumes, where only checkpoint Jobs mount it.
+        namespace, name = bundle.sandboxes.namespace, bundle.checkpoint.upload_secret
+        command = ["kubectl", "-n", namespace, "create", "secret", "generic", name]
+        files = [
+            f"--from-file={key}=secrets/checkpoint-upload/{key}" for key in CHECKPOINT_UPLOAD_KEYS
+        ]
+        lines.append(
+            " \\\n  ".join(
+                [" ".join(shlex.quote(part) for part in command), *map(shlex.quote, files)]
+            )
+        )
     return "\n".join(lines) + "\n"
 
 
@@ -753,6 +811,15 @@ def _readme(site: Site, bundle: BundleConfig) -> str:
         f"- The model gateway is `{site.model.url}`: over `http` the manager's model key\n"
         "  crosses the Pod network unencrypted.\n"
         if site.model.url.startswith("http:")
+        else ""
+    )
+    checkpoints = (
+        "- `secrets/checkpoint-upload/`: the checkpoint Jobs' upload key, for the Secret\n"
+        f"  `{bundle.checkpoint.upload_secret}` in the sandbox namespace (`secrets.sh` makes it).\n"
+        "- `operator/checkpoint-*.toml`: the buckets as the operator's machine reaches them\n"
+        "  (through `kubectl port-forward`), for `checkpoint --apply` and `cleanup --apply`\n"
+        "  with the keeper key's SDK profile (docs/KUBERNETES-BUNDLE.md#workspace-checkpoints).\n"
+        if bundle.checkpoint is not None
         else ""
     )
     direct = bundle.mcp_direct
@@ -805,7 +872,7 @@ token, generate a new directory, replace every Secret and recreate the Pods.
 - `gateway/`: the CA the gateway must trust for the middleware, and the OpenShell
   chart's values that mount it and register the middleware.
 - `bootstrap/policy.yaml`: the project policy, granted to every project below.
-
+{checkpoints}
 ## Steps
 
 1. `sh secrets.sh`, then render and apply the bundle (docs/KUBERNETES-PREP.md step 8).

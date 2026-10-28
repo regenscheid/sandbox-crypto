@@ -80,6 +80,7 @@ from sandbox_science.policy.openshell import (
 )
 from sandbox_science.policy.store import PolicyStore, StoreError
 
+from .checkpoint_records import HeldError, begin_start, end_start
 from .claims import EnvironmentClaims
 from .errors import WorkerError
 from .kubernetes import check_pinned_policy
@@ -778,6 +779,7 @@ class Environments:
         except PolicyLoadError as exc:
             raise WorkerError(ErrorKind.UNAVAILABLE, f"environment settings: {exc}") from exc
         self.root = state_dir / "environments"
+        self.state_dir = state_dir
         self.records = EnvironmentRecords(state_dir / "environments.sqlite3", clock)
         self.claims = EnvironmentClaims(state_dir / "environment-claims.sqlite3", clock=clock)
         self.release: Release | None = None
@@ -1890,6 +1892,35 @@ class Environments:
                 "try again later",
             )
         started = self.clock.now()
+        await self._begin_start(info.environment_id)
+        try:
+            return await self._run_start(info, started, pinned=pinned)
+        finally:
+            with contextlib.suppress(sqlite3.Error, OSError):
+                await asyncio.to_thread(
+                    end_start, self.state_dir, info.environment_id, self.clock.now()
+                )
+
+    async def _begin_start(self, environment_id: str) -> None:
+        """Refuse to start a sandbox a checkpoint holds stopped, and record the start in the
+        same transaction, so a plan placed meanwhile sees it (checkpoint_records). A records
+        error refuses the start too: the check never fails open."""
+        try:
+            await asyncio.to_thread(begin_start, self.state_dir, environment_id, self.clock.now())
+        except HeldError as held:
+            raise WorkerError(
+                ErrorKind.UNAVAILABLE,
+                f"environment {environment_id} is {held}; try again after that",
+            ) from None
+        except (sqlite3.Error, OSError, ValueError) as error:
+            raise WorkerError(
+                ErrorKind.UNAVAILABLE,
+                f"cannot check checkpoint holds ({type(error).__name__}); not starting",
+            ) from None
+
+    async def _run_start(
+        self, info: EnvironmentInfo, started: datetime, *, pinned: bool
+    ) -> EnvironmentInfo:
         timeout = min(self.settings.create_timeout, self.resume_timeout)
         try:
             document = await self.cli.sandbox(info.sandbox)

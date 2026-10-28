@@ -13,7 +13,17 @@ from collections.abc import Callable, Generator
 from contextlib import closing, contextmanager, suppress
 from pathlib import Path
 from types import TracebackType
-from typing import Annotated, BinaryIO, Literal, Protocol, Self, TypedDict, Unpack, cast
+from typing import (
+    Annotated,
+    BinaryIO,
+    Literal,
+    NotRequired,
+    Protocol,
+    Self,
+    TypedDict,
+    Unpack,
+    cast,
+)
 from urllib.parse import urlsplit
 
 from pydantic import Field, model_validator
@@ -78,6 +88,17 @@ def load(path: Path) -> Storage:
             raise ValueError("checkpoint storage settings are invalid") from None
 
 
+def parse(document: str) -> Storage:
+    """Destination settings given inline as JSON, as a checkpoint Job's environment carries
+    them (no file of its own user's to check); credential fields are refused as in ``load``."""
+    if len(document.encode()) > 8192:
+        raise ValueError("checkpoint storage settings exceed their bound")
+    try:
+        return Storage.model_validate_json(document)
+    except ValueError:
+        raise ValueError("checkpoint storage settings are invalid") from None
+
+
 class Body(Protocol):
     def read(self, amt: int) -> bytes: ...
     def close(self) -> None: ...
@@ -86,6 +107,7 @@ class Body(Protocol):
 class Object(TypedDict):
     Body: Body
     ContentLength: int
+    ETag: NotRequired[str]
 
 
 class Location(TypedDict):
@@ -99,9 +121,29 @@ class Put(Location):
     IfNoneMatch: str
 
 
+class CopySource(TypedDict):
+    Bucket: str
+    Key: str
+
+
+class Copy(Location):
+    CopySource: CopySource
+    CopySourceIfMatch: str
+
+
+class Listing(TypedDict, total=False):
+    Bucket: str
+    Prefix: str
+    MaxKeys: int
+    ContinuationToken: str
+
+
 class Client(Protocol):
     def put_object(self, **kwargs: Unpack[Put]) -> object: ...
     def get_object(self, **kwargs: Unpack[Location]) -> Object: ...
+    def copy_object(self, **kwargs: Unpack[Copy]) -> object: ...
+    def delete_object(self, **kwargs: Unpack[Location]) -> object: ...
+    def list_objects_v2(self, **kwargs: Unpack[Listing]) -> dict[str, object]: ...
     def close(self) -> None: ...
 
 
@@ -135,6 +177,20 @@ def connect(
         raise OSError("checkpoint object-store connection failed") from None
 
 
+class MissingObjectError(OSError):
+    """The store answered that the object does not exist (NoSuchKey, 404)."""
+
+
+def _missing(error: Exception) -> bool:
+    response: object = getattr(error, "response", None)
+    if not isinstance(response, dict):
+        return False
+    detail = cast(dict[str, object], response).get("Error")
+    if not isinstance(detail, dict):
+        return False
+    return cast(dict[str, object], detail).get("Code") in ("NoSuchKey", "404", "NotFound")
+
+
 class Objects:
     """One attempt per PUT; an uncertain write is reconciled through an exact GET."""
 
@@ -147,6 +203,8 @@ class Objects:
         self.deadline = clock.monotonic() + timeout
         self.request_timeout = min(15, timeout)
         self.connection: tuple[Client, tuple[type[Exception], ...]] | None = None
+        self.etag: str | None = None
+        """The ETag of the object ``copy`` last read: the version whose bytes it hashed."""
 
     def __enter__(self) -> Self:
         return self
@@ -173,7 +231,9 @@ class Objects:
         client, errors = self.connection
         try:
             yield client, errors
-        except errors:
+        except errors as error:
+            if _missing(error):
+                raise MissingObjectError("checkpoint object is not in the store") from None
             raise OSError("checkpoint object-store request failed") from None
 
     def copy(
@@ -190,6 +250,7 @@ class Objects:
             response = client.get_object(
                 Bucket=self.settings.bucket, Key=self.settings.key(kind, digest)
             )
+            self.etag = response.get("ETag")
             with closing(response["Body"]) as body:
                 size = response["ContentLength"]
                 if (
@@ -232,3 +293,101 @@ class Objects:
                     IfNoneMatch="*",
                 )
         self.copy(kind, digest, size, expected=size)
+
+    def store(
+        self, kind: Literal["chunks", "manifests"], digest: str, size: int, handle: BinaryIO
+    ) -> bool:
+        """``retain``, unless an object of that name already reads back exactly; whether
+        it was written. A retried capture re-sends only what is missing or differs."""
+        try:
+            self.copy(kind, digest, size, expected=size)
+        except (OSError, ValueError):
+            self.retain(kind, digest, size, handle)
+            return True
+        return False
+
+    def verified(self, kind: Literal["chunks", "manifests"], digest: str, size: int) -> bool:
+        """Whether an object of that name already reads back with exactly its hash.
+
+        Only a missing object or one whose bytes differ counts as absent; any other error
+        (a timeout, a refused or failed request) raises, so a caller never overwrites a
+        kept object it merely could not read.
+        """
+        try:
+            self.copy(kind, digest, size, expected=size)
+        except (MissingObjectError, ValueError):
+            return False
+        return True
+
+    def copy_in(
+        self,
+        source: Storage,
+        kind: Literal["chunks", "manifests"],
+        digest: str,
+        size: int,
+        etag: str,
+    ) -> None:
+        """Copy one object from ``source``'s bucket into this one inside the store
+        (``CopyObject``: no bytes pass through this process), only if the source is still
+        the version whose bytes were hashed (``CopySourceIfMatch`` on its ETag), then read
+        the copy back whole and check its hash. The key needs read on the source bucket and
+        read and write on this one."""
+        if (source.endpoint, source.region) != (self.settings.endpoint, self.settings.region):
+            raise ValueError("a checkpoint copy stays inside one object store")
+        self.check()
+        with self.client() as (client, _):
+            client.copy_object(
+                Bucket=self.settings.bucket,
+                Key=self.settings.key(kind, digest),
+                CopySource={"Bucket": source.bucket, "Key": source.key(kind, digest)},
+                CopySourceIfMatch=etag,
+            )
+        self.copy(kind, digest, size, expected=size)
+
+    def delete(self, kind: Literal["chunks", "manifests"], digest: str) -> None:
+        self.check()
+        with self.client() as (client, _):
+            client.delete_object(Bucket=self.settings.bucket, Key=self.settings.key(kind, digest))
+
+    def names(self, kind: Literal["chunks", "manifests"], limit: int) -> list[str]:
+        """The digests stored under ``kind``, at most ``limit``; more is an error, not a
+        silently shorter list, since a deletion decides by what is absent from it."""
+        prefix = self.settings.key(kind, "0" * 64)[:-64]
+        found: list[str] = []
+        token: str | None = None
+        while True:
+            self.check()
+            with self.client() as (client, _):
+                page = (
+                    client.list_objects_v2(
+                        Bucket=self.settings.bucket,
+                        Prefix=prefix,
+                        MaxKeys=1000,
+                        ContinuationToken=token,
+                    )
+                    if token is not None
+                    else client.list_objects_v2(
+                        Bucket=self.settings.bucket, Prefix=prefix, MaxKeys=1000
+                    )
+                )
+            contents = page.get("Contents", [])
+            if not isinstance(contents, list):
+                raise ValueError("checkpoint object listing is malformed")
+            for item in cast(list[object], contents):
+                key = cast(dict[str, object], item).get("Key") if isinstance(item, dict) else None
+                name = key[len(prefix) :] if isinstance(key, str) else ""
+                if (
+                    not key
+                    or not str(key).startswith(prefix)
+                    or re.fullmatch(r"[0-9a-f]{64}", name) is None
+                ):
+                    raise ValueError("checkpoint object listing names a foreign key")
+                found.append(name)
+                if len(found) > limit:
+                    raise ValueError("checkpoint object listing exceeds its bound")
+            following = page.get("NextContinuationToken")
+            if page.get("IsTruncated") is not True:
+                return found
+            if not isinstance(following, str) or not following:
+                raise ValueError("checkpoint object listing is truncated without a token")
+            token = following

@@ -78,7 +78,11 @@ succeeds or a local copy may be evicted. What changes without the 412:
   `If-None-Match: *` on one scratch key) and record which kind it is.
 
 The [checkpoint transport](WORKER.md#offline-complete-workspace-checkpoints) uses the same
-hash-named keys with read-back, so the same holds for its chunks and manifests.
+hash-named keys with read-back, so the same holds for its chunks and manifests. Checkpoint
+Jobs therefore write a separate upload bucket with a key that can write nothing else; the
+worker verifies each checkpoint there with a read-only key, and only the operator's keeper
+key, which never enters the cluster, writes the kept bucket
+([workspace checkpoints](KUBERNETES-BUNDLE.md#workspace-checkpoints)).
 
 ## Bounded cache maintenance
 

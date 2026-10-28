@@ -99,3 +99,13 @@ key = "secure/worker/tls.key"
 # [extra_files.control]
 # s3-credentials = "secure/control-s3-credentials"
 # s3-config = "secure/control-s3-config"
+
+# With the bundle's [checkpoint]: the SDK credential and config files of the checkpoint keys
+# (docs/KUBERNETES-PREP.md, step 6). upload_* goes into the Jobs' Secret in the sandbox
+# namespace, verify_* into the worker's Secret; the keeper key never enters the cluster.
+# [checkpoint]
+# upload_credentials = "secure/checkpoint-upload-credentials"
+# upload_config = "secure/checkpoint-upload-config"
+# verify_credentials = "secure/checkpoint-verify-credentials"
+# verify_config = "secure/checkpoint-verify-config"
+# # keeper_endpoint = "http://127.0.0.1:3900"   # through kubectl port-forward, by default

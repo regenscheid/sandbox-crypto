@@ -8,6 +8,7 @@ sandbox-science-worker token --sha256 client.token  # the SHA-256 of an existing
 sandbox-science-worker policy add --settings worker.toml [--project p1] policy.yaml
 sandbox-science-worker environments list --settings worker.toml [--state creating]
 sandbox-science-worker environments reconcile --settings worker.toml [--no-wait] ENVIRONMENT_ID
+sandbox-science-worker checkpoint plan|verify|inventory|... (checkpoint_jobs_cli)
 ```
 
 ``policy add`` is the operator's way to put a project policy revision into the pool's
@@ -37,7 +38,7 @@ from sandbox_science.contracts.logs import configure_logging
 from sandbox_science.policy.openshell import CompileError, compile_sandbox
 from sandbox_science.policy.store import StoreError
 
-from . import checkpoint_cli
+from . import checkpoint_cli, checkpoint_jobs_cli
 from .admission import DraftWatcher
 from .artifact_retention import MAX_RELEASE_PAGE
 from .artifacts import Blobs
@@ -346,6 +347,12 @@ def main(argv: list[str] | None = None) -> int:
     checkpoint_cli.parser(
         commands.add_parser("workspace-checkpoint", help="offline complete workspace checkpoint")
     )
+    checkpoint_jobs_cli.parser(
+        commands.add_parser(
+            "checkpoint",
+            help="checkpoint Jobs: plan, verify, promote, inventory and cleanup records",
+        )
+    )
     serve_parser = commands.add_parser("serve", help="run the worker API")
     serve_parser.add_argument("--settings", type=Path, required=True)
     serve_parser.add_argument(
@@ -424,6 +431,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "workspace-checkpoint":
         return checkpoint_cli.run(args)
+    if args.command == "checkpoint":
+        return checkpoint_jobs_cli.run(args)
     if args.command == "token":
         if args.out is not None:
             token = secrets.token_urlsafe(32)

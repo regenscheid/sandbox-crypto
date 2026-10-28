@@ -54,8 +54,9 @@ and the explicit `app.architecture` / `pool.architecture` (`amd64` or `arm64`).
 Set an existing namespace, bundle name, each `storage_gib` and optional
 `storage_class`. `image_pull_secret` (default `ghcr-pull`) names the registry Secret in
 that namespace that every rendered Pod lists in `imagePullSecrets` (the app, the pool, the
-runtime manager, the maintenance CronJob's and the release Job's Pods, init containers
-included), since the images are private ([preparation, step 1](KUBERNETES-PREP.md#1-namespaces-and-the-pull-secret)). Use block-backed SQLite-compatible storage; RWX/NFS does not make
+runtime manager, the maintenance CronJob's, the release Job's and the checkpoint Jobs' Pods,
+init containers included), since the images are private; checkpoint Jobs run in the sandbox
+namespace, so the Secret must exist there too ([preparation, step 1](KUBERNETES-PREP.md#1-namespaces-and-the-pull-secret)). Use block-backed SQLite-compatible storage; RWX/NFS does not make
 independent SQLite writers safe. An omitted class uses the cluster default. The
 renderer cannot verify its type, binding behavior, capacity or reclaim policy.
 Inspect the actual StorageClass/PV and choose Retain behavior before real data.
@@ -187,8 +188,9 @@ file holds the actual keys; do not put them in this TOML. Select a suitable writ
 profile separately under `control.environment` (control and the workspace both need
 write on the artifacts bucket: control for publications, the workspace for upload
 originals), and use another prefix-limited
-principal for an operator's checkpoint transport. The renderer validates file
-selection, not the permissions, certificate contents or SDK profile correctness.
+principal for checkpoints ([workspace checkpoints](#workspace-checkpoints)). The
+renderer validates file selection, not the permissions, certificate contents or SDK
+profile correctness.
 
 OpenShell CLI state may need a persistent home/config tree prepared by the trusted
 operator on the pool PVC. The optional `worker.environment.HOME` value is exactly
@@ -272,8 +274,8 @@ If using [S3 artifacts](ARTIFACT-S3.md), both trusted control and workspace serv
 open the artifact store: control needs its scoped retention/write access and the
 workspace needs read-only GET/HEAD access to the same artifact prefix for cold
 downloads. Give each its own standard-chain credential file/profile as above; no
-credential is exposed to the browser. Worker operator checkpoint transport uses
-a separate archive prefix and principal, independently of scientific artifacts.
+credential is exposed to the browser. Workspace checkpoints use buckets and keys of
+their own, independently of scientific artifacts.
 No S3 key belongs in research sandboxes. Coordinate metadata, backing settings,
 retained blobs, worker ownership/bindings and complete workspace checkpoints as a
 recovery set. This bundle does not initialize project policy/bindings or restore it.
@@ -709,12 +711,8 @@ page's thread (FG-17, [preview](WORKSPACE.md#the-pdf-viewers-origin)).
 
 ## Maintenance
 
-Workspace checkpoints to object storage, the third item on D92's list, have no renderer:
-the operator command needs the pool PVC (the worker's state and lock) and the sandbox's
-workspace PVC in one Pod, and a Pod mounts only claims of its own namespace. With the
-sandboxes in a namespace of their own (`[sandboxes] namespace`, as the first deployment
-runs them), the two claims are in different namespaces, so no Job built from these parts
-can run the checkpoint; it needs a design change first.
+Workspace checkpoints to object storage, the third item on D92's list, run as Jobs in the
+sandbox namespace ([workspace checkpoints](#workspace-checkpoints)).
 
 Two maintenance workloads from D92's list before a research stress test: scheduled
 control-cache trimming, rendered into the bundle by an opt-in `[maintenance]` section, and
@@ -825,6 +823,162 @@ service account with authority to read them. Online release, beside a serving wo
 is not built: it still needs the reader and writer fences
 ([Kubernetes work](KUBERNETES.md)).
 
+## Workspace checkpoints
+
+A checkpoint is a verified full copy of one research workspace in the object store (D92):
+the worker's checkpoint format, streamed in 16 MiB content-addressed chunks with a manifest
+whose SHA-256 is the checkpoint's identity ([checkpoint Jobs](WORKER.md#checkpoint-jobs)).
+The workspace volume lives in the sandbox namespace and the worker's state in the bundle's,
+and a Pod mounts claims of its own namespace only, so a short-lived **checkpoint Job** reads
+the volume beside it, and the worker checks the result in the store:
+
+1. **Plan** (the worker, online): it holds the environment stopped, suspending it through its
+   own API if it runs (refused while it is in use: a job, a publication, busy kernels), and
+   prints the plan: the retained binding to write into the archive, a checkpoint ID and the
+   hold's expiry (6 hours by default). While held, the worker refuses to start the sandbox:
+   each start checks for a hold and records itself in one transaction, a plan refuses while
+   a start is under way, and records it cannot read refuse the start.
+2. **The Job** (`checkpoint-job`, created by the operator): `sandbox-science-worker
+   checkpoint capture-upload` on the trusted worker image, the workspace claim mounted
+   read-only, run as the sandbox user (10001) so that a file the sandbox made unreadable
+   fails it by name, pinned to the volume's node. It streams to the **upload bucket** with
+   the upload key, re-sending only chunks that do not already read back exactly, and prints
+   `checkpoint_manifest=<sha256>`. Sockets, FIFOs and devices are left out and listed in the
+   receipt. No local archive: its scratch holds one chunk and the path index.
+3. **Verify** (the worker): it reads the manifest and every chunk back through its decoder,
+   against its own binding, the planned capture mode and the hold's time window (ending at
+   an early release), records the checkpoint as `verified` with its chunk list and lifts the
+   hold. It holds only a read key.
+4. **Promote** (the operator's machine, keeper key): the manifest's chunks, then the manifest,
+   are copied into the **kept bucket** inside the store (`CopyObject`). Chunks are shared
+   between checkpoints of a workspace, and Garage ignores `If-None-Match`, so a kept object
+   that already reads back with its hash is never overwritten; any other is read and hashed
+   in the upload bucket, copied only as that version (`CopySourceIfMatch` on its ETag) and
+   hashed again in the kept bucket. A chunk swapped in the upload bucket after verification
+   therefore fails the promotion, and cannot reach an older kept checkpoint.
+5. **Verify again** (the worker): the kept copy, byte for byte; the checkpoint is now `kept`,
+   the only state that counts. The latest two kept checkpoints of a workspace stay; older
+   ones are listed by [cleanup](#cleanup) and removed only when named there.
+
+```toml
+[checkpoint]                           # needs [sandboxes]
+upload_secret = "research-checkpoint-upload"   # in the sandbox namespace: credentials, config
+upload_bucket = "research-checkpoint-upload"
+kept_bucket = "research-checkpoints"
+endpoint = "http://garage.garage.svc.cluster.local:3900"
+# region = "garage", prefix = "sandbox-science", addressing_style = "path"
+# upload_profile = "checkpoint-upload", verify_profile = "checkpoint-verify"
+# keep = 2, deadline_seconds = 7200, hold_seconds = 21600 (longer than the deadline)
+# run_as_user = 10001, run_as_group = 10001
+# [checkpoint.job]: cpu/memory/ephemeral requests and limits, scratch_mib (default 1024)
+
+[checkpoint.object_store]              # the store's Pods and port
+ports = [3900]
+peer.namespace_labels = { "kubernetes.io/metadata.name" = "garage" }
+peer.pod_labels = { "app.kubernetes.io/name" = "garage" }
+```
+
+With the section the bundle renders the NetworkPolicy `<name>-checkpoint` in the sandbox
+namespace (nothing connects to a checkpoint Pod; it reaches DNS and the store only, never
+the gateway, a sandbox or the internet) and adds the store to the pool's egress. The worker's
+Secret then also projects `checkpoint-upload.toml` and `checkpoint-kept.toml` (destinations,
+no credential) and `checkpoint-s3-credentials`, `checkpoint-s3-config` (its read-only key);
+`site` generates them from the site file's `[checkpoint]` paths, writes the upload key's
+Secret files and its `kubectl create secret` line for the sandbox namespace, and writes
+`operator/checkpoint-upload.toml` and `operator/checkpoint-kept.toml`, the buckets as the
+operator's machine reaches them through `kubectl port-forward`. The keys and buckets are in
+[preparation, step 6](KUBERNETES-PREP.md#6-garage-artifacts).
+
+The Job, as rendered: `generateName: <name>-checkpoint-` (so `kubectl apply` refuses it),
+`backoffLimit: 0`, the section's deadline, kept a week after it ends; no service-account
+token, no service links, no `fsGroup` (the kubelet would otherwise change the workspace's
+group), a read-only root, no capabilities, `RuntimeDefault` seccomp; the claim and the upload
+Secret (its `credentials` and `config` keys only) read-only and a bounded `/tmp`. The plan
+and the upload bucket's settings are its environment (`SS_CHECKPOINT_PLAN`,
+`SS_CHECKPOINT_STORAGE`); it never sees the kept bucket. NetworkPolicies add up, so a sandbox
+Pod with the Job's labels would get the same egress; the worker never sets
+`app.kubernetes.io` labels on sandboxes.
+
+One command does it all:
+
+```sh
+sandbox-science-kubernetes checkpoint --config private.toml --environment ENV          # prints the steps
+kubectl -n garage port-forward svc/garage 3900:3900 &
+AWS_PROFILE=checkpoint-keeper sandbox-science-kubernetes checkpoint --config private.toml \
+  --environment ENV --apply \
+  --keeper-upload operator/checkpoint-upload.toml --keeper-kept operator/checkpoint-kept.toml
+```
+
+With `--apply` it runs, with the operator's kubeconfig: the plan (`kubectl exec` into the
+pool's worker container), the claim and its node (`volume.kubernetes.io/selected-node`),
+refusing while any Pod mounts the claim; `kubectl create` of the Job; polling until it
+succeeds or fails; its log for the manifest; the worker's verification; the promotion
+(locally, `sandbox-science-worker checkpoint promote`); the worker's second verification.
+A failure before the first verification succeeds deletes the Job and lifts the hold; if
+that cleanup fails too, the error says so after the run's own error. Without the keeper files it
+stops after the first verification and prints the two remaining commands. `--operator`
+names who runs it in the worker's records (by default `kubectl auth whoami` and the local
+account); `--context` picks the kubeconfig context. Step by step, `checkpoint-job --plan
+plan.json --claim CLAIM [--node NODE] --output job.json` renders one Job from a plan.
+
+The operator needs the rights in [preparation, step 13](KUBERNETES-PREP.md#13-workspace-checkpoints-and-cleanup-qualification);
+the worker and every bundle Pod keep none. Creating a Job in the sandbox namespace amounts to
+creating Pods there, which can mount any Secret of that namespace, which is why no service
+holds that right: a later checkpoint controller would need its own service account and an
+admission policy that pins what its Jobs may contain.
+
+Not built yet: checkpoints of running sandboxes without suspending them (Longhorn clones,
+`clone_pvc`), of volumes whose environment the worker no longer binds (a static claim on a
+Released PV), and the restore Job. Not qualified on a cluster.
+
+## Cleanup
+
+`sandbox-science-kubernetes cleanup --config private.toml` lists, without changing anything:
+
+- **workspace volumes left behind by deleted sandboxes**: Released PVs whose claim was in the
+  sandbox namespace, and claims whose owning `Sandbox` is gone, each with size, age, phase,
+  owner (project, session and environment, from the worker's records, deleted ones
+  included) and how many verified checkpoints it has;
+- **checkpoints beyond the kept count**: kept checkpoints of a workspace older than its
+  latest `keep`, and deletions that began and did not finish.
+
+Each line says `candidate` or `REFUSED` with the reasons. Then it deletes only the items
+named on its command line, with `--apply`, after a typed confirmation (`--yes` skips it):
+
+```sh
+sandbox-science-kubernetes cleanup --config private.toml --volume PV --checkpoint MANIFEST     # prints the commands
+AWS_PROFILE=checkpoint-keeper sandbox-science-kubernetes cleanup --config private.toml \
+  --volume PV --checkpoint MANIFEST --keeper-kept operator/checkpoint-kept.toml --apply
+```
+
+Refusals, checked against a fresh survey and again by the worker:
+
+- a volume whose sandbox exists, which a Pod mounts, which the worker records for a live
+  or paused environment, a hand-back under way or retained, or a checkpoint hold;
+- a volume or claim annotated `sandbox-science.io/keep` (with a reason as its value): the
+  operator's mark for a volume a recovery set still needs;
+- a volume without a current verified checkpoint, unless `--without-checkpoint VOLUME`
+  names it (repeatable; it covers only the volumes it names): none, or the newest predates
+  the last time the worker started its sandbox (recorded from this version on), since work
+  after a checkpoint would be lost.
+  The listing shows the newest checkpoint's age and the last start;
+- the last verified checkpoint of a workspace whose volume still exists, and any checkpoint
+  that is not a candidate.
+
+A volume's deletion: the worker journals the intent (refusing it if its records forbid it),
+the PV's reclaim policy becomes Delete so its provisioner frees the storage (a JSON patch
+that first tests the claim UID and phase the survey saw), the claim is deleted if it remains
+(with its UID as a precondition), and the worker journals it done; a failed step is
+journaled as failed and stops the run. A checkpoint's deletion: the worker marks it
+`deleting` (it stops counting at once) and journals the intent; the chunk list the worker
+recorded at verification is copied to a private directory of the operator's; the keeper key
+removes the chunks no other kept manifest names and then, last, the manifest, a missing
+object counting as removed; the worker journals it done. A failure leaves it `deleting`,
+listed again next time, and the next run finishes it even if the manifest is already gone. Every journal row names who ran it and is
+never changed or removed (`checkpoints.sqlite3`, beside the worker's state). Run cleanup
+when no checkpoint is being promoted: a chunk two checkpoints share is kept only if the other
+manifest is already in the kept bucket.
+
 ## Two instances on one cluster
 
 D94 gives each trust group a complete instance: its own bundle, normally its own namespace.
@@ -846,7 +1000,7 @@ What the renderer cannot make distinct, the operator does, per instance:
 | Namespace (recommended), `name`, the Secrets named under `[secrets]` | The bundle references Secrets by name and cannot see another bundle's; two instances naming one Secret share its credentials. Separate namespaces also keep Secret access and the pull secret apart |
 | `ingress.workspace_host` and `ingress.preview_host`, and an Authentik application and forward-auth `Middleware` | Host names are cluster-wide: two routes with one name make Traefik pick one. The Authentik application's group decides who may log in |
 | An OpenShell workspace on the shared gateway and the instance's own CLI client identity (`runtime_manager.openshell_gateway` and the profile keys in its Secret) | One OpenShell workspace per user (D94) keeps one instance's sandboxes and policies from the other's |
-| A Garage bucket and keys (`<instance>-artifacts`, `-control`, `-workspace`, `-checkpoint`) | A bucket and key per user ([preparation, step 6](KUBERNETES-PREP.md#6-garage-artifacts)) |
+| Garage buckets and keys (`<instance>-artifacts`, `-checkpoint-upload`, `-checkpoints`; keys `-control`, `-workspace`, `-checkpoint-upload`, `-checkpoint-verify`, `-checkpoint-keeper`) | A bucket and key per user ([preparation, step 6](KUBERNETES-PREP.md#6-garage-artifacts)) |
 | A LiteLLM key and budget (the runtime manager's `model.key` and the keys control's settings use) | The model gateway enforces each instance's budget and shows its spend by key |
 | Worker tokens, CAs and certificates for the `<name>-worker`, `-control` and `-middleware` Service names | Certificates cover one instance's Service DNS names |
 

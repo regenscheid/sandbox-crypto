@@ -22,6 +22,7 @@ from sandbox_science.contracts.workspace_checkpoint import (
     MAX_CHECKPOINT_RECEIPT,
     CheckpointReceipt,
     CheckpointSource,
+    SkippedEntry,
 )
 
 from .backends import OpenShellBackend
@@ -140,7 +141,7 @@ def retained_source(
     )
 
 
-def _prefix(root: Path, source: CheckpointSource) -> None:
+def check_prefix(root: Path, source: CheckpointSource) -> None:
     sentinel = read(root / ".openshell-initialized", 128)
     if sentinel != b"initialized\n":
         raise ValueError("checkpoint workspace initialization sentinel is missing or invalid")
@@ -153,7 +154,7 @@ def _prefix(root: Path, source: CheckpointSource) -> None:
             raise ValueError("checkpoint prefix differs from the retained original")
 
 
-async def _stopped(settings: Settings, source: CheckpointSource) -> None:
+async def confirm_stopped(settings: Settings, source: CheckpointSource) -> None:
     if settings.openshell is None:
         raise ValueError("offline checkpoints require the OpenShell backend")
     backend = OpenShellBackend(settings.openshell, settings.state_dir)
@@ -246,7 +247,7 @@ async def operate(
             journal = workspace.with_name(workspace.name + ".checkpoint-restore")
             if workspace.resolve().is_relative_to(directory.resolve()):
                 raise ValueError("checkpoint restore must be outside its archive")
-        await _stopped(settings, source)
+        await confirm_stopped(settings, source)
         journal.mkdir(mode=0o700)
         sync(journal.parent)
         install(
@@ -263,16 +264,19 @@ async def operate(
         stage = journal / "tree"
         try:
             if action == "create":
-                _prefix(root, source)
+                check_prefix(root, source)
+                skipped: list[SkippedEntry] = []
                 with (directory / "archive.bin").open("xb") as handle:
                     os.chmod(directory / "archive.bin", 0o600)
-                    summary = encode(root, source, handle)
+                    summary = encode(root, source, handle, skipped=skipped)
                     handle.flush()
                     os.fsync(handle.fileno())
-                _prefix(root, source)
+                check_prefix(root, source)
                 expected = CheckpointReceipt(
                     source=source,
                     created_at=datetime.now(UTC),
+                    capture="offline_mount",
+                    skipped=tuple(skipped),
                     archive_sha256=summary.sha256,
                     archive_size=summary.size,
                     members=summary.members,
@@ -287,13 +291,13 @@ async def operate(
                 stage.mkdir(mode=0o700)
                 with (directory / "archive.bin").open("rb") as handle:
                     _matches(decode(handle, source, stage), expected)
-                _prefix(stage, source)
+                check_prefix(stage, source)
             if retained_source(settings, environment, architecture) != source:
                 raise ValueError("checkpoint retained binding changed during the operation")
             receipt_bytes = expected.model_dump_json().encode()
             if len(receipt_bytes) > MAX_CHECKPOINT_RECEIPT:
                 raise ValueError("checkpoint receipt exceeds its metadata bound")
-            await _stopped(settings, source)
+            await confirm_stopped(settings, source)
             if action == "restore":
                 publish_directory(stage, workspace)
                 sync(workspace.parent)

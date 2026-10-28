@@ -1,20 +1,29 @@
 # SPDX-License-Identifier: MIT
-"""Offline check/render of the bundle, and generation of its Secrets' contents (site); no
-cluster, image or subprocess access."""
+"""Offline check/render of the bundle, and generation of its Secrets' contents (site),
+with no cluster, image or subprocess access; and the operator's workspace checkpoint and
+cleanup commands, which run ``kubectl`` with the operator's credentials only when given
+``--apply`` (docs/KUBERNETES-BUNDLE.md#workspace-checkpoints)."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import shlex
 import sys
 import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 
+from pydantic import ValidationError
+
+from sandbox_science.contracts.workspace_checkpoint import CheckpointPlan
+
 from . import kubernetes_site, kubernetes_site_config
 from .kubernetes_bundle import release_job, render
+from .kubernetes_checkpoint import checkpoint_job
 from .kubernetes_config import BundleError, load
+from .kubernetes_operations import OperationError, Operator, report, run_command, whoami
 
 
 def write_bundle(path: Path, content: bytes) -> None:
@@ -50,8 +59,58 @@ def main(argv: Sequence[str] | None = None) -> int:
     release = commands.choices["release-job"]
     release.add_argument("--preview", action="store_true", help="report without releasing")
     release.add_argument("--after", help="the previous report's next_after")
+    job = commands.add_parser("checkpoint-job", help="render one checkpoint Job from a plan")
+    job.add_argument("--config", type=Path, required=True)
+    job.add_argument("--plan", type=Path, required=True, help="the worker's checkpoint plan")
+    job.add_argument("--claim", required=True, help="the sandbox's workspace claim")
+    job.add_argument("--node", help="the volume's node (volume.kubernetes.io/selected-node)")
+    job.add_argument("--output", type=Path, required=True)
+    checkpoint = commands.add_parser(
+        "checkpoint", help="checkpoint one environment's workspace (prints unless --apply)"
+    )
+    cleanup = commands.add_parser(
+        "cleanup", help="list leftover volumes and old checkpoints; delete named ones"
+    )
+    for command in (checkpoint, cleanup):
+        command.add_argument("--config", type=Path, required=True)
+        command.add_argument("--apply", action="store_true", help="run the steps")
+        command.add_argument("--operator", help="who runs this, for the deletion journal")
+        command.add_argument("--context", help="the kubeconfig context to use")
+    checkpoint.add_argument("--environment", required=True)
+    checkpoint.add_argument("--architecture", choices=("amd64", "arm64"), default="amd64")
+    checkpoint.add_argument("--keeper-upload", type=Path, help="operator/checkpoint-upload.toml")
+    checkpoint.add_argument("--keeper-kept", type=Path, help="operator/checkpoint-kept.toml")
+    cleanup.add_argument("--volume", action="append", default=[], help="a PV to delete")
+    cleanup.add_argument("--checkpoint", action="append", default=[], help="a manifest SHA-256")
+    cleanup.add_argument(
+        "--without-checkpoint",
+        action="append",
+        default=[],
+        metavar="VOLUME",
+        help="this volume may go without a current verified checkpoint (repeatable)",
+    )
+    cleanup.add_argument("--keeper-kept", type=Path, help="operator/checkpoint-kept.toml")
+    cleanup.add_argument("--yes", action="store_true", help="do not ask for confirmation")
     args = parser.parse_args(argv)
+    if args.command in ("checkpoint", "cleanup"):
+        try:
+            return _operate(args)
+        except (BundleError, OperationError, ValidationError, ValueError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
     try:
+        if args.command == "checkpoint-job":
+            try:
+                plan = CheckpointPlan.model_validate_json(args.plan.read_bytes())
+                rendered = checkpoint_job(load(args.config), plan, args.claim, args.node)
+            except (ValidationError, ValueError) as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 1
+            write_bundle(
+                args.output, (json.dumps(rendered, indent=2, sort_keys=True) + "\n").encode()
+            )
+            print("rendered offline; kubectl create -f the file (it needs the plan's hold)")
+            return 0
         if args.command == "site":
             site, bundle = kubernetes_site_config.load(args.config)
             kubernetes_site.write(args.output, kubernetes_site.plan(site, bundle))
@@ -88,6 +147,61 @@ def main(argv: Sequence[str] | None = None) -> int:
     except OSError:
         print("error: cannot create a new output file; no overwrite is permitted", file=sys.stderr)
         return 1
+    return 0
+
+
+def _confirm(prompt: str) -> bool:
+    try:
+        return input(prompt).strip() == "delete"
+    except EOFError:
+        return False
+
+
+def _operate(args: argparse.Namespace) -> int:
+    config = load(args.config)
+    kubectl = ("kubectl", *(("--context", args.context) if args.context else ()))
+    actor = args.operator or (whoami(run_command, kubectl) if args.apply else "OPERATOR")
+    operator = Operator(config, actor, run=run_command, kubectl=kubectl)
+    if args.command == "checkpoint":
+        keepers = (args.keeper_upload, args.keeper_kept)
+        if (keepers[0] is None) != (keepers[1] is None):
+            raise ValueError("give both --keeper-upload and --keeper-kept, or neither")
+        keeper = None if keepers[0] is None else (keepers[0], keepers[1])
+        if not args.apply:
+            for line in operator.checkpoint_steps(args.environment, args.architecture, keeper):
+                print(line)
+            return 0
+        manifest = operator.run_checkpoint(args.environment, args.architecture, keeper)
+        print(f"checkpoint_manifest={manifest}")
+        return 0
+    found = operator.survey()
+    if not args.volume and not args.checkpoint:
+        for line in report(found):
+            print(line)
+        return 0
+    # The worker's chunk lists pass through a private directory of the operator's.
+    workdir = Path(tempfile.mkdtemp(prefix="sandbox-science-cleanup-")) if args.apply else Path(".")
+    steps = operator.delete(
+        found,
+        args.volume,
+        args.checkpoint,
+        without_checkpoint=args.without_checkpoint,
+        keeper_kept=args.keeper_kept,
+        workdir=workdir,
+    )
+    if not args.apply:
+        for step in steps:
+            print(" ".join(shlex.quote(part) for part in step.command))
+        return 0
+    if args.checkpoint and args.keeper_kept is None:
+        raise ValueError("deleting a checkpoint needs --keeper-kept and the keeper key")
+    named = len(args.volume) + len(args.checkpoint)
+    if not args.yes and not _confirm(
+        f"Delete {named} item(s) for good, journaled as {actor}? Type 'delete': "
+    ):
+        print("nothing deleted")
+        return 1
+    operator.apply(steps)
     return 0
 
 

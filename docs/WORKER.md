@@ -955,6 +955,14 @@ stops a sandbox itself, and stopping only the worker does not stop its research
 daemons or jobs. Paths and settings are trusted operator configuration, never agent
 tool arguments. The token file is not read by these commands.
 
+The receipt states how its copy was made in `capture`, which says how consistent it
+is: `offline_mount` (this command: the operator declared the mount exclusive),
+`suspended_pvc` (a checkpoint Job read a stopped, held sandbox's volume), and, reserved
+for later work, `clone_pvc` (a crash-consistent copy of a running sandbox's volume) and
+`sandbox_stream` (what a running sandbox presented). Receipts of format v2 carry it and
+the skipped special files; v1 receipts, which carry `exclusive_offline_mount_declared`
+instead, stay readable and keep their original bytes.
+
 The new checkpoint directory contains `archive.bin`, an incomplete `intent.json`
 and, only after full verification and the final stopped check, immutable
 `receipt.json`. Failures preserve partial bytes and a failure record; a crash leaves
@@ -969,7 +977,9 @@ indexes. Explicit limits are one million members, 256 MiB of member metadata,
 16 TiB of file contents, 16 KiB per member header and 256 path components. Whole
 content and provenance are checksummed. Regular files, directories, modes, symlink
 text and existing hardlink topology survive; links are never followed out of the
-tree. Special files are refused. Ownership becomes the invoking operator's;
+tree. Sockets, FIFOs and devices are left out and listed in the receipt (at most
+1,000; more fail the capture), since they hold no data a restore could recreate; a
+regular file the reader cannot open fails the capture, naming it. Ownership becomes the invoking operator's;
 timestamps, extended attributes and ACLs are outside this format. The initialized
 workspace sentinel and required native prefix marker must match the retained state.
 Source metadata is checked during reads and again after the whole capture.
@@ -1062,6 +1072,43 @@ acceptance. The SDK operation semantics are documented in
 [PutObject](https://docs.aws.amazon.com/boto3/latest/reference/services/s3/client/put_object.html),
 [GetObject](https://docs.aws.amazon.com/boto3/latest/reference/services/s3/client/get_object.html)
 and [botocore Config](https://docs.aws.amazon.com/botocore/latest/reference/config.html).
+
+### Checkpoint jobs
+
+On Kubernetes the workspace volume and the worker's state are in different namespaces, so
+a checkpoint Job reads the volume and the worker verifies the result in the store
+([workspace checkpoints](KUBERNETES-BUNDLE.md#workspace-checkpoints)). The operator runs
+the worker's part in its container, beside the serving worker, with
+`sandbox-science-worker checkpoint`:
+
+| Command | Where | What |
+| --- | --- | --- |
+| `plan --environment E --architecture A --by WHO` | worker container | Holds the environment, suspends it through the worker's own API if it runs (`POST /v1/environments/{id}/suspend` with the pool token; the TLS peer must present exactly the worker's certificate), confirms OpenShell says `Stopped`, prints the plan JSON |
+| `capture-upload --workspace DIR` | the Job | Streams the tree into the upload bucket from `SS_CHECKPOINT_PLAN` and `SS_CHECKPOINT_STORAGE`; prints and writes to `/dev/termination-log` `checkpoint_manifest=<sha256>` |
+| `verify --checkpoint-id ID --manifest H --storage F --stage upload\|kept --by WHO` | worker container | Reads every byte back against the plan's binding and records `verified` (upload) or `kept`; prints the workspace's prune candidates |
+| `promote --from F --to F --manifest H` | operator's machine | Copies a checkpoint into the kept bucket inside the store, chunks first, manifest last; never overwrites a kept object that reads back exactly, and copies only the version it hashed (`CopySourceIfMatch`), then hashes the copy |
+| `delete-objects --storage F --manifest H [--chunks-file F]` | operator's machine | Removes the chunks no other manifest in the bucket names, then the manifest last; with the worker's recorded list it finishes even once the manifest is gone |
+| `chunks --manifest H` | worker container | Prints the chunk list the worker recorded when it verified the checkpoint |
+| `inventory [--keep N]` | worker container | JSON: every environment the worker has a record of (deleted ones too), hand-backs, checkpoints, holds |
+| `forget --manifest H --by WHO [--volume-gone] [--done]` | worker container | Journals a checkpoint's deletion; refuses the last kept checkpoint of a workspace unless its volume is gone |
+| `record-volume --phase intent\|done\|failed --volume PV [--sandbox S] --by WHO` | worker container | Journals a volume's deletion; the intent is refused for a live or paused environment, a hand-back, a hold, or without a kept checkpoint unless `--without-checkpoint` |
+| `release-hold --checkpoint-id ID --reason R --by WHO` | worker container | Lifts a hold early |
+
+The records are `checkpoints.sqlite3` in the worker's state directory (WAL, synchronous
+commits): **holds** (one active per environment; the serving worker refuses to start a
+held sandbox until the hold is released or expires, 6 hours by default), **checkpoints**
+(`verified`, `kept`, `deleting`, `deleted`; only `kept` counts, and a kept checkpoint
+needs a verified upload of the same manifest first), each checkpoint's chunk list, the
+last **start** of each environment's sandbox (recorded in the transaction that checks for a
+hold; any records error refuses the start) and the **deletion journal**, whose
+rows triggers make append-only. Verification checks the manifest's hash, each chunk's hash
+and length before decoding it, the whole archive through the decoder (paths, links,
+bounds, the binding), the receipt's counts, the planned capture mode, and that the capture
+finished within the hold (and before an early release) (five minutes' clock skew allowed); the binding must still be the
+environment's. A Job's word is only the manifest's name. The upload key cannot touch the
+kept bucket, and the worker's key only reads; the operator's keeper key, which writes the
+kept bucket, stays off the cluster. The latest two kept checkpoints per workspace stay
+(`keep`), and nothing is removed automatically.
 
 ## Conformance suite
 

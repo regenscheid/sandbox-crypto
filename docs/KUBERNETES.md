@@ -322,6 +322,16 @@ placement, prefix identity and package fingerprint. Restore publishes a verified
 new directory without rebinding ownership or clearing recovery holds. The separate
 S3 transport uploads 16 MiB immutable chunks and commits a fully verified manifest;
 fetch requires its exact digest. See [workspace checkpoint operations](WORKER.md#offline-complete-workspace-checkpoints).
+On Kubernetes a checkpoint Job in the sandbox namespace reads a suspended, held sandbox's
+volume read-only and streams it to an upload bucket; the worker verifies it in full and
+records it, and counts it once the operator's keeper key has copied it into the kept bucket
+and the worker has verified that copy too. An operator cleanup command lists leftover
+workspace volumes and checkpoints beyond the latest two, and deletes only named ones under
+refusals that the worker's records also enforce, journaling who ran each deletion
+([workspace checkpoints](KUBERNETES-BUNDLE.md#workspace-checkpoints), [cleanup](KUBERNETES-BUNDLE.md#cleanup)).
+Deleting a volume releases it to its provisioner (reclaim policy Delete); it needs a
+verified checkpoint unless the operator says otherwise, and a live or paused environment's
+volume, a hand-back's or one marked for a recovery set is never deleted.
 
 A disposable Garage test verified a 128 MiB workspace archive, repeat upload of the
 same immutable identity, fetch, content hashes, modes, symlinks and hardlinks, then

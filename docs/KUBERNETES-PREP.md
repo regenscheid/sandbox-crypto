@@ -322,20 +322,27 @@ Rollback: `helm uninstall openshell -n openshell` leaves the PVCs of existing sa
 
 Garage may run on another machine or in the cluster. In the cluster, give it a namespace of its own, one Pod per node with its data on a single-replica local class (Garage replicates; Longhorn should not again), its S3 port (3900) on a ClusterIP Service only, and a NetworkPolicy that admits the bundle's Pods (`app.kubernetes.io/part-of: <name>` in the bundle's namespace) to 3900 and the Garage Pods to each other on the RPC port. Two things to check on Longhorn: a volume with no recurring-job label joins Longhorn's `default` group, so if a default job backs up to a target that may not hold artifacts in the clear, give the class's `recurringJobSelector` an empty group of its own; and an in-cluster Garage needs its own copy outside the cluster (step 2.2 does not cover it), for example a nightly `rclone copy` (never `sync`, so a deletion does not propagate) through an rclone `crypt` remote, with the crypt passwords kept off the cluster.
 
-One bucket and distinct keys per application (D94), with checkpoints in a bucket of their own so that the checkpoint key cannot write artifact objects, and no key with the owner right (which includes lifecycle rules). The workspace writes the originals of user uploads itself, so its key needs write access too unless the deployment takes no uploads ([bundle](KUBERNETES-BUNDLE.md#prepare-existing-secrets-and-recovery-state)):
+One bucket and distinct keys per application (D94), with checkpoints in buckets of their own so that no checkpoint key can write artifact objects, and no key with the owner right (which includes lifecycle rules). The workspace writes the originals of user uploads itself, so its key needs write access too unless the deployment takes no uploads ([bundle](KUBERNETES-BUNDLE.md#prepare-existing-secrets-and-recovery-state)). Checkpoints use two buckets and three keys ([workspace checkpoints](KUBERNETES-BUNDLE.md#workspace-checkpoints)): checkpoint Jobs write only the upload bucket, so a key leaked from the sandbox namespace cannot touch kept checkpoints; the worker only reads; the operator's keeper key copies verified checkpoints into the kept bucket and removes old ones, and never enters the cluster. In Garage "write" includes delete:
 
 ```sh
 garage bucket create <instance>-artifacts
+garage bucket create <instance>-checkpoint-upload
 garage bucket create <instance>-checkpoints
-garage key create <instance>-control          # read and write, the artifact writer
-garage key create <instance>-workspace        # cold downloads, and user upload originals
-garage key create <instance>-checkpoint       # the operator's checkpoint Job
+garage key create <instance>-control            # read and write, the artifact writer
+garage key create <instance>-workspace          # cold downloads, and user upload originals
+garage key create <instance>-checkpoint-upload  # checkpoint Jobs, in the sandbox namespace
+garage key create <instance>-checkpoint-verify  # the worker
+garage key create <instance>-checkpoint-keeper  # the operator's machine only
 garage bucket allow --read --write <instance>-artifacts --key <instance>-control
 garage bucket allow --read --write <instance>-artifacts --key <instance>-workspace  # --read alone refuses uploads
-garage bucket allow --read --write <instance>-checkpoints --key <instance>-checkpoint
+garage bucket allow --read --write <instance>-checkpoint-upload --key <instance>-checkpoint-upload  # read for the read-back
+garage bucket allow --read <instance>-checkpoint-upload --key <instance>-checkpoint-verify
+garage bucket allow --read <instance>-checkpoints --key <instance>-checkpoint-verify
+garage bucket allow --read <instance>-checkpoint-upload --key <instance>-checkpoint-keeper
+garage bucket allow --read --write <instance>-checkpoints --key <instance>-checkpoint-keeper
 ```
 
-`garage key create` prints the secret key: send its output to a private file, not the terminal. A quota on the checkpoint bucket (`garage bucket set-quotas <instance>-checkpoints --max-size ...`) keeps checkpoints from filling the store; never a lifecycle rule on either bucket.
+`garage key create` prints the secret key: send its output to a private file, not the terminal. A quota on each checkpoint bucket (`garage bucket set-quotas <instance>-checkpoints --max-size ...`) keeps checkpoints from filling the store: chunks are fixed 16 MiB windows of the archive, so two checkpoints of a workspace share the chunks of any unchanged leading part of the archive and nothing after the first change; a workspace that changed early costs its full size again, one that changed little at its end costs little more. Shared chunks belong to several kept checkpoints, which is why promotion never overwrites a kept chunk and deletion keeps any chunk another manifest names. Never a lifecycle rule on the artifact or kept bucket. The upload bucket may expire objects after a week, which removes uploads that were never promoted, but that needs an owner key once and must outlast the time between a Job and its promotion (the `checkpoint` command promotes at once). The off-cluster copy (the nightly `rclone copy`) should read the kept bucket too; it also protects against a keeper key that deletes too much.
 
 **Garage has no conditional writes**: it ignores `If-None-Match: *` and overwrites. The hash-named keys and the read-back check of every write take the place of the 412, and immutability rests on the keys above ([stores without conditional writes](ARTIFACT-S3.md#stores-without-conditional-writes)).
 
@@ -350,7 +357,7 @@ kubectl -n research exec deploy/<name>-app -c control -- sandbox-science-artifac
 
 The endpoint is `https://<garage-host>` for a Garage elsewhere, or `http://garage.<garage-namespace>.svc.<cluster-domain>:3900` in the cluster (plain HTTP inside the cluster: SigV4 keeps the keys off the wire, the object bytes are not encrypted on the Pod network). Use the cluster's real domain: `cluster.local` resolves only where it is the cluster domain. Run it before any research data exists. Repeating the same configuration is safe; a different destination is refused.
 
-Egress: add the Garage address to the bundle as an explicit entry for the app Pod, which runs control and the workspace and whose flows the maintenance CronJob shares. The pool needs a `network.pool_egress` entry of the same form only if the checkpoint transport runs in the pool Pod; a separate checkpoint Job with its own key and NetworkPolicy needs none. Longhorn's own backup traffic leaves `longhorn-system`, outside this bundle. For a Garage elsewhere, its address:
+Egress: add the Garage address to the bundle as an explicit entry for the app Pod, which runs control and the workspace and whose flows the maintenance CronJob shares. With the bundle's `[checkpoint]` section, its `object_store` peer gives the pool (where the worker verifies checkpoints) and the checkpoint Jobs their egress; Garage's own NetworkPolicy must then also admit port 3900 from the sandbox namespace's Pods labelled `app.kubernetes.io/part-of: <name>` and `app.kubernetes.io/component: checkpoint`. Longhorn's own backup traffic leaves `longhorn-system`, outside this bundle. For a Garage elsewhere, its address:
 
 ```toml
 [[network.app_egress]]
@@ -379,7 +386,8 @@ Create each Secret through the site's secure workflow, with exactly the keys the
 | --- | --- | --- |
 | `secrets.control` | `control.json`, `runtime-manager-token.sha256`, `worker-token`, `control.crt`, `control.key`, `worker-ca.crt` | `runtime-manager-token.sha256` is the lowercase SHA-256 hex of the manager's bearer token (the file `manager-control.token` in the manager's Secret). With the bundle's `[mcp_direct]` also `mcp-check-token.sha256`, the digest of the workspace's `mcp-check-token`, which `site` generates. Add `extra_files` `s3-credentials`, `s3-config` for the writer key |
 | `secrets.workspace` | `worker-token`, `worker-ca.crt` | With the bundle's `[mcp_direct]` also `mcp-check-token`, the workspace's token for the availability check, which `site` generates. `extra_files` `s3-credentials`, `s3-config` for the read-only key; `[workspace.environment]` names them |
-| `secrets.worker` | `worker.toml`, `worker.crt`, `worker.key` | `extra_files` `pool-token`, `ceiling.yaml`, `targets.yaml` (required by `site`), the checkpoint S3 pair; the OpenShell CLI tree goes on the PVC |
+| `secrets.worker` | `worker.toml`, `worker.crt`, `worker.key` | `extra_files` `pool-token`, `ceiling.yaml`, `targets.yaml` (required by `site`); with `[checkpoint]` also `checkpoint-upload.toml`, `checkpoint-kept.toml` (the buckets, generated) and `checkpoint-s3-credentials`, `checkpoint-s3-config` (the verify key); the OpenShell CLI tree goes on the PVC |
+| `checkpoint.upload_secret`, in the sandbox namespace | `credentials`, `config` | With `[checkpoint]`: the upload key's SDK files, which only checkpoint Jobs mount. `site` writes them under `secrets/checkpoint-upload/` and `secrets.sh` creates the Secret |
 | `secrets.middleware` | `middleware.toml`, `middleware.crt`, `middleware.key` | `extra_files` `ceiling.yaml` and `gateway-public.pem`, the gateway verifier's public key (both required by `site`), optionally `targets.yaml` |
 | `secrets.cache` (optional) | `cache.toml` | Needs `network.sandboxes` peers |
 | `secrets.runtime_manager` | `runtime-manager.json`, `control-models.json`, `manager-control.token`, `model.key`, `control-ca.crt`, `active-gateway`, `gateway-metadata.json`, `gateway-ca.crt`, `gateway-tls.crt`, `gateway-tls.key` | The model key is the manager's, issued by the in-cluster model gateway for this instance; the profile files are from 5.1. With the bundle's `[mcp_direct]` also `manager-worker.token`, `agent-mcp-project-policy.yaml`, `agent-mcp-ceiling.yaml` and `agent-mcp-targets.yaml`, which `site` generates |
@@ -583,6 +591,44 @@ kubectl -n research exec deploy/<name>-app -c workspace -- sandbox-science-works
 Log in to Authentik in a browser, then open `https://workspace.<domain>/login?token=<token from the log>` (with `[ingress.forward_auth]`, `https://workspace.<domain>/` alone, and the sidebar names the Authentik user); the app should load, a document should save and a PDF open in the viewer. Negative checks: `curl -sk --resolve workspace.<domain>:443:<controller-ip> https://other.<domain>/` is not served (404); from a throwaway Pod in `research` (an approved image with `curl`, outside the bundle's labels), `curl -m 3 http://<app-pod-ip>:8200/` times out, since only the controller's Pods are admitted. The browser's developer tools show the session cookie as `__Host-…-8200`, Secure.
 
 Rollback: remove `[ingress]` and `workspace.allow_remote` from the TOML, render and apply (the workspace returns to loopback). Apply does not prune: `kubectl -n research delete ingressroute/<name>-workspace ingressroute/<name>-preview certificate/<name>-workspace certificate/<name>-preview service/<name>-workspace service/<name>-preview networkpolicy/<name>-ingress`, then the two TLS Secrets, and remove the DNS records. The PVCs are untouched.
+
+## 13. Workspace checkpoints and cleanup (qualification)
+
+Also confirm on the cluster's Garage that `CopyObject` honours `x-amz-copy-source-if-match` (promotion pins each copy to the ETag of the bytes it hashed; Garage's source implements the copy preconditions, but this was not run): copy a scratch object with a wrong ETag and expect 412.
+
+Before the research stress test (D92), qualify checkpoint Jobs and the cleanup command on the cluster ([workspace checkpoints](KUBERNETES-BUNDLE.md#workspace-checkpoints), [cleanup](KUBERNETES-BUNDLE.md#cleanup)). Nothing here is verified offline beyond rendering and the scripted tests. Run it in a quiet window, after the snapshot of the rollback points below, and record each result.
+
+Prepare:
+
+1. The buckets and keys of step 6, the bundle's `[checkpoint]` section and the site's `[checkpoint]` paths; regenerate and replace the worker's Secret, create the upload Secret (`secrets.sh`), apply the bundle (the Jobs' NetworkPolicy and the pool's egress) and restart the pool so it projects the new keys.
+2. Garage's NetworkPolicy admits the checkpoint Jobs (step 6). The trusted-worker image is pullable in the sandbox namespace: `image_pull_secret` must exist there too (copy it, or check the existing one can read the private package).
+3. The operator's machine: the keeper key in an SDK profile (`AWS_PROFILE`), the `operator/` storage files from `site`, and `kubectl -n <garage-namespace> port-forward svc/garage 3900:3900` while promoting or deleting.
+4. Grant the operator the Role below if it is not cluster-admin.
+
+The operator's rights, which neither the worker nor any bundle Pod gets:
+
+| Where | Resources and verbs | For |
+| --- | --- | --- |
+| the sandbox namespace | `batch/jobs`: create, get, list, watch; `pods`: get, list; `pods/log`: get; `persistentvolumeclaims`: get, list, delete; `agents.x-k8s.io/sandboxes`: get, list | creating and watching checkpoint Jobs; cleanup's survey and claim deletion |
+| cluster | `persistentvolumes`: get, list, patch | cleanup's survey, and setting a leftover PV's reclaim policy to Delete |
+| the bundle's namespace | `pods`: get, list; `pods/exec`: create; `apps/deployments`: get | running the worker's checkpoint commands in the pool Pod |
+| Garage's namespace | `services`: get; `pods/portforward`: create | reaching the store with the keeper key |
+
+Creating a Job in the sandbox namespace is the right to create Pods there, which can mount any Secret of that namespace (the upload key, the supervisors' TLS): keep it with the operator.
+
+Qualify, in order:
+
+1. **A suspended environment.** `sandbox-science-kubernetes checkpoint --config ... --environment <env>` prints the steps; with `--apply --keeper-upload operator/checkpoint-upload.toml --keeper-kept operator/checkpoint-kept.toml`, check: the hold appears (`checkpoint inventory`), the Job lands on the volume's node with the claim read-only, it runs as the sandbox user and finishes, its log names the manifest, the worker records `verified` then `kept`, and the hold is lifted. The sandbox then resumes on use and its prefix check passes.
+2. **A running environment.** The same command suspends it first (its kernels end, as with idle suspension); one in use (a job, busy kernels) is refused and stays running. During the hold, a request that would start it is refused with "held stopped for a workspace checkpoint".
+3. **Size and time.** The largest workspace: time the Job and both verifications, watch the Job's scratch and memory, the bucket quota and Garage's free space, and that the next off-cluster copy carries the kept bucket.
+4. **Negative checks.** The upload key cannot read or write the kept bucket or the artifact bucket; the verify key cannot write either checkpoint bucket; the Job cannot reach the gateway, a sandbox or the internet; a sandbox Pod still cannot reach Garage; a Job without its Secret fails cleanly; a tampered object in the upload bucket (replace one chunk with the keeper key) makes the worker's verification fail and records nothing.
+5. **Special and unreadable files.** A socket or FIFO in a workspace is listed in the receipt (`skipped=`) and does not fail the Job; a file the sandbox made unreadable (`chmod 000`) fails it, naming the file. Record any file OpenShell itself seeds that uid 10001 cannot read.
+6. **Rotation.** After a third kept checkpoint of one workspace, `cleanup` lists the oldest as a candidate and not the other two.
+7. **Cleanup, listing.** `sandbox-science-kubernetes cleanup --config ...` lists the Released workspace volumes with size, age, owner and checkpoint coverage, and marks refusals: a live or suspended sandbox's volume never appears as a candidate; one annotated `sandbox-science.io/keep` is refused.
+8. **Cleanup, deletion.** On one disposable leftover volume (a scratch sandbox made and deleted for the test), `--volume <pv> --apply` asks for confirmation, journals the intent naming the operator, sets the PV to Delete (a JSON patch whose `test` operations check the claim's UID and the phase: confirm the API server applies a `test` on `/status/phase`), deletes a remaining claim with its UID as a precondition (`kubectl delete --raw … -f -`), and Longhorn removes the volume (`kubectl -n longhorn-system get volumes.longhorn.io`); without a checkpoint it is refused until `--without-checkpoint`. Then delete one old checkpoint with `--checkpoint <manifest> --keeper-kept ...`: its manifest goes, chunks another kept checkpoint names stay (`checkpoint verify --stage kept` of the other still passes), and the journal records intent and done.
+9. **Restore drill** (not built yet: the backlog's restore Job). Until it exists, `workspace-checkpoint fetch` of a kept checkpoint on the operator's machine, then compare file hashes with the source volume.
+
+Rollback: delete the Jobs (`kubectl -n <sandbox-namespace> delete job -l app.kubernetes.io/component=checkpoint`), release any hold (`checkpoint release-hold`), remove `[checkpoint]` and re-apply. Checkpoint objects and the journal stay.
 
 ## Order of the rollback points
 

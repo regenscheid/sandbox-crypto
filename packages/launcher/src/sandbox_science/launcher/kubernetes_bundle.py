@@ -10,7 +10,7 @@ from typing import cast
 
 import yaml
 
-from . import toml
+from . import kubernetes_checkpoint, toml
 from .kubernetes_config import (
     CHECK_TOKEN,
     GATEWAY_PROFILE,
@@ -243,6 +243,9 @@ def _policies(config: BundleConfig) -> list[dict[str, object]]:
             # The worker drives the gateway with its own client identity to create every
             # research sandbox.
             egress.append(_gateway(config))
+            if config.checkpoint is not None:
+                # The worker reads checkpoints back with its read-only key (D92).
+                egress.append(kubernetes_checkpoint.object_store_egress(config))
             if config.secrets.cache is not None:
                 ingress.append(
                     {"from": [_peer(peer) for peer in network.sandboxes], "ports": _ports(8090)}
@@ -989,6 +992,8 @@ def render(config: BundleConfig) -> dict[str, object]:
         items.extend(_routes(config, config.ingress))
     if config.sandboxes is not None and config.sandboxes.job_budget:
         items.append(_job_budget(config, config.sandboxes.namespace))
+    if config.checkpoint is not None:
+        items.append(kubernetes_checkpoint.network_policy(config))
     if config.maintenance is not None:
         items.extend(_maintenance(config, config.maintenance))
     if config.alerts is not None:
