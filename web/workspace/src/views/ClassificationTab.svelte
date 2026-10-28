@@ -16,8 +16,11 @@
   import { visible } from '../lib/text';
   import ClassificationDraft from './ClassificationDraft.svelte';
   import ErrorMessage from './ErrorMessage.svelte';
+  import { adminBlock } from '../lib/viewer.svelte';
 
   let { projectId, server }: { projectId: string; server: string } = $props();
+  /** Why this user may not take the admin-only action here (D104); null when they may. */
+  const blocked = $derived(adminBlock());
   let view = $state<ClassificationView | null>(null);
   let error = $state<unknown>(null);
   let drafts = $state<DraftListing | null>(null);
@@ -229,9 +232,11 @@
         <button
           type="button"
           class="primary-button"
-          disabled={saving}
+          disabled={saving || blocked !== null}
+          title={blocked ?? undefined}
           onclick={() => void reaccept()}>{saving ? 'Re-accepting…' : 'Re-accept'}</button
         >
+        {#if blocked}<p class="admin-only">{blocked}</p>{/if}
         {#if problem}<p class="problem" role="alert">{problem}</p>{/if}
         {#if writeError}<ErrorMessage error={writeError} />{/if}
       {:else}<p class="muted">No drift recorded for this server.</p>{/if}

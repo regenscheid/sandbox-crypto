@@ -16,6 +16,7 @@
   import { visible } from '../lib/text';
   import ErrorMessage from './ErrorMessage.svelte';
   import Icon from './Icon.svelte';
+  import { adminBlock } from '../lib/viewer.svelte';
 
   let {
     request,
@@ -32,7 +33,12 @@
   let menu = $state(false);
   let split = $state<HTMLDivElement>();
   const sending = $state(idle());
-  const chosen = $derived(scopes.find((item) => item.id === scope) ?? scopes[0]!);
+  /** Why this user may not grant for the project (D104); null when they may. */
+  const projectBlocked = $derived(adminBlock());
+  const chosen = $derived(
+    scopes.find((item) => item.id === scope && !(item.id === 'project' && projectBlocked)) ??
+      scopes[0]!,
+  );
   /** The asking agent's own words: a delegated agent's from its request's record, a
    * package request's from the provisioning operation. */
   const words = $derived(
@@ -150,17 +156,22 @@
       {#if menu}
         <div class="scope-menu" role="menu">
           {#each scopes as item (item.id)}
+            {@const blocked = item.id === 'project' ? projectBlocked : null}
             <button
               type="button"
               role="menuitemradio"
               aria-checked={chosen.id === item.id}
+              disabled={blocked !== null}
+              title={blocked ?? undefined}
               onclick={() => {
                 scope = item.id;
                 menu = false;
               }}
               ><span class="check"
                 >{#if chosen.id === item.id}<Icon name="check" size={14} />{/if}</span
-              ><span><strong>{item.label}</strong><small>{visible(item.detail)}</small></span
+              ><span
+                ><strong>{item.label}</strong><small>{visible(item.detail)}</small
+                >{#if blocked}<small class="admin-only">{blocked}</small>{/if}</span
               ></button
             >
           {/each}

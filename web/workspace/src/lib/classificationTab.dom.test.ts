@@ -4,6 +4,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import ClassificationTab from '../views/ClassificationTab.svelte';
 import McpServices from '../views/McpServices.svelte';
 import type { ClassifiedTool } from './api-types';
+import { setViewer } from './viewer.svelte';
 
 const REVISION = 'c'.repeat(64);
 const WHY = 'read passes without asking, where unclassified is escalate';
@@ -14,6 +15,7 @@ afterEach(async () => {
   document.body.innerHTML = '';
   sessionStorage.clear();
   vi.unstubAllGlobals();
+  setViewer(null);
 });
 
 async function settle() {
@@ -382,4 +384,19 @@ tools:
     rules:
       - {argument: dry_run, equals: true, class: read}
 `);
+});
+
+it('disables accepting and re-accepting for a user outside the admin group (D104)', async () => {
+  setViewer({ user: 'bob', login: 'forward', admin: false, admin_group: 'atlas-admins' });
+  const { target, requests } = await tab();
+  const reason = 'Only members of the Authentik group atlas-admins can do this.';
+  for (const words of ['Accept…', 'Re-accept']) {
+    const found = button(target, words);
+    expect(found.disabled).toBe(true);
+    expect(found.title).toBe(reason);
+  }
+  expect(target.querySelectorAll('.admin-only').length).toBeGreaterThanOrEqual(2);
+  expect(requests.filter((item) => item.method === 'POST')).toEqual([]);
+  // The view itself is everyone's: the classification in force and the drafts are shown.
+  expect(target.textContent).toContain('calls no tool');
 });

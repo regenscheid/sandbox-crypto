@@ -3,6 +3,7 @@
   import { guardPendingUploads } from './lib/uploadDrafts.svelte';
   import { focusPanel } from './lib/focusPanel';
   import { api } from './lib/api';
+  import { setViewer } from './lib/viewer.svelte';
   import WorkspaceSidebar from './views/WorkspaceSidebar.svelte';
   import Icon from './views/Icon.svelte';
   import { parseRoute } from './lib/router';
@@ -54,6 +55,11 @@
     };
     window.addEventListener('hashchange', follow);
     return () => window.removeEventListener('hashchange', follow);
+  });
+
+  $effect(() => {
+    // Who the session is, for the sidebar's name and the admin-only buttons (D104).
+    api.me().then(setViewer, () => setViewer(null));
   });
 
   async function logout() {
@@ -148,7 +154,9 @@
       <ProjectMath projectId={routeProject || null}>
         {#if loggedOut}
           <p>
-            Logged out. To log in again, open the login URL that sandbox-science-workspace printed.
+            Logged out. To log in again, reload the page if you came through Authentik, or open the
+            login URL that sandbox-science-workspace printed. Signing out of Authentik is
+            Authentik's own.
           </p>
         {:else if route.view === 'projects'}
           <ProjectList />
