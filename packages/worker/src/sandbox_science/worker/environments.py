@@ -80,6 +80,7 @@ from sandbox_science.policy.openshell import (
 )
 from sandbox_science.policy.store import PolicyStore, StoreError
 
+from .checkpoint_records import held_until
 from .claims import EnvironmentClaims
 from .errors import WorkerError
 from .kubernetes import check_pinned_policy
@@ -778,6 +779,7 @@ class Environments:
         except PolicyLoadError as exc:
             raise WorkerError(ErrorKind.UNAVAILABLE, f"environment settings: {exc}") from exc
         self.root = state_dir / "environments"
+        self.state_dir = state_dir
         self.records = EnvironmentRecords(state_dir / "environments.sqlite3", clock)
         self.claims = EnvironmentClaims(state_dir / "environment-claims.sqlite3", clock=clock)
         self.release: Release | None = None
@@ -1882,6 +1884,14 @@ class Environments:
             self.records.save(info)
         if info.state is not EnvironmentState.STOPPED:
             return info
+        until = held_until(self.state_dir, info.environment_id, self.clock.now())
+        if until is not None:
+            # A checkpoint Job is reading the stopped sandbox's volume (checkpoint_records).
+            raise WorkerError(
+                ErrorKind.UNAVAILABLE,
+                f"environment {info.environment_id} is held stopped for a workspace checkpoint"
+                f" until {until:%Y-%m-%d %H:%M} UTC; try again after that",
+            )
         failed = self._start_failures.get(info.environment_id)
         if failed is not None and self.clock.monotonic() - failed[0] < self.start_backoff:
             raise WorkerError(

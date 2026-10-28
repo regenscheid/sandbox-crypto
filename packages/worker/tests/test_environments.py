@@ -1471,6 +1471,48 @@ async def test_a_suspended_environment_keeps_its_sandbox_and_resumes_on_use(setu
     assert setup.environments.store.binding(info.sandbox_id or "") == setup.policy
 
 
+async def test_a_checkpoint_hold_keeps_a_stopped_sandbox_stopped(setup: Setup) -> None:
+    """While a checkpoint Job reads its volume, nothing starts the sandbox again; the hold
+    ends when released, or by itself when it expires."""
+    from sandbox_science.contracts.workspace_checkpoint import CheckpointPlan, CheckpointSource
+    from sandbox_science.worker.checkpoint_records import CheckpointRecords
+
+    info, _ = await setup.environments.create(setup.request())
+    setup.environments.release_idle = always
+    assert await setup.environments.suspend("env-1", time.monotonic())
+    source = CheckpointSource(
+        project_id="p1",
+        environment_id="env-1",
+        sandbox=info.sandbox,
+        sandbox_id=info.sandbox_id or "",
+        profile="minimal",
+        image=IMAGE,
+        policy=setup.policy,
+        launch_settings=None,
+        architecture="amd64",
+        require_workspace_prefix=False,
+        prefix_identity=None,
+        package_fingerprint=None,
+    )
+    plan = CheckpointPlan(
+        checkpoint_id="ckpt-" + "a" * 24,
+        source=source,
+        source_sha256="b" * 64,
+        capture="suspended_pvc",
+        hold_expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    records = CheckpointRecords(setup.state_dir)
+    records.place(plan, datetime.now(UTC), "test-operator")
+    with pytest.raises(WorkerError, match="held stopped for a workspace checkpoint") as held:
+        await setup.environments.resume("env-1")
+    assert held.value.kind is ErrorKind.UNAVAILABLE
+    assert setup.fake.calls("sandbox", "start") == []
+    records.release(plan.checkpoint_id, datetime.now(UTC), "verified")
+    records.close()
+    await setup.environments.resume("env-1")
+    assert setup.environments.get("env-1").state is EnvironmentState.READY
+
+
 async def test_an_environment_in_use_is_not_suspended(setup: Setup) -> None:
     await setup.environments.create(setup.request())
 

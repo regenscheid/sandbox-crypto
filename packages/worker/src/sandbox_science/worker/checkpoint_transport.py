@@ -59,14 +59,14 @@ def _line(handle: BinaryIO, maximum: int) -> bytes:
     return raw
 
 
-def _header(handle: BinaryIO) -> CheckpointReceipt:
+def header(handle: BinaryIO) -> CheckpointReceipt:
     result = Header.model_validate_json(_line(handle, MAX_HEADER_BYTES)).receipt
     if not 1 <= result.archive_size <= MAX_TRANSPORT_BYTES:
         raise ValueError("checkpoint archive exceeds the transport size bound")
     return result
 
 
-def _chunks(handle: BinaryIO, expected: CheckpointReceipt) -> Iterator[Chunk]:
+def chunks(handle: BinaryIO, expected: CheckpointReceipt) -> Iterator[Chunk]:
     left, count = expected.archive_size, 0
     while left:
         entry = Chunk.model_validate_json(_line(handle, 256))
@@ -177,13 +177,13 @@ def fetch(
                 manifest.flush()
                 os.fsync(manifest.fileno())
             with (journal / "manifest.ndjson").open("rb") as manifest:
-                expected = _header(manifest)
+                expected = header(manifest)
                 if expected.source != source:
                     raise ValueError(
                         "checkpoint manifest differs from the retained original source"
                     )
                 with (stage / "archive.bin").open("xb") as archive:
-                    for entry in _chunks(manifest, expected):
+                    for entry in chunks(manifest, expected):
                         objects.copy(
                             "chunks", entry.sha256, CHUNK_BYTES, archive, expected=entry.size
                         )

@@ -1,0 +1,557 @@
+# SPDX-License-Identifier: MIT
+"""Checkpoint Jobs offline: streaming capture with no local archive, the worker's own
+verification (a tampered object is refused), promotion and deletion with the keeper key,
+holds, the kept count and its rotation, the deletion journal and its refusals."""
+
+from __future__ import annotations
+
+import hashlib
+import http.server
+import io
+import json
+import os
+import sqlite3
+import ssl
+import threading
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from sandbox_science.contracts import EnvironmentInfo, EnvironmentState
+from sandbox_science.contracts.workspace_checkpoint import CheckpointInventory, CheckpointPlan
+from sandbox_science.testing import FakeClock
+from sandbox_science.worker import (
+    checkpoint_capture,
+    checkpoint_jobs,
+    checkpoint_jobs_cli,
+    checkpoint_remote,
+    checkpoint_s3,
+    checkpoint_transport,
+)
+from sandbox_science.worker.checkpoint_capture import capture_upload
+from sandbox_science.worker.checkpoint_records import CheckpointRecords, RecordError, held_until
+from sandbox_science.worker.checkpoint_s3 import Storage
+from sandbox_science.worker.cli import main
+from sandbox_science.worker.environments import EnvironmentRecords, OpenShellCli
+from sandbox_science.worker.settings import OpenShellBackendSettings, Settings
+from sandbox_science.worker.store import Store
+from sandbox_science.worker.tls import ServerTLS
+
+SMALL = 4096
+LAUNCH = json.dumps({"kubernetes": {"pod": {"node_selector": {"kubernetes.io/arch": "amd64"}}}})
+IMAGE = "example.invalid/research@sha256:" + "1" * 64
+POLICY = "sha256:" + "2" * 64
+
+
+class FakeSdkError(Exception):
+    pass
+
+
+class Garage:
+    """Buckets as one store: like Garage, it ignores ``If-None-Match`` and copies inside."""
+
+    def __init__(self) -> None:
+        self.objects: dict[tuple[str, str], bytes] = {}
+        self.calls: list[tuple[str, str, str]] = []
+
+    def put_object(self, **arguments: Any) -> None:
+        data = arguments["Body"].read()
+        assert len(data) == arguments["ContentLength"]
+        self.calls.append(("put", arguments["Bucket"], arguments["Key"]))
+        self.objects[(arguments["Bucket"], arguments["Key"])] = data
+
+    def get_object(self, **arguments: Any) -> dict[str, Any]:
+        location = (arguments["Bucket"], arguments["Key"])
+        self.calls.append(("get", *location))
+        if location not in self.objects:
+            raise FakeSdkError("NoSuchKey")
+        data = self.objects[location]
+        return {"Body": io.BytesIO(data), "ContentLength": len(data)}
+
+    def head_object(self, **arguments: Any) -> dict[str, Any]:
+        location = (arguments["Bucket"], arguments["Key"])
+        if location not in self.objects:
+            raise FakeSdkError("NoSuchKey")
+        return {"ContentLength": len(self.objects[location])}
+
+    def copy_object(self, **arguments: Any) -> None:
+        source = arguments["CopySource"]
+        self.calls.append(("copy", arguments["Bucket"], arguments["Key"]))
+        self.objects[(arguments["Bucket"], arguments["Key"])] = self.objects[
+            (source["Bucket"], source["Key"])
+        ]
+
+    def delete_object(self, **arguments: Any) -> None:
+        self.calls.append(("delete", arguments["Bucket"], arguments["Key"]))
+        self.objects.pop((arguments["Bucket"], arguments["Key"]), None)
+
+    def list_objects_v2(self, **arguments: Any) -> dict[str, object]:
+        # Two keys a page, so that continuation is exercised.
+        keys = sorted(
+            key
+            for bucket, key in self.objects
+            if bucket == arguments["Bucket"] and key.startswith(arguments["Prefix"])
+        )
+        start = int(arguments.get("ContinuationToken", "0"))
+        page = keys[start : start + 2]
+        more = start + 2 < len(keys)
+        return {
+            "Contents": [{"Key": key} for key in page],
+            "IsTruncated": more,
+            **({"NextContinuationToken": str(start + 2)} if more else {}),
+        }
+
+    def close(self) -> None:
+        pass
+
+    def keys(self, bucket: str, kind: str) -> set[str]:
+        return {
+            key.rsplit("/", 1)[1] for b, key in self.objects if b == bucket and f"/{kind}/" in key
+        }
+
+
+@pytest.fixture
+def garage(monkeypatch) -> Garage:
+    store = Garage()
+    monkeypatch.setattr(checkpoint_s3, "connect", lambda _s, _t: (store, (FakeSdkError,)))
+    # Small chunks, so that a small workspace spans several.
+    for module in (checkpoint_capture, checkpoint_transport, checkpoint_remote):
+        monkeypatch.setattr(module, "CHUNK_BYTES", SMALL)
+    return store
+
+
+def storage(bucket: str) -> Storage:
+    return Storage(
+        bucket=bucket,
+        prefix="test-only",
+        endpoint="http://garage.test.invalid:3900",
+        addressing_style="path",
+        region="garage",
+    )
+
+
+UPLOAD, KEPT = storage("test-checkpoint-upload"), storage("test-checkpoints")
+
+
+def workspace(root: Path) -> Path:
+    root.mkdir()
+    (root / ".openshell-initialized").write_bytes(b"initialized\n")
+    (root / "research").mkdir()
+    # About five small chunks, none alike.
+    big = b"".join(hashlib.sha256(n.to_bytes(2)).digest() for n in range(600))
+    (root / "research" / "big").write_bytes(big)
+    (root / "research" / "notes").write_text("retained result")
+    (root / "link").symlink_to("research/notes")
+    return root
+
+
+@pytest.fixture
+def retained(tmp_path) -> Settings:
+    """A worker state directory with one stopped session environment."""
+    token = tmp_path / "pool-token"
+    token.write_text("test-secret-" + "t" * 40)
+    settings = Settings(
+        token_file=token,
+        state_dir=tmp_path / "state",
+        openshell=OpenShellBackendSettings(isolation_tier=3),
+    )
+    settings.state_dir.mkdir()
+    save_environment(settings, "e", "ss-checkpoint-test", EnvironmentState.STOPPED)
+    Store(settings.state_dir / "worker.sqlite3").close()
+    return settings
+
+
+def save_environment(
+    settings: Settings, environment_id: str, sandbox: str, state: EnvironmentState, **fields: Any
+) -> None:
+    records = EnvironmentRecords(settings.state_dir / "environments.sqlite3")
+    records.save(
+        EnvironmentInfo(
+            environment_id=environment_id,
+            project_id="p",
+            profile="crypto-base",
+            image=IMAGE,
+            sandbox=sandbox,
+            sandbox_id=f"{sandbox}-id",
+            policy=POLICY,
+            state=state,
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+            **fields,
+        ),
+        driver_config=LAUNCH,
+        require_workspace_prefix=False,
+    )
+    records.close()
+
+
+@pytest.fixture
+def stopped(monkeypatch) -> list[str]:
+    """OpenShell's phases, one per look; the last repeats."""
+    phases = ["Stopped"]
+
+    async def sandbox(self, name):
+        phase = phases.pop(0) if len(phases) > 1 else phases[0]
+        return {"id": f"{name}-id", "phase": phase}
+
+    monkeypatch.setattr(OpenShellCli, "sandbox", sandbox)
+    return phases
+
+
+def planned(settings: Settings, **options: Any) -> CheckpointPlan:
+    return checkpoint_jobs.plan(
+        settings, "e", "amd64", "test-operator", suspend=options.pop("suspend", refuse), **options
+    )
+
+
+def refuse(_settings: Settings, _environment: str) -> bool:
+    raise AssertionError("a stopped environment is not suspended again")
+
+
+# Streaming capture and the worker's verification
+
+
+def test_capture_streams_chunks_and_the_worker_verifies_every_byte(
+    tmp_path, garage, retained, stopped
+):
+    plan = planned(retained)
+    root = workspace(tmp_path / "volume")
+    identity, receipt, written = capture_upload(root, plan.source, UPLOAD, plan.capture)
+    assert receipt.capture == "suspended_pvc"
+    assert receipt.format.endswith("-v2")
+    assert len(garage.keys(UPLOAD.bucket, "chunks")) == written > 3
+    assert garage.keys(UPLOAD.bucket, "manifests") == {identity}
+    assert checkpoint_remote.verify(UPLOAD, identity, plan.source) == receipt
+    # A retry of an unchanged tree re-sends no chunk: each one already reads back exactly.
+    again, _, rewritten = capture_upload(root, plan.source, UPLOAD, plan.capture)
+    assert rewritten == 0
+    assert again != identity  # a new receipt time, so a new manifest
+
+
+def test_capture_skips_and_lists_special_files(tmp_path, garage, retained, stopped):
+    plan = planned(retained)
+    root = workspace(tmp_path / "volume")
+    os.mkfifo(root / "research" / "kernel.fifo")
+    identity, receipt, _ = capture_upload(root, plan.source, UPLOAD, plan.capture)
+    assert [(e.path, e.kind) for e in receipt.skipped] == [("research/kernel.fifo", "fifo")]
+    assert checkpoint_remote.verify(UPLOAD, identity, plan.source).skipped == receipt.skipped
+
+
+@pytest.mark.parametrize("target", ["chunk", "manifest", "missing-chunk"])
+def test_a_tampered_or_missing_object_is_refused(tmp_path, garage, retained, stopped, target):
+    plan = planned(retained)
+    identity, _, _ = capture_upload(
+        workspace(tmp_path / "volume"), plan.source, UPLOAD, plan.capture
+    )
+    chunk = sorted(k for b, k in garage.objects if "/chunks/" in k)[1]
+    manifest = next(k for b, k in garage.objects if "/manifests/" in k)
+    key = (UPLOAD.bucket, chunk if target != "manifest" else manifest)
+    if target == "missing-chunk":
+        del garage.objects[key]
+    else:
+        original = garage.objects[key]
+        garage.objects[key] = bytes([original[0] ^ 1]) + original[1:]  # same length
+    with pytest.raises((ValueError, OSError)):
+        checkpoint_remote.verify(UPLOAD, identity, plan.source)
+
+
+def test_verification_refuses_another_binding(tmp_path, garage, retained, stopped):
+    plan = planned(retained)
+    identity, _, _ = capture_upload(
+        workspace(tmp_path / "volume"), plan.source, UPLOAD, plan.capture
+    )
+    other = plan.source.model_copy(update={"sandbox_id": "another-sandbox"})
+    with pytest.raises(ValueError, match="another binding"):
+        checkpoint_remote.verify(UPLOAD, identity, other)
+
+
+# The worker's records: plan and hold, verify, keep, rotate
+
+
+def test_plan_holds_the_environment_and_a_second_plan_is_refused(retained, stopped):
+    clock = FakeClock(datetime.now(UTC))
+    plan = planned(retained, clock=clock)
+    assert plan.source.environment_id == "e"
+    assert plan.capture == "suspended_pvc"
+    assert held_until(retained.state_dir, "e", clock.now()) == plan.hold_expires_at
+    with pytest.raises(RecordError, match="holds this environment"):
+        planned(retained, clock=clock)
+    clock.advance(checkpoint_jobs.HOLD_SECONDS + 1)
+    assert held_until(retained.state_dir, "e", clock.now()) is None
+    assert planned(retained, clock=clock).checkpoint_id != plan.checkpoint_id  # expired
+
+
+def test_a_running_environment_is_suspended_first_and_one_in_use_is_left_running(retained, stopped):
+    save_environment(retained, "e", "ss-checkpoint-test", EnvironmentState.READY)
+    asked: list[str] = []
+
+    def suspend(_settings: Settings, environment: str) -> bool:
+        asked.append(environment)
+        return True
+
+    stopped[:] = ["Running", "Stopped"]
+    planned(retained, suspend=suspend)
+    assert asked == ["e"]
+    records = CheckpointRecords(retained.state_dir)
+    records.release(records.holds(datetime.now(UTC))[0].checkpoint_id, datetime.now(UTC), "test")
+    records.close()
+    stopped[:] = ["Running"]
+    with pytest.raises(RecordError, match="in use"):
+        planned(retained, suspend=lambda _s, _e: False)
+    # The failed plan lifted its own hold.
+    assert held_until(retained.state_dir, "e", datetime.now(UTC)) is None
+
+
+def checkpointed(tmp_path: Path, settings: Settings, name: str) -> tuple[CheckpointPlan, str]:
+    plan = planned(settings)
+    root = workspace(tmp_path / name)
+    (root / "research" / "notes").write_text(f"result of {name}")
+    identity, _, _ = capture_upload(root, plan.source, UPLOAD, plan.capture)
+    checkpoint_jobs.verify(
+        settings, plan.checkpoint_id, identity, UPLOAD, "upload", "test-operator"
+    )
+    checkpoint_remote.promote(UPLOAD, KEPT, identity)
+    checkpoint_jobs.verify(settings, plan.checkpoint_id, identity, KEPT, "kept", "test-operator")
+    return plan, identity
+
+
+def test_a_checkpoint_counts_only_once_verified_again_in_the_kept_bucket(
+    tmp_path, garage, retained, stopped
+):
+    plan = planned(retained)
+    identity, _, _ = capture_upload(workspace(tmp_path / "v"), plan.source, UPLOAD, plan.capture)
+    with pytest.raises(RecordError, match="upload bucket first"):
+        checkpoint_jobs.verify(retained, plan.checkpoint_id, identity, KEPT, "kept", "op")
+    checkpoint_jobs.verify(retained, plan.checkpoint_id, identity, UPLOAD, "upload", "op")
+    states = {c.manifest_sha256: c.state for c in checkpoint_jobs.inventory(retained).checkpoints}
+    assert states == {identity: "verified"}
+    assert held_until(retained.state_dir, "e", datetime.now(UTC)) is None  # hold lifted
+    checkpoint_remote.promote(UPLOAD, KEPT, identity)
+    assert any(call[0] == "copy" for call in garage.calls)  # inside the store
+    # A kept copy that differs is not counted.
+    chunk = next(k for b, k in garage.objects if b == KEPT.bucket and "/chunks/" in k)
+    good = garage.objects[(KEPT.bucket, chunk)]
+    garage.objects[(KEPT.bucket, chunk)] = b"x" * len(good)
+    with pytest.raises(ValueError, match="differ"):
+        checkpoint_jobs.verify(retained, plan.checkpoint_id, identity, KEPT, "kept", "op")
+    garage.objects[(KEPT.bucket, chunk)] = good
+    checkpoint_jobs.verify(retained, plan.checkpoint_id, identity, KEPT, "kept", "op")
+    assert [c.state for c in checkpoint_jobs.inventory(retained).checkpoints] == ["kept"]
+
+
+def test_a_capture_outside_its_hold_is_not_recorded(tmp_path, garage, retained, stopped):
+    plan = planned(retained)
+    late = FakeClock(plan.hold_expires_at + timedelta(hours=1))
+    identity, _, _ = capture_upload(
+        workspace(tmp_path / "v"), plan.source, UPLOAD, plan.capture, clock=late
+    )
+    with pytest.raises(RecordError, match="while its hold held"):
+        checkpoint_jobs.verify(retained, plan.checkpoint_id, identity, UPLOAD, "upload", "op")
+
+
+def test_the_latest_two_are_kept_and_older_ones_become_candidates(
+    tmp_path, garage, retained, stopped
+):
+    identities = [checkpointed(tmp_path, retained, f"v{n}")[1] for n in range(3)]
+    records = CheckpointRecords(retained.state_dir)
+    try:
+        keep, prune = records.rotation("ss-checkpoint-test", 2)
+    finally:
+        records.close()
+    assert keep == identities[:0:-1]
+    assert prune == identities[:1]
+
+
+def test_deleting_a_checkpoint_keeps_chunks_another_one_uses(tmp_path, garage, retained, stopped):
+    first = checkpointed(tmp_path, retained, "one")[1]
+    second = checkpointed(tmp_path, retained, "two")[1]
+    shared = garage.keys(KEPT.bucket, "chunks")
+    removed = checkpoint_remote.delete(KEPT, first)
+    assert first not in garage.keys(KEPT.bucket, "manifests")
+    assert 0 < removed < len(shared)  # the large file's chunks are the same in both
+    plan = (
+        CheckpointRecords(retained.state_dir)
+        .hold(
+            next(
+                c.checkpoint_id
+                for c in checkpoint_jobs.inventory(retained).checkpoints
+                if c.manifest_sha256 == second
+            )
+        )
+        .plan
+    )
+    assert checkpoint_remote.verify(KEPT, second, plan.source).members > 1
+
+
+def test_the_last_kept_checkpoint_of_an_existing_volume_is_never_forgotten(
+    tmp_path, garage, retained, stopped
+):
+    first = checkpointed(tmp_path, retained, "one")[1]
+    records = CheckpointRecords(retained.state_dir)
+    now = datetime.now(UTC)
+    try:
+        with pytest.raises(RecordError, match="last verified checkpoint"):
+            records.forget(first, now, "test-operator", volume_gone=False)
+        second = checkpointed(tmp_path, retained, "two")[1]
+        assert records.forget(first, now, "test-operator", volume_gone=False).state == "deleting"
+        with pytest.raises(RecordError, match="last verified checkpoint"):
+            records.forget(second, now, "test-operator", volume_gone=False)
+        records.deleted(first, now, "test-operator", {"chunks_removed": 1})
+        journal = records.deletions()
+        assert [(d.kind, d.subject, d.phase, d.actor) for d in journal] == [
+            ("checkpoint", first, "intent", "test-operator"),
+            ("checkpoint", first, "done", "test-operator"),
+        ]
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            records.db.execute("UPDATE deletions SET actor='someone else'")
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            records.db.execute("DELETE FROM deletions")
+    finally:
+        records.close()
+
+
+# Volume deletions: the worker's refusals and its journal
+
+
+def test_volume_deletion_refusals_and_journal(tmp_path, garage, retained, stopped):
+    record = checkpoint_jobs.record_volume
+    with pytest.raises(RecordError, match="is stopped"):
+        record(
+            retained,
+            "intent",
+            "pv-1",
+            "ss-checkpoint-test",
+            "op",
+            without_checkpoint=True,
+            detail={},
+        )
+    save_environment(retained, "gone", "ss-gone", EnvironmentState.DELETED)
+    with pytest.raises(RecordError, match="no verified checkpoint"):
+        record(retained, "intent", "pv-2", "ss-gone", "op", without_checkpoint=False, detail={})
+    record(retained, "intent", "pv-2", "ss-gone", "op", without_checkpoint=True, detail={"gib": 20})
+    with pytest.raises(RecordError, match="--without-checkpoint"):
+        record(retained, "intent", "pv-3", None, "op", without_checkpoint=False, detail={})
+    # A child whose hand-back was incomplete keeps its volume, even once deleted.
+    save_environment(retained, "child", "ss-child", EnvironmentState.DELETED, kind="child")
+    db = sqlite3.connect(retained.state_dir / "worker.sqlite3")
+    db.execute(
+        "INSERT INTO child_environments VALUES ('child','d','p','s','e','crypto-base','retained',"
+        "NULL,NULL,'t','t',NULL,NULL,'t','t')"
+    )
+    db.commit()
+    db.close()
+    with pytest.raises(RecordError, match="hand-back is retained"):
+        record(retained, "intent", "pv-4", "ss-child", "op", without_checkpoint=True, detail={})
+    # A hold refuses too.
+    planned(retained)
+    found = checkpoint_jobs.inventory(retained)
+    assert checkpoint_jobs.volume_refusals(found, "ss-checkpoint-test", without_checkpoint=True)
+    record(retained, "done", "pv-2", "ss-gone", "op", without_checkpoint=True, detail={})
+    journal = CheckpointRecords(retained.state_dir).deletions()
+    assert [(d.subject, d.phase, d.actor, d.detail["sandbox"]) for d in journal] == [
+        ("pv-2", "intent", "op", "ss-gone"),
+        ("pv-2", "done", "op", "ss-gone"),
+    ]
+
+
+def test_inventory_traces_volumes_to_projects_sessions_and_hand_backs(retained, stopped):
+    save_environment(
+        retained, "c1", "ss-child", EnvironmentState.DELETED, kind="child", session_id="s1"
+    )
+    found = CheckpointInventory.model_validate_json(
+        checkpoint_jobs.inventory(retained, keep=3).model_dump_json()
+    )
+    assert found.keep == 3
+    rows = {e.environment_id: e for e in found.environments}
+    assert rows["c1"].session_id == "s1"
+    assert rows["c1"].state == "deleted"
+    assert rows["e"].state == "stopped"
+    assert rows["e"].project_id == "p"
+
+
+# The commands
+
+
+def test_the_job_command_reads_its_plan_and_storage_from_its_environment(
+    tmp_path, garage, retained, stopped, monkeypatch, capsys
+):
+    plan = planned(retained)
+    root = workspace(tmp_path / "volume")
+    log = tmp_path / "termination-log"
+    monkeypatch.setattr(checkpoint_jobs_cli, "TERMINATION_LOG", log)
+    monkeypatch.setenv(checkpoint_jobs_cli.PLAN_VARIABLE, plan.model_dump_json())
+    monkeypatch.setenv(checkpoint_jobs_cli.STORAGE_VARIABLE, UPLOAD.model_dump_json())
+    assert main(["checkpoint", "capture-upload", "--workspace", str(root)]) == 0
+    line = capsys.readouterr().out.splitlines()[0]
+    identity = line.split()[0].removeprefix("checkpoint_manifest=")
+    assert log.read_text() == f"checkpoint_manifest={identity}\n"
+    assert f"checkpoint_id={plan.checkpoint_id}" in line
+    # An expired plan, or storage settings carrying a credential, are refused.
+    expired = plan.model_copy(update={"hold_expires_at": datetime.now(UTC) - timedelta(1)})
+    monkeypatch.setenv(checkpoint_jobs_cli.PLAN_VARIABLE, expired.model_dump_json())
+    assert main(["checkpoint", "capture-upload", "--workspace", str(root)]) == 1
+    monkeypatch.setenv(checkpoint_jobs_cli.PLAN_VARIABLE, plan.model_dump_json())
+    leaked = json.dumps({**UPLOAD.model_dump(), "aws_secret_access_key": "test-secret-leak"})
+    monkeypatch.setenv(checkpoint_jobs_cli.STORAGE_VARIABLE, leaked)
+    assert main(["checkpoint", "capture-upload", "--workspace", str(root)]) == 1
+    assert "test-secret-leak" not in capsys.readouterr().err
+
+
+def test_the_local_suspend_accepts_only_the_workers_own_certificate(tmp_path, retained):
+    from sandbox_science.testing.mcp import make_tls
+
+    make_tls(tmp_path)
+    seen: list[str] = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            seen.append(f"{self.path} {self.headers['Authorization'][:12]}")
+            info = EnvironmentInfo(
+                environment_id="e",
+                project_id="p",
+                profile="crypto-base",
+                image=IMAGE,
+                sandbox="ss-checkpoint-test",
+                policy=POLICY,
+                state=EnvironmentState.STOPPED,
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+            )
+            body = json.dumps({"environment": info.model_dump(mode="json"), "suspended": True})
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body.encode())
+
+        def log_message(self, *_args: object) -> None:
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(tmp_path / "server.pem", tmp_path / "server-key.pem")
+    server.socket = context.wrap_socket(server.socket, server_side=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        own = retained.model_copy(
+            update={
+                "listen": f"127.0.0.1:{port}",
+                "tls": ServerTLS(
+                    certificate=tmp_path / "server.pem", private_key=tmp_path / "server-key.pem"
+                ),
+            }
+        )
+        assert checkpoint_jobs.local_suspend(own, "e")
+        assert seen == ["/v1/environments/e/suspend Bearer test-"]
+        other = own.model_copy(
+            update={"tls": ServerTLS(certificate=tmp_path / "ca.pem", private_key=tmp_path / "x")}
+        )
+        with pytest.raises(RecordError, match="another certificate"):
+            checkpoint_jobs.local_suspend(other, "e")
+        assert len(seen) == 1  # nothing, not even the token, went to the impostor
+    finally:
+        server.shutdown()
+        server.server_close()
