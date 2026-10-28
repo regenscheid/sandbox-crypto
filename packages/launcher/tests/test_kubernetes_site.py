@@ -873,3 +873,44 @@ def test_only_a_site_may_name_an_http_cluster_gateway():
     }
     with pytest.raises(ValidationError, match="in the clear"):
         ModelConfig.model_validate(model)
+
+
+def test_the_readme_names_what_login_through_authentik_needs(tmp_path):
+    values = site_values(tmp_path)
+    bundle = bundle_values()
+    bundle["workspace"] = {**bundle.get("workspace", {}), "allow_remote": True}
+    bundle["ingress"] = {
+        "workspace_host": "workspace.research.test",
+        "preview_host": "preview.research.test",
+        "issuer": "test-issuer",
+        "authentik_middleware": "test-authentik",
+        "traefik": [
+            {
+                "namespace_labels": {"kubernetes.io/metadata.name": "traefik"},
+                "pod_labels": {"app.kubernetes.io/name": "traefik"},
+            }
+        ],
+        "forward_auth": {
+            "jwks_url": "http://authentik-server.authentik.svc/application/o/atlas/jwks/",
+            "issuer": "https://auth.research.test/application/o/atlas/",
+            "audience": "test-client-id",
+            "user_group": "atlas-users",
+            "admin_group": "atlas-admins",
+            "authentik": {
+                "namespace_labels": {"kubernetes.io/metadata.name": "authentik"},
+                "pod_labels": {"app.kubernetes.io/component": "server"},
+            },
+        },
+    }
+    (tmp_path / "inputs/bundle.toml").write_text(toml.dumps(bundle))
+    output = tmp_path / "out"
+    files = plan(*load(site_file(tmp_path, values)))
+    write(output, files)
+    readme = (output / "README.md").read_text()
+    for said in ("Signing Key", "test-client-id", "authResponseHeaders", "atlas-admins"):
+        assert said in readme
+    # No generated Secret holds anything of it: the keys are public, fetched.
+    assert not any("forward" in name or "authentik" in name for name in files)
+    # Without it, the README says nothing of it.
+    (tmp_path / "plain").mkdir()
+    assert "Signing Key" not in (generate(tmp_path / "plain") / "README.md").read_text()

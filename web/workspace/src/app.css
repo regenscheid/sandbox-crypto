@@ -1043,6 +1043,16 @@ h2 {
   min-width: 0;
 }
 .sidebar-section a:hover,
+.sidebar-footer .signed-in {
+  margin: 4px 10px;
+  font-size: 13px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.admin-only {
+  font-size: 13px;
+  color: var(--muted);
+}
 .sidebar-footer a:hover,
 .sidebar-footer button:hover:not(:disabled) {
   background: var(--subtle);

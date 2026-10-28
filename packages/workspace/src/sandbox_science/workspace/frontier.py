@@ -24,7 +24,7 @@ from aiohttp import web
 from pydantic import AwareDatetime
 
 from sandbox_science.contracts import Contract, ErrorKind, Identifier
-from sandbox_science.orchestrator.documents import USER, DocumentStore
+from sandbox_science.orchestrator.documents import DocumentStore
 from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.ledger.models import (
     Category,
@@ -38,6 +38,7 @@ from sandbox_science.orchestrator.ledger.models import (
 from sandbox_science.orchestrator.projects import ProjectError
 
 from .context import identifier, json_body
+from .identity import author
 from .ledger import matched, query_of, read_answer
 from .requests import document_answer
 
@@ -283,6 +284,6 @@ async def define(request: web.Request) -> web.Response:
     raw: object = await json_body(request, "frontier category JSON")
 
     def defined(store: DocumentStore) -> dict[str, object]:
-        return Ledger(store).define_category(project, raw, USER).model_dump(mode="json")
+        return Ledger(store).define_category(project, raw, author(request)).model_dump(mode="json")
 
     return await document_answer(request, defined, access="write")

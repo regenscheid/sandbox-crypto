@@ -3,6 +3,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import ProjectModels from '../views/ProjectModels.svelte';
 import type { ModelSettings } from './api-types';
+import { setViewer } from './viewer.svelte';
 
 const mounted: ReturnType<typeof mount>[] = [];
 let identities = 0;
@@ -26,6 +27,7 @@ afterEach(() => {
   for (const component of mounted.splice(0)) unmount(component);
   document.body.innerHTML = '';
   vi.unstubAllGlobals();
+  setViewer(null);
 });
 
 async function settle() {
@@ -127,4 +129,22 @@ it('retries an uncertain save with the exact operation and locks the pending dra
   expect(posts).toHaveLength(2);
   expect(posts[1]!.operation_id).toBe(posts[0]!.operation_id);
   expect(posts[1]!.expected).toBe(0);
+});
+
+it('disables saving the models for a user outside the admin group (D104)', async () => {
+  setViewer({ user: 'bob', login: 'forward', admin: false, admin_group: 'atlas-admins' });
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => new Response(JSON.stringify(settings()))),
+  );
+  const target = document.createElement('div');
+  document.body.append(target);
+  mounted.push(mount(ProjectModels, { target, props: { projectId: 'p1' } }));
+  await settle();
+  const save = [...target.querySelectorAll<HTMLButtonElement>('button')].find(
+    (item) => item.textContent?.trim() === 'Save agent models',
+  )!;
+  expect(save.disabled).toBe(true);
+  expect(save.title).toContain('atlas-admins');
+  expect(target.querySelector('.admin-only')?.textContent).toContain('decide spend');
 });

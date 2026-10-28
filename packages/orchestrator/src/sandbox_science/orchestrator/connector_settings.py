@@ -64,11 +64,18 @@ class ProjectConnectors:
         return _view(project, revision, stored, configured)
 
     def change(
-        self, project: str, value: object, author: Author, *, configured: Collection[str]
+        self,
+        project: str,
+        value: object,
+        author: Author,
+        *,
+        configured: Collection[str],
+        widen: bool = True,
     ) -> tuple[ConnectorSettings, bool]:
         """The user's change, at the revision read (``expected``): a list of configured
         servers to turn off. A server the deployment does not configure is refused, so
-        the setting can only narrow."""
+        the setting can only narrow. Without ``widen``, a change that turns a server back
+        on is refused (the workspace's admin-only action, D104)."""
         _scope(project)
         if author.kind != "user":
             raise DocumentError(POLICY_DENIED, "only the user turns a project's connectors off")
@@ -93,6 +100,10 @@ class ProjectConnectors:
             revision, current = _read(db, project)
             if revision != change.expected:
                 raise DocumentError(CONFLICT, "the project's connector settings changed meanwhile")
+            if not widen and not set(current) <= set(wanted):
+                raise DocumentError(
+                    POLICY_DENIED, "turning an MCP service back on is for the workspace's admins"
+                )
             if current != wanted:
                 db.execute(
                     "INSERT INTO project_connector_settings VALUES(?,?,?,?) ON CONFLICT(project) "

@@ -562,8 +562,10 @@ Serves the workspace and its preview origin at two host names through Traefik, o
      forwardAuth:
        address: http://<outpost-service>.<authentik-namespace>.svc.<cluster-domain>:<port>/outpost.goauthentik.io/auth/traefik
        trustForwardHeader: true
-       authResponseHeaders: [X-authentik-username, X-authentik-groups, X-authentik-email, X-authentik-name, X-authentik-uid]
+       authResponseHeaders: [X-authentik-username, X-authentik-groups, X-authentik-email, X-authentik-name, X-authentik-uid, X-authentik-jwt]
    ```
+
+   `X-authentik-jwt` is what [login through Authentik](KUBERNETES-BUNDLE.md#login-through-authentik-opt-in) reads (D104); it also needs the provider to have a *Signing Key*. Listing a header here also makes Traefik drop a client's own header of that name.
 
    `<port>` is the outpost Service's HTTP port: 9000 on a dedicated outpost's Service; for the embedded outpost, the Authentik server Service's HTTP port (80 in the Helm chart, which forwards to the server's 9000). With domain-level forward auth the callback runs on the authentication URL's host, so that host must reach the outpost too (the embedded outpost answers there already). Traefik must be able to reach the outpost; that path, and Traefik's own NetworkPolicy, are the cluster's, not the bundle's.
 6. **The bundle.** Add `[workspace] allow_remote = true`, `[ingress]` and `[[ingress.traefik]]` to the private TOML (see [the template](../examples/kubernetes-bundle.toml)), then `check`, `render`, `kubectl diff` and `apply` as in step 8. The workspace Pod restarts onto the Pod network; the rest of the bundle is unchanged. cert-manager issues the two certificates into `<name>-workspace-tls` and `<name>-preview-tls`.
@@ -574,10 +576,11 @@ Verify:
 kubectl -n research get certificate,ingressroute,svc,networkpolicy -l app.kubernetes.io/part-of=<name>
 kubectl -n research wait certificate/<name>-workspace certificate/<name>-preview --for=condition=Ready --timeout=300s
 curl -sI https://workspace.<domain>/ | head -3        # a redirect to Authentik, never the workspace
-kubectl -n research logs deploy/<name>-app -c workspace | grep 'login?token'
+kubectl -n research logs deploy/<name>-app -c workspace | grep 'login?token'   # without [ingress.forward_auth]
+kubectl -n research exec deploy/<name>-app -c workspace -- sandbox-science-workspace login-url --state-dir /var/lib/sandbox-science/control   # with it
 ```
 
-Log in to Authentik in a browser, then open `https://workspace.<domain>/login?token=<token from the log>`; the app should load, a document should save and a PDF open in the viewer. Negative checks: `curl -sk --resolve workspace.<domain>:443:<controller-ip> https://other.<domain>/` is not served (404); from a throwaway Pod in `research` (an approved image with `curl`, outside the bundle's labels), `curl -m 3 http://<app-pod-ip>:8200/` times out, since only the controller's Pods are admitted. The browser's developer tools show the session cookie as `__Host-…-8200`, Secure.
+Log in to Authentik in a browser, then open `https://workspace.<domain>/login?token=<token from the log>` (with `[ingress.forward_auth]`, `https://workspace.<domain>/` alone, and the sidebar names the Authentik user); the app should load, a document should save and a PDF open in the viewer. Negative checks: `curl -sk --resolve workspace.<domain>:443:<controller-ip> https://other.<domain>/` is not served (404); from a throwaway Pod in `research` (an approved image with `curl`, outside the bundle's labels), `curl -m 3 http://<app-pod-ip>:8200/` times out, since only the controller's Pods are admitted. The browser's developer tools show the session cookie as `__Host-…-8200`, Secure.
 
 Rollback: remove `[ingress]` and `workspace.allow_remote` from the TOML, render and apply (the workspace returns to loopback). Apply does not prune: `kubectl -n research delete ingressroute/<name>-workspace ingressroute/<name>-preview certificate/<name>-workspace certificate/<name>-preview service/<name>-workspace service/<name>-preview networkpolicy/<name>-ingress`, then the two TLS Secrets, and remove the DNS records. The PVCs are untouched.
 

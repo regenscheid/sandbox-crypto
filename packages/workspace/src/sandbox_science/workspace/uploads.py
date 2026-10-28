@@ -23,7 +23,7 @@ from sandbox_science.contracts import (
 )
 from sandbox_science.contracts.model import Contract
 from sandbox_science.orchestrator.aio import held
-from sandbox_science.orchestrator.documents import USER, DocumentError
+from sandbox_science.orchestrator.documents import DocumentError
 from sandbox_science.orchestrator.projects import ProjectError, ensure_environment
 from sandbox_science.orchestrator.uploads import MAX_UPLOAD_BYTES, UserUpload, UserUploads
 from sandbox_science.orchestrator.worker_client import WorkerAPIError
@@ -38,6 +38,7 @@ from .context import (
     session_record,
 )
 from .errors import TooLargeError
+from .identity import author
 
 PATH: Final = "/api/v0/projects/{project}/sessions/{session}/uploads"
 _IDS: Final = TypeAdapter[list[Identifier]](list[Identifier])
@@ -249,7 +250,7 @@ async def document(request: web.Request) -> web.Response:
             name=name,
             title=found.filename[:200],
             text=text,
-            author=USER,
+            author=author(request),
             session_id=session,
             reason=f"Imported original upload {upload}",
             operation_id=name,

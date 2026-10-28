@@ -18,6 +18,7 @@
   import Icon, { type IconName } from './Icon.svelte';
   import PollStatus from './PollStatus.svelte';
   import ErrorMessage from './ErrorMessage.svelte';
+  import { viewer, viewerName } from '../lib/viewer.svelte';
   let {
     route,
     close,
@@ -235,6 +236,10 @@
     <a href="#/" onclick={close} aria-current={route.view === 'projects' ? 'page' : undefined}
       ><Icon name="projects" />All projects</a
     >
+    {#if viewer.current}<p class="signed-in" aria-label="Signed in as">
+        Signed in as <strong>{viewerName(viewer.current)}</strong>{#if !viewer.current.admin}
+          <span class="muted">(not an admin)</span>{/if}
+      </p>{/if}
     {#if logout}<button type="button" onclick={logout}><Icon name="logout" />Log out</button>{/if}
   </div>
 </nav>

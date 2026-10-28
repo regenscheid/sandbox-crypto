@@ -15,6 +15,7 @@ from sandbox_science.orchestrator.delegation.records import Delegation, Delegati
 from sandbox_science.orchestrator.projects import ModelUsage, ProjectStore
 from sandbox_science.orchestrator.runstate import RunState
 
+from .authentik_support import ADMINS, USERS, Authentik, as_user
 from .route_support import ClientFactory, context_of, error_of, origin, workspace
 from .test_routes_recovery import CHILD, ROOT, RUN
 
@@ -187,3 +188,48 @@ async def test_user_soft_extension_is_scoped_origin_checked_and_never_resumes(
         assert WorkRecords(store.control).queued() == []
     finally:
         store.close()
+
+
+async def test_with_an_admin_group_a_resource_extension_is_the_admins(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
+) -> None:
+    seed_resources(state_dir)
+    store = ProjectStore(state_dir)
+    try:
+        # A warning is emitted during the run; then the tree pauses at its allowance.
+        works = WorkRecords(store.control)
+        with store.control.write() as tx:
+            tx.sql.execute("UPDATE research_work SET state='running' WHERE work=?", (CHILD,))
+        owner = works.owner("p1", "a", CHILD)
+        assert owner is not None
+        warning = ResourceRequests(store.control).observe(
+            owner, "turns", used=300, total=300, revision=0
+        )
+        works.interrupt("p1", "a", RUN)
+        assert warning is not None
+    finally:
+        store.close()
+    authentik = Authentik()
+    client = await workspace(
+        aiohttp_client, state_dir, static_dir, login=False, forward_auth=authentik.verifier(ADMINS)
+    )
+    body = {
+        "request_id": warning.request_id,
+        "current": CHILD,
+        "epoch": 1,
+        "total": 300,
+        "action": "extend_turns",
+        "reason": "Continue the verified experiment",
+    }
+    member = {**as_user(authentik.token("bob")), **origin(client)}
+    admin = {**as_user(authentik.token("carol", (USERS, ADMINS))), **origin(client)}
+    refused = await client.post(ROOT + "/resources/decide", json=body, headers=member)
+    await error_of(refused, 403, "policy_denied")
+    # Stopping narrows: the gate lets a member through (this request ID is unknown).
+    stop = {**body, "action": "stop", "request_id": "no-such-request"}
+    passed = await client.post(ROOT + "/resources/decide", json=stop, headers=member)
+    assert passed.status != 403, await passed.text()
+    granted = await client.post(ROOT + "/resources/decide", json=body, headers=admin)
+    assert granted.status == 200, await granted.text()
+    decision = await granted.json()
+    assert (decision["total"], decision["operator"]) == (600, "authentik:carol")

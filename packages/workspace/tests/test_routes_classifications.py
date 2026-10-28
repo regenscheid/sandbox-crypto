@@ -28,6 +28,7 @@ from sandbox_science.workspace.classifications import (
 )
 from sandbox_science.workspace.mcp_services import ServiceConfig
 
+from .authentik_support import ADMINS, USERS, Authentik, as_user
 from .route_support import WORKER_SECRET, error_of, origin, workspace
 
 ClientFactory = Callable[..., Awaitable[TestClient[Any, Any]]]
@@ -424,3 +425,60 @@ def test_the_workers_client_has_the_source_methods_with_the_sources_signatures()
     worker = WorkerClient("http://worker.invalid", "token")
     assert from_worker(worker) is worker
     assert as_source is not None
+
+
+async def test_with_an_admin_group_accepting_is_the_admins(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
+) -> None:
+    """D104 (CL-3, CL-4): a member reads classifications and drafts but neither accepts a
+    draft nor re-accepts after drift; a member of the admin group does."""
+    fake = FakeClassifications()
+    authentik = Authentik()
+    client = await workspace(
+        aiohttp_client,
+        state_dir,
+        static_dir,
+        login=False,
+        mcp_project="p1",
+        mcp_inventory=(ServiceConfig(name="papers", purpose="Papers"),),
+        mcp_classifications=fake,
+        forward_auth=authentik.verifier(ADMINS),
+    )
+    member = as_user(authentik.token("bob"))
+    admin = as_user(authentik.token("carol", (USERS, ADMINS)))
+    draft = BASE + f"/mcp-services/papers/classification/drafts/{DRAFT}/accept"
+    drift = BASE + "/mcp-services/papers/drift/accept"
+    accept = {"yaml": "server: papers\n", "reason": "Reviewed", "operation_id": "op-a"}
+    reaccept = {"reason": "Checked", "operation_id": "op-d", "listings": ["e" * 64]}
+    assert (await client.get(BASE + "/classifications", headers=member)).status == 200
+    for path, body in ((draft, accept), (drift, reaccept)):
+        response = await client.post(path, json=body, headers={**member, **origin(client)})
+        error = await error_of(response, 403, "policy_denied")
+        assert ADMINS in error["message"]
+    assert [call[0] for call in fake.calls] == ["classifications"]
+    for path, body in ((draft, accept), (drift, reaccept)):
+        response = await client.post(path, json=body, headers={**admin, **origin(client)})
+        assert response.status == 200, await response.text()
+    assert [call[0] for call in fake.calls][-2:] == ["accept", "drift"]
+
+
+async def test_without_an_admin_group_every_user_accepts(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
+) -> None:
+    fake = FakeClassifications()
+    authentik = Authentik()
+    client = await workspace(
+        aiohttp_client,
+        state_dir,
+        static_dir,
+        login=False,
+        mcp_project="p1",
+        mcp_inventory=(ServiceConfig(name="papers", purpose="Papers"),),
+        mcp_classifications=fake,
+        forward_auth=authentik.verifier(),
+    )
+    member = as_user(authentik.token("bob"))
+    path = BASE + f"/mcp-services/papers/classification/drafts/{DRAFT}/accept"
+    body = {"yaml": "server: papers\n", "reason": "Reviewed", "operation_id": "op-b"}
+    response = await client.post(path, json=body, headers={**member, **origin(client)})
+    assert response.status == 200, await response.text()

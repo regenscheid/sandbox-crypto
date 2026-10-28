@@ -22,6 +22,9 @@ Routes (``…`` is ``/api/v0/projects/{project}``):
   project's accepted revision, its YAML exactly as the worker stored it, with the
   worker's ``X-Classification-*`` headers, to check in.
 
+Accepting a draft and re-accepting after drift are admin-only actions (identity.py, D104):
+with an admin group configured, only its members may take them.
+
 A write's ``operation_id`` goes to the worker, which keeps the receipt: the same request
 again answers the first result; another request under that ID is a conflict, which the
 workspace answers as its own (409).
@@ -50,6 +53,7 @@ from sandbox_science.orchestrator.projects import ProjectError
 from sandbox_science.orchestrator.worker_client import ClassificationExport, WorkerClient
 
 from .context import CONTEXT, identifier, json_answer, json_body, no_query
+from .identity import require_admin
 from .mcp_services import CONFIGURATION, Configuration
 from .requests import dumps
 
@@ -251,6 +255,7 @@ async def drafts(request: web.Request) -> web.Response:
 
 async def accept_draft(request: web.Request) -> web.Response:
     """Accept a draft, edited or not, as the project's classification of the service."""
+    require_admin(request, "accepting a classification")
     project, server = await _service(request)
     draft = request.match_info["draft"]
     if request.query or re.fullmatch(_DRAFT, draft) is None:
@@ -276,6 +281,7 @@ async def accept_draft(request: web.Request) -> web.Response:
 
 async def accept_drift(request: web.Request) -> web.Response:
     """Re-accept the service's tool list after drift, as ``accept-tools`` does."""
+    require_admin(request, "re-accepting a tool list after drift")
     project, server = await _service(request)
     if request.query:
         raise ProjectError(ErrorKind.INVALID_REQUEST, "re-acceptance takes no query")

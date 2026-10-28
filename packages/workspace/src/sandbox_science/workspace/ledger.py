@@ -27,7 +27,7 @@ from aiohttp import web
 from pydantic import AwareDatetime, ConfigDict, Field, JsonValue, ValidationError
 
 from sandbox_science.contracts import Contract, ErrorKind, Identifier
-from sandbox_science.orchestrator.documents import USER, DocumentError, DocumentStore
+from sandbox_science.orchestrator.documents import DocumentError, DocumentStore
 from sandbox_science.orchestrator.documents.errors import NOT_FOUND
 from sandbox_science.orchestrator.ledger import EntryHistory, EntryPage, EntryView, Ledger
 from sandbox_science.orchestrator.ledger.models import (
@@ -42,6 +42,7 @@ from sandbox_science.orchestrator.ledger.proposals import FoldProposals, Proposa
 from sandbox_science.orchestrator.projects import ProjectError
 
 from .context import CONTEXT, identifier, json_body
+from .identity import author
 from .requests import document_answer, encoded_response
 
 PATH: Final = "/api/v0/projects/{project}/ledger"
@@ -302,7 +303,7 @@ async def check(request: web.Request) -> web.Response:
             project,
             reference,
             value.revision,
-            USER,
+            author(request),
             operation_id=value.operation_id,
             note=value.note,
         )
@@ -342,7 +343,7 @@ async def assess(request: web.Request) -> web.Response:
             value.claim,
             value.verdict,
             value.revision,
-            USER,
+            author(request),
             note=value.note,
             operation_id=value.operation_id,
         )
@@ -380,7 +381,7 @@ async def drop(request: web.Request) -> web.Response:
             reference,
             value.target,
             value.revision,
-            USER,
+            author(request),
             reason=value.reason,
             operation_id=value.operation_id,
         )
@@ -429,7 +430,7 @@ async def clear(request: web.Request) -> web.Response:
             project,
             reference,
             value.flags,
-            USER,
+            author(request),
             reason=value.reason,
             operation_id=value.operation_id,
             cause=value.cause,
@@ -454,7 +455,7 @@ async def reopen(request: web.Request) -> web.Response:
             project,
             reference,
             value.flags,
-            USER,
+            author(request),
             reason=value.reason,
             operation_id=value.operation_id,
         )
@@ -500,7 +501,7 @@ async def proposal_accepted(request: web.Request) -> web.Response:
 
     def accepted(store: DocumentStore) -> dict[str, object]:
         proposals = _of_session(store, project, session, proposal)
-        return proposals.accept(project, proposal, value.operation_id, USER)
+        return proposals.accept(project, proposal, value.operation_id, author(request))
 
     return await document_answer(request, accepted, access="write")
 
@@ -517,7 +518,9 @@ async def proposal_dismissed(request: web.Request) -> web.Response:
 
     def dismissed(store: DocumentStore) -> dict[str, object]:
         proposals = _of_session(store, project, session, proposal)
-        return proposals.dismiss(project, proposal, value.reason, USER).model_dump(mode="json")
+        return proposals.dismiss(project, proposal, value.reason, author(request)).model_dump(
+            mode="json"
+        )
 
     return await document_answer(request, dismissed, access="write")
 
