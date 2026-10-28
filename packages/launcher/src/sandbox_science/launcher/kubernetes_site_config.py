@@ -147,6 +147,24 @@ class OpenShell(Model):
         return urlsplit(self.endpoint).hostname or ""
 
 
+class SiteCheckpoint(Model):
+    """The object-store keys of workspace checkpoints, given exactly when the bundle has
+    ``[checkpoint]``: SDK credential and config files the site's Garage workflow made.
+    ``upload_*`` is the checkpoint Jobs' key (write on the upload bucket only), which goes
+    into its own Secret in the sandbox namespace; ``verify_*`` the worker's (read on both
+    buckets). The operator's keeper key (read on the upload bucket, write on the kept one)
+    never enters the cluster: only its profile name is given, for the generated storage
+    files the operator's commands use."""
+
+    upload_credentials: ConfigPath
+    upload_config: ConfigPath
+    verify_credentials: ConfigPath
+    verify_config: ConfigPath
+    keeper_endpoint: Annotated[str, StringConstraints(max_length=2048)] | None = None
+    """Where the operator's machine reaches the store, such as ``http://127.0.0.1:3900``
+    through ``kubectl port-forward``; by default that, on the store's first port."""
+
+
 class Site(Model):
     """The site file; see the module's docstring."""
 
@@ -177,6 +195,7 @@ class Site(Model):
     extra_files: dict[Role, dict[Key, ConfigPath]] = Field(
         default_factory=dict[Role, dict[str, Path]]
     )
+    checkpoint: SiteCheckpoint | None = None
     """Files for the bundle's other ``extra_files``, such as S3 credentials, by service."""
 
     @model_validator(mode="after")

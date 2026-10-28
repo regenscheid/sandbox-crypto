@@ -157,3 +157,22 @@ scratch_mib = 512
 #
 # [mcp_direct.servers.crypto-research-mcp]
 # credentials = { "CF-Access-Client-Id" = "CF_ACCESS_CLIENT_ID", "CF-Access-Client-Secret" = "CF_ACCESS_CLIENT_SECRET" }
+
+# Optional: workspace checkpoints by Job (D92, docs/KUBERNETES-BUNDLE.md#workspace-checkpoints).
+# Needs [sandboxes]. The bundle renders the Jobs' NetworkPolicy in the sandbox namespace and the
+# pool's egress to the store; `sandbox-science-kubernetes checkpoint` renders and runs each Job.
+# The upload key (write on upload_bucket only) is the Secret upload_secret in the sandbox
+# namespace; the worker's key (read on both buckets) is in its own Secret; the keeper key (read
+# on the upload bucket, write on the kept one) stays on the operator's machine.
+# [checkpoint]
+# upload_secret = "research-checkpoint-upload"
+# upload_bucket = "research-checkpoint-upload"
+# kept_bucket = "research-checkpoints"
+# endpoint = "http://garage.garage.svc.cluster.local:3900"
+# # region = "garage"; prefix = "sandbox-science"; addressing_style = "path"
+# # keep = 2; deadline_seconds = 7200; hold_seconds = 21600; run_as_user = 10001
+#
+# [checkpoint.object_store]
+# ports = [3900]
+# peer.namespace_labels = { "kubernetes.io/metadata.name" = "garage" }
+# peer.pod_labels = { "app.kubernetes.io/name" = "garage" }

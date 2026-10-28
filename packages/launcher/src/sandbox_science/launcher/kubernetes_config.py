@@ -8,6 +8,7 @@ import re
 import tomllib
 from pathlib import Path
 from typing import Annotated, Literal, Self, cast
+from urllib.parse import urlsplit
 
 from pydantic import (
     AfterValidator,
@@ -457,6 +458,96 @@ class Maintenance(Model):
     one resumes from the cursor."""
 
 
+CHECKPOINT_WORKER_FILES: tuple[str, ...] = (
+    "checkpoint-upload.toml",
+    "checkpoint-kept.toml",
+    "checkpoint-s3-credentials",
+    "checkpoint-s3-config",
+)
+"""With ``[checkpoint]``, the worker's further keys: the two buckets' destination settings
+(no credential) and the SDK files of its read-only verify key."""
+CHECKPOINT_UPLOAD_KEYS: tuple[str, ...] = ("credentials", "config")
+"""The keys of the checkpoint Job's Secret in the sandbox namespace: the upload key's SDK
+credential and config files, and nothing else."""
+_BUCKET = r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"
+_PROFILE = r"^[A-Za-z0-9][A-Za-z0-9_.@-]{0,63}$"
+
+
+def _object_store(value: str) -> str:
+    url = urlsplit(value)
+    if (
+        url.scheme not in ("http", "https")
+        or not url.hostname
+        or url.username is not None
+        or url.password is not None
+        or url.path not in ("", "/")
+        or url.query
+        or url.fragment
+        or any(c.isspace() for c in value)
+    ):
+        raise ValueError("checkpoint.endpoint is the object store's http(s)://host[:port]")
+    return value
+
+
+class CheckpointJob(Capacity):
+    """The checkpoint Job's container bounds: its scratch holds one 16 MiB chunk and the
+    encoder's path index, which grows with the number of files (about 100 bytes each)."""
+
+    cpu_request_millis: Count = 250
+    cpu_limit_millis: Count = 2000
+    memory_request_mib: Count = 256
+    memory_limit_mib: Count = 1024
+    ephemeral_request_mib: Count = 512
+    ephemeral_limit_mib: Count = 2048
+    scratch_mib: Count = 1024
+
+
+class Checkpoint(Model):
+    """Workspace checkpoints by Job (D92, docs/KUBERNETES-BUNDLE.md#workspace-checkpoints):
+    a short-lived Job the operator creates in the sandbox namespace mounts a suspended
+    sandbox's volume read-only and writes its checkpoint to the upload bucket with a key
+    that can write nothing else; the worker verifies it with a read-only key and records
+    it; the operator's keeper key copies it into the kept bucket. The bundle renders the
+    Job's NetworkPolicy and the pool's egress to the object store; ``checkpoint-job``
+    renders each Job."""
+
+    upload_secret: Name
+    """The Secret in the sandbox namespace with the upload key's SDK files (``credentials``
+    and ``config``), which only checkpoint Jobs mount. The operator creates it."""
+    upload_profile: Annotated[str, StringConstraints(pattern=_PROFILE)] = "checkpoint-upload"
+    verify_profile: Annotated[str, StringConstraints(pattern=_PROFILE)] = "checkpoint-verify"
+    """The profile in the worker's ``checkpoint-s3-*`` files: read-only on both buckets."""
+    upload_bucket: Annotated[str, StringConstraints(pattern=_BUCKET)]
+    kept_bucket: Annotated[str, StringConstraints(pattern=_BUCKET)]
+    prefix: Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9._-]{1,64}$")] = "sandbox-science"
+    endpoint: Annotated[str, StringConstraints(max_length=2048), AfterValidator(_object_store)]
+    region: Annotated[str, StringConstraints(pattern=r"^[a-z0-9-]{1,64}$")] = "garage"
+    addressing_style: Literal["auto", "path", "virtual"] = "path"
+    object_store: Egress
+    """The object store's Pods and port: the Job's only peer besides DNS, and the pool's,
+    whose worker verifies there."""
+    run_as_user: Annotated[int, Field(strict=True, ge=1, le=2147483647)] = 10001
+    """The sandbox user, who owns the workspace's files: the Job reads them as it, so a
+    file the sandbox made unreadable fails the checkpoint by name rather than being read
+    with more authority."""
+    run_as_group: Annotated[int, Field(strict=True, ge=1, le=2147483647)] = 10001
+    deadline_seconds: Annotated[int, Field(strict=True, ge=60, le=86400)] = 7200
+    keep: Annotated[int, Field(strict=True, ge=1, le=100)] = 2
+    """Kept checkpoints per workspace; older ones are cleanup candidates, never removed
+    automatically."""
+    hold_seconds: Annotated[int, Field(strict=True, ge=600, le=7 * 86400)] = 21600
+    """How long a plan holds the sandbox stopped: longer than the Job's deadline."""
+    job: CheckpointJob = Field(default_factory=CheckpointJob)
+
+    @model_validator(mode="after")
+    def separate(self) -> Self:
+        if self.upload_bucket == self.kept_bucket:
+            raise ValueError("the upload bucket is separate from the kept bucket")
+        if self.hold_seconds <= self.deadline_seconds:
+            raise ValueError("checkpoint.hold_seconds must outlast the Job's deadline")
+        return self
+
+
 _HEADER = r"^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,128}$"
 _VARIABLE = r"^[A-Za-z_][A-Za-z0-9_]{0,127}$"
 _SERVER = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
@@ -549,6 +640,8 @@ class BundleConfig(Model):
     """Absent, no alert rules are rendered."""
     mcp_direct: McpDirect | None = None
     """Absent, the agent runtime makes no MCP request."""
+    checkpoint: Checkpoint | None = None
+    """Absent, no checkpoint Job can be rendered and the pool does not reach the store."""
     image_pull_secret: Name = "ghcr-pull"  # noqa: S105 - a Secret's name, not a value
     """The registry Secret (``kubernetes.io/dockerconfigjson``) in the bundle's namespace that
     every rendered Pod names in ``imagePullSecrets``: the app, the pool, the runtime manager,
@@ -564,6 +657,13 @@ class BundleConfig(Model):
             raise ValueError("workspace.allow_remote requires an [ingress] section")
         if self.ingress is not None and not self.workspace.allow_remote:
             raise ValueError("an [ingress] section requires workspace.allow_remote = true")
+        return self
+
+    @model_validator(mode="after")
+    def checkpoint_namespace(self) -> Self:
+        # The Job runs beside the volumes, in the namespace OpenShell creates sandboxes in.
+        if self.checkpoint is not None and self.sandboxes is None:
+            raise ValueError("[checkpoint] requires [sandboxes] to name the sandbox namespace")
         return self
 
     @model_validator(mode="after")
@@ -601,6 +701,8 @@ def projected_files(config: BundleConfig, role: str) -> tuple[str, ...]:
     the runtime manager's direct MCP ones and the availability check's token (the
     workspace's) and its digest (control's)."""
     files = REQUIRED_FILES[role]
+    if config.checkpoint is not None and role == "worker":
+        files = (*files, *CHECKPOINT_WORKER_FILES)
     if config.mcp_direct is not None:
         if role == "runtime-manager":
             files = (*files, *DIRECT_MANAGER_FILES)
