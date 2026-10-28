@@ -968,7 +968,18 @@ admission policy that pins what its Jobs may contain.
 
 Not built yet: checkpoints of running sandboxes without suspending them (Longhorn clones,
 `clone_pvc`), of volumes whose environment the worker no longer binds (a static claim on a
-Released PV), and the restore Job. Not qualified on a cluster.
+Released PV), and the restore Job.
+
+As seen on the first cluster (2026-10-28):
+
+* an environment the worker has created but never run anything in has no recorded prefix
+  baseline yet, and the plan refuses it ("checkpoint required prefix has no known retained
+  baseline"); its first execution records the baseline;
+* a finished checkpoint Job's Pod still names the workspace claim, and Kubernetes keeps a
+  claim that a Pod names (`kubernetes.io/pvc-protection`), so deleting the environment
+  within the week the Job is kept leaves its claim `Terminating` and the volume `Bound`, out
+  of cleanup's list of Released volumes. Save the Job's log and delete its Job
+  (`kubectl -n <sandbox-namespace> delete job <job>`) before cleaning up that volume.
 
 ## Cleanup
 
@@ -998,11 +1009,13 @@ Refusals, checked against a fresh survey and again by the worker:
   operator's mark for a volume a recovery set still needs;
 - a volume without a current verified checkpoint, unless `--without-checkpoint VOLUME`
   names it (repeatable; it covers only the volumes it names): none, or the newest predates
-  the last time the worker started its sandbox (recorded from this version on), since work
-  after a checkpoint would be lost.
+  the last time the worker started its sandbox (recorded from this version on, at each
+  resume; the start at creation is not recorded), since work after a checkpoint would be lost.
   The listing shows the newest checkpoint's age and the last start;
 - the last verified checkpoint of a workspace whose volume still exists, and any checkpoint
-  that is not a candidate.
+  that is not a candidate. Only checkpoints beyond a workspace's latest `keep` are
+  candidates, so its latest `keep` checkpoints stay after the volume and the environment
+  are gone: cleanup lists no way to remove them.
 
 A volume's deletion: the worker journals the intent (refusing it if its records forbid it),
 the PV's reclaim policy becomes Delete so its provisioner frees the storage (a JSON patch
