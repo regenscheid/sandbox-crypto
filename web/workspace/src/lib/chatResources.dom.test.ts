@@ -2,7 +2,9 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, expect, it, vi } from 'vitest';
 import ChatResources from '../views/ChatResources.svelte';
+import ResourceAllowance from '../views/ResourceAllowance.svelte';
 import type { ResourceRequest } from './api-types';
+import { setViewer } from './viewer.svelte';
 
 const mounted: ReturnType<typeof mount>[] = [];
 afterEach(() => {
@@ -337,4 +339,29 @@ it('shows a decided root turn limit as history and offers nothing more', async (
   await settle();
   expect(target.textContent).toContain('User decision: stop');
   expect(target.querySelector('button.subtle')).toBeNull();
+});
+
+it('lets a member outside the admin group stop at the turn limit but not continue (D104)', () => {
+  setViewer({ user: 'bob', login: 'forward', admin: false, admin_group: 'atlas-admins' });
+  try {
+    const target = document.createElement('div');
+    document.body.append(target);
+    mounted.push(
+      mount(ResourceAllowance, {
+        target,
+        props: { path: '/projects/p1/sessions/a/recovery', item: limit },
+      }),
+    );
+    flushSync();
+    const button = (start: string) =>
+      [...target.querySelectorAll<HTMLButtonElement>('button')].find((item) =>
+        item.textContent?.trim().startsWith(start),
+      )!;
+    expect(button('Continue for').disabled).toBe(true);
+    expect(button('Continue for').title).toContain('atlas-admins');
+    expect(button('Stop the research').disabled).toBe(false);
+    expect(target.querySelector('.admin-only')?.textContent).toContain('atlas-admins');
+  } finally {
+    setViewer(null);
+  }
 });
