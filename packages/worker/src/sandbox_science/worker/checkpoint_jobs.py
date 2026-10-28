@@ -78,7 +78,12 @@ def local_suspend(settings: Settings, environment_id: str, timeout: float = 300)
     with closing(connection):
         connection.connect()
         if settings.tls is not None:
-            expected = ssl.PEM_cert_to_DER_cert(settings.tls.certificate.read_text())
+            # The served certificate is the file's first; a chain may follow it.
+            pem = settings.tls.certificate.read_text()
+            start, end = pem.find(ssl.PEM_HEADER), pem.find(ssl.PEM_FOOTER)
+            if not 0 <= start < end:
+                raise RecordError("the worker's certificate file holds no certificate")
+            expected = ssl.PEM_cert_to_DER_cert(pem[start : end + len(ssl.PEM_FOOTER)])
             socket = connection.sock
             if not isinstance(socket, ssl.SSLSocket) or socket.getpeercert(True) != expected:
                 raise RecordError("the local worker presented another certificate")
