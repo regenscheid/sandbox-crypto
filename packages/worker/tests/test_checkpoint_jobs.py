@@ -49,12 +49,18 @@ class FakeSdkError(Exception):
     pass
 
 
+def etag(data: bytes) -> str:
+    return '"' + hashlib.md5(data, usedforsecurity=False).hexdigest() + '"'
+
+
 class Garage:
     """Buckets as one store: like Garage, it ignores ``If-None-Match`` and copies inside."""
 
     def __init__(self) -> None:
         self.objects: dict[tuple[str, str], bytes] = {}
         self.calls: list[tuple[str, str, str]] = []
+        self.before_copy: Any = None
+        self.fail_delete: set[str] = set()
 
     def put_object(self, **arguments: Any) -> None:
         data = arguments["Body"].read()
@@ -68,24 +74,23 @@ class Garage:
         if location not in self.objects:
             raise FakeSdkError("NoSuchKey")
         data = self.objects[location]
-        return {"Body": io.BytesIO(data), "ContentLength": len(data)}
-
-    def head_object(self, **arguments: Any) -> dict[str, Any]:
-        location = (arguments["Bucket"], arguments["Key"])
-        if location not in self.objects:
-            raise FakeSdkError("NoSuchKey")
-        return {"ContentLength": len(self.objects[location])}
+        return {"Body": io.BytesIO(data), "ContentLength": len(data), "ETag": etag(data)}
 
     def copy_object(self, **arguments: Any) -> None:
         source = arguments["CopySource"]
         self.calls.append(("copy", arguments["Bucket"], arguments["Key"]))
-        self.objects[(arguments["Bucket"], arguments["Key"])] = self.objects[
-            (source["Bucket"], source["Key"])
-        ]
+        if self.before_copy is not None:
+            self.before_copy(source["Key"])
+        data = self.objects[(source["Bucket"], source["Key"])]
+        if arguments["CopySourceIfMatch"] != etag(data):
+            raise FakeSdkError("PreconditionFailed")
+        self.objects[(arguments["Bucket"], arguments["Key"])] = data
 
     def delete_object(self, **arguments: Any) -> None:
         self.calls.append(("delete", arguments["Bucket"], arguments["Key"]))
-        self.objects.pop((arguments["Bucket"], arguments["Key"]), None)
+        if any(arguments["Key"].endswith(name) for name in self.fail_delete):
+            raise FakeSdkError("ServiceUnavailable")
+        self.objects.pop((arguments["Bucket"], arguments["Key"]), None)  # missing: a no-op
 
     def list_objects_v2(self, **arguments: Any) -> dict[str, object]:
         # Two keys a page, so that continuation is exercised.
@@ -555,3 +560,181 @@ def test_the_local_suspend_accepts_only_the_workers_own_certificate(tmp_path, re
     finally:
         server.shutdown()
         server.server_close()
+
+
+# Review findings (2026-10-28): each with the reproduction it came with
+
+
+def second_upload(tmp_path: Path, settings: Settings) -> tuple[CheckpointPlan, str]:
+    """A second checkpoint of the same workspace, verified in the upload bucket only."""
+    plan = planned(settings)
+    root = workspace(tmp_path / "two")
+    (root / "research" / "notes").write_text("result of two")
+    identity, _, _ = capture_upload(root, plan.source, UPLOAD, plan.capture)
+    checkpoint_jobs.verify(settings, plan.checkpoint_id, identity, UPLOAD, "upload", "op")
+    return plan, identity
+
+
+def source_of(settings: Settings, manifest: str) -> Any:
+    found = checkpoint_jobs.inventory(settings).checkpoints
+    checkpoint_id = next(c.checkpoint_id for c in found if c.manifest_sha256 == manifest)
+    records = CheckpointRecords(settings.state_dir)
+    try:
+        return records.hold(checkpoint_id).plan.source
+    finally:
+        records.close()
+
+
+def test_promotion_never_overwrites_a_shared_kept_chunk(tmp_path, garage, retained, stopped):
+    """Finding 1: a chunk swapped in the upload bucket after verification must not replace
+    the kept copy an older checkpoint uses."""
+    first = checkpointed(tmp_path, retained, "one")[1]
+    plan, identity = second_upload(tmp_path, retained)
+    shared = sorted(garage.keys(KEPT.bucket, "chunks") & garage.keys(UPLOAD.bucket, "chunks"))
+    assert shared  # the large file's chunks are the same in both
+    key = (UPLOAD.bucket, UPLOAD.key("chunks", shared[0]))
+    garage.objects[key] = b"x" * len(garage.objects[key])
+    checkpoint_remote.promote(UPLOAD, KEPT, identity)
+    assert checkpoint_remote.verify(KEPT, first, source_of(retained, first)).members > 1
+    # The second's kept copy holds the exact shared chunk too, so it verifies as well.
+    checkpoint_jobs.verify(retained, plan.checkpoint_id, identity, KEPT, "kept", "op")
+
+
+def test_a_swapped_chunk_of_its_own_is_never_promoted(tmp_path, garage, retained, stopped):
+    checkpointed(tmp_path, retained, "one")
+    _, identity = second_upload(tmp_path, retained)
+    own = sorted(garage.keys(UPLOAD.bucket, "chunks") - garage.keys(KEPT.bucket, "chunks"))
+    key = (UPLOAD.bucket, UPLOAD.key("chunks", own[0]))
+    garage.objects[key] = b"x" * len(garage.objects[key])
+    before = dict(garage.objects)
+    with pytest.raises(ValueError, match="differ"):
+        checkpoint_remote.promote(UPLOAD, KEPT, identity)
+    assert {k: v for k, v in garage.objects.items() if k[0] == KEPT.bucket} == {
+        k: v for k, v in before.items() if k[0] == KEPT.bucket
+    }
+
+
+def test_the_copy_is_pinned_to_the_bytes_that_were_hashed(tmp_path, garage, retained, stopped):
+    """A swap between the hashed read and the copy fails the copy's ETag precondition."""
+    _, identity = second_upload(tmp_path, retained)
+
+    def swap(key: str) -> None:
+        garage.objects[(UPLOAD.bucket, key)] = b"y" * len(garage.objects[(UPLOAD.bucket, key)])
+
+    garage.before_copy = swap
+    with pytest.raises(OSError, match="request failed"):
+        checkpoint_remote.promote(UPLOAD, KEPT, identity)
+    assert not garage.keys(KEPT.bucket, "chunks")
+
+
+def test_a_deletion_resumes_after_its_manifest_is_gone(tmp_path, garage, retained, stopped):
+    """Finding 2: the worker's recorded chunk list finishes a deletion whose manifest an
+    earlier run already removed; the manifest itself goes last."""
+    first = checkpointed(tmp_path, retained, "one")[1]
+    records = CheckpointRecords(retained.state_dir)
+    try:
+        names = records.chunk_names(first)
+    finally:
+        records.close()
+    assert len(names) > 3
+    garage.fail_delete = {names[-1]}
+    with pytest.raises(OSError, match="request failed"):
+        checkpoint_remote.delete(KEPT, first, chunk_names=names)
+    assert first in garage.keys(KEPT.bucket, "manifests")  # still there: deleted last
+    garage.objects.pop((KEPT.bucket, KEPT.key("manifests", first)))  # as an older run left it
+    garage.fail_delete = set()
+    checkpoint_remote.delete(KEPT, first, chunk_names=names)
+    assert not garage.keys(KEPT.bucket, "chunks")
+    assert checkpoint_remote.delete(KEPT, first, chunk_names=names) == len(set(names))  # again
+
+
+def test_the_delete_command_reads_the_recorded_list(tmp_path, garage, retained, stopped, capsys):
+    first = checkpointed(tmp_path, retained, "one")[1]
+    settings = ["--settings", str(tmp_path / "worker.toml")]
+    (tmp_path / "worker.toml").write_text(
+        f'token_file = "{retained.token_file}"\nstate_dir = "{retained.state_dir}"\n'
+        "[openshell]\nisolation_tier = 3\n"
+    )
+    assert main(["checkpoint", "chunks", "--manifest", first, *settings]) == 0
+    listing = tmp_path / "chunks.txt"
+    listing.write_text(capsys.readouterr().out)
+    garage.objects.pop((KEPT.bucket, KEPT.key("manifests", first)))
+    storage = tmp_path / "kept.toml"
+    storage.write_text(
+        "\n".join(f'{key} = "{value}"' for key, value in KEPT.model_dump().items()) + "\n"
+    )
+    storage.chmod(0o600)
+    command = ["checkpoint", "delete-objects", "--storage", str(storage), "--manifest", first]
+    assert main([*command, "--chunks-file", str(listing)]) == 0
+    assert not garage.keys(KEPT.bucket, "chunks")
+    listing.write_text("not-a-digest\n")
+    assert main([*command, "--chunks-file", str(listing)]) == 1
+
+
+def test_a_capture_after_an_early_release_is_not_recorded(tmp_path, garage, retained, stopped):
+    """Finding 4: once the hold was lifted the sandbox may have run again."""
+    plan = planned(retained)
+    records = CheckpointRecords(retained.state_dir)
+    records.release(plan.checkpoint_id, datetime.now(UTC), "operator")
+    records.close()
+    later = FakeClock(datetime.now(UTC) + timedelta(minutes=1))
+    identity, _, _ = capture_upload(
+        workspace(tmp_path / "v"), plan.source, UPLOAD, plan.capture, clock=later
+    )
+    with pytest.raises(RecordError, match="while its hold held"):
+        checkpoint_jobs.verify(retained, plan.checkpoint_id, identity, UPLOAD, "upload", "op")
+
+
+def test_a_start_and_a_plan_cannot_interleave(retained, stopped):
+    """Finding 8: a start records itself in the transaction that finds no hold, and a plan
+    refuses while a start is under way; a start cut short long ago no longer blocks."""
+    from sandbox_science.worker.checkpoint_records import HeldError, begin_start, end_start
+
+    now = datetime.now(UTC)
+    begin_start(retained.state_dir, "e", now)
+    with pytest.raises(RecordError, match="starting this sandbox"):
+        planned(retained)
+    end_start(retained.state_dir, "e", now)
+    plan = planned(retained)
+    with pytest.raises(HeldError):
+        begin_start(retained.state_dir, "e", datetime.now(UTC))
+    records = CheckpointRecords(retained.state_dir)
+    records.release(plan.checkpoint_id, datetime.now(UTC), "test")
+    records.close()
+    begin_start(retained.state_dir, "e", now - timedelta(hours=1))  # never ended
+    assert planned(retained, clock=FakeClock(now)).source.environment_id == "e"
+
+
+def test_the_hold_check_fails_closed(retained):
+    """Finding 8: only a missing table means no hold; any other error refuses."""
+    from sandbox_science.worker.checkpoint_records import begin_start
+
+    path = retained.state_dir / "checkpoints.sqlite3"
+    db = sqlite3.connect(path)
+    db.execute("CREATE TABLE unrelated (x)")  # a file whose tables do not exist yet
+    db.commit()
+    db.close()
+    assert held_until(retained.state_dir, "e", datetime.now(UTC)) is None
+    path.write_bytes(b"not a database, " * 64)
+    with pytest.raises(sqlite3.DatabaseError):
+        held_until(retained.state_dir, "e", datetime.now(UTC))
+    with pytest.raises(sqlite3.DatabaseError):
+        begin_start(retained.state_dir, "e", datetime.now(UTC))
+
+
+def test_a_start_after_the_newest_checkpoint_needs_the_flag(tmp_path, garage, retained, stopped):
+    """Finding 6: a checkpoint older than the workspace's last start does not cover it."""
+    from sandbox_science.worker.checkpoint_records import begin_start, end_start
+
+    checkpointed(tmp_path, retained, "one")
+    save_environment(retained, "e", "ss-checkpoint-test", EnvironmentState.DELETED)
+    found = checkpoint_jobs.inventory(retained)
+    assert checkpoint_jobs.checkpoint_cover(found, "ss-checkpoint-test") is None
+    later = datetime.now(UTC) + timedelta(minutes=10)
+    begin_start(retained.state_dir, "e", later)
+    end_start(retained.state_dir, "e", later)
+    found = checkpoint_jobs.inventory(retained)
+    assert found.environments[0].last_started_at == later
+    reasons = checkpoint_jobs.volume_refusals(found, "ss-checkpoint-test", without_checkpoint=False)
+    assert any("after its newest verified checkpoint" in reason for reason in reasons)
+    assert not checkpoint_jobs.volume_refusals(found, "ss-checkpoint-test", without_checkpoint=True)

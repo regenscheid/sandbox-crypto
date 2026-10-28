@@ -184,6 +184,9 @@ class InventoryEnvironment(StrictContract):
     hand_back: Literal["pending", "retained"] | None = None
     """A child environment whose hand-back is under way (``pending``) or was incomplete,
     so the worker keeps it stopped (``retained``): its volume is still referenced."""
+    last_started_at: AwareDatetime | None = None
+    """When the worker last started its sandbox, if it recorded it: any work after a
+    checkpoint needs a start, so a later one means the checkpoint is out of date."""
 
 
 class InventoryCheckpoint(StrictContract):

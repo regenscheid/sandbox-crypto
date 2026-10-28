@@ -195,18 +195,21 @@ def verify(
         if stage == "upload":
             if retained_source(settings, source.environment_id, source.architecture) != source:
                 raise RecordError("the environment's binding changed since it was planned")
+            names: list[str] = []
             receipt = checkpoint_remote.verify(
-                storage, manifest, source, timeout=timeout, clock=clock
+                storage, manifest, source, chunk_names=names, timeout=timeout, clock=clock
             )
             if receipt.capture != hold.plan.capture:
                 raise RecordError("the checkpoint was captured otherwise than planned")
+            # Within the hold as it held: from its placing to its expiry, or to its release
+            # if it was lifted early (after which the sandbox may have run again).
             if not (
                 hold.placed_at - CLOCK_SKEW
                 <= receipt.created_at
                 <= hold.plan.hold_expires_at + CLOCK_SKEW
-            ):
+            ) or (hold.released_at is not None and receipt.created_at > hold.released_at):
                 raise RecordError("the checkpoint was not captured while its hold held")
-            records.verified(hold.plan, manifest, receipt, clock.now(), actor)
+            records.verified(hold.plan, manifest, receipt, clock.now(), actor, names)
             records.release(checkpoint_id, clock.now(), "verified")
         else:
             try:
@@ -246,6 +249,11 @@ def inventory(
     if not path.is_file():
         raise RecordError("no environment records in the state directory")
     children = _children(settings)
+    records = CheckpointRecords(settings.state_dir)
+    try:
+        starts = records.last_starts()
+    finally:
+        records.close()
     environments: list[InventoryEnvironment] = []
     with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as db:
         for (document,) in db.execute(
@@ -265,6 +273,7 @@ def inventory(
                     sandbox=info.sandbox,
                     sandbox_id=info.sandbox_id,
                     hand_back=children.get(info.environment_id),
+                    last_started_at=starts.get(info.environment_id),
                 )
             )
     records = CheckpointRecords(settings.state_dir)
@@ -281,6 +290,24 @@ def inventory(
         records.close()
 
 
+def checkpoint_cover(found: CheckpointInventory, sandbox: str) -> str | None:
+    """Why the workspace of ``sandbox`` has no current verified checkpoint, or None if it
+    has one: a kept checkpoint newer than the last time its sandbox was started, since any
+    work in it after a checkpoint needed a start."""
+    kept = [c.created_at for c in found.checkpoints if c.sandbox == sandbox and c.state == "kept"]
+    if not kept:
+        return "it has no verified checkpoint"
+    newest = max(kept)
+    for info in found.environments:
+        if info.sandbox == sandbox and info.last_started_at and info.last_started_at > newest:
+            return (
+                f"environment {info.environment_id} was started at "
+                f"{info.last_started_at:%Y-%m-%d %H:%M} UTC, after its newest verified "
+                f"checkpoint ({newest:%Y-%m-%d %H:%M} UTC)"
+            )
+    return None
+
+
 def volume_refusals(
     found: CheckpointInventory, sandbox: str, *, without_checkpoint: bool
 ) -> list[str]:
@@ -295,10 +322,8 @@ def volume_refusals(
             reasons.append(f"environment {info.environment_id}'s hand-back is {info.hand_back}")
     if any(hold.sandbox == sandbox for hold in found.holds):
         reasons.append("a checkpoint holds it")
-    if not without_checkpoint and not any(
-        c.sandbox == sandbox and c.state == "kept" for c in found.checkpoints
-    ):
-        reasons.append("it has no verified checkpoint (pass --without-checkpoint to delete anyway)")
+    if not without_checkpoint and (missing := checkpoint_cover(found, sandbox)) is not None:
+        reasons.append(f"{missing} (pass --without-checkpoint for this volume to delete anyway)")
     return reasons
 
 

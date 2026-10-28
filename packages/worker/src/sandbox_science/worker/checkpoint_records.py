@@ -11,8 +11,11 @@ or checkpoint removal an operator asked for, intent before effect, with who aske
 rows are never changed or removed.
 
 The operator's commands write these from their own process (``kubectl exec`` into the
-worker container), beside the serving worker, which only reads holds. SQLite's own
-locking orders the writers; every write is a single short transaction, synchronous.
+worker container), beside the serving worker. The worker records each sandbox **start**
+here, in the same transaction that finds no hold, and a plan places its hold in a
+transaction that finds no start under way, so the two cannot interleave; the last start
+also tells cleanup whether a checkpoint is older than the work in its workspace. SQLite's
+own locking orders the writers; every write is a single short transaction, synchronous.
 """
 
 from __future__ import annotations
@@ -22,7 +25,7 @@ import sqlite3
 from collections.abc import Generator
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Literal
 
@@ -69,6 +72,17 @@ _SCHEMA = (
     deleted_at TEXT
 ) STRICT""",
     "CREATE INDEX IF NOT EXISTS checkpoints_sandbox ON checkpoints(sandbox, state)",
+    """CREATE TABLE IF NOT EXISTS checkpoint_chunks (
+    manifest_sha256 TEXT NOT NULL REFERENCES checkpoints(manifest_sha256),
+    seq INTEGER NOT NULL,
+    chunk TEXT NOT NULL CHECK (length(chunk) = 64),
+    PRIMARY KEY (manifest_sha256, seq)
+) STRICT""",
+    """CREATE TABLE IF NOT EXISTS starts (
+    environment_id TEXT PRIMARY KEY,
+    began_at TEXT NOT NULL,
+    ended_at TEXT
+) STRICT""",
     """CREATE TABLE IF NOT EXISTS deletions (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
     recorded_at TEXT NOT NULL,
@@ -108,9 +122,24 @@ class Deletion:
     detail: dict[str, object]
 
 
+class HeldError(Exception):
+    """A checkpoint holds the environment's sandbox stopped until ``until``."""
+
+    def __init__(self, until: datetime) -> None:
+        super().__init__(
+            f"held stopped for a workspace checkpoint until {until:%Y-%m-%d %H:%M} UTC"
+        )
+        self.until = until
+
+
+STALE_START = timedelta(minutes=15)
+"""A start recorded as under way for longer than this was cut short (a worker restart)."""
+
+
 def held_until(state_dir: Path, environment_id: str, now: datetime) -> datetime | None:
-    """When the environment's checkpoint hold expires, if one holds it now. Read by the
-    serving worker before it starts a stopped sandbox; no records file means no hold."""
+    """When the environment's checkpoint hold expires, if one holds it now. No records
+    file, or one whose tables do not exist yet, means no hold; any other error raises, so
+    a caller deciding a start fails closed."""
     path = state_dir / DATABASE
     if not path.is_file():
         return None
@@ -120,13 +149,39 @@ def held_until(state_dir: Path, environment_id: str, now: datetime) -> datetime 
                 "SELECT expires_at FROM holds WHERE environment_id=? AND released_at IS NULL",
                 (environment_id,),
             ).fetchall()
-        except sqlite3.OperationalError:
-            return None  # created but not yet initialized by its first writer
+        except sqlite3.OperationalError as error:
+            if "no such table" in str(error):
+                return None
+            raise
+    return _active(rows, now)
+
+
+def _active(rows: list[tuple[object]], now: datetime) -> datetime | None:
     for (expires,) in rows:
         until = datetime.fromisoformat(str(expires))
         if until > now:
             return until
     return None
+
+
+def begin_start(state_dir: Path, environment_id: str, now: datetime) -> None:
+    """Before the worker starts a stopped sandbox: in one transaction, refuse if a hold
+    holds it (HeldError), else record the start as under way. Any database error raises:
+    the start is refused rather than run unchecked."""
+    records = CheckpointRecords(state_dir)
+    try:
+        records.begin_start(environment_id, now)
+    finally:
+        records.close()
+
+
+def end_start(state_dir: Path, environment_id: str, now: datetime) -> None:
+    """The start under way ended, however it ended."""
+    records = CheckpointRecords(state_dir)
+    try:
+        records.end_start(environment_id, now)
+    finally:
+        records.close()
 
 
 class CheckpointRecords:
@@ -155,11 +210,54 @@ class CheckpointRecords:
             raise
         self.db.execute("COMMIT")
 
+    # Starts
+
+    def begin_start(self, environment_id: str, now: datetime) -> None:
+        with self._write() as db:
+            until = _active(
+                db.execute(
+                    "SELECT expires_at FROM holds WHERE environment_id=? AND released_at IS NULL",
+                    (environment_id,),
+                ).fetchall(),
+                now,
+            )
+            if until is not None:
+                raise HeldError(until)
+            db.execute(
+                "INSERT INTO starts VALUES (?,?,NULL) ON CONFLICT(environment_id)"
+                " DO UPDATE SET began_at=excluded.began_at, ended_at=NULL",
+                (environment_id, now.isoformat()),
+            )
+
+    def end_start(self, environment_id: str, now: datetime) -> None:
+        with self._write() as db:
+            db.execute(
+                "UPDATE starts SET ended_at=? WHERE environment_id=?",
+                (now.isoformat(), environment_id),
+            )
+
+    def last_starts(self) -> dict[str, datetime]:
+        """When the worker last began starting each environment's sandbox."""
+        return {
+            str(environment): datetime.fromisoformat(str(began))
+            for environment, began in self.db.execute("SELECT environment_id, began_at FROM starts")
+        }
+
     # Holds
 
     def place(self, plan: CheckpointPlan, now: datetime, actor: str) -> None:
-        """Hold the plan's environment; refuses while another unexpired hold holds it."""
+        """Hold the plan's environment; refuses while another unexpired hold holds it, or
+        while the worker is starting its sandbox."""
         with self._write() as db:
+            starting = db.execute(
+                "SELECT began_at FROM starts WHERE environment_id=? AND ended_at IS NULL",
+                (plan.source.environment_id,),
+            ).fetchone()
+            if (
+                starting is not None
+                and datetime.fromisoformat(str(starting[0])) > now - STALE_START
+            ):
+                raise RecordError("the worker is starting this sandbox; try again shortly")
             for checkpoint_id, expires in db.execute(
                 "SELECT checkpoint_id, expires_at FROM holds"
                 " WHERE environment_id=? AND released_at IS NULL",
@@ -237,6 +335,7 @@ class CheckpointRecords:
         receipt: CheckpointReceipt,
         now: datetime,
         actor: str,
+        chunk_names: list[str] | None = None,
     ) -> None:
         """Record a checkpoint the worker verified in the upload bucket."""
         with self._write() as db:
@@ -261,6 +360,11 @@ class CheckpointRecords:
                     now.isoformat(),
                     actor,
                 ),
+            )
+            # The chunk list outlives the manifest, so a deletion can always finish.
+            db.executemany(
+                "INSERT INTO checkpoint_chunks VALUES (?,?,?)",
+                [(manifest, seq, name) for seq, name in enumerate(chunk_names or ())],
             )
 
     def kept(self, checkpoint_id: str, manifest: str, now: datetime, actor: str) -> None:
@@ -288,6 +392,16 @@ class CheckpointRecords:
         if row is None:
             raise RecordError("no checkpoint with that manifest")
         return CheckpointReceipt.model_validate_json(str(row[0]))
+
+    def chunk_names(self, manifest: str) -> list[str]:
+        """The chunks the worker read when it verified the checkpoint, in order."""
+        return [
+            str(row[0])
+            for row in self.db.execute(
+                "SELECT chunk FROM checkpoint_chunks WHERE manifest_sha256=? ORDER BY seq",
+                (manifest,),
+            )
+        ]
 
     def checkpoints(self) -> list[InventoryCheckpoint]:
         result: list[InventoryCheckpoint] = []

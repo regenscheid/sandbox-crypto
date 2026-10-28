@@ -13,7 +13,17 @@ from collections.abc import Callable, Generator
 from contextlib import closing, contextmanager, suppress
 from pathlib import Path
 from types import TracebackType
-from typing import Annotated, BinaryIO, Literal, Protocol, Self, TypedDict, Unpack, cast
+from typing import (
+    Annotated,
+    BinaryIO,
+    Literal,
+    NotRequired,
+    Protocol,
+    Self,
+    TypedDict,
+    Unpack,
+    cast,
+)
 from urllib.parse import urlsplit
 
 from pydantic import Field, model_validator
@@ -97,6 +107,7 @@ class Body(Protocol):
 class Object(TypedDict):
     Body: Body
     ContentLength: int
+    ETag: NotRequired[str]
 
 
 class Location(TypedDict):
@@ -117,6 +128,7 @@ class CopySource(TypedDict):
 
 class Copy(Location):
     CopySource: CopySource
+    CopySourceIfMatch: str
 
 
 class Listing(TypedDict, total=False):
@@ -126,14 +138,9 @@ class Listing(TypedDict, total=False):
     ContinuationToken: str
 
 
-class Head(TypedDict):
-    ContentLength: int
-
-
 class Client(Protocol):
     def put_object(self, **kwargs: Unpack[Put]) -> object: ...
     def get_object(self, **kwargs: Unpack[Location]) -> Object: ...
-    def head_object(self, **kwargs: Unpack[Location]) -> Head: ...
     def copy_object(self, **kwargs: Unpack[Copy]) -> object: ...
     def delete_object(self, **kwargs: Unpack[Location]) -> object: ...
     def list_objects_v2(self, **kwargs: Unpack[Listing]) -> dict[str, object]: ...
@@ -182,6 +189,8 @@ class Objects:
         self.deadline = clock.monotonic() + timeout
         self.request_timeout = min(15, timeout)
         self.connection: tuple[Client, tuple[type[Exception], ...]] | None = None
+        self.etag: str | None = None
+        """The ETag of the object ``copy`` last read: the version whose bytes it hashed."""
 
     def __enter__(self) -> Self:
         return self
@@ -225,6 +234,7 @@ class Objects:
             response = client.get_object(
                 Bucket=self.settings.bucket, Key=self.settings.key(kind, digest)
             )
+            self.etag = response.get("ETag")
             with closing(response["Body"]) as body:
                 size = response["ContentLength"]
                 if (
@@ -280,13 +290,27 @@ class Objects:
             return True
         return False
 
+    def verified(self, kind: Literal["chunks", "manifests"], digest: str, size: int) -> bool:
+        """Whether an object of that name already reads back with exactly its hash."""
+        try:
+            self.copy(kind, digest, size, expected=size)
+        except (OSError, ValueError):
+            return False
+        return True
+
     def copy_in(
-        self, source: Storage, kind: Literal["chunks", "manifests"], digest: str, size: int
+        self,
+        source: Storage,
+        kind: Literal["chunks", "manifests"],
+        digest: str,
+        size: int,
+        etag: str,
     ) -> None:
         """Copy one object from ``source``'s bucket into this one inside the store
-        (``CopyObject``: no bytes pass through this process), then check its length. The
-        key needs read on the source bucket and write on this one; the worker verifies
-        every byte afterwards."""
+        (``CopyObject``: no bytes pass through this process), only if the source is still
+        the version whose bytes were hashed (``CopySourceIfMatch`` on its ETag), then read
+        the copy back whole and check its hash. The key needs read on the source bucket and
+        read and write on this one."""
         if (source.endpoint, source.region) != (self.settings.endpoint, self.settings.region):
             raise ValueError("a checkpoint copy stays inside one object store")
         self.check()
@@ -295,12 +319,9 @@ class Objects:
                 Bucket=self.settings.bucket,
                 Key=self.settings.key(kind, digest),
                 CopySource={"Bucket": source.bucket, "Key": source.key(kind, digest)},
+                CopySourceIfMatch=etag,
             )
-            length = client.head_object(
-                Bucket=self.settings.bucket, Key=self.settings.key(kind, digest)
-            )["ContentLength"]
-        if type(length) is not int or length != size:
-            raise ValueError("checkpoint object copy differs in length")
+        self.copy(kind, digest, size, expected=size)
 
     def delete(self, kind: Literal["chunks", "manifests"], digest: str) -> None:
         self.check()

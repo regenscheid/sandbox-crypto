@@ -14,7 +14,7 @@ from __future__ import annotations
 import io
 import tempfile
 from collections.abc import Iterator
-from typing import BinaryIO
+from typing import BinaryIO, Literal
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock
 from sandbox_science.contracts.workspace_checkpoint import CheckpointReceipt, CheckpointSource
@@ -66,11 +66,13 @@ def verify(
     identity: str,
     source: CheckpointSource,
     *,
+    chunk_names: list[str] | None = None,
     timeout: float = 3600,
     clock: Clock = SYSTEM_CLOCK,
 ) -> CheckpointReceipt:
     """The receipt of the checkpoint whose manifest has SHA-256 ``identity``, once every
-    byte read back matches it and ``source``; any difference raises ValueError."""
+    byte read back matches it and ``source``; any difference raises ValueError. With
+    ``chunk_names``, the manifest's chunks are appended there in order."""
     with (
         Objects(settings, timeout=timeout, clock=clock) as objects,
         tempfile.TemporaryFile() as raw,
@@ -80,7 +82,7 @@ def verify(
             raise ValueError("checkpoint manifest names another binding than the worker's")
         if receipt.capture is None:
             raise ValueError("checkpoint receipt does not state how it was captured")
-        entries = chunks(raw, receipt)
+        entries = _noted(chunks(raw, receipt), chunk_names)
         archive = RemoteArchive(objects, entries)
         summary = decode(archive, source, check=objects.check)
         if next(entries, None) is not None:
@@ -96,6 +98,36 @@ def verify(
         return receipt
 
 
+def _noted(entries: Iterator[Chunk], names: list[str] | None) -> Iterator[Chunk]:
+    for entry in entries:
+        if names is not None:
+            names.append(entry.sha256)
+        yield entry
+
+
+def _promote_one(
+    reader: Objects,
+    writer: Objects,
+    kind: Literal["chunks", "manifests"],
+    digest: str,
+    size: int,
+) -> bool:
+    """One object into the kept bucket; whether it was copied.
+
+    Chunks are shared between checkpoints of a workspace (an unchanged leading part of the
+    archive gives the same chunks), so a kept object that already reads back exactly is
+    never overwritten: anything holding the upload key could have replaced the upload's
+    copy since the worker verified it. Otherwise the upload's copy is read and hashed, and
+    only that version (its ETag) is copied; the copy is then read back and hashed too."""
+    if writer.verified(kind, digest, size):
+        return False
+    reader.copy(kind, digest, size, expected=size)
+    if not reader.etag:
+        raise ValueError("the object store gave no ETag to pin the copy to")
+    writer.copy_in(reader.settings, kind, digest, size, reader.etag)
+    return True
+
+
 def promote(
     source: Storage,
     target: Storage,
@@ -103,19 +135,22 @@ def promote(
     *,
     timeout: float = 3600,
     clock: Clock = SYSTEM_CLOCK,
-) -> CheckpointReceipt:
+) -> tuple[CheckpointReceipt, int]:
     """Copy a checkpoint from the upload bucket into the kept one inside the store: every
-    chunk, then the manifest last, so a kept manifest never names a missing chunk."""
+    chunk, then the manifest last, so a kept manifest never names a missing chunk. Returns
+    the receipt and how many objects were copied (the rest were already kept, exactly)."""
     with (
         Objects(source, timeout=timeout, clock=clock) as reader,
         Objects(target, timeout=timeout, clock=clock) as writer,
         tempfile.TemporaryFile() as raw,
     ):
         receipt = _manifest(reader, identity, raw)
+        copied = 0
         for entry in chunks(raw, receipt):
-            writer.copy_in(source, "chunks", entry.sha256, entry.size)
-        writer.copy_in(source, "manifests", identity, raw.seek(0, io.SEEK_END))
-        return receipt
+            copied += _promote_one(reader, writer, "chunks", entry.sha256, entry.size)
+        size = raw.seek(0, io.SEEK_END)
+        copied += _promote_one(reader, writer, "manifests", identity, size)
+        return receipt, copied
 
 
 def referenced(objects: Objects, identities: list[str]) -> set[str]:
@@ -132,24 +167,28 @@ def delete(
     settings: Storage,
     identity: str,
     *,
+    chunk_names: list[str] | None = None,
     timeout: float = 3600,
     clock: Clock = SYSTEM_CLOCK,
 ) -> int:
-    """Remove a checkpoint: its manifest first, so it can never be fetched half gone, then
-    each of its chunks no other manifest in the bucket names. Returns the chunks removed.
-    A manifest that is already gone leaves its chunks for a later pass to find unnamed."""
+    """Remove a checkpoint: each of its chunks no other manifest in the bucket names, then
+    its manifest last. ``chunk_names`` is the list the worker recorded when it verified the
+    checkpoint, so a run can resume after a failure even once the manifest is gone; without
+    it the manifest is read. A missing object counts as removed (S3 deletes are idempotent).
+    Returns how many chunks were asked to go."""
     with Objects(settings, timeout=timeout, clock=clock) as objects:
-        with tempfile.TemporaryFile() as raw:
-            receipt = _manifest(objects, identity, raw)
-            own = [entry.sha256 for entry in chunks(raw, receipt)]
+        if chunk_names is None:
+            with tempfile.TemporaryFile() as raw:
+                receipt = _manifest(objects, identity, raw)
+                chunk_names = [entry.sha256 for entry in chunks(raw, receipt)]
         others = [
             name for name in objects.names("manifests", MAX_KEPT_MANIFESTS) if name != identity
         ]
         kept = referenced(objects, others)
-        objects.delete("manifests", identity)
         removed = 0
-        for name in dict.fromkeys(own):
+        for name in dict.fromkeys(chunk_names):
             if name not in kept:
                 objects.delete("chunks", name)
                 removed += 1
+        objects.delete("manifests", identity)
         return removed

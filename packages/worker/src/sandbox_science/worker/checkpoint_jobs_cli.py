@@ -25,6 +25,7 @@ import argparse
 import contextlib
 import json
 import os
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -38,6 +39,7 @@ from . import checkpoint_jobs, checkpoint_remote
 from .checkpoint_capture import capture_upload
 from .checkpoint_records import DEFAULT_KEEP, CheckpointRecords
 from .checkpoint_s3 import load, parse
+from .checkpoint_transport import MAX_CHUNKS
 from .errors import WorkerError
 from .settings import SettingsError, load_settings
 
@@ -74,6 +76,11 @@ def parser(command: argparse.ArgumentParser) -> None:
     delete.add_argument("--storage", type=Path, required=True)
     delete.add_argument("--manifest", required=True)
     delete.add_argument("--timeout", type=float, default=3600)
+    delete.add_argument(
+        "--chunks-file", type=Path, help="the worker's recorded chunk list (checkpoint chunks)"
+    )
+    listed = actions.add_parser("chunks", help="the chunk list the worker recorded")
+    listed.add_argument("--manifest", required=True)
     inventory = actions.add_parser("inventory", help="what a cleanup decides with, as JSON")
     inventory.add_argument("--keep", type=int, choices=range(1, 101), default=DEFAULT_KEEP)
     forget = actions.add_parser("forget", help="journal a checkpoint's deletion")
@@ -90,7 +97,15 @@ def parser(command: argparse.ArgumentParser) -> None:
     release = actions.add_parser("release-hold", help="lift a checkpoint's hold")
     release.add_argument("--checkpoint-id", required=True)
     release.add_argument("--reason", required=True)
-    for name in ("plan", "verify", "inventory", "forget", "record-volume", "release-hold"):
+    for name in (
+        "plan",
+        "verify",
+        "inventory",
+        "forget",
+        "record-volume",
+        "release-hold",
+        "chunks",
+    ):
         actions.choices[name].add_argument("--settings", type=Path, required=True)
     for name in ("plan", "verify", "forget", "record-volume", "release-hold"):
         actions.choices[name].add_argument(
@@ -105,6 +120,19 @@ def _detail(raw: str) -> dict[str, object]:
     if not isinstance(value, dict):
         raise ValueError("--detail is a JSON object")
     return cast(dict[str, object], value)
+
+
+def _chunk_file(path: Path | None) -> list[str] | None:
+    """A recorded chunk list, one SHA-256 a line; empty or absent means read the manifest."""
+    if path is None:
+        return None
+    raw = path.read_bytes()
+    if len(raw) > 65 * MAX_CHUNKS:
+        raise ValueError("the chunk list exceeds its bound")
+    names = raw.decode().split()
+    if any(re.fullmatch(r"[0-9a-f]{64}", name) is None for name in names):
+        raise ValueError("the chunk list holds something other than SHA-256 digests")
+    return names or None
 
 
 def _variable(name: str) -> str:
@@ -143,14 +171,20 @@ def run(args: argparse.Namespace) -> int:
         if command == "capture-upload":
             return _capture(args)
         if command == "promote":
-            receipt = checkpoint_remote.promote(
+            receipt, copied = checkpoint_remote.promote(
                 load(args.source), load(args.target), args.manifest, timeout=args.timeout
             )
-            print(f"promoted={args.manifest} archive_bytes={receipt.archive_size}")
+            print(
+                f"promoted={args.manifest} archive_bytes={receipt.archive_size}"
+                f" objects_copied={copied}"
+            )
             return 0
         if command == "delete-objects":
             removed = checkpoint_remote.delete(
-                load(args.storage), args.manifest, timeout=args.timeout
+                load(args.storage),
+                args.manifest,
+                chunk_names=_chunk_file(args.chunks_file),
+                timeout=args.timeout,
             )
             print(f"deleted={args.manifest} chunks_removed={removed}")
             return 0
@@ -202,7 +236,10 @@ def run(args: argparse.Namespace) -> int:
         records = CheckpointRecords(settings.state_dir)
         try:
             now = SYSTEM_CLOCK.now()
-            if command == "release-hold":
+            if command == "chunks":
+                for name in records.chunk_names(args.manifest):
+                    print(name)
+            elif command == "release-hold":
                 released = records.release(args.checkpoint_id, now, f"{args.actor}: {args.reason}")
                 print(f"released={args.checkpoint_id if released else 'none'}")
             elif args.done:

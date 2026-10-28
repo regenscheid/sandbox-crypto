@@ -1513,6 +1513,17 @@ async def test_a_checkpoint_hold_keeps_a_stopped_sandbox_stopped(setup: Setup) -
     assert setup.environments.get("env-1").state is EnvironmentState.READY
 
 
+async def test_unreadable_checkpoint_records_refuse_a_start(setup: Setup) -> None:
+    """The hold check fails closed: records it cannot read never let a sandbox start."""
+    await setup.environments.create(setup.request())
+    setup.environments.release_idle = always
+    assert await setup.environments.suspend("env-1", time.monotonic())
+    (setup.state_dir / "checkpoints.sqlite3").write_bytes(b"not a database, " * 64)
+    with pytest.raises(WorkerError, match="cannot check checkpoint holds"):
+        await setup.environments.resume("env-1")
+    assert setup.fake.calls("sandbox", "start") == []
+
+
 async def test_an_environment_in_use_is_not_suspended(setup: Setup) -> None:
     await setup.environments.create(setup.request())
 
