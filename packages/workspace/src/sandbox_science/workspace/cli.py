@@ -4,7 +4,9 @@
 ```
 sandbox-science-workspace serve --state-dir DIR --static DIR [--listen 127.0.0.1:8200] \\
     [--allow-remote [--public-origin https://H --preview-public-origin https://P] \\
-     [--trust-proxy-from CIDR ...]] \\
+     [--trust-proxy-from CIDR ...] \\
+     [--forward-auth-jwks-url URL --forward-auth-issuer URL --forward-auth-audience ID \\
+      --forward-auth-user-group G [--forward-auth-admin-group G]]] \\
     [--model-url http://127.0.0.1:4000 --reviewer-model reviewer --api-key-file key]
 ```
 
@@ -17,7 +19,12 @@ network unencrypted. Behind a TLS-terminating reverse proxy, ``--public-origin``
 ``--preview-public-origin`` name the ``https://`` origins the browser sees, and
 ``--trust-proxy-from`` the proxies whose forwarded scheme and host are believed
 (proxy.py). At each start it makes a new login token and prints the login URL once, on
-standard output.
+standard output. Behind Authentik's forward auth, the ``--forward-auth-*`` options (with
+``--public-origin``) let a user Authentik admitted in without the login URL: the server
+believes the signed token Authentik's proxy outpost sends, checked against the provider's
+JWKS, issuer and audience and the user group (forward_auth.py, D104); with an admin group,
+only its members may take the admin-only actions (identity.py). The login URL keeps
+working, as the operator's own login.
 
 With ``--model-url``, ``--reviewer-model`` and ``--api-key-file``, the page may ask the
 reviewer model, through the model gateway, to repair math that KaTeX rejects
@@ -54,6 +61,7 @@ from sandbox_science.orchestrator.worker_client import WorkerClient
 
 from .app import create_app
 from .context import CONTEXT
+from .forward_auth import HEADER, ForwardAuthSettings, Verifier
 from .mathrepair import MathRepairService, gateway_service, reviewer_alias
 from .mcp_metadata import AvailabilityClient
 from .mcp_services import ServiceConfig
@@ -186,6 +194,44 @@ def check_preview_name(name: str, preview_host: str) -> None:
     except ValueError:
         if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?", name):
             raise ValueError(f"--preview-name {name!r} is not a host name") from None
+
+
+def forward_auth_settings(
+    jwks_url: str | None,
+    issuer: str | None,
+    audience: str | None,
+    user_group: str | None,
+    admin_group: str | None,
+    header: str | None,
+    *,
+    public: bool,
+) -> ForwardAuthSettings | None:
+    """The forward-auth settings, or None when none are given; ``ValueError`` for an
+    incomplete set, or one without a public origin behind the proxy."""
+    required = {
+        "--forward-auth-jwks-url": jwks_url,
+        "--forward-auth-issuer": issuer,
+        "--forward-auth-audience": audience,
+        "--forward-auth-user-group": user_group,
+    }
+    given = [*required.values(), admin_group, header]
+    if all(value is None for value in given):
+        return None
+    missing = [option for option, value in required.items() if not value]
+    if missing:
+        raise ValueError(f"forward auth needs {', '.join(missing)}")
+    if not public:
+        raise ValueError(
+            "forward auth is for a server behind Authentik's proxy: it needs --public-origin"
+        )
+    return ForwardAuthSettings(
+        jwks_url=str(jwks_url),
+        issuer=str(issuer),
+        audience=str(audience),
+        user_group=str(user_group),
+        admin_group=admin_group or None,
+        header=header or HEADER,
+    )
 
 
 def proxy_settings(
@@ -360,6 +406,31 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="a network whose connections' X-Forwarded-Proto and X-Forwarded-Host are "
         "believed; repeat for each (needs --allow-remote; never X-Forwarded-For or Forwarded)",
     )
+    forward = command.add_argument_group(
+        "forward auth",
+        "behind Authentik's forward auth (needs --public-origin): a user Authentik admits "
+        "gets a session from its proxy outpost's signed token, without the login URL",
+    )
+    forward.add_argument(
+        "--forward-auth-jwks-url", metavar="URL", help="the provider's JWKS (public keys)"
+    )
+    forward.add_argument(
+        "--forward-auth-issuer", metavar="URL", help="the tokens' exact iss: the provider's"
+    )
+    forward.add_argument(
+        "--forward-auth-audience", metavar="ID", help="the tokens' aud: the provider's client ID"
+    )
+    forward.add_argument(
+        "--forward-auth-user-group", metavar="GROUP", help="the group a user must be in"
+    )
+    forward.add_argument(
+        "--forward-auth-admin-group",
+        metavar="GROUP",
+        help="the group the admin-only actions need (default: none; every user may)",
+    )
+    forward.add_argument(
+        "--forward-auth-header", metavar="NAME", help=f"the token's header (default {HEADER})"
+    )
     command.add_argument(
         "--log-level", default="INFO", choices=("DEBUG", "INFO", "WARNING", "ERROR")
     )
@@ -507,6 +578,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     except ValueError as exc:
         parser.error(str(exc))
+    try:
+        forward_settings = forward_auth_settings(
+            args.forward_auth_jwks_url,
+            args.forward_auth_issuer,
+            args.forward_auth_audience,
+            args.forward_auth_user_group,
+            args.forward_auth_admin_group,
+            args.forward_auth_header,
+            public=public is not None,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
     if not args.state_dir.is_dir():
         print(f"error: there is no state directory {args.state_dir}", file=sys.stderr)
         return 1
@@ -580,6 +663,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             mcp_checks=checks,
             model_configuration=model_configuration,
             exposure=exposure,
+            forward_auth=Verifier(forward_settings) if forward_settings is not None else None,
         )
     except OSError as exc:
         print(f"error: {exc} (build the web app: npm run build)", file=sys.stderr)
@@ -612,7 +696,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "its own",
                 public[1].origin,
             )
-    elif not loopback:
+    if forward_settings is not None:
+        _log.info(
+            "login through Authentik: tokens from %s, signed by the keys at %s, for users in "
+            "%s; admin-only actions: %s",
+            forward_settings.issuer,
+            forward_settings.jwks_url,
+            forward_settings.user_group,
+            forward_settings.admin_group or "every user",
+        )
+    if public is None and not loopback:
         _log.warning(
             "listening on %s, which is not loopback: the login URL and session cookie travel "
             "unencrypted, and any Host name is accepted",

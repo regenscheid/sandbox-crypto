@@ -20,6 +20,7 @@ from aiohttp import web
 from sandbox_science.orchestrator.control import migrations
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.workspace import app, cli
+from sandbox_science.workspace.forward_auth import ForwardAuthSettings, Verifier
 from sandbox_science.workspace.proxy import Exposure, PublicOrigin
 
 COMMAND = Path(sys.executable).parent / "sandbox-science-workspace"
@@ -457,6 +458,66 @@ def test_proxy_settings_reach_the_app_and_the_announcement(
         PublicOrigin("workspace.research.test"),
         PublicOrigin("preview.research.test"),
     )
+
+
+FORWARD = [
+    "--forward-auth-jwks-url",
+    "http://authentik-server.authentik.svc/application/o/atlas/jwks/",
+    "--forward-auth-issuer",
+    "https://auth.research.test/application/o/atlas/",
+    "--forward-auth-audience",
+    "test-client-id",
+    "--forward-auth-user-group",
+    "atlas-users",
+]
+
+
+def test_forward_auth_settings_reach_the_app(
+    state_dir: Path, static_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings, _ = captured_app(monkeypatch)
+    flags = [*REMOTE, *PUBLIC, *PREVIEW_PUBLIC, *FORWARD, "--forward-auth-admin-group", "admins"]
+    args = ["serve", "--state-dir", str(state_dir), "--static", str(static_dir), *flags]
+    assert cli.main(args) == 0
+    verifier = settings["forward_auth"]
+    assert isinstance(verifier, Verifier)
+    assert verifier.settings == ForwardAuthSettings(
+        jwks_url=FORWARD[1],
+        issuer=FORWARD[3],
+        audience="test-client-id",
+        user_group="atlas-users",
+        admin_group="admins",
+        header="X-authentik-jwt",
+    )
+    settings.clear()
+    assert cli.main(["serve", "--state-dir", str(state_dir), "--static", str(static_dir)]) == 0
+    assert settings["forward_auth"] is None
+
+
+@pytest.mark.parametrize(
+    ("flags", "reason"),
+    [
+        ([*REMOTE, *FORWARD], "needs --public-origin"),
+        ([*REMOTE, *PUBLIC, *PREVIEW_PUBLIC, *FORWARD[:6]], "--forward-auth-user-group"),
+        ([*REMOTE, *PUBLIC, *PREVIEW_PUBLIC, "--forward-auth-admin-group", "a"], "needs"),
+        (
+            [*REMOTE, *PUBLIC, *PREVIEW_PUBLIC, *FORWARD[2:], "--forward-auth-jwks-url", "ftp://x"],
+            "http or https",
+        ),
+    ],
+    ids=["no-public-origin", "incomplete", "admin-group-alone", "bad-jwks-url"],
+)
+def test_incomplete_forward_auth_settings_are_refused(
+    state_dir: Path,
+    static_dir: Path,
+    capsys: pytest.CaptureFixture[str],
+    flags: list[str],
+    reason: str,
+) -> None:
+    with pytest.raises(SystemExit) as refused:
+        cli.main(["serve", "--state-dir", str(state_dir), "--static", str(static_dir), *flags])
+    assert refused.value.code == 2
+    assert reason in capsys.readouterr().err
 
 
 @pytest.mark.asyncio

@@ -248,6 +248,7 @@ All routes need the session and answer JSON, except original upload downloads. E
 | GET | `/api/v0/projects/{project}/environments/{environment}/provisioning/observations/lockfile-diff` | The differences between two pinned retained lockfiles ([contract](LOCKFILE-DIFF-WORKSPACE.md)) |
 | POST | `/api/v0/math-repair` | The reviewer model's repair of one formula ([math repairs](#math-repairs)) |
 | POST | `/api/v0/logout` | Ends the session: 204, no body |
+| GET | `/api/v0/me` | Who the session is: `user`, `login` (`token` or `forward`), `admin` and the `admin_group` the admin-only actions need ([login through Authentik](#login-through-authentik)) |
 
 Outside `/api/`, `GET /login` takes the login token, and every other GET is a [file or an app route](#what-the-browser-may-do).
 

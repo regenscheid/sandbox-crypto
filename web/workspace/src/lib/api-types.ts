@@ -2924,6 +2924,14 @@ export interface UserUpload {
   number: number;
 }
 
+/** ``GET /api/v0/me``: who this session is, and what it may do. */
+export interface Viewer {
+  user: string;
+  login: "token" | "forward";
+  admin: boolean;
+  admin_group: string | null;
+}
+
 /** The viewer's URL for one PDF revision, and when it stops opening it. */
 export interface ViewerLink {
   url: string;

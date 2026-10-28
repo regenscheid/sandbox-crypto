@@ -45,6 +45,7 @@ from sandbox_science.testing import fake_worker_app
 from sandbox_science.workspace.app import create_app
 from sandbox_science.workspace.classifications import ClassificationSource
 from sandbox_science.workspace.context import TIMEOUTS, Timeouts
+from sandbox_science.workspace.forward_auth import Verifier
 from sandbox_science.workspace.mcp_metadata import AvailabilityClient
 from sandbox_science.workspace.mcp_services import ListingSource, ServiceConfig
 
@@ -550,8 +551,10 @@ async def workspace(
     mcp_checks: AvailabilityClient | None = None,
     mcp_listings: ListingSource | None = None,
     mcp_classifications: ClassificationSource | None = None,
+    forward_auth: Verifier | None = None,
 ) -> TestClient[Any, Any]:
-    """The workspace app under test, optionally connected to a worker and logged in."""
+    """The workspace app under test, optionally connected to a worker and logged in with
+    the login link (the operator's own login)."""
     worker = WorkerClient(worker_url, WORKER_TOKEN) if worker_url is not None else None
     client = await aiohttp_client(
         create_app(
@@ -567,6 +570,7 @@ async def workspace(
             mcp_checks=mcp_checks,
             mcp_listings=mcp_listings,
             mcp_classifications=mcp_classifications,
+            forward_auth=forward_auth,
         )
     )
     if login:
