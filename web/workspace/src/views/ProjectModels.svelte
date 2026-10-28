@@ -7,8 +7,11 @@
   import { guardedWrite } from '../lib/mutation';
   import { idle, type Submitting } from '../lib/submit';
   import ErrorMessage from './ErrorMessage.svelte';
+  import { adminBlock } from '../lib/viewer.svelte';
 
   let { projectId, open = false }: { projectId: string; open?: boolean } = $props();
+  /** Why this user may not change the agents' models (D104); null when they may. */
+  const blocked = $derived(adminBlock());
   type AgentModelRole = 'main' | 'delegated' | 'reviewer';
   let settings = $state<ModelSettings | null>(null);
   let expected = $state(0);
@@ -131,8 +134,14 @@
         <button type="button" disabled={saving.busy} onclick={useDefaults}
           >Use deployment defaults</button
         >
-        <button type="button" disabled={saving.busy} onclick={save}>Save agent models</button>
+        <button
+          type="button"
+          disabled={saving.busy || blocked !== null}
+          title={blocked ?? undefined}
+          onclick={save}>Save agent models</button
+        >
       </div>
+      {#if blocked}<p class="admin-only">{blocked} The models decide spend.</p>{/if}
       {#if status}<p role="status">{status}</p>{/if}
       {#if saving.error}<ErrorMessage error={saving.error} />{/if}
     {/if}

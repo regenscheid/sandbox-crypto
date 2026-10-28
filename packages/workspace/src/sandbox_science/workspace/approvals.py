@@ -39,6 +39,10 @@ Routes:
 - ``GET …/grants``: the project's grants, with when each was last used; ``POST
   …/grants/{grant}/revoke`` ends one at once.
 
+A project grant and clearing a hold are admin-only actions (identity.py, D104): with an
+admin group configured, only its members may take them, while every user may allow once,
+for the session, deny or stop. A grant's author is the user who gave or revoked it.
+
 The relay answers each new request a grant covers, and notes the grant's use. It answers
 the request itself (an MCP call with its exact arguments, so a grant never stretches to a
 call of another class) or, for a host grant, the host's reads for that sandbox and policy
@@ -73,7 +77,7 @@ from sandbox_science.orchestrator.delegation.requests import (
     ChildRequests,
     brief_text,
 )
-from sandbox_science.orchestrator.documents import USER, DocumentStore
+from sandbox_science.orchestrator.documents import DocumentStore
 from sandbox_science.orchestrator.project_grants import (
     MAX_GRANT_HOURS,
     Asked,
@@ -88,6 +92,7 @@ from sandbox_science.policy import normalize_host
 from sandbox_science.policy.approvals import offered
 
 from .context import CONTEXT, WorkspaceContext, identifier, json_answer, json_body, session_record
+from .identity import author, require_admin
 from .requests import document_answer, dumps
 
 _log = logging.getLogger(__name__)
@@ -445,7 +450,11 @@ async def answer(request: web.Request) -> web.Response:
             ErrorKind.INVALID_REQUEST, "a hold is cleared or stopped, and only a hold is"
         )
     if held.kind == "hold":
+        if decision.decision == "clear":
+            require_admin(request, "clearing a hold")
         return await _answer_hold(request, project, config, held, decision)
+    if decision.decision == "project":
+        require_admin(request, "a project grant")
     asked = asked_of(held)
     if decision.decision != "deny" and decision.decision not in _offered(held).scopes:
         # The ceiling is the server's to enforce, whatever a client sends (D97).
@@ -458,7 +467,7 @@ async def answer(request: web.Request) -> web.Response:
         now = config.clock.now()
         granted = await asyncio.to_thread(
             ProjectGrants(context.writer).give,
-            project, asked, decision.decision, USER, now, decision.hours,
+            project, asked, decision.decision, author(request), now, decision.hours,
         )  # fmt: skip
     scope, hours = ledger_answer(held, decision.decision)
     await _send(config, held, approve=decision.decision != "deny", scope=scope, hours=hours)
@@ -511,9 +520,10 @@ async def grants(request: web.Request) -> web.Response:
 async def revoke(request: web.Request) -> web.Response:
     project, grant = identifier(request, "project"), request.match_info["grant"]
     clock = request.app[APPROVALS].clock if APPROVALS in request.app else SYSTEM_CLOCK
+    by = author(request)
 
     def write(store: DocumentStore) -> GrantListing:
-        return ProjectGrants(store).revoke(project, grant, USER, clock.now())
+        return ProjectGrants(store).revoke(project, grant, by, clock.now())
 
     return await document_answer(request, write, access="write")
 

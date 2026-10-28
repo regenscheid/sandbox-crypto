@@ -54,6 +54,12 @@ loki.source.kubernetes "sandbox_science" {
 // fields become labels; the identifiers stay out of the label set, as structured metadata
 // (Loki 3), so that a project, session, run or request is a filter, not a stream.
 loki.process "sandbox_science" {
+  // A `token=` value anywhere in a line, such as the workspace's login URL, which logs in
+  // as the operator, an admin (D104): it never reaches Loki.
+  stage.replace {
+    expression = "token=([^&\\s\"'<>]+)"
+    replace    = "REDACTED"
+  }
   stage.json {
     expressions = {
       level       = "level",
@@ -104,6 +110,12 @@ loki.process "ocsf" {
   stage.match {
     selector = "{namespace=\"research-runtimes\"} !~ \".* OCSF-JSON [{].*\""
     action   = "drop"
+  }
+  // A `token=` value anywhere in a line, such as the workspace's login URL, which logs in
+  // as the operator, an admin (D104): it never reaches Loki.
+  stage.replace {
+    expression = "token=([^&\\s\"'<>]+)"
+    replace    = "REDACTED"
   }
   stage.regex {
     expression = "^\\S+ OCSF-JSON (?P<ocsf>\\{.*\\})\\s*$"  // the line keeps its trailing newline

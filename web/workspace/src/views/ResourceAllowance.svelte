@@ -4,8 +4,11 @@
   import type { ResourceDecision, ResourceRequest } from '../lib/api-types';
   import { post } from '../lib/http';
   import ErrorMessage from './ErrorMessage.svelte';
+  import { adminBlock } from '../lib/viewer.svelte';
 
   let { path, item }: { path: string; item: ResourceRequest } = $props();
+  /** Why this user may not extend the allowance (D104); stopping is everyone's. */
+  const blocked = $derived(adminBlock());
   let reason = $state('Continue from the saved research checkpoint.');
   let attempted = $state(false);
   let busy = $state(false);
@@ -82,8 +85,10 @@
       research for good. Spending limits, worker capacity and execution deadlines stay unchanged.
     </p>
     <label>Reason<textarea bind:value={reason} maxlength="2000" rows="2"></textarea></label>
-    <button disabled={busy || !reason.trim()} onclick={() => approve()}
-      >Continue for {extension.label}</button
+    <button
+      disabled={busy || !reason.trim() || blocked !== null}
+      title={blocked ?? undefined}
+      onclick={() => approve()}>Continue for {extension.label}</button
     >
     <button class="subtle" disabled={busy || !reason.trim()} onclick={() => approve('stop')}
       >Stop the research</button
@@ -98,10 +103,13 @@
       >Reason for continuing<textarea bind:value={reason} maxlength="2000" rows="2"
       ></textarea></label
     >
-    <button disabled={busy || !reason.trim()} onclick={() => approve()}
-      >Approve {extension.label}</button
+    <button
+      disabled={busy || !reason.trim() || blocked !== null}
+      title={blocked ?? undefined}
+      onclick={() => approve()}>Approve {extension.label}</button
     >
   {/if}
+  {#if blocked && !result}<p class="admin-only">{blocked}</p>{/if}
 </div>
 
 <style>

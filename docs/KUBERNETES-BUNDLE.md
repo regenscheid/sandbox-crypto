@@ -641,9 +641,66 @@ proxy](WORKSPACE.md#behind-a-reverse-proxy)). Told its two public origins, the w
 
 The renderer passes no `--trust-proxy-from`: Traefik's Pods have no fixed addresses, and
 with `Host` passed through no forwarded header is needed. Authentik is checked before
-the workspace's own login token, which the workspace still needs
-(`kubectl logs deploy/<name>-app -c workspace` prints the login URL on the public origin);
-Authentik's headers open no workspace session. Nothing here is qualified on a cluster.
+the workspace's own login token, which the workspace still needs unless
+[login through Authentik](#login-through-authentik-opt-in) is on
+(`kubectl logs deploy/<name>-app -c workspace` prints the login URL on the public origin; with login through Authentik it is not in the log, and `kubectl -n <namespace> exec deploy/<name>-app -c workspace -- sandbox-science-workspace login-url --state-dir /var/lib/sandbox-science/control` prints it);
+Authentik's plain headers open no workspace session. Nothing here is qualified on a cluster.
+
+### Login through Authentik (opt-in)
+
+Owner decision 2026-10-28 (D104). `[ingress.forward_auth]` lets a user Authentik admits
+into the workspace without the login URL, by the token Authentik's proxy outpost signs
+([workspace: login through Authentik](WORKSPACE.md#login-through-authentik)). Absent, or
+with `enabled = false`, nothing of it is rendered.
+
+```toml
+[ingress.forward_auth]
+# enabled = true
+jwks_url = "http://authentik-server.authentik.svc/application/o/cryptoatlas/jwks/"
+issuer = "https://auth.example.org/application/o/cryptoatlas/"
+audience = "PROVIDER_CLIENT_ID"    # the client ID: public, not the client secret
+user_group = "atlas-users"
+admin_group = "atlas-admins"       # optional: absent, every user may take the admin-only actions
+# header = "X-authentik-jwt"
+# authentik_ports = [9000]         # the server Pods' HTTP port, the Service's target
+authentik = { namespace_labels = { "kubernetes.io/metadata.name" = "authentik" }, pod_labels = { "app.kubernetes.io/name" = "authentik", "app.kubernetes.io/component" = "server" } }
+```
+
+**Validation.** `jwks_url` is `https`, or `http` to an in-cluster Service (`*.svc` or
+`*.svc.<domain>`), with no credentials or query; `issuer` is a URL; the groups are names
+without control characters; `header` is letters, digits and hyphens; `authentik` selects
+Pods by namespace and Pod labels (or a CIDR), never a bare namespace. Unknown keys are
+refused, so no secret can be put here: the workspace fetches only public keys.
+
+**What changes.** The workspace gets `--forward-auth-jwks-url`, `--forward-auth-issuer`,
+`--forward-auth-audience`, `--forward-auth-user-group`, `--forward-auth-header` and, with
+an admin group, `--forward-auth-admin-group`. The `<name>-ingress` NetworkPolicy gains an
+egress rule, its only one: the application Pod to the `authentik` peer's Pods on
+`authentik_ports`, for the JWKS. A NetworkPolicy selects Pods, not containers, so the
+rule admits every container of the application Pod, `control` (zone Z2) included, to
+Authentik's server on that port: control could reach Authentik's HTTP interface as any
+client inside the cluster can, with no credential of Authentik's. Narrowing it to the JWKS
+path would need a proxy in front of Authentik, which this does not add. No other policy
+and no Secret changes. The workspace no longer prints its login URL, which logs in as the
+operator, an admin: `kubectl -n <namespace> exec deploy/<name>-app -c workspace -- sandbox-science-workspace login-url --state-dir /var/lib/sandbox-science/control` prints it. The JWKS crosses
+the Pod network in plain HTTP, as every request from Traefik to the workspace does; an
+attacker able to rewrite Pod traffic could swap the keys, but could equally rewrite what
+Traefik forwards, so this adds no new exposure ([threat model](THREAT-MODEL.md)).
+
+**The operator's side** (the site generator's README lists it too):
+
+* give the Authentik proxy provider a **Signing Key** (the provider's *Advanced protocol
+  settings*): without one its tokens are `HS256` under the client secret, and the
+  workspace refuses every login, saying why;
+* add `X-authentik-jwt` to the forward-auth middleware's `authResponseHeaders`;
+* create the admin group, if one is configured, and add the admins to it directly: the
+  token lists a user's direct groups only.
+
+Find the values with `kubectl -n authentik get svc authentik-server` (the Service and its
+target port) and the provider's discovery document,
+`https://<Authentik host>/application/o/<slug>/.well-known/openid-configuration` (`issuer`
+and `jwks_uri`, whose path the in-cluster URL keeps). Use the cluster's DNS domain in
+`jwks_url` if search domains do not resolve `*.svc` in the Pod.
 
 **Both host names behind Authentik.** The preview is framed by the workspace page, so its
 requests carry the Authentik session too. Put both names under one parent domain and use

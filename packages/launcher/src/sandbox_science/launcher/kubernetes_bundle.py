@@ -17,6 +17,7 @@ from .kubernetes_config import (
     Alerts,
     BundleConfig,
     Capacity,
+    ForwardAuth,
     Ingress,
     Maintenance,
     Peer,
@@ -301,25 +302,34 @@ def _policies(config: BundleConfig) -> list[dict[str, object]]:
     return policies
 
 
+def _forward_auth(ingress: Ingress) -> ForwardAuth | None:
+    found = ingress.forward_auth
+    return found if found is not None and found.enabled else None
+
+
 def _ingress_policy(config: BundleConfig, ingress: Ingress) -> dict[str, object]:
     """An additive policy: the ingress controller's Pods may reach the workspace's two
-    listeners and nothing else. It adds no egress and no other port; the default-deny and
-    the app policy still decide everything else."""
-    return _object(
-        config,
-        "NetworkPolicy",
-        "ingress",
-        spec={
-            "podSelector": {"matchLabels": _labels(config, "app")},
-            "policyTypes": ["Ingress"],
-            "ingress": [
-                {
-                    "from": [_peer(peer) for peer in ingress.traefik],
-                    "ports": _ports(WORKSPACE_PORT, PREVIEW_PORT),
-                }
-            ],
-        },
-    )
+    listeners and nothing else, and with login through Authentik (D104) the application
+    Pod may reach Authentik's server Pods for the provider's public keys. It adds no
+    other egress and no other port; the default-deny and the app policy still decide
+    everything else."""
+    spec: dict[str, object] = {
+        "podSelector": {"matchLabels": _labels(config, "app")},
+        "policyTypes": ["Ingress"],
+        "ingress": [
+            {
+                "from": [_peer(peer) for peer in ingress.traefik],
+                "ports": _ports(WORKSPACE_PORT, PREVIEW_PORT),
+            }
+        ],
+    }
+    forward = _forward_auth(ingress)
+    if forward is not None:
+        spec["policyTypes"] = ["Ingress", "Egress"]
+        spec["egress"] = [
+            {"to": [_peer(forward.authentik)], "ports": _ports(*forward.authentik_ports)}
+        ]
+    return _object(config, "NetworkPolicy", "ingress", spec=spec)
 
 
 def _routes(config: BundleConfig, ingress: Ingress) -> list[dict[str, object]]:
@@ -530,6 +540,28 @@ def _command(config: BundleConfig, name: str) -> list[str]:
             if ingress is not None
             else []
         )
+        forward = _forward_auth(ingress) if ingress is not None else None
+        login = (
+            [
+                "--forward-auth-jwks-url",
+                forward.jwks_url,
+                "--forward-auth-issuer",
+                forward.issuer,
+                "--forward-auth-audience",
+                forward.audience,
+                "--forward-auth-user-group",
+                forward.user_group,
+                "--forward-auth-header",
+                forward.header,
+                *(
+                    ["--forward-auth-admin-group", forward.admin_group]
+                    if forward.admin_group is not None
+                    else []
+                ),
+            ]
+            if forward is not None
+            else []
+        )
         return [
             "sandbox-science-workspace",
             "serve",
@@ -542,6 +574,7 @@ def _command(config: BundleConfig, name: str) -> list[str]:
             "--preview-listen",
             f"{bind}:{PREVIEW_PORT}",
             *remote,
+            *login,
             "--worker",
             worker,
             "--worker-token-file",

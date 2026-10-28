@@ -11,12 +11,13 @@ from aiohttp import web
 from sandbox_science.orchestrator.consistency.findings import Findings
 from sandbox_science.orchestrator.consistency.response_bodies import ResponseBodies
 from sandbox_science.orchestrator.consistency.store import ReviewStore
-from sandbox_science.orchestrator.documents import USER, DocumentError
+from sandbox_science.orchestrator.documents import DocumentError
 from sandbox_science.orchestrator.mathchecks.contexts import finding_macro_contexts
 from sandbox_science.orchestrator.mathchecks.jobs import MathJobs
 
 from . import errors
 from .context import json_body
+from .identity import author
 from .requests import document_store, json_response
 
 # Persisted heterogeneous review JSON is bounded by the review store.
@@ -168,7 +169,7 @@ async def respond(request: web.Request) -> web.Response:
         return errors.to_response(DocumentError("invalid_request", "invalid finding response"))
     raw = cast(Json, raw)
     return await answer(
-        request, lambda s, p, sid: Findings(s).respond(p, sid, raw, USER), writer=True
+        request, lambda s, p, sid: Findings(s).respond(p, sid, raw, author(request)), writer=True
     )
 
 

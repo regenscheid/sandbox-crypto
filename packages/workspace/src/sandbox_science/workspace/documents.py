@@ -16,7 +16,7 @@ from pydantic import ValidationError
 
 from sandbox_science.orchestrator.documents import DocumentError, DocumentStore, Mapped
 from sandbox_science.orchestrator.documents.annotations import Annotations
-from sandbox_science.orchestrator.documents.models import NAME, USER
+from sandbox_science.orchestrator.documents.models import NAME
 from sandbox_science.orchestrator.documents.operations import unlay
 from sandbox_science.orchestrator.documents.project_macros import view as macro_view
 from sandbox_science.orchestrator.figurechecks import shown as figure_checks
@@ -31,6 +31,7 @@ from .domain_contracts import (
     Revert,
     SourceEdit,
 )
+from .identity import author
 from .requests import document_answer, document_store, execute
 
 _DOCUMENT_ID: Final = re.compile(r"doc-[0-9a-f]{24}")
@@ -89,7 +90,7 @@ async def comment_change(request: web.Request) -> web.Response:
     return await _answer(
         request,
         lambda store: Annotations(store).change(
-            request.match_info["project"], request.match_info["document"], raw, USER
+            request.match_info["project"], request.match_info["document"], raw, author(request)
         ),
         access="write",
     )
@@ -122,7 +123,7 @@ async def change(request: web.Request) -> web.Response:
                 reference,
                 text=value.text,
                 base=value.base,
-                author=USER,
+                author=author(request),
                 reason=value.reason,
                 operation_id=value.operation_id,
             )
@@ -132,7 +133,7 @@ async def change(request: web.Request) -> web.Response:
                 reference,
                 operations=[op.model_dump(mode="json", by_alias=True) for op in value.operations],
                 base=value.base,
-                author=USER,
+                author=author(request),
                 reason=value.reason,
                 operation_id=value.operation_id,
             )
@@ -142,19 +143,21 @@ async def change(request: web.Request) -> web.Response:
                 reference,
                 target=value.target,
                 base=value.base,
-                author=USER,
+                author=author(request),
                 reason=value.reason,
                 operation_id=value.operation_id,
             )
         elif isinstance(value, Decline):
-            result = store.decide(project, reference, value.patch_id, accept=False, author=USER)
+            result = store.decide(
+                project, reference, value.patch_id, accept=False, author=author(request)
+            )
         elif isinstance(value, Promote):
             result = store.promote(
                 project,
                 reference,
                 name=value.name,
                 base=value.base,
-                author=USER,
+                author=author(request),
                 reason=value.reason,
                 operation_id=value.operation_id,
             )
@@ -164,7 +167,7 @@ async def change(request: web.Request) -> web.Response:
                 reference,
                 value.patch_id,
                 base=value.base,
-                author=USER,
+                author=author(request),
                 reason=value.reason,
                 operation_id=value.operation_id,
             )

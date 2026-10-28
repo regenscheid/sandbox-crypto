@@ -154,6 +154,14 @@ numbered CL-n.
     policy revision; the widening rule is in [connectors](../MCP-CONNECTORS.md#project-revisions).
     An accepted revision exports as its stored YAML through `GET /v1/classifications/{server}/
     revisions/{revision}/export?project=P` ([worker](../WORKER.md)).
+  - *As built 2026-10-28 (admin group, D104):* behind Authentik with an admin group
+    configured, "admin" is a member of that Authentik group, from the provider's signed
+    token, or the operator's login link: the workspace's accept route answers anyone else
+    403 before it asks the worker, and the page disables Accept with the reason. Without an
+    admin group every logged-in user is an admin, as before. The workspace logs who
+    accepted; the worker's acceptance record does not yet name the user (it is the
+    workspace's operator client), which is open work
+    ([workspace](../WORKSPACE.md#login-through-authentik)).
   - *As built 2026-10-27 (fences):* the agent runtime's native fence admits tools by the
     revision in force when the launcher compiles it, on `up` and at every runtime
     replacement, so a revision accepted while a runtime runs reaches the fence at the next
@@ -170,6 +178,9 @@ numbered CL-n.
   reason recorded: a changed tool keeps its class only after re-acceptance, an added tool
   is `unclassified` until a classification names it, a removed one is listed as gone.
   Re-acceptance is admin-only, as acceptance is.
+  - *As built 2026-10-28 (admin group, D104):* as for CL-3: with an Authentik admin group,
+    the workspace's re-accept route refuses a user outside it (403) and the page disables
+    Re-accept with the reason; the workspace logs who re-accepted.
 - CL-5. **Proxy-side drift.** Moot: the MCP proxy retired after the A2 decision
   (2026-10-26). The tab reads the middleware's records and the runtime's reported
   listings' (source `runtime`).

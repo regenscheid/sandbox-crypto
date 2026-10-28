@@ -8,6 +8,7 @@ and only LiteLLM's budget, or a configured local limit, stops spending.
 from __future__ import annotations
 
 import asyncio
+from typing import Final
 
 from aiohttp import web
 from pydantic import ValidationError
@@ -23,13 +24,16 @@ from sandbox_science.orchestrator.runstate import RunState
 
 from .context import (
     CONTEXT,
-    USER_ID,
     identifier,
     json_answer,
     json_body,
     no_query,
     session_record,
 )
+from .identity import operator, require_admin
+
+NARROWING: Final = frozenset(("stop", "report", "pause"))
+"""Answers that stop or pause the work, which every member may give (D104)."""
 
 
 def add_routes(app: web.Application, path: str) -> None:
@@ -70,21 +74,26 @@ async def resources(request: web.Request) -> web.Response:
 
 
 async def approve_resource(request: web.Request) -> web.Response:
-    """Record a USER soft-allowance extension; root Resume remains a separate action."""
+    """Record a USER soft-allowance extension; root Resume remains a separate action. An
+    extension widens what a run may spend: an admin-only action (D104). Stopping or pausing
+    the work instead narrows, and is every member's."""
     project, session = identifier(request, "project"), identifier(request, "session")
+    by = operator(request)
     try:
         body = ResourceApprovalRequest.model_validate(
             await json_body(request, "USER resource approval")
         )
     except ValidationError as error:
         raise ProjectError(ErrorKind.INVALID_REQUEST, error.errors()[0]["msg"][:300]) from None
+    if body.action not in NARROWING:
+        require_admin(request, "a resource extension")
     context = request.app[CONTEXT]
 
     def write() -> str:
         session_record(context.projects, project, session)
         return (
             ResourceRequests(context.writer)
-            .approve(project, session, body, operator=USER_ID or "user")
+            .approve(project, session, body, operator=by)
             .model_dump_json()
         )
 

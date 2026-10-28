@@ -11,6 +11,7 @@
   import { idle, submit } from '../lib/submit';
   import { visible } from '../lib/text';
   import ErrorMessage from './ErrorMessage.svelte';
+  import { adminBlock } from '../lib/viewer.svelte';
 
   let {
     request,
@@ -20,6 +21,8 @@
     answer: (decision: PermissionDecision) => Promise<void>;
   } = $props();
   const sending = $state(idle());
+  /** Why this user may not clear the hold (D104); null when they may. */
+  const blocked = $derived(adminBlock());
   const calls = $derived(request.hold?.requests ?? []);
   async function send(decision: PermissionDecision) {
     await submit(sending, () => answer(decision));
@@ -48,13 +51,15 @@
     <button
       type="button"
       class="primary-button"
-      disabled={sending.busy}
+      disabled={sending.busy || blocked !== null}
+      title={blocked ?? undefined}
       onclick={() => void send('clear')}>Clear hold</button
     >
     <button type="button" disabled={sending.busy} onclick={() => void send('stop')}
       >Stop session</button
     >
   </div>
+  {#if blocked}<p class="admin-only">{blocked} You can stop the session.</p>{/if}
   {#if sending.error}<ErrorMessage error={sending.error} />{/if}
 </section>
 

@@ -32,6 +32,7 @@
   import { guardedWrite } from '../lib/mutation';
   import { visible } from '../lib/text';
   import ErrorMessage from './ErrorMessage.svelte';
+  import { adminBlock } from '../lib/viewer.svelte';
 
   let {
     projectId,
@@ -47,6 +48,8 @@
     current: ClassifiedTool[];
     onaccepted: () => Promise<void>;
   } = $props();
+  /** Why this user may not take the admin-only action here (D104); null when they may. */
+  const blocked = $derived(adminBlock());
 
   let edits = $state<Record<string, EditedTool>>(
     untrack(() => Object.fromEntries(draft.tools.map((tool) => [tool.name, editable(tool)]))),
@@ -381,7 +384,14 @@
       </ul>
     {/if}
   {:else if !confirming}
-    <button type="button" class="primary-button" onclick={open}>Accept…</button>
+    <button
+      type="button"
+      class="primary-button"
+      disabled={blocked !== null}
+      title={blocked ?? undefined}
+      onclick={open}>Accept…</button
+    >
+    {#if blocked}<p class="admin-only">{blocked}</p>{/if}
   {/if}
   {#if confirming}
     <div class="confirm" role="dialog" aria-label="Confirm acceptance">
@@ -428,7 +438,7 @@
         <button
           type="button"
           class="primary-button"
-          disabled={saving}
+          disabled={saving || blocked !== null}
           onclick={() => void confirm()}>{saving ? 'Accepting…' : 'Confirm acceptance'}</button
         >
         <button type="button" onclick={() => (confirming = false)}>Cancel</button>

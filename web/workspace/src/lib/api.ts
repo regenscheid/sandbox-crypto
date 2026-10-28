@@ -63,6 +63,7 @@ import type {
   SkillSettingsChange,
   SkillSettingsView,
   ViewerLink,
+  Viewer,
 } from './api-types';
 import type { ArtifactFilter, ArtifactGroup, FileSettings } from './artifactFiles';
 import { artifactQuery, NO_FILTER } from './artifactFiles';
@@ -772,6 +773,8 @@ export const api = {
   changeMemory: (project: string, change: Record<string, unknown>) =>
     post<MemoryChange>(`/projects/${part(project)}/memory`, change),
   mathRepair: (request: MathRepairRequest) => post<MathRepairAnswer>('/math-repair', request),
+  /** Who the session is: its user, how it logged in, and whether it is an admin (D104). */
+  me: () => get<Viewer>('/me'),
   /** Ends the page's session at once, even when the server cannot be told. */
   async logout(): Promise<void> {
     signOut();

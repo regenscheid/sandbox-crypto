@@ -15,10 +15,13 @@
   import ClassificationList from './ClassificationList.svelte';
   import ClassificationTab from './ClassificationTab.svelte';
   import ErrorMessage from './ErrorMessage.svelte';
+  import { adminBlock } from '../lib/viewer.svelte';
   import GrantsPanel from './GrantsPanel.svelte';
   import PaneResizer from './PaneResizer.svelte';
 
   let { projectId }: { projectId: string } = $props();
+  /** Why this user may not take the admin-only action here (D104); null when they may. */
+  const blocked = $derived(adminBlock());
   let shown = $state<McpInventory | null>(null);
   let error = $state<unknown>(null);
   const scope = untrack(() => `mcp:${projectId}`);
@@ -241,11 +244,15 @@
             <button
               type="button"
               class:primary-button={isOff(current.name)}
-              disabled={toggling}
+              disabled={toggling || (isOff(current.name) && blocked !== null)}
+              title={isOff(current.name) ? (blocked ?? undefined) : undefined}
               onclick={() => void toggle(current.name)}
               >{isOff(current.name) ? 'Turn on' : 'Turn off'}</button
             >
           </div>
+          {#if isOff(current.name) && blocked}<p class="admin-only">
+              {blocked} Turning a service on widens what agents may reach.
+            </p>{/if}
           {#if toggleError}<ErrorMessage error={toggleError} />{/if}
         {/if}
         <p class="mcp-listing-state">

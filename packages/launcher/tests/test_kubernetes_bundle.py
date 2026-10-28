@@ -1143,6 +1143,106 @@ def test_ingress_network_policy_admits_only_the_controller_pods_to_the_two_ports
     assert not [i for i in objects() if i["metadata"]["name"] == "research-ingress"]
 
 
+FORWARD_AUTH = {
+    "jwks_url": "http://authentik-server.authentik.svc/application/o/atlas/jwks/",
+    "issuer": "https://auth.research.test/application/o/atlas/",
+    "audience": "test-client-id",
+    "user_group": "atlas-users",
+    "admin_group": "atlas-admins",
+    "authentik": {
+        "namespace_labels": {"kubernetes.io/metadata.name": "authentik"},
+        "pod_labels": {
+            "app.kubernetes.io/name": "authentik",
+            "app.kubernetes.io/component": "server",
+        },
+    },
+}
+
+
+def with_forward_auth(**change: object) -> dict:
+    data = with_ingress()
+    data["ingress"]["forward_auth"] = {**FORWARD_AUTH, **change}
+    return data
+
+
+def test_forward_auth_reaches_the_workspace_command():
+    command = workspace_command(objects(configured(with_forward_auth())))
+    expected = {
+        "--forward-auth-jwks-url": FORWARD_AUTH["jwks_url"],
+        "--forward-auth-issuer": FORWARD_AUTH["issuer"],
+        "--forward-auth-audience": "test-client-id",
+        "--forward-auth-user-group": "atlas-users",
+        "--forward-auth-admin-group": "atlas-admins",
+        "--forward-auth-header": "X-authentik-jwt",
+    }
+    for flag, value in expected.items():
+        assert command[command.index(flag) + 1] == value
+    # Only those: the command is otherwise the ingress's.
+    plain = workspace_command(objects(configured(with_ingress())))
+    assert [a for a in command if a not in {*expected, *expected.values()}] == plain
+    # No admin group: the option is left out, and every user may take the admin actions.
+    data = with_forward_auth()
+    del data["ingress"]["forward_auth"]["admin_group"]
+    assert "--forward-auth-admin-group" not in workspace_command(objects(configured(data)))
+    # Turned off, or absent: nothing of it is rendered.
+    for off in (with_forward_auth(enabled=False), with_ingress()):
+        items = objects(configured(off))
+        assert not any(a.startswith("--forward-auth") for a in workspace_command(items))
+        assert "egress" not in named(items, "NetworkPolicy", "research-ingress")["spec"]
+
+
+def test_forward_auth_adds_only_the_egress_to_authentiks_server_pods():
+    items = objects(configured(with_forward_auth()))
+    policy = named(items, "NetworkPolicy", "research-ingress")["spec"]
+    assert policy["policyTypes"] == ["Ingress", "Egress"]
+    assert policy["egress"] == [
+        {
+            "to": [
+                {
+                    "namespaceSelector": {
+                        "matchLabels": {"kubernetes.io/metadata.name": "authentik"}
+                    },
+                    "podSelector": {
+                        "matchLabels": {
+                            "app.kubernetes.io/name": "authentik",
+                            "app.kubernetes.io/component": "server",
+                        }
+                    },
+                }
+            ],
+            "ports": [{"protocol": "TCP", "port": 9000}],
+        }
+    ]
+    # Every other policy is as without it, and no Secret names anything of it.
+    plain = objects(configured(with_ingress()))
+    for item in items:
+        if item["kind"] in ("NetworkPolicy", "Secret") and item["metadata"]["name"] != (
+            "research-ingress"
+        ):
+            assert item in plain, item["metadata"]["name"]
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"jwks_url": "http://auth.research.test/application/o/atlas/jwks/"}, "in-cluster"),
+        ({"jwks_url": "ftp://authentik.svc/jwks/"}, "in-cluster"),
+        ({"jwks_url": "https://user:pw@auth.research.test/jwks/"}, "credentials"),
+        ({"issuer": "auth.research.test"}, "issuer"),
+        ({"audience": ""}, "audience"),
+        ({"user_group": ""}, "user_group"),
+        ({"admin_group": "bad\ngroup"}, "admin_group"),
+        ({"header": "X-Bad Header"}, "header"),
+        ({"authentik": {"namespace_labels": {"kubernetes.io/metadata.name": "authentik"}}}, "Pod"),
+        ({"authentik_ports": []}, "authentik_ports"),
+        ({"client_secret": "x"}, "client_secret"),
+    ],
+)
+def test_forward_auth_validation_failures(change, message):
+    with pytest.raises(ValidationError, match=message):
+        configured(with_forward_auth(**change))
+
+
 def test_ingress_exposes_no_other_pod():
     items = objects(configured(with_ingress()))
     routed = {

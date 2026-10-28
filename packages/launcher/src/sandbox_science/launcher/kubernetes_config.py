@@ -330,6 +330,62 @@ _PLAIN_ENTRY_POINTS = frozenset(("web", "http"))
 """Entry point names that conventionally carry plain HTTP; the ingress requires TLS."""
 
 
+_GROUP = re.compile(r"^[^\x00-\x1f\x7f]{1,150}$")
+_AUTH_HEADER = re.compile(r"^[A-Za-z0-9-]{1,64}$")
+
+
+class ForwardAuth(Model):
+    """Login through Authentik (D104, ``[ingress.forward_auth]``): the workspace believes
+    the signed token Authentik's proxy outpost sends (``X-authentik-jwt``), checked against
+    the provider's JWKS, issuer and audience and the user group, and opens a session for
+    its user without the login link. The keys are public: nothing here is a secret. The
+    provider must sign its tokens with a key (Authentik's "Signing Key"), and the Traefik
+    middleware must pass the header on (``authResponseHeaders``)."""
+
+    enabled: bool = True
+    header: Annotated[str, StringConstraints(pattern=_AUTH_HEADER.pattern)] = "X-authentik-jwt"
+    jwks_url: str
+    """The provider's JWKS: https, or http to Authentik's in-cluster Service."""
+    issuer: Annotated[str, StringConstraints(min_length=1, max_length=512)]
+    """The tokens' exact ``iss``: ``https://<authentik host>/application/o/<slug>/``."""
+    audience: Annotated[str, StringConstraints(min_length=1, max_length=255)]
+    """The provider's client ID, the tokens' ``aud``."""
+    user_group: Annotated[str, StringConstraints(pattern=_GROUP.pattern)]
+    admin_group: Annotated[str, StringConstraints(pattern=_GROUP.pattern)] | None = None
+    """The group the workspace's admin-only actions need; absent, every user may take them."""
+    authentik: Peer
+    """Authentik's server Pods, which the application Pod may reach for the JWKS."""
+    authentik_ports: Annotated[tuple[Port, ...], Field(min_length=1, max_length=2)] = (9000,)
+    """The Pods' ports (the Service's targets: 9000 for HTTP, 9443 for HTTPS)."""
+
+    @field_validator("jwks_url")
+    @classmethod
+    def public_keys(cls, value: str) -> str:
+        parts = urlsplit(value)
+        host = parts.hostname or ""
+        if parts.username is not None or parts.password is not None or parts.query:
+            raise ValueError("the JWKS URL carries no credentials or query")
+        if parts.scheme == "https" and host:
+            return value
+        if parts.scheme == "http" and (host.endswith(".svc") or ".svc." in host):
+            return value
+        raise ValueError("the JWKS URL is https, or http to an in-cluster Service (*.svc)")
+
+    @field_validator("authentik")
+    @classmethod
+    def server_pods(cls, peer: Peer) -> Peer:
+        if peer.cidr is None and not peer.pod_labels:
+            raise ValueError("select Authentik's server Pods by namespace and Pod labels")
+        return peer
+
+    @field_validator("issuer")
+    @classmethod
+    def issuer_url(cls, value: str) -> str:
+        if urlsplit(value).scheme not in ("https", "http"):
+            raise ValueError("the issuer is the provider's URL")
+        return value
+
+
 class Ingress(Model):
     """The opt-in route from a browser to the workspace and its preview origin: Traefik
     terminates TLS with a cert-manager certificate and asks Authentik (forward auth) before
@@ -348,6 +404,8 @@ class Ingress(Model):
     """The Traefik controller Pods, the only peers admitted to the workspace's ports."""
     entry_point: Name = "websecure"
     ingress_class: Name | None = None
+    forward_auth: ForwardAuth | None = None
+    """Login through Authentik, without the login link (D104); off when absent."""
 
     @field_validator("traefik")
     @classmethod

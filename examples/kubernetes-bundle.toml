@@ -145,6 +145,19 @@ scratch_mib = 512
 # [[ingress.traefik]]   # the controller's Pods: the only peers let in to ports 8200 and 8201
 # namespace_labels = { "kubernetes.io/metadata.name" = "traefik-public" }
 # pod_labels = { "app.kubernetes.io/name" = "traefik" }
+#
+# # Optional: login through Authentik without the login link (D104, docs/KUBERNETES-BUNDLE.md).
+# # The provider needs a Signing Key, and the middleware must pass X-authentik-jwt on.
+# [ingress.forward_auth]
+# # enabled = true
+# jwks_url = "http://authentik-server.authentik.svc/application/o/YOUR_APP_SLUG/jwks/"
+# issuer = "https://YOUR_AUTHENTIK_HOST/application/o/YOUR_APP_SLUG/"
+# audience = "YOUR_PROVIDER_CLIENT_ID"     # public: the provider's client ID, not its secret
+# user_group = "atlas-users"
+# # admin_group = "atlas-admins"           # absent: every user may take the admin-only actions
+# # header = "X-authentik-jwt"
+# # authentik_ports = [9000]               # the server Pods' HTTP port (the Service's target)
+# authentik = { namespace_labels = { "kubernetes.io/metadata.name" = "authentik" }, pod_labels = { "app.kubernetes.io/name" = "authentik", "app.kubernetes.io/component" = "server" } }
 
 # Optional: the direct MCP path (D98, docs/KUBERNETES-BUNDLE.md#the-direct-mcp-path-opt-in):
 # the agent's connector calls made by the runtime's own client, with the provider registered

@@ -13,7 +13,8 @@ from sandbox_science.orchestrator.continuity.resolutions import RecoveryControls
 from sandbox_science.orchestrator.continuity.status import RecoveryStatus
 from sandbox_science.orchestrator.projects import ProjectError, RunName
 
-from .context import CONTEXT, USER_ID, identifier, json_answer, json_body, session_record
+from .context import CONTEXT, identifier, json_answer, json_body, session_record
+from .identity import operator, require_admin
 from .resource_requests import add_routes as add_resource_routes
 
 PATH = "/api/v0/projects/{project}/sessions/{session}/recovery"
@@ -103,7 +104,10 @@ async def pending(request: web.Request) -> web.Response:
 
 
 async def resolve(request: web.Request) -> web.Response:
+    """An operator's resolution of interrupted work: an admin-only action (D104)."""
+    require_admin(request, "resolving a recovery")
     project, session = identifier(request, "project"), identifier(request, "session")
+    by = operator(request)
     try:
         body = Resolution.model_validate(await json_body(request, "recovery resolution"))
     except ValidationError as error:
@@ -114,7 +118,7 @@ async def resolve(request: web.Request) -> web.Response:
         session_record(context.projects, project, session)
         return (
             RecoveryControls(context.writer)
-            .resolve(project, session, body, operator=USER_ID or "user")
+            .resolve(project, session, body, operator=by)
             .model_dump_json()
         )
 
