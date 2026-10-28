@@ -651,56 +651,95 @@ Authentik's plain headers open no workspace session. Nothing here is qualified o
 Owner decision 2026-10-28 (D104). `[ingress.forward_auth]` lets a user Authentik admits
 into the workspace without the login URL, by the token Authentik's proxy outpost signs
 ([workspace: login through Authentik](WORKSPACE.md#login-through-authentik)). Absent, or
-with `enabled = false`, nothing of it is rendered.
+with `enabled = false`, nothing of it is rendered. `algorithm` is required and pinned:
+
+* **`HS256`** (Authentik's proxy providers): the token's MAC under the provider's client
+  secret. Authentik 2026.8 gives a proxy provider no signing key it keeps:
+  `ProxyProvider.set_oauth_defaults` (`authentik/providers/proxy/models.py`) sets
+  `signing_key` to None whenever the server starts, so the outpost's token is always
+  HS256, whatever the provider's settings say. The site generator puts the secret into
+  the workspace's Secret, and the workspace reaches nothing.
+* **`RS256`**: a signature by a provider's signing key, checked against its JWKS
+  (`jwks_url`), fetched from the `authentik` peer: for a provider whose signing key stays.
 
 ```toml
 [ingress.forward_auth]
 # enabled = true
-jwks_url = "http://authentik-server.authentik.svc/application/o/cryptoatlas/jwks/"
+algorithm = "HS256"
 issuer = "https://auth.example.org/application/o/cryptoatlas/"
 audience = "PROVIDER_CLIENT_ID"    # the client ID: public, not the client secret
 user_group = "atlas-users"
 admin_group = "atlas-admins"       # optional: absent, every user may take the admin-only actions
 # header = "X-authentik-jwt"
+# RS256 instead:
+# algorithm = "RS256"
+# jwks_url = "http://authentik-server.authentik.svc/application/o/cryptoatlas/jwks/"
 # authentik_ports = [9000]         # the server Pods' HTTP port, the Service's target
-authentik = { namespace_labels = { "kubernetes.io/metadata.name" = "authentik" }, pod_labels = { "app.kubernetes.io/name" = "authentik", "app.kubernetes.io/component" = "server" } }
+# authentik = { namespace_labels = { "kubernetes.io/metadata.name" = "authentik" }, pod_labels = { "app.kubernetes.io/name" = "authentik", "app.kubernetes.io/component" = "server" } }
 ```
 
-**Validation.** `jwks_url` is `https`, or `http` to an in-cluster Service (`*.svc` or
-`*.svc.<domain>`), with no credentials or query; `issuer` is a URL; the groups are names
-without control characters; `header` is letters, digits and hyphens; `authentik` selects
-Pods by namespace and Pod labels (or a CIDR), never a bare namespace. Unknown keys are
-refused, so no secret can be put here: the workspace fetches only public keys.
+With HS256, the site file names the secret's file
+(`forward_auth_secret = "secure/authentik-forward-auth-client-secret"`, mode 600).
 
-**What changes.** The workspace gets `--forward-auth-jwks-url`, `--forward-auth-issuer`,
-`--forward-auth-audience`, `--forward-auth-user-group`, `--forward-auth-header` and, with
-an admin group, `--forward-auth-admin-group`. The `<name>-ingress` NetworkPolicy gains an
-egress rule, its only one: the application Pod to the `authentik` peer's Pods on
-`authentik_ports`, for the JWKS. A NetworkPolicy selects Pods, not containers, so the
-rule admits every container of the application Pod, `control` (zone Z2) included, to
-Authentik's server on that port: control could reach Authentik's HTTP interface as any
-client inside the cluster can, with no credential of Authentik's. Narrowing it to the JWKS
-path would need a proxy in front of Authentik, which this does not add. No other policy
-and no Secret changes. The workspace no longer prints its login URL, which logs in as the
-operator, an admin: `kubectl -n <namespace> exec deploy/<name>-app -c workspace -- sandbox-science-workspace login-url --state-dir /var/lib/sandbox-science/control` prints it. The JWKS crosses
-the Pod network in plain HTTP, as every request from Traefik to the workspace does; an
-attacker able to rewrite Pod traffic could swap the keys, but could equally rewrite what
-Traefik forwards, so this adds no new exposure ([threat model](THREAT-MODEL.md)).
+**Validation.** `algorithm` is `HS256` or `RS256`; HS256 takes no `jwks_url` or
+`authentik`, and RS256 needs both. `jwks_url` is `https`, or `http` to an in-cluster
+Service (`*.svc` or `*.svc.<domain>`), with no credentials or query; `issuer` is a URL; the
+groups are names without control characters; `header` is letters, digits and hyphens;
+`authentik` selects Pods by namespace and Pod labels (or a CIDR), never a bare namespace.
+Unknown keys are refused, so no secret can be put in the bundle; no service's
+`extra_files` may name `authentik-client-secret`. The site generator refuses an HS256
+bundle without `forward_auth_secret`, a missing file, one open to other users or one
+shorter than 32 bytes, and a `forward_auth_secret` without HS256.
+
+**What changes.** The workspace gets `--forward-auth-algorithm`, with HS256
+`--forward-auth-secret-file /private/authentik-client-secret` (the workspace's Secret's key
+`authentik-client-secret`, which only its copy init projects, mode 600) or with RS256
+`--forward-auth-jwks-url`, and `--forward-auth-issuer`, `--forward-auth-audience`,
+`--forward-auth-user-group`, `--forward-auth-header` and, with an admin group,
+`--forward-auth-admin-group`. With HS256 no NetworkPolicy changes. With RS256 the
+`<name>-ingress` NetworkPolicy gains an egress rule, its only one: the application Pod to
+the `authentik` peer's Pods on `authentik_ports`, for the JWKS. A NetworkPolicy selects
+Pods, not containers, so that rule admits every container of the application Pod,
+`control` (zone Z2) included, to Authentik's server on that port, with no credential of
+Authentik's; narrowing it to the JWKS path would need a proxy in front of Authentik. The
+JWKS crosses the Pod network in plain HTTP, as every request from Traefik to the workspace
+does, so this adds no new exposure ([threat model](THREAT-MODEL.md)). The workspace no
+longer prints its login URL, which logs in as the operator, an admin:
+`kubectl -n <namespace> exec deploy/<name>-app -c workspace -- sandbox-science-workspace login-url --state-dir /var/lib/sandbox-science/control` prints it.
+
+**Who can mint a login.** With HS256, whoever holds the client secret can make a token for
+any user and group: Authentik's administrators, and whoever can read the workspace's
+Secret, the site's `secure/` file or the workspace container's `/private`. That is the
+same reach as the login link's, which logs in as the operator.
 
 **The operator's side** (the site generator's README lists it too):
 
-* give the Authentik proxy provider a **Signing Key** (the provider's *Advanced protocol
-  settings*): without one its tokens are `HS256` under the client secret, and the
-  workspace refuses every login, saying why;
+* with HS256, write the provider's client secret into the site's private file once,
+  straight from `ak shell`, so that it is never printed or kept in shell history:
+
+  ```sh
+  umask 077 && mkdir -p secure
+  printf '%s\n' 'from authentik.providers.proxy.models import ProxyProvider' \
+    'print("CLIENT_SECRET=" + ProxyProvider.objects.get(name="PROVIDER_NAME").client_secret)' |
+    kubectl -n authentik exec -i deploy/authentik-server -- ak shell 2>/dev/null |
+    sed -n 's/^CLIENT_SECRET=//p' > secure/authentik-forward-auth-client-secret
+  test -s secure/authentik-forward-auth-client-secret && wc -c < secure/authentik-forward-auth-client-secret
+  ```
+
+  `wc -c` shows its length only (129 for Authentik's 128-character secrets and the
+  newline). Then generate the Secrets and apply them (`secrets.sh`). Rotating the secret
+  in Authentik means doing this again; the workspace reads the file at start and when it
+  changes, and refuses every token while it is unusable;
+* with RS256, give the provider a **Signing Key** (*Advanced protocol settings*); on
+  Authentik 2026.8 a proxy provider does not keep it (above);
 * add `X-authentik-jwt` to the forward-auth middleware's `authResponseHeaders`;
 * create the admin group, if one is configured, and add the admins to it directly: the
   token lists a user's direct groups only.
 
-Find the values with `kubectl -n authentik get svc authentik-server` (the Service and its
-target port) and the provider's discovery document,
-`https://<Authentik host>/application/o/<slug>/.well-known/openid-configuration` (`issuer`
-and `jwks_uri`, whose path the in-cluster URL keeps). Use the cluster's DNS domain in
-`jwks_url` if search domains do not resolve `*.svc` in the Pod.
+The issuer is `https://<Authentik host>/application/o/<slug>/`, as the provider's discovery
+document `https://<Authentik host>/application/o/<slug>/.well-known/openid-configuration`
+says (with `jwks_uri`, whose path an in-cluster RS256 `jwks_url` keeps; use the cluster's
+DNS domain there if search domains do not resolve `*.svc` in the Pod).
 
 **Both host names behind Authentik.** The preview is framed by the workspace page, so its
 requests carry the Authentik session too. Put both names under one parent domain and use

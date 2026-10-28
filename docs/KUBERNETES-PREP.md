@@ -573,7 +573,7 @@ Serves the workspace and its preview origin at two host names through Traefik, o
        authResponseHeaders: [X-authentik-username, X-authentik-groups, X-authentik-email, X-authentik-name, X-authentik-uid, X-authentik-jwt]
    ```
 
-   `X-authentik-jwt` is what [login through Authentik](KUBERNETES-BUNDLE.md#login-through-authentik-opt-in) reads (D104); it also needs the provider to have a *Signing Key*. Listing a header here also makes Traefik drop a client's own header of that name.
+   `X-authentik-jwt` is what [login through Authentik](KUBERNETES-BUNDLE.md#login-through-authentik-opt-in) reads (D104), with the provider's client secret in the workspace's Secret (HS256; RS256 needs a *Signing Key* the provider keeps). Listing a header here also makes Traefik drop a client's own header of that name.
 
    `<port>` is the outpost Service's HTTP port: 9000 on a dedicated outpost's Service; for the embedded outpost, the Authentik server Service's HTTP port (80 in the Helm chart, which forwards to the server's 9000). With domain-level forward auth the callback runs on the authentication URL's host, so that host must reach the outpost too (the embedded outpost answers there already). Traefik must be able to reach the outpost; that path, and Traefik's own NetworkPolicy, are the cluster's, not the bundle's.
 6. **The bundle.** Add `[workspace] allow_remote = true`, `[ingress]` and `[[ingress.traefik]]` to the private TOML (see [the template](../examples/kubernetes-bundle.toml)), then `check`, `render`, `kubectl diff` and `apply` as in step 8. The workspace Pod restarts onto the Pod network; the rest of the bundle is unchanged. cert-manager issues the two certificates into `<name>-workspace-tls` and `<name>-preview-tls`.
