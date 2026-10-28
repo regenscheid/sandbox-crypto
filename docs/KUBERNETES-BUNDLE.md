@@ -778,7 +778,9 @@ the volume beside it, and the worker checks the result in the store:
 1. **Plan** (the worker, online): it holds the environment stopped, suspending it through its
    own API if it runs (refused while it is in use: a job, a publication, busy kernels), and
    prints the plan: the retained binding to write into the archive, a checkpoint ID and the
-   hold's expiry (6 hours by default). While held, the worker refuses to start the sandbox.
+   hold's expiry (6 hours by default). While held, the worker refuses to start the sandbox:
+   each start checks for a hold and records itself in one transaction, a plan refuses while
+   a start is under way, and records it cannot read refuse the start.
 2. **The Job** (`checkpoint-job`, created by the operator): `sandbox-science-worker
    checkpoint capture-upload` on the trusted worker image, the workspace claim mounted
    read-only, run as the sandbox user (10001) so that a file the sandbox made unreadable
@@ -787,10 +789,16 @@ the volume beside it, and the worker checks the result in the store:
    `checkpoint_manifest=<sha256>`. Sockets, FIFOs and devices are left out and listed in the
    receipt. No local archive: its scratch holds one chunk and the path index.
 3. **Verify** (the worker): it reads the manifest and every chunk back through its decoder,
-   against its own binding, the planned capture mode and the hold's time window, records the
-   checkpoint as `verified` and lifts the hold. It holds only a read key.
+   against its own binding, the planned capture mode and the hold's time window (ending at
+   an early release), records the checkpoint as `verified` with its chunk list and lifts the
+   hold. It holds only a read key.
 4. **Promote** (the operator's machine, keeper key): the manifest's chunks, then the manifest,
-   are copied into the **kept bucket** inside the store (`CopyObject`).
+   are copied into the **kept bucket** inside the store (`CopyObject`). Chunks are shared
+   between checkpoints of a workspace, and Garage ignores `If-None-Match`, so a kept object
+   that already reads back with its hash is never overwritten; any other is read and hashed
+   in the upload bucket, copied only as that version (`CopySourceIfMatch` on its ETag) and
+   hashed again in the kept bucket. A chunk swapped in the upload bucket after verification
+   therefore fails the promotion, and cannot reach an older kept checkpoint.
 5. **Verify again** (the worker): the kept copy, byte for byte; the checkpoint is now `kept`,
    the only state that counts. The latest two kept checkpoints of a workspace stay; older
    ones are listed by [cleanup](#cleanup) and removed only when named there.
@@ -849,7 +857,8 @@ pool's worker container), the claim and its node (`volume.kubernetes.io/selected
 refusing while any Pod mounts the claim; `kubectl create` of the Job; polling until it
 succeeds or fails; its log for the manifest; the worker's verification; the promotion
 (locally, `sandbox-science-worker checkpoint promote`); the worker's second verification.
-A failure before the first verification succeeds lifts the hold. Without the keeper files it
+A failure before the first verification succeeds deletes the Job and lifts the hold; if
+that cleanup fails too, the error says so after the run's own error. Without the keeper files it
 stops after the first verification and prints the two remaining commands. `--operator`
 names who runs it in the worker's records (by default `kubectl auth whoami` and the local
 account); `--context` picks the kubeconfig context. Step by step, `checkpoint-job --plan
@@ -891,17 +900,24 @@ Refusals, checked against a fresh survey and again by the worker:
   or paused environment, a hand-back under way or retained, or a checkpoint hold;
 - a volume or claim annotated `sandbox-science.io/keep` (with a reason as its value): the
   operator's mark for a volume a recovery set still needs;
-- a volume without a verified checkpoint, unless `--without-checkpoint`;
+- a volume without a current verified checkpoint, unless `--without-checkpoint VOLUME`
+  names it (repeatable; it covers only the volumes it names): none, or the newest predates
+  the last time the worker started its sandbox (recorded from this version on), since work
+  after a checkpoint would be lost.
+  The listing shows the newest checkpoint's age and the last start;
 - the last verified checkpoint of a workspace whose volume still exists, and any checkpoint
   that is not a candidate.
 
 A volume's deletion: the worker journals the intent (refusing it if its records forbid it),
-the PV's reclaim policy becomes Delete so its provisioner frees the storage, the claim is
-deleted if it remains, and the worker journals it done; a failed step is journaled as
-failed and stops the run. A checkpoint's deletion: the worker marks it `deleting` (it stops
-counting at once) and journals the intent, the operator's keeper key removes its manifest
-and then its chunks no other kept manifest names, and the worker journals it done; a failure
-leaves it `deleting`, listed again next time. Every journal row names who ran it and is
+the PV's reclaim policy becomes Delete so its provisioner frees the storage (a JSON patch
+that first tests the claim UID and phase the survey saw), the claim is deleted if it remains
+(with its UID as a precondition), and the worker journals it done; a failed step is
+journaled as failed and stops the run. A checkpoint's deletion: the worker marks it
+`deleting` (it stops counting at once) and journals the intent; the chunk list the worker
+recorded at verification is copied to a private directory of the operator's; the keeper key
+removes the chunks no other kept manifest names and then, last, the manifest, a missing
+object counting as removed; the worker journals it done. A failure leaves it `deleting`,
+listed again next time, and the next run finishes it even if the manifest is already gone. Every journal row names who ran it and is
 never changed or removed (`checkpoints.sqlite3`, beside the worker's state). Run cleanup
 when no checkpoint is being promoted: a chunk two checkpoints share is kept only if the other
 manifest is already in the kept bucket.

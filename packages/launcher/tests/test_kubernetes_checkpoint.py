@@ -386,7 +386,7 @@ def listing(*items: dict[str, Any]) -> bytes:
 
 
 def pvc(name: str, sandbox: str | None, volume: str, **annotations: str) -> dict[str, Any]:
-    metadata: dict[str, Any] = {"name": name, "annotations": annotations}
+    metadata: dict[str, Any] = {"name": name, "annotations": annotations, "uid": f"uid-{name}"}
     if sandbox is not None:
         metadata["ownerReferences"] = [{"kind": "Sandbox", "name": sandbox}]
     return {"metadata": metadata, "spec": {"volumeName": volume}}
@@ -400,7 +400,7 @@ def pv(name: str, claim: str, phase: str, **annotations: str) -> dict[str, Any]:
             "creationTimestamp": "2026-10-01T00:00:00Z",
         },
         "spec": {
-            "claimRef": {"namespace": SANDBOXES, "name": claim},
+            "claimRef": {"namespace": SANDBOXES, "name": claim, "uid": f"uid-{claim}"},
             "capacity": {"storage": "20Gi"},
             "persistentVolumeReclaimPolicy": "Retain",
         },
@@ -511,20 +511,69 @@ def test_a_failed_checkpoint_lifts_its_hold(failure):
     assert not kubectl.ran("checkpoint promote")
     if failure == "mounted":
         assert not kubectl.ran("create")
+        assert not kubectl.ran("delete job")
+    else:  # finding 4: the Job goes too
+        assert kubectl.ran(f"-n {SANDBOXES} delete job research-checkpoint-x1")
+
+
+def test_a_failed_cleanup_after_a_failed_checkpoint_reports_both_errors():
+    """Finding 5: the run's own error first, then what could not be cleaned up."""
+    claim = "workspace-default--ss-0123456789abcdef"
+    kubectl = Kubectl(
+        {
+            "checkpoint plan": a_plan().model_dump_json().encode(),
+            "get pvc": listing(pvc(claim, "ss-0123456789abcdef", "pv-1")),
+            "get pods": listing(),
+            "create -f -": b"job.batch/research-checkpoint-x1\n",
+            "get job": json.dumps({"status": {"failed": 1}}).encode(),
+            "logs job/": b"error: unreadable file 'research/secret'\n",
+            "release-hold": OperationError("exec refused"),
+        }
+    )
+    with pytest.raises(OperationError) as raised:
+        operator(kubectl).run_checkpoint("crypto-main", "amd64", None)
+    message = str(raised.value)
+    assert message.index("unreadable file") < message.index("the hold was not lifted")
+    assert "exec refused" in message
 
 
 def test_an_orphaned_claim_is_released_to_its_provisioner_then_deleted():
+    """Finding 3: both effects act only on the objects surveyed, by UID and phase."""
     pvs = [pv("pv-orphan", "workspace-default--ss-gone", "Bound")]
     pvcs = [pvc("workspace-default--ss-gone", "ss-gone", "pv-orphan")]
     found = survey(pvs, pvcs, [], [], inventory(), SANDBOXES, NOW)
     steps = operator(Kubectl({})).delete(
-        found, ["pv-orphan"], [], without_checkpoint=False, keeper_kept=None
+        found, ["pv-orphan"], [], without_checkpoint=[], keeper_kept=None
     )
     words = [" ".join(step.command) for step in steps]
     assert "record-volume --phase intent" in words[0]
-    assert words[1].startswith("kubectl patch pv pv-orphan")
-    assert words[2] == f"kubectl -n {SANDBOXES} delete pvc workspace-default--ss-gone"
+    patch = steps[1].command
+    assert patch[:5] == ["kubectl", "patch", "pv", "pv-orphan", "--type=json"]
+    assert json.loads(patch[-1]) == [
+        {"op": "test", "path": "/spec/claimRef/uid", "value": "uid-workspace-default--ss-gone"},
+        {"op": "test", "path": "/status/phase", "value": "Bound"},
+        {"op": "replace", "path": "/spec/persistentVolumeReclaimPolicy", "value": "Delete"},
+    ]
+    assert steps[2].command == [
+        "kubectl",
+        "delete",
+        "--raw",
+        f"/api/v1/namespaces/{SANDBOXES}/persistentvolumeclaims/workspace-default--ss-gone",
+        "-f",
+        "-",
+    ]
+    assert json.loads(steps[2].stdin or b"")["preconditions"] == {
+        "uid": "uid-workspace-default--ss-gone"
+    }
     assert "record-volume --phase done" in words[3]
+
+
+def test_a_volume_whose_claim_uid_is_unknown_is_refused():
+    released = pv("pv-x", "workspace-default--ss-gone", "Released")
+    del released["spec"]["claimRef"]["uid"]
+    found = survey([released], [], [], [], inventory(), SANDBOXES, NOW)
+    with pytest.raises(OperationError, match="no UID"):
+        operator(Kubectl({})).delete(found, ["pv-x"], [], without_checkpoint=[], keeper_kept=None)
 
 
 def test_without_apply_the_checkpoint_steps_are_printed(tmp_path, capsys, monkeypatch):
@@ -612,7 +661,13 @@ def inventory() -> CheckpointInventory:
         generated_at=NOW,
         keep=2,
         environments=(
-            environment("e-gone", "ss-gone", "deleted", session_id="main"),
+            environment(
+                "e-gone",
+                "ss-gone",
+                "deleted",
+                session_id="main",
+                last_started_at=NOW - timedelta(days=9),
+            ),
             environment("e-nockpt", "ss-nockpt", "deleted"),
             environment("e-live", "ss-live", "ready"),
             environment("e-paused", "ss-paused", "stopped"),
@@ -657,11 +712,12 @@ def test_cleanup_lists_candidates_with_owner_size_age_and_checkpoint():
     assert "pv-live" not in rows  # bound to a sandbox that exists: not left behind
     assert rows["pv-gone"].refusals == ()
     assert rows["pv-gone"].kept_checkpoints == 3
+    assert rows["pv-gone"].uncovered is None
     assert rows["pv-nockpt"].kept_checkpoints == 0
     text = "\n".join(report(found))
     assert "volume pv-gone 20Gi age 28d Released" in text
     assert "project crypto session main environment e-gone (deleted)" in text
-    assert "3 verified checkpoint(s); candidate" in text
+    assert "3 verified checkpoint(s), newest 7d old; last started 9d ago; candidate" in text
     assert "no verified checkpoint" in text
 
 
@@ -680,18 +736,20 @@ def test_cleanup_refuses_protected_volumes(volume, reason):
     row = next(row for row in found.volumes if row.volume == volume)
     assert any(reason in refusal for refusal in row.refusals)
     with pytest.raises(OperationError, match="refused"):
-        operator(Kubectl({})).delete(found, [volume], [], without_checkpoint=True, keeper_kept=None)
+        operator(Kubectl({})).delete(
+            found, [volume], [], without_checkpoint=[volume], keeper_kept=None
+        )
 
 
 def test_a_volume_without_a_verified_checkpoint_needs_the_flag():
     found = surveyed()
     run = operator(Kubectl({}))
     with pytest.raises(OperationError, match="--without-checkpoint"):
-        run.delete(found, ["pv-nockpt"], [], without_checkpoint=False, keeper_kept=None)
-    steps = run.delete(found, ["pv-nockpt"], [], without_checkpoint=True, keeper_kept=None)
+        run.delete(found, ["pv-nockpt"], [], without_checkpoint=[], keeper_kept=None)
+    steps = run.delete(found, ["pv-nockpt"], [], without_checkpoint=["pv-nockpt"], keeper_kept=None)
     assert "--without-checkpoint" in steps[0].command
     with pytest.raises(OperationError, match="not a cleanup candidate"):
-        run.delete(found, ["pv-live"], [], without_checkpoint=True, keeper_kept=None)
+        run.delete(found, ["pv-live"], [], without_checkpoint=["pv-live"], keeper_kept=None)
 
 
 def test_only_checkpoints_beyond_the_kept_count_are_candidates():
@@ -702,31 +760,41 @@ def test_only_checkpoints_beyond_the_kept_count_are_candidates():
     assert marks[f"{1:064x}"].volume_exists  # its Released PV still exists
     run = operator(Kubectl({}))
     with pytest.raises(OperationError, match="not a cleanup candidate"):
-        run.delete(found, [], [f"{4:064x}"], without_checkpoint=False, keeper_kept=None)
+        run.delete(found, [], [f"{4:064x}"], without_checkpoint=[], keeper_kept=None)
     with pytest.raises(OperationError, match="not a cleanup candidate"):
-        run.delete(found, [], [f"{3:064x}"], without_checkpoint=False, keeper_kept=None)
+        run.delete(found, [], [f"{3:064x}"], without_checkpoint=[], keeper_kept=None)
 
 
-def test_deletions_journal_intent_first_and_name_the_operator():
+def test_deletions_journal_intent_first_and_name_the_operator(tmp_path):
     found = surveyed()
-    kubectl = Kubectl({})
+    listing_path = tmp_path / f"chunks-{1:064x}.txt"
+    kubectl = Kubectl({"checkpoint chunks": b"a" * 64 + b"\n"})
     run = operator(kubectl)
     steps = run.delete(
-        found, ["pv-gone"], [f"{1:064x}"], without_checkpoint=False, keeper_kept=Path("kept.toml")
+        found,
+        ["pv-gone"],
+        [f"{1:064x}"],
+        without_checkpoint=[],
+        keeper_kept=Path("kept.toml"),
+        workdir=tmp_path,
     )
     words = [" ".join(step.command) for step in steps]
     assert "record-volume --phase intent --volume pv-gone --sandbox ss-gone" in words[0]
     assert "--by test-operator" in words[0]
-    assert words[1].startswith("kubectl patch pv pv-gone --type=merge")
+    assert words[1].startswith("kubectl patch pv pv-gone --type=json")
     assert "record-volume --phase done" in words[2]
     assert "forget --manifest " + f"{1:064x}" + " --by test-operator" in words[3]
     assert "--volume-gone" not in words[3]  # its volume exists
-    assert words[4].startswith(
+    assert "checkpoint chunks --manifest " + f"{1:064x}" in words[4]
+    assert steps[4].output == listing_path
+    assert words[5] == (
         "sandbox-science-worker checkpoint delete-objects --storage kept.toml"
+        f" --manifest {1:064x} --chunks-file {listing_path}"
     )
-    assert "forget --manifest " + f"{1:064x}" + " --done" in words[5]
+    assert "forget --manifest " + f"{1:064x}" + " --done" in words[6]
     run.apply(steps)
     assert [" ".join(c) for c, _ in kubectl.commands] == words
+    assert listing_path.read_bytes() == b"a" * 64 + b"\n"  # the list the worker recorded
 
 
 def test_a_failed_volume_deletion_is_journaled_and_stops():
@@ -735,7 +803,7 @@ def test_a_failed_volume_deletion_is_journaled_and_stops():
         {"delete pvc": OperationError("forbidden"), "patch pv": OperationError("forbidden")}
     )
     run = operator(kubectl)
-    steps = run.delete(found, ["pv-gone"], [], without_checkpoint=False, keeper_kept=None)
+    steps = run.delete(found, ["pv-gone"], [], without_checkpoint=[], keeper_kept=None)
     with pytest.raises(OperationError, match="forbidden"):
         run.apply(steps)
     assert kubectl.ran("--phase failed")
@@ -769,3 +837,49 @@ def test_the_cleanup_command_asks_before_deleting(tmp_path, monkeypatch, capsys)
     assert kubectl.ran("patch pv pv-gone")
     assert kubernetes_cli.main([*base, "--volume", "pv-paused", "--apply", "--yes"]) == 1
     assert "environment e-paused is stopped" in capsys.readouterr().err
+
+
+def test_without_checkpoint_covers_only_the_volumes_it_names():
+    """Finding 7."""
+    found = surveyed()
+    run = operator(Kubectl({}))
+    with pytest.raises(OperationError, match="pv-nockpt: no verified checkpoint"):
+        run.delete(
+            found, ["pv-gone", "pv-nockpt"], [], without_checkpoint=["pv-gone"], keeper_kept=None
+        )
+    steps = run.delete(
+        found, ["pv-gone", "pv-nockpt"], [], without_checkpoint=["pv-nockpt"], keeper_kept=None
+    )
+    intents = [step.command for step in steps if "intent" in step.command]
+    assert ["--without-checkpoint" in command for command in intents] == [False, True]
+    with pytest.raises(OperationError, match="names no --volume"):
+        run.delete(found, ["pv-gone"], [], without_checkpoint=["pv-other"], keeper_kept=None)
+
+
+def test_a_checkpoint_older_than_the_last_start_does_not_cover_a_volume():
+    """Finding 6: work after the newest checkpoint would be lost."""
+    pvs, pvcs, pods, sandboxes = cluster()
+    found_inventory = inventory()
+    environments = tuple(
+        e.model_copy(update={"last_started_at": NOW - timedelta(days=1)})
+        if e.environment_id == "e-gone"
+        else e
+        for e in found_inventory.environments
+    )
+    found = survey(
+        pvs,
+        pvcs,
+        pods,
+        sandboxes,
+        found_inventory.model_copy(update={"environments": environments}),
+        SANDBOXES,
+        NOW,
+    )
+    row = next(row for row in found.volumes if row.volume == "pv-gone")
+    assert row.uncovered is not None
+    assert "predates its last start" in row.uncovered
+    assert "(after the newest checkpoint: not covered)" in "\n".join(report(found))
+    run = operator(Kubectl({}))
+    with pytest.raises(OperationError, match="--without-checkpoint pv-gone"):
+        run.delete(found, ["pv-gone"], [], without_checkpoint=[], keeper_kept=None)
+    assert run.delete(found, ["pv-gone"], [], without_checkpoint=["pv-gone"], keeper_kept=None)

@@ -56,6 +56,9 @@ class Step:
 
     command: list[str]
     on_failure: list[str] | None = None
+    stdin: bytes | None = None
+    output: Path | None = None
+    """Where the command's output is kept, for a later step to read."""
 
 
 def run_command(arguments: Sequence[str], stdin: bytes | None) -> bytes:
@@ -284,6 +287,7 @@ class Operator:
             f"planned {plan.checkpoint_id}: {environment} held until"
             f" {plan.hold_expires_at:%Y-%m-%d %H:%M} UTC"
         )
+        name: str | None = None
         try:
             claim, node = self.claim_of(plan.source.sandbox)
             job = checkpoint_job(self.config, plan, claim, node)
@@ -307,18 +311,46 @@ class Operator:
                 .strip()
             )
         except BaseException as error:
-            self.run(
-                self.exec_worker(
-                    "release-hold",
-                    "--checkpoint-id",
-                    plan.checkpoint_id,
-                    "--reason",
-                    f"checkpoint failed: {str(error)[:120]}",
-                    "--by",
-                    self.actor,
-                ),
-                None,
-            )
+            # Stop the Job and lift the hold so research goes on; the run's own error comes
+            # first, and a failure to clean up is reported beside it, never instead of it.
+            problems: list[str] = []
+            if name is not None:
+                try:
+                    self.run(
+                        [
+                            *self.kubectl,
+                            "-n",
+                            self.sandbox_namespace,
+                            "delete",
+                            "job",
+                            name,
+                            "--cascade=background",
+                            "--wait=false",
+                        ],
+                        None,
+                    )
+                except OperationError as cleanup:
+                    problems.append(f"the Job {name} was not deleted: {cleanup}")
+            try:
+                self.run(
+                    self.exec_worker(
+                        "release-hold",
+                        "--checkpoint-id",
+                        plan.checkpoint_id,
+                        "--reason",
+                        f"checkpoint failed: {str(error)[:120]}",
+                        "--by",
+                        self.actor,
+                    ),
+                    None,
+                )
+            except OperationError as cleanup:
+                problems.append(
+                    f"the hold was not lifted ({cleanup}); it expires at"
+                    f" {plan.hold_expires_at:%Y-%m-%d %H:%M} UTC"
+                )
+            if problems:
+                raise OperationError(f"{error}; and {'; '.join(problems)}") from error
             raise
         if keeper is None:
             self.out("not promoted (no keeper storage files); run these with the keeper key:")
@@ -377,25 +409,32 @@ class Operator:
         volumes: Sequence[str],
         checkpoints: Sequence[str],
         *,
-        without_checkpoint: bool,
+        without_checkpoint: Sequence[str],
         keeper_kept: Path | None,
+        workdir: Path = Path("."),
     ) -> list[Step]:
         """The commands that delete exactly the named candidates, in order; refuses a name
-        that is not a candidate or that a rule protects."""
+        that is not a candidate or that a rule protects. ``without_checkpoint`` names the
+        volumes that may go without a current verified checkpoint, and must name only
+        volumes being deleted."""
         rows = {row.volume: row for row in found.volumes}
         marks = {row.checkpoint.manifest_sha256: row for row in found.checkpoints}
         refused: list[str] = []
         commands: list[Step] = []
+        if stray := sorted(set(without_checkpoint) - set(volumes)):
+            refused.append(f"--without-checkpoint names no --volume: {', '.join(stray)}")
         for name in volumes:
             row = rows.get(name)
             if row is None:
                 refused.append(f"{name}: not a cleanup candidate")
             elif row.refusals:
                 refused.append(f"{name}: {'; '.join(row.refusals)}")
-            elif not row.kept_checkpoints and not without_checkpoint:
-                refused.append(f"{name}: no verified checkpoint (pass --without-checkpoint)")
+            elif row.uncovered is not None and name not in without_checkpoint:
+                refused.append(f"{name}: {row.uncovered} (pass --without-checkpoint {name})")
+            elif row.claim_uid is None:
+                refused.append(f"{name}: its claim reference carries no UID to check against")
             else:
-                commands.extend(self._delete_volume(row, without_checkpoint))
+                commands.extend(self._delete_volume(row, name in without_checkpoint))
         for manifest in checkpoints:
             mark = marks.get(manifest)
             if mark is None:
@@ -403,13 +442,15 @@ class Operator:
             elif mark.refusals:
                 refused.append(f"{manifest}: {'; '.join(mark.refusals)}")
             else:
-                commands.extend(self._delete_checkpoint(mark, keeper_kept))
+                commands.extend(self._delete_checkpoint(mark, keeper_kept, workdir))
         if refused:
             raise OperationError("refused: " + " | ".join(refused))
         return commands
 
     def _delete_volume(self, row: VolumeRow, without_checkpoint: bool) -> list[Step]:
-        detail = json.dumps({"claim": row.claim, "size": row.size, "phase": row.phase})
+        detail = json.dumps(
+            {"claim": row.claim, "claim_uid": row.claim_uid, "size": row.size, "phase": row.phase}
+        )
 
         def journal(phase: str) -> list[str]:
             return self.exec_worker(
@@ -429,6 +470,13 @@ class Operator:
         # The worker journals the intent first, and refuses it if its records forbid it.
         # Then the PV's reclaim policy becomes Delete, so its provisioner frees the storage
         # once no claim holds it (at once for a Released PV); then the claim, if any, goes.
+        # Both act only on the objects surveyed: the patch tests the PV's claim UID and
+        # phase, and the claim's deletion carries its UID as a precondition.
+        patch = [
+            {"op": "test", "path": "/spec/claimRef/uid", "value": row.claim_uid},
+            {"op": "test", "path": "/status/phase", "value": row.phase},
+            {"op": "replace", "path": "/spec/persistentVolumeReclaimPolicy", "value": "Delete"},
+        ]
         steps = [
             Step(journal("intent")),
             Step(
@@ -437,28 +485,46 @@ class Operator:
                     "patch",
                     "pv",
                     row.volume,
-                    "--type=merge",
+                    "--type=json",
                     "-p",
-                    '{"spec":{"persistentVolumeReclaimPolicy":"Delete"}}',
+                    json.dumps(patch, separators=(",", ":")),
                 ],
                 journal("failed"),
             ),
         ]
         if row.claim_exists and row.claim is not None:
+            options = {
+                "kind": "DeleteOptions",
+                "apiVersion": "v1",
+                "preconditions": {"uid": row.claim_uid},
+            }
             steps.append(
                 Step(
-                    [*self.kubectl, "-n", self.sandbox_namespace, "delete", "pvc", row.claim],
+                    [
+                        *self.kubectl,
+                        "delete",
+                        "--raw",
+                        f"/api/v1/namespaces/{self.sandbox_namespace}"
+                        f"/persistentvolumeclaims/{row.claim}",
+                        "-f",
+                        "-",
+                    ],
                     journal("failed"),
+                    stdin=json.dumps(options).encode(),
                 )
             )
         steps.append(Step(journal("done")))
         return steps
 
-    def _delete_checkpoint(self, row: CheckpointRow, keeper_kept: Path | None) -> list[Step]:
-        """Journaled and no longer counted first; its objects then go with the keeper key.
-        A failure leaves it ``deleting``, which the next cleanup lists again."""
+    def _delete_checkpoint(
+        self, row: CheckpointRow, keeper_kept: Path | None, workdir: Path
+    ) -> list[Step]:
+        """Journaled and no longer counted first; the worker's recorded chunk list then
+        lets the keeper key remove its chunks and, last, its manifest. A failure leaves it
+        ``deleting``, which the next cleanup lists again and finishes."""
         manifest = row.checkpoint.manifest_sha256
         storage = str(keeper_kept or Path("KEPT.toml"))
+        listing = workdir / f"chunks-{manifest}.txt"
         return [
             Step(
                 self.exec_worker(
@@ -470,6 +536,7 @@ class Operator:
                     self.actor,
                 )
             ),
+            Step(self.exec_worker("chunks", "--manifest", manifest), output=listing),
             Step(
                 [
                     *self.worker,
@@ -479,6 +546,8 @@ class Operator:
                     storage,
                     "--manifest",
                     manifest,
+                    "--chunks-file",
+                    str(listing),
                 ]
             ),
             Step(self.exec_worker("forget", "--manifest", manifest, "--done", "--by", self.actor)),
@@ -489,11 +558,19 @@ class Operator:
         for step in steps:
             self.out("+ " + " ".join(map(shlex.quote, step.command)))
             try:
-                output = self.run(step.command, None)
-            except OperationError:
+                output = self.run(step.command, step.stdin)
+            except OperationError as error:
                 if step.on_failure is not None:
-                    self.run(step.on_failure, None)
+                    try:
+                        self.run(step.on_failure, None)
+                    except OperationError as journal:
+                        raise OperationError(
+                            f"{error}; and its failure was not journaled: {journal}"
+                        ) from error
                 raise
+            if step.output is not None:
+                step.output.write_bytes(output)
+                continue
             if output.strip():
                 self.out(output.decode(errors="replace").strip())
 
@@ -510,6 +587,12 @@ class VolumeRow:
     environments: tuple[InventoryEnvironment, ...]
     kept_checkpoints: int
     refusals: tuple[str, ...]
+    claim_uid: str | None = None
+    newest_checkpoint: datetime | None = None
+    last_started: datetime | None = None
+    uncovered: str | None = None
+    """Why no verified checkpoint covers it: none, or the newest predates its last start.
+    Only ``--without-checkpoint`` for this volume lets it go then."""
 
 
 @dataclass(frozen=True)
@@ -601,8 +684,12 @@ def survey(
         if reference.get("namespace") != namespace:
             continue
         claim_name = str(reference.get("name", "")) or None
+        claim_uid = str(reference.get("uid", "")) or None
         pvc = claims.get(claim_name or "")
-        if pvc is not None and _dict(pvc.get("spec")).get("volumeName") != _name(pv):
+        if pvc is not None and (
+            _dict(pvc.get("spec")).get("volumeName") != _name(pv)
+            or _dict(pvc.get("metadata")).get("uid") != claim_uid
+        ):
             pvc = None
         sandbox = _sandbox_owner(pvc) if pvc is not None else None
         if sandbox is None and claim_name is not None:
@@ -635,6 +722,20 @@ def survey(
         if sandbox is not None and any(hold.sandbox == sandbox for hold in found.holds):
             refusals.append("a checkpoint holds it")
         capacity = _dict(spec.get("capacity")).get("storage", "")
+        own = [c.created_at for c in kept if sandbox is not None and c.sandbox == sandbox]
+        newest = max(own, default=None)
+        started = max(
+            (e.last_started_at for e in environments if e.last_started_at is not None),
+            default=None,
+        )
+        uncovered = None
+        if newest is None:
+            uncovered = "no verified checkpoint"
+        elif started is not None and started > newest:
+            uncovered = (
+                "its newest verified checkpoint predates its last start"
+                f" ({started:%Y-%m-%d %H:%M} UTC)"
+            )
         rows.append(
             VolumeRow(
                 volume=_name(pv),
@@ -649,6 +750,10 @@ def survey(
                     1 for c in kept if sandbox is not None and c.sandbox == sandbox
                 ),
                 refusals=tuple(refusals),
+                claim_uid=claim_uid,
+                newest_checkpoint=newest,
+                last_started=started,
+                uncovered=uncovered,
             )
         )
     for pvc in pvcs:
@@ -691,10 +796,16 @@ def report(found: Survey) -> list[str]:
             or "owner unknown"
         )
         checkpoint = (
-            f"{row.kept_checkpoints} verified checkpoint(s)"
+            f"{row.kept_checkpoints} verified checkpoint(s), newest"
+            f" {_age(row.newest_checkpoint, found.now)} old"
             if row.kept_checkpoints
             else "no verified checkpoint"
         )
+        checkpoint += (
+            f"; last started {_age(row.last_started, found.now)} ago" if row.last_started else ""
+        )
+        if row.uncovered is not None and row.kept_checkpoints:
+            checkpoint += " (after the newest checkpoint: not covered)"
         verdict = "REFUSED: " + "; ".join(row.refusals) if row.refusals else "candidate"
         lines.append(
             f"volume {row.volume} {row.size} age {_age(row.created, found.now)} {row.phase}"

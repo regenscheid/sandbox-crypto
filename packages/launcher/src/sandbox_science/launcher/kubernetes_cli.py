@@ -82,7 +82,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     checkpoint.add_argument("--keeper-kept", type=Path, help="operator/checkpoint-kept.toml")
     cleanup.add_argument("--volume", action="append", default=[], help="a PV to delete")
     cleanup.add_argument("--checkpoint", action="append", default=[], help="a manifest SHA-256")
-    cleanup.add_argument("--without-checkpoint", action="store_true")
+    cleanup.add_argument(
+        "--without-checkpoint",
+        action="append",
+        default=[],
+        metavar="VOLUME",
+        help="this volume may go without a current verified checkpoint (repeatable)",
+    )
     cleanup.add_argument("--keeper-kept", type=Path, help="operator/checkpoint-kept.toml")
     cleanup.add_argument("--yes", action="store_true", help="do not ask for confirmation")
     args = parser.parse_args(argv)
@@ -173,12 +179,15 @@ def _operate(args: argparse.Namespace) -> int:
         for line in report(found):
             print(line)
         return 0
+    # The worker's chunk lists pass through a private directory of the operator's.
+    workdir = Path(tempfile.mkdtemp(prefix="sandbox-science-cleanup-")) if args.apply else Path(".")
     steps = operator.delete(
         found,
         args.volume,
         args.checkpoint,
         without_checkpoint=args.without_checkpoint,
         keeper_kept=args.keeper_kept,
+        workdir=workdir,
     )
     if not args.apply:
         for step in steps:
