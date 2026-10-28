@@ -231,7 +231,7 @@ async def test_explicit_exclusivity_lease_and_architecture_are_required(tmp_path
 
 
 @pytest.mark.parametrize(
-    "change", ["missing-sentinel", "wrong-prefix", "symlink-prefix", "special-file"]
+    "change", ["missing-sentinel", "wrong-prefix", "symlink-prefix", "unreadable-file"]
 )
 async def test_incomplete_tree_never_commits_a_receipt(tmp_path, retained, change):
     settings, _ = retained
@@ -247,11 +247,57 @@ async def test_incomplete_tree_never_commits_a_receipt(tmp_path, retained, chang
         (root / ".sandbox-science-prefix").rename(root / "elsewhere")
         (root / ".sandbox-science-prefix").symlink_to("elsewhere")
     else:
-        os.mkfifo(root / "pipe")
-    with pytest.raises((ValueError, OSError)):
+        (root / "research" / "secret").write_text("the sandbox made this unreadable")
+        (root / "research" / "secret").chmod(0)
+    with pytest.raises((ValueError, OSError)) as raised:
         await operate(settings, "create", "e", "arm64", checkpoint, root, True)
+    if change == "unreadable-file":
+        assert "research/secret" in str(raised.value)
     assert not (checkpoint / "receipt.json").exists()
     assert (checkpoint / "failure.json").is_file()
+
+
+async def test_special_files_are_skipped_and_listed_not_fatal(tmp_path, retained):
+    """C4: a socket or FIFO in the workspace is left out and named in the receipt, which
+    says how the copy was made; the rest restores intact."""
+    import socket
+
+    settings, _ = retained
+    root, checkpoint, target = tmp_path / "sandbox", tmp_path / "checkpoint", tmp_path / "target"
+    tree(root)
+    os.mkfifo(root / "research" / "pipe")
+    listener = socket.socket(socket.AF_UNIX)
+    # A short relative name: socket paths are limited to about 100 bytes.
+    cwd = Path.cwd()
+    os.chdir(root)
+    try:
+        listener.bind("kernel.sock")
+    finally:
+        os.chdir(cwd)
+    try:
+        expected = await operate(settings, "create", "e", "arm64", checkpoint, root, True)
+    finally:
+        listener.close()
+    assert expected.format == "sandbox-workspace-checkpoint-v2"
+    assert expected.capture == "offline_mount"
+    assert expected.exclusive_offline_mount_declared is None
+    assert {(entry.path, entry.kind) for entry in expected.skipped} == {
+        ("research/pipe", "fifo"),
+        ("kernel.sock", "socket"),
+    }
+    assert verify(checkpoint) == expected
+    await operate(settings, "restore", "e", "arm64", checkpoint, target, True)
+    assert (target / "research" / "result").read_text() == "retained result"
+    assert not (target / "research" / "pipe").exists()
+    assert not (target / "kernel.sock").exists()
+
+
+def test_special_files_still_fail_a_strict_encoding(tmp_path):
+    root = tmp_path / "sandbox"
+    tree(root)
+    os.mkfifo(root / "pipe")
+    with pytest.raises(ValueError, match="special file"):
+        encode(root, source(), io.BytesIO())
 
 
 async def test_checkpoint_and_restore_never_overwrite_existing_outputs(tmp_path, retained):

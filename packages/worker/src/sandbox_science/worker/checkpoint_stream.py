@@ -14,7 +14,7 @@ from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO
+from typing import Protocol, cast
 
 from sandbox_science.contracts.jsonio import strict_loads
 from sandbox_science.contracts.workspace_checkpoint import (
@@ -23,12 +23,27 @@ from sandbox_science.contracts.workspace_checkpoint import (
     MAX_CHECKPOINT_MEMBERS,
     MAX_CHECKPOINT_METADATA,
     MAX_CHECKPOINT_RECEIPT,
+    MAX_CHECKPOINT_SKIPPED,
     CheckpointMember,
     CheckpointSource,
+    SkippedEntry,
+    SkippedKind,
 )
 
 MAGIC = b"SS-WORKSPACE-CHECKPOINT-1\n"
 CHUNK = 512 * 1024
+
+
+class Writer(Protocol):
+    """Where the encoder writes: a file, or a sink that uploads as it goes."""
+
+    def write(self, data: bytes, /) -> int: ...
+
+
+class Reader(Protocol):
+    """What the decoder reads: a file, or chunks fetched one at a time."""
+
+    def read(self, amount: int, /) -> bytes: ...
 
 
 @dataclass(frozen=True)
@@ -43,13 +58,19 @@ class StreamSummary:
 class Stream:
     """Hash every byte while enforcing bounded individual reads and writes."""
 
-    def __init__(self, handle: BinaryIO, check: Callable[[], None] | None = None) -> None:
+    def __init__(
+        self,
+        handle: Writer | Reader,
+        check: Callable[[], None] | None = None,
+        skipped: list[SkippedEntry] | None = None,
+    ) -> None:
         self.handle, self.digest, self.size = handle, hashlib.sha256(), 0
         self.members = self.content = self.metadata = 0
         self.check = check
+        self.skipped = skipped
 
     def write(self, data: bytes) -> None:
-        if self.handle.write(data) != len(data):
+        if cast(Writer, self.handle).write(data) != len(data):
             raise OSError("short checkpoint write")
         self.digest.update(data)
         self.size += len(data)
@@ -57,7 +78,7 @@ class Stream:
     def read(self, amount: int) -> bytes:
         if self.check is not None:
             self.check()
-        data = self.handle.read(amount)
+        data = cast(Reader, self.handle).read(amount)
         self.digest.update(data)
         self.size += len(data)
         if len(data) != amount:
@@ -136,6 +157,28 @@ def _member(
     )
 
 
+def _special(mode: int) -> SkippedKind:
+    if stat.S_ISSOCK(mode):
+        return "socket"
+    if stat.S_ISFIFO(mode):
+        return "fifo"
+    if stat.S_ISCHR(mode):
+        return "character_device"
+    if stat.S_ISBLK(mode):
+        return "block_device"
+    return "other"
+
+
+def _skip(stream: Stream, path: str, mode: int) -> None:
+    """Leave a special file out and list it (C4): a socket or FIFO holds no data a restore
+    could recreate, and one left by a kernel or a tool must not block every checkpoint."""
+    if stream.skipped is None:
+        raise ValueError(f"checkpoint source has an unsupported special file: {path!r}")
+    if len(stream.skipped) >= MAX_CHECKPOINT_SKIPPED:
+        raise ValueError("checkpoint source has more special files than a receipt lists")
+    stream.skipped.append(SkippedEntry(path=path, kind=_special(mode)))
+
+
 def _emit(stream: Stream, member: CheckpointMember) -> None:
     data = member.model_dump_json().encode()
     if len(data) > MAX_CHECKPOINT_HEADER:
@@ -187,9 +230,16 @@ def _walk(stream: Stream, db: sqlite3.Connection, directory: int, path: str) -> 
                 if prior is not None:
                     _emit(stream, _member(relative, info, "hardlink", str(prior[0])))
                     continue
-                descriptor = os.open(
-                    entry.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory
-                )
+                try:
+                    descriptor = os.open(
+                        entry.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory
+                    )
+                except PermissionError:
+                    # The sandbox may make its own files unreadable; the copy is then
+                    # incomplete, so it fails, naming the file.
+                    raise ValueError(
+                        f"checkpoint source file is unreadable: {relative!r}"
+                    ) from None
                 with os.fdopen(descriptor, "rb") as handle:
                     if _stamp(os.fstat(descriptor)) != _stamp(info):
                         raise ValueError("checkpoint source file changed")
@@ -208,7 +258,7 @@ def _walk(stream: Stream, db: sqlite3.Connection, directory: int, path: str) -> 
                         "INSERT INTO inodes VALUES (?,?,?)", (info.st_dev, info.st_ino, relative)
                     )
             else:
-                raise ValueError(f"checkpoint source has an unsupported special file: {relative!r}")
+                _skip(stream, relative, info.st_mode)
     if _stamp(os.fstat(directory)) != _stamp(before):
         raise ValueError("checkpoint source directory changed")
 
@@ -249,16 +299,23 @@ def _unchanged(db: sqlite3.Connection, directory: int, path: str) -> int:
     return count
 
 
-def encode(root: Path, source: CheckpointSource, handle: BinaryIO) -> StreamSummary:
-    """Capture complete bytes without following source links or buffering files."""
-    stream = Stream(handle)
+def encode(
+    root: Path,
+    source: CheckpointSource,
+    handle: Writer,
+    *,
+    skipped: list[SkippedEntry] | None = None,
+) -> StreamSummary:
+    """Capture complete bytes without following source links or buffering files. With
+    ``skipped``, special files are left out and appended there; without it they fail."""
+    stream = Stream(handle, skipped=skipped)
     stream.write(MAGIC)
     stream.frame(source.model_dump_json().encode())
     descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         with index() as db:
             _walk(stream, db, descriptor, ".")
-            if _unchanged(db, descriptor, ".") != stream.members:
+            if _unchanged(db, descriptor, ".") != stream.members + len(skipped or ()):
                 raise ValueError("checkpoint source member count changed")
     finally:
         os.close(descriptor)
@@ -294,7 +351,7 @@ def _validate(db: sqlite3.Connection, member: CheckpointMember, number: int) -> 
 
 
 def decode(
-    handle: BinaryIO,
+    handle: Reader,
     source: CheckpointSource,
     target: Path | None = None,
     *,
