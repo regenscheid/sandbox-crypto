@@ -641,7 +641,7 @@ The renderer passes no `--trust-proxy-from`: Traefik's Pods have no fixed addres
 with `Host` passed through no forwarded header is needed. Authentik is checked before
 the workspace's own login token, which the workspace still needs unless
 [login through Authentik](#login-through-authentik-opt-in) is on
-(`kubectl logs deploy/<name>-app -c workspace` prints the login URL on the public origin);
+(`kubectl logs deploy/<name>-app -c workspace` prints the login URL on the public origin; with login through Authentik it is not in the log, and `kubectl -n <namespace> exec deploy/<name>-app -c workspace -- sandbox-science-workspace login-url --state-dir /var/lib/sandbox-science/control` prints it);
 Authentik's plain headers open no workspace session. Nothing here is qualified on a cluster.
 
 ### Login through Authentik (opt-in)
@@ -674,7 +674,13 @@ refused, so no secret can be put here: the workspace fetches only public keys.
 `--forward-auth-audience`, `--forward-auth-user-group`, `--forward-auth-header` and, with
 an admin group, `--forward-auth-admin-group`. The `<name>-ingress` NetworkPolicy gains an
 egress rule, its only one: the application Pod to the `authentik` peer's Pods on
-`authentik_ports`, for the JWKS. No other policy and no Secret changes. The JWKS crosses
+`authentik_ports`, for the JWKS. A NetworkPolicy selects Pods, not containers, so the
+rule admits every container of the application Pod, `control` (zone Z2) included, to
+Authentik's server on that port: control could reach Authentik's HTTP interface as any
+client inside the cluster can, with no credential of Authentik's. Narrowing it to the JWKS
+path would need a proxy in front of Authentik, which this does not add. No other policy
+and no Secret changes. The workspace no longer prints its login URL, which logs in as the
+operator, an admin: `kubectl -n <namespace> exec deploy/<name>-app -c workspace -- sandbox-science-workspace login-url --state-dir /var/lib/sandbox-science/control` prints it. The JWKS crosses
 the Pod network in plain HTTP, as every request from Traefik to the workspace does; an
 attacker able to rewrite Pod traffic could swap the keys, but could equally rewrite what
 Traefik forwards, so this adds no new exposure ([threat model](THREAT-MODEL.md)).

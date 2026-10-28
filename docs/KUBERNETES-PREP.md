@@ -576,7 +576,8 @@ Verify:
 kubectl -n research get certificate,ingressroute,svc,networkpolicy -l app.kubernetes.io/part-of=<name>
 kubectl -n research wait certificate/<name>-workspace certificate/<name>-preview --for=condition=Ready --timeout=300s
 curl -sI https://workspace.<domain>/ | head -3        # a redirect to Authentik, never the workspace
-kubectl -n research logs deploy/<name>-app -c workspace | grep 'login?token'
+kubectl -n research logs deploy/<name>-app -c workspace | grep 'login?token'   # without [ingress.forward_auth]
+kubectl -n research exec deploy/<name>-app -c workspace -- sandbox-science-workspace login-url --state-dir /var/lib/sandbox-science/control   # with it
 ```
 
 Log in to Authentik in a browser, then open `https://workspace.<domain>/login?token=<token from the log>` (with `[ingress.forward_auth]`, `https://workspace.<domain>/` alone, and the sidebar names the Authentik user); the app should load, a document should save and a PDF open in the viewer. Negative checks: `curl -sk --resolve workspace.<domain>:443:<controller-ip> https://other.<domain>/` is not served (404); from a throwaway Pod in `research` (an approved image with `curl`, outside the bundle's labels), `curl -m 3 http://<app-pod-ip>:8200/` times out, since only the controller's Pods are admitted. The browser's developer tools show the session cookie as `__Host-…-8200`, Secure.
