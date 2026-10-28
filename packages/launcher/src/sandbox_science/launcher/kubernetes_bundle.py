@@ -13,6 +13,7 @@ import yaml
 from . import kubernetes_checkpoint, toml
 from .kubernetes_config import (
     CHECK_TOKEN,
+    FORWARD_AUTH_SECRET,
     GATEWAY_PROFILE,
     Alerts,
     BundleConfig,
@@ -309,8 +310,9 @@ def _forward_auth(ingress: Ingress) -> ForwardAuth | None:
 
 def _ingress_policy(config: BundleConfig, ingress: Ingress) -> dict[str, object]:
     """An additive policy: the ingress controller's Pods may reach the workspace's two
-    listeners and nothing else, and with login through Authentik (D104) the application
-    Pod may reach Authentik's server Pods for the provider's public keys. It adds no
+    listeners and nothing else, and with RS256 login through Authentik (D104) the
+    application Pod may reach Authentik's server Pods for the provider's public keys; with
+    HS256 it reaches nothing, as the workspace holds the client secret. It adds no
     other egress and no other port; the default-deny and the app policy still decide
     everything else."""
     spec: dict[str, object] = {
@@ -324,7 +326,7 @@ def _ingress_policy(config: BundleConfig, ingress: Ingress) -> dict[str, object]
         ],
     }
     forward = _forward_auth(ingress)
-    if forward is not None:
+    if forward is not None and forward.authentik is not None:  # RS256: the JWKS
         spec["policyTypes"] = ["Ingress", "Egress"]
         spec["egress"] = [
             {"to": [_peer(forward.authentik)], "ports": _ports(*forward.authentik_ports)}
@@ -543,8 +545,13 @@ def _command(config: BundleConfig, name: str) -> list[str]:
         forward = _forward_auth(ingress) if ingress is not None else None
         login = (
             [
-                "--forward-auth-jwks-url",
-                forward.jwks_url,
+                "--forward-auth-algorithm",
+                forward.algorithm,
+                *(
+                    ["--forward-auth-secret-file", f"{PRIVATE}/{FORWARD_AUTH_SECRET}"]
+                    if forward.algorithm == "HS256"
+                    else ["--forward-auth-jwks-url", str(forward.jwks_url)]
+                ),
                 "--forward-auth-issuer",
                 forward.issuer,
                 "--forward-auth-audience",

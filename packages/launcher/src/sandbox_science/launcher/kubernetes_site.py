@@ -59,6 +59,7 @@ from .kubernetes_config import (
     CHECK_DIGEST,
     CHECK_TOKEN,
     CHECKPOINT_UPLOAD_KEYS,
+    FORWARD_AUTH_SECRET,
     GATEWAY_PROFILE,
     BundleConfig,
     BundleError,
@@ -520,6 +521,40 @@ def _check_inputs(site: Site, bundle: BundleConfig) -> dict[str, bytes]:
     }
 
 
+MIN_CLIENT_SECRET = 32
+"""The shortest client secret taken, as the workspace's own check (an HMAC key)."""
+
+
+def _forward_auth_secret(site: Site, bundle: BundleConfig) -> dict[str, bytes]:
+    """The workspace Secret's client secret, with the bundle's HS256 forward auth: from the
+    site's private file, checked, never printed."""
+    ingress = bundle.ingress
+    forward = ingress.forward_auth if ingress is not None else None
+    wanted = forward is not None and forward.shared_secret
+    path = site.forward_auth_secret
+    if not wanted:
+        if path is not None:
+            raise BundleError(
+                "forward_auth_secret is for the bundle's HS256 [ingress.forward_auth] only"
+            )
+        return {}
+    if path is None:
+        raise BundleError(
+            "the bundle's forward auth is HS256: set forward_auth_secret in the site file to "
+            "the Authentik provider's client secret, a file of mode 600 such as "
+            "secure/authentik-forward-auth-client-secret (docs/KUBERNETES-BUNDLE.md)"
+        )
+    if not path.exists():
+        raise BundleError(
+            f"{path} is missing: write the Authentik provider's client secret there "
+            "(docs/KUBERNETES-BUNDLE.md#login-through-authentik-opt-in)"
+        )
+    value = _read(path, private=True).rstrip(b"\r\n")
+    if len(value) < MIN_CLIENT_SECRET:
+        raise BundleError(f"{path} holds no client secret of at least {MIN_CLIENT_SECRET} bytes")
+    return {FORWARD_AUTH_SECRET: value}
+
+
 def plan(site: Site, bundle: BundleConfig) -> dict[str, bytes]:
     """Every file to write, by its path in the output directory; nothing is written."""
     shared = _check_inputs(site, bundle)
@@ -559,6 +594,7 @@ def plan(site: Site, bundle: BundleConfig) -> dict[str, bytes]:
             "worker-token": tokens["workspace"].encode(),
             "worker-ca.crt": authority.pem,
             **check["workspace"],
+            **_forward_auth_secret(site, bundle),
         },
         "worker": {
             "worker.toml": toml.dumps(worker_settings(site, bundle, digests)).encode(),
@@ -842,12 +878,9 @@ def _readme(site: Site, bundle: BundleConfig) -> str:
     )
     ingress = bundle.ingress
     forward = ingress.forward_auth if ingress is not None else None
+    hs256 = forward is not None and forward.shared_secret
     login = (
-        "- Login through Authentik (`[ingress.forward_auth]`, D104): the workspace believes\n"
-        f"  only tokens signed by a key in `{forward.jwks_url}`. In Authentik, give the\n"
-        f"  proxy provider whose client ID is `{forward.audience}` a Signing Key (Providers,\n"
-        "  Edit, Advanced protocol settings): without one its tokens are HS256 under the\n"
-        "  client secret, and every login is refused. The Traefik middleware\n"
+        "- Login through Authentik (`[ingress.forward_auth]`, D104): the Traefik middleware\n"
         f"  `{ingress.authentik_middleware}` must list `{forward.header}` in\n"
         f"  `authResponseHeaders`. Users need the group `{forward.user_group}`"
         + (
@@ -855,6 +888,14 @@ def _readme(site: Site, bundle: BundleConfig) -> str:
             " only those).\n"
             if forward.admin_group is not None
             else "; with no\n  `admin_group` every user may take the admin-only actions.\n"
+        )
+        + (
+            "  The workspace's Secret holds the provider's client secret (HS256): whoever reads\n"
+            "  that Secret can mint a login, as with the login link. Rotating the secret in\n"
+            "  Authentik means writing the site file anew and generating the Secrets again.\n"
+            if hs256
+            else f"  The workspace believes only tokens signed by a key in `{forward.jwks_url}`;\n"
+            f"  the provider whose client ID is `{forward.audience}` needs a Signing Key.\n"
         )
         if ingress is not None and forward is not None and forward.enabled
         else ""

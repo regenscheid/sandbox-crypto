@@ -232,6 +232,13 @@ class Secrets(Model):
         for secret in (self.control, self.worker, self.middleware, self.cache):
             if secret is not None and CHECK_TOKEN in secret.extra_files:
                 raise ValueError("only the workspace projects its availability-check token")
+        if any(
+            secret is not None and FORWARD_AUTH_SECRET in secret.extra_files for secret in others
+        ):
+            raise ValueError(
+                "no extra_files names Authentik's client secret: with HS256 forward auth the "
+                "bundle projects it into the workspace's Secret, and no other"
+            )
         return self
 
 
@@ -334,18 +341,31 @@ _GROUP = re.compile(r"^[^\x00-\x1f\x7f]{1,150}$")
 _AUTH_HEADER = re.compile(r"^[A-Za-z0-9-]{1,64}$")
 
 
+FORWARD_AUTH_SECRET = "authentik-client-secret"  # noqa: S105 - a Secret key's name
+"""With HS256 forward auth, the workspace Secret's key holding the provider's client
+secret; no other service's Secret may hold it."""
+
+
 class ForwardAuth(Model):
     """Login through Authentik (D104, ``[ingress.forward_auth]``): the workspace believes
     the signed token Authentik's proxy outpost sends (``X-authentik-jwt``), checked against
-    the provider's JWKS, issuer and audience and the user group, and opens a session for
-    its user without the login link. The keys are public: nothing here is a secret. The
-    provider must sign its tokens with a key (Authentik's "Signing Key"), and the Traefik
-    middleware must pass the header on (``authResponseHeaders``)."""
+    the issuer, audience and user group, and opens a session for its user without the
+    login link. ``algorithm`` is pinned:
+
+    - ``HS256``: the token's MAC under the provider's client secret, which the site
+      generator puts in the workspace's Secret (``FORWARD_AUTH_SECRET``); the workspace
+      reaches nothing. Authentik 2026.8's proxy providers sign so: its
+      ``ProxyProvider.set_oauth_defaults`` clears their signing key at every start.
+    - ``RS256``: a signature by the provider's signing key, checked against its JWKS
+      (``jwks_url``), which the application Pod may fetch from ``authentik``.
+
+    The Traefik middleware must pass the header on (``authResponseHeaders``)."""
 
     enabled: bool = True
+    algorithm: Literal["HS256", "RS256"]
     header: Annotated[str, StringConstraints(pattern=_AUTH_HEADER.pattern)] = "X-authentik-jwt"
-    jwks_url: str
-    """The provider's JWKS: https, or http to Authentik's in-cluster Service."""
+    jwks_url: str | None = None
+    """RS256: the provider's JWKS, https, or http to Authentik's in-cluster Service."""
     issuer: Annotated[str, StringConstraints(min_length=1, max_length=512)]
     """The tokens' exact ``iss``: ``https://<authentik host>/application/o/<slug>/``."""
     audience: Annotated[str, StringConstraints(min_length=1, max_length=255)]
@@ -353,14 +373,16 @@ class ForwardAuth(Model):
     user_group: Annotated[str, StringConstraints(pattern=_GROUP.pattern)]
     admin_group: Annotated[str, StringConstraints(pattern=_GROUP.pattern)] | None = None
     """The group the workspace's admin-only actions need; absent, every user may take them."""
-    authentik: Peer
-    """Authentik's server Pods, which the application Pod may reach for the JWKS."""
+    authentik: Peer | None = None
+    """RS256: Authentik's server Pods, which the application Pod may reach for the JWKS."""
     authentik_ports: Annotated[tuple[Port, ...], Field(min_length=1, max_length=2)] = (9000,)
     """The Pods' ports (the Service's targets: 9000 for HTTP, 9443 for HTTPS)."""
 
     @field_validator("jwks_url")
     @classmethod
-    def public_keys(cls, value: str) -> str:
+    def public_keys(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
         parts = urlsplit(value)
         host = parts.hostname or ""
         if parts.username is not None or parts.password is not None or parts.query:
@@ -373,8 +395,8 @@ class ForwardAuth(Model):
 
     @field_validator("authentik")
     @classmethod
-    def server_pods(cls, peer: Peer) -> Peer:
-        if peer.cidr is None and not peer.pod_labels:
+    def server_pods(cls, peer: Peer | None) -> Peer | None:
+        if peer is not None and peer.cidr is None and not peer.pod_labels:
             raise ValueError("select Authentik's server Pods by namespace and Pod labels")
         return peer
 
@@ -384,6 +406,19 @@ class ForwardAuth(Model):
         if urlsplit(value).scheme not in ("https", "http"):
             raise ValueError("the issuer is the provider's URL")
         return value
+
+    @model_validator(mode="after")
+    def one_key(self) -> Self:
+        if self.algorithm == "HS256" and (self.jwks_url or self.authentik):
+            raise ValueError("HS256 takes the client secret from the site: no jwks_url, authentik")
+        if self.algorithm == "RS256" and (self.jwks_url is None or self.authentik is None):
+            raise ValueError("RS256 needs jwks_url and the authentik peer for the JWKS")
+        return self
+
+    @property
+    def shared_secret(self) -> bool:
+        """Whether the workspace needs the provider's client secret."""
+        return self.enabled and self.algorithm == "HS256"
 
 
 class Ingress(Model):
@@ -765,6 +800,10 @@ def projected_files(config: BundleConfig, role: str) -> tuple[str, ...]:
         if role == "runtime-manager":
             files = (*files, *DIRECT_MANAGER_FILES)
         files = (*files, *DIRECT_CHECK_FILES.get(role, ()))
+    ingress = config.ingress
+    forward = ingress.forward_auth if ingress is not None else None
+    if role == "workspace" and forward is not None and forward.shared_secret:
+        files = (*files, FORWARD_AUTH_SECRET)
     return files
 
 

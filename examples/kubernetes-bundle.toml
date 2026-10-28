@@ -147,17 +147,20 @@ scratch_mib = 512
 # pod_labels = { "app.kubernetes.io/name" = "traefik" }
 #
 # # Optional: login through Authentik without the login link (D104, docs/KUBERNETES-BUNDLE.md).
-# # The provider needs a Signing Key, and the middleware must pass X-authentik-jwt on.
+# # Authentik 2026.8's proxy providers sign with their client secret (HS256), which the site
+# # file's forward_auth_secret supplies. The middleware must pass X-authentik-jwt on.
 # [ingress.forward_auth]
 # # enabled = true
-# jwks_url = "http://authentik-server.authentik.svc/application/o/YOUR_APP_SLUG/jwks/"
+# algorithm = "HS256"                      # or "RS256", with jwks_url and authentik below
 # issuer = "https://YOUR_AUTHENTIK_HOST/application/o/YOUR_APP_SLUG/"
 # audience = "YOUR_PROVIDER_CLIENT_ID"     # public: the provider's client ID, not its secret
 # user_group = "atlas-users"
 # # admin_group = "atlas-admins"           # absent: every user may take the admin-only actions
 # # header = "X-authentik-jwt"
-# # authentik_ports = [9000]               # the server Pods' HTTP port (the Service's target)
-# authentik = { namespace_labels = { "kubernetes.io/metadata.name" = "authentik" }, pod_labels = { "app.kubernetes.io/name" = "authentik", "app.kubernetes.io/component" = "server" } }
+# # RS256 only: the provider's JWKS, and Authentik's server Pods the app Pod may fetch it from.
+# # jwks_url = "http://authentik-server.authentik.svc/application/o/YOUR_APP_SLUG/jwks/"
+# # authentik_ports = [9000]
+# # authentik = { namespace_labels = { "kubernetes.io/metadata.name" = "authentik" }, pod_labels = { "app.kubernetes.io/name" = "authentik", "app.kubernetes.io/component" = "server" } }
 
 # Optional: the direct MCP path (D98, docs/KUBERNETES-BUNDLE.md#the-direct-mcp-path-opt-in):
 # the agent's connector calls made by the runtime's own client, with the provider registered

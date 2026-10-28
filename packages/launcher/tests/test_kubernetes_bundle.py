@@ -15,7 +15,12 @@ from pydantic import ValidationError
 from sandbox_science.launcher import toml, unit
 from sandbox_science.launcher.kubernetes_bundle import render
 from sandbox_science.launcher.kubernetes_cli import main, write_bundle
-from sandbox_science.launcher.kubernetes_config import BundleConfig, BundleError, load
+from sandbox_science.launcher.kubernetes_config import (
+    BundleConfig,
+    BundleError,
+    load,
+    projected_files,
+)
 
 
 def values() -> dict:
@@ -1144,6 +1149,7 @@ def test_ingress_network_policy_admits_only_the_controller_pods_to_the_two_ports
 
 
 FORWARD_AUTH = {
+    "algorithm": "RS256",
     "jwks_url": "http://authentik-server.authentik.svc/application/o/atlas/jwks/",
     "issuer": "https://auth.research.test/application/o/atlas/",
     "audience": "test-client-id",
@@ -1159,15 +1165,29 @@ FORWARD_AUTH = {
 }
 
 
+HS256_AUTH = {
+    key: value
+    for key, value in FORWARD_AUTH.items()
+    if key not in ("jwks_url", "authentik", "algorithm")
+} | {"algorithm": "HS256"}
+
+
 def with_forward_auth(**change: object) -> dict:
     data = with_ingress()
     data["ingress"]["forward_auth"] = {**FORWARD_AUTH, **change}
     return data
 
 
+def with_hs256(**change: object) -> dict:
+    data = with_ingress()
+    data["ingress"]["forward_auth"] = {**HS256_AUTH, **change}
+    return data
+
+
 def test_forward_auth_reaches_the_workspace_command():
     command = workspace_command(objects(configured(with_forward_auth())))
     expected = {
+        "--forward-auth-algorithm": "RS256",
         "--forward-auth-jwks-url": FORWARD_AUTH["jwks_url"],
         "--forward-auth-issuer": FORWARD_AUTH["issuer"],
         "--forward-auth-audience": "test-client-id",
@@ -1977,3 +1997,56 @@ def test_every_rendered_pod_names_the_registry_pull_secret():
     for bad in ("", "Bad_Name", "x" * 64):
         with pytest.raises(ValidationError):
             configured(values() | {"image_pull_secret": bad})
+
+
+def test_hs256_forward_auth_reads_the_secret_and_reaches_nothing():
+    """D104 amended: Authentik 2026.8's proxy providers sign with the client secret. The
+    workspace reads it from its own Secret; no egress to Authentik is rendered."""
+    items = objects(configured(with_hs256()))
+    command = workspace_command(items)
+    assert command[command.index("--forward-auth-algorithm") + 1] == "HS256"
+    assert command[command.index("--forward-auth-secret-file") + 1] == (
+        "/private/authentik-client-secret"
+    )
+    assert "--forward-auth-jwks-url" not in command
+    assert command[command.index("--forward-auth-admin-group") + 1] == "atlas-admins"
+    policy = named(items, "NetworkPolicy", "research-ingress")["spec"]
+    assert policy["policyTypes"] == ["Ingress"]
+    assert "egress" not in policy
+    # Only the workspace's Secret projects the client secret.
+    config = configured(with_hs256())
+    assert "authentik-client-secret" in projected_files(config, "workspace")
+    for role in ("control", "worker", "middleware", "runtime-manager"):
+        assert "authentik-client-secret" not in projected_files(config, role)
+    assert "authentik-client-secret" not in projected_files(
+        configured(with_forward_auth()), "workspace"
+    )
+    rendered = json.dumps(items)
+    assert "authentik-client-secret" in rendered  # the projected key's name only
+
+
+@pytest.mark.parametrize(
+    ("data", "message"),
+    [
+        (lambda: with_hs256(jwks_url=FORWARD_AUTH["jwks_url"]), "HS256 takes the client secret"),
+        (lambda: with_hs256(authentik=FORWARD_AUTH["authentik"]), "HS256 takes the client secret"),
+        (lambda: with_forward_auth(jwks_url=None), "RS256 needs jwks_url"),
+        (lambda: with_forward_auth(authentik=None), "RS256 needs jwks_url"),
+        (lambda: with_forward_auth(algorithm="none"), "algorithm"),
+        (lambda: with_forward_auth(algorithm="HS384"), "algorithm"),
+    ],
+)
+def test_the_algorithm_is_pinned_with_its_key(data, message):
+    with pytest.raises(ValidationError, match=message):
+        configured(data())
+    missing = with_forward_auth()
+    del missing["ingress"]["forward_auth"]["algorithm"]
+    with pytest.raises(ValidationError, match="algorithm"):
+        configured(missing)
+
+
+def test_no_extra_files_names_the_client_secret():
+    data = with_hs256()
+    data["secrets"]["control"]["extra_files"] = ["authentik-client-secret"]
+    with pytest.raises(ValidationError, match="no extra_files names Authentik's client secret"):
+        configured(data)

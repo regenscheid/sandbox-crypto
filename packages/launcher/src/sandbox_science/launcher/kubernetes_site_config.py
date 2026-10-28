@@ -197,6 +197,12 @@ class Site(Model):
     )
     checkpoint: SiteCheckpoint | None = None
     """Files for the bundle's other ``extra_files``, such as S3 credentials, by service."""
+    forward_auth_secret: ConfigPath | None = None
+    """With the bundle's HS256 forward auth (D104): the Authentik provider's client secret,
+    a private file (mode 600) the operator writes once from ``ak shell``
+    (docs/KUBERNETES-BUNDLE.md#login-through-authentik-opt-in), such as
+    ``secure/authentik-forward-auth-client-secret``; it goes into the workspace's Secret
+    only."""
 
     @model_validator(mode="after")
     def _consistent(self) -> Self:
