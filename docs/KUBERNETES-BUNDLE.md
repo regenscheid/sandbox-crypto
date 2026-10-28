@@ -897,7 +897,8 @@ the volume beside it, and the worker checks the result in the store:
    therefore fails the promotion, and cannot reach an older kept checkpoint.
 5. **Verify again** (the worker): the kept copy, byte for byte; the checkpoint is now `kept`,
    the only state that counts. The latest two kept checkpoints of a workspace stay; older
-   ones are listed by [cleanup](#cleanup) and removed only when named there.
+   ones are listed by [cleanup](#cleanup) and removed only when named there, and the latest
+   two go only when the operator retires a deleted environment's checkpoints there.
 
 ```toml
 [checkpoint]                           # needs [sandboxes]
@@ -908,6 +909,7 @@ endpoint = "http://garage.garage.svc.cluster.local:3900"
 # region = "garage", prefix = "sandbox-science", addressing_style = "path"
 # upload_profile = "checkpoint-upload", verify_profile = "checkpoint-verify"
 # keep = 2, deadline_seconds = 7200, hold_seconds = 21600 (longer than the deadline)
+# job_ttl_seconds = 600 (how long Kubernetes keeps a finished Job; 0 to 604800)
 # run_as_user = 10001, run_as_group = 10001
 # [checkpoint.job]: cpu/memory/ephemeral requests and limits, scratch_mib (default 1024)
 
@@ -929,7 +931,9 @@ operator's machine reaches them through `kubectl port-forward`. The keys and buc
 [preparation, step 6](KUBERNETES-PREP.md#6-garage-artifacts).
 
 The Job, as rendered: `generateName: <name>-checkpoint-` (so `kubectl apply` refuses it),
-`backoffLimit: 0`, the section's deadline, kept a week after it ends; no service-account
+`backoffLimit: 0`, the section's deadline, removed by Kubernetes `job_ttl_seconds` (600 s)
+after it ends (`ttlSecondsAfterFinished`: its finished Pod still names the workspace claim,
+which keeps a deleted claim `Terminating`); no service-account
 token, no service links, no `fsGroup` (the kubelet would otherwise change the workspace's
 group), a read-only root, no capabilities, `RuntimeDefault` seccomp; the claim and the upload
 Secret (its `credentials` and `config` keys only) read-only and a bounded `/tmp`. The plan
@@ -951,8 +955,12 @@ AWS_PROFILE=checkpoint-keeper sandbox-science-kubernetes checkpoint --config pri
 With `--apply` it runs, with the operator's kubeconfig: the plan (`kubectl exec` into the
 pool's worker container), the claim and its node (`volume.kubernetes.io/selected-node`),
 refusing while any Pod mounts the claim; `kubectl create` of the Job; polling until it
-succeeds or fails; its log for the manifest; the worker's verification; the promotion
-(locally, `sandbox-science-worker checkpoint promote`); the worker's second verification.
+succeeds or fails; its log for the manifest; the worker's verification; then it prints the
+Job's log (`job <name>: …` lines, the manifest and any skipped files) and deletes the Job,
+whose finished Pod would otherwise hold the claim (a failed deletion is reported and the
+run goes on; the Job's TTL removes it later); the promotion (locally, `sandbox-science-worker
+checkpoint promote`); the worker's second verification. The claim is found by its owning
+`Sandbox`, whose name OpenShell prefixes with its workspace (see [cleanup](#cleanup)).
 A failure before the first verification succeeds deletes the Job and lifts the hold; if
 that cleanup fails too, the error says so after the run's own error. Without the keeper files it
 stops after the first verification and prints the two remaining commands. `--operator`
@@ -977,9 +985,15 @@ As seen on the first cluster (2026-10-28):
   baseline"); its first execution records the baseline;
 * a finished checkpoint Job's Pod still names the workspace claim, and Kubernetes keeps a
   claim that a Pod names (`kubernetes.io/pvc-protection`), so deleting the environment
-  within the week the Job is kept leaves its claim `Terminating` and the volume `Bound`, out
-  of cleanup's list of Released volumes. Save the Job's log and delete its Job
-  (`kubectl -n <sandbox-namespace> delete job <job>`) before cleaning up that volume.
+  while the Job was kept (a week then) left its claim `Terminating` and the volume `Bound`.
+  Since then `checkpoint` deletes its Job once the worker verified it, keeping its log in
+  the operator's output, a Job left behind goes `job_ttl_seconds` after it ends, and cleanup
+  deletes a finished checkpoint Job that still names a claim before the claim itself;
+* OpenShell names a sandbox's Kubernetes objects after its workspace: the `Sandbox` and the
+  claim's owner are `default--ss-…` and the claim `workspace-default--ss-…`, while the
+  worker records `ss-…`. Cleanup compared them as they were, so a claim that still existed
+  showed "owner unknown; no verified checkpoint" and its checkpoints "volume gone"; it now
+  drops the workspace first (below).
 
 ## Cleanup
 
@@ -990,7 +1004,19 @@ As seen on the first cluster (2026-10-28):
   owner (project, session and environment, from the worker's records, deleted ones
   included) and how many verified checkpoints it has;
 - **checkpoints beyond the kept count**: kept checkpoints of a workspace older than its
-  latest `keep`, and deletions that began and did not finish.
+  latest `keep`, and deletions that began and did not finish;
+- **retirable checkpoints**: the latest `keep` checkpoints of an environment the worker
+  records as deleted, which no candidate list ever offers. Each is `retirable
+  (--retire-checkpoints ENV)` once its volume is gone and nothing references it, otherwise
+  `REFUSED retirement` with the reasons.
+
+Owners are matched exactly by the worker's sandbox name. OpenShell names a sandbox's
+Kubernetes objects `<OpenShell workspace>--<sandbox>` (the `Sandbox` and the claim's owner
+reference; the claim `workspace-<workspace>--<sandbox>`), and the worker's names never
+contain `--`, so cleanup takes what follows the last `--` (`worker_sandbox` in
+`kubernetes_operations.py`, the rule of `new_sandbox_name` in the worker), for any
+workspace name. A Released PV whose claim is gone is traced by its claim's name the same
+way, and only to a sandbox the worker records or that exists.
 
 Each line says `candidate` or `REFUSED` with the reasons. Then it deletes only the items
 named on its command line, with `--apply`, after a typed confirmation (`--yes` skips it):
@@ -999,12 +1025,19 @@ named on its command line, with `--apply`, after a typed confirmation (`--yes` s
 sandbox-science-kubernetes cleanup --config private.toml --volume PV --checkpoint MANIFEST     # prints the commands
 AWS_PROFILE=checkpoint-keeper sandbox-science-kubernetes cleanup --config private.toml \
   --volume PV --checkpoint MANIFEST --keeper-kept operator/checkpoint-kept.toml --apply
+AWS_PROFILE=checkpoint-keeper sandbox-science-kubernetes cleanup --config private.toml \
+  --retire-checkpoints ENV --keeper-kept operator/checkpoint-kept.toml --apply
 ```
 
 Refusals, checked against a fresh survey and again by the worker:
 
 - a volume whose sandbox exists, which a Pod mounts, which the worker records for a live
   or paused environment, a hand-back under way or retained, or a checkpoint hold;
+- a claim that a checkpoint Job still running, or any Job that is not a checkpoint Job,
+  names (the line names the Job). A *finished* checkpoint Job that names it is listed
+  with the volume and deleted first, with the UID the survey saw as a precondition
+  (`kubectl delete --raw …/jobs/<job> -f -`, propagation `Background`): its Pod would
+  otherwise keep the claim `Terminating`;
 - a volume or claim annotated `sandbox-science.io/keep` (with a reason as its value): the
   operator's mark for a volume a recovery set still needs;
 - a volume without a current verified checkpoint, unless `--without-checkpoint VOLUME`
@@ -1014,12 +1047,19 @@ Refusals, checked against a fresh survey and again by the worker:
   The listing shows the newest checkpoint's age and the last start;
 - the last verified checkpoint of a workspace whose volume still exists, and any checkpoint
   that is not a candidate. Only checkpoints beyond a workspace's latest `keep` are
-  candidates, so its latest `keep` checkpoints stay after the volume and the environment
-  are gone: cleanup lists no way to remove them.
+  candidates for `--checkpoint`, which refuses a retirable one;
+- retiring, `--retire-checkpoints ENVIRONMENT` (repeatable; all of that environment's
+  remaining kept checkpoints or none), unless the worker records the environment as
+  deleted, its volume is gone (no PV or claim of its sandbox, or a PV already being deleted
+  with reclaim policy Delete) and nothing references it (no hand-back, no hold). The worker
+  checks the same records again (`checkpoint forget --volume-gone --retire ENV`) and
+  journals each intent with the environment it retires (`"retire"` in the detail); the
+  deletion then runs as any checkpoint's below.
 
 A volume's deletion: the worker journals the intent (refusing it if its records forbid it),
-the PV's reclaim policy becomes Delete so its provisioner frees the storage (a JSON patch
-that first tests the claim UID and phase the survey saw), the claim is deleted if it remains
+finished checkpoint Jobs that name the claim are deleted (each by its UID), the PV's reclaim
+policy becomes Delete so its provisioner frees the storage (a JSON patch that first tests
+the claim UID and phase the survey saw), the claim is deleted if it remains
 (with its UID as a precondition), and the worker journals it done; a failed step is
 journaled as failed and stops the run. A checkpoint's deletion: the worker marks it
 `deleting` (it stops counting at once) and journals the intent; the chunk list the worker
