@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import time
+from pathlib import Path
 from typing import Any
 
 import jwt
@@ -18,6 +19,7 @@ ISSUER = "https://auth.example.org/application/o/atlas/"
 AUDIENCE = "test-client-id-atlas"
 JWKS_URL = "http://authentik-server.authentik.svc/application/o/atlas/jwks/"
 KID = "test-kid-provider"
+SECRET = "test-secret-authentik-client-secret-0123456789abcdefghijklmnopqrstuvwxyz"
 USERS = "atlas-users"
 ADMINS = "atlas-admins"
 
@@ -64,18 +66,32 @@ class Authentik:
             **claims,
         }
         headers = {"kid": kid} if kid is not None else {}
-        signer = self.key if key is None else key
+        signer = (SECRET if algorithm == "HS256" else self.key) if key is None else key
         return jwt.encode(payload, signer, algorithm=algorithm, headers=headers)
 
-    def verifier(self, admin_group: str | None = None, **keys: Any) -> Verifier:
+    def verifier(
+        self, admin_group: str | None = None, *, secret_file: Path | None = None, **keys: Any
+    ) -> Verifier:
+        """RS256 with the JWKS by default; HS256 with ``secret_file``, which holds
+        ``SECRET`` unless the test wrote another."""
+        common: dict[str, Any] = {"issuer": ISSUER, "audience": AUDIENCE, "user_group": USERS}
+        if secret_file is not None:
+            settings = ForwardAuthSettings(
+                algorithm="HS256", secret_file=secret_file, admin_group=admin_group, **common
+            )
+            return Verifier(settings)
         settings = ForwardAuthSettings(
-            jwks_url=JWKS_URL,
-            issuer=ISSUER,
-            audience=AUDIENCE,
-            user_group=USERS,
-            admin_group=admin_group,
+            algorithm="RS256", jwks_url=JWKS_URL, admin_group=admin_group, **common
         )
         return Verifier(settings, keys=KeySet(JWKS_URL, fetch=self.fetch, **keys))
+
+
+def secret_file(directory: Path, value: str = SECRET, mode: int = 0o600) -> Path:
+    """The provider's client secret as the workspace's Secret projects it."""
+    path = directory / "authentik-client-secret"
+    path.write_text(value)
+    path.chmod(mode)
+    return path
 
 
 def as_user(token: str) -> dict[str, str]:

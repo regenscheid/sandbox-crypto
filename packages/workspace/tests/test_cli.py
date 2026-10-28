@@ -462,9 +462,9 @@ def test_proxy_settings_reach_the_app_and_the_announcement(
     )
 
 
+JWKS = "http://authentik-server.authentik.svc/application/o/atlas/jwks/"
+RS256 = ["--forward-auth-algorithm", "RS256", "--forward-auth-jwks-url", JWKS]
 FORWARD = [
-    "--forward-auth-jwks-url",
-    "http://authentik-server.authentik.svc/application/o/atlas/jwks/",
     "--forward-auth-issuer",
     "https://auth.research.test/application/o/atlas/",
     "--forward-auth-audience",
@@ -478,14 +478,16 @@ def test_forward_auth_settings_reach_the_app(
     state_dir: Path, static_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     settings, _ = captured_app(monkeypatch)
-    flags = [*REMOTE, *PUBLIC, *PREVIEW_PUBLIC, *FORWARD, "--forward-auth-admin-group", "admins"]
+    flags = [*REMOTE, *PUBLIC, *PREVIEW_PUBLIC, *RS256, *FORWARD]
+    flags += ["--forward-auth-admin-group", "admins"]
     args = ["serve", "--state-dir", str(state_dir), "--static", str(static_dir), *flags]
     assert cli.main(args) == 0
     verifier = settings["forward_auth"]
     assert isinstance(verifier, Verifier)
     assert verifier.settings == ForwardAuthSettings(
-        jwks_url=FORWARD[1],
-        issuer=FORWARD[3],
+        algorithm="RS256",
+        jwks_url=JWKS,
+        issuer=FORWARD[1],
         audience="test-client-id",
         user_group="atlas-users",
         admin_group="admins",
@@ -499,15 +501,43 @@ def test_forward_auth_settings_reach_the_app(
 @pytest.mark.parametrize(
     ("flags", "reason"),
     [
-        ([*REMOTE, *FORWARD], "needs --public-origin"),
-        ([*REMOTE, *PUBLIC, *PREVIEW_PUBLIC, *FORWARD[:6]], "--forward-auth-user-group"),
+        ([*REMOTE, *RS256, *FORWARD], "needs --public-origin"),
+        ([*REMOTE, *PUBLIC, *PREVIEW_PUBLIC, *RS256, *FORWARD[:4]], "--forward-auth-user-group"),
+        (
+            [*REMOTE, *PUBLIC, *PREVIEW_PUBLIC, *FORWARD, "--forward-auth-jwks-url", JWKS],
+            "--forward-auth-algorithm",
+        ),
         ([*REMOTE, *PUBLIC, *PREVIEW_PUBLIC, "--forward-auth-admin-group", "a"], "needs"),
         (
-            [*REMOTE, *PUBLIC, *PREVIEW_PUBLIC, *FORWARD[2:], "--forward-auth-jwks-url", "ftp://x"],
+            [
+                *REMOTE,
+                *PUBLIC,
+                *PREVIEW_PUBLIC,
+                *FORWARD,
+                *RS256[:2],
+                "--forward-auth-jwks-url",
+                "ftp://x",
+            ],
             "http or https",
         ),
+        (
+            [*REMOTE, *PUBLIC, *PREVIEW_PUBLIC, *FORWARD, "--forward-auth-algorithm", "HS256"],
+            "takes --forward-auth-secret-file only",
+        ),
+        (
+            [*REMOTE, *PUBLIC, *PREVIEW_PUBLIC, *FORWARD, "--forward-auth-algorithm", "none"],
+            "invalid choice",
+        ),
     ],
-    ids=["no-public-origin", "incomplete", "admin-group-alone", "bad-jwks-url"],
+    ids=[
+        "no-public-origin",
+        "incomplete",
+        "no-algorithm",
+        "admin-group-alone",
+        "bad-jwks-url",
+        "hs256-without-secret",
+        "alg-none",
+    ],
 )
 def test_incomplete_forward_auth_settings_are_refused(
     state_dir: Path,
@@ -641,7 +671,7 @@ def test_forward_auth_passes_the_login_file_to_serve(
     state_dir: Path, static_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _, served = captured_app(monkeypatch)
-    flags = [*REMOTE, *PUBLIC, *PREVIEW_PUBLIC, *FORWARD]
+    flags = [*REMOTE, *PUBLIC, *PREVIEW_PUBLIC, *RS256, *FORWARD]
     assert (
         cli.main(["serve", "--state-dir", str(state_dir), "--static", str(static_dir), *flags]) == 0
     )
@@ -649,3 +679,48 @@ def test_forward_auth_passes_the_login_file_to_serve(
     served.clear()
     assert cli.main(["serve", "--state-dir", str(state_dir), "--static", str(static_dir)]) == 0
     assert served[6] is None  # without forward auth the URL is printed, as before
+
+
+SECRET = "test-secret-authentik-client-secret-0123456789abcdefghijklmnop"
+
+
+def test_hs256_reads_the_secret_file_at_start(
+    state_dir: Path, static_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings, _ = captured_app(monkeypatch)
+    secret = tmp_path / "authentik-client-secret"
+    secret.write_text(SECRET + "\n")
+    secret.chmod(0o600)
+    flags = [*REMOTE, *PUBLIC, *PREVIEW_PUBLIC, *FORWARD]
+    flags += ["--forward-auth-algorithm", "HS256", "--forward-auth-secret-file", str(secret)]
+    args = ["serve", "--state-dir", str(state_dir), "--static", str(static_dir), *flags]
+    assert cli.main(args) == 0
+    verifier = settings["forward_auth"]
+    assert isinstance(verifier, Verifier)
+    assert verifier.settings.algorithm == "HS256"
+    assert verifier.secret is not None
+    assert verifier.secret.value() == SECRET.encode()
+    assert verifier.keys is None  # nothing to fetch
+
+
+@pytest.mark.parametrize(("mode", "reason"), [(None, "cannot read"), (0o644, "open to others")])
+def test_hs256_without_a_private_secret_file_does_not_start(
+    state_dir: Path,
+    static_dir: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    mode: int | None,
+    reason: str,
+) -> None:
+    secret = tmp_path / "authentik-client-secret"
+    if mode is not None:
+        secret.write_text(SECRET)
+        secret.chmod(mode)
+    flags = [*REMOTE, *PUBLIC, *PREVIEW_PUBLIC, *FORWARD]
+    flags += ["--forward-auth-algorithm", "HS256", "--forward-auth-secret-file", str(secret)]
+    with pytest.raises(SystemExit) as refused:
+        cli.main(["serve", "--state-dir", str(state_dir), "--static", str(static_dir), *flags])
+    assert refused.value.code == 2
+    said = capsys.readouterr()
+    assert reason in said.err
+    assert SECRET not in said.out + said.err

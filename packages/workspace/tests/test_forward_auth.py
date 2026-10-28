@@ -6,7 +6,10 @@ never do, and the login link keeps working as the operator's own login."""
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import json
+import os
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -14,6 +17,7 @@ from typing import Any
 
 import pytest
 from aiohttp.test_utils import TestClient, make_mocked_request
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from jwt.algorithms import ECAlgorithm
 
@@ -23,12 +27,23 @@ from sandbox_science.workspace.app import SESSION_COOKIE, Sessions
 from sandbox_science.workspace.forward_auth import (
     ForwardAuthSettings,
     KeySet,
+    SharedSecret,
     TokenRefusedError,
     parse_keys,
 )
 from sandbox_science.workspace.identity import IDENTITY, OPERATOR, Identity, author, operator
 
-from .authentik_support import ADMINS, AUDIENCE, ISSUER, JWKS_URL, USERS, Authentik, as_user
+from .authentik_support import (
+    ADMINS,
+    AUDIENCE,
+    ISSUER,
+    JWKS_URL,
+    SECRET,
+    USERS,
+    Authentik,
+    as_user,
+    secret_file,
+)
 from .route_support import TOKEN, log_in, origin, workspace
 
 ClientFactory = Callable[..., Awaitable[TestClient[Any, Any]]]
@@ -183,9 +198,9 @@ def _other_rsa() -> rsa.RSAPrivateKey:
         (lambda a: a.token(kid=None), "names no signing key"),
         (
             lambda a: a.token(key="test-secret-client-secret-0123456789abcdef", algorithm="HS256"),
-            "HS256",
+            "configured RS256",
         ),
-        (lambda a: a.token(key=None, algorithm="none"), "public-key signature"),
+        (lambda a: "unsigned", "configured RS256"),
         (lambda a: a.token(preferred_username=""), "username"),
         (lambda a: a.token(preferred_username="eve\nadmin"), "username"),
         (lambda a: a.token(groups="atlas-users"), "groups"),
@@ -220,7 +235,8 @@ async def test_a_token_that_is_not_believed_opens_nothing(
     reason: str,
 ) -> None:
     client = await forwarded(aiohttp_client, state_dir, static_dir, authentik)
-    token = _none_token() if reason == "public-key signature" else make(authentik)
+    token = make(authentik)
+    token = _none_token() if token == "unsigned" else token
     response = await client.get(PROJECTS, headers=as_user(token))
     assert response.status == 401
     assert not response.cookies
@@ -375,9 +391,23 @@ def test_the_jwks_keeps_only_signing_keys() -> None:
 
 
 def test_settings_are_checked() -> None:
-    good = {"jwks_url": JWKS_URL, "issuer": ISSUER, "audience": AUDIENCE, "user_group": USERS}
+    good: dict[str, Any] = {
+        "algorithm": "RS256",
+        "jwks_url": JWKS_URL,
+        "issuer": ISSUER,
+        "audience": AUDIENCE,
+        "user_group": USERS,
+    }
     ForwardAuthSettings(**good)
+    ForwardAuthSettings(
+        **{**good, "algorithm": "HS256", "jwks_url": None, "secret_file": Path("s")}
+    )
     for bad, reason in (
+        ({"algorithm": "HS256"}, "HS256 takes the secret file"),
+        ({"algorithm": "HS256", "jwks_url": None}, "HS256 takes the secret file"),
+        ({"secret_file": Path("s")}, "RS256 takes the JWKS URL"),
+        ({"jwks_url": None}, "RS256 takes the JWKS URL"),
+        ({"algorithm": "none"}, "HS256 or RS256"),
         ({"jwks_url": "file:///etc/keys"}, "http or https"),
         ({"jwks_url": "https://user:pass@auth.example.org/jwks/"}, "credentials"),
         ({"issuer": ""}, "issuer"),
@@ -388,3 +418,143 @@ def test_settings_are_checked() -> None:
     ):
         with pytest.raises(ValueError, match=reason):
             ForwardAuthSettings(**{**good, **bad})
+
+
+# HS256: the provider's client secret (Authentik 2026.8's proxy providers, D104).
+
+
+@pytest.mark.asyncio
+async def test_an_hs256_token_under_the_secret_opens_a_session(
+    aiohttp_client: ClientFactory,
+    state_dir: Path,
+    static_dir: Path,
+    authentik: Authentik,
+    tmp_path: Path,
+) -> None:
+    client = await workspace(
+        aiohttp_client,
+        state_dir,
+        static_dir,
+        login=False,
+        forward_auth=authentik.verifier(ADMINS, secret_file=secret_file(tmp_path)),
+    )
+    token = authentik.token("carol", (USERS, ADMINS), algorithm="HS256", kid=None)
+    response = await client.get(PROJECTS, headers=as_user(token))
+    assert response.status == 200, await response.text()
+    assert cookie(client) in response.cookies
+    viewer = await me(client, as_user(token))
+    assert (viewer["user"], viewer["login"], viewer["admin"]) == ("carol", "forward", True)
+    assert authentik.fetches == 0  # no JWKS: nothing is fetched
+
+
+def _rsa_public_pem(authentik: Authentik) -> bytes:
+    return authentik.key.public_key().public_bytes(
+        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+
+
+@pytest.mark.parametrize(
+    ("make", "reason"),
+    [
+        (lambda a: a.token(key="test-secret-another-client-secret-0123456789abcdef",
+                           algorithm="HS256"), "signature"),
+        (lambda a: a.token(), "configured HS256"),  # RS256, by the provider's key
+        (lambda a: _hmac_by_public_key(a), "signature"),  # the classic alg swap
+        (lambda a: _none_token(), "configured HS256"),
+        (lambda a: a.token(algorithm="HS384", key=SECRET), "configured HS256"),
+        (lambda a: a.token(algorithm="HS256", groups=("someone-else",)), "not in the group"),
+        (lambda a: a.token(algorithm="HS256", iss="https://other.example/"), "issuer"),
+        (lambda a: a.token(algorithm="HS256", aud="another-client"), "audience"),
+        (lambda a: a.token(algorithm="HS256", exp=int(time.time()) - 120), "expired"),
+        (lambda a: a.token(algorithm="HS256", preferred_username=""), "username"),
+    ],
+    ids=[
+        "wrong-secret", "rs256-header", "hmac-by-public-key", "alg-none", "hs384",
+        "missing-group", "wrong-issuer", "wrong-audience", "expired", "no-username",
+    ],
+)  # fmt: skip
+@pytest.mark.asyncio
+async def test_with_hs256_any_other_token_opens_nothing(
+    aiohttp_client: ClientFactory,
+    state_dir: Path,
+    static_dir: Path,
+    authentik: Authentik,
+    tmp_path: Path,
+    make: Callable[[Authentik], str],
+    reason: str,
+) -> None:
+    client = await workspace(
+        aiohttp_client,
+        state_dir,
+        static_dir,
+        login=False,
+        forward_auth=authentik.verifier(secret_file=secret_file(tmp_path)),
+    )
+    response = await client.get(PROJECTS, headers=as_user(make(authentik)))
+    assert response.status == 401
+    assert not response.cookies
+    message = (await response.json())["error"]["message"]
+    assert reason in message
+    assert SECRET not in message
+
+
+def _hmac_by_public_key(authentik: Authentik) -> str:
+    """An HS256 token whose MAC key is the provider's public key, which anyone has."""
+    now = int(time.time())
+    claims = {
+        "iss": ISSUER, "aud": AUDIENCE, "sub": "s", "iat": now, "exp": now + 600,
+        "preferred_username": "mallory", "groups": [USERS],
+    }  # fmt: skip
+
+    def part(value: object) -> str:
+        return base64.urlsafe_b64encode(json.dumps(value).encode()).rstrip(b"=").decode()
+
+    signed = f"{part({'alg': 'HS256', 'typ': 'JWT'})}.{part(claims)}"
+    mac = hmac.new(_rsa_public_pem(authentik), signed.encode(), hashlib.sha256).digest()
+    return f"{signed}.{base64.urlsafe_b64encode(mac).rstrip(b'=').decode()}"
+
+
+@pytest.mark.parametrize(
+    ("write", "reason"),
+    [
+        (None, "cannot read"),
+        ("", "empty"),
+        ("\n", "empty"),
+        ("short-secret", "shorter than 32"),
+        (SECRET, "open to others"),
+    ],
+    ids=["missing", "empty", "newline", "short", "world-readable"],
+)
+def test_an_unusable_secret_file_stops_the_verifier(
+    tmp_path: Path, write: str | None, reason: str
+) -> None:
+    path = tmp_path / "authentik-client-secret"
+    if write is not None:
+        secret_file(tmp_path, write, 0o644 if reason == "open to others" else 0o600)
+    with pytest.raises(ValueError, match=reason) as refused:
+        Authentik().verifier(secret_file=path)
+    assert SECRET not in str(refused.value)
+
+
+def test_a_group_readable_secret_file_is_accepted(tmp_path: Path) -> None:
+    Authentik().verifier(secret_file=secret_file(tmp_path, mode=0o640))
+    with pytest.raises(ValueError, match="open to others"):
+        Authentik().verifier(secret_file=secret_file(tmp_path, mode=0o660))
+
+
+@pytest.mark.asyncio
+async def test_a_changed_secret_file_is_read_again(tmp_path: Path) -> None:
+    now = [0.0]
+    path = secret_file(tmp_path)
+    secret = SharedSecret(path, clock=lambda: now[0])
+    assert secret.value() == SECRET.encode()
+    replacement = "test-secret-rotated-client-secret-0123456789abcdefghij"
+    secret_file(tmp_path, replacement)
+    assert secret.value() == SECRET.encode()  # looked at no more than every few seconds
+    now[0] += forward_auth.SECRET_CHECK_SECONDS
+    assert secret.value() == replacement.encode()
+    path.chmod(0o644)  # now open to others: no secret, every token refused
+    os.utime(path, ns=(1, 1))
+    now[0] += forward_auth.SECRET_CHECK_SECONDS
+    with pytest.raises(TokenRefusedError, match="not usable"):
+        secret.value()

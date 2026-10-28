@@ -6,15 +6,23 @@ was admitted by Authentik, and its proxy outpost adds headers that say who the u
 ``X-authentik-username`` and ``X-authentik-groups`` are plain text that anything able to
 reach the workspace's port could send, so they are never read. The outpost also sends
 ``X-authentik-jwt``: the OAuth access token Authentik issued to the outpost for this
-user, a JWT that the provider's signing key signs. ``Verifier`` believes a token only
-when all of these hold:
+user, a JWT. The settings pin how it is signed (``algorithm``), exactly one of:
 
-- it is at most ``MAX_TOKEN`` characters and its header names a ``kid`` and an
-  asymmetric algorithm (``ALGORITHMS``). ``HS256``, which Authentik uses when the
-  provider has no signing key, is a MAC under the provider's client secret, which the
-  workspace never holds, and it is refused;
-- the key with that ``kid`` is in the provider's JWKS, fetched from the configured URL
-  (``KeySet``), and the key's own ``alg``, if it names one, is the header's;
+- ``HS256``: a MAC under the provider's client secret, which the workspace reads from
+  ``secret_file``. Authentik 2026.8 signs every proxy provider's tokens so: its
+  ``ProxyProvider.set_oauth_defaults`` sets the provider's ``signing_key`` to None at each
+  server start, whatever an administrator chose. Whoever holds the secret can mint a
+  token, so the file must be closed to other users (``SharedSecret``), and is re-read
+  when it changes.
+- ``RS256``: a signature by the provider's signing key, whose public half is in the
+  provider's JWKS, fetched from ``jwks_url`` (``KeySet``); the token's ``kid`` names the
+  key, and the key's own ``alg``, if the JWKS gives one, must be ``RS256``.
+
+``Verifier`` believes a token only when all of these hold:
+
+- it is at most ``MAX_TOKEN`` characters and its header names exactly the configured
+  algorithm: any other, ``none`` included, is refused, so neither a MAC under a public
+  key nor an unsigned token passes;
 - the signature verifies, ``iss`` is exactly the configured issuer, ``aud`` names the
   configured audience (the provider's client ID), and ``exp`` has not passed, with
   ``LEEWAY_SECONDS`` of leeway (also for ``iat`` and ``nbf``);
@@ -23,7 +31,8 @@ when all of these hold:
 
 The admin group, when configured, decides ``admin``; without one every admitted user is
 an admin, as every logged-in user was before (app.py). Anything else is a refusal, with a
-reason the guard logs and shows; never a fallback to the plain headers.
+reason the guard logs and shows; never a fallback to the plain headers. The secret is
+never logged or shown.
 
 The JWKS is fetched without redirects, proxies or cookies, at most ``MAX_JWKS_BYTES``,
 within ``FETCH_SECONDS``. Keys are used for ``REFRESH_SECONDS`` after a fetch; a token
@@ -37,11 +46,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import stat
 import time
 import unicodedata
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from typing import Final, cast
+from pathlib import Path
+from typing import Any, Final, Literal, cast
 from urllib.parse import urlsplit
 
 import aiohttp
@@ -67,6 +79,12 @@ LEEWAY_SECONDS: Final = 30.0
 REFRESH_SECONDS: Final = 900.0
 RETRY_SECONDS: Final = 10.0
 FETCH_SECONDS: Final = 5.0
+MIN_SECRET_BYTES: Final = 32
+"""A shorter HMAC key is refused (RFC 7518, 3.2: at least the hash's 256 bits)."""
+MAX_SECRET_BYTES: Final = 4096
+SECRET_CHECK_SECONDS: Final = 5.0
+"""How often, at most, the secret file is looked at for a change."""
+Algorithm = Literal["HS256", "RS256"]
 
 Fetch = Callable[[str], Awaitable[bytes]]
 
@@ -75,23 +93,34 @@ class TokenRefusedError(Exception):
     """A token that is not believed; the message says why, without the token."""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class ForwardAuthSettings:
-    """``serve``'s ``--forward-auth-*`` options (cli.py)."""
+    """``serve``'s ``--forward-auth-*`` options (cli.py): ``algorithm`` is pinned, with
+    ``secret_file`` for ``HS256`` or ``jwks_url`` for ``RS256``, never both."""
 
-    jwks_url: str
+    algorithm: Algorithm
     issuer: str
     audience: str
     user_group: str
+    jwks_url: str | None = None
+    secret_file: Path | None = None
     admin_group: str | None = None
     header: str = HEADER
 
     def __post_init__(self) -> None:
-        parts = urlsplit(self.jwks_url)
-        if parts.scheme not in ("http", "https") or not parts.hostname:
-            raise ValueError("the JWKS URL must be an http or https URL")
-        if parts.username is not None or parts.password is not None or parts.fragment:
-            raise ValueError("the JWKS URL carries no credentials or fragment")
+        if self.algorithm == "HS256":
+            if self.secret_file is None or self.jwks_url is not None:
+                raise ValueError("HS256 takes the secret file, and no JWKS URL")
+        elif self.algorithm == "RS256":
+            if self.jwks_url is None or self.secret_file is not None:
+                raise ValueError("RS256 takes the JWKS URL, and no secret file")
+            parts = urlsplit(self.jwks_url)
+            if parts.scheme not in ("http", "https") or not parts.hostname:
+                raise ValueError("the JWKS URL must be an http or https URL")
+            if parts.username is not None or parts.password is not None or parts.fragment:
+                raise ValueError("the JWKS URL carries no credentials or fragment")
+        else:
+            raise ValueError("the algorithm is HS256 or RS256")
         if not self.issuer or not self.audience:
             raise ValueError("forward auth needs the issuer and the audience")
         for group in (self.user_group, self.admin_group):
@@ -101,6 +130,60 @@ class ForwardAuthSettings:
             char.isascii() and (char.isalnum() or char == "-") for char in self.header
         ):
             raise ValueError("the header name is letters, digits and hyphens")
+
+
+class SharedSecret:
+    """The provider's client secret, from a file closed to other users: read at start,
+    where a missing, empty, short or open file is a ``ValueError``, and again when the
+    file changes, looked at no more than every ``SECRET_CHECK_SECONDS``. A change that
+    leaves it unusable leaves no secret: every token is then refused."""
+
+    def __init__(self, path: Path, *, clock: Callable[[], float] = time.monotonic) -> None:
+        self.path = path
+        self._clock = clock
+        self._seen, self._value = self._read()
+        self._checked = clock()
+
+    def _read(self) -> tuple[tuple[int, int, int], bytes]:
+        path = self.path
+        try:
+            descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK)
+        except OSError as error:
+            raise ValueError(f"cannot read the secret file {path}: {error.strerror}") from None
+        with os.fdopen(descriptor, "rb") as stream:
+            found = os.fstat(stream.fileno())
+            if not stat.S_ISREG(found.st_mode):
+                raise ValueError(f"the secret file {path} is not a regular file")
+            if found.st_mode & 0o037:
+                raise ValueError(
+                    f"the secret file {path} is open to others: chmod 600 (or 640) {path}"
+                )
+            value = stream.read(MAX_SECRET_BYTES + 1).rstrip(b"\r\n")
+        if not value:
+            raise ValueError(f"the secret file {path} is empty")
+        if len(value) > MAX_SECRET_BYTES:
+            raise ValueError(f"the secret file {path} is larger than a client secret")
+        if len(value) < MIN_SECRET_BYTES:
+            raise ValueError(f"the secret in {path} is shorter than {MIN_SECRET_BYTES} bytes")
+        return (found.st_ino, found.st_mtime_ns, found.st_size), value
+
+    def value(self) -> bytes:
+        """The secret now; TokenRefusedError when the file no longer holds a usable one."""
+        now = self._clock()
+        if now - self._checked >= SECRET_CHECK_SECONDS:
+            self._checked = now
+            try:
+                found = os.stat(self.path)
+                seen = (found.st_ino, found.st_mtime_ns, found.st_size)
+                if seen != self._seen:
+                    self._seen, self._value = self._read()
+                    _log.info("the forward-auth secret file changed; it was read again")
+            except (OSError, ValueError) as error:
+                _log.warning("the forward-auth secret is not usable: %s", error)
+                self._seen, self._value = (0, 0, 0), b""
+        if not self._value:
+            raise TokenRefusedError("the workspace's copy of the provider's secret is not usable")
+        return self._value
 
 
 @dataclass(frozen=True)
@@ -219,9 +302,23 @@ class KeySet:
 class Verifier:
     """Believes Authentik's forward-auth token only as the module's docstring says."""
 
-    def __init__(self, settings: ForwardAuthSettings, *, keys: KeySet | None = None) -> None:
+    def __init__(
+        self,
+        settings: ForwardAuthSettings,
+        *,
+        keys: KeySet | None = None,
+        secret: SharedSecret | None = None,
+    ) -> None:
+        """``ValueError`` when the HS256 secret file is missing, empty, short or open."""
         self.settings = settings
-        self.keys = keys if keys is not None else KeySet(settings.jwks_url)
+        self.keys: KeySet | None = None
+        self.secret: SharedSecret | None = None
+        if settings.algorithm == "HS256":
+            assert settings.secret_file is not None  # noqa: S101 - the settings checked it
+            self.secret = secret if secret is not None else SharedSecret(settings.secret_file)
+        else:
+            assert settings.jwks_url is not None  # noqa: S101 - the settings checked it
+            self.keys = keys if keys is not None else KeySet(settings.jwks_url)
 
     @property
     def header(self) -> str:
@@ -236,23 +333,26 @@ class Verifier:
         except jwt.PyJWTError:
             raise TokenRefusedError("the token is not a JWT") from None
         algorithm, kid = header.get("alg"), header.get("kid")
-        if algorithm == "HS256":
+        if algorithm != settings.algorithm:
             raise TokenRefusedError(
-                "the token is signed with the provider's client secret (HS256): "
-                "the Authentik provider needs a signing key"
+                f"the token's algorithm is not the configured {settings.algorithm}"
             )
-        if not isinstance(algorithm, str) or algorithm not in ALGORITHMS:
-            raise TokenRefusedError("the token's algorithm is not a public-key signature")
-        if not isinstance(kid, str) or not kid:
-            raise TokenRefusedError("the token names no signing key")
-        found = await self.keys.key(kid)
-        if found.algorithm is not None and found.algorithm != algorithm:
-            raise TokenRefusedError("the token's algorithm is not its key's")
+        key: Any
+        if self.secret is not None:
+            key = self.secret.value()
+        else:
+            assert self.keys is not None  # noqa: S101 - RS256 has its keys
+            if not isinstance(kid, str) or not kid:
+                raise TokenRefusedError("the token names no signing key")
+            found = await self.keys.key(kid)
+            if found.algorithm is not None and found.algorithm != algorithm:
+                raise TokenRefusedError("the token's algorithm is not its key's")
+            key = found.key.key
         try:
             claims = jwt.decode(
                 token,
-                key=found.key.key,
-                algorithms=[algorithm],
+                key=key,
+                algorithms=[settings.algorithm],
                 audience=settings.audience,
                 issuer=settings.issuer,
                 leeway=LEEWAY_SECONDS,

@@ -5,7 +5,9 @@
 sandbox-science-workspace serve --state-dir DIR --static DIR [--listen 127.0.0.1:8200] \\
     [--allow-remote [--public-origin https://H --preview-public-origin https://P] \\
      [--trust-proxy-from CIDR ...] \\
-     [--forward-auth-jwks-url URL --forward-auth-issuer URL --forward-auth-audience ID \\
+     [--forward-auth-algorithm HS256 --forward-auth-secret-file FILE
+      | --forward-auth-algorithm RS256 --forward-auth-jwks-url URL] \\
+      --forward-auth-issuer URL --forward-auth-audience ID \\
       --forward-auth-user-group G [--forward-auth-admin-group G]]] \\
     [--model-url http://127.0.0.1:4000 --reviewer-model reviewer --api-key-file key]
 ```
@@ -21,8 +23,10 @@ network unencrypted. Behind a TLS-terminating reverse proxy, ``--public-origin``
 (proxy.py). At each start it makes a new login token and prints the login URL once, on
 standard output. Behind Authentik's forward auth, the ``--forward-auth-*`` options (with
 ``--public-origin``) let a user Authentik admitted in without the login URL: the server
-believes the signed token Authentik's proxy outpost sends, checked against the provider's
-JWKS, issuer and audience and the user group (forward_auth.py, D104); with an admin group,
+believes the signed token Authentik's proxy outpost sends, checked with the provider's
+client secret (HS256, from a file closed to other users) or its JWKS (RS256), and against
+its issuer and audience and the user group (forward_auth.py, D104); a secret file that is
+missing, empty or open to others stops the server; with an admin group,
 only its members may take the admin-only actions (identity.py). The login URL keeps
 working, as the operator's own login, which counts as an admin: with forward auth on it
 is not printed, since the log reaches whoever reads the logs, but written to
@@ -239,6 +243,8 @@ def check_preview_name(name: str, preview_host: str) -> None:
 
 
 def forward_auth_settings(
+    algorithm: str | None,
+    secret_file: Path | None,
     jwks_url: str | None,
     issuer: str | None,
     audience: str | None,
@@ -249,25 +255,32 @@ def forward_auth_settings(
     public: bool,
 ) -> ForwardAuthSettings | None:
     """The forward-auth settings, or None when none are given; ``ValueError`` for an
-    incomplete set, or one without a public origin behind the proxy."""
+    incomplete set, one whose key does not match its algorithm, or one without a public
+    origin behind the proxy."""
     required = {
-        "--forward-auth-jwks-url": jwks_url,
+        "--forward-auth-algorithm": algorithm,
         "--forward-auth-issuer": issuer,
         "--forward-auth-audience": audience,
         "--forward-auth-user-group": user_group,
     }
-    given = [*required.values(), admin_group, header]
+    given = [*required.values(), secret_file, jwks_url, admin_group, header]
     if all(value is None for value in given):
         return None
     missing = [option for option, value in required.items() if not value]
     if missing:
         raise ValueError(f"forward auth needs {', '.join(missing)}")
+    if algorithm == "HS256" and (secret_file is None or jwks_url is not None):
+        raise ValueError("--forward-auth-algorithm HS256 takes --forward-auth-secret-file only")
+    if algorithm == "RS256" and (jwks_url is None or secret_file is not None):
+        raise ValueError("--forward-auth-algorithm RS256 takes --forward-auth-jwks-url only")
     if not public:
         raise ValueError(
             "forward auth is for a server behind Authentik's proxy: it needs --public-origin"
         )
     return ForwardAuthSettings(
-        jwks_url=str(jwks_url),
+        algorithm="HS256" if algorithm == "HS256" else "RS256",
+        secret_file=secret_file,
+        jwks_url=jwks_url,
         issuer=str(issuer),
         audience=str(audience),
         user_group=str(user_group),
@@ -473,7 +486,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         "gets a session from its proxy outpost's signed token, without the login URL",
     )
     forward.add_argument(
-        "--forward-auth-jwks-url", metavar="URL", help="the provider's JWKS (public keys)"
+        "--forward-auth-algorithm",
+        choices=("HS256", "RS256"),
+        help="how the provider signs its tokens: HS256 with its client secret (Authentik's "
+        "proxy providers), RS256 with a signing key",
+    )
+    forward.add_argument(
+        "--forward-auth-secret-file",
+        type=Path,
+        metavar="FILE",
+        help="HS256: the provider's client secret, in a file closed to other users",
+    )
+    forward.add_argument(
+        "--forward-auth-jwks-url", metavar="URL", help="RS256: the provider's JWKS (public keys)"
     )
     forward.add_argument(
         "--forward-auth-issuer", metavar="URL", help="the tokens' exact iss: the provider's"
@@ -643,6 +668,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(str(exc))
     try:
         forward_settings = forward_auth_settings(
+            args.forward_auth_algorithm,
+            args.forward_auth_secret_file,
             args.forward_auth_jwks_url,
             args.forward_auth_issuer,
             args.forward_auth_audience,
@@ -651,6 +678,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.forward_auth_header,
             public=public is not None,
         )
+        # An HS256 secret file is read now: missing, empty or open to others, no start.
+        verifier = Verifier(forward_settings) if forward_settings is not None else None
     except ValueError as exc:
         parser.error(str(exc))
     if not args.state_dir.is_dir():
@@ -726,7 +755,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             mcp_checks=checks,
             model_configuration=model_configuration,
             exposure=exposure,
-            forward_auth=Verifier(forward_settings) if forward_settings is not None else None,
+            forward_auth=verifier,
         )
     except OSError as exc:
         print(f"error: {exc} (build the web app: npm run build)", file=sys.stderr)
@@ -761,10 +790,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
     if forward_settings is not None:
         _log.info(
-            "login through Authentik: tokens from %s, signed by the keys at %s, for users in "
+            "login through Authentik: %s tokens from %s, checked with %s, for users in "
             "%s; admin-only actions: %s",
+            forward_settings.algorithm,
             forward_settings.issuer,
-            forward_settings.jwks_url,
+            # The secret's file, never the secret.
+            forward_settings.secret_file or forward_settings.jwks_url,
             forward_settings.user_group,
             forward_settings.admin_group or "every user",
         )
