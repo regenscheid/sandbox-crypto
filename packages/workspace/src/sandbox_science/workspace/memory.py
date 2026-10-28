@@ -19,7 +19,7 @@ from typing import Final
 from aiohttp import web
 
 from sandbox_science.contracts import Contract, ErrorKind
-from sandbox_science.orchestrator.documents import USER, DocumentStore
+from sandbox_science.orchestrator.documents import DocumentStore
 from sandbox_science.orchestrator.memory import (
     GIVEN_CHARS,
     Memory,
@@ -31,6 +31,7 @@ from sandbox_science.orchestrator.memory import (
 from sandbox_science.orchestrator.projects import ProjectError
 
 from .context import json_body
+from .identity import author
 from .requests import document_answer
 
 PATH: Final = "/api/v0/projects/{project}/memory"
@@ -115,7 +116,7 @@ async def change(request: web.Request) -> web.Response:
 
     def changed(store: DocumentStore) -> dict[str, object]:
         result: MemoryChange = ProjectMemory(store).change(
-            request.match_info["project"], value, USER
+            request.match_info["project"], value, author(request)
         )
         return result.model_dump(mode="json")
 

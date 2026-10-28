@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: MIT
 """Explicit authenticated USER project settings: macros, and the files executions
-write (research artifacts, RA-29, RA-39); same-origin guard is shared."""
+write (research artifacts, RA-29, RA-39), and the agents' models; same-origin guard is
+shared. Changing the model settings changes spend and model choice, an admin-only action
+(D104); macros and file settings are every member's. The session's user is the author."""
 
 from __future__ import annotations
 
@@ -9,13 +11,14 @@ from typing import Literal
 
 from aiohttp import web
 
-from sandbox_science.orchestrator.documents import USER, DocumentStore
+from sandbox_science.orchestrator.documents import DocumentStore
 from sandbox_science.orchestrator.documents.project_macros import ProjectMacros
 from sandbox_science.orchestrator.file_settings import DEFAULT_IGNORE, ProjectFiles
 from sandbox_science.orchestrator.model_profiles import ModelProfile
 from sandbox_science.orchestrator.model_settings import AgentModelRole, ProjectModels
 
 from .context import json_body
+from .identity import author, require_admin
 from .requests import document_answer
 
 
@@ -47,7 +50,9 @@ async def change(request: web.Request) -> web.Response:
     value = await json_body(request, "project macro JSON")
     return await document_answer(
         request,
-        lambda store: ProjectMacros(store).change(request.match_info["project"], value, USER),
+        lambda store: ProjectMacros(store).change(
+            request.match_info["project"], value, author(request)
+        ),
         access="write",
     )
 
@@ -67,7 +72,9 @@ async def change_files(request: web.Request) -> web.Response:
     value = await json_body(request, "file settings JSON")
 
     def changed(store: DocumentStore) -> dict[str, object]:
-        settings, replayed = ProjectFiles(store).change(request.match_info["project"], value, USER)
+        settings, replayed = ProjectFiles(store).change(
+            request.match_info["project"], value, author(request)
+        )
         return {**settings.model_dump(), "replayed": replayed}
 
     return await document_answer(request, changed, access="write")
@@ -94,6 +101,7 @@ async def model_settings(request: web.Request) -> web.Response:
 
 
 async def change_models(request: web.Request) -> web.Response:
+    require_admin(request, "changing the agents' model settings")
     value = await json_body(request, "project model settings JSON")
     configured = _models(request)
 
@@ -101,7 +109,7 @@ async def change_models(request: web.Request) -> web.Response:
         settings, replayed = ProjectModels(store).change(
             request.match_info["project"],
             value,
-            USER,
+            author(request),
             defaults=configured.defaults,
             available=configured.available,
         )

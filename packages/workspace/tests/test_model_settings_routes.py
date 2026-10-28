@@ -16,22 +16,26 @@ from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.workspace.app import create_app
 from sandbox_science.workspace.project_settings import ModelConfiguration
 
+from .authentik_support import ADMINS, USERS, Authentik, as_user
 from .test_reviews import TOKEN
 
 pytestmark = pytest.mark.asyncio
 ClientFactory = Callable[..., Awaitable[TestClient[Any, Any]]]
 
 
+CONFIGURATION = ModelConfiguration(
+    defaults={
+        "main": ModelProfile(alias="sol", api="responses", reasoning_effort="max"),
+        "delegated": ModelProfile(alias="sol", api="responses", reasoning_effort="max"),
+        "reviewer": ModelProfile(alias="luna", api="responses", reasoning_effort="medium"),
+    },
+    available={"sol": "responses", "luna": "responses"},
+)
+
+
 @pytest_asyncio.fixture
 async def client(aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path):
-    configuration = ModelConfiguration(
-        defaults={
-            "main": ModelProfile(alias="sol", api="responses", reasoning_effort="max"),
-            "delegated": ModelProfile(alias="sol", api="responses", reasoning_effort="max"),
-            "reviewer": ModelProfile(alias="luna", api="responses", reasoning_effort="medium"),
-        },
-        available={"sol": "responses", "luna": "responses"},
-    )
+    configuration = CONFIGURATION
     found = await aiohttp_client(
         create_app(
             ProjectStore(state_dir, readonly=True),
@@ -72,3 +76,30 @@ async def test_read_and_change_agent_models(client) -> None:
     widened = {**roles, "main": {"alias": "outside", "reasoning_effort": "max"}}
     bad = {"expected": 1, "roles": widened, "operation_id": "models-3", "api": "chat"}
     assert (await client.post(base, json=bad, headers=headers)).status == 400
+
+
+async def test_with_an_admin_group_model_settings_are_the_admins(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
+) -> None:
+    """D104: the agents' models change spend and model choice: an admin-only change. A
+    member still reads them."""
+    authentik = Authentik()
+    client = await aiohttp_client(
+        create_app(
+            ProjectStore(state_dir, readonly=True),
+            static_dir,
+            login_token=TOKEN,
+            model_configuration=CONFIGURATION,
+            forward_auth=authentik.verifier(ADMINS),
+        )
+    )
+    base = "/api/v0/projects/p1/models/settings"
+    origin = {"Origin": str(client.make_url("/")).rstrip("/")}
+    member = {**as_user(authentik.token("bob")), **origin}
+    admin = {**as_user(authentik.token("carol", (USERS, ADMINS))), **origin}
+    shown = await (await client.get(base, headers=member)).json()
+    value = {"expected": 0, "roles": shown["roles"], "operation_id": "models-a"}
+    refused = await client.post(base, json=value, headers=member)
+    assert refused.status == 403
+    assert ADMINS in (await refused.json())["error"]["message"]
+    assert (await client.post(base, json=value, headers=admin)).status == 200

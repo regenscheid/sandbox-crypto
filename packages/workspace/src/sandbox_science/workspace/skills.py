@@ -21,12 +21,13 @@ from aiohttp import web
 from pydantic import AwareDatetime, Field, JsonValue, ValidationError
 
 from sandbox_science.contracts import Contract, ErrorKind, Identifier
-from sandbox_science.orchestrator.documents import USER, DocumentStore
+from sandbox_science.orchestrator.documents import DocumentStore
 from sandbox_science.orchestrator.projects import ProjectError
 from sandbox_science.orchestrator.skills import SkillSettings, SkillStore
 from sandbox_science.orchestrator.skills.derive import VERSION as PASS_VERSION
 
 from .context import json_body
+from .identity import author
 from .requests import document_answer
 
 PATH: Final = "/api/v0/projects/{project}/skills"
@@ -208,7 +209,7 @@ async def settings(request: web.Request) -> web.Response:
     def changed(store: DocumentStore) -> dict[str, object]:
         found = SkillStore.of(store).set_settings(
             project,
-            USER,
+            author(request),
             change.expected,
             always=tuple(change.always),
             excluded=tuple(change.excluded),

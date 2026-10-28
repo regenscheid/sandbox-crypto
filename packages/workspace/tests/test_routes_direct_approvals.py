@@ -465,8 +465,8 @@ async def test_with_an_admin_group_a_project_grant_is_the_admins(
     assert project_grant["scope"] == "project"
     with ProjectStore(state_dir).control.read() as tx:
         rows = dict(tx.sql.execute("SELECT grant_id, author FROM project_grants").fetchall())
-    assert json.loads(rows[session_grant["grant_id"]])["user"] == "bob"
-    assert json.loads(rows[project_grant["grant_id"]])["user"] == "carol"
+    assert json.loads(rows[session_grant["grant_id"]])["user"] == "authentik:bob"
+    assert json.loads(rows[project_grant["grant_id"]])["user"] == "authentik:carol"
 
 
 async def test_with_an_admin_group_clearing_a_hold_is_the_admins(
