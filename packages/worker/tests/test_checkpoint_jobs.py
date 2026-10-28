@@ -20,7 +20,13 @@ from typing import Any
 import pytest
 
 from sandbox_science.contracts import EnvironmentInfo, EnvironmentState
-from sandbox_science.contracts.workspace_checkpoint import CheckpointInventory, CheckpointPlan
+from sandbox_science.contracts.workspace_checkpoint import (
+    CheckpointInventory,
+    CheckpointPlan,
+    InventoryCheckpoint,
+    InventoryEnvironment,
+    InventoryHold,
+)
 from sandbox_science.testing import FakeClock
 from sandbox_science.worker import (
     checkpoint_capture,
@@ -763,3 +769,77 @@ def test_a_kept_chunk_that_cannot_be_read_is_never_overwritten(tmp_path, garage,
     garage.unavailable = set()
     checkpoint_remote.promote(UPLOAD, KEPT, identity)  # the retry finishes
     assert checkpoint_remote.verify(KEPT, first, source_of(retained, first)).members > 1
+
+
+def test_a_deleted_environments_last_checkpoints_are_retired_only_when_nothing_needs_them(
+    tmp_path, garage, retained, stopped, capsys
+):
+    """Qualification 2026-10-28, finding 2: the latest kept checkpoints of a workspace stay
+    until the operator retires them by environment, which the worker checks again."""
+    first = checkpointed(tmp_path, retained, "one")[1]
+    second = checkpointed(tmp_path, retained, "two")[1]
+    forget = checkpoint_jobs.forget
+    with pytest.raises(RecordError, match="environment e is stopped"):
+        forget(retained, first, "op", volume_gone=True, retire="e")
+    save_environment(retained, "e", "ss-checkpoint-test", EnvironmentState.DELETED)
+    with pytest.raises(RecordError, match="needs its volume gone"):
+        forget(retained, first, "op", volume_gone=False, retire="e")
+    with pytest.raises(RecordError, match="not other"):
+        forget(retained, first, "op", volume_gone=True, retire="other")
+    assert forget(retained, first, "op", volume_gone=True, retire="e").state == "deleting"
+    settings = ["--settings", str(tmp_path / "worker.toml")]
+    (tmp_path / "worker.toml").write_text(
+        f'token_file = "{retained.token_file}"\nstate_dir = "{retained.state_dir}"\n'
+        "[openshell]\nisolation_tier = 3\n"
+    )
+    command = ["checkpoint", "forget", "--manifest", second, "--by", "op", *settings]
+    assert main([*command, "--retire", "e"]) == 1
+    assert "needs its volume gone" in capsys.readouterr().err
+    assert main([*command, "--volume-gone", "--retire", "e"]) == 0
+    journal = CheckpointRecords(retained.state_dir).deletions()
+    assert [(d.subject, d.phase, d.detail.get("retire")) for d in journal] == [
+        (first, "intent", "e"),
+        (second, "intent", "e"),
+    ]
+
+
+def test_a_hold_or_a_hand_back_keeps_a_deleted_environments_checkpoints():
+    now = datetime.now(UTC)
+    environment = InventoryEnvironment(
+        environment_id="e", project_id="p", kind="child", state="deleted", sandbox="ss-a"
+    )
+    checkpoint = InventoryCheckpoint(
+        checkpoint_id="ckpt-" + "a" * 24,
+        environment_id="e",
+        project_id="p",
+        sandbox="ss-a",
+        sandbox_id="ss-a-id",
+        manifest_sha256="b" * 64,
+        archive_size=1,
+        content_bytes=1,
+        capture="suspended_pvc",
+        skipped=0,
+        state="kept",
+        created_at=now,
+        verified_at=now,
+        kept_at=now,
+    )
+
+    def refusals(**changes: Any) -> list[str]:
+        found = CheckpointInventory(
+            generated_at=now,
+            keep=2,
+            environments=(environment.model_copy(update=changes.get("environment", {})),),
+            checkpoints=(checkpoint,),
+            holds=changes.get("holds", ()),
+        )
+        return checkpoint_jobs.retire_refusals(found, checkpoint, "e")
+
+    assert refusals() == []
+    assert refusals(environment={"hand_back": "retained"}) == [
+        "environment e's hand-back is retained"
+    ]
+    hold = InventoryHold(
+        checkpoint_id="ckpt-" + "c" * 24, environment_id="x", sandbox="ss-a", expires_at=now
+    )
+    assert refusals(holds=(hold,)) == ["a checkpoint holds it"]

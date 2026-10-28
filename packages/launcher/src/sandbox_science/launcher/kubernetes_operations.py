@@ -33,7 +33,7 @@ from sandbox_science.contracts.workspace_checkpoint import (
 )
 
 from .kubernetes_bundle import PRIVATE
-from .kubernetes_checkpoint import checkpoint_job
+from .kubernetes_checkpoint import CHECKPOINT, CHECKPOINT_LABEL, checkpoint_job
 from .kubernetes_config import BundleConfig, Checkpoint
 
 Runner = Callable[[Sequence[str], bytes | None], bytes]
@@ -41,6 +41,12 @@ Runner = Callable[[Sequence[str], bytes | None], bytes]
 KEEP_ANNOTATION = "sandbox-science.io/keep"
 """On a workspace's PV or PVC: part of a recovery set, never a cleanup candidate."""
 SELECTED_NODE = "volume.kubernetes.io/selected-node"
+OPENSHELL_SEPARATOR = "--"
+"""Between the segments of OpenShell's routable names: a sandbox's Kubernetes objects are
+``<OpenShell workspace>--<sandbox>`` (the ``Sandbox``, and its claim
+``workspace-<workspace>--<sandbox>``). The worker's sandbox names never contain it
+(``worker.environments.OPENSHELL_SEPARATOR``; a test compares them, the launcher never
+imports the worker), so the sandbox is what follows its last occurrence."""
 WORKER_SETTINGS = f"{PRIVATE}/worker.toml"
 _MANIFEST = re.compile(r"^checkpoint_manifest=([0-9a-f]{64})\b", re.MULTILINE)
 MAX_OUTPUT = 64 * 1024 * 1024
@@ -247,7 +253,7 @@ class Operator:
         found = [
             pvc
             for pvc in self.get("pvc")
-            if _sandbox_owner(pvc) == sandbox or _name(pvc).endswith(f"-{sandbox}")
+            if _sandbox_owner(pvc) == sandbox or claim_sandbox(_name(pvc)) == sandbox
         ]
         if len(found) != 1:
             raise OperationError(
@@ -288,6 +294,7 @@ class Operator:
             f" {plan.hold_expires_at:%Y-%m-%d %H:%M} UTC"
         )
         name: str | None = None
+        claim = ""
         try:
             claim, node = self.claim_of(plan.source.sandbox)
             job = checkpoint_job(self.config, plan, claim, node)
@@ -316,19 +323,7 @@ class Operator:
             problems: list[str] = []
             if name is not None:
                 try:
-                    self.run(
-                        [
-                            *self.kubectl,
-                            "-n",
-                            self.sandbox_namespace,
-                            "delete",
-                            "job",
-                            name,
-                            "--cascade=background",
-                            "--wait=false",
-                        ],
-                        None,
-                    )
+                    self.run(self._delete_job(name), None)
                 except OperationError as cleanup:
                     problems.append(f"the Job {name} was not deleted: {cleanup}")
             try:
@@ -352,6 +347,7 @@ class Operator:
             if problems:
                 raise OperationError(f"{error}; and {'; '.join(problems)}") from error
             raise
+        self._finish_job(name, logs, claim)
         if keeper is None:
             self.out("not promoted (no keeper storage files); run these with the keeper key:")
             self.out(
@@ -366,6 +362,35 @@ class Operator:
             self.run(self._verify(plan.checkpoint_id, manifest, "kept"), None).decode().strip()
         )
         return manifest
+
+    def _delete_job(self, name: str) -> list[str]:
+        return [
+            *self.kubectl,
+            "-n",
+            self.sandbox_namespace,
+            "delete",
+            "job",
+            name,
+            "--cascade=background",
+            "--wait=false",
+        ]
+
+    def _finish_job(self, name: str, logs: bytes, claim: str) -> None:
+        """After the worker verified what the Job wrote: its log goes to the operator's
+        output and the Job goes, since its finished Pod still names the claim and would keep
+        the claim ``Terminating`` once the environment is deleted. A failed deletion is
+        reported, not raised: the checkpoint is good, and the Job's TTL removes it later."""
+        for line in logs.decode(errors="replace").splitlines():
+            self.out(f"job {name}: {line}")
+        try:
+            self.run(self._delete_job(name), None)
+        except OperationError as error:
+            self.out(
+                f"the Job {name} was not deleted ({error}); its Pod keeps {claim} in use until"
+                f" it is, or until {self.checkpoint.job_ttl_seconds}s after it finished"
+            )
+            return
+        self.out(f"deleted job {name}")
 
     def _wait(self, name: str, poll: float) -> None:
         deadline = time.monotonic() + self.checkpoint.deadline_seconds + 300
@@ -401,6 +426,7 @@ class Operator:
             self.inventory(),
             self.sandbox_namespace,
             datetime.now(UTC),
+            jobs=self.get("jobs.batch"),
         )
 
     def delete(
@@ -412,11 +438,13 @@ class Operator:
         without_checkpoint: Sequence[str],
         keeper_kept: Path | None,
         workdir: Path = Path("."),
+        retire: Sequence[str] = (),
     ) -> list[Step]:
         """The commands that delete exactly the named candidates, in order; refuses a name
         that is not a candidate or that a rule protects. ``without_checkpoint`` names the
         volumes that may go without a current verified checkpoint, and must name only
-        volumes being deleted."""
+        volumes being deleted. ``retire`` names deleted environments whose remaining
+        (latest kept) checkpoints go too, all of them or none."""
         rows = {row.volume: row for row in found.volumes}
         marks = {row.checkpoint.manifest_sha256: row for row in found.checkpoints}
         refused: list[str] = []
@@ -439,10 +467,40 @@ class Operator:
             mark = marks.get(manifest)
             if mark is None:
                 refused.append(f"{manifest}: not a cleanup candidate")
+            elif mark.retire:
+                environment = mark.checkpoint.environment_id
+                refused.append(
+                    f"{manifest}: one of the latest checkpoints of deleted environment"
+                    f" {environment} (pass --retire-checkpoints {environment})"
+                )
             elif mark.refusals:
                 refused.append(f"{manifest}: {'; '.join(mark.refusals)}")
             else:
                 commands.extend(self._delete_checkpoint(mark, keeper_kept, workdir))
+        for environment in dict.fromkeys(retire):
+            retiring = [
+                mark
+                for mark in found.checkpoints
+                if mark.retire and mark.checkpoint.environment_id == environment
+            ]
+            info = next((e for e in found.environments if e.environment_id == environment), None)
+            if info is None:
+                refused.append(f"{environment}: the worker has no record of this environment")
+            elif info.state != "deleted":
+                refused.append(f"{environment}: environment {environment} is {info.state}")
+            elif not retiring:
+                refused.append(f"{environment}: no kept checkpoints left to retire")
+            elif blocked := [mark for mark in retiring if mark.refusals]:
+                refused.extend(
+                    f"{environment}: checkpoint {mark.checkpoint.manifest_sha256}:"
+                    f" {'; '.join(mark.refusals)}"
+                    for mark in blocked
+                )
+            else:
+                for mark in retiring:
+                    commands.extend(
+                        self._delete_checkpoint(mark, keeper_kept, workdir, retire=environment)
+                    )
         if refused:
             raise OperationError("refused: " + " | ".join(refused))
         return commands
@@ -477,8 +535,32 @@ class Operator:
             {"op": "test", "path": "/status/phase", "value": row.phase},
             {"op": "replace", "path": "/spec/persistentVolumeReclaimPolicy", "value": "Delete"},
         ]
-        steps = [
-            Step(journal("intent")),
+        steps = [Step(journal("intent"))]
+        # A finished checkpoint Job's Pod still names the claim; the claim would stay
+        # Terminating until it went. Each goes with the UID the survey saw.
+        steps.extend(
+            Step(
+                [
+                    *self.kubectl,
+                    "delete",
+                    "--raw",
+                    f"/apis/batch/v1/namespaces/{self.sandbox_namespace}/jobs/{job.name}",
+                    "-f",
+                    "-",
+                ],
+                journal("failed"),
+                stdin=json.dumps(
+                    {
+                        "kind": "DeleteOptions",
+                        "apiVersion": "v1",
+                        "preconditions": {"uid": job.uid},
+                        "propagationPolicy": "Background",
+                    }
+                ).encode(),
+            )
+            for job in row.jobs
+        )
+        steps.append(
             Step(
                 [
                     *self.kubectl,
@@ -490,8 +572,8 @@ class Operator:
                     json.dumps(patch, separators=(",", ":")),
                 ],
                 journal("failed"),
-            ),
-        ]
+            )
+        )
         if row.claim_exists and row.claim is not None:
             options = {
                 "kind": "DeleteOptions",
@@ -517,11 +599,17 @@ class Operator:
         return steps
 
     def _delete_checkpoint(
-        self, row: CheckpointRow, keeper_kept: Path | None, workdir: Path
+        self,
+        row: CheckpointRow,
+        keeper_kept: Path | None,
+        workdir: Path,
+        *,
+        retire: str | None = None,
     ) -> list[Step]:
         """Journaled and no longer counted first; the worker's recorded chunk list then
         lets the keeper key remove its chunks and, last, its manifest. A failure leaves it
-        ``deleting``, which the next cleanup lists again and finishes."""
+        ``deleting``, which the next cleanup lists again and finishes. ``retire`` names the
+        deleted environment whose last checkpoints these are; the worker checks it again."""
         manifest = row.checkpoint.manifest_sha256
         storage = str(keeper_kept or Path("KEPT.toml"))
         listing = workdir / f"chunks-{manifest}.txt"
@@ -532,6 +620,7 @@ class Operator:
                     "--manifest",
                     manifest,
                     *([] if row.volume_exists else ["--volume-gone"]),
+                    *(["--retire", retire] if retire is not None else []),
                     "--by",
                     self.actor,
                 )
@@ -593,6 +682,16 @@ class VolumeRow:
     uncovered: str | None = None
     """Why no verified checkpoint covers it: none, or the newest predates its last start.
     Only ``--without-checkpoint`` for this volume lets it go then."""
+    jobs: tuple[JobRef, ...] = ()
+    """Finished checkpoint Jobs whose Pods still name its claim: deleted before it."""
+
+
+@dataclass(frozen=True)
+class JobRef:
+    """A finished checkpoint Job, by the UID the survey saw."""
+
+    name: str
+    uid: str
 
 
 @dataclass(frozen=True)
@@ -600,6 +699,9 @@ class CheckpointRow:
     checkpoint: InventoryCheckpoint
     volume_exists: bool
     refusals: tuple[str, ...] = ()
+    retire: bool = False
+    """One of the latest kept checkpoints of an environment the worker records as deleted:
+    never a candidate, removed only with ``--retire-checkpoints`` for its environment."""
 
 
 @dataclass(frozen=True)
@@ -607,6 +709,7 @@ class Survey:
     volumes: list[VolumeRow] = field(default_factory=list[VolumeRow])
     checkpoints: list[CheckpointRow] = field(default_factory=list[CheckpointRow])
     now: datetime = field(default_factory=lambda: datetime.now(UTC))
+    environments: tuple[InventoryEnvironment, ...] = ()
 
 
 def _dict(value: object) -> dict[str, object]:
@@ -623,13 +726,60 @@ def _annotations(item: dict[str, object]) -> dict[str, str]:
     }
 
 
+def worker_sandbox(name: str) -> str:
+    """The worker's name of the sandbox an OpenShell Kubernetes name carries:
+    ``default--ss-…`` and ``team-a--ss-…`` are both ``ss-…``, the name the worker records.
+    A name without the separator is the sandbox's own."""
+    return name.rpartition(OPENSHELL_SEPARATOR)[2]
+
+
+def claim_sandbox(claim: str) -> str | None:
+    """The worker's name of the sandbox a workspace claim's name carries
+    (``workspace-<workspace>--<sandbox>``), if it has OpenShell's shape."""
+    return worker_sandbox(claim) if OPENSHELL_SEPARATOR in claim else None
+
+
 def _sandbox_owner(item: dict[str, object]) -> str | None:
+    """The worker's name of the ``Sandbox`` that owns ``item``, if one does."""
     owners = _dict(item.get("metadata")).get("ownerReferences")
     for owner in cast(list[object], owners) if isinstance(owners, list) else []:
         reference = _dict(owner)
         if reference.get("kind") == "Sandbox" and isinstance(reference.get("name"), str):
-            return str(reference["name"])
+            return worker_sandbox(str(reference["name"]))
     return None
+
+
+def _items(value: object) -> list[dict[str, object]]:
+    return [_dict(item) for item in cast(list[object], value)] if isinstance(value, list) else []
+
+
+def _job_claims(job: dict[str, object]) -> set[str]:
+    """The claims a Job's Pods name."""
+    pod = _dict(_dict(_dict(job.get("spec")).get("template")).get("spec"))
+    claims = (
+        _dict(volume.get("persistentVolumeClaim")).get("claimName")
+        for volume in _items(pod.get("volumes"))
+    )
+    return {claim for claim in claims if isinstance(claim, str)}
+
+
+def _job_finished(job: dict[str, object]) -> bool:
+    return any(
+        condition.get("type") in ("Complete", "Failed") and condition.get("status") == "True"
+        for condition in _items(_dict(job.get("status")).get("conditions"))
+    )
+
+
+def _checkpoint_job(job: dict[str, object]) -> bool:
+    labels = _dict(_dict(job.get("metadata")).get("labels"))
+    return labels.get("app.kubernetes.io/component") == CHECKPOINT and CHECKPOINT_LABEL in labels
+
+
+def _being_deleted(pv: dict[str, object]) -> bool:
+    """A PV already being deleted with its storage: it counts as gone."""
+    return bool(_dict(pv.get("metadata")).get("deletionTimestamp")) and (
+        _dict(pv.get("spec")).get("persistentVolumeReclaimPolicy") == "Delete"
+    )
 
 
 def _mounted(pods: list[dict[str, object]]) -> set[str]:
@@ -662,16 +812,23 @@ def survey(
     found: CheckpointInventory,
     namespace: str,
     now: datetime,
+    *,
+    jobs: Sequence[dict[str, object]] = (),
 ) -> Survey:
     """Cleanup candidates and what protects each (pure, so tests decide it offline).
 
-    A volume is a candidate when it held a workspace in the sandbox namespace and its
-    sandbox is gone: a Released PV, or a claim whose owning Sandbox object no longer
-    exists. It is refused while its sandbox exists, a Pod mounts it, it is marked
-    ``sandbox-science.io/keep`` (a recovery set), the worker records a live or paused
-    environment, a hand-back or a checkpoint hold for it. A checkpoint is a candidate when
-    newer kept ones of its workspace fill the kept count, or when its deletion began."""
-    live = {_name(item) for item in sandboxes}
+    Sandboxes are matched by the worker's names, exactly: OpenShell's names carry its
+    workspace before them (``worker_sandbox``). A volume is a candidate when it held a
+    workspace in the sandbox namespace and its sandbox is gone: a Released PV, or a claim
+    whose owning Sandbox object no longer exists. It is refused while its sandbox exists, a
+    Pod or an unfinished Job mounts it, it is marked ``sandbox-science.io/keep`` (a recovery
+    set), the worker records a live or paused environment, a hand-back or a checkpoint hold
+    for it; finished checkpoint Jobs that still name its claim are deleted with it. A
+    checkpoint is a candidate when newer kept ones of its workspace fill the kept count, or
+    when its deletion began; the latest kept ones of an environment the worker records as
+    deleted are listed for retirement, refused while their volume exists or the worker's
+    records still reference their workspace."""
+    live = {worker_sandbox(_name(item)) for item in sandboxes}
     claims = {_name(item): item for item in pvcs}
     mounted = _mounted(pods)
     known = {info.sandbox for info in found.environments} | live
@@ -691,12 +848,13 @@ def survey(
             or _dict(pvc.get("metadata")).get("uid") != claim_uid
         ):
             pvc = None
+        named = claim_sandbox(claim_name) if claim_name is not None else None
         sandbox = _sandbox_owner(pvc) if pvc is not None else None
-        if sandbox is None and claim_name is not None:
-            matches = [s for s in known if claim_name.endswith(f"-{s}")]
-            sandbox = matches[0] if len(matches) == 1 else None
-        if sandbox is not None:
-            volume_sandboxes.add(sandbox)
+        if sandbox is None and named in known:
+            sandbox = named
+        if not _being_deleted(pv):
+            # Any trace of a volume counts, so a checkpoint is never taken for its last.
+            volume_sandboxes.update(s for s in (sandbox, named) if s is not None)
         phase = str(status.get("phase", ""))
         orphaned = pvc is not None and _sandbox_owner(pvc) is not None and sandbox not in live
         if phase != "Released" and not orphaned:
@@ -706,6 +864,19 @@ def survey(
             refusals.append(f"its sandbox {sandbox} exists")
         if claim_name in mounted and pvc is not None:
             refusals.append("a Pod mounts it")
+        finished: list[JobRef] = []
+        for job in jobs if pvc is not None else ():
+            if claim_name not in _job_claims(job):
+                continue
+            uid = str(_dict(job.get("metadata")).get("uid", ""))
+            if not _checkpoint_job(job):
+                refusals.append(f"Job {_name(job)} mounts it")
+            elif not _job_finished(job):
+                refusals.append(f"checkpoint Job {_name(job)} still runs and mounts it")
+            elif not uid:
+                refusals.append(f"checkpoint Job {_name(job)} mounts it and carries no UID")
+            else:
+                finished.append(JobRef(_name(job), uid))
         noted = {**_annotations(pv), **(_annotations(pvc) if pvc is not None else {})}
         if KEEP_ANNOTATION in noted:
             refusals.append(f"marked to keep ({noted[KEEP_ANNOTATION][:80]})")
@@ -754,25 +925,53 @@ def survey(
                 newest_checkpoint=newest,
                 last_started=started,
                 uncovered=uncovered,
+                jobs=tuple(finished),
             )
         )
     for pvc in pvcs:
-        owner = _sandbox_owner(pvc)
-        if owner is not None:
-            volume_sandboxes.add(owner)
+        volume_sandboxes.update(
+            s for s in (_sandbox_owner(pvc), claim_sandbox(_name(pvc))) if s is not None
+        )
     marks: list[CheckpointRow] = []
     by_sandbox: dict[str, list[InventoryCheckpoint]] = {}
     for checkpoint in kept:
         by_sandbox.setdefault(checkpoint.sandbox, []).append(checkpoint)
+    recorded = {info.environment_id: info for info in found.environments}
     for sandbox, listed in by_sandbox.items():
         listed.sort(key=lambda c: c.created_at, reverse=True)
         marks.extend(CheckpointRow(c, sandbox in volume_sandboxes) for c in listed[found.keep :])
+        for c in listed[: found.keep]:
+            info = recorded.get(c.environment_id)
+            if info is not None and info.state == "deleted":
+                exists = sandbox in volume_sandboxes
+                marks.append(
+                    CheckpointRow(c, exists, tuple(_retire_refusals(c, found, exists)), retire=True)
+                )
     marks.extend(
         CheckpointRow(c, c.sandbox in volume_sandboxes)
         for c in found.checkpoints
         if c.state == "deleting"
     )
-    return Survey(rows, marks, now)
+    return Survey(rows, marks, now, found.environments)
+
+
+def _retire_refusals(
+    checkpoint: InventoryCheckpoint, found: CheckpointInventory, volume_exists: bool
+) -> list[str]:
+    """Why one of a deleted environment's latest checkpoints may not be retired: its volume
+    exists, or the worker's records still reference its workspace (as the worker's own
+    ``checkpoint_jobs.retire_refusals`` decides again)."""
+    environment = checkpoint.environment_id
+    reasons = ["its volume still exists"] if volume_exists else []
+    for info in found.environments:
+        if info.environment_id == environment and info.hand_back is not None:
+            reasons.append(f"environment {environment}'s hand-back is {info.hand_back}")
+    if any(
+        hold.environment_id == environment or hold.sandbox == checkpoint.sandbox
+        for hold in found.holds
+    ):
+        reasons.append("a checkpoint holds it")
+    return reasons
 
 
 def _age(created: datetime | None, now: datetime) -> str:
@@ -806,6 +1005,11 @@ def report(found: Survey) -> list[str]:
         )
         if row.uncovered is not None and row.kept_checkpoints:
             checkpoint += " (after the newest checkpoint: not covered)"
+        if row.jobs:
+            checkpoint += (
+                f"; finished checkpoint Job(s) {', '.join(job.name for job in row.jobs)}"
+                " still name its claim (deleted with it)"
+            )
         verdict = "REFUSED: " + "; ".join(row.refusals) if row.refusals else "candidate"
         lines.append(
             f"volume {row.volume} {row.size} age {_age(row.created, found.now)} {row.phase}"
@@ -814,12 +1018,20 @@ def report(found: Survey) -> list[str]:
         )
     for mark in found.checkpoints:
         c = mark.checkpoint
+        if mark.refusals:
+            verdict = ("REFUSED retirement: " if mark.retire else "REFUSED: ") + "; ".join(
+                mark.refusals
+            )
+        elif mark.retire:
+            verdict = f"retirable (--retire-checkpoints {c.environment_id})"
+        else:
+            verdict = "candidate"
         lines.append(
             f"checkpoint {c.manifest_sha256} {c.archive_size} bytes"
             f" age {_age(c.created_at, found.now)}"
             f" {c.state} sandbox {c.sandbox}: project {c.project_id} environment"
             f" {c.environment_id}; {'volume exists' if mark.volume_exists else 'volume gone'};"
-            f" {'REFUSED: ' + '; '.join(mark.refusals) if mark.refusals else 'candidate'}"
+            f" {verdict}"
         )
     if not lines:
         lines.append("no cleanup candidates")

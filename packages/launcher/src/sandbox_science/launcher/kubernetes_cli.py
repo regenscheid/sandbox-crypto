@@ -89,6 +89,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         metavar="VOLUME",
         help="this volume may go without a current verified checkpoint (repeatable)",
     )
+    cleanup.add_argument(
+        "--retire-checkpoints",
+        action="append",
+        default=[],
+        metavar="ENVIRONMENT",
+        help="remove the remaining checkpoints of this deleted environment whose volume is"
+        " gone (repeatable)",
+    )
     cleanup.add_argument("--keeper-kept", type=Path, help="operator/checkpoint-kept.toml")
     cleanup.add_argument("--yes", action="store_true", help="do not ask for confirmation")
     args = parser.parse_args(argv)
@@ -175,7 +183,7 @@ def _operate(args: argparse.Namespace) -> int:
         print(f"checkpoint_manifest={manifest}")
         return 0
     found = operator.survey()
-    if not args.volume and not args.checkpoint:
+    if not args.volume and not args.checkpoint and not args.retire_checkpoints:
         for line in report(found):
             print(line)
         return 0
@@ -188,14 +196,20 @@ def _operate(args: argparse.Namespace) -> int:
         without_checkpoint=args.without_checkpoint,
         keeper_kept=args.keeper_kept,
         workdir=workdir,
+        retire=args.retire_checkpoints,
     )
     if not args.apply:
         for step in steps:
             print(" ".join(shlex.quote(part) for part in step.command))
         return 0
-    if args.checkpoint and args.keeper_kept is None:
+    if (args.checkpoint or args.retire_checkpoints) and args.keeper_kept is None:
         raise ValueError("deleting a checkpoint needs --keeper-kept and the keeper key")
-    named = len(args.volume) + len(args.checkpoint)
+    retiring = sum(
+        1
+        for mark in found.checkpoints
+        if mark.retire and mark.checkpoint.environment_id in args.retire_checkpoints
+    )
+    named = len(args.volume) + len(args.checkpoint) + retiring
     if not args.yes and not _confirm(
         f"Delete {named} item(s) for good, journaled as {actor}? Type 'delete': "
     ):

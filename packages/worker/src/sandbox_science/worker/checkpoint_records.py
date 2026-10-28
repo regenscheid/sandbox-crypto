@@ -442,11 +442,18 @@ class CheckpointRecords:
         return [c.manifest_sha256 for c in kept[:keep]], [c.manifest_sha256 for c in kept[keep:]]
 
     def forget(
-        self, manifest: str, now: datetime, actor: str, *, volume_gone: bool
+        self,
+        manifest: str,
+        now: datetime,
+        actor: str,
+        *,
+        volume_gone: bool,
+        retire: str | None = None,
     ) -> InventoryCheckpoint:
         """Mark a checkpoint ``deleting`` before its objects go, with who asked; it stops
         counting at once. Refuses the last kept checkpoint of a workspace whose volume may
-        still exist."""
+        still exist. ``retire`` names the deleted environment whose remaining checkpoints
+        are being retired (``checkpoint_jobs.forget`` checks it first); the journal says so."""
         with self._write() as db:
             row = db.execute(
                 "SELECT checkpoint_id, sandbox, state FROM checkpoints WHERE manifest_sha256=?",
@@ -483,6 +490,7 @@ class CheckpointRecords:
                     "sandbox": sandbox,
                     "was": state,
                     "volume_gone": volume_gone,
+                    **({"retire": retire} if retire is not None else {}),
                 },
             )
         return next(c for c in self.checkpoints() if c.manifest_sha256 == manifest)

@@ -131,6 +131,9 @@ async def _owned[T](work: Awaitable[T]) -> T:
 
 
 SANDBOX_PREFIX: Final = "ss-"
+OPENSHELL_SEPARATOR: Final = "--"
+"""What OpenShell puts between the segments of a routable name: a sandbox's Kubernetes
+objects are ``<OpenShell workspace>--<sandbox name>``. A sandbox name never contains it."""
 CREATION_UNKNOWN: Final = "environment_creation_unknown"
 """The log event of a creation still unknown past the grace (B3, D103)."""
 MAX_SANDBOX_NAME: Final = 19
@@ -199,8 +202,10 @@ def printable(text: str, limit: int = 255) -> str:
 def new_sandbox_name() -> str:
     """A fresh OpenShell sandbox name: the prefix and 64 random bits, in 19 characters.
 
-    OpenShell v0.1.5 takes at most 19 characters, a DNS label without the ``--`` it uses
-    between the segments of routable names. A name derived from the environment ID left
+    OpenShell v0.1.5 takes at most 19 characters, a DNS label without the ``--``
+    (``OPENSHELL_SEPARATOR``) it uses between the segments of routable names, so the
+    sandbox is what follows the last ``--`` of its Kubernetes objects' names (the
+    operator's cleanup reads them so). A name derived from the environment ID left
     room for only 32 bits of a hash, so a client could choose an ID whose name was
     another project's sandbox (review of D78). The record keeps the name.
     """
