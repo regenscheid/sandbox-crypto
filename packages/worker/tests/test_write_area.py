@@ -208,9 +208,9 @@ def test_the_check_and_the_hand_back_paths() -> None:
     refusal = outside_write_area(context, "x.md")
     assert refusal is not None
     assert refusal.startswith("outside_write_area: ")
-    assert hand_back_path("dlg-a", "work/dlg-a/notes.md") == "work/dlg-a/notes.md"
-    assert hand_back_path("dlg-a", "out/fig.png") == "work/dlg-a/out/fig.png"
-    assert hand_back_path("dlg-a", "work/dlg-b/x") == "work/dlg-a/work/dlg-b/x"
-    assert hand_back_reserved("dlg-a", ".handback/manifest.json")
-    assert hand_back_reserved("dlg-a", "work/dlg-a/.handback/x")
-    assert not hand_back_reserved("dlg-a", "work/dlg-a/handback/x")
+    assert hand_back_path("work/dlg-a", "work/dlg-a/notes.md") == "work/dlg-a/notes.md"
+    assert hand_back_path("work/dlg-a", "out/fig.png") == "work/dlg-a/out/fig.png"
+    assert hand_back_path("work/dlg-a", "work/dlg-b/x") == "work/dlg-a/work/dlg-b/x"
+    assert hand_back_reserved("work/dlg-a", ".handback/manifest.json")
+    assert hand_back_reserved("work/dlg-a", "work/dlg-a/.handback/x")
+    assert not hand_back_reserved("work/dlg-a", "work/dlg-a/handback/x")

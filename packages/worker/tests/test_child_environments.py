@@ -478,6 +478,26 @@ async def test_a_file_of_the_write_area_keeps_its_path(pool: Pool) -> None:
     assert not back.complete
 
 
+async def test_a_continuations_hand_back_goes_to_its_works_write_area(pool: Pool) -> None:
+    """DA-19 with CE-12: a Resume's continuation is a delegation of its own for the same
+    research work, and writes in the work's area; its hand-back goes there, keeping
+    the paths of the files it wrote there."""
+    made = await pool.ready()
+    child = made.environment_id
+    first = "dlg-" + "f" * 24
+    area = f"work/{first}"
+    pool.port.files[child, f"{area}/notes.md"] = b"edited\n"
+    pool.port.files[child, "out/fig.png"] = b"png"
+    back = await pool.children.hand_back(
+        child, pool.back((f"{area}/notes.md", "out/fig.png"), write_area=area)
+    )
+    assert back.target == area
+    assert [f.path for f in back.collected] == [f"{area}/notes.md", f"{area}/out/fig.png"]
+    assert pool.port.files[SESSION, f"{area}/notes.md"] == b"edited\n"
+    assert (SESSION, f"{area}/.handback/manifest.json") in pool.port.files
+    assert not any(path.startswith(f"work/{DELEGATION}/") for _, path in pool.port.files)
+
+
 async def test_an_incomplete_hand_back_retains_two_a_project(tmp_path: Path) -> None:
     pool = Pool(
         tmp_path,

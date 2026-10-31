@@ -35,7 +35,7 @@ from sandbox_science.contracts import (
     new_id,
 )
 from sandbox_science.contracts.child_environments import RetainedFile, is_child_environment
-from sandbox_science.contracts.context import ExecutionAuthority, write_area
+from sandbox_science.contracts.context import ExecutionAuthority
 from sandbox_science.contracts.logs import log_context
 from sandbox_science.contracts.recovery import RecoveryFence
 from sandbox_science.contracts.worker import Language
@@ -1462,6 +1462,11 @@ class Harness:
             self.settings.min_isolation_tier,
             self.clock,
             self.environment_poll,
+            areas=(
+                DelegationRecords(self.stores.projects.control, clock=self.clock)
+                if self.stores is not None
+                else None
+            ),
         )
 
     def _blueprint(self, admitted: Admitted) -> Blueprint:
@@ -2174,7 +2179,15 @@ class Harness:
         if delegated:
             if admitted.request.delegation is None:
                 raise ValueError("a delegated run needs its delegation for its write area")
-            area = write_area(admitted.request.delegation)
+            # Its research work's: a reopened task's and a Resume continuation's are the
+            # area their work's first delegation wrote in, which this attempt alone holds.
+            area = await threaded(
+                DelegationRecords(stores.projects.control, clock=self.clock).held_write_area,
+                context.project_id,
+                context.session_id,
+                run_name(admitted.started_at, admitted.run_id),
+                admitted.request.delegation,
+            )
         return Toolbox(
             self.client,
             context,

@@ -29,6 +29,7 @@ transaction and may run in a thread.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -37,7 +38,7 @@ from typing import Annotated, Final, Literal, cast
 
 from pydantic import Field, JsonValue, ValidationError, field_validator
 
-from sandbox_science.contracts import SYSTEM_CLOCK, Clock, Identifier
+from sandbox_science.contracts import SYSTEM_CLOCK, Clock, Identifier, write_area
 from sandbox_science.contracts.model import Contract
 from sandbox_science.orchestrator.continuity.blueprints import Blueprint, reserve_child
 from sandbox_science.orchestrator.control import ControlError, ControlStore
@@ -393,6 +394,30 @@ class Ending:
     read_proofs: bool | None = None
     files: dict[str, JsonValue] | None = None
     environment: dict[str, JsonValue] | None = None
+
+
+_IDENTIFIER: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+"""A delegation ID's shape, as ``Identifier`` takes it."""
+
+
+def _area_delegation(db: sqlite3.Connection, project: str, session: str, delegation: str) -> str:
+    """The delegation whose ``work/<delegation_id>/`` is ``delegation``'s write area: the
+    one its research work was first admitted for (DA-19), by the work of any run it had."""
+    row = db.execute(
+        "SELECT b.snapshot FROM research_attempts a JOIN research_blueprints b "
+        "ON b.project=a.project AND b.session=a.session AND b.work=a.work "
+        "WHERE a.project=? AND a.session=? AND a.run IN (SELECT run FROM delegations "
+        "WHERE project_id=? AND session_id=? AND delegation_id=? UNION SELECT run FROM "
+        "delegation_results WHERE project_id=? AND session_id=? AND delegation_id=?) LIMIT 1",
+        (project, session, project, session, delegation, project, session, delegation),
+    ).fetchone()
+    if row is None:
+        return delegation
+    try:
+        first = Blueprint.model_validate_json(row[0]).request.get("delegation")
+    except ValidationError:
+        return delegation
+    return first if isinstance(first, str) and _IDENTIFIER.fullmatch(first) else delegation
 
 
 class DelegationRecords:
@@ -1002,6 +1027,40 @@ class DelegationRecords:
             if parent is None:
                 return found
             return [d for d in found if _parent_of(db, project, session, d.parent, parent, work)]
+
+    def write_area(self, project: str, session: str, delegation_id: str) -> str:
+        """The write area of a delegation's research work (DA-19): ``work/<first>``, where
+        ``first`` is the delegation the work was first admitted for, which its blueprint
+        names. A reopened task is that same delegation (PD-46); a Resume's continuation is
+        a delegation of its own for the same work (D100, CE-12), and so writes where the
+        work's earlier attempts wrote. A delegation whose run has no recorded work yet
+        has its own."""
+        with self.control.read() as tx:
+            return write_area(_area_delegation(tx.sql, project, session, delegation_id))
+
+    def held_write_area(self, project: str, session: str, run: str, delegation_id: str) -> str:
+        """The write area ``run``, an attempt of ``delegation_id``'s research work, writes
+        in, once it is sure that no other attempt can hold it: the work's one current
+        attempt is ``run`` and it is running (``WorkRecords.admit`` makes one attempt of a
+        work current at a time, under the control store's single writer). Otherwise
+        ``conflict`` (``write_area_held``)."""
+        with self.control.read() as tx:
+            db = tx.sql
+            area = write_area(_area_delegation(db, project, session, delegation_id))
+            found = db.execute(
+                "SELECT w.work,w.current,w.state FROM research_attempts a JOIN research_work w "
+                "ON w.project=a.project AND w.session=a.session AND w.work=a.work "
+                "WHERE a.project=? AND a.session=? AND a.run=?",
+                (project, session, run),
+            ).fetchone()
+        if found is not None and (found[1] != run or found[2] != "running"):
+            raise ControlError(
+                CONFLICT,
+                f"write_area_held: {area}/ is the write area of research work {found[0]}, "
+                f"whose current attempt is {found[1]} ({found[2]}), not {run}; only one "
+                "attempt of a work writes there at a time",
+            )
+        return area
 
     def union_plan(
         self,

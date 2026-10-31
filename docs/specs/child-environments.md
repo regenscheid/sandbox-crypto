@@ -156,7 +156,9 @@ platform places a child by the project's settings. No change to checks' evidence
   write area to the same path in the session's environment, and any other below it
   (`out/x` to `work/<delegation_id>/out/x`), so a path the child names is the path its
   parent reads. Of two files that would land on one path, the first the request names is
-  copied and the other left out with that reason. The parent reads handed-back files with its ordinary
+  copied and the other left out with that reason. A Resume's continuation (CE-12) writes in its research
+  work's write area, the first delegation's, and its hand-back goes there
+  (`HandBackRequest.write_area`). The parent reads handed-back files with its ordinary
   file tools, at that path; the recorder records them as the parent's files, so they
   are artifacts of the session like any other.
 - CE-7. **Inputs.** The brief's `inputs` (file grants, DA-17) are copied into the child
