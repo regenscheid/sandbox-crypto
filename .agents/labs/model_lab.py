@@ -16,6 +16,9 @@ file, by its path alone). The model is the gateway's ``sandbox-orchestrator`` al
 ``arrcodex`` alias, deliberately weaker; model errors are part of what is tested), for
 every role; the gateway URL and the key file's path are read from the personal config at
 ``prepare`` and only the lab's private config names them; the key is never opened here.
+``prepare --model ALIAS --api chat|responses|messages`` runs another alias, on the API the
+launcher's ``[model] api`` names for it (``messages`` for a Claude alias on ``/v1/messages``,
+2026-10-31).
 
 Steps are small and composable, since a real model's turns are not scripted:
 
@@ -126,7 +129,7 @@ PROMPTS: dict[str, str] = {
 }
 
 
-def prepare(static: Path, personal: Path) -> Path:
+def prepare(static: Path, personal: Path, model: str = MODEL, api: str = "responses") -> Path:
     if not (static / "index.html").is_file():
         raise ValueError("build web/workspace first (npm run build), or pass --static")
     direct = _module("direct_mcp", "direct_mcp.py")
@@ -140,7 +143,7 @@ def prepare(static: Path, personal: Path) -> Path:
         "ss-modellab-",
         PURPOSE,
         ("gateway", "middleware", "cache", "unused", "worker", "workspace", "preview", "control"),
-        {"images": images, "static": str(static.resolve()), "model": MODEL},
+        {"images": images, "static": str(static.resolve()), "model": model, "api": api},
     )
     recovery.private(
         lab / "private.json", json.dumps({"gateway": gateway_url, "portal": portal}) + "\n"
@@ -165,11 +168,11 @@ def prepare(static: Path, personal: Path) -> Path:
         "projects": [{"id": PROJECT, "profile": "minimal", "sessions": list(SESSIONS)}],
         "model": {
             "url": gateway_url,
-            "name": MODEL,
-            "reviewer": MODEL,
-            "watcher": MODEL,
-            "delegated": MODEL,
-            "api": {MODEL: "responses"},
+            "name": model,
+            "reviewer": model,
+            "watcher": model,
+            "delegated": model,
+            "api": {model: api},
             "api_key_file": str(key_file),
         },
         "orchestrator": {
@@ -523,9 +526,11 @@ def main():
     parser.add_argument("--static", type=Path, default=REPO / "web/workspace/dist")
     parser.add_argument("--personal", type=Path, default=PERSONAL)
     parser.add_argument("--seconds", type=float, default=1800)
+    parser.add_argument("--model", default=MODEL, help="the gateway alias for every role")
+    parser.add_argument("--api", default="responses", choices=("chat", "responses", "messages"))
     args = parser.parse_args()
     if args.action == "prepare":
-        print(prepare(args.static, args.personal))
+        print(prepare(args.static, args.personal, args.model, args.api))
         return
     if args.lab is None:
         parser.error("lab is required")
