@@ -210,7 +210,13 @@ async def test_a_reopened_task_keeps_its_environment_and_is_released_on_acceptan
             FIRST: [
                 Reply(calls=[call("write_file", path=f"{AREA}/basis.txt", content="3 1\n1 2\n")]),
                 Reply(json.dumps({**PARTIAL, "result_files": [f"{AREA}/basis.txt"]})),
-                Reply(calls=[call("read_file", path=f"{AREA}/basis.txt")], before=look),
+                Reply(
+                    calls=[
+                        call("read_file", path=f"{AREA}/basis.txt"),
+                        call("edit_file", path=f"{AREA}/basis.txt", old_string="3", new_string="4"),
+                    ],
+                    before=look,
+                ),
                 Reply(json.dumps({**COMPLETE, "result_files": [f"{AREA}/basis.txt"]})),
             ],
             SECOND: [Reply(json.dumps(DONE))],
@@ -234,9 +240,13 @@ async def test_a_reopened_task_keeps_its_environment_and_is_released_on_acceptan
     assert other.environment is not None
     assert other.environment["end"] == "released"
     assert (found.review, other.review_reason) == ("accepted", "parent_ended")
-    # The reopened run worked in the same environment.
+    # The reopened run worked in the same environment, and edited the file it wrote
+    # before in its write area, which is the same delegation's (PD-46, DA-19).
     runs = [r for r in children(owning, root) if r.delegation == first]
     assert {r.context.environment_id for r in runs} == {found.environment_id}
+    edited = json.loads(results(runs[-1])[-1])
+    assert "error" not in edited, edited
+    assert edited["edited"] == f"work/{first}/basis.txt"
 
 
 async def test_a_check_returning_still_ends(delegating: Harness) -> None:

@@ -170,7 +170,7 @@ class ChildService:
         found = self.made[environment_id]
         assert self.manager is not None
         child = request.context.model_copy(update={"environment_id": environment_id})
-        target = hand_back_target(request.delegation_id)
+        target = request.target
         collected: list[ManifestFile] = []
         left: list[UncollectedFile] = []
         for path in request.files:
@@ -179,7 +179,7 @@ class ChildService:
             except Exception as error:
                 left.append(UncollectedFile(path=path, reason=str(error)[:300]))
                 continue
-            destination = hand_back_path(request.delegation_id, path)
+            destination = hand_back_path(target, path)
             await self.manager.write_file(
                 WriteFileRequest(
                     context=request.context, path=destination, content_b64=read.content_b64
@@ -694,6 +694,49 @@ async def test_a_resume_continues_in_a_ready_environment(service: ChildService) 
         None,
     )
     assert len(service.made) == 1
+
+
+@dataclass
+class _Areas:
+    """The write area of every delegation's work: the first delegation's (DA-19)."""
+
+    first: str
+
+    def write_area(self, project: str, session: str, delegation_id: str) -> str:
+        return f"work/{self.first}"
+
+
+async def test_a_continuations_hand_back_goes_to_its_works_write_area(
+    worker: Worker, service: ChildService
+) -> None:
+    """A Resume's continuation hands back into its research work's write area, where
+    it wrote, not one of its own (DA-19, CE-12)."""
+    continuation = "dlg-" + "d" * 24
+    place = ChildPlacement(
+        service, SESSION_CONTEXT, areas=cast(DelegationRecords, _Areas(DELEGATION))
+    )
+    made = await place.admit(continuation, [])
+    assert service.manager is not None
+    child = SESSION_CONTEXT.model_copy(update={"environment_id": made.environment_id})
+    path = f"work/{DELEGATION}/notes.md"
+    await service.manager.write_file(
+        WriteFileRequest(context=child, path=path, content_b64=base64.b64encode(b"n\n").decode())
+    )
+    account = await place.close(made.environment_id, continuation, ((path,), ()))
+    (back,) = service.hand_backs
+    assert (back.delegation_id, back.write_area, back.target) == (
+        continuation,
+        f"work/{DELEGATION}",
+        f"work/{DELEGATION}",
+    )
+    hand_back = account["hand_back"]
+    assert isinstance(hand_back, dict)
+    assert hand_back["copied"] == [path]
+    # A delegation that is its work's first sends no area: its own is the default.
+    plain = ChildPlacement(service, SESSION_CONTEXT, areas=cast(DelegationRecords, _Areas("x")))
+    other = await plain.admit(DELEGATION, [])
+    await plain.close(other.environment_id, "x", ((), ()))
+    assert service.hand_backs[-1].write_area is None
 
 
 async def test_a_resume_restarts_in_a_new_one_with_its_inputs(service: ChildService) -> None:

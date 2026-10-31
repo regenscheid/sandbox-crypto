@@ -283,9 +283,10 @@ async def _session_action(args: argparse.Namespace, store: ProjectStore) -> int:
         from .delegation.records import DelegationRecords
         from .delegation.review import Closer
 
-        accepted = await Closer(
-            DelegationRecords(store.control), ChildPlacement(client, context)
-        ).close_all(args.project, args.session, reason="session_closed")
+        records = DelegationRecords(store.control)
+        accepted = await Closer(records, ChildPlacement(client, context, areas=records)).close_all(
+            args.project, args.session, reason="session_closed"
+        )
         closed = await client.close_session(context)
     store.close_session(args.project, args.session)
     if accepted:

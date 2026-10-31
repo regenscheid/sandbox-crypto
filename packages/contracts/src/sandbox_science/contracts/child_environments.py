@@ -20,7 +20,7 @@ from typing import Annotated, Final, Literal
 
 from pydantic import Field, StringConstraints
 
-from .context import WRITE_AREA_DIRECTORY, ExecutionContext, in_write_area
+from .context import WRITE_AREA_DIRECTORY, ExecutionContext, WriteArea, in_write_area
 from .model import Contract, Identifier, Sha256
 from .worker import (
     MAX_MANIFEST_FILES,
@@ -84,19 +84,18 @@ def hand_back_target(delegation_id: str) -> str:
     return f"{HAND_BACK_DIRECTORY}/{delegation_id}"
 
 
-def hand_back_path(delegation_id: str, path: str) -> str:
-    """Where a hand-back writes a child environment's ``path`` in the session workspace
-    (CE-6, DA-19): a file in the delegation's write area keeps its path, so the path the
-    child wrote and named is the one its parent reads; any other file goes below the
-    write area, ``x/y`` to ``work/<delegation_id>/x/y``."""
-    target = hand_back_target(delegation_id)
+def hand_back_path(target: str, path: str) -> str:
+    """Where a hand-back into ``target`` (a write area, ``work/<delegation_id>``) writes a
+    child environment's ``path`` in the session workspace (CE-6, DA-19): a file in the
+    write area keeps its path, so the path the child wrote and named is the one its
+    parent reads; any other file goes below it, ``x/y`` to ``work/<delegation_id>/x/y``."""
     return path if in_write_area(target, path) else f"{target}/{path}"
 
 
-def hand_back_reserved(delegation_id: str, path: str) -> bool:
-    """Whether a hand-back would write ``path`` of the child environment into its own
-    ``.handback/`` (CE-6), which no handed-back file takes."""
-    inside = hand_back_path(delegation_id, path)[len(hand_back_target(delegation_id)) + 1 :]
+def hand_back_reserved(target: str, path: str) -> bool:
+    """Whether a hand-back into ``target`` would write ``path`` of the child environment
+    into its own ``.handback/`` (CE-6), which no handed-back file takes."""
+    inside = hand_back_path(target, path)[len(target) + 1 :]
     return inside == HAND_BACK_RESERVED or inside.startswith(f"{HAND_BACK_RESERVED}/")
 
 
@@ -143,11 +142,19 @@ class HandBackRequest(Contract):
     context: ExecutionContext
     """The session's: the hand-back writes into its environment."""
     delegation_id: Identifier
-    """The delegation whose ``work/<delegation_id>/`` the files go to; a continuation's
-    own after a Resume (CE-12)."""
+    """The delegation handed back: a continuation's own after a Resume (CE-12). Its
+    files go to its research work's write area (``write_area``), by default its own."""
     files: tuple[RelativePath, ...] = Field(default=(), max_length=2 * MAX_MANIFEST_FILES)
     """Child environment paths to copy, in order: past 1,000 they are left out."""
     retained: tuple[RetainedFile, ...] = Field(default=(), max_length=MAX_MANIFEST_FILES)
+    write_area: WriteArea | None = Field(default=None, exclude_if=lambda v: v is None)
+    """Where the files go when it is not ``work/<delegation_id>/``: the write area of the
+    delegation's research work, a continuation's after a Resume (DA-19, CE-12)."""
+
+    @property
+    def target(self) -> str:
+        """The session directory the files go to (CE-6, DA-19)."""
+        return self.write_area or hand_back_target(self.delegation_id)
 
 
 class ChildHandBack(Contract):

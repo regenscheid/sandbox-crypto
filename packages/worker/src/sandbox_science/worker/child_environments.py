@@ -79,7 +79,6 @@ from sandbox_science.contracts.child_environments import (
     child_environment_id,
     hand_back_path,
     hand_back_reserved,
-    hand_back_target,
 )
 from sandbox_science.contracts.worker import (
     DEFAULT_COLLECT_MAX_BYTES,
@@ -631,7 +630,7 @@ class ChildEnvironments:
         self._update(environment_id, phase="collecting")
         session = request.context
         child = session.model_copy(update={"environment_id": environment_id})
-        target = hand_back_target(request.delegation_id)
+        target = request.target
         paths = list(dict.fromkeys(request.files))
         collected: list[ManifestFile] = []
         left: list[UncollectedFile] = []
@@ -678,11 +677,11 @@ class ChildEnvironments:
         # listed is copied.
         first: dict[str, str] = {}
         for path in paths:
-            first.setdefault(hand_back_path(request.delegation_id, path), path)
+            first.setdefault(hand_back_path(target, path), path)
         try:
             async with asyncio.timeout(remaining):
                 for index, path in pending:
-                    destination = hand_back_path(request.delegation_id, path)
+                    destination = hand_back_path(target, path)
                     if first[destination] != path:
                         copied = _Copied(
                             left=UncollectedFile(
@@ -691,7 +690,7 @@ class ChildEnvironments:
                                 f"path, {destination!r}"[:300],
                             )
                         )
-                    elif hand_back_reserved(request.delegation_id, path):
+                    elif hand_back_reserved(target, path):
                         copied = _Copied(
                             left=UncollectedFile(
                                 path=path[:4096],

@@ -203,6 +203,10 @@ class ChildPlacement:
     min_isolation_tier: int | None = None
     clock: Clock = SYSTEM_CLOCK
     poll_seconds: float = 5.0
+    areas: DelegationRecords | None = None
+    """Where a delegation's files go back to: its research work's write area (DA-19),
+    which a Resume's continuation shares with the delegation it continues. Without it,
+    each delegation's own."""
 
     async def offered(self) -> bool:
         """Whether the worker offers this project child environments at all: a pool with
@@ -275,8 +279,22 @@ class ChildPlacement:
         errors: list[str] = []
         if plan is not None:
             files, retained = plan
+            area = (
+                await threaded(
+                    self.areas.write_area,
+                    self.context.project_id,
+                    self.context.session_id,
+                    delegation_id,
+                )
+                if self.areas is not None
+                else hand_back_target(delegation_id)
+            )
             request = HandBackRequest(
-                context=self.context, delegation_id=delegation_id, files=files, retained=retained
+                context=self.context,
+                delegation_id=delegation_id,
+                files=files,
+                retained=retained,
+                write_area=None if area == hand_back_target(delegation_id) else area,
             )
             try:
                 back = await self._retried(lambda: self.client.hand_back(environment_id, request))
