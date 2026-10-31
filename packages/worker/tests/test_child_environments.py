@@ -11,6 +11,7 @@ listings carry file sizes. The orchestrator's side is in the orchestrator's test
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -31,12 +32,10 @@ from sandbox_science.contracts import (
     EnvironmentState,
     ErrorKind,
     ExecutionContext,
-    FileContent,
     FileListing,
     IsolationEvidence,
     ListFilesRequest,
     Location,
-    ReadFileRequest,
     SessionCloseRequest,
 )
 from sandbox_science.contracts.child_environments import (
@@ -531,38 +530,106 @@ async def test_an_incomplete_hand_back_retains_two_a_project(tmp_path: Path) -> 
         await pool.close()
 
 
-async def test_a_file_over_100_mib_is_refused_by_its_size_and_the_limit(pool: Pool) -> None:
-    """CE-F1's 1.5 GiB file: a write into a sandbox takes 100 MiB at most, so the
-    hand-back leaves it in the child environment, which is retained; the reason names its
-    size and the limit, and the environment's message the largest files left out."""
+LARGE = 100 * 1024**2 + 5
+"""Just over one 100 MiB write: copied in 13 parts of 8 MiB."""
+
+
+async def test_a_file_over_100_mib_is_handed_back_in_parts(pool: Pool) -> None:
+    """CE-F1's large file: over 100 MiB, it goes in parts of 8 MiB, and takes its name in
+    the session only once its whole SHA-256 and size are checked; the manifest names it."""
     made = await pool.ready()
     child = made.environment_id
-    for name in ("small.txt", "huge.bin", "big.bin"):
-        pool.port.files[child, name] = b"x"
-    sizes = {"huge.bin": 1536 * 1024**2, "big.bin": 200 * 1024**2}
-    read = pool.port.read_file
-
-    async def sized(request: ReadFileRequest) -> FileContent:
-        found = await read(request)
-        size = sizes.get(request.path) if request.context.environment_id == child else None
-        return found if size is None else found.model_copy(update={"size": size})
-
-    pool.port.read_file = sized
-    back = await pool.children.hand_back(child, pool.back(("small.txt", "huge.bin", "big.bin")))
-    assert not back.complete
-    assert [f.path for f in back.collected] == [f"work/{DELEGATION}/small.txt"]
-    reasons = {f.path: f.reason for f in back.not_collected}
-    assert reasons["huge.bin"] == (
-        "1.5 GiB (1610612736 bytes) is over the 100 MiB (104857600 bytes) a hand-back "
-        "copies per file; it stays in the child environment while that is retained"
-    )
-    assert reasons["big.bin"].startswith("200 MiB (209715200 bytes) is over the 100 MiB")
+    data = bytes(range(256)) * (LARGE // 256) + b"tail!"
+    assert len(data) == LARGE
+    pool.port.files[child, "huge.bin"] = data
+    pool.port.files[child, "small.txt"] = b"small\n"
+    back = await pool.children.hand_back(child, pool.back(("small.txt", "huge.bin")))
+    assert back.complete
+    target = f"work/{DELEGATION}/huge.bin"
+    found = {f.path: f for f in back.collected}
+    assert found[target].size == LARGE
+    assert found[target].sha256 == hashlib.sha256(data).hexdigest()
+    assert pool.port.files[SESSION, target] == data
+    assert pool.port.range_writes == 13
+    assert not pool.port.parts  # nothing is left of the parts
     ended = await pool.children.end(child, pool.end())
-    assert ended.phase == "retained"
-    assert ended.message == (
-        "its hand-back left 2 files behind; 2 too large to copy (over 100 MiB a file, or "
-        "past the hand-back's bytes), the largest huge.bin (1.5 GiB), big.bin (200 MiB)"
-    )
+    assert ended.phase == "released"
+
+
+async def test_a_file_past_the_hand_backs_bytes_is_left_by_its_size(tmp_path: Path) -> None:
+    """Past the bytes left of the profile's collect_max_bytes, a file stays in the child
+    environment, which is retained; the reason names its size and the limit, and the
+    environment's message the largest files left out."""
+    pool = Pool(tmp_path, child_profiles={"standard": child_profile(collect_max_bytes=1000)})
+    try:
+        await pool.session()
+        made = await pool.ready()
+        child = made.environment_id
+        pool.port.files[child, "small.txt"] = b"x" * 100
+        pool.port.files[child, "huge.bin"] = b"y" * 2048
+        pool.port.files[child, "big.bin"] = b"z" * 950
+        back = await pool.children.hand_back(child, pool.back(("small.txt", "huge.bin", "big.bin")))
+        assert not back.complete
+        assert [f.path for f in back.collected] == [f"work/{DELEGATION}/small.txt"]
+        reasons = {f.path: f.reason for f in back.not_collected}
+        assert reasons["huge.bin"] == (
+            "2 KiB (2048 bytes) is over the 900 bytes (900 bytes) left of the child "
+            "profile's hand-back bytes (collect_max_bytes); it stays in the child "
+            "environment while that is retained"
+        )
+        assert reasons["big.bin"].startswith("950 bytes (950 bytes) is over the 900 bytes")
+        ended = await pool.children.end(child, pool.end())
+        assert ended.phase == "retained"
+        assert ended.message == (
+            "its hand-back left 2 files behind; 2 too large to copy (past the hand-back's "
+            "bytes), the largest huge.bin (2 KiB), big.bin (950 bytes)"
+        )
+    finally:
+        await pool.close()
+
+
+async def test_a_large_copy_cut_short_resumes_where_its_part_ends(pool: Pool) -> None:
+    """A worker stopped during a ranged copy: the next hand-back goes on from the bytes
+    the session's part holds, sending none of them again."""
+    made = await pool.ready()
+    child = made.environment_id
+    data = b"\x07" * LARGE
+    pool.port.files[child, "huge.bin"] = data
+    pool.port.range_gates["huge.bin"] = asyncio.Event()  # never set: the worker stops
+    cut = asyncio.ensure_future(pool.children.hand_back(child, pool.back(("huge.bin",))))
+    await eventually(lambda: bool(pool.port.gated), timeout=10)
+    cut.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await cut
+    assert [len(part) for part in pool.port.parts.values()] == [8 * 1024**2]
+    del pool.port.range_gates["huge.bin"]
+    await pool.restart()
+    ended = await pool.children.end(child, pool.end())  # finishes the recorded hand-back
+    assert ended.hand_back is not None
+    assert ended.hand_back.complete
+    assert pool.port.files[SESSION, f"work/{DELEGATION}/huge.bin"] == data
+    # The first part was sent once: 13 parts in all.
+    assert pool.port.range_writes == 13
+    assert ended.phase == "released"
+
+
+async def test_a_file_changed_while_copied_is_left_out(pool: Pool) -> None:
+    """The whole file's digest is checked at its end: a file that changed while its parts
+    were copied takes no name in the session, and its parts are discarded."""
+    made = await pool.ready()
+    child = made.environment_id
+    pool.port.files[child, "huge.bin"] = b"a" * LARGE
+    pool.port.range_gates["huge.bin"] = gate = asyncio.Event()
+    copying = asyncio.ensure_future(pool.children.hand_back(child, pool.back(("huge.bin",))))
+    await eventually(lambda: bool(pool.port.gated), timeout=10)
+    pool.port.files[child, "huge.bin"] = b"b" * LARGE  # same size, other content
+    gate.set()
+    back = await copying
+    assert not back.complete
+    assert back.not_collected[0].path == "huge.bin"
+    assert back.not_collected[0].reason.startswith("it was not copied: ")
+    assert (SESSION, f"work/{DELEGATION}/huge.bin") not in pool.port.files
+    assert not pool.port.parts
 
 
 async def test_a_hand_back_must_stay_the_same(pool: Pool) -> None:

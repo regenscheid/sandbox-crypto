@@ -39,6 +39,12 @@ SHARED = "shared"
 DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
 """A file opened to read: through no symlink, and without waiting on a FIFO."""
+PARTS = ".parts"
+"""Where ranged writes keep their parts: below the root, beside ``sessions`` and outside
+every workspace, so no listing, search or scan of written files sees one."""
+_UPLOAD_RE = re.compile(r"[0-9a-f]{16,64}")
+STALE_PART_SECONDS = 24 * 3600.0
+"""A part nothing has written for this long is removed when another ranged write starts."""
 
 
 class ToolError(Exception):
@@ -673,6 +679,82 @@ def move_file(source: int, name: str, destination: int, target: str, path: str) 
     return [moved.st_mtime_ns, moved.st_size, moved.st_ino]
 
 
+def write_part(parts: int, upload: str, offset: int, content: bytes) -> tuple[int | None, bool]:
+    """Write ``content`` at ``offset`` of the part ``upload`` in the directory ``parts``,
+    where the part must end; offset 0 starts a part. Returns the part's size (``None``
+    when there is none) and whether ``content`` was written."""
+    flags = os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC | (os.O_CREAT if offset == 0 else 0)
+    try:
+        descriptor = os.open(upload, flags, 0o600, dir_fd=parts)
+    except FileNotFoundError:
+        return None, False
+    with os.fdopen(descriptor, "r+b") as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode):
+            raise ToolError("invalid_request", "the ranged write's part is not a regular file")
+        if info.st_size != offset:
+            return info.st_size, False  # the writer resumes from where the part ends
+        handle.seek(offset)
+        handle.write(content)
+        handle.flush()
+    return offset + len(content), True
+
+
+def commit_part(
+    parts: int, upload: str, parent: int, name: str, sha256: str, size: int, path: str
+) -> Message:
+    """Give the whole part ``upload`` the name ``name`` in ``parent`` (consumed), once its
+    SHA-256 and size are the ones expected; a part that differs is removed. A commit
+    whose reply was lost finds the file named already, with that content."""
+    try:
+        try:
+            descriptor = os.open(upload, FILE_FLAGS, dir_fd=parts)
+        except FileNotFoundError:
+            try:
+                current, info = _hashed(parent, name, path)
+            except FileNotFoundError:
+                raise ToolError("not_found", f"no part of {path!r} to commit") from None
+            if (current, info.st_size) != (sha256, size):
+                raise ToolError("not_found", f"no part of {path!r} to commit") from None
+            return {"size": size, "accepted": True, "committed": True, "sha256": current}
+        digest = hashlib.sha256()
+        length = 0
+        with os.fdopen(descriptor, "rb") as handle:
+            while block := handle.read(1024 * 1024):
+                digest.update(block)
+                length += len(block)
+        if (digest.hexdigest(), length) != (sha256, size):
+            os.unlink(upload, dir_fd=parts)
+            raise ToolError(
+                "conflict",
+                f"{path!r} was not written: its parts hold {length} bytes with SHA-256"
+                f" {digest.hexdigest()}, not the {size} bytes with {sha256} expected; they"
+                " are discarded",
+            )
+        try:
+            info = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        except FileNotFoundError:
+            info = None
+        if info is not None and stat.S_ISLNK(info.st_mode):
+            raise ToolError("invalid_request", f"path {path!r} goes through a symlink")
+        if info is not None and stat.S_ISDIR(info.st_mode):
+            raise ToolError("invalid_request", f"{path!r} is a directory")
+        os.replace(upload, name, src_dir_fd=parts, dst_dir_fd=parent)
+    finally:
+        os.close(parent)
+    return {"size": size, "accepted": True, "committed": True, "sha256": sha256}
+
+
+def sweep_parts(parts: int, now: float) -> None:
+    """Remove the parts nothing has written for ``STALE_PART_SECONDS``: transfers that
+    were never resumed."""
+    for name in os.listdir(parts):
+        with contextlib.suppress(OSError):
+            info = os.stat(name, dir_fd=parts, follow_symlinks=False)
+            if stat.S_ISREG(info.st_mode) and now - info.st_mtime > STALE_PART_SECONDS:
+                os.unlink(name, dir_fd=parts)
+
+
 _WHOLE_EXECUTOR: Final = frozenset(
     {errno.ENOSPC, errno.EDQUOT, errno.EIO, errno.EROFS, errno.EMFILE, errno.ENFILE, errno.ENOMEM}
 )
@@ -1223,6 +1305,58 @@ class Requests:
         except OSError as exc:
             raise file_error(exc, str(path)) from exc
         return reply
+
+    async def write_range(self, request: Message) -> Message:
+        """Write a file of the session workspace in parts, kept under ``.parts`` until the
+        last one's commit checks the whole file's SHA-256 and size and gives it its name
+        (child environments' hand-back and inputs). A part that does not start where the
+        part ends is not written, and the reply says where it ends, so a writer resumes
+        there; ``discard`` removes the part."""
+        path = request.get("path")
+        base, rest = self.split(request.get("session"), path)
+        if base == [SHARED] or not rest:
+            raise ToolError("invalid_request", "a ranged write goes to a file of the session")
+        upload, offset = request.get("upload"), request.get("offset", 0)
+        if not (isinstance(upload, str) and _UPLOAD_RE.fullmatch(upload)):
+            raise ToolError("invalid_request", f"invalid upload {upload!r}")
+        if type(offset) is not int or offset < 0:
+            raise ToolError("invalid_request", "offset must be a non-negative integer")
+        try:
+            content = base64.b64decode(str(request.get("content_b64", "")), validate=True)
+        except ValueError as exc:
+            raise ToolError("invalid_request", "content_b64 is not base64") from exc
+        sha256, size = request.get("sha256"), request.get("size")
+        if sha256 is not None and not (
+            isinstance(sha256, str)
+            and _SHA256_RE.fullmatch(sha256)
+            and type(size) is int
+            and size >= 0
+        ):
+            raise ToolError("invalid_request", "a commit names the file's SHA-256 and size")
+        try:
+            root = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+            parts = walk(root, [PARTS], PARTS, create=True)
+        except OSError as exc:
+            raise file_error(exc, str(path)) from exc
+        try:
+            if request.get("discard") is True:
+                with contextlib.suppress(FileNotFoundError):
+                    os.unlink(upload, dir_fd=parts)
+                return {"size": 0, "accepted": True}
+            if offset == 0:
+                await asyncio.to_thread(sweep_parts, parts, time.time())
+            held, accepted = await asyncio.to_thread(write_part, parts, upload, offset, content)
+            reply: Message = {"size": held or 0, "accepted": accepted}
+            if sha256 is not None and (accepted or (held is None and not content)):
+                parent = walk(self.open_base(base), rest[:-1], str(path), create=True)
+                reply = await asyncio.to_thread(
+                    commit_part, parts, upload, parent, rest[-1], sha256, cast(int, size), str(path)
+                )
+            return reply
+        except OSError as exc:
+            raise file_error(exc, str(path)) from exc
+        finally:
+            os.close(parts)
 
     async def edit(self, request: Message) -> Message:
         """Replace a string in a text file, under ``write``'s rules (``edit_file``)."""

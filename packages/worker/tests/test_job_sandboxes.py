@@ -66,6 +66,7 @@ from sandbox_science.worker.artifacts import Blobs
 from sandbox_science.worker.backends import LocalBackend
 from sandbox_science.worker.environments import JOB_ENVIRONMENT, Environments
 from sandbox_science.worker.errors import PrefixRecoveryError, WorkerError
+from sandbox_science.worker.files import RangeWritten
 from sandbox_science.worker.identity import execution_digest, same_execution
 from sandbox_science.worker.job_sandboxes import (
     JobFailureError,
@@ -163,6 +164,12 @@ class FakePort:
         """Writes to the session of a path ending so wait for the event."""
         self.gated: list[str] = []
         self.write_counts: Counter[tuple[str, str]] = Counter()
+        self.parts: dict[tuple[str, str], bytearray] = {}
+        """Ranged writes' parts, by environment and upload."""
+        self.range_gates: dict[str, asyncio.Event] = {}
+        """Ranged writes past the first part of a path ending so wait for the event."""
+        self.part_reads = 0
+        self.range_writes = 0
         self._jobs: dict[str, Execution] = {}
 
     def lose_all(self) -> None:
@@ -269,6 +276,62 @@ class FakePort:
         self.write_counts[environment, request.path] += 1
         self.files[request.context.environment_id, request.path] = data
         return WriteFileResult(sha256=hashlib.sha256(data).hexdigest(), size=len(data))
+
+    async def read_part(
+        self, context: ExecutionContext, path: str, offset: int, length: int
+    ) -> tuple[bytes, int]:
+        key = (context.environment_id, path)
+        if key in self.links or key not in self.files:
+            raise WorkerError(ErrorKind.NOT_FOUND, f"no file {path}")
+        data = self.files[key]
+        self.part_reads += 1
+        return data[offset : offset + length], len(data)
+
+    async def write_range(
+        self,
+        context: ExecutionContext,
+        path: str,
+        upload: str,
+        offset: int,
+        content: bytes,
+        *,
+        sha256: str | None = None,
+        size: int | None = None,
+        discard: bool = False,
+    ) -> RangeWritten:
+        """The executor's ``write_range``: a part per upload, named once whole and checked."""
+        environment = context.environment_id
+        key = (environment, upload)
+        if discard:
+            self.parts.pop(key, None)
+            return RangeWritten(size=0, accepted=True)
+        for suffix, gate in self.range_gates.items():
+            if path.endswith(suffix) and offset > 0:
+                self.gated.append(path)
+                await gate.wait()
+        part = self.parts.get(key)
+        if part is None and offset == 0:
+            part = self.parts[key] = bytearray()
+        if part is None:
+            if sha256 is not None and not content:
+                found = self.files.get((environment, path))
+                if found is not None and hashlib.sha256(found).hexdigest() == sha256:
+                    return RangeWritten(
+                        size=len(found), accepted=True, committed=True, sha256=sha256
+                    )
+            return RangeWritten(size=0, accepted=False)
+        if len(part) != offset:
+            return RangeWritten(size=len(part), accepted=False)
+        part += content
+        self.range_writes += 1 if content else 0
+        if sha256 is None:
+            return RangeWritten(size=len(part), accepted=True)
+        del self.parts[key]
+        if hashlib.sha256(part).hexdigest() != sha256 or len(part) != size:
+            raise WorkerError(ErrorKind.CONFLICT, f"{path!r} was not written: its parts differ")
+        self.write_counts[environment, path] += 1
+        self.files[environment, path] = bytes(part)
+        return RangeWritten(size=len(part), accepted=True, committed=True, sha256=sha256)
 
     async def list_files(self, request: ListFilesRequest) -> FileListing:
         environment, base = request.context.environment_id, request.path

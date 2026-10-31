@@ -70,7 +70,7 @@ from .channel import ExecutorChannel
 from .connections import Activity, Connection, ConnectionHooks, EnvironmentConnections
 from .dispatcher import Dispatcher
 from .errors import WorkerError
-from .files import Files
+from .files import Files, RangeWritten
 from .journal import ExecutionJournal
 from .kernels import KernelRegistry
 from .lifecycle import (
@@ -666,6 +666,31 @@ class ExecutionManager:
     async def list_files(self, request: ListFilesRequest) -> FileListing:
         with self.store.recovery_fences.bind(request.context):
             return await self._files.listing(request)
+
+    async def read_part(
+        self, context: ExecutionContext, path: str, offset: int, length: int
+    ) -> tuple[bytes, int]:
+        """A range of a file, unhashed, and the file's size (``Files.read_part``)."""
+        with self.store.recovery_fences.bind(context):
+            return await self._files.read_part(context, path, offset, length)
+
+    async def write_range(
+        self,
+        context: ExecutionContext,
+        path: str,
+        upload: str,
+        offset: int,
+        content: bytes,
+        *,
+        sha256: str | None = None,
+        size: int | None = None,
+        discard: bool = False,
+    ) -> RangeWritten:
+        """Write part of a file of the session, committed whole (``Files.write_range``)."""
+        with self.store.recovery_fences.bind(context):
+            return await self._files.write_range(
+                context, path, upload, offset, content, sha256=sha256, size=size, discard=discard
+            )
 
     async def edit_file(self, request: EditFileRequest) -> EditFileResult:
         with self.store.recovery_fences.bind(request.context):

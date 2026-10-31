@@ -21,8 +21,10 @@ as in a session environment: the executor, kernels, file tools and recorder are 
 worker's ordinary ones. At the delegation's end the orchestrator asks for the hand-back
 (CE-6): the worker copies the files it names into the session environment, under
 ``work/<delegation_id>/``, the delegation's write area (DA-19), where a file the child
-wrote in its write area keeps its path, within the job collection's bounds (1,000 files, 100 MiB a
-write, a 30-minute deadline, the profile's byte cap), and stores a manifest once. Then
+wrote in its write area keeps its path, within the job collection's bounds (1,000
+files, a 30-minute deadline, the profile's byte cap; a file over 100 MiB goes in parts,
+its whole digest checked before it takes its name, ``ranged_copy``), and stores a
+manifest once. Then
 the orchestrator ends it: released after a complete hand-back or a session close, kept
 stopped for ``child_retention`` otherwise (CE-4, JS-25's rule).
 
@@ -82,7 +84,6 @@ from sandbox_science.contracts.child_environments import (
 )
 from sandbox_science.contracts.worker import (
     DEFAULT_COLLECT_MAX_BYTES,
-    MAX_FILE_WRITE_BYTES,
     MAX_MANIFEST_FILES,
     ManifestFile,
     ReplayedPackages,
@@ -95,7 +96,8 @@ from sandbox_science.policy.model import Resources
 from .child_records import ACTIVE, ChildRecord
 from .environments import Environments, ScheduleTimeoutError
 from .errors import WorkerError
-from .job_sandboxes import EnvironmentPort, JobFailureError, TooLargeError, read_whole, replay
+from .job_sandboxes import EnvironmentPort, JobFailureError, TooLargeError, replay
+from .ranged_copy import copy_file, upload_id
 from .settings import ChildProfile, EnvironmentSettings
 
 if TYPE_CHECKING:
@@ -162,17 +164,13 @@ def size_text(size: int) -> str:
 
 
 def too_large(error: TooLargeError) -> str:
-    """Why a hand-back left a file out for its size: its size and the limit it passed."""
+    """Why a hand-back left a file out for its size: its size and the limit it passed,
+    the bytes left of the child profile's ``collect_max_bytes``."""
     size = f"{size_text(error.size)} ({error.size} bytes)"
-    if error.per_file:
-        return (
-            f"{size} is over the {size_text(MAX_FILE_WRITE_BYTES)} ({MAX_FILE_WRITE_BYTES}"
-            " bytes) a hand-back copies per file; it stays in the child environment while"
-            " that is retained"
-        )
     return (
-        f"{size} is over the {error.limit} bytes left of the child profile's hand-back"
-        " bytes; it stays in the child environment while that is retained"
+        f"{size} is over the {size_text(error.limit)} ({error.limit} bytes) left of the"
+        " child profile's hand-back bytes (collect_max_bytes); it stays in the child"
+        " environment while that is retained"
     )
 
 
@@ -192,8 +190,7 @@ def largest_left(steps: dict[str, str]) -> str:
     shown = ", ".join(f"{path} ({size_text(size)})" for size, path in found[:LARGEST_SHOWN])
     more = f" and {len(found) - LARGEST_SHOWN} more" if len(found) > LARGEST_SHOWN else ""
     return (
-        f"; {len(found)} too large to copy (over {size_text(MAX_FILE_WRITE_BYTES)} a file,"
-        f" or past the hand-back's bytes), the largest {shown}{more}"
+        f"; {len(found)} too large to copy (past the hand-back's bytes), the largest {shown}{more}"
     )
 
 
@@ -584,19 +581,22 @@ class ChildEnvironments:
             target = f"{INPUTS}/{path}"
             try:
                 validate_relative_path(target)
-                data, digest = await read_whole(port, session, path, budget)
-                await port.write_file(
-                    WriteFileRequest(
-                        context=child, path=target, content_b64=base64.b64encode(data).decode()
-                    )
+                copied = await copy_file(
+                    port,
+                    session,
+                    path,
+                    child,
+                    target,
+                    budget=budget,
+                    upload=upload_id("child-input", child.environment_id, path),
                 )
             except TooLargeError as error:
                 raise _PrepareError("inputs_too_large", f"input {path}: {error}") from error
             except (ValueError, WorkerError) as error:
                 message = error.message if isinstance(error, WorkerError) else str(error)
                 raise _PrepareError("staging_failed", f"input {path}: {message}") from error
-            budget -= len(data)
-            staged.append(ManifestFile(path=target, size=len(data), sha256=digest))
+            budget -= copied.size
+            staged.append(copied)
         return staged
 
     # The hand-back (CE-6).
@@ -699,7 +699,14 @@ class ChildEnvironments:
                             )
                         )
                     else:
-                        copied = await self._copy(path, destination, budget, session, child)
+                        copied = await self._copy(
+                            upload_id("hand-back", environment_id, str(index)),
+                            path,
+                            destination,
+                            budget,
+                            session,
+                            child,
+                        )
                     recorded = self.records.record_step(
                         environment_id, f"copy-{index}", copied.model_dump_json(), self.clock.now()
                     )
@@ -727,13 +734,15 @@ class ChildEnvironments:
 
     async def _copy(
         self,
+        upload: str,
         source: str,
         target: str,
         budget: int,
         session: ExecutionContext,
         child: ExecutionContext,
     ) -> _Copied:
-        """Copy one file into the session, or say why it was left out."""
+        """Copy one file into the session, in parts when it is over 100 MiB, or say why it
+        was left out."""
 
         def leave(reason: str) -> _Copied:
             return _Copied(left=UncollectedFile(path=source[:4096], reason=reason[:300]))
@@ -743,24 +752,18 @@ class ChildEnvironments:
         except ValueError:
             return leave("its path in the session would be too long")
         try:
-            data, digest = await read_whole(self._port(), child, source, budget)
+            copied = await copy_file(
+                self._port(), child, source, session, target, budget=budget, upload=upload
+            )
         except TooLargeError as error:
-            # Writes into a sandbox take 100 MiB at most, and the worker has no ranged
-            # write yet (JS's delivery step 4): the file stays in the child environment,
-            # which is retained, and the reason names its size and the limit.
+            # Past the bytes left of the profile's collect_max_bytes: the file stays in
+            # the child environment, which is retained, and the reason names its size
+            # and the limit.
             left = leave(too_large(error))
             return left.model_copy(update={"size": error.size})
         except WorkerError as error:
-            return leave(error.message)
-        try:
-            await self._port().write_file(
-                WriteFileRequest(
-                    context=session, path=target, content_b64=base64.b64encode(data).decode()
-                )
-            )
-        except WorkerError as error:
-            return leave(f"writing it to the session failed: {error.message}")
-        return _Copied(collected=ManifestFile(path=target, size=len(data), sha256=digest))
+            return leave(f"it was not copied: {error.message}")
+        return _Copied(collected=copied)
 
     async def _write_copy(self, session: ExecutionContext, manifest: ChildHandBack) -> None:
         """``work/<delegation_id>/.handback/manifest.json`` in the session: an untrusted copy,

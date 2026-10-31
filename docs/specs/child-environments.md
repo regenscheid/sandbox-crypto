@@ -9,10 +9,11 @@ parent's review (PD-46, built 2026-10-26): a returned task keeps its environment
 closes. Built 2026-10-27, against the fake CLI: the Compute tab's children's kernels
 (CE-8), the workspace's environment views (CE-11's GUI part), the prompts' guidance
 (CE-13), `child_idle_max` checked during a main run as well as at its start (CE-4), and a
-hand-back's refusal of a file over 100 MiB by its size and the limit (CE-6). Open:
-inputs from control's retained content (CE-7), copying files over 100 MiB in a
-hand-back (as JS's delivery step 4: CE-F1's 1.5 GiB file is left out, named with its
-size, and the environment retained), and read-only `inputs/` and
+hand-back's refusal of a file over 100 MiB by its size and the limit (CE-6). Built
+2026-10-31, against the fake CLI: the worker's ranged write, which copies a hand-back
+file or an input over 100 MiB in parts with the whole file's digest checked at its end
+(CE-6, CE-7). Open:
+inputs from control's retained content (CE-7), and read-only `inputs/` and
 `work/<id>/` for a child's processes: the worker's file calls set no file mode, and a
 sandbox's agent code runs as the user who owns its files and could change one back, so
 it needs per-run mounts (DA-20's open question 1). A child's file tools write only in its
@@ -146,11 +147,15 @@ platform places a child by the project's settings. No change to checks' evidence
   Files already retained in control are not copied twice: the manifest names their
   artifact revisions. A collection past its bounds is incomplete: the delegation's
   outcome lists what was left behind, the environment is retained (CE-4), and the
-  parent's outcome notice says so. *As built 2026-10-27:* a file over 100 MiB (one
-  sandbox write), or past the bytes left of the profile's `collect_max_bytes`, is left
-  out with a reason that gives its size and the limit, and the retained environment's
-  message names the files left out for their size, the five largest first; copying them
-  waits for a ranged write (JS's delivery step 4). *Amended 2026-10-31 with DA-19:* a
+  parent's outcome notice says so. *As built 2026-10-27, amended 2026-10-31:* a file is
+  copied whole up to the bytes left of the profile's `collect_max_bytes` (4 GiB unless
+  set), which is the one cap on a file's size: a file over 100 MiB (one sandbox write)
+  goes by the worker's ranged write, in parts of 8 MiB kept outside the session's
+  workspace until the whole file's SHA-256 and size are checked, then named at once; a
+  copy cut short goes on from what its part holds, and a file that changed while it was
+  copied is left out. A file past the bytes left is left out with a reason that gives its
+  size and the limit, and the retained environment's message names the files left out
+  for their size, the five largest first. *Amended 2026-10-31 with DA-19:* a
   child in its own environment has the same write area there, `work/<delegation_id>/`,
   and its file tools write only in it and in `shared/`; the hand-back copies a file of the
   write area to the same path in the session's environment, and any other below it
