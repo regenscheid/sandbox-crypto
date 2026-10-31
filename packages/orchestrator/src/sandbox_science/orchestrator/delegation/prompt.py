@@ -208,6 +208,29 @@ def write_area_text(area: str) -> str:
     )
 
 
+INPUTS_SHOWN: Final = 40
+"""The copied inputs a brief's line names one by one; it counts the rest."""
+
+
+def inputs_text(copied: Sequence[str]) -> str | None:
+    """The platform's line of a brief, for a child in an environment of its own, that maps
+    each input's session path to its copy under ``inputs/`` (CE-7); ``None`` when none
+    was copied. ``copied`` are the copies' paths, ``inputs/<session path>``."""
+    pairs = [(path.removeprefix("inputs/"), path) for path in copied if path.startswith("inputs/")]
+    if not pairs:
+        return None
+    shown = "; ".join(f"{session} is {copy}" for session, copy in pairs[:INPUTS_SHOWN])
+    more = (
+        f"; and {len(pairs) - INPUTS_SHOWN} more, each under inputs/ at its session path"
+        if len(pairs) > INPUTS_SHOWN
+        else ""
+    )
+    return (
+        "You work in an environment of your own, where the session's files are not: your "
+        f"inputs were copied into it, read them there: {shown}{more}."
+    )
+
+
 def check_task(handle: str, revision: int) -> str:
     """A check's task, as the platform writes it."""
     return (

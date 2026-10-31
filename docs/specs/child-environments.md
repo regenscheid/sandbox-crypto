@@ -189,7 +189,12 @@ platform places a child by the project's settings. No change to checks' evidence
   each becomes `inputs/<path>` with the session's inputs, in the environment's record and
   the delegation's outcome. One that cannot be sent or checked fails the delegation
   (`staging_failed`, naming the input), and its environment is released. A Resume in a
-  new environment sends the same revisions its earlier environment planned. By path,
+  new environment sends the same revisions its earlier environment planned. The child
+  is told where they are by the platform's line that closes its brief, after the write
+  area's (DA-19), added once its environment is ready and its inputs staged: each copied
+  file's session path and its copy (`data/a.csv is inputs/data/a.csv`), the first 40 by
+  name and the rest counted; a child that shares the session's environment gets no such
+  line, and the pinned prompts are unchanged. By path,
   only the session's own files and `shared/` are inputs this way, never another
   session's; an evidence artifact of another session keeps its `sessions/<session>/`
   prefix under `inputs/`.

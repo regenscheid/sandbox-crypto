@@ -23,6 +23,7 @@ from sandbox_science.orchestrator.delegation.child_inputs import (
     send_input,
     session_path,
 )
+from sandbox_science.orchestrator.delegation.prompt import inputs_text
 
 from .test_artifact_review import build, publish
 
@@ -167,3 +168,18 @@ async def test_content_shorter_than_its_size_fails_by_its_path() -> None:
 
     with pytest.raises(StagingError, match="another sender"):
         await send_input(content, 0, content.item("a.bin"), refusing)
+
+
+def test_the_briefs_line_maps_each_input_to_its_copy() -> None:
+    assert inputs_text(()) is None
+    assert inputs_text(("out/x.txt",)) is None  # only copies under inputs/
+    line = inputs_text(("inputs/data/a.csv", "inputs/shared/fig.png"))
+    assert line == (
+        "You work in an environment of your own, where the session's files are not: your "
+        "inputs were copied into it, read them there: data/a.csv is inputs/data/a.csv; "
+        "shared/fig.png is inputs/shared/fig.png."
+    )
+    many = inputs_text(tuple(f"inputs/d/{n:03}.bin" for n in range(45)))
+    assert many is not None
+    assert "d/039.bin is inputs/d/039.bin; and 5 more, each under inputs/" in many
+    assert "d/040.bin" not in many

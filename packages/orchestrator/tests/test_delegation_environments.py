@@ -51,8 +51,8 @@ from sandbox_science.contracts.child_environments import (
     InputPart,
     InputStaged,
     RetainedFile,
-    hand_back_path,
     RetainedInput,
+    hand_back_path,
     hand_back_target,
 )
 from sandbox_science.contracts.worker import (
@@ -912,7 +912,8 @@ async def test_a_task_reads_an_input_control_retains_in_its_own_environment(
     owning: Harness, service: ChildService
 ) -> None:
     """End to end: the parent's recorded file is named at admission and staged at
-    inputs/<path> of the child's environment before the child runs."""
+    inputs/<path> of the child's environment before the child runs, and the platform's
+    line closing the child's brief says where its inputs are."""
     await owning.run(
         "root",
         [
@@ -922,9 +923,9 @@ async def test_a_task_reads_an_input_control_retains_in_its_own_environment(
             Reply("Done."),
         ],
         delegated=[
-            Reply(calls=[call("write_file", path="table.txt", content="1 1 1\n")]),
-            Reply(calls=[call("write_file", path="notes.txt", content="All ones.\n")]),
-            Reply(calls=[call("publish", path="table.txt")]),
+            Reply(calls=[call("write_file", path=f"{AREA}/table.txt", content="1 1 1\n")]),
+            Reply(calls=[call("write_file", path=f"{AREA}/notes.txt", content="All ones.\n")]),
+            Reply(calls=[call("publish", path=f"{AREA}/table.txt")]),
             Reply(json.dumps(RESULT)),
         ],
     )
@@ -937,6 +938,13 @@ async def test_a_task_reads_an_input_control_retains_in_its_own_environment(
         / SESSION / "inputs" / "data" / "primes.txt"
     )  # fmt: skip
     assert copied.read_text() == "2 3 5 7\n"
+    brief = str(owning.gateway.children[0][1]["content"])
+    assert brief.endswith(
+        "You work in an environment of your own, where the session's files are not: your "
+        "inputs were copied into it, read them there: data/primes.txt is "
+        "inputs/data/primes.txt."
+    )
+    assert "Your write area: work/" in brief
 
 
 # The review of 2026-10-26.

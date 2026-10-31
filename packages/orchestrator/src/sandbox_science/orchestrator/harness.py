@@ -1605,12 +1605,20 @@ class Harness:
                     alias=child.alias or self.delegated.alias,
                     environment=account(found, None),
                 )
+            line = delegated_prompt.inputs_text(tuple(f.path for f in found.inputs))
             admitted = dataclasses.replace(
                 admitted,
                 context=admitted.context.model_copy(
                     update={"environment_id": child.environment_id}
                 ),
                 session_environment=admitted.context.environment_id,
+                # The platform's line naming where its inputs were copied closes its brief
+                # (CE-7), as the write area's does (DA-19).
+                request=admitted.request
+                if line is None
+                else dataclasses.replace(
+                    admitted.request, task=f"{admitted.request.task}\n\n{line}"
+                ),
             )
             expires = found.expires_at
         expired = asyncio.Event()
