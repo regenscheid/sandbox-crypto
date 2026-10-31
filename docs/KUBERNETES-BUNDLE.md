@@ -1070,7 +1070,7 @@ the restore created (one created again since, or gone, is left alone, so a stale
 never blocks an ID). Nothing in a restore needs the keeper key, so the operator's machine
 needs no S3 SDK for it; the bundle needs `restore_secret` (`site` writes the key's files from
 the site file's `restore_credentials` and `restore_config`). The operator's rights are those
-of a checkpoint plus creating and deleting Secrets in the sandbox namespace
+of a checkpoint plus reading, creating and deleting Secrets in the sandbox namespace
 ([preparation, step 13](KUBERNETES-PREP.md#13-workspace-checkpoints-and-cleanup-qualification)).
 
 What a restore does not do: it brings back the workspace's files, installed packages and
