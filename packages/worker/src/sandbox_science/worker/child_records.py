@@ -279,6 +279,19 @@ class ChildRecords:
             raise WorkerError(ErrorKind.INTERNAL, f"step {step} of {environment_id} was lost")
         return found
 
+    def created_seconds(self, project_id: str) -> list[tuple[ChildRecord, str | None]]:
+        """The project's newest 1,000 rows, oldest first, each with its ``created`` step
+        (how long its sandbox took to be made, CE-13), in one statement."""
+        rows = self.db.execute(
+            f"SELECT * FROM (SELECT {_COLUMNS},"  # noqa: S608 - fixed columns
+            " (SELECT record FROM child_progress p WHERE p.environment_id=c.environment_id"
+            " AND p.step='created') FROM child_environments c WHERE project_id=?"
+            " ORDER BY created_at DESC, environment_id DESC LIMIT 1000)"
+            " ORDER BY created_at, environment_id",
+            (project_id,),
+        ).fetchall()
+        return [(_record(row[:-1]), None if row[-1] is None else str(row[-1])) for row in rows]
+
     def steps(self, environment_id: str) -> dict[str, str]:
         rows = self.db.execute(
             "SELECT step, record FROM child_progress WHERE environment_id=?", (environment_id,)

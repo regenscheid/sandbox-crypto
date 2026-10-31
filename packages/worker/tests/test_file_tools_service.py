@@ -247,6 +247,11 @@ async def test_a_ranged_write_through_the_worker(worker: Harness) -> None:
     assert (worker.workspace / "big" / "x.bin").read_bytes() == data
     part, size = await worker.manager.read_part(context, "big/x.bin", 10, 5)
     assert (part, size) == (data[10:15], len(data))
+    # A delegated run's context is held to its write area, as its writes are (DA-19).
+    held = context.model_copy(update={"write_area": "work/dlg-" + "a" * 24})
+    with pytest.raises(WorkerError) as outside:
+        await worker.manager.write_range(held, "big/z.bin", upload, 0, b"x")
+    assert outside.value.kind is ErrorKind.POLICY_DENIED
     del worker.view.channel("env1").hello["ranged_write"]
     with pytest.raises(WorkerError) as caught:
         await worker.manager.write_range(context, "big/y.bin", upload, 0, b"x")

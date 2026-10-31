@@ -7,16 +7,29 @@ without hashing the whole file again, and written into a part file the target's
 executor keeps outside the workspace; the last part's write names the whole file's
 SHA-256 and size, which the executor checks before it gives the file its name, so a
 file that changed while it was copied is never written, and its parts are discarded.
-An upload's ID is derived from what is copied, so a copy that a timeout or a worker
-restart cut short goes on from the bytes its part holds; one never resumed is removed
-by the target's executor after a day (child environments' hand-back, CE-6, and inputs,
-CE-7).
+An upload's ID is derived from what is copied, so a copy a worker restart cut short
+goes on from the bytes its part holds. A part's read or write is tried once more after
+a transient failure; a copy that then gives up, or that its caller's deadline ends, has
+its parts discarded by the caller, and a part nothing has written for a day is removed
+by the target's executor (child environments' hand-back, CE-6, and inputs, CE-7).
+
+The digest is checked in sandboxes: the source's executor reports the file's SHA-256 as
+its first read hashes it, and the target's executor hashes the parts against it before
+it names the file. Both run beside the research code of their sandboxes, so the digest
+is the source executor's claim, checked by the target's. The file takes its name by a
+rename in its directory, which the executor opened following no symlink, after checking
+the name holds no directory or symlink: code in the target sandbox could put another
+file at that name between the check and the rename, and may change the file afterwards
+as it may change any file there. A file within 100 MiB is read by the worker, which
+checks its digest itself.
 """
 
 from __future__ import annotations
 
 import base64
 import hashlib
+from collections.abc import Awaitable, Callable
+from functools import partial
 from typing import Final
 
 from sandbox_science.contracts import (
@@ -35,6 +48,17 @@ PART_BYTES: Final = MAX_READ_BYTES
 _REFUSED_PARTS: Final = 3
 """Parts in a row the target may refuse for their offset before the copy gives up: only
 another writer of the same upload makes it refuse one twice."""
+
+
+async def _again[T](call: Callable[[], Awaitable[T]]) -> T:
+    """``call``, tried once more after a transient failure (``unavailable``): a part's read
+    or write is not given up for one dropped request."""
+    try:
+        return await call()
+    except WorkerError as error:
+        if error.kind is not ErrorKind.UNAVAILABLE:
+            raise
+    return await call()
 
 
 def upload_id(*names: str) -> str:
@@ -137,23 +161,34 @@ async def _send(
             offset = (await port.write_range(target, target_path, upload, 0, b"")).size
         data = b""
         if offset < size:
-            data, now = await port.read_part(source, path, offset, min(PART_BYTES, size - offset))
+            length = min(PART_BYTES, size - offset)
+            data, now = await _again(partial(port.read_part, source, path, offset, length))
             if now != size or not data:
                 await port.write_range(target, target_path, upload, 0, b"", discard=True)
                 raise WorkerError(ErrorKind.CONFLICT, f"{path} changed while it was copied")
         last = offset + len(data) >= size
-        written = await port.write_range(
-            target,
-            target_path,
-            upload,
-            offset,
-            data,
-            sha256=sha256 if last else None,
-            size=size if last else None,
+        written = await _again(
+            partial(
+                port.write_range,
+                target,
+                target_path,
+                upload,
+                offset,
+                data,
+                sha256=sha256 if last else None,
+                size=size if last else None,
+            )
         )
         if written.committed:
             return ManifestFile(path=target_path, size=size, sha256=sha256)
         if written.accepted:
+            if written.size != offset + len(data):
+                # A target that took the part must hold exactly what was sent.
+                raise WorkerError(
+                    ErrorKind.CONFLICT,
+                    f"the target holds {written.size} bytes of {target_path} after a part"
+                    f" that ended at {offset + len(data)}",
+                )
             refused = 0
         else:
             refused += 1

@@ -683,15 +683,24 @@ def write_part(parts: int, upload: str, offset: int, content: bytes) -> tuple[in
     """Write ``content`` at ``offset`` of the part ``upload`` in the directory ``parts``,
     where the part must end; offset 0 starts a part. Returns the part's size (``None``
     when there is none) and whether ``content`` was written."""
-    flags = os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC | (os.O_CREAT if offset == 0 else 0)
+    flags = os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC
     try:
-        descriptor = os.open(upload, flags, 0o600, dir_fd=parts)
+        if offset == 0:
+            try:
+                # A fresh part is made here, never one another process put in its place.
+                descriptor = os.open(upload, flags | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=parts)
+            except FileExistsError:
+                descriptor = os.open(upload, flags, dir_fd=parts)
+        else:
+            descriptor = os.open(upload, flags, dir_fd=parts)
     except FileNotFoundError:
         return None, False
     with os.fdopen(descriptor, "r+b") as handle:
         info = os.fstat(handle.fileno())
-        if not stat.S_ISREG(info.st_mode):
-            raise ToolError("invalid_request", "the ranged write's part is not a regular file")
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ToolError(
+                "invalid_request", "the ranged write's part is not a regular file of its own"
+            )
         if info.st_size != offset:
             return info.st_size, False  # the writer resumes from where the part ends
         handle.seek(offset)
@@ -720,6 +729,11 @@ def commit_part(
         digest = hashlib.sha256()
         length = 0
         with os.fdopen(descriptor, "rb") as handle:
+            info = os.fstat(handle.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise ToolError(
+                    "invalid_request", "the ranged write's part is not a regular file of its own"
+                )
             while block := handle.read(1024 * 1024):
                 digest.update(block)
                 length += len(block)

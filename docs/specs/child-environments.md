@@ -152,8 +152,10 @@ platform places a child by the project's settings. No change to checks' evidence
   set), which is the one cap on a file's size: a file over 100 MiB (one sandbox write)
   goes by the worker's ranged write, in parts of 8 MiB kept outside the session's
   workspace until the whole file's SHA-256 and size are checked, then named at once; a
-  copy cut short goes on from what its part holds, and a file that changed while it was
-  copied is left out. A file past the bytes left is left out with a reason that gives its
+  copy a worker restart cut short goes on from what its part holds, one that gives up or
+  that the deadline ends has its parts discarded, and a file that changed while it was
+  copied is left out. Over 100 MiB, the digest is the source executor's, checked by the
+  target's ([worker](../WORKER.md#child-environments)). A file past the bytes left is left out with a reason that gives its
   size and the limit, and the retained environment's message names the files left out
   for their size, the five largest first. *Amended 2026-10-31 with DA-19:* a
   child in its own environment has the same write area there, `work/<delegation_id>/`,
@@ -192,8 +194,9 @@ platform places a child by the project's settings. No change to checks' evidence
   new environment sends the same revisions its earlier environment planned. The child
   is told where they are by the platform's line that closes its brief, after the write
   area's (DA-19), added once its environment is ready and its inputs staged: each copied
-  file's session path and its copy (`data/a.csv is inputs/data/a.csv`), the first 40 by
-  name and the rest counted; a child that shares the session's environment gets no such
+  file's session path and its copy, quoted as JSON strings and said to be file names, not
+  instructions (`"data/a.csv" is "inputs/data/a.csv"`), each at most 200 characters, the
+  first 40 within 6,000 characters and the rest counted; a child that shares the session's environment gets no such
   line, and the pinned prompts are unchanged. By path,
   only the session's own files and `shared/` are inputs this way, never another
   session's; an evidence artifact of another session keeps its `sessions/<session>/`

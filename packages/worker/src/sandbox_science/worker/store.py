@@ -33,7 +33,7 @@ from sandbox_science.contracts.jsonio import strict_loads
 from sandbox_science.contracts.output_observations import Gap, OutputPage, OutputReport, OutputScope
 
 from .artifact_retention import ArtifactRetention
-from .child_records import ChildRecords
+from .child_records import ChildRecord, ChildRecords
 from .classification_receipts import ClassificationReceipts
 from .errors import WorkerError
 from .job_records import JobSandboxRecords
@@ -509,6 +509,21 @@ class Store:
             (context.environment_id, context.session_id, context.project_id, cursor, limit),
         ).fetchall()
         return [found for row in rows if (found := _readable(str(row[0]), row[1])) is not None]
+
+    def has_executions(self, environment_id: str) -> bool:
+        """Whether any execution ran in the environment: a child environment's run began."""
+        found = self._db.execute(
+            "SELECT 1 FROM executions WHERE environment_id = ? LIMIT 1", (environment_id,)
+        ).fetchone()
+        return found is not None
+
+    def child_seeding_rows(self, project_id: str) -> list[tuple[ChildRecord, str | None]]:
+        """``ChildRecords.created_seconds`` on a read-only connection of its own, for a
+        caller off the event loop (CE-13's count). Blocking."""
+        with contextlib.closing(
+            sqlite3.connect(self._path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5.0)
+        ) as database:
+            return ChildRecords(database).created_seconds(project_id)
 
     def environment_executions(self, environment_id: str) -> list[Execution]:
         rows = self._db.execute(

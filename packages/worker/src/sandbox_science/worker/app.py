@@ -1261,8 +1261,8 @@ async def monitor(request: web.Request) -> web.Response:
     found = await asyncio.to_thread(desk.figures, project_id, cast(MonitorWindow, window))
     children = request.app.get(CHILDREN)
     if children is not None and children.settings.child_profiles:
-        # Read on the event loop, where the child environments' records are kept (CE-13).
-        seeding = children.seeding(project_id, found.since, found.at)
+        # The child environments' seeding (CE-13), read on a connection of its own.
+        seeding = await children.seeding(project_id, found.since, found.at)
         found = found.model_copy(update={"child_environments": seeding})
     return _json(found)
 

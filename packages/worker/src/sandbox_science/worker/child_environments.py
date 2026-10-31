@@ -580,7 +580,11 @@ class ChildEnvironments:
                         f" the request or the session environment needs {minimum}",
                     )
                 packages = await replay(port, _operation(environment_id), session, child)
-                inputs = await self._stage(session, child, planned.files, profile)
+                # The bound is shared with the inputs control sends once ready (CE-7).
+                retained = sum(item.size for item in planned.retained)
+                inputs = await self._stage(
+                    session, child, planned.files, profile.stage_max_bytes - retained
+                )
         except TimeoutError as error:
             raise _PrepareError(
                 "environment_unavailable",
@@ -607,11 +611,11 @@ class ChildEnvironments:
         session: ExecutionContext,
         child: ExecutionContext,
         paths: tuple[str, ...],
-        profile: ChildProfile,
+        budget: int,
     ) -> list[ManifestFile]:
-        """Copy the inputs to ``inputs/`` in the child environment (CE-7)."""
+        """Copy the session's inputs to ``inputs/`` in the child environment (CE-7), within
+        ``budget``: the staging bound less what control's retained inputs take."""
         port = self._port()
-        budget = profile.stage_max_bytes
         staged: list[ManifestFile] = []
         for path in paths:
             target = f"{INPUTS}/{path}"
@@ -646,6 +650,11 @@ class ChildEnvironments:
                 raise WorkerError(
                     ErrorKind.CONFLICT,
                     f"the child environment is {record.phase}; inputs go to a ready one",
+                )
+            if self.store.has_executions(environment_id):
+                raise WorkerError(
+                    ErrorKind.CONFLICT,
+                    "the child's run has begun; its inputs are staged before it begins",
                 )
             steps = self.records.steps(environment_id)
             planned = _Planned.model_validate_json(steps["inputs"])
@@ -772,6 +781,7 @@ class ChildEnvironments:
         first: dict[str, str] = {}
         for path in paths:
             first.setdefault(hand_back_path(target, path), path)
+        inflight: tuple[str, str] | None = None
         try:
             async with asyncio.timeout(remaining):
                 for index, path in pending:
@@ -793,19 +803,18 @@ class ChildEnvironments:
                             )
                         )
                     else:
-                        copied = await self._copy(
-                            upload_id("hand-back", environment_id, str(index), destination),
-                            path,
-                            destination,
-                            budget,
-                            session,
-                            child,
-                        )
+                        upload = upload_id("hand-back", environment_id, str(index), destination)
+                        inflight = (upload, destination)
+                        copied = await self._copy(upload, path, destination, budget, session, child)
+                        inflight = None
                     recorded = self.records.record_step(
                         environment_id, f"copy-{index}", copied.model_dump_json(), self.clock.now()
                     )
                     budget -= apply(_Copied.model_validate_json(recorded))
         except TimeoutError:
+            if inflight is not None:
+                # The copy the deadline cut short gives up: its parts go too.
+                await self._discard(session, *inflight)
             complete = False
             left.append(
                 UncollectedFile(path=".", reason="the hand-back ran past its 30-minute deadline")
@@ -856,8 +865,17 @@ class ChildEnvironments:
             left = leave(too_large(error))
             return left.model_copy(update={"size": error.size})
         except WorkerError as error:
+            # Given up after one retry of a transient failure: its parts go too.
+            await self._discard(session, upload, target)
             return leave(f"it was not copied: {error.message}")
         return _Copied(collected=copied)
+
+    async def _discard(self, session: ExecutionContext, upload: str, target: str) -> None:
+        """Remove a ranged copy's parts in the session; one never started has none."""
+        try:
+            await self._port().write_range(session, target, upload, 0, b"", discard=True)
+        except WorkerError as error:
+            _log.warning("the parts of a hand-back copy were not removed: %s", error.message)
 
     async def _write_copy(self, session: ExecutionContext, manifest: ChildHandBack) -> None:
         """``work/<delegation_id>/.handback/manifest.json`` in the session: an untrusted copy,
@@ -1050,16 +1068,17 @@ class ChildEnvironments:
 
     # Reading.
 
-    def seeding(self, project_id: str, since: datetime, now: datetime) -> ChildSeeding:
+    async def seeding(self, project_id: str, since: datetime, now: datetime) -> ChildSeeding:
         """The project's child environments made since ``since``, as the cost view counts
-        their seeding (CE-13), from the rows the worker keeps."""
-        rows = self.records.listed(project_id=project_id)
+        their seeding (CE-13), from the rows the worker keeps, read off the event loop."""
+        found = await asyncio.to_thread(self.store.child_seeding_rows, project_id)
+        rows = [row for row, _ in found]
         made = [row for row in rows if row.created_at >= since]
-        created: list[float] = []
-        for row in made:
-            found = self.records.steps(row.environment_id).get("created")
-            if found is not None:
-                created.append(float(json.loads(found)))
+        created = [
+            float(json.loads(step))
+            for row, step in found
+            if step is not None and row.created_at >= since
+        ]
         to_ready = [
             (row.ready_at - row.created_at).total_seconds()
             for row in made

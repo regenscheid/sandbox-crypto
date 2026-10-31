@@ -18,6 +18,7 @@ delegation's outcome keeps (CE-11).
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
@@ -86,6 +87,9 @@ WALL_TIME: Final = "environment_time"
 READY_MARGIN: Final = 120.0
 """Seconds past a child environment's ``ready_by`` that the orchestrator still waits for
 the worker's own verdict on it."""
+STAGE_SECONDS: Final = 1800.0
+"""How long sending a child environment's inputs from control may take in all: the
+hand-back's 30 minutes (CE-7, JS-15)."""
 TRIES: Final = 3
 """Tries at a hand-back or an end the worker did not answer, as across a worker restart."""
 
@@ -225,6 +229,8 @@ class ChildPlacement:
     each delegation's own."""
     content: RetainedContent | None = None
     """Control's retained content, for inputs the session's files do not give (CE-7)."""
+    stage_seconds: float = STAGE_SECONDS
+    """How long sending a child environment's inputs from control may take in all."""
 
     async def offered(self) -> bool:
         """Whether the worker offers this project child environments at all: a pool with
@@ -295,16 +301,24 @@ class ChildPlacement:
             )
             return got.size, got.accepted, got.staged is not None
 
-        for index in indexes:
-            item = found.retained[index]
-            try:
-                await send_input(content, index, item, send)
-            except StagingError as error:
-                raise WorkerAPIError(ErrorKind.CONFLICT, str(error)) from error
-            except WorkerAPIError as error:
-                raise WorkerAPIError(
-                    error.kind, f"staging_failed: input {item.path}: {error.message}"
-                ) from error
+        item = found.retained[indexes[0]]
+        try:
+            async with asyncio.timeout(self.stage_seconds):
+                for index in indexes:
+                    item = found.retained[index]
+                    await send_input(content, index, item, send)
+        except TimeoutError as error:
+            raise WorkerAPIError(
+                ErrorKind.UNAVAILABLE,
+                f"staging_failed: input {item.path}: the inputs from control were not sent"
+                f" within {self.stage_seconds:g} s",
+            ) from error
+        except StagingError as error:
+            raise WorkerAPIError(ErrorKind.CONFLICT, str(error)) from error
+        except WorkerAPIError as error:
+            raise WorkerAPIError(
+                error.kind, f"staging_failed: input {item.path}: {error.message}"
+            ) from error
         return await self.get(found.environment_id)
 
     async def get(self, environment_id: str) -> ChildEnvironment:

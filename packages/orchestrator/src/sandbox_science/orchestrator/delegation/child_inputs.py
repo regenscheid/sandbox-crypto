@@ -198,7 +198,12 @@ async def send_input(
                 raise StagingError(item.path, f"control could not read it ({error})") from error
             if not data and offset < item.size:
                 raise StagingError(item.path, "control's content ended before its size")
+            sent = offset + len(data)
             offset, accepted, staged = await send(index, offset, data)
+            if accepted and not staged and offset != sent:
+                raise StagingError(
+                    item.path, f"the worker holds {offset} bytes after a part that ended at {sent}"
+                )
             refused = 0 if accepted else refused + 1
             if refused > REFUSED_PARTS:
                 raise StagingError(item.path, "another sender of it is under way")

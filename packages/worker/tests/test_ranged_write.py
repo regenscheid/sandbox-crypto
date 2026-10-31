@@ -149,3 +149,17 @@ async def test_the_executor_says_and_serves_ranged_writes(tmp_path: Path) -> Non
     )
     assert messages[-1]["committed"] is True, messages[-1]
     assert (tmp_path / "sessions" / "s1" / "a.bin").read_bytes() == data
+
+
+def test_a_part_with_another_link_or_put_in_place_is_refused(tmp_path: Path) -> None:
+    """A part is the executor's own file: a fresh one is made exclusively, and one with a
+    second link (sandbox code linked it elsewhere) is neither written nor named."""
+    requests = _requests(tmp_path)
+    _write(requests, offset=0, content=b"abc")
+    part = tmp_path / ".parts" / UPLOAD
+    os.link(part, tmp_path / "elsewhere")
+    refused = _refused(requests, offset=3, content=b"def")
+    assert "of its own" in refused.message
+    digest = hashlib.sha256(b"abc").hexdigest()
+    assert "of its own" in _refused(requests, offset=3, sha256=digest, size=3).message
+    assert not (tmp_path / "sessions" / "s1" / "out" / "big.bin").exists()

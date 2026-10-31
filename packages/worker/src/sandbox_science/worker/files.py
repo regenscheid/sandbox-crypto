@@ -242,6 +242,7 @@ class Files:
         files under preconditions."""
         if in_shared(path):
             raise WorkerError(ErrorKind.INVALID_REQUEST, "a ranged write goes to the session")
+        _in_write_area(context, path)  # as a write's (DA-19); the platform's carry none
         async with self.connections.using(context.environment_id) as channel:
             if channel.hello.get("ranged_write") != 1:
                 raise WorkerError(ErrorKind.UNSUPPORTED, UNSUPPORTED_RANGED_WRITE)

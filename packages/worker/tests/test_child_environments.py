@@ -506,7 +506,7 @@ async def test_the_cost_view_counts_child_environments_seeding(tmp_path: Path) -
         pool.fake.update(phase_on_create="Provisioning")  # pending: no node has room
         await pool.ready("dlg-" + "b" * 24)
         now = datetime.now(UTC)
-        found = pool.children.seeding("p1", now - timedelta(hours=24), now)
+        found = await pool.children.seeding("p1", now - timedelta(hours=24), now)
         assert (found.made, found.ready, found.failed, found.preparing) == (2, 1, 1, 0)
         assert found.created is not None
         assert found.created.count == 1  # the unplaced one's sandbox was never created
@@ -516,10 +516,10 @@ async def test_the_cost_view_counts_child_environments_seeding(tmp_path: Path) -
         assert found.to_ready.longest == (ready.ready_at - ready.created_at).total_seconds()
         assert (found.alive, found.retained, found.counted_since) == (1, 0, None)
         # A week reaches past the 3 days released ones are kept.
-        week = pool.children.seeding("p1", now - timedelta(days=7), now)
+        week = await pool.children.seeding("p1", now - timedelta(days=7), now)
         assert week.counted_since == now - timedelta(days=3)
         # Another project's are not counted.
-        assert pool.children.seeding("p2", now - timedelta(hours=24), now).made == 0
+        assert (await pool.children.seeding("p2", now - timedelta(hours=24), now)).made == 0
     finally:
         await pool.close()
 
@@ -751,6 +751,76 @@ async def test_a_large_copy_cut_short_resumes_where_its_part_ends(pool: Pool) ->
     # The first part was sent once: 13 parts in all.
     assert pool.port.range_writes == 13
     assert ended.phase == "released"
+
+
+async def test_a_copy_that_gives_up_discards_its_parts(pool: Pool) -> None:
+    """A part's read that fails once for a transient reason is tried again; one that
+    fails again gives the file up, and its parts in the session go with it."""
+    made = await pool.ready()
+    child = made.environment_id
+    pool.port.files[child, "a.bin"] = b"a" * LARGE
+    pool.port.files[child, "b.bin"] = b"b" * LARGE
+    read = pool.port.read_part
+    failures = {"a.bin": 1, "b.bin": 2}
+
+    async def flaky(context: ExecutionContext, path: str, offset: int, length: int):
+        if offset > 0 and failures.get(path, 0) > 0:
+            failures[path] -= 1
+            raise WorkerError(ErrorKind.UNAVAILABLE, "the executor did not answer")
+        return await read(context, path, offset, length)
+
+    pool.port.read_part = flaky
+    back = await pool.children.hand_back(child, pool.back(("a.bin", "b.bin")))
+    assert [f.path for f in back.collected] == [f"work/{DELEGATION}/a.bin"]
+    assert back.not_collected[0].path == "b.bin"
+    assert back.not_collected[0].reason == "it was not copied: the executor did not answer"
+    assert not pool.port.parts  # b.bin's first part was discarded
+
+
+async def test_a_copy_the_deadline_ends_discards_its_parts(tmp_path: Path) -> None:
+    pool = Pool(tmp_path)
+    try:
+        await pool.session()
+        pool.children.collect_timeout = 0.5
+        made = await pool.ready()
+        child = made.environment_id
+        pool.port.files[child, "huge.bin"] = b"h" * LARGE
+        pool.port.range_gates["huge.bin"] = asyncio.Event()  # never set
+        back = await pool.children.hand_back(child, pool.back(("huge.bin",)))
+        assert not back.complete
+        assert [f.path for f in back.not_collected] == ["."]
+        assert not pool.port.parts
+    finally:
+        await pool.close()
+
+
+async def test_session_inputs_share_the_bound_with_retained_ones(tmp_path: Path) -> None:
+    """Staging starts from the bound less the retained inputs' bytes: a session file that
+    grew after admission cannot take the room admission counted for them."""
+    pool = Pool(tmp_path, child_profiles={"standard": child_profile(stage_max_bytes=100)})
+    try:
+        await pool.session()
+        pool.port.located.clear()  # preparation waits before it stages
+        item = retained("results/r.bin", b"r" * 60)
+        made, _ = await pool.children.admit(
+            pool.request(inputs=("data/input.txt",), retained=(item,))
+        )
+        pool.port.files[SESSION, "data/input.txt"] = b"i" * 50  # grew: 50 + 60 > 100
+        pool.port.located.set()
+        found = await pool.settled(made.environment_id)
+        assert (found.phase, found.failure) == ("released", "inputs_too_large")
+    finally:
+        await pool.close()
+
+
+async def test_inputs_are_refused_once_the_childs_run_began(
+    pool: Pool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = b"r" * 10
+    made = await pool.ready(retained=(retained("results/r.bin", data),))
+    monkeypatch.setattr(pool.store, "has_executions", lambda environment_id: True)
+    with pytest.raises(WorkerError, match="run has begun"):
+        await pool.children.stage_input(made.environment_id, part(0, 0, data))
 
 
 async def test_a_file_changed_while_copied_is_left_out(pool: Pool) -> None:
