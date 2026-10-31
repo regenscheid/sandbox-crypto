@@ -11,6 +11,7 @@ listings carry file sizes. The orchestrator's side is in the orchestrator's test
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import logging
@@ -44,7 +45,9 @@ from sandbox_science.contracts.child_environments import (
     ChildEnvironmentRequest,
     ChildPhase,
     HandBackRequest,
+    InputPart,
     RetainedFile,
+    RetainedInput,
     is_child_environment,
 )
 from sandbox_science.contracts.worker import PROTOCOL_VERSION
@@ -302,6 +305,93 @@ async def test_a_child_environment_is_made_from_the_session_environment(pool: Po
     # The same delegation again finds the same one.
     again, created = await pool.children.admit(pool.request())
     assert (again.environment_id, created) == (made.environment_id, False)
+
+
+def retained(path: str, data: bytes, revision: int = 1) -> RetainedInput:
+    return RetainedInput(
+        path=path,
+        artifact_id="artifact-" + hashlib.sha256(path.encode()).hexdigest()[:8],
+        revision=revision,
+        sha256=hashlib.sha256(data).hexdigest(),
+        size=len(data),
+    )
+
+
+def part(index: int, offset: int, data: bytes) -> InputPart:
+    return InputPart(
+        context=CONTEXT,
+        index=index,
+        offset=offset,
+        content_b64=base64.b64encode(data).decode(),
+    )
+
+
+async def test_inputs_from_controls_retained_content_are_planned_and_staged(
+    pool: Pool,
+) -> None:
+    """CE-7: an input whose content control retains is planned at admission, counted in
+    the staging bound, and staged part by part once ready, its digest checked; the
+    session's file wins where it exists, and a missing path one gives is not missing."""
+    report = b"# Report r2\n" * 1000
+    figure = b"\x89PNG" + bytes(5000)
+    items = (
+        retained("data/input.txt", b"older input\n"),  # the session's file is copied
+        retained("results/report.md", report, revision=2),
+        retained("shared/fig.png", figure),
+    )
+    made = await pool.ready(inputs=("data/input.txt", "results/report.md"), retained=items)
+    assert made.phase == "ready"
+    assert made.retained == items[1:]
+    assert made.inputs_missing == ()  # results/report.md comes from control
+    assert [f.path for f in made.inputs] == ["inputs/data/input.txt"]
+    child = made.environment_id
+    # Parts of the first one, out of order: the worker says where its bytes end.
+    first = await pool.children.stage_input(child, part(0, 0, report[:5000]))
+    assert (first.size, first.accepted, first.staged) == (5000, True, None)
+    skipped = await pool.children.stage_input(child, part(0, 9000, report[9000:]))
+    assert (skipped.size, skipped.accepted) == (5000, False)
+    done = await pool.children.stage_input(child, part(0, 5000, report[5000:]))
+    assert done.staged is not None
+    assert done.staged.path == "inputs/results/report.md"
+    assert done.staged.sha256 == items[1].sha256
+    assert pool.port.files[child, "inputs/results/report.md"] == report
+    # Asked again, the staged input answers the same.
+    again = await pool.children.stage_input(child, part(0, 0, b""))
+    assert again.staged == done.staged
+    # Content that is not the planned digest is refused, and its parts discarded.
+    with pytest.raises(WorkerError) as caught:
+        await pool.children.stage_input(child, part(1, 0, b"\x00" * len(figure)))
+    assert caught.value.kind is ErrorKind.CONFLICT
+    assert (child, "inputs/shared/fig.png") not in pool.port.files
+    assert not pool.port.parts
+    # A part past the input's size, or of an input not planned, is refused.
+    with pytest.raises(WorkerError, match="may not end"):
+        await pool.children.stage_input(child, part(1, 0, figure + b"x"))
+    with pytest.raises(WorkerError, match="no input 2"):
+        await pool.children.stage_input(child, part(2, 0, b"x"))
+    await pool.children.stage_input(child, part(1, 0, figure))
+    found = pool.children.get(child, CONTEXT)
+    assert [f.path for f in found.inputs] == [
+        "inputs/data/input.txt",
+        "inputs/results/report.md",
+        "inputs/shared/fig.png",
+    ]
+    # Only a ready one takes inputs.
+    await pool.children.end(child, pool.end("abandoned"))
+    with pytest.raises(WorkerError, match="inputs go to a ready one"):
+        await pool.children.stage_input(child, part(1, 0, figure))
+
+
+async def test_retained_inputs_count_in_the_staging_bound(tmp_path: Path) -> None:
+    pool = Pool(tmp_path, child_profiles={"standard": child_profile(stage_max_bytes=100)})
+    try:
+        await pool.session()
+        big = retained("results/big.bin", b"b" * 95)
+        with pytest.raises(WorkerError, match=r"inputs_too_large: input results/big\.bin"):
+            await pool.children.admit(pool.request(inputs=("data",), retained=(big,)))
+        assert pool.store.child_environments.listed() == []
+    finally:
+        await pool.close()
 
 
 async def test_no_client_may_create_an_environment_by_a_child_id(pool: Pool) -> None:
@@ -784,6 +874,13 @@ async def test_the_routes_serve_the_sessions_child_environments(
     assert found["phase"] == "ready"
     listed = await (await client.get(f"/v1/child-environments?{query}", headers=headers)).json()
     assert [c["environment_id"] for c in listed["environments"]] == [child]
+    response = await client.post(
+        f"/v1/child-environments/{child}/inputs",
+        json=part(0, 0, b"x").model_dump(mode="json"),
+        headers=headers,
+    )
+    assert response.status == 400  # admission planned no retained input
+    assert "no input 0" in (await response.json())["error"]["message"]
     # Another session's context does not find it, and the environment routes do not name it.
     other = query.replace("session_id=s1", "session_id=s2")
     response = await client.get(f"/v1/child-environments/{child}?{other}", headers=headers)
@@ -816,10 +913,14 @@ async def test_the_routes_serve_the_sessions_child_environments(
 def test_a_child_contract_bounds_its_inputs() -> None:
     with pytest.raises(ValidationError):
         ChildEnvironmentRequest(
-            context=CONTEXT, delegation_id=DELEGATION, inputs=tuple(f"f{n}" for n in range(21))
+            context=CONTEXT, delegation_id=DELEGATION, inputs=tuple(f"f{n}" for n in range(61))
         )
     with pytest.raises(ValidationError):
         ChildEnvironmentRequest(context=CONTEXT, delegation_id=DELEGATION, inputs=("../up",))
+    with pytest.raises(ValidationError):
+        RetainedInput(path="/etc/x", artifact_id="a", revision=1, sha256="0" * 64, size=1)
+    with pytest.raises(ValidationError):
+        InputPart(context=CONTEXT, index=0, offset=0, content_b64="A" * (12 * 1024**2))
 
 
 # The review of 2026-10-26.

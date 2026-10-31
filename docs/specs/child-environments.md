@@ -12,8 +12,7 @@ closes. Built 2026-10-27, against the fake CLI: the Compute tab's children's ker
 hand-back's refusal of a file over 100 MiB by its size and the limit (CE-6). Built
 2026-10-31, against the fake CLI: the worker's ranged write, which copies a hand-back
 file or an input over 100 MiB in parts with the whole file's digest checked at its end
-(CE-6, CE-7). Open:
-inputs from control's retained content (CE-7), and read-only `inputs/` and
+(CE-6, CE-7); inputs from control's retained content (CE-7). Open: read-only `inputs/` and
 `work/<id>/` for a child's processes: the worker's file calls set no file mode, and a
 sandbox's agent code runs as the user who owns its files and could change one back, so
 it needs per-run mounts (DA-20's open question 1). A child's file tools write only in its
@@ -173,6 +172,26 @@ platform places a child by the project's settings. No change to checks' evidence
   `inputs_too_large` naming the file. `references` (PD-11, B8) are archive records and
   reach the child as today, materialized into its state block. `shared/` (D79) is
   synchronized into a child environment as into any environment.
+
+  *As built 2026-10-31:* a task's inputs are the files its `inputs` and its file
+  `references` name, by their session paths; a referenced file is copied too, since in
+  an environment of its own the child cannot read it at its path in the session's. The
+  worker copies each from the session's environment where it is there. Where it is not,
+  and control keeps the bytes of the recorded file at that path (its latest revision,
+  deleted or hash-only ones excepted), control names that revision at admission with
+  its SHA-256 and size, which the worker counts in the staging bound and refuses with
+  `inputs_too_large` as the session's files; a path one gives is not missing. A check in
+  its own environment (under `all`) gets its entry's evidence artifacts the same way, at
+  the revisions the entry pins. The worker cannot read control's store, so control sends
+  them once the environment is ready and before the run starts, in parts of 8 MiB, each
+  written by the worker's ranged write and the whole file's digest checked at its end;
+  each becomes `inputs/<path>` with the session's inputs, in the environment's record and
+  the delegation's outcome. One that cannot be sent or checked fails the delegation
+  (`staging_failed`, naming the input), and its environment is released. A Resume in a
+  new environment sends the same revisions its earlier environment planned. By path,
+  only the session's own files and `shared/` are inputs this way, never another
+  session's; an evidence artifact of another session keeps its `sessions/<session>/`
+  prefix under `inputs/`.
 - CE-8. **Kernels and compute.** A child's kernels live in its environment. The worker's
   kernel listing and observation are per environment, so the Compute tab asks for the
   session's and for each live child environment's, and shows each kernel under its

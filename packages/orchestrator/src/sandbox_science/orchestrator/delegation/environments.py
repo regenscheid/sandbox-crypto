@@ -18,6 +18,7 @@ delegation's outcome keeps (CE-11).
 
 from __future__ import annotations
 
+import base64
 import logging
 from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
@@ -34,6 +35,7 @@ from sandbox_science.contracts import (
     ExecutionContext,
 )
 from sandbox_science.contracts.child_environments import (
+    MAX_CHILD_INPUTS,
     ChildEndReason,
     ChildEnvironment,
     ChildEnvironmentEnd,
@@ -41,13 +43,24 @@ from sandbox_science.contracts.child_environments import (
     ChildEnvironmentRequest,
     ChildHandBack,
     HandBackRequest,
+    InputPart,
+    InputStaged,
     RetainedFile,
+    RetainedInput,
     hand_back_target,
 )
 from sandbox_science.contracts.worker import MAX_MANIFEST_FILES, validate_relative_path
 from sandbox_science.orchestrator.aio import threaded
 from sandbox_science.orchestrator.worker_client import WorkerAPIError
 
+from .child_inputs import (
+    RetainedContent,
+    StagingError,
+    pending,
+    reference_files,
+    resolve,
+    send_input,
+)
 from .records import ChildEnvironments, DelegationRecords, DelegationSettings, held_plan
 
 _log = logging.getLogger(__name__)
@@ -91,10 +104,11 @@ def placement(
     return "own", None
 
 
-def file_inputs(inputs: Sequence[str]) -> tuple[str, ...]:
+def file_inputs(inputs: Sequence[str], most: int = 20) -> tuple[str, ...]:
     """The brief's inputs that may name session files (DA-17), to copy into a child
-    environment's ``inputs/`` (CE-7): those shaped as a workspace path; the worker lists
-    the ones that name nothing. Text with spaces or newlines is not a path."""
+    environment's ``inputs/`` (CE-7): those shaped as a workspace path, at most ``most``;
+    the worker lists the ones that name nothing. Text with spaces or newlines is not a
+    path."""
     found: list[str] = []
     for text in inputs:
         candidate = text.strip().removeprefix("./")
@@ -106,7 +120,7 @@ def file_inputs(inputs: Sequence[str]) -> tuple[str, ...]:
             continue
         if candidate != "." and candidate not in found:
             found.append(candidate)
-    return tuple(found[:20])
+    return tuple(found[:most])
 
 
 def hand_back_plan(
@@ -188,6 +202,8 @@ class ChildEnvironmentClient(Protocol):
 
     async def hand_back(self, environment_id: str, request: HandBackRequest) -> ChildHandBack: ...
 
+    async def stage_child_input(self, environment_id: str, part: InputPart) -> InputStaged: ...
+
     async def end_child_environment(
         self, environment_id: str, request: ChildEnvironmentEnd
     ) -> ChildEnvironment: ...
@@ -207,6 +223,8 @@ class ChildPlacement:
     """Where a delegation's files go back to: its research work's write area (DA-19),
     which a Resume's continuation shares with the delegation it continues. Without it,
     each delegation's own."""
+    content: RetainedContent | None = None
+    """Control's retained content, for inputs the session's files do not give (CE-7)."""
 
     async def offered(self) -> bool:
         """Whether the worker offers this project child environments at all: a pool with
@@ -221,19 +239,73 @@ class ChildPlacement:
         inputs: Sequence[str],
         profile: str | None = None,
         project_profile: str | None = None,
+        *,
+        references: Sequence[str] = (),
+        artifacts: Sequence[tuple[str, int]] = (),
+        retained: Sequence[RetainedInput] | None = None,
     ) -> ChildEnvironment:
         """Admit the delegation's own environment, of ``profile`` or the project's
-        (``project_profile``, or the pool's default); the worker's refusal as it gave it."""
+        (``project_profile``, or the pool's default); the worker's refusal as it gave it.
+        Its inputs are the files the brief's ``inputs`` and file ``references`` name, from
+        the session, or else from control's retained content, as are the ``artifacts``
+        (a check's evidence) at their revisions (CE-7); ``retained`` names those instead
+        (a Resume's, as its earlier environment planned them)."""
+        files = file_inputs([*inputs, *references], MAX_CHILD_INPUTS)
+        if retained is None:
+            retained = (
+                await threaded(resolve, self.content, files, artifacts)
+                if self.content is not None
+                else ()
+            )
         return await self.client.create_child_environment(
             ChildEnvironmentRequest(
                 context=self.context,
                 delegation_id=delegation_id,
                 profile=profile,
                 project_profile=project_profile,
-                inputs=file_inputs(inputs),
+                inputs=files,
+                retained=tuple(retained),
                 min_isolation_tier=self.min_isolation_tier,
             )
         )
+
+    async def stage(self, found: ChildEnvironment) -> ChildEnvironment:
+        """Send a ready child environment the inputs from control's retained content it
+        planned and has not staged (CE-7); its record once they are. Raises
+        ``WorkerAPIError`` (``staging_failed: input …``) when one cannot be staged."""
+        indexes = pending(found.retained, (f.path for f in found.inputs))
+        if not indexes:
+            return found
+        content = self.content
+        if content is None:
+            raise WorkerAPIError(
+                ErrorKind.UNAVAILABLE,
+                "staging_failed: control's retained content is not available to this run",
+            )
+
+        async def send(index: int, offset: int, data: bytes) -> tuple[int, bool, bool]:
+            part = InputPart(
+                context=self.context,
+                index=index,
+                offset=offset,
+                content_b64=base64.b64encode(data).decode(),
+            )
+            got = await self._retried(
+                lambda: self.client.stage_child_input(found.environment_id, part)
+            )
+            return got.size, got.accepted, got.staged is not None
+
+        for index in indexes:
+            item = found.retained[index]
+            try:
+                await send_input(content, index, item, send)
+            except StagingError as error:
+                raise WorkerAPIError(ErrorKind.CONFLICT, str(error)) from error
+            except WorkerAPIError as error:
+                raise WorkerAPIError(
+                    error.kind, f"staging_failed: input {item.path}: {error.message}"
+                ) from error
+        return await self.get(found.environment_id)
 
     async def get(self, environment_id: str) -> ChildEnvironment:
         return await self.client.child_environment(environment_id, self.context)
@@ -360,6 +432,9 @@ async def continue_in(
         [str(i) for i in inputs] if isinstance(inputs, list) else [],
         named,
         named,
+        references=reference_files(brief.get("references")),
+        # The inputs from control the earlier environment planned, at their revisions.
+        retained=found.retained if found is not None else None,
     )
     ready = await placement.ready(made.environment_id)
     if ready.phase != "ready":
@@ -367,6 +442,11 @@ async def continue_in(
             ErrorKind.UNAVAILABLE,
             f"environment_unavailable: {ready.message or 'it was not made ready'}",
         )
+    try:
+        await placement.stage(ready)
+    except WorkerAPIError:
+        await placement.end(made.environment_id, "abandoned")
+        raise
     return made.environment_id, previous
 
 

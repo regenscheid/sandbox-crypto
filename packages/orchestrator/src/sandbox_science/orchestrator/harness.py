@@ -75,6 +75,7 @@ from .continuity.resources import ResourceRequests
 from .control import ControlError
 from .control.errors import NOT_FOUND
 from .delegation import prompt as delegated_prompt
+from .delegation.child_inputs import InventoryContent
 from .delegation.environments import (
     WALL_TIME,
     ChildPlacement,
@@ -153,7 +154,7 @@ from .skills.embeddings import SkillVectors
 from .skills.staging import Stager
 from .tools import HARNESS_TOOL_NAMES, Toolbox, ToolOutcome
 from .view_image import ImageViewer
-from .worker_client import WorkerClient
+from .worker_client import WorkerAPIError, WorkerClient
 
 _IDENTIFIER: TypeAdapter[str] = TypeAdapter(Identifier)
 Snapshot = tuple[int, tuple[MemoryEntry, ...]]
@@ -1471,6 +1472,11 @@ class Harness:
                 if self.stores is not None
                 else None
             ),
+            content=None
+            if self.stores is None
+            else InventoryContent(
+                ArtifactInventory(self.stores.documents), context.project_id, context.session_id
+            ),
         )
 
     def _blueprint(self, admitted: Admitted) -> Blueprint:
@@ -1574,6 +1580,12 @@ class Harness:
                 if found.phase != "ready"
                 else await self.child_tier_refusal(child.environment_id)
             )
+            if refused is None:
+                try:
+                    # Its inputs from control's retained content, before it runs (CE-7).
+                    found = await placement.stage(found)
+                except WorkerAPIError as error:
+                    refused = error.message
             if refused is not None:
                 if found.phase == "ready":
                     # Not isolated enough for the project: nothing runs in it (CE-10).

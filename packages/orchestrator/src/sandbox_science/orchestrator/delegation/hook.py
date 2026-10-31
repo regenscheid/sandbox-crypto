@@ -84,6 +84,7 @@ from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.session_plans import PlanRef
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, dump
 
+from .child_inputs import reference_files
 from .environments import NOT_OFFERED, ChildPlacement, placement, reconcile, waiting_notice
 from .models import Choice, ModelChoice
 from .narrowing import narrow
@@ -194,6 +195,9 @@ class _Planned:
     """What ``delegate``'s answer says of it."""
     track: tuple[PlanRef, str] | None = None
     delegate: bool = False
+    artifacts: tuple[tuple[str, int], ...] = ()
+    """For a check, its entry's evidence artifacts at their pinned revisions, copied into
+    an environment of its own from control's retained content (CE-7)."""
 
 
 @dataclass(frozen=True)
@@ -458,6 +462,8 @@ class Delegations(TurnHook):
                 [str(i) for i in inputs] if isinstance(inputs, list) else [],
                 brief.profile if isinstance(brief, TaskBrief) else None,
                 self.limits.child_profile,
+                references=reference_files(planned.brief.get("references")),
+                artifacts=planned.artifacts,
             )
         started = self.clock.now().astimezone(UTC)
         limits: dict[str, JsonValue] = {"turns": planned.turns, "tokens": tokens}
@@ -576,6 +582,11 @@ class Delegations(TurnHook):
             self.limits.check_tokens,
             Target(entry.entry_id, entry.handle, brief.check.revision, proof_reads(entry.evidence)),
             {"check": {"entry": entry.handle, "revision": brief.check.revision}},
+            artifacts=tuple(
+                (link.target_id, link.revision)
+                for link in entry.evidence
+                if link.target == "artifact" and link.revision is not None
+            ),
         )
 
     async def _task(self, brief: TaskBrief) -> _Planned:

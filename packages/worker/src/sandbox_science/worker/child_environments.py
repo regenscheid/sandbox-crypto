@@ -78,6 +78,9 @@ from sandbox_science.contracts.child_environments import (
     ChildFailure,
     ChildHandBack,
     HandBackRequest,
+    InputPart,
+    InputStaged,
+    RetainedInput,
     child_environment_id,
     hand_back_path,
     hand_back_reserved,
@@ -143,6 +146,8 @@ class _Planned(BaseModel):
     files: tuple[str, ...] = ()
     missing: tuple[str, ...] = ()
     min_isolation_tier: int | None = None
+    retained: tuple[RetainedInput, ...] = ()
+    """The inputs from control's retained content to copy once ready (CE-7)."""
 
 
 class _Copied(BaseModel):
@@ -330,7 +335,7 @@ class ChildEnvironments:
                 f" was placed on {recorded}",
             )
         launch_settings(profile, resources)
-        planned = await self._plan_inputs(context, request.inputs, profile)
+        planned = await self._plan_inputs(context, request.inputs, request.retained, profile)
         async with self._admitting:
             # Counted and inserted with no await between, so two admissions cannot
             # both pass the same count.
@@ -388,10 +393,15 @@ class ChildEnvironments:
         return self.view(record)
 
     async def _plan_inputs(
-        self, context: ExecutionContext, paths: tuple[str, ...], profile: ChildProfile
+        self,
+        context: ExecutionContext,
+        paths: tuple[str, ...],
+        retained: tuple[RetainedInput, ...],
+        profile: ChildProfile,
     ) -> _Planned:
-        """The input files, and the paths that name nothing; refuses inputs over the
-        profile's staging bound, naming the file that crosses it (CE-7)."""
+        """The input files, those from control's retained content that the session's do
+        not give, and the paths that name nothing; refuses inputs over the profile's
+        staging bound, naming the file that crosses it (CE-7)."""
         files: list[tuple[str, int]] = []
         missing: list[str] = []
         for path in dict.fromkeys(paths):
@@ -406,8 +416,23 @@ class ChildEnvironments:
                     f"inputs_too_large: the inputs hold over {MAX_MANIFEST_FILES} files",
                 )
         files = list(dict.fromkeys(files))  # an input inside another named one
+        given = {path for path, _ in files}
+        kept: dict[str, RetainedInput] = {}
+        for item in retained:
+            if item.path not in given and item.path not in kept:
+                kept[item.path] = item  # the session's file, when there is one, is copied
+        if len(files) + len(kept) > MAX_MANIFEST_FILES:
+            raise WorkerError(
+                ErrorKind.INVALID_REQUEST,
+                f"inputs_too_large: the inputs hold over {MAX_MANIFEST_FILES} files",
+            )
+        missing = [
+            path
+            for path in missing
+            if not any(name == path or name.startswith(f"{path}/") for name in kept)
+        ]
         total = 0
-        for path, size in files:
+        for path, size in [*files, *((item.path, item.size) for item in kept.values())]:
             total += size
             if total > profile.stage_max_bytes:
                 raise WorkerError(
@@ -415,7 +440,11 @@ class ChildEnvironments:
                     f"inputs_too_large: input {path} brings the inputs to {total} bytes, over"
                     f" the child profile's {profile.stage_max_bytes}",
                 )
-        return _Planned(files=tuple(path for path, _ in files), missing=tuple(missing))
+        return _Planned(
+            files=tuple(path for path, _ in files),
+            missing=tuple(missing),
+            retained=tuple(kept.values()),
+        )
 
     async def _files_of(self, context: ExecutionContext, path: str) -> list[tuple[str, int]] | None:
         """The regular files at ``path`` with their sizes, following no symlink; None when
@@ -598,6 +627,64 @@ class ChildEnvironments:
             budget -= copied.size
             staged.append(copied)
         return staged
+
+    async def stage_input(self, environment_id: str, part: InputPart) -> InputStaged:
+        """Write part of an input from control's retained content to ``inputs/<path>`` in
+        a ready child environment (CE-7): in place, after the bytes received so far, the
+        last part's write checking the whole file's SHA-256 and size as admission
+        planned them. A part not sent where those bytes end is not written."""
+        async with self._lock(environment_id):
+            record = self._owned(environment_id, part.context)
+            if record.phase != "ready":
+                raise WorkerError(
+                    ErrorKind.CONFLICT,
+                    f"the child environment is {record.phase}; inputs go to a ready one",
+                )
+            steps = self.records.steps(environment_id)
+            planned = _Planned.model_validate_json(steps["inputs"])
+            if part.index >= len(planned.retained):
+                raise WorkerError(
+                    ErrorKind.INVALID_REQUEST,
+                    f"admission planned {len(planned.retained)} retained inputs; there is no"
+                    f" input {part.index}",
+                )
+            item = planned.retained[part.index]
+            target = f"{INPUTS}/{item.path}"
+            done = steps.get(f"retained-{part.index}")
+            if done is not None:
+                staged = ManifestFile.model_validate_json(done)
+                return InputStaged(size=staged.size, accepted=True, staged=staged)
+            try:
+                data = base64.b64decode(part.content_b64, validate=True)
+            except ValueError as exc:
+                raise WorkerError(ErrorKind.INVALID_REQUEST, "content_b64 is not base64") from exc
+            end = part.offset + len(data)
+            if end > item.size:
+                raise WorkerError(
+                    ErrorKind.INVALID_REQUEST,
+                    f"input {item.path} holds {item.size} bytes; a part may not end at {end}",
+                )
+            last = end == item.size
+            child = part.context.model_copy(update={"environment_id": environment_id})
+            written = await self._port().write_range(
+                child,
+                target,
+                upload_id("child-retained", environment_id, str(part.index)),
+                part.offset,
+                data,
+                sha256=item.sha256 if last else None,
+                size=item.size if last else None,
+            )
+            if not written.committed:
+                return InputStaged(size=written.size, accepted=written.accepted)
+            staged = ManifestFile(path=target, size=item.size, sha256=item.sha256)
+            self.records.record_step(
+                environment_id,
+                f"retained-{part.index}",
+                staged.model_dump_json(),
+                self.clock.now(),
+            )
+            return InputStaged(size=item.size, accepted=True, staged=staged)
 
     # The hand-back (CE-6).
 
@@ -970,9 +1057,16 @@ class ChildEnvironments:
         prepared = (
             _Prepared.model_validate_json(steps["prepared"]) if "prepared" in steps else _Prepared()
         )
+        planned = _Planned.model_validate_json(steps["inputs"]) if "inputs" in steps else None
         missing = prepared.missing
-        if "inputs" in steps and "prepared" not in steps:
-            missing = _Planned.model_validate_json(steps["inputs"]).missing
+        if planned is not None and "prepared" not in steps:
+            missing = planned.missing
+        retained = planned.retained if planned is not None else ()
+        staged = tuple(
+            ManifestFile.model_validate_json(steps[f"retained-{index}"])
+            for index in range(len(retained))
+            if f"retained-{index}" in steps
+        )
         return ChildEnvironment(
             environment_id=record.environment_id,
             delegation_id=record.delegation_id,
@@ -984,7 +1078,8 @@ class ChildEnvironments:
             failure=record.failure,
             message=record.message,
             isolation_tier=prepared.isolation_tier,
-            inputs=prepared.inputs,
+            inputs=(*prepared.inputs, *staged),
+            retained=retained,
             inputs_missing=missing,
             packages=prepared.packages,
             created_at=record.created_at,
