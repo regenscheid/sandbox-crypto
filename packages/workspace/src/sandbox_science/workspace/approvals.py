@@ -193,7 +193,20 @@ class Configuration:
     worker: WorkerClient | None = None
     clock: Clock = SYSTEM_CLOCK
     relayed: set[tuple[str, int]] = field(default_factory=set[tuple[str, int]])
-    """Requests the relay answered, by project, so it answers each once."""
+    """Requests answered or being answered, by project: the user's answer and the relay
+    each claim a request here before they send theirs, so one request is answered once."""
+
+    def claim(self, project: str, seq: int) -> bool:
+        """Take the right to answer a request; false when someone else has it. No ``await``
+        separates the check from the claim, so only one caller gets it."""
+        if (project, seq) in self.relayed:
+            return False
+        self.relayed.add((project, seq))
+        return True
+
+    def release(self, project: str, seq: int) -> None:
+        """Give the claim back after an answer that did not reach the worker."""
+        self.relayed.discard((project, seq))
 
 
 APPROVALS: Final = web.AppKey("approvals", Configuration)
@@ -462,21 +475,28 @@ async def answer(request: web.Request) -> web.Response:
             ErrorKind.POLICY_DENIED,
             asked.grantable(decision.decision) or "this request takes no such answer",
         )
+    # The grant this answer stores would let the relay answer the same request too, and the
+    # worker takes one answer: claim the request before storing anything.
+    if not config.claim(project, seq):
+        raise ProjectError(ErrorKind.CONFLICT, f"permission request {seq} is already answered")
     granted: list[ProjectGrant] = []
-    if decision.decision in ("session", "project"):
-        now = config.clock.now()
-        granted = await asyncio.to_thread(
-            ProjectGrants(context.writer).give,
-            project, asked, decision.decision, author(request), now, decision.hours,
-        )  # fmt: skip
-    scope, hours = ledger_answer(held, decision.decision)
-    await _send(config, held, approve=decision.decision != "deny", scope=scope, hours=hours)
+    try:
+        if decision.decision in ("session", "project"):
+            now = config.clock.now()
+            granted = await asyncio.to_thread(
+                ProjectGrants(context.writer).give,
+                project, asked, decision.decision, author(request), now, decision.hours,
+            )  # fmt: skip
+        scope, hours = ledger_answer(held, decision.decision)
+        await _send(config, held, approve=decision.decision != "deny", scope=scope, hours=hours)
+    except BaseException:
+        config.release(project, seq)
+        raise
     if granted:
         await asyncio.to_thread(
             ProjectGrants(context.writer).used,
             project, [grant.grant_id for grant in granted], config.clock.now(),
         )  # fmt: skip
-    config.relayed.add((project, seq))
     result = AnswerResult(
         seq=seq, decision=decision.decision, kind=held.kind, source=held.source, granted=granted
     )
@@ -538,8 +558,13 @@ async def _relay_one(
         return
     scope = found[0].scope
     ledger_scope, hours = ledger_answer(held, scope)
-    await _send(config, held, approve=True, scope=ledger_scope, hours=hours)
-    config.relayed.add((project, held.seq))
+    if not config.claim(project, held.seq):
+        return  # the user is answering it, or has
+    try:
+        await _send(config, held, approve=True, scope=ledger_scope, hours=hours)
+    except BaseException:
+        config.release(project, held.seq)
+        raise
     await asyncio.to_thread(
         ProjectGrants(writer).used, project, [grant.grant_id for grant in found],
         config.clock.now(),
@@ -564,8 +589,12 @@ async def _relay_worker(
                         ChildRequests(store).in_session, project, held.session
                     )
                 if _withdrawn(held, children[held.session]):
-                    await _send(config, held, approve=False, scope="call", hours=None)
-                    config.relayed.add((project, held.seq))
+                    if config.claim(project, held.seq):
+                        try:
+                            await _send(config, held, approve=False, scope="call", hours=None)
+                        except BaseException:
+                            config.release(project, held.seq)
+                            raise
                     continue
             await _relay_one(config, store, writer, project, held)
 
