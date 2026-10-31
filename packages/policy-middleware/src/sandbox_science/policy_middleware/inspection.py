@@ -21,10 +21,20 @@ nothing else, or (another media) delivery is aborted.
 stream's ``data:`` text, any other body's text, both decoded as UTF-8. Each piece is
 searched together with the last ``CARRY`` characters before it, so a match split between
 two pieces is found, once. Input per search is bounded by a piece (64 KiB) and the carry.
+
+**JSON escapes.** A JSON answer or an event stream is searched twice: as it came, and with
+its JSON string escapes decoded (``_Escapes``: ``\\uXXXX``, a surrogate pair, ``\\n``,
+``\\"``, ``\\\\``, ``\\/``, ``\\b``, ``\\f``, ``\\r``, ``\\t``), so that ``\\u0069gnore`` is
+found as ``ignore``. The decoder reads piece by piece and holds back an escape a piece
+cuts. A malformed escape (a bad letter, short or non-hex digits, an unpaired surrogate) is
+left as written, so decoding never fails and the raw search still sees it. Each view has its
+own carry; a finding's offset is always in the raw text, and a match both views find counts
+once.
 """
 
 from __future__ import annotations
 
+import bisect
 import codecs
 import hashlib
 import json
@@ -249,14 +259,164 @@ class Tracked:
 
 @dataclass(slots=True)
 class _Text:
-    """The answer's text so far: what the excerpt keeps, and the carry for the next search."""
+    """The answer's text so far, as the excerpt keeps it."""
 
     excerpt: list[str] = field(default_factory=list[str])
     excerpt_bytes: int = 0
     over: bool = False
+
+
+@dataclass(slots=True)
+class _View:
+    """One reading of the answer's text that the patterns run over, with the carry for the
+    next search."""
+
     carry: str = ""
     base: int = 0
-    """Characters of text before the carry."""
+    """Characters of this reading before the carry."""
+    open: tuple[str, int] | None = None
+    """A secret left open at the end of the text read so far: its continuation mode and
+    where it began, in characters."""
+    spans: list[Span] | None = None
+    """The current search's secret spans, found once when a finding needs them."""
+    opening: str | None = None
+    window: str = ""
+    start: int = 0
+    """The current search's text, and the position of its first character in this reading."""
+
+
+_SIMPLE: Final = {
+    '"': '"',
+    "\\": "\\",
+    "/": "/",
+    "b": "\b",
+    "f": "\f",
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+}
+_HEX: Final = "0123456789abcdefABCDEF"
+_HEX4: Final = re.compile(r"[0-9a-fA-F]{4}")
+_LOW: Final = re.compile(r"\\u[dD][c-fC-F][0-9a-fA-F]{2}")
+_LOW_SHAPE: Final = ("\\", "u", "dD", "cdefCDEF", _HEX, _HEX)
+_ESCAPED_MEDIA: Final = ("application/json", "text/event-stream")
+
+
+def _json_text(media: str | None) -> bool:
+    """Whether the answer's text is JSON strings, in which a backslash starts an escape."""
+    kind = (media or "").lower()
+    return kind in _ESCAPED_MEDIA or kind.endswith("+json")
+
+
+def _escape(data: str, at: int) -> tuple[str, int] | None:
+    """The escape that starts at ``data[at]`` (a backslash): its text and how many characters
+    it takes; None if ``data`` ends before it can be told. One that is no JSON escape is
+    the backslash alone, as written."""
+    if at + 1 >= len(data):
+        return None
+    letter = data[at + 1]
+    if letter in _SIMPLE:
+        return _SIMPLE[letter], 2
+    if letter != "u":
+        return "\\", 1
+    digits = data[at + 2 : at + 6]
+    if len(digits) < 4 and all(char in _HEX for char in digits):
+        return None
+    if not _HEX4.fullmatch(digits):
+        return "\\", 1
+    code = int(digits, 16)
+    if 0xDC00 <= code < 0xE000:
+        return "\\", 1  # a low surrogate with no high one before it
+    if code < 0xD800 or code >= 0xE000:
+        return chr(code), 6
+    following = data[at + 6 : at + 12]
+    if len(following) < 6:
+        if all(char in allowed for char, allowed in zip(following, _LOW_SHAPE, strict=False)):
+            return None  # the low half may still come
+        return "\\", 1
+    if not _LOW.fullmatch(following):
+        return "\\", 1  # a high surrogate alone
+    low = int(following[2:], 16)
+    return chr(0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00)), 12
+
+
+def _union(first: list[Span], second: list[Span]) -> list[Span]:
+    """Two lists of secret spans as one, sorted and merged."""
+    merged: list[Span] = []
+    for start, end, kind in sorted([*first, *second], key=lambda span: (span[0], -span[1])):
+        if merged and start < merged[-1][1]:
+            last = merged[-1]
+            merged[-1] = (last[0], max(last[1], end), last[2])
+        else:
+            merged.append((start, end, kind))
+    return merged
+
+
+def _follow(view: _View, text: str) -> None:
+    """Move ``view`` past ``text`` without searching it."""
+    window = view.carry + text
+    view.carry = window[-CARRY:]
+    view.base += len(window) - len(view.carry)
+
+
+class _Escapes:
+    """Decodes JSON string escapes in text that arrives piece by piece, and maps a position
+    in the decoded text to the position in the text as it came."""
+
+    def __init__(self) -> None:
+        self._rest = ""
+        """An escape the last piece ended in the middle of, as written."""
+        self._produced = 0
+        self._delta = 0
+        self.changed = False
+        """Whether any escape was decoded: until then the decoded text is the text read."""
+        self._at: list[int] = []
+        self._shift: list[int] = []
+        """After each decoded escape, the decoded position and the characters the text as
+        it came is longer by from there on."""
+
+    def feed(self, text: str) -> str:
+        data = self._rest + text
+        out: list[str] = []
+        end = len(data)
+        position = 0
+        rest = ""
+        while position < end:
+            start = data.find("\\", position)
+            if start < 0:
+                out.append(data[position:])
+                self._produced += end - position
+                break
+            if start > position:
+                out.append(data[position:start])
+                self._produced += start - position
+            found = _escape(data, start)
+            if found is None:
+                rest = data[start:]
+                break
+            decoded, used = found
+            out.append(decoded)
+            self._produced += len(decoded)
+            if used != len(decoded):
+                self._delta += used - len(decoded)
+                self._at.append(self._produced)
+                self._shift.append(self._delta)
+                self.changed = True
+            position = start + used
+        self._rest = rest
+        return "".join(out)
+
+    def raw_at(self, position: int) -> int:
+        """Where the decoded text's ``position`` is in the text as it came."""
+        index = bisect.bisect_right(self._at, position)
+        return position + (self._shift[index - 1] if index else 0)
+
+    def forget(self, before: int) -> None:
+        """Drop what positions before ``before`` need."""
+        index = bisect.bisect_right(self._at, before) - 1
+        if index > 0:
+            del self._at[:index]
+            del self._shift[:index]
 
 
 class AnswerInspection:
@@ -284,6 +444,9 @@ class AnswerInspection:
         self._hash = hashlib.sha256()
         self._size = 0
         self._text = _Text()
+        self._raw = _View()
+        self._decoded = _View()
+        self._escapes: _Escapes | None = _Escapes() if _json_text(media) else None
         self._excerpt_limit = excerpt_limit
         self._findings: list[_Finding] = []
         self._more = 0
@@ -298,12 +461,7 @@ class AnswerInspection:
         """False when the answer passed unread (``reason``): no pattern applied to it."""
         self.reason: str | None = None
         self._seen: set[tuple[str, int]] = set()
-        self._open: tuple[str, int] | None = None
-        """A secret left open at the end of the text read so far: its continuation mode
-        and where it began, in characters."""
-        self._spans: list[Span] | None = None
-        """The current search's secret spans, found once when a finding needs them."""
-        self._opening: str | None = None
+        """Matches found, by pattern and offset in the text as it came, in either reading."""
         self.mode: Mode = "headers"
         self.note: str | None = None
         self.blocked: _Finding | None = None
@@ -338,30 +496,53 @@ class AnswerInspection:
         if not text:
             return
         self._keep(text)
-        state = self._text
-        window = state.carry + text
-        held = len(state.carry)
+        self._scan(self._raw, text, None)
+        if self.blocked is not None:
+            return
+        floor = self._raw.base
+        escapes = self._escapes
+        if escapes is not None:
+            decoded = escapes.feed(text)
+            if escapes.changed:
+                if decoded:
+                    self._scan(self._decoded, decoded, escapes)
+                    if self.blocked is not None:
+                        return
+            else:
+                # No escape yet: the decoded text is the text as it came, which the raw
+                # search covered. Only follow it, so that the carry is there when one comes.
+                _follow(self._decoded, decoded)
+                self._decoded.open = self._raw.open
+            floor = min(floor, escapes.raw_at(self._decoded.base))
+            escapes.forget(self._decoded.base)
+        # Only a match that starts in the carry can be met again: forget the others.
+        self._seen = {seen for seen in self._seen if seen[1] >= floor}
+
+    def _scan(self, view: _View, text: str, escapes: _Escapes | None) -> None:
+        """Search ``view``'s carry and the text after it; ``escapes`` maps a decoded view's
+        positions to the text as it came."""
+        window = view.carry + text
+        held = len(view.carry)
+        view.window, view.start = window, view.base
         # A secret that began before this window (beyond the carry) goes on at its start.
-        opened = self._open
-        self._opening = opened[0] if opened is not None and opened[1] < state.base else None
-        self._spans = None
+        opened = view.open
+        view.opening = opened[0] if opened is not None and opened[1] < view.base else None
+        view.spans = None
         for pattern in self.tracked.patterns:
             for match in pattern.regex.finditer(window):
                 if match.end() <= held:
                     continue  # found in the search before
-                self._found(pattern, match, window, state.base + match.start())
+                self._found(view, escapes, pattern, match, window)
                 if self.blocked is not None:
                     return
         redactor = self._inspection.redactor
-        _, left = redactor.scan(window, self._opening, only_open=True)
+        _, left = redactor.scan(window, view.opening, only_open=True)
         if left is None:
-            self._open = None
-        elif not (opened is not None and self._opening is not None and left[1] == 0):
-            self._open = (left[0], state.base + left[1])
-        state.carry = window[-CARRY:]
-        state.base += len(window) - len(state.carry)
-        # Only a match that starts in the carry can be met again: forget the others.
-        self._seen = {seen for seen in self._seen if seen[1] >= state.base}
+            view.open = None
+        elif not (opened is not None and view.opening is not None and left[1] == 0):
+            view.open = (left[0], view.base + left[1])
+        view.carry = window[-CARRY:]
+        view.base += len(window) - len(view.carry)
 
     def _keep(self, text: str) -> None:
         state = self._text
@@ -375,28 +556,64 @@ class AnswerInspection:
         state.excerpt.append(text)
         state.excerpt_bytes += len(text.encode("utf-8"))
 
-    def _found(self, pattern: Compiled, match: LinearMatch, window: str, offset: int) -> None:
-        # Seen before (a match the carry meets again) counts once, whether recorded or not.
+    def _found(
+        self,
+        view: _View,
+        escapes: _Escapes | None,
+        pattern: Compiled,
+        match: LinearMatch,
+        window: str,
+    ) -> None:
+        offset = view.base + match.start()
+        if escapes is not None:
+            offset = escapes.raw_at(offset)  # always in the text as it came
+        # Seen before (a match the carry meets again, or the other reading found) counts
+        # once, whether recorded or not.
         if (pattern.name, offset) in self._seen:
             return
         self._seen.add((pattern.name, offset))
         if len(self._findings) >= MAX_FINDINGS:
             self._more += 1
             return
-        middle = (match.start() + match.end()) // 2
-        start = max(0, middle - FINDING_CONTEXT // 2)
-        end = min(len(window), start + FINDING_CONTEXT)
-        # Redacted with the secrets of the whole text searched (and one an earlier piece
-        # left open), so that a secret the window cuts goes whole, however long.
-        redactor = self._inspection.redactor
-        if self._spans is None:
-            self._spans = redactor.scan(window, self._opening)[0]
-        context = redactor.window(window, start, end, spans=self._spans)
+        context = self._context(view, escapes, match, window)
         found = _Finding(pattern, offset, context)
         self._findings.append(found)
         if pattern.action == "block" and self.blocked is None:
             self.blocked = found
             self.decision = "blocked"
+
+    def _context(
+        self, view: _View, escapes: _Escapes | None, match: LinearMatch, window: str
+    ) -> str:
+        """The text around a match, redacted as part of the text around it. A match in the
+        decoded text is shown as the server wrote it, escapes undecoded, with the secrets
+        either reading finds: a stray quote that decoding brings can hide a secret's name
+        from the decoded reading, and an escaped character can hide its shape from the raw."""
+        redactor = self._inspection.redactor
+        # A secret an earlier piece left open goes on at the start of the text, so that a
+        # secret the window cuts goes whole, however long.
+        if view.spans is None:
+            view.spans = redactor.scan(window, view.opening)[0]
+        if escapes is None:
+            middle = (match.start() + match.end()) // 2
+            start = max(0, middle - FINDING_CONTEXT // 2)
+            end = min(len(window), start + FINDING_CONTEXT)
+            return redactor.window(window, start, end, spans=view.spans)
+        raw = self._raw
+        if raw.spans is None:
+            raw.spans = redactor.scan(raw.window, raw.opening)[0]
+
+        def local(position: int) -> int:
+            """A position of the decoded search in the raw search's text, kept inside it."""
+            found = escapes.raw_at(view.start + position) - raw.start
+            return max(0, min(len(raw.window), found))
+
+        middle = (local(match.start()) + local(match.end())) // 2
+        start = max(0, middle - FINDING_CONTEXT // 2)
+        end = min(len(raw.window), start + FINDING_CONTEXT)
+        both = [(local(low), local(high), kind) for low, high, kind in view.spans]
+        spans = _union(raw.spans, [span for span in both if span[0] < span[1]])
+        return redactor.window(raw.window, start, end, spans=spans)
 
     def new_findings(self) -> list[tuple[str, str]]:
         """The patterns found since the last call, with their actions, for OpenShell's
@@ -507,8 +724,9 @@ class AnswerInspection:
         for found in self._findings:
             found.excerpt = ""
         self._seen.clear()
-        self._spans = None
-        self._text.carry = ""
+        self._raw = _View()
+        self._decoded = _View()
+        self._escapes = None
         self.events = None if self.events is None else _EventData()
         self.compacted = True
 
