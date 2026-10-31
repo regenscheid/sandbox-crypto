@@ -101,14 +101,25 @@ def _known(settings: Settings, environment_id: str) -> EnvironmentInfo | None:
 
 
 def _executions(settings: Settings, environment_id: str) -> int:
-    """Executions the worker records in the environment, under any of its sandboxes."""
+    """Executions the worker records in the environment, under any of its sandboxes, that
+    may have run: every one except those that ended without reaching an executor (a
+    request the held target refused, say, which must not block ``--resume``). One still
+    under way, or whose record cannot be read, counts."""
     path = settings.state_dir / "worker.sqlite3"
     if not path.is_file():
         return 0
     with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as db:
         return int(
             db.execute(
-                "SELECT count(*) FROM executions WHERE environment_id=?", (environment_id,)
+                "SELECT count(*) FROM executions WHERE environment_id=? AND NOT coalesce(("
+                # Provably never reached an executor: ended failed or cancelled with no
+                # executor location and no start, as a request the held target refused.
+                # Anything unknown (NULL) counts.
+                " terminal=1 AND json_valid(record)"
+                " AND json_extract(record,'$.state') IN ('failed','cancelled')"
+                " AND json_type(record,'$.location')='null'"
+                " AND json_type(record,'$.started_at')='null'),0)",
+                (environment_id,),
             ).fetchone()[0]
         )
 

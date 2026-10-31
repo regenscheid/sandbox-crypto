@@ -1009,7 +1009,10 @@ next use. A restore never writes into an existing environment, so it cannot over
    revision on first use, as for any environment), records the restore, which
    **holds the target's sandbox stopped with no expiry**, suspends it, confirms OpenShell
    says `Stopped`, and checks that nothing has run in it: no prefix identity, no package
-   revision, no execution since the plan began. If that check fails nothing was written
+   revision, no execution since the plan began that may have reached an executor (one that
+   ended failed or cancelled with no executor location and no start, such as a request
+   the held target refused to start for, does not count; one still under way does). The
+   same check is made again by `--resume` and before the verification. If that check fails nothing was written
    yet, so the restore is cancelled and the hold goes with it. While the restore is
    unfinished, the worker also refuses to delete the target (except through the restore's
    discard), a checkpoint plan of it, and the deletion or retirement of the checkpoint it

@@ -17,7 +17,19 @@ from typing import Any, cast
 
 import pytest
 
-from sandbox_science.contracts import EnvironmentInfo, EnvironmentRequest, EnvironmentState
+from sandbox_science.contracts import (
+    TERMINAL_STATES,
+    EnvironmentInfo,
+    EnvironmentRequest,
+    EnvironmentState,
+    ErrorInfo,
+    ErrorKind,
+    Execution,
+    ExecutionContext,
+    ExecutionState,
+    Location,
+    Result,
+)
 from sandbox_science.contracts.workspace_checkpoint import RestorePlan
 from sandbox_science.worker import checkpoint_jobs_cli, checkpoint_remote, checkpoint_restore
 from sandbox_science.worker.checkpoint_capture import capture_upload
@@ -285,6 +297,83 @@ def test_a_resume_rechecks_that_the_target_is_still_fresh_and_stopped(
     db.execute("INSERT INTO executions VALUES ('x1','op1','d',?,'s',1,'{}','legacy')", (TARGET,))
     db.commit()
     db.close()
+    with pytest.raises(RecordError, match="something ran"):
+        checkpoint_restore.resume(retained, plan.restore_id, "op")
+
+
+def recorded(settings: Settings, execution: Execution) -> None:
+    """An execution as the worker's store records it."""
+    db = sqlite3.connect(settings.state_dir / "worker.sqlite3")
+    db.execute(
+        "INSERT INTO executions VALUES (?,?,'d',?,'s',?,?,'legacy')",
+        (
+            execution.execution_id,
+            execution.operation_id,
+            execution.context.environment_id,
+            int(execution.state in TERMINAL_STATES),
+            execution.model_dump_json(),
+        ),
+    )
+    db.commit()
+    db.close()
+
+
+def execution(number: int, state: ExecutionState, **fields: Any) -> Execution:
+    return Execution(
+        execution_id=f"exe-{number}",
+        attempt_id=f"att-{number}",
+        operation_id=f"op-{number}",
+        kind="shell",
+        context=ExecutionContext(project_id="p", session_id="s", environment_id=TARGET),
+        state=state,
+        submitted_at=datetime.now(UTC),
+        **fields,
+    )
+
+
+def test_a_request_the_held_target_refused_never_counts_as_having_run(
+    tmp_path, garage, retained, stopped
+):
+    """The drill's own check that the held target refuses to start must not block
+    ``--resume``: such a request ends failed without ever reaching an executor."""
+    identity, _ = kept_checkpoint(tmp_path, retained)
+    plan = restore_plan(retained, identity)
+    refused = Result(
+        error=ErrorInfo(
+            kind=ErrorKind.UNAVAILABLE,
+            message=f"environment {TARGET} is held stopped while a workspace checkpoint is"
+            " restored into it; try again after that",
+        )
+    )
+    recorded(
+        retained, execution(1, ExecutionState.FAILED, ended_at=datetime.now(UTC), result=refused)
+    )
+    recorded(retained, execution(2, ExecutionState.CANCELLED, ended_at=datetime.now(UTC)))
+    assert checkpoint_restore.resume(retained, plan.restore_id, "op") == plan
+    nonce = attempted(retained, plan.restore_id, "op")
+    checkpoint_restore.verify(retained, plan.restore_id, nonce, plan.tree_sha256, "op")
+    assert not blocked(retained)
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"state": ExecutionState.QUEUED},  # still under way: it may yet reach its executor
+        {"state": ExecutionState.SUCCEEDED, "started_at": datetime.now(UTC)},
+        {"state": ExecutionState.FAILED, "started_at": datetime.now(UTC)},
+        {  # reached an executor, ended before it reported running
+            "state": ExecutionState.FAILED,
+            "location": Location(pool_id="pool", backend="openshell", hostname="h"),
+        },
+        {"state": ExecutionState.LOST},
+    ],
+)
+def test_an_execution_that_may_have_run_blocks_the_resume(
+    tmp_path, garage, retained, stopped, fields
+):
+    identity, _ = kept_checkpoint(tmp_path, retained)
+    plan = restore_plan(retained, identity)
+    recorded(retained, execution(1, **fields))
     with pytest.raises(RecordError, match="something ran"):
         checkpoint_restore.resume(retained, plan.restore_id, "op")
 
