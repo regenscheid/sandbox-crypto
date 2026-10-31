@@ -61,6 +61,7 @@ from sandbox_science.worker.child_records import ACTIVE, ChildRecord
 from sandbox_science.worker.environments import Environments
 from sandbox_science.worker.errors import WorkerError
 from sandbox_science.worker.manager import ExecutionManager
+from sandbox_science.worker.monitor import MonitorDesk
 from sandbox_science.worker.settings import (
     ChildProfile,
     EnvironmentSettings,
@@ -494,6 +495,35 @@ async def test_an_unplaced_child_environment_fails_and_is_released(tmp_path: Pat
         await pool.close()
 
 
+async def test_the_cost_view_counts_child_environments_seeding(tmp_path: Path) -> None:
+    """CE-13: the child environments made within the window, how long their sandboxes took
+    to be placed, seeded and started, and from admission to ready, from the worker's
+    records; past what the worker keeps, the counts say from when they are complete."""
+    pool = Pool(tmp_path, child_profiles={"standard": child_profile(schedule_timeout=0.3)})
+    try:
+        await pool.session()
+        ready = await pool.ready()
+        pool.fake.update(phase_on_create="Provisioning")  # pending: no node has room
+        await pool.ready("dlg-" + "b" * 24)
+        now = datetime.now(UTC)
+        found = pool.children.seeding("p1", now - timedelta(hours=24), now)
+        assert (found.made, found.ready, found.failed, found.preparing) == (2, 1, 1, 0)
+        assert found.created is not None
+        assert found.created.count == 1  # the unplaced one's sandbox was never created
+        assert found.to_ready is not None
+        assert found.to_ready.count == 1
+        assert ready.ready_at is not None
+        assert found.to_ready.longest == (ready.ready_at - ready.created_at).total_seconds()
+        assert (found.alive, found.retained, found.counted_since) == (1, 0, None)
+        # A week reaches past the 3 days released ones are kept.
+        week = pool.children.seeding("p1", now - timedelta(days=7), now)
+        assert week.counted_since == now - timedelta(days=3)
+        # Another project's are not counted.
+        assert pool.children.seeding("p2", now - timedelta(hours=24), now).made == 0
+    finally:
+        await pool.close()
+
+
 async def test_a_weaker_sandbox_than_required_is_released(pool: Pool) -> None:
     pool.port.located.clear()
     made, _ = await pool.children.admit(pool.request())
@@ -850,8 +880,11 @@ async def test_the_routes_serve_the_sessions_child_environments(
         state_dir=pool.tmp / "worker",
     )
     monkeypatch.setattr(manager, "capabilities", capabilities)
+    desk = MonitorDesk(
+        None, pool.environments.records.listed, declared_tier=3, measured_tier=lambda _: None
+    )
     client: TestClient[Any, Any] = await aiohttp_client(
-        create_app(manager, TOKEN, pool.environments, children=pool.children)
+        create_app(manager, TOKEN, pool.environments, children=pool.children, monitor_desk=desk)
     )
     headers = {"Authorization": f"Bearer {TOKEN}"}
     body = await (
@@ -872,6 +905,8 @@ async def test_the_routes_serve_the_sessions_child_environments(
         await client.get(f"/v1/child-environments/{child}?{query}", headers=headers)
     ).json()
     assert found["phase"] == "ready"
+    figures = await (await client.get("/v1/monitor?project=p1&window=24h", headers=headers)).json()
+    assert (figures["child_environments"]["made"], figures["child_environments"]["alive"]) == (1, 1)
     listed = await (await client.get(f"/v1/child-environments?{query}", headers=headers)).json()
     assert [c["environment_id"] for c in listed["environments"]] == [child]
     response = await client.post(

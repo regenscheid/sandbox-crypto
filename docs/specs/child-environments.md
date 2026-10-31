@@ -12,7 +12,8 @@ closes. Built 2026-10-27, against the fake CLI: the Compute tab's children's ker
 hand-back's refusal of a file over 100 MiB by its size and the limit (CE-6). Built
 2026-10-31, against the fake CLI: the worker's ranged write, which copies a hand-back
 file or an input over 100 MiB in parts with the whole file's digest checked at its end
-(CE-6, CE-7); inputs from control's retained content (CE-7). Open: read-only `inputs/` and
+(CE-6, CE-7); inputs from control's retained content (CE-7); the cost view's count of
+child environments' seeding (CE-13). Open: read-only `inputs/` and
 `work/<id>/` for a child's processes: the worker's file calls set no file mode, and a
 sandbox's agent code runs as the user who owns its files and could change one back, so
 it needs per-run mounts (DA-20's open question 1). A child's file tools write only in its
@@ -239,7 +240,12 @@ platform places a child by the project's settings. No change to checks' evidence
   disk, or that must not disturb the session's environment; keep short tasks shared.
   The project's cost view counts child environments' seeding as the worker reports it.
   *As built 2026-10-27:* `sandbox-main-19` and `sandbox-delegated-task-17` (CE-5's
-  working memory), with the `delegate` description; the cost view's count is not built.
+  working memory), with the `delegate` description. *Built 2026-10-31:* the cost view's
+  count, in the Monitor view's spend (the worker's `GET /v1/monitor`,
+  `child_environments`): the child environments made in the window, ready, failed or
+  being made; how long their sandboxes took to be placed, seeded and started, which each
+  records once its sandbox is ready, and from admission to ready; and how many are alive
+  or kept now. It counts time, not money: the platform has no price for a sandbox.
   Many short children in own environments are a cost the owner has named; B11 (option C,
   the Python environment out of the workspace) cuts each seed to seconds, this design's
   natural prerequisite for `all`.

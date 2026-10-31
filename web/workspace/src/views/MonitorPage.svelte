@@ -1,8 +1,8 @@
 <!-- SPDX-License-Identifier: MIT -->
 <!-- The project's Monitor view (D103, built into the GUI since Grafana is avoided): calls
      by effect class and destination, approvals, holds and drift, inspected MCP answers'
-     alerts and blocks by server, spend and tokens, sandbox
-     tiers and MCP canaries for the last 24 hours or 7 days. Every figure is the platform's
+     alerts and blocks by server, spend and tokens with the child environments' seeding
+     (CE-13), sandbox tiers and MCP canaries for the last 24 hours or 7 days. Every figure is the platform's
      count; names from records are shown through visible(). It polls while the page is
      visible, at the chat's cadence, and says which part is unavailable. -->
 <script lang="ts">
@@ -347,6 +347,31 @@
         href={usageHref(projectId)}>Usage</a
       > page.
     </p>
+    {#if data.worker?.child_environments}
+      {@const seeding = data.worker.child_environments}
+      <h3>Child environments</h3>
+      <p class="child-seeding">
+        {seeding.made} made in this window, each a new sandbox whose workspace is seeded from the session's
+        image: {seeding.ready} ready, {seeding.failed} failed before they were ready{#if seeding.preparing},
+          {seeding.preparing} being made{/if}.
+        {#if seeding.created}
+          Their sandboxes took {wait(seeding.created.total)} in all to be placed, seeded and started (median
+          {wait(seeding.created.median)}, longest {wait(seeding.created.longest)}).
+        {/if}
+        {#if seeding.to_ready}
+          From admission to ready, with the session's packages and the inputs: median {wait(
+            seeding.to_ready.median,
+          )}, longest {wait(seeding.to_ready.longest)}.
+        {/if}
+        Alive now: {seeding.alive}{#if seeding.retained}, and {seeding.retained} kept stopped{/if}.
+      </p>
+      {#if seeding.counted_since}
+        <p class="muted child-counted">
+          Counted from {formatTime(seeding.counted_since)}: the worker keeps no earlier records of
+          the ones it released.
+        </p>
+      {/if}
+    {/if}
   </section>
 
   <section aria-labelledby="monitor-tiers">
@@ -367,7 +392,7 @@
               <tr class="tier-row">
                 <td><code>{item.environment_id}</code> <span class="muted">{item.profile}</span></td
                 >
-                <td>{item.kind === 'job' ? `job ${item.job_id ?? ''}` : 'session'}</td>
+                <td>{item.kind === 'job' ? `job ${item.job_id ?? ''}` : item.kind}</td>
                 <td>{item.state}</td>
                 <td>{tier(item.declared_tier)}</td>
                 <td>{tier(item.tier)}</td>

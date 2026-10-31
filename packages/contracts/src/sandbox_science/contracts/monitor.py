@@ -154,6 +154,43 @@ class EnvironmentTier(Contract):
     job_id: Identifier | None = None
 
 
+class SecondsSummary(Contract):
+    """How long some steps took: their count, median, longest and total, in seconds."""
+
+    count: Counter
+    median: Annotated[float, Field(ge=0, allow_inf_nan=False)]
+    longest: Annotated[float, Field(ge=0, allow_inf_nan=False)]
+    total: Annotated[float, Field(ge=0, allow_inf_nan=False)]
+
+
+class ChildSeeding(Contract):
+    """The project's child environments made within the window, each a new sandbox whose
+    workspace is seeded from the session environment's image (CE-13), as the worker's
+    records report them."""
+
+    made: Counter
+    """Admitted within the window."""
+    ready: Counter
+    """Of those, the ones that became ready."""
+    failed: Counter
+    """Of those, the ones that ended before they were ready."""
+    preparing: Counter
+    """Of those, the ones still being made."""
+    created: SecondsSummary | None = None
+    """Their sandboxes' creation: placement, the workspace's seed from the image and the
+    start, until the sandbox was ready; null when none was created."""
+    to_ready: SecondsSummary | None = None
+    """From admission to ready: the creation, the session's packages and the inputs."""
+    alive: Counter
+    """The project's child environments alive now, whenever they were made."""
+    retained: Counter
+    """Those kept stopped now, after an incomplete hand-back."""
+    counted_since: AwareDatetime | None = None
+    """When the window reaches past what the worker keeps (released child environments'
+    records go after ``child_retention``, or past the newest 1,000), the oldest time the
+    counts are complete from; null when they cover the whole window."""
+
+
 class WorkerMonitor(Contract):
     """``GET /v1/monitor?project=P&window=24h|7d``: one project's monitor figures."""
 
@@ -165,3 +202,5 @@ class WorkerMonitor(Contract):
     """Null when the event store is not configured or cannot be read (``unavailable``)."""
     unavailable: Annotated[str, StringConstraints(max_length=300)] | None = None
     environments: list[EnvironmentTier] = Field(max_length=MAX_ENVIRONMENTS)
+    child_environments: ChildSeeding | None = None
+    """Null when the worker offers no child environments."""

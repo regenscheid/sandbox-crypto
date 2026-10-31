@@ -53,6 +53,7 @@ import json
 import logging
 import posixpath
 import re
+import statistics
 from collections.abc import AsyncGenerator
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final
@@ -85,6 +86,7 @@ from sandbox_science.contracts.child_environments import (
     hand_back_path,
     hand_back_reserved,
 )
+from sandbox_science.contracts.monitor import ChildSeeding, SecondsSummary
 from sandbox_science.contracts.worker import (
     DEFAULT_COLLECT_MAX_BYTES,
     MAX_MANIFEST_FILES,
@@ -529,6 +531,7 @@ class ChildEnvironments:
         remaining = (record.ready_by - self.clock.now()).total_seconds()
         if remaining <= 0:
             raise _PrepareError("environment_unavailable", "its schedule timeout ran out")
+        creating = self.clock.now()
         try:
             await self.environments.create_child(
                 record.session_environment,
@@ -546,6 +549,10 @@ class ChildEnvironments:
                 "environment_unavailable",
                 f"the child environment could not be created: {error.message}",
             ) from error
+        now = self.clock.now()
+        # How long its sandbox took to be placed, seeded and started (CE-13's count).
+        seconds = max(0.0, (now - creating).total_seconds())
+        self.records.record_step(environment_id, "created", json.dumps(seconds), now)
         self._update(environment_id, phase="preparing")
         session = ExecutionContext(
             project_id=record.project_id,
@@ -1043,6 +1050,37 @@ class ChildEnvironments:
 
     # Reading.
 
+    def seeding(self, project_id: str, since: datetime, now: datetime) -> ChildSeeding:
+        """The project's child environments made since ``since``, as the cost view counts
+        their seeding (CE-13), from the rows the worker keeps."""
+        rows = self.records.listed(project_id=project_id)
+        made = [row for row in rows if row.created_at >= since]
+        created: list[float] = []
+        for row in made:
+            found = self.records.steps(row.environment_id).get("created")
+            if found is not None:
+                created.append(float(json.loads(found)))
+        to_ready = [
+            (row.ready_at - row.created_at).total_seconds()
+            for row in made
+            if row.ready_at is not None
+        ]
+        kept = now - timedelta(seconds=self.settings.child_retention)
+        complete = max(kept, rows[0].created_at) if len(rows) >= 1000 else kept
+        return ChildSeeding(
+            made=len(made),
+            ready=len(to_ready),
+            failed=sum(
+                1 for row in made if row.ready_at is None and row.phase in ("released", "retained")
+            ),
+            preparing=sum(1 for row in made if row.phase in ("creating", "preparing")),
+            created=_summary(created),
+            to_ready=_summary(to_ready),
+            alive=sum(1 for row in rows if row.phase in ACTIVE),
+            retained=sum(1 for row in rows if row.phase == "retained"),
+            counted_since=complete if complete > since else None,
+        )
+
     def get(self, environment_id: str, context: ExecutionContext) -> ChildEnvironment:
         return self.view(self._owned(environment_id, context))
 
@@ -1148,6 +1186,17 @@ class ChildEnvironments:
     async def _lock(self, environment_id: str) -> AsyncGenerator[None]:
         async with self._locks.setdefault(environment_id, asyncio.Lock()):
             yield
+
+
+def _summary(seconds: list[float]) -> SecondsSummary | None:
+    if not seconds:
+        return None
+    return SecondsSummary(
+        count=len(seconds),
+        median=statistics.median(seconds),
+        longest=max(seconds),
+        total=sum(seconds),
+    )
 
 
 def _operation(environment_id: str) -> str:
