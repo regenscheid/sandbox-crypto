@@ -709,7 +709,7 @@ class Executor:
         if (below := self.places.base_prefix) is not None:
             # This process finds the kernelspecs, which are the base's, as its kernels do.
             os.environ["JUPYTER_PATH"] = jupyter_path(os.environ, below)
-            self.rebased = rebase(self.places, below)
+            self.rebased = rebase(self.places, below, self.packages)
         self.provisioning: provisioning.Config | None = None
         """None when the wrappers could not be written: package commands then run as they are."""
         self.wrapped: list[str] = []
@@ -2170,7 +2170,7 @@ def tool_environment(
 IMAGE_RECORD: Final = Path("/usr/share/sandbox-science/image.json")
 
 
-def rebase(places: provisioning.Places, below: str) -> Message | None:
+def rebase(places: provisioning.Places, below: str, packages: provisioning.State) -> Message | None:
     """Move a workspace layer onto the image's base when the image changed under it, before
     anything reads its packages (provisioning.rebase_layer); None otherwise. A failure is
     reported and leaves the layer as it was found, for the layout check to judge."""
@@ -2181,9 +2181,21 @@ def rebase(places: provisioning.Places, below: str) -> Message | None:
     with contextlib.suppress(OSError, ValueError, AttributeError):
         revision = str(json.loads(IMAGE_RECORD.read_text()).get("revision", "unknown"))[:128]
     try:
-        return provisioning.rebase_layer(
-            layer, Path(below), provisioning.base_identity(places), revision
-        )
+        identity = provisioning.base_identity(places)
+        if not provisioning.over_another_base(layer, identity):
+            return None
+        # A package command holds the environment's lock exclusively while it changes the
+        # layer: wait for it (briefly) before moving the layer under it.
+        held = packages.lock_within(provisioning.LAYER_LOCK_WAIT)
+        if held is None:
+            raise provisioning.LayerLockError(
+                "a package command has held the environment's lock for more than"
+                f" {provisioning.LAYER_LOCK_WAIT:g} s"
+            )
+        try:
+            return provisioning.rebase_layer(layer, Path(below), identity, revision)
+        finally:
+            os.close(held)
     except (OSError, ValueError) as exc:
         print(f"executor: the layer stays over its old base: {exc}", file=sys.stderr)
         return None

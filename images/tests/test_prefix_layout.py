@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from types import ModuleType
 
@@ -586,3 +587,138 @@ def test_a_new_base_under_a_kept_layer_replaces_its_copies(base: Path, tmp_path:
     assert after[:16] == before[:16]
     assert after[16:32] != before[16:32]
     assert after.split()[1] == identity
+
+
+def _kept_layer_on_rebuilt_base(base: Path, tmp_path: Path) -> tuple[Path, str]:
+    """A layer made on the base, then the image is rebuilt (sympy goes up, newpkg comes)
+    at the same path; returns the layer and the rebuilt base's identity."""
+    _package(base, "sympy", "1.14.0", script=True)
+    layer = _make(base, tmp_path)
+    rebuilt = tmp_path / "rebuilt"
+    shutil.copytree(base, rebuilt, symlinks=True)
+    shutil.rmtree(base)
+    rebuilt.rename(base)
+    for path in (base / "conda-meta").glob("sympy-*"):
+        path.unlink()
+    shutil.rmtree(base / "lib/python3.14/site-packages/sympy-1.14.0.dist-info")
+    (base / "bin/sympy-tool").unlink()
+    _package(base, "sympy", "1.15.0", script=True)
+    _package(base, "newpkg", "2.0", script=True)
+    return layer, layout.base_identity(base)
+
+
+def test_a_mover_waits_for_the_one_moving_the_layer_and_then_finds_it_moved(
+    base: Path, tmp_path: Path
+) -> None:
+    """The layer's lock: a second starter does not touch the layer while the first holds the
+    lock, and when it gets the lock the layer is over the new base, so it moves nothing."""
+    from sandbox_science.worker import provisioning
+
+    layer, identity = _kept_layer_on_rebuilt_base(base, tmp_path)
+    old = json.loads((layer / layout.LAYER_MARKER).read_text())["identity"]
+    outcome: list[object] = []
+    with provisioning.layer_lock(layer):
+        mover = threading.Thread(
+            target=lambda: outcome.append(provisioning.rebase_layer(layer, base, identity, "rev-2"))
+        )
+        mover.start()
+        mover.join(0.5)  # a mover that did not wait would have finished by now
+        assert mover.is_alive()
+        assert outcome == []
+        assert json.loads((layer / layout.LAYER_MARKER).read_text())["identity"] == old
+        # The holder moves the layer meanwhile (it takes the same lock in another process in
+        # production, so the lock is not re-entered here).
+        assert provisioning._move_layer(layer, base, identity, "rev-2") is not None
+    mover.join(30)
+    assert not mover.is_alive()
+    assert outcome == [None]
+    assert json.loads((layer / layout.LAYER_MARKER).read_text())["identity"] == identity
+
+
+def test_two_processes_moving_a_layer_at_once_move_it_once(base: Path, tmp_path: Path) -> None:
+    """Two starters on one workspace (such as after a restart) both see the old base's marker
+    and start together: one moves the layer and reports it, the other waits and reports
+    nothing, and the layer is whole."""
+    layer, identity = _kept_layer_on_rebuilt_base(base, tmp_path)
+    gate = tmp_path / "go"
+    code = (
+        "import sys, time\n"
+        "from pathlib import Path\n"
+        "from sandbox_science.worker import provisioning as p\n"
+        f"while not Path({str(gate)!r}).exists():\n"
+        "    time.sleep(0.001)\n"
+        f"found = p.rebase_layer(Path({str(layer)!r}), Path({str(base)!r}), "
+        f"{identity!r}, 'rev-2')\n"
+        "print('moved' if found else 'nothing')\n"
+    )
+    movers = [
+        subprocess.Popen(
+            [sys.executable, "-c", code], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
+        for _ in range(2)
+    ]
+    gate.write_text("go")
+    results = [mover.communicate(timeout=120) for mover in movers]
+    assert [mover.returncode for mover in movers] == [0, 0], results
+    assert sorted(out.strip() for out, _ in results) == ["moved", "nothing"]
+    assert json.loads((layer / layout.LAYER_MARKER).read_text())["identity"] == identity
+    assert (layer / "bin/sympy-tool").read_text().endswith("# 1.15.0\n")
+    assert (layer / "bin/newpkg-tool").is_file()
+
+
+def test_a_mover_that_waits_too_long_says_so_and_leaves_the_layer(
+    base: Path, tmp_path: Path
+) -> None:
+    from sandbox_science.worker import provisioning
+
+    layer, identity = _kept_layer_on_rebuilt_base(base, tmp_path)
+    before = (layer / layout.LAYER_MARKER).read_text()
+    with provisioning.layer_lock(layer):
+        with pytest.raises(provisioning.LayerLockError, match=r"moving .* onto a new base") as info:
+            provisioning.rebase_layer(layer, base, identity, "rev-2", wait=0.2)
+        assert isinstance(info.value, OSError)  # the executor reports it and goes on
+    assert (layer / layout.LAYER_MARKER).read_text() == before
+    # Free again: the layer moves.
+    assert provisioning.rebase_layer(layer, base, identity, "rev-2", wait=0.2) is not None
+
+
+def test_a_layer_already_over_the_base_takes_no_lock(base: Path, tmp_path: Path) -> None:
+    from sandbox_science.worker import provisioning
+
+    layer = _make(base, tmp_path)
+    identity = layout.base_identity(base)
+    with provisioning.layer_lock(layer):
+        assert provisioning.rebase_layer(layer, base, identity, "rev-2", wait=0.2) is None
+
+
+def test_the_executor_leaves_the_layer_while_a_package_command_holds_the_environment(
+    base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A package command holds the environment's lock exclusively: the executor starting on a
+    rebuilt base waits a bounded time, reports, and leaves the layer for the layout check."""
+    from sandbox_science.worker import provisioning
+    from sandbox_science.worker.executor import rebase
+
+    layer, identity = _kept_layer_on_rebuilt_base(base, tmp_path)
+    site = str(base / "lib/python3.14/site-packages")
+    places = provisioning.Places(
+        str(layer / "conda-meta"),
+        (str(layer / "lib/python3.14/site-packages"),),
+        str(base),
+        str(base / "conda-meta"),
+        (site,),
+    )
+    state = provisioning.State(tmp_path / "state")
+    monkeypatch.setattr(sys, "prefix", str(layer))
+    monkeypatch.setattr(provisioning, "LAYER_LOCK_WAIT", 0.2)
+    command = state.try_lock(exclusive=True)
+    assert command is not None
+    try:
+        assert rebase(places, str(base), state) is None
+    finally:
+        os.close(command)
+    assert "the layer stays over its old base" in capsys.readouterr().err
+    assert json.loads((layer / layout.LAYER_MARKER).read_text())["identity"] != identity
+    moved = rebase(places, str(base), state)
+    assert moved is not None
+    assert moved["to"] == identity
