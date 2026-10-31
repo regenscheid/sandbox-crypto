@@ -227,6 +227,13 @@ def free_ports() -> tuple[int, int]:
     return worker, bound_port(span=2)
 
 
+LAUNCHER_WAIT = 120.0
+"""The longest any wait on a launcher or its parts may take, in seconds. A bound for a
+broken launcher, not a delay: every wait returns as soon as its condition holds. The launcher
+starts eight interpreters, so a host running a whole test suite in parallel (or other jobs
+besides) can take several times the 8 s an idle one needs."""
+
+
 class Launcher:
     """``sandbox-science`` as a process, its output read as it comes."""
 
@@ -253,7 +260,7 @@ class Launcher:
             self.lines.put(line.rstrip("\n"))
         self.lines.put(None)  # the end of its output
 
-    def expect(self, text: str, timeout: float = 30) -> None:
+    def expect(self, text: str, timeout: float = LAUNCHER_WAIT) -> None:
         """Wait until the launcher says ``text``: at most ``timeout`` seconds, and no
         longer than its output lasts, so that a launcher that stopped early fails at once
         with what it said."""
@@ -273,7 +280,7 @@ class Launcher:
             else:
                 self.seen.append(line)
 
-    def finish(self, timeout: float = 30) -> int:
+    def finish(self, timeout: float = LAUNCHER_WAIT) -> int:
         status = self.process.wait(timeout)
         # All it said: the reader ends at the end of its output, however loaded the host.
         self.reader.join(timeout)
@@ -292,7 +299,7 @@ class Launcher:
         return subprocess.run(
             [sys.executable, "-m", "sandbox_science.launcher", name,
              "--config", str(self.config), *extra],
-            capture_output=True, text=True, env=self.env, timeout=60, check=False,
+            capture_output=True, text=True, env=self.env, timeout=LAUNCHER_WAIT, check=False,
         )  # fmt: skip
 
 
@@ -320,8 +327,8 @@ def site(
             {
                 "bin_dir": str(fake_parts),
                 "openshell": {"cli": str(fake_openshell)},
-                "start_timeout": 20,
-                "stop_timeout": changes.pop("stop_timeout", 5),
+                "start_timeout": LAUNCHER_WAIT,
+                "stop_timeout": changes.pop("stop_timeout", 20),
                 "worker": {
                     "listen": f"127.0.0.1:{worker}",
                     "pass_env": [*fakes, *extra.get("worker", [])],
