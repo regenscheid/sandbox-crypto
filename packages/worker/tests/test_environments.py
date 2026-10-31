@@ -2899,6 +2899,53 @@ async def test_delete_never_certifies_or_mutates_same_name_replacement(setup: Se
     assert setup.fake.read()["sandboxes"][original.sandbox].get("phase", "Ready") == "Ready"
 
 
+def reuse_name(setup: Setup, sandbox: str) -> None:
+    """Another sandbox now has the environment's sandbox's name, as after the original
+    went and a new one took its name."""
+    state = setup.fake.read()
+    state["sandboxes"][sandbox]["id"] = "healthy-replacement"
+    state["sandboxes"][sandbox]["phase"] = "Ready"
+    setup.fake.write(state)
+
+
+async def test_suspension_never_stops_a_sandbox_that_reused_the_name(setup: Setup) -> None:
+    original, _ = await setup.environments.create(setup.request())
+    setup.environments.release_idle = always
+    reuse_name(setup, original.sandbox)
+    with pytest.raises(WorkerError, match="refusing to stop another sandbox"):
+        await setup.environments.suspend("env-1", time.monotonic())
+    assert setup.fake.calls("sandbox", "stop") == []
+    assert setup.environments.get("env-1").state is EnvironmentState.READY
+    assert setup.fake.read()["sandboxes"][original.sandbox]["phase"] == "Ready"
+
+
+async def test_stopping_again_on_request_never_stops_a_sandbox_that_reused_the_name(
+    setup: Setup,
+) -> None:
+    original, _ = await setup.environments.create(setup.request())
+    setup.environments.release_idle = always
+    assert await setup.environments.stop_now("env-1", time.monotonic())
+    stops = setup.fake.calls("sandbox", "stop")
+    reuse_name(setup, original.sandbox)  # recorded stopped; another runs under the name
+    with pytest.raises(WorkerError, match="refusing to stop another sandbox"):
+        await setup.environments.stop_now("env-1", time.monotonic())
+    assert setup.fake.calls("sandbox", "stop") == stops
+    assert setup.fake.read()["sandboxes"][original.sandbox]["phase"] == "Ready"
+
+
+async def test_admission_never_changes_the_policy_of_a_sandbox_that_reused_the_name(
+    setup: Setup,
+) -> None:
+    original, _ = await setup.environments.create(setup.request())
+    version = setup.fake.read()["sandboxes"][original.sandbox]["version"]
+    reuse_name(setup, original.sandbox)
+    with pytest.raises(WorkerError, match="refusing to change the policy of another sandbox"):
+        await setup.environments.admit("env-1", [("eprint.example.net", 443)])
+    assert setup.fake.calls("policy", "set") == []
+    assert setup.fake.read()["sandboxes"][original.sandbox]["version"] == version
+    assert setup.environments.get("env-1").admitted_hosts == original.admitted_hosts
+
+
 async def test_a_known_environment_never_falls_back_to_a_sandbox_made_by_hand(
     tmp_path: Path,
 ) -> None:

@@ -1332,6 +1332,25 @@ async def test_a_held_package_gate_does_not_keep_a_retained_job_sandbox(pool: Po
     assert pool.sandbox_of(ended.execution_id) not in pool.fake.read()["sandboxes"]
 
 
+async def test_retention_never_stops_a_sandbox_that_reused_the_name(pool: Pool) -> None:
+    pool.port.hold.clear()
+    pool.port.exit_code = 1  # the job fails: its sandbox would be stopped and retained
+    job, _ = await pool.manager.submit(pool.request())
+    await eventually(lambda: bool(pool.port.submitted), timeout=15)
+    sandbox = pool.sandbox_of(job.execution_id)
+    state = pool.fake.read()
+    state["sandboxes"][sandbox]["id"] = "someone-elses"  # the name now another's
+    pool.fake.write(state)
+    pool.port.hold.set()
+    ended = await asyncio.wait_for(pool.manager.wait(job.execution_id), 30)
+    assert ended.state is ExecutionState.FAILED
+    assert not [call for call in pool.fake.calls("sandbox", "stop") if call[2] == sandbox]
+    assert not [call for call in pool.fake.calls("sandbox", "delete") if call[2] == sandbox]
+    assert pool.fake.read()["sandboxes"][sandbox]["phase"] == "Ready"
+    with pytest.raises(WorkerError, match="refusing to stop another sandbox"):
+        await pool.environments.stop_job(pool.job_environment(job.execution_id))
+
+
 async def test_a_held_package_gate_still_keeps_a_session_environment(pool: Pool) -> None:
     hold_prefix(pool.store, SESSION)
     with pytest.raises(WorkerError, match="no proven original sandbox binding"):

@@ -222,7 +222,14 @@ async def _deleted(config: LauncherConfig, layout: Layout, name: str) -> bool:
     openshell = OpenShell(config)
     existing = await openshell.sandbox(name)
     deleted = False
-    if existing is not None and found[1] in (None, existing.get("id")):
+    if existing is not None and found[1] not in (None, existing.get("id")):
+        # Ours is gone, since the gateway's names are unique; the name is another's now.
+        print(
+            f"left the sandbox {name} alone: it is {existing.get('id')}, not the retired MCP"
+            f" proxy's {found[1]}; forgetting the record",
+            flush=True,
+        )
+    elif existing is not None:
         await openshell.run("sandbox", "delete", name)
         for _ in range(120):
             if await openshell.sandbox(name) is None:

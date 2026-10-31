@@ -201,11 +201,13 @@ profiles should carry. No mounting of one sandbox's disk in another. No automati
   missing workspace prefix) from being stopped or deleted does not apply to it: a held
   gate never keeps a job sandbox from being stopped, released or deleted, and its gate
   is forgotten with it once the deletion is confirmed. Its sandbox identity is still
-  checked before each deletion. A job sandbox whose executor fails the workspace-prefix
-  preflight (its image lacks the prefix its profile requires) ends the job `failed`
-  (`sandbox_unavailable`, saying so) before its command, and is released at once. At startup and hourly, a live job reattaches, an
-  unfinished collection restarts, an overdue retention releases, and a record whose
-  execution is gone is reported and kept. A sandbox without a record is never deleted.
+  checked before each stop and deletion: a sandbox that took its name is never touched.
+  A job sandbox whose executor fails the workspace-prefix preflight (its image lacks the
+  prefix its profile requires) ends the job `failed` (`sandbox_unavailable`, saying so)
+  before its command, and is released at once. At startup and hourly, a live job
+  reattaches, an unfinished collection restarts, an overdue retention releases, and a
+  record whose execution is gone is reported and kept. A sandbox without a record is
+  never deleted.
 
 ## Contracts, configuration and code
 
