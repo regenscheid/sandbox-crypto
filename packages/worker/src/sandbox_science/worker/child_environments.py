@@ -794,7 +794,7 @@ class ChildEnvironments:
                         )
                     else:
                         copied = await self._copy(
-                            upload_id("hand-back", environment_id, str(index)),
+                            upload_id("hand-back", environment_id, str(index), destination),
                             path,
                             destination,
                             budget,

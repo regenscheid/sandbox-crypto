@@ -617,6 +617,26 @@ async def test_a_continuations_hand_back_goes_to_its_works_write_area(pool: Pool
     assert not any(path.startswith(f"work/{DELEGATION}/") for _, path in pool.port.files)
 
 
+async def test_large_files_go_in_parts_to_the_works_write_area(pool: Pool) -> None:
+    """The ranged hand-back keeps DA-19's targets: a continuation's files over 100 MiB go
+    to its work's area, one written there at its own path, any other below it."""
+    made = await pool.ready()
+    child = made.environment_id
+    area = "work/dlg-" + "f" * 24
+    kept, other = b"k" * LARGE, b"o" * LARGE
+    pool.port.files[child, f"{area}/big.bin"] = kept
+    pool.port.files[child, "out/big.bin"] = other
+    back = await pool.children.hand_back(
+        child, pool.back((f"{area}/big.bin", "out/big.bin"), write_area=area)
+    )
+    assert back.complete
+    assert [f.path for f in back.collected] == [f"{area}/big.bin", f"{area}/out/big.bin"]
+    assert pool.port.files[SESSION, f"{area}/big.bin"] == kept
+    assert pool.port.files[SESSION, f"{area}/out/big.bin"] == other
+    assert pool.port.range_writes == 26  # 13 parts each
+    assert not pool.port.parts
+
+
 async def test_an_incomplete_hand_back_retains_two_a_project(tmp_path: Path) -> None:
     pool = Pool(
         tmp_path,
