@@ -362,8 +362,15 @@ class Pool:
 
         async def release(environment_id: str) -> None:
             self.released.append(environment_id)
+            await self.manager.release(environment_id)
 
+        async def deleting(environment_id: str) -> None:
+            await self.manager.end_job_sandboxes(environment_id)
+
+        # Wired to the current worker, as ``create_app`` wires the real one.
         self.environments.release = release
+        self.environments.required_deleting.append(deleting)
+        self.environments.given_up.append(lambda found: self.manager.environment_given_up(found))
         self.store = Store(tmp_path / "worker" / "worker.sqlite3")
         self.port = FakePort()
         self.manager, self.sandboxes = self._worker()
@@ -1116,6 +1123,136 @@ async def test_another_sessions_close_leaves_the_job_alone(pool: Pool) -> None:
     pool.port.hold.set()
     ended = await asyncio.wait_for(pool.manager.wait(job.execution_id), 30)
     assert ended.state is ExecutionState.SUCCEEDED
+
+
+def deleted_ending(pool: Pool, ended: Execution) -> None:
+    """A job its session environment's deletion ended: cancelled, never lost, nothing
+    copied back into the environment that went, its sandbox released, and the manifest
+    saying why."""
+    assert ended.state is ExecutionState.CANCELLED, ended.result
+    assert ended.result is not None
+    assert any("session environment was deleted" in notice for notice in ended.result.notices)
+    prefix = f".jobs/{ended.execution_id}/"
+    copied = [path for (env, path) in pool.port.write_counts if env == SESSION and prefix in path]
+    assert copied == []
+    assert len(pool.port.submitted) == 1  # never run again
+    record = pool.store.job_sandboxes.get(ended.execution_id)
+    assert record is not None
+    assert record.phase == "released"
+    assert pool.sandbox_of(ended.execution_id) not in pool.fake.read()["sandboxes"]
+    manifest = pool.sandboxes.manifest(ended.execution_id)
+    assert manifest is not None
+    assert manifest.outcome is ExecutionState.CANCELLED
+    assert manifest.collection == "incomplete"
+    assert any("deleted" in file.reason for file in manifest.not_collected)
+
+
+async def test_deleting_the_session_environment_ends_the_job_and_releases_its_sandbox(
+    pool: Pool,
+) -> None:
+    pool.port.hold.clear()
+    job, _ = await pool.manager.submit(pool.request())
+    await eventually(lambda: bool(pool.port.submitted), timeout=15)
+    deleting = asyncio.create_task(pool.environments.delete(SESSION))
+    await eventually(lambda: bool(pool.port.cancelled), timeout=15)
+    pool.port.hold.set()  # the command ends as cancelled
+    deleted = await asyncio.wait_for(deleting, 30)
+    assert deleted.state is EnvironmentState.DELETED
+    # The deletion waited for the job, which ended as it does, not as lost.
+    ended = pool.manager.get(job.execution_id)
+    deleted_ending(pool, ended)
+    assert pool.store.job_sandboxes.steps(job.execution_id)["release"] == '"environment_deleted"'
+
+
+async def test_deleting_the_session_environment_releases_its_retained_sandboxes(
+    pool: Pool,
+) -> None:
+    pool.port.exit_code = 1  # a failure retains its sandbox
+    ended = await pool.run(pool.request())
+    assert ended.state is ExecutionState.FAILED
+    record = pool.store.job_sandboxes.get(ended.execution_id)
+    assert record is not None
+    assert record.phase == "retained"
+    collected_once(pool, ended.execution_id)  # collected before the deletion, and kept
+    await pool.environments.delete(SESSION)
+    record = pool.store.job_sandboxes.get(ended.execution_id)
+    assert record is not None
+    assert record.phase == "released"
+    assert pool.sandbox_of(ended.execution_id) not in pool.fake.read()["sandboxes"]
+    # The job's outcome and manifest are not changed by the release.
+    assert pool.manager.get(ended.execution_id).state is ExecutionState.FAILED
+    manifest = pool.sandboxes.manifest(ended.execution_id)
+    assert manifest is not None
+    assert manifest.outcome is ExecutionState.FAILED
+
+
+async def test_deleting_another_environment_leaves_the_job_alone(pool: Pool) -> None:
+    await pool.environments.create(
+        EnvironmentRequest(
+            environment_id="env-2", project_id="p1", profile="minimal", policy=pool.policy
+        )
+    )
+    pool.port.hold.clear()
+    job, _ = await pool.manager.submit(pool.request())
+    await eventually(lambda: bool(pool.port.submitted), timeout=15)
+    await pool.environments.delete("env-2")
+    assert pool.port.cancelled == []
+    assert "release" not in pool.store.job_sandboxes.steps(job.execution_id)
+    pool.port.hold.set()
+    ended = await asyncio.wait_for(pool.manager.wait(job.execution_id), 30)
+    assert ended.state is ExecutionState.SUCCEEDED
+    collected_once(pool, job.execution_id)
+
+
+async def test_a_session_environment_given_up_ends_its_job_sandboxes(pool: Pool) -> None:
+    pool.port.hold.clear()
+    job, _ = await pool.manager.submit(pool.request())
+    await eventually(lambda: bool(pool.port.submitted), timeout=15)
+    session = pool.environments.records.get(SESSION)
+    assert session is not None
+    state = pool.fake.read()
+    del state["sandboxes"][session.sandbox]  # the session's own pod went
+    pool.fake.write(state)
+    with pytest.raises(WorkerError, match="create the environment again"):
+        await pool.environments.resume(SESSION)
+    await eventually(lambda: bool(pool.port.cancelled), timeout=15)
+    pool.port.hold.set()
+    ended = await asyncio.wait_for(pool.manager.wait(job.execution_id), 30)
+    deleted_ending(pool, ended)
+
+
+async def test_a_session_environment_deleted_while_the_worker_was_down(pool: Pool) -> None:
+    pool.port.exit_code = 1
+    retained = await pool.run(pool.request("failed"))
+    pool.port.exit_code = 0
+    pool.port.hold.clear()
+    job, _ = await pool.manager.submit(pool.request())
+    await eventually(lambda: len(pool.port.submitted) == 2, timeout=15)
+
+    def deleted() -> None:
+        # As the offline reconciliation command, or a deletion this worker did not see
+        # through, leaves it: the session environment's record says deleted.
+        info = pool.environments.records.get(SESSION)
+        assert info is not None
+        pool.environments.records.save(info.model_copy(update={"state": EnvironmentState.DELETED}))
+
+    await pool.restart(deleted)
+    await eventually(lambda: len(pool.port.cancelled) == 1, timeout=15)
+    pool.port.hold.set()
+    ended = await asyncio.wait_for(pool.manager.wait(job.execution_id), 30)
+    assert ended.state is ExecutionState.CANCELLED
+    assert len(pool.port.submitted) == 2
+    record = pool.store.job_sandboxes.get(job.execution_id)
+    assert record is not None
+    assert record.phase == "released"
+    manifest = pool.sandboxes.manifest(job.execution_id)
+    assert manifest is not None
+    assert any("deleted" in file.reason for file in manifest.not_collected)
+    # The earlier job's retained sandbox has nothing to be reached through: released.
+    kept = pool.store.job_sandboxes.get(retained.execution_id)
+    assert kept is not None
+    assert kept.phase == "released"
+    assert pool.sandbox_of(retained.execution_id) not in pool.fake.read()["sandboxes"]
 
 
 async def test_the_workers_port_finds_an_operation_without_submitting_it(pool: Pool) -> None:
