@@ -98,13 +98,16 @@ from .requests import document_answer, dumps
 _log = logging.getLogger(__name__)
 
 GRANT_HOURS: Final = 0.25
-"""How long an answer the relay gives the middleware for one call lasts, in hours."""
+"""How long an answer the relay gives the middleware for one call lasts, in hours. Every
+answer from a grant ends by the grant's expiry, if it has one (``ledger_answer``)."""
 HOST_HOURS: Final = 1.0
 """How long the relay's answer for a host grant lets the middleware pass the host's reads
 for one sandbox and policy revision, in hours: research code is refused once an hour at
 most, while a revoked grant stops reaching the middleware within the hour."""
 ONCE_HOURS: Final = 1.0
 """How long an approval of one request (its exact arguments or body) lasts."""
+MIN_ANSWER_HOURS: Final = 1 / 3600
+"""The shortest answer sent: a second, for a grant with less than that left."""
 RELAY_SECONDS: Final = 3.0
 MAX_REQUESTS: Final = 256
 Kind = Literal["mcp", "network", "packages", "hold"]
@@ -404,18 +407,37 @@ def _asked(child: ChildRequest | None) -> ChildAsked | None:
     )
 
 
-def ledger_answer(item: PendingApproval, decision: str) -> tuple[str, float | None]:
+def ledger_answer(
+    item: PendingApproval,
+    decision: str,
+    grants: Sequence[ProjectGrant] = (),
+    now: datetime | None = None,
+) -> tuple[str, float | None]:
     """The scope and hours of the answer the middleware records: the request itself (an
     MCP call with its exact arguments), or for a host grant the host's reads in that
-    sandbox."""
+    sandbox. An answer from ``grants`` never outlasts the first of them to expire."""
     approve = decision != "deny"
     if item.kind == "mcp":
-        return "call", (None if not approve else ONCE_HOURS if decision == "once" else GRANT_HOURS)
-    if item.kind == "packages" and item.http is None:
-        return "files", None  # the operation's own deadline bounds it
-    if item.kind == "network" and decision in ("session", "project"):
-        return "host", HOST_HOURS
-    return "request", (None if not approve else ONCE_HOURS if decision == "once" else GRANT_HOURS)
+        scope = "call"
+        hours = None if not approve else ONCE_HOURS if decision == "once" else GRANT_HOURS
+    elif item.kind == "packages" and item.http is None:
+        scope, hours = "files", None  # the operation's own deadline bounds it
+    elif item.kind == "network" and decision in ("session", "project"):
+        scope, hours = "host", HOST_HOURS
+    else:
+        scope = "request"
+        hours = None if not approve else ONCE_HOURS if decision == "once" else GRANT_HOURS
+    return scope, (_within(hours, grants, now) if approve and now is not None else hours)
+
+
+def _within(hours: float | None, grants: Sequence[ProjectGrant], now: datetime) -> float | None:
+    """``hours``, or less if one of ``grants`` expires sooner: the grants' remaining time.
+    The grants are live at ``now``."""
+    ends = [grant.expires_at for grant in grants if grant.expires_at is not None]
+    if not ends:
+        return hours
+    left = max((min(ends) - now).total_seconds() / 3600, MIN_ANSWER_HOURS)
+    return left if hours is None else min(hours, left)
 
 
 async def _send(
@@ -481,13 +503,13 @@ async def answer(request: web.Request) -> web.Response:
         raise ProjectError(ErrorKind.CONFLICT, f"permission request {seq} is already answered")
     granted: list[ProjectGrant] = []
     try:
+        now = config.clock.now()
         if decision.decision in ("session", "project"):
-            now = config.clock.now()
             granted = await asyncio.to_thread(
                 ProjectGrants(context.writer).give,
                 project, asked, decision.decision, author(request), now, decision.hours,
             )  # fmt: skip
-        scope, hours = ledger_answer(held, decision.decision)
+        scope, hours = ledger_answer(held, decision.decision, granted, now)
         await _send(config, held, approve=decision.decision != "deny", scope=scope, hours=hours)
     except BaseException:
         config.release(project, seq)
@@ -553,11 +575,12 @@ async def _relay_one(
     project: str, held: PendingApproval,
 ) -> None:  # fmt: skip
     grants = ProjectGrants(store)
-    found = await asyncio.to_thread(grants.covering, project, asked_of(held), config.clock.now())
+    now = config.clock.now()
+    found = await asyncio.to_thread(grants.covering, project, asked_of(held), now)
     if not found:
         return
     scope = found[0].scope
-    ledger_scope, hours = ledger_answer(held, scope)
+    ledger_scope, hours = ledger_answer(held, scope, found, now)
     if not config.claim(project, held.seq):
         return  # the user is answering it, or has
     try:

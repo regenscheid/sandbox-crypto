@@ -22,6 +22,7 @@ from sandbox_science.contracts import new_id
 from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords
 from sandbox_science.orchestrator.delegation.requests import ChildRequests
 from sandbox_science.orchestrator.projects import ProjectStore
+from sandbox_science.testing import FakeClock
 from sandbox_science.testing.worker_api import fake_worker_app
 from sandbox_science.workspace import approvals
 
@@ -421,6 +422,43 @@ async def test_the_relay_answers_network_and_package_requests_from_grants(
     assert desk.answers[2] == (
         20, {"approve": True, "scope": "host", "hours": approvals.HOST_HOURS},
     )  # fmt: skip
+
+
+async def test_an_answer_from_a_grant_never_outlasts_the_grant(
+    aiohttp_client: ClientFactory,
+    state_dir: Path,
+    static_dir: Path,
+    worker: tuple[FakeWorker, str],
+) -> None:
+    desk, worker_url = worker
+    client = await client_for(aiohttp_client, state_dir, static_dir, worker_url)
+    clock = FakeClock(datetime(2026, 10, 31, 22, 0, tzinfo=UTC))
+    client.app[approvals.APPROVALS].clock = clock
+    desk.network(10, "data.example.org")
+    desk.hold(11, "crawl")
+    desk.network(12, "plain.example.org")
+    # 72 s and 6 min: shorter than the host answer's hour and the call answer's 15 min.
+    await post(client, ANSWER.format(10), {"decision": "project", "kind": "network", "hours": 0.02})
+    await post(client, ANSWER.format(11), {"decision": "project", "hours": 0.1})
+    await post(client, ANSWER.format(12), {"decision": "project", "kind": "network", "hours": 5})
+    clock.advance(36)  # half of the host grant's 72 s left
+    desk.network(20, "data.example.org", path="/other")
+    await until(lambda: len(desk.answers) == 4)
+    assert desk.answers == [
+        (10, {"approve": True, "scope": "host", "hours": pytest.approx(0.02)}),
+        (11, {"approve": True, "scope": "call", "hours": pytest.approx(0.1)}),
+        # A grant longer than the answer's own time leaves it as it is.
+        (12, {"approve": True, "scope": "host", "hours": approvals.HOST_HOURS}),
+        (20, {"approve": True, "scope": "host", "hours": pytest.approx(0.01)}),
+    ]
+    clock.advance(37)  # the grant has expired: the next request is the user's again
+    desk.network(21, "data.example.org", path="/more")
+    await asyncio.sleep(0.3)
+    assert len(desk.answers) == 4
+    assert 21 in await shown(client)
+    # Granted again, the host gets a new grant and its own time, not the expired one's.
+    await post(client, ANSWER.format(21), {"decision": "project", "kind": "network", "hours": 2})
+    assert desk.answers[-1] == (21, {"approve": True, "scope": "host", "hours": 1.0})
 
 
 async def test_a_worker_without_permission_routes_shows_no_cards(
