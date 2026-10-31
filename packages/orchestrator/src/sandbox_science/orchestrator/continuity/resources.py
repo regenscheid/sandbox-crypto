@@ -179,7 +179,7 @@ class SafePoint:
     """A root's pinned turn limit, the block each accepted continuation adds; 0 for a child."""
 
 
-_SUPERSEDED = (
+SUPERSEDED = (
     "EXISTS (SELECT 1 FROM research_observations t WHERE t.project={o}.project "  # noqa: S608
     "AND t.session={o}.session AND t.work={o}.work AND t.kind='resource_decision' "
     "AND json_extract(t.detail,'$.request.action') NOT IN ('stop','report','pause') "
@@ -325,7 +325,7 @@ class ResourceRequests:
         with self.control.read() as tx:
             rows = tx.sql.execute(
                 "SELECT r.detail,d.detail,w.state,w.current,"  # noqa: S608 - fixed SQL
-                + _SUPERSEDED.format(o="r")
+                + SUPERSEDED.format(o="r")
                 + " FROM research_observations r "
                 "JOIN research_work w USING(project,session,work) LEFT JOIN "
                 "research_observations d ON d.project=r.project AND d.session=r.session "
@@ -373,7 +373,7 @@ class ResourceRequests:
                 "AND NOT EXISTS (SELECT 1 FROM research_observations d WHERE d.project=o.project "
                 "AND d.session=o.session AND d.work=o.work AND d.kind='resource_decision' "
                 "AND d.identity=json_extract(o.detail,'$.request_id')) "
-                "AND NOT " + _SUPERSEDED.format(o="o") + " "
+                "AND NOT " + SUPERSEDED.format(o="o") + " "
                 "ORDER BY o.observed LIMIT 4",
                 (
                     owner.project,

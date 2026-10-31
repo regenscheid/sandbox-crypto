@@ -1,8 +1,9 @@
 # Adaptive research resource policy
 
 Status: implemented locally (A8, [D102](../DECISIONS.md)): soft caps on tokens, turns,
-active time and cost are check-ins, loop heuristics ask for an early check-in, and the
-user token approvals of D87 are removed. Retained-artifact allowances and hard retention
+active time and cost are check-ins, loop heuristics ask for an early check-in, the
+user token approvals of D87 are removed, and the web app shows the usage ([usage
+view](#usage-view)). Retained-artifact allowances and hard retention
 capacity keep their earlier behavior. Runtime qualification with a real model is pending.
 
 ## Purpose
@@ -129,7 +130,7 @@ a row (RS-6f).
 ## Accounting
 
 Spend and tokens per project, session, run and role, the reviewer's included, are
-recorded and read through the usage view ([run service](run-service.md), RS-6g). The
+recorded and read through the usage view ([run service](run-service.md), RS-6g; [below](#usage-view)). The
 reviewer's calls are accounted under their own role; a review has no token budget by
 default (`--review-token-budget` is an operator's optional cap), and no reviewer cost
 stops anything but the gateway's budget. Optional project cost notices record when the
@@ -167,8 +168,30 @@ sandbox-science-harness project budget --state-dir STATE --project PROJECT \
 caps off; `--no-notify` removes the notices; `project budget --daily-cost-limit AMOUNT`
 sets the optional local limit, which the model-call journal alone enforces.
 
+## Usage view
+
+The workspace shows the accounting and the check-ins in one read-only view
+([workspace](../WORKSPACE.md#views)), over records control already keeps; it decides,
+extends and stops nothing.
+
+- A session's Usage tab reads `GET …/sessions/{session}/usage/view`: the session's spend
+  and tokens by role and by model; by agent, one entry for each work across its attempts
+  with the reviewer's calls under the run they reviewed, beside the work's four soft caps
+  and what it has used against each; the latest check-ins; and counts of the session's
+  check-ins by resource, loop rule, who answered and the answer's action.
+- The project's Usage page reads `GET …/usage/view?window=24h|7d|all`: the window's use
+  beside the project's whole-life use, its sessions by spend with their check-ins and loop
+  detections in the window, the optional local cost limit and the notices.
+- The soft caps are read without sampling or pinning anything: a child's token and turn
+  caps are its blueprint's, the others the allowance pinned when the work first reached a
+  safe point (else the settings' value), and each is raised by the recorded extensions. A
+  root's turn limit is unknown until its first safe point pins it. A work's token use is
+  its own calls and folds, as its cap counts it; its cost use also counts the calls made
+  for it, such as the reviewer's.
+- A cost the gateway did not price is shown as unknown, or as unpriced calls beside a
+  known part, never as zero.
+
 ## Not built
 
-The web app shows check-ins, decisions and the root's notices, but not yet the usage
-account; `GET /api/v0/projects/{project}/usage` and the session's `recovery/usage` are its
-interface until a usage view is added.
+The loop heuristics and soft caps have been exercised with scripted models only; the
+check-ins have not been qualified with a real model.

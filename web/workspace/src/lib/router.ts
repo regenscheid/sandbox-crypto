@@ -21,6 +21,9 @@
  *   wait for the user;
  * - `#/projects/<project>/monitor` the project's monitor figures (D103): calls, approvals,
  *   holds and drift, spend and tokens, sandbox tiers and canaries;
+ * - `#/projects/<project>/usage` the project's spend by session over a window, with its
+ *   check-ins and loop detections (D102), and `…/sessions/<session>/usage` one session with
+ *   its Usage tab open;
  * - `#/projects/<project>/ledger` the project's ledger browser,
  *   `#/projects/<project>/ledger/issues` its issues and what they concern, and
  *   `#/projects/<project>/ledger/<entry>` one entry by its handle or ID, with
@@ -59,6 +62,8 @@ export type Route =
   | { view: 'skills'; project: string }
   | { view: 'mcp'; project: string }
   | { view: 'monitor'; project: string }
+  | { view: 'usage'; project: string }
+  | { view: 'session_usage'; project: string; session: string }
   | { view: 'documents'; project: string }
   | { view: 'artifacts'; project: string }
   | { view: 'settings'; project: string }
@@ -101,6 +106,7 @@ export function parseRoute(hash: string): Route {
   if (parts.length === 3 && parts[2] === 'skills') return { view: 'skills', project };
   if (parts.length === 3 && parts[2] === 'mcp') return { view: 'mcp', project };
   if (parts.length === 3 && parts[2] === 'monitor') return { view: 'monitor', project };
+  if (parts.length === 3 && parts[2] === 'usage') return { view: 'usage', project };
   if (parts.length === 3 && parts[2] === 'documents') return { view: 'documents', project };
   if (parts.length === 3 && parts[2] === 'artifacts') return { view: 'artifacts', project };
   if (parts.length === 3 && parts[2] === 'settings') return { view: 'settings', project };
@@ -127,6 +133,9 @@ export function parseRoute(hash: string): Route {
   }
   if (parts[2] === 'sessions' && parts.length === 5 && parts[4] === 'tree') {
     return { view: 'tree', project, session: name };
+  }
+  if (parts[2] === 'sessions' && parts.length === 5 && parts[4] === 'usage') {
+    return { view: 'session_usage', project, session: name };
   }
   if (parts[2] === 'sessions' && parts.length === 6 && parts[4] === 'runs') {
     const run = decoded(parts[5]!);
@@ -200,6 +209,16 @@ export function mcpHref(project: string): string {
 /** The project's Monitor view (D103). */
 export function monitorHref(project: string): string {
   return `${projectHref(project)}/monitor`;
+}
+
+/** The project's usage view (D102). */
+export function usageHref(project: string): string {
+  return `${projectHref(project)}/usage`;
+}
+
+/** A session with its Usage tab open (D102). */
+export function sessionUsageHref(project: string, session: string): string {
+  return `${sessionHref(project, session)}/usage`;
 }
 
 /** The project's documents, beside the one chosen. */

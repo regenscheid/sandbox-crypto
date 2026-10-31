@@ -92,6 +92,7 @@ from . import (
     session_opening,
     skills,
     uploads,
+    usage_view,
 )
 from .context import (
     CONTEXT,
@@ -507,6 +508,7 @@ def create_app(
         mcp_traffic,
         messages,
         uploads,
+        usage_view,
         session_opening,
         approvals,
     ):

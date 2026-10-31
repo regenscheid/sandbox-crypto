@@ -866,13 +866,14 @@ class RunState:
         return {role: totals[role] for role in COST_ROLES if role in totals}
 
     def usage_rows(
-        self, project: str, session: str | None = None
+        self, project: str, session: str | None = None, since: datetime | None = None
     ) -> list[tuple[str | None, str | None, str, float | None, int, int, int]]:
         """Recorded model usage grouped by session, run and role (D102), from the same
         sources and precedence as ``model_costs``: ``(session, run, role, known cost or
-        None, tokens, calls, unpriced calls)``. A reviewer's call is under the session it
-        reviewed and the author run; the skills' calls have neither."""
-        runs, values = _run_usage(project, None)
+        None, tokens, calls, unpriced calls)``, after ``since`` if given. A reviewer's call
+        is under the session it reviewed and the author run; the skills' calls have
+        neither."""
+        runs, values = _run_usage(project, since)
         tokens = (
             "coalesce(json_extract(u,'$.input_tokens'),0)+"
             "coalesce(json_extract(u,'$.output_tokens'),0)"
@@ -896,6 +897,40 @@ class RunState:
                 int(unpriced),
             )
             for sess, rn, role, cost, priced, used, calls, unpriced in rows
+        ]
+
+    def usage_breakdown(
+        self, project: str, session: str | None = None, since: datetime | None = None
+    ) -> list[tuple[str | None, str | None, str, str | None, float | None, int, int, int]]:
+        """Recorded model usage at its finest grain, for the usage view (D102): ``(session,
+        run, role, model or None when the record names none, known cost or None, tokens,
+        calls, unpriced calls)``, after ``since`` if given, from the same sources and
+        precedence as ``usage_rows``."""
+        runs, values = _run_usage(project, since)
+        tokens = (
+            "coalesce(json_extract(u,'$.input_tokens'),0)+"
+            "coalesce(json_extract(u,'$.output_tokens'),0)"
+        )
+        with self.control.read() as tx:
+            rows = tx.sql.execute(
+                f"SELECT sess,rn,role,json_extract(u,'$.model') m,sum(json_extract(u,'$.cost')),"  # noqa: S608 - fixed SQL
+                f"count(json_extract(u,'$.cost')),sum({tokens}),count(*),"
+                f"count(*) FILTER (WHERE json_extract(u,'$.cost') IS NULL AND {tokens}>0) "
+                f"FROM ({runs}) WHERE ? IS NULL OR sess=? GROUP BY sess,rn,role,m",
+                (*values, session, session),
+            ).fetchall()
+        return [
+            (
+                None if sess is None else str(sess),
+                None if rn is None else str(rn),
+                str(role),
+                model if isinstance(model, str) and model else None,
+                float(cost) if priced else None,
+                int(used or 0),
+                int(calls),
+                int(unpriced),
+            )
+            for sess, rn, role, model, cost, priced, used, calls, unpriced in rows
         ]
 
     def usage_by_model(

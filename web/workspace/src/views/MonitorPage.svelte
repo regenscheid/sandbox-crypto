@@ -14,7 +14,7 @@
   import { costByRole, costSource, roleName } from '../lib/modelCost';
   import { initialPoll, Poller, type PollState } from '../lib/poller';
   import { ageText } from '../lib/questions';
-  import { mcpHref, projectHref } from '../lib/router';
+  import { mcpHref, projectHref, usageHref } from '../lib/router';
   import { visible } from '../lib/text';
   import PollStatus from './PollStatus.svelte';
 
@@ -342,6 +342,11 @@
     {:else}
       <p class="muted project-cost">The project's cost: unknown, no call was priced.</p>
     {/if}
+    <p class="muted">
+      By session, by agent against its soft caps, with the check-ins and loop detections: the <a
+        href={usageHref(projectId)}>Usage</a
+      > page.
+    </p>
   </section>
 
   <section aria-labelledby="monitor-tiers">
