@@ -21,6 +21,7 @@ own locking orders the writers; every write is a single short transaction, synch
 from __future__ import annotations
 
 import json
+import secrets
 import sqlite3
 from collections.abc import Generator
 from contextlib import closing, contextmanager
@@ -35,6 +36,9 @@ from sandbox_science.contracts.workspace_checkpoint import (
     CheckpointState,
     InventoryCheckpoint,
     InventoryHold,
+    InventoryRestore,
+    RestorePlan,
+    RestoreState,
 )
 
 DATABASE = "checkpoints.sqlite3"
@@ -51,7 +55,8 @@ _SCHEMA = (
     expires_at TEXT NOT NULL,
     placed_by TEXT NOT NULL CHECK (length(placed_by) BETWEEN 1 AND 256),
     released_at TEXT,
-    released_reason TEXT
+    released_reason TEXT,
+    released_by TEXT
 ) STRICT""",
     "CREATE UNIQUE INDEX IF NOT EXISTS holds_active ON holds(environment_id)"
     " WHERE released_at IS NULL",
@@ -96,7 +101,44 @@ _SCHEMA = (
     " BEGIN SELECT RAISE(ABORT, 'the deletion journal is append-only'); END",
     "CREATE TRIGGER IF NOT EXISTS deletions_kept_delete BEFORE DELETE ON deletions"
     " BEGIN SELECT RAISE(ABORT, 'the deletion journal is append-only'); END",
+    """CREATE TABLE IF NOT EXISTS restores (
+    restore_id TEXT PRIMARY KEY,
+    environment_id TEXT NOT NULL,
+    sandbox TEXT NOT NULL,
+    manifest_sha256 TEXT NOT NULL CHECK (length(manifest_sha256) = 64),
+    plan TEXT NOT NULL CHECK (length(CAST(plan AS BLOB)) BETWEEN 2 AND 262144),
+    tree_sha256 TEXT NOT NULL CHECK (length(tree_sha256) = 64),
+    executions INTEGER NOT NULL,
+    state TEXT NOT NULL CHECK
+        (state IN ('planned', 'failed', 'discarding', 'restored', 'cancelled')),
+    attempt TEXT,
+    placed_at TEXT NOT NULL,
+    placed_by TEXT NOT NULL CHECK (length(placed_by) BETWEEN 1 AND 256),
+    finished_at TEXT,
+    finished_by TEXT
+) STRICT""",
+    "CREATE UNIQUE INDEX IF NOT EXISTS restores_open ON restores(environment_id)"
+    " WHERE state IN ('planned', 'failed', 'discarding')",
+    """CREATE TABLE IF NOT EXISTS operations (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    recorded_at TEXT NOT NULL,
+    actor TEXT NOT NULL CHECK (length(actor) BETWEEN 1 AND 256),
+    kind TEXT NOT NULL CHECK (kind IN ('restore', 'upload-expiry')),
+    subject TEXT NOT NULL CHECK (length(subject) BETWEEN 1 AND 256),
+    phase TEXT NOT NULL CHECK (phase IN ('intent', 'attempt', 'job', 'retry', 'verified',
+        'failed', 'discarding', 'cancelled', 'done')),
+    detail TEXT NOT NULL CHECK (length(CAST(detail AS BLOB)) BETWEEN 2 AND 65536)
+) STRICT""",
+    "CREATE TRIGGER IF NOT EXISTS operations_kept_update BEFORE UPDATE ON operations"
+    " BEGIN SELECT RAISE(ABORT, 'the operations journal is append-only'); END",
+    "CREATE TRIGGER IF NOT EXISTS operations_kept_delete BEFORE DELETE ON operations"
+    " BEGIN SELECT RAISE(ABORT, 'the operations journal is append-only'); END",
 )
+OPEN_RESTORE = ("planned", "failed", "discarding")
+"""Restore states that keep the target's sandbox stopped, with no expiry."""
+EXPIRY_LEASE = timedelta(hours=6)
+"""How long an upload expiry's intent without its end keeps checkpoint plans and upload
+verifications away; ``expire-objects`` runs within it (its deadline is shorter)."""
 
 
 class RecordError(ValueError):
@@ -122,12 +164,35 @@ class Deletion:
     detail: dict[str, object]
 
 
-class HeldError(Exception):
-    """A checkpoint holds the environment's sandbox stopped until ``until``."""
+@dataclass(frozen=True, slots=True)
+class Restore:
+    plan: RestorePlan
+    tree_sha256: str
+    executions: int
+    state: RestoreState
+    attempt: str | None = None
 
-    def __init__(self, until: datetime) -> None:
+
+@dataclass(frozen=True, slots=True)
+class Operation:
+    seq: int
+    recorded_at: datetime
+    actor: str
+    kind: str
+    subject: str
+    phase: str
+    detail: dict[str, object]
+
+
+class HeldError(Exception):
+    """A checkpoint holds the environment's sandbox stopped until ``until``, or (``until``
+    None) a restore into it is not verified yet."""
+
+    def __init__(self, until: datetime | None) -> None:
         super().__init__(
-            f"held stopped for a workspace checkpoint until {until:%Y-%m-%d %H:%M} UTC"
+            "held stopped while a workspace checkpoint is restored into it"
+            if until is None
+            else f"held stopped for a workspace checkpoint until {until:%Y-%m-%d %H:%M} UTC"
         )
         self.until = until
 
@@ -164,13 +229,31 @@ def _active(rows: list[tuple[object]], now: datetime) -> datetime | None:
     return None
 
 
-def begin_start(state_dir: Path, environment_id: str, now: datetime) -> None:
+def begin_start(
+    state_dir: Path, environment_id: str, now: datetime, sandbox: str | None = None
+) -> None:
     """Before the worker starts a stopped sandbox: in one transaction, refuse if a hold
-    holds it (HeldError), else record the start as under way. Any database error raises:
-    the start is refused rather than run unchecked."""
+    holds it or an unfinished restore targets it (HeldError), else record the start as
+    under way. Any database error raises: the start is refused rather than run unchecked.
+    ``sandbox`` narrows the restore check to that sandbox, so an environment created again
+    after a discarded target is not held by the old one's record."""
     records = CheckpointRecords(state_dir)
     try:
-        records.begin_start(environment_id, now)
+        records.begin_start(environment_id, now, sandbox)
+    finally:
+        records.close()
+
+
+def restore_refusing_deletion(state_dir: Path, environment_id: str, sandbox: str) -> str | None:
+    """The unfinished restore writing into this sandbox, which refuses its deletion except
+    through the restore's own discard (``discarding``); None if there is none or no
+    records file yet. Any other error raises, so a deletion fails closed."""
+    path = state_dir / DATABASE
+    if not path.is_file():
+        return None
+    records = CheckpointRecords(state_dir)
+    try:
+        return records.writing(environment_id, sandbox)
     finally:
         records.close()
 
@@ -195,6 +278,11 @@ class CheckpointRecords:
         self.db.execute("PRAGMA foreign_keys=ON")
         for statement in _SCHEMA:
             self.db.execute(statement)
+        # Records from before ``released_by`` gain it; their old releases keep NULL.
+        if "released_by" not in {
+            str(row[1]) for row in self.db.execute("PRAGMA table_info(holds)")
+        }:
+            self.db.execute("ALTER TABLE holds ADD COLUMN released_by TEXT")
         self.path.chmod(0o600)
 
     def close(self) -> None:
@@ -212,8 +300,10 @@ class CheckpointRecords:
 
     # Starts
 
-    def begin_start(self, environment_id: str, now: datetime) -> None:
+    def begin_start(self, environment_id: str, now: datetime, sandbox: str | None = None) -> None:
         with self._write() as db:
+            if self._open_restore(db, environment_id, sandbox) is not None:
+                raise HeldError(None)
             until = _active(
                 db.execute(
                     "SELECT expires_at FROM holds WHERE environment_id=? AND released_at IS NULL",
@@ -258,6 +348,12 @@ class CheckpointRecords:
                 and datetime.fromisoformat(str(starting[0])) > now - STALE_START
             ):
                 raise RecordError("the worker is starting this sandbox; try again shortly")
+            if (
+                restoring := self._open_restore(db, plan.source.environment_id, plan.source.sandbox)
+            ) is not None:
+                raise RecordError(f"restore {restoring} into this environment is not verified")
+            if self._expiry_open(db, now):
+                raise RecordError("an upload expiry is under way; plan the checkpoint after it")
             for checkpoint_id, expires in db.execute(
                 "SELECT checkpoint_id, expires_at FROM holds"
                 " WHERE environment_id=? AND released_at IS NULL",
@@ -273,7 +369,8 @@ class CheckpointRecords:
                     (now.isoformat(), checkpoint_id),
                 )
             db.execute(
-                "INSERT INTO holds VALUES (?,?,?,?,?,?,?,NULL,NULL)",
+                "INSERT INTO holds (checkpoint_id, environment_id, sandbox, plan, placed_at,"
+                " expires_at, placed_by) VALUES (?,?,?,?,?,?,?)",
                 (
                     plan.checkpoint_id,
                     plan.source.environment_id,
@@ -299,17 +396,31 @@ class CheckpointRecords:
             None if row[3] is None else datetime.fromisoformat(str(row[3])),
         )
 
-    def release(self, checkpoint_id: str, now: datetime, reason: str) -> bool:
-        """Lift a hold; whether it was still in place."""
+    def release(self, checkpoint_id: str, now: datetime, reason: str, actor: str) -> bool:
+        """Lift a hold, recording who asked; whether it was still in place."""
         with self._write() as db:
             return (
                 db.execute(
-                    "UPDATE holds SET released_at=?, released_reason=?"
+                    "UPDATE holds SET released_at=?, released_reason=?, released_by=?"
                     " WHERE checkpoint_id=? AND released_at IS NULL",
-                    (now.isoformat(), reason[:200], checkpoint_id),
+                    (now.isoformat(), reason[:200], actor[:256], checkpoint_id),
                 ).rowcount
                 == 1
             )
+
+    def released_by(self, checkpoint_id: str) -> tuple[str | None, str | None]:
+        """Who lifted a hold and why; (None, 'expired') when it ran out, (None, None) while
+        it holds."""
+        row = self.db.execute(
+            "SELECT released_by, released_reason FROM holds WHERE checkpoint_id=?",
+            (checkpoint_id,),
+        ).fetchone()
+        if row is None:
+            raise RecordError(f"no checkpoint plan {checkpoint_id}")
+        return (
+            None if row[0] is None else str(row[0]),
+            None if row[1] is None else str(row[1]),
+        )
 
     def holds(self, now: datetime) -> list[InventoryHold]:
         return [
@@ -462,6 +573,8 @@ class CheckpointRecords:
             if row is None:
                 raise RecordError("no checkpoint with that manifest")
             checkpoint_id, sandbox, state = str(row[0]), str(row[1]), str(row[2])
+            if (restoring := self.reading(manifest)) is not None:
+                raise RecordError(f"restore {restoring} reads this checkpoint; finish it first")
             if state == "deleted":
                 raise RecordError("this checkpoint is already deleted")
             others = db.execute(
@@ -556,6 +669,288 @@ class CheckpointRecords:
                 " FROM deletions ORDER BY seq"
             )
         ]
+
+    # Restores
+
+    @staticmethod
+    def _open_restore(
+        db: sqlite3.Connection,
+        environment_id: str,
+        sandbox: str | None,
+        states: tuple[str, ...] = OPEN_RESTORE,
+    ) -> str | None:
+        row = db.execute(
+            "SELECT restore_id FROM restores WHERE environment_id=?"
+            " AND state IN (SELECT value FROM json_each(?)) AND (? IS NULL OR sandbox=?)",
+            (environment_id, json.dumps(states), sandbox, sandbox),
+        ).fetchone()
+        return None if row is None else str(row[0])
+
+    def place_restore(self, plan: RestorePlan, executions: int, now: datetime, actor: str) -> None:
+        """Hold the fresh target stopped until the restore is verified, with no expiry;
+        refuses while a checkpoint holds it or another restore into it is unfinished."""
+        target = plan.target.environment_id
+        with self._write() as db:
+            if _active(
+                db.execute(
+                    "SELECT expires_at FROM holds WHERE environment_id=? AND released_at IS NULL",
+                    (target,),
+                ).fetchall(),
+                now,
+            ):
+                raise RecordError("a checkpoint holds the target environment")
+            if (other := self._open_restore(db, target, None)) is not None:
+                raise RecordError(
+                    f"restore {other} into this environment is not finished (finish or"
+                    " discard it first)"
+                )
+            db.execute(
+                "INSERT INTO restores VALUES (?,?,?,?,?,?,?,'planned',NULL,?,?,NULL,NULL)",
+                (
+                    plan.restore_id,
+                    target,
+                    plan.target.sandbox,
+                    plan.manifest_sha256,
+                    plan.model_dump_json(),
+                    plan.tree_sha256,
+                    executions,
+                    now.isoformat(),
+                    actor,
+                ),
+            )
+            self._operation(
+                db,
+                now,
+                actor,
+                "restore",
+                plan.restore_id,
+                "intent",
+                {
+                    "manifest": plan.manifest_sha256,
+                    "checkpoint_id": plan.checkpoint_id,
+                    "environment": target,
+                    "sandbox": plan.target.sandbox,
+                    "source_environment": plan.source.environment_id,
+                },
+            )
+
+    def restore(self, restore_id: str) -> Restore:
+        row = self.db.execute(
+            "SELECT plan, tree_sha256, executions, state, attempt FROM restores WHERE restore_id=?",
+            (restore_id,),
+        ).fetchone()
+        if row is None:
+            raise RecordError(f"no restore {restore_id}")
+        return Restore(
+            RestorePlan.model_validate_json(str(row[0])),
+            str(row[1]),
+            int(row[2]),
+            _restore_state(str(row[3])),
+            None if row[4] is None else str(row[4]),
+        )
+
+    def attempt(self, restore_id: str, now: datetime, actor: str) -> str:
+        """Start another Job attempt of an unfinished restore: a new nonce, the only one
+        whose report ``verify`` accepts from now on."""
+        nonce = secrets.token_hex(16)
+        with self._write() as db:
+            if (
+                db.execute(
+                    "UPDATE restores SET attempt=? WHERE restore_id=? AND state IN ('planned',"
+                    " 'failed')",
+                    (nonce, restore_id),
+                ).rowcount
+                != 1
+            ):
+                raise RecordError(f"restore {restore_id} takes no further attempt")
+            self._operation(db, now, actor, "restore", restore_id, "attempt", {"attempt": nonce})
+        return nonce
+
+    def finish_restore(
+        self,
+        restore_id: str,
+        state: Literal["failed", "discarding", "restored", "cancelled"],
+        now: datetime,
+        actor: str,
+        detail: dict[str, object],
+        *,
+        attempt: str | None = None,
+    ) -> None:
+        """Move an unfinished restore on, journaling it: ``failed`` keeps the target held
+        and voids the current attempt; ``discarding`` too, while its target is deleted;
+        ``restored`` (only for the current ``attempt``) and ``cancelled`` end it."""
+        allowed = {
+            "failed": ("planned", "failed"),
+            "discarding": ("planned", "failed", "discarding"),
+            "restored": ("planned", "failed"),
+            "cancelled": OPEN_RESTORE,
+        }[state]
+        with self._write() as db:
+            if (
+                db.execute(
+                    "UPDATE restores SET state=?, finished_at=?, finished_by=?, attempt=NULL"
+                    " WHERE restore_id=? AND state IN (SELECT value FROM json_each(?))"
+                    " AND (? IS NULL OR attempt=?)",
+                    (
+                        state,
+                        now.isoformat(),
+                        actor,
+                        restore_id,
+                        json.dumps(allowed),
+                        attempt,
+                        attempt,
+                    ),
+                ).rowcount
+                != 1
+            ):
+                raise RecordError(
+                    f"restore {restore_id} cannot become {state}"
+                    + (" (not its current attempt)" if attempt is not None else "")
+                )
+            phase = {
+                "failed": "failed",
+                "discarding": "discarding",
+                "restored": "verified",
+                "cancelled": "cancelled",
+            }[state]
+            self._operation(db, now, actor, "restore", restore_id, phase, detail)
+
+    def restores(self) -> list[InventoryRestore]:
+        return [
+            InventoryRestore(
+                restore_id=str(row[0]),
+                environment_id=str(row[1]),
+                sandbox=str(row[2]),
+                manifest_sha256=str(row[3]),
+                state=_restore_state(str(row[4])),
+            )
+            for row in self.db.execute(
+                "SELECT restore_id, environment_id, sandbox, manifest_sha256, state"
+                " FROM restores ORDER BY placed_at"
+            )
+        ]
+
+    def writing(self, environment_id: str, sandbox: str) -> str | None:
+        """The planned or failed restore writing into this sandbox, if any."""
+        return self._open_restore(self.db, environment_id, sandbox, ("planned", "failed"))
+
+    def reading(self, manifest: str) -> str | None:
+        """An unfinished restore that reads this checkpoint, if any."""
+        row = self.db.execute(
+            "SELECT restore_id FROM restores WHERE manifest_sha256=? AND state IN (?,?,?)",
+            (manifest, *OPEN_RESTORE),
+        ).fetchone()
+        return None if row is None else str(row[0])
+
+    # Uploads
+
+    def protected_uploads(self) -> list[str]:
+        """The upload bucket's objects a checkpoint still needs there: the manifests and
+        chunks of checkpoints verified in the upload bucket and not yet kept."""
+        names: list[str] = []
+        for (manifest,) in self.db.execute(
+            "SELECT manifest_sha256 FROM checkpoints WHERE state='verified'"
+        ).fetchall():
+            names.append(str(manifest))
+            names.extend(self.chunk_names(str(manifest)))
+        return list(dict.fromkeys(names))
+
+    @staticmethod
+    def _expiry_open(db: sqlite3.Connection, now: datetime) -> bool:
+        """An upload expiry whose intent has no end yet, within its lease."""
+        row = db.execute(
+            "SELECT phase, recorded_at FROM operations WHERE kind='upload-expiry'"
+            " ORDER BY seq DESC LIMIT 1"
+        ).fetchone()
+        return (
+            row is not None
+            and row[0] == "intent"
+            and datetime.fromisoformat(str(row[1])) > now - EXPIRY_LEASE
+        )
+
+    def expiry_open(self, now: datetime) -> bool:
+        return self._expiry_open(self.db, now)
+
+    def upload_expiry(
+        self,
+        phase: Literal["intent", "done", "failed"],
+        now: datetime,
+        actor: str,
+        detail: dict[str, object],
+    ) -> list[str]:
+        """Journal an upload expiry. The intent is refused while a checkpoint holds an
+        environment or another expiry is open, and returns what the upload bucket must
+        keep; while it is open, checkpoint plans and upload verifications are refused, so
+        nothing can reuse an old chunk the expiry removes. Its end needs its intent."""
+        with self._write() as db:
+            if phase == "intent":
+                if self._expiry_open(db, now):
+                    raise RecordError("another upload expiry is under way")
+                held = self.holds(now)
+                if held:
+                    raise RecordError(
+                        f"checkpoint {held[0].checkpoint_id} is under way; expire uploads when"
+                        " none is"
+                    )
+            elif not self._expiry_open(db, now):
+                raise RecordError("no upload expiry is under way (its intent is missing or old)")
+            self._operation(db, now, actor, "upload-expiry", "upload", phase, detail)
+        return self.protected_uploads() if phase == "intent" else []
+
+    # The operations journal: restores and upload expiry, beside the deletion journal
+
+    def operation(
+        self,
+        now: datetime,
+        actor: str,
+        kind: Literal["restore", "upload-expiry"],
+        subject: str,
+        phase: str,
+        detail: dict[str, object],
+    ) -> None:
+        with self._write() as db:
+            self._operation(db, now, actor, kind, subject, phase, detail)
+
+    @staticmethod
+    def _operation(
+        db: sqlite3.Connection,
+        now: datetime,
+        actor: str,
+        kind: str,
+        subject: str,
+        phase: str,
+        detail: dict[str, object],
+    ) -> None:
+        if not 1 <= len(actor) <= 256 or not actor.isprintable():
+            raise RecordError("name who runs this (1 to 256 printable characters)")
+        db.execute(
+            "INSERT INTO operations(recorded_at, actor, kind, subject, phase, detail)"
+            " VALUES (?,?,?,?,?,?)",
+            (now.isoformat(), actor, kind, subject, phase, json.dumps(detail, sort_keys=True)),
+        )
+
+    def operations(self) -> list[Operation]:
+        return [
+            Operation(
+                int(row[0]),
+                datetime.fromisoformat(str(row[1])),
+                str(row[2]),
+                str(row[3]),
+                str(row[4]),
+                str(row[5]),
+                json.loads(str(row[6])),
+            )
+            for row in self.db.execute(
+                "SELECT seq, recorded_at, actor, kind, subject, phase, detail"
+                " FROM operations ORDER BY seq"
+            )
+        ]
+
+
+def _restore_state(value: str) -> RestoreState:
+    if value == "planned" or value == "failed" or value == "restored" or value == "cancelled":
+        return value
+    raise RecordError("unknown restore state")
 
 
 def _state(value: str) -> CheckpointState:

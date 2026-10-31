@@ -612,6 +612,16 @@ class Checkpoint(Model):
     upload_profile: Annotated[str, StringConstraints(pattern=_PROFILE)] = "checkpoint-upload"
     verify_profile: Annotated[str, StringConstraints(pattern=_PROFILE)] = "checkpoint-verify"
     """The profile in the worker's ``checkpoint-s3-*`` files: read-only on both buckets."""
+    restore_secret: Name | None = None
+    """The Secret in the sandbox namespace with the restore key's SDK files (``credentials``
+    and ``config``): read-only on the kept bucket, mounted only by restore Jobs. Absent,
+    no restore Job can be rendered. The operator creates it, for good or for a restore."""
+    restore_profile: Annotated[str, StringConstraints(pattern=_PROFILE)] = "checkpoint-restore"
+    restore_run_as_user: Annotated[int, Field(strict=True, ge=1, le=2147483647)] = 1000
+    """Who the restore Job writes as: the owner the sandbox's files need, uid 1000 in the
+    research images (D77, docs/IMAGES.md). The Job refuses a volume whose root another
+    user owns; confirm the owner in qualification and set both this and ``run_as_user``."""
+    restore_run_as_group: Annotated[int, Field(strict=True, ge=1, le=2147483647)] = 1000
     upload_bucket: Annotated[str, StringConstraints(pattern=_BUCKET)]
     kept_bucket: Annotated[str, StringConstraints(pattern=_BUCKET)]
     prefix: Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9._-]{1,64}$")] = "sandbox-science"
@@ -642,6 +652,8 @@ class Checkpoint(Model):
     def separate(self) -> Self:
         if self.upload_bucket == self.kept_bucket:
             raise ValueError("the upload bucket is separate from the kept bucket")
+        if self.restore_secret is not None and self.restore_secret == self.upload_secret:
+            raise ValueError("the restore key's Secret is separate from the upload key's")
         if self.hold_seconds <= self.deadline_seconds:
             raise ValueError("checkpoint.hold_seconds must outlast the Job's deadline")
         return self

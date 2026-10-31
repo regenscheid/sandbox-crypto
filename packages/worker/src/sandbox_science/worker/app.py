@@ -18,6 +18,7 @@ import hmac
 import logging
 import re
 import secrets
+import sqlite3
 from collections.abc import Awaitable, Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -120,6 +121,7 @@ from sandbox_science.contracts.worker import (
 )
 from sandbox_science.policy import effective_resources
 
+from .checkpoint_records import restore_refusing_deletion
 from .child_environments import RESERVED_OPERATION as RESERVED_CHILD_OPERATION
 from .child_environments import ChildEnvironments
 from .classifications import (
@@ -370,6 +372,7 @@ def create_app(
         app[ENVIRONMENTS] = environments
         environments.deleted.append(manager.forget_revisions)
         environments.required_deleting.append(manager.guard_package_deletion)
+        environments.required_deleting.append(_restore_guard(environments))
         environments.confirmed_deleted.append(manager.forget_package_gate)
         environments.reusing.append(manager.guard_package_reuse)
 
@@ -913,6 +916,32 @@ async def runtime_classifications_in_force(request: web.Request) -> web.Response
     _allowed(request, project)
     found = await asyncio.to_thread(runtime_classifications, environments.store, project, servers)
     return _json(found)
+
+
+def _restore_guard(environments: Environments) -> Callable[[str], Awaitable[None]]:
+    """Refuse deleting an environment while a restore writes into its sandbox: only the
+    restore's own discard may delete it (docs/KUBERNETES-BUNDLE.md#restoring-a-checkpoint).
+    Records it cannot read refuse the deletion too."""
+
+    async def guard(environment_id: str) -> None:
+        sandbox = environments.get(environment_id).sandbox
+        try:
+            restoring = await asyncio.to_thread(
+                restore_refusing_deletion, environments.state_dir, environment_id, sandbox
+            )
+        except (sqlite3.Error, OSError, ValueError) as error:
+            raise WorkerError(
+                ErrorKind.UNAVAILABLE,
+                f"cannot check restores ({type(error).__name__}); not deleting",
+            ) from None
+        if restoring is not None:
+            raise WorkerError(
+                ErrorKind.CONFLICT,
+                f"restore {restoring} is writing into environment {environment_id}; discard"
+                " the restore to delete it",
+            )
+
+    return guard
 
 
 async def delete_environment(request: web.Request) -> web.Response:

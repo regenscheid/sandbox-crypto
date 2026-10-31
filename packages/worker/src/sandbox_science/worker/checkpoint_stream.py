@@ -30,6 +30,8 @@ from sandbox_science.contracts.workspace_checkpoint import (
     SkippedKind,
 )
 
+from .checkpoint_tree import TreeIndex
+
 MAGIC = b"SS-WORKSPACE-CHECKPOINT-1\n"
 CHUNK = 512 * 1024
 
@@ -356,8 +358,10 @@ def decode(
     target: Path | None = None,
     *,
     check: Callable[[], None] | None = None,
+    tree: TreeIndex | None = None,
 ) -> StreamSummary:
-    """Verify the entire stream; optionally extract into a caller-owned empty directory."""
+    """Verify the entire stream; optionally extract into a caller-owned empty directory,
+    and describe the tree into ``tree`` for its digest (checkpoint_tree)."""
     stream = Stream(handle, check)
     if stream.read(len(MAGIC)) != MAGIC:
         raise ValueError("unsupported checkpoint archive format")
@@ -372,6 +376,12 @@ def decode(
             stream.charge(data, member)
             _validate(db, member, stream.members)
             path = None if target is None else target / member.path
+            if tree is not None and member.kind == "directory":
+                tree.add(member.path, "directory", member.mode)
+            elif tree is not None and member.kind == "symlink":
+                tree.add(member.path, "symlink", member.mode, detail=member.target)
+            elif tree is not None and member.kind == "hardlink":
+                tree.link(member.path, member.target or "")
             if path is not None and member.kind == "directory" and member.path != ".":
                 path.mkdir(mode=0o700)
             elif path is not None and member.kind == "symlink":
@@ -380,20 +390,32 @@ def decode(
                 os.link(target / (member.target or ""), path, follow_symlinks=False)
             if member.kind == "file":
                 writer = None if path is None else path.open("xb")
+                content = hashlib.sha256()
                 try:
                     left = member.size
                     while left:
                         chunk = stream.read(min(CHUNK, left))
+                        content.update(chunk)
                         if writer is not None:
                             writer.write(chunk)
                         left -= len(chunk)
                     if writer is not None:
                         writer.flush()
-                        os.fchmod(writer.fileno(), member.mode)
+                        # Never set-user-ID or set-group-ID: an archive does not grant them.
+                        os.fchmod(writer.fileno(), member.mode & ~0o6000)
                         os.fsync(writer.fileno())
                 finally:
                     if writer is not None:
                         writer.close()
+                if tree is not None:
+                    tree.add(
+                        member.path,
+                        "file",
+                        member.mode,
+                        size=member.size,
+                        detail=content.hexdigest(),
+                        first=member.path,
+                    )
         if not stream.members or handle.read(1):
             raise ValueError("checkpoint has no members or has trailing bytes")
         if target is not None:
@@ -404,7 +426,11 @@ def decode(
                 directory = target / str(path)
                 descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
                 try:
-                    os.fchmod(descriptor, int(mode))
+                    # Unchanged modes are left alone: a restore's root is the volume's own
+                    # directory, which its user may not be allowed to change.
+                    wanted = int(mode) & ~0o6000
+                    if stat.S_IMODE(os.fstat(descriptor).st_mode) != wanted:
+                        os.fchmod(descriptor, wanted)
                     os.fsync(descriptor)
                 finally:
                     os.close(descriptor)

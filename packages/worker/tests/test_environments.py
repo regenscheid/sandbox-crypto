@@ -1533,7 +1533,7 @@ async def test_a_checkpoint_hold_keeps_a_stopped_sandbox_stopped(setup: Setup) -
         await setup.environments.resume("env-1")
     assert held.value.kind is ErrorKind.UNAVAILABLE
     assert setup.fake.calls("sandbox", "start") == []
-    records.release(plan.checkpoint_id, datetime.now(UTC), "verified")
+    records.release(plan.checkpoint_id, datetime.now(UTC), "verified", "op")
     records.close()
     await setup.environments.resume("env-1")
     assert setup.environments.get("env-1").state is EnvironmentState.READY
