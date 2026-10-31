@@ -197,6 +197,67 @@ async def test_an_answer_is_recorded_for_the_middleware_and_bounded_by_kind(
     del permissions
 
 
+GRANT = "grant-" + "d" * 20
+
+
+async def test_revoking_a_grant_withdraws_its_live_answers_and_nothing_else(
+    api: tuple[TestClient[Any, Any], EventStore, Permissions],
+) -> None:
+    client, sink, _ = api
+    key = RequestKey.http("sbx-1", DIGEST, "GET", "data.org", 443, "/a", body_digest(b""))
+    granted = escalate(sink, key)
+    once = escalate(sink, RequestKey.http("sbx-1", DIGEST, "GET", "data.org", 443, "/once"))
+    other_grant = escalate(sink, RequestKey.http("sbx-1", DIGEST, "GET", "o.org", 443, "/"))
+    path = "/v1/permission-requests/{}/answer"
+    for seq, body in (
+        (granted, {"approve": True, "scope": "host", "hours": 1, "grants": [GRANT]}),
+        (once, {"approve": True, "scope": "request", "hours": 1}),
+        (other_grant, {"approve": True, "scope": "host", "hours": 1,
+                       "grants": ["grant-" + "e" * 20]}),
+    ):  # fmt: skip
+        answered = await client.post(path.format(seq), json=body, headers=headers("workspace"))
+        assert answered.status == 201, await answered.text()
+    bad = await client.post(
+        path.format(once), json={"approve": True, "scope": "host", "grants": ["mine"]},
+        headers=headers("workspace"),
+    )  # fmt: skip
+    assert bad.status == 400  # not a grant's id
+    withdraw = {"project_id": "p1", "grant": GRANT}
+    refused = await client.post(
+        "/v1/permission-grants/withdraw", json=withdraw, headers=headers("harness")
+    )
+    assert refused.status == 403  # an operator client's only
+    foreign = await client.post(
+        "/v1/permission-grants/withdraw", json={**withdraw, "project_id": "p2"},
+        headers=headers("workspace"),
+    )  # fmt: skip
+    assert foreign.status == 403
+    done = await client.post(
+        "/v1/permission-grants/withdraw", json=withdraw, headers=headers("workspace")
+    )
+    assert done.status == 200, await done.text()
+    assert (await done.json())["requests"] == [granted]
+    again = await client.post(
+        "/v1/permission-grants/withdraw", json=withdraw, headers=headers("workspace")
+    )
+    assert (await again.json())["requests"] == []  # nothing more to withdraw
+    with StoreReader(sink.path) as reader:
+        records = list(reader.records(kinds=KINDS))
+    assert (records[-1].kind, records[-1].source) == ("denial", "worker")
+    approvals = Approvals()
+    approvals.load(records)
+    now = NOW  # the desk's clock, which the answers' expiry counts from
+    elsewhere = RequestKey.http("sbx-1", DIGEST, "GET", "data.org", 443, "/b")
+    assert approvals.answer(elsewhere, now) is None  # the middleware asks again
+    assert approvals.answer(RequestKey.http("sbx-1", DIGEST, "GET", "data.org", 443, "/once"), now)
+    assert approvals.answer(RequestKey.http("sbx-1", DIGEST, "GET", "o.org", 443, "/x"), now)
+    late = await client.post(
+        path.format(granted), json={"approve": True, "scope": "host", "hours": 1},
+        headers=headers("workspace"),
+    )  # fmt: skip
+    assert late.status == 409  # a withdrawn request takes no answer again
+
+
 ARGS = "c" * 64
 LONG = {"timeout_seconds": 10**9, "on_timeout": "deny"}
 """Terms that keep a request waiting whatever the test clock says."""

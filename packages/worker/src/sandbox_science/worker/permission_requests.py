@@ -12,6 +12,9 @@ the middleware takes from the sandbox's compiled config. A download from the pac
 cache is a package request, answered for that file only: a ``host`` answer would cover
 the whole cache.
 
+When the user revokes a grant, the workspace has the desk withdraw the requests its live
+answers cover (``withdraw_grant``, D97).
+
 Any client may also confirm one MCP request for its own projects (``confirm``): whether
 it is a given call's and stands as a refusal said. The harness asks before it trusts a
 refusal that names a request, since an MCP server can write one; the answer is a yes or
@@ -29,6 +32,8 @@ from pydantic import ValidationError
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, EnvironmentInfo
 from sandbox_science.contracts.permission_requests import (
     MAX_LISTED,
+    GrantWithdrawal,
+    GrantWithdrawn,
     HoldAsked,
     HttpSummary,
     McpAsked,
@@ -160,13 +165,30 @@ class PermissionDesk:
             )
         try:
             record, decided = self.permissions.answer_request(
-                seq, approve=answer.approve, scope=answer.scope, hours=answer.hours, now=now
-            )
+                seq, approve=answer.approve, scope=answer.scope, hours=answer.hours, now=now,
+                grants=answer.grants,
+            )  # fmt: skip
         except ValueError as exc:
             raise PermissionRequestError(str(exc)) from None
         return WorkerPermissionAnswered(
             seq=seq, answer=record, kind="approval" if decided == "approval" else "denial"
         )
+
+    def withdraw_grant(
+        self, asked: GrantWithdrawal, allows: Callable[[str], bool], now: datetime
+    ) -> GrantWithdrawn:
+        """Withdraw the project's answered requests whose live approval names the grant the
+        user revoked, so that the middleware asks again on their next try. Blocking."""
+        if not allows(asked.project_id):
+            raise PermissionRequestError(f"no project {asked.project_id}", missing=True)
+        owners = self._owners()
+        withdrawn: list[int] = []
+        for request in self.permissions.granted_by(asked.grant, now):
+            if self._project(request, owners) != asked.project_id:
+                continue
+            self.permissions.withdraw(request.seq, f"grant {asked.grant} was revoked", now)
+            withdrawn.append(request.seq)
+        return GrantWithdrawn(requests=withdrawn)
 
     def _owners(self) -> dict[str, EnvironmentInfo]:
         return {info.sandbox_id: info for info in self.environments() if info.sandbox_id}

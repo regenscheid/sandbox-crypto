@@ -90,7 +90,7 @@ class Approvals:
         self._answers: list[Answer] = []
         self._answered: set[int] = set()
         self._withdrawn: set[int] = set()
-        """The ``packages`` requests the worker withdrew: closed for good."""
+        """The requests the worker withdrew: closed for good."""
 
     @property
     def last_seq(self) -> int:
@@ -131,28 +131,36 @@ class Approvals:
         except ValidationError:
             return
         kind: Literal["approval", "denial"] = "approval" if record.kind == APPROVAL else "denial"
-        self._answers.append(
-            Answer(
-                record.seq, answer.request_seq, kind, answer.target, answer.scope, answer.expires
-            )
-        )
-        self._answered.add(answer.request_seq)
         request = self._requests.get(answer.request_seq)
-        if (
+        withdrawal = (
             kind == "denial"
             and answer.withdrawn
             and request is not None
             and request.key == answer.target
-            and answer.target.kind == "packages"
-        ):
+        )
+        if withdrawal and answer.target.kind != "packages":
+            # An answered request whose grant was revoked (D97): its approvals, later ones
+            # included, apply no longer (``answer``), and nothing is denied, so the next
+            # try is recorded as a new request.
+            self._withdrawn.add(answer.request_seq)
+            self._answered.add(answer.request_seq)
+            return
+        self._answers.append(
+            Answer(
+                record.seq, answer.request_seq, kind, answer.target, answer.scope,
+                answer.expires, answer.grants,
+            )
+        )  # fmt: skip
+        self._answered.add(answer.request_seq)
+        if withdrawal:
             self._withdrawn.add(answer.request_seq)
 
     def resolve(self, key: RequestKey, now: datetime) -> Resolution:
         """How a request with ``key`` stands: the one state machine the policy middleware
         and the MCP proxy share. The newest live answer covering it decides; without one,
         its recorded request waits until the rule's timeout. A request whose own answer was
-        an approval that has expired is asked again: it is unrecorded, so the next try
-        records a new request instead of taking the old one's timeout."""
+        an approval that has expired, or was withdrawn, is asked again: it is unrecorded,
+        so the next try records a new request instead of taking the old one's timeout."""
         answer = self.answer(key, now)
         if answer is not None:
             return Denied(answer) if answer.kind == "denial" else Approved(answer)
@@ -161,7 +169,7 @@ class Approvals:
             return Unrecorded()
         own = self.answer_to(request.seq)
         if own is not None and own.kind == "approval":
-            return Unrecorded()  # it expired, or ``answer`` would have found it
+            return Unrecorded()  # expired or withdrawn, or ``answer`` would have found it
         return TimedOut(request) if request.expired(now) else Waiting(request)
 
     def confirms(self, seq: int, reason: str, call: Mapping[str, str | int], now: datetime) -> bool:
@@ -199,13 +207,25 @@ class Approvals:
         return False
 
     def answer(self, key: RequestKey, now: datetime) -> Answer | None:
-        """The newest live answer that covers ``key``: a later answer replaces an earlier one."""
+        """The newest live answer that covers ``key``: a later answer replaces an earlier one.
+        An approval of an ``http`` or ``mcp`` request the worker withdrew applies no longer."""
         with self._lock:
-            matching = [answer for answer in self._answers if answer.applies(key, now)]
+            matching = [
+                answer
+                for answer in self._answers
+                if answer.applies(key, now) and not self._ended(answer)
+            ]
         if not matching:
             return None
         newest = max(answer.seq for answer in matching)
         return next(answer for answer in matching if answer.seq == newest)
+
+    def _ended(self, answer: Answer) -> bool:
+        return (
+            answer.kind == "approval"
+            and answer.key.kind != "packages"
+            and answer.request_seq in self._withdrawn
+        )
 
     def pending(self, key: RequestKey) -> PermissionRequest | None:
         """The recorded request with this key's fingerprint, if there is one."""
@@ -227,9 +247,25 @@ class Approvals:
         return request.files if request is not None else ()
 
     def withdrawn(self, seq: int) -> bool:
-        """Whether the worker withdrew ``packages`` request ``seq``: nothing grants it again."""
+        """Whether the worker withdrew request ``seq``: nothing grants it again."""
         with self._lock:
             return seq in self._withdrawn
+
+    def granted_by(self, grant: str, now: datetime) -> list[int]:
+        """The ``http`` and ``mcp`` requests, not withdrawn, that a live approval naming the
+        workspace's ``grant`` answers: what revoking the grant withdraws."""
+        with self._lock:
+            return sorted(
+                {
+                    answer.request_seq
+                    for answer in self._answers
+                    if answer.kind == "approval"
+                    and grant in answer.grants
+                    and answer.key.kind in ("http", "mcp")
+                    and answer.live(now)
+                    and answer.request_seq not in self._withdrawn
+                }
+            )
 
     def answer_to(self, seq: int) -> Answer | None:
         """The newest answer to request ``seq`` itself, expired or not: a later answer

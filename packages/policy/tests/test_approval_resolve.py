@@ -7,6 +7,8 @@ import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from sandbox_science.policy.approvals import (
     APPROVAL,
     DENIAL,
@@ -18,6 +20,8 @@ from sandbox_science.policy.approvals import (
     TimedOut,
     Unrecorded,
     Waiting,
+    prepare_answer,
+    withdrawal_payload,
 )
 
 NOW = datetime(2026, 10, 14, 12, 0, tzinfo=UTC)
@@ -211,3 +215,79 @@ def test_a_timed_out_request_is_confirmed_as_timed_out_only() -> None:
     assert approvals.confirms(1, "escalation_timed_out", mcp_call(), later)
     assert not approvals.confirms(1, "escalation_timed_out", mcp_call(tool="search"), later)
     assert not approvals.confirms(1, "approval_required", mcp_call(), later)
+
+
+GRANT = "grant-" + "1" * 20
+READ = RequestKey.http("sb", DIGEST, "GET", "data.example.org", 443, "/a")
+READ_ELSEWHERE = RequestKey.http("sb", DIGEST, "GET", "data.example.org", 443, "/b")
+
+
+def granted(seq: int, request_seq: int, *grants: str, hours: float = 1) -> Record:
+    """A host approval the workspace relayed from ``grants`` (D97)."""
+    expires = (NOW + timedelta(hours=hours)).isoformat()
+    payload = {
+        "request_seq": request_seq, "scope": "host", "target": READ.payload(),
+        "expires": expires, "grants": list(grants),
+    }  # fmt: skip
+    return Record(seq, NOW.isoformat(), APPROVAL, payload)
+
+
+def withdrawn(seq: int, request_seq: int, at: datetime) -> Record:
+    """The worker's withdrawal of an answered request whose grant the user revoked."""
+    payload = withdrawal_payload(request_seq, READ, "grant revoked")
+    return Record(seq, at.isoformat(), DENIAL, payload)
+
+
+def test_a_withdrawal_ends_a_grants_answer_and_the_next_try_asks_again() -> None:
+    approvals = Approvals()
+    approvals.load([request(1, key=READ), granted(2, 1, GRANT)])
+    assert isinstance(approvals.resolve(READ_ELSEWHERE, NOW), Approved)
+    assert approvals.granted_by(GRANT, NOW) == [1]
+    assert approvals.granted_by("grant-" + "2" * 20, NOW) == []
+    later = NOW + timedelta(minutes=2)
+    approvals.load([withdrawn(3, 1, later)])
+    assert approvals.withdrawn(1)
+    # Nothing covers the host now, and nothing is denied either: each try is a new
+    # request, the user's or a grant's.
+    assert approvals.resolve(READ, later) == Unrecorded()
+    assert approvals.resolve(READ_ELSEWHERE, later) == Unrecorded()
+    assert approvals.granted_by(GRANT, later) == []
+    assert 1 not in [pending.seq for pending in approvals.unanswered()]
+    # The withdrawn request takes no answer again: refused, and ignored if recorded.
+    with pytest.raises(ValueError, match="withdrawn when its grant was revoked"):
+        prepare_answer(approvals, 1, approve=True, scope="host", hours=1, now=later)
+    approvals.load([granted(4, 1, GRANT, hours=5)])
+    assert approvals.resolve(READ_ELSEWHERE, later) == Unrecorded()
+    # A new request of the same key is answered as any other.
+    approvals.load([request(5, key=READ), answer(6, 5, APPROVAL, scope="request")])
+    assert approvals.pending(READ) is not None
+
+
+def test_a_withdrawal_ends_only_its_own_requests_answers() -> None:
+    other = RequestKey.http("sb", DIGEST, "GET", "data.example.org", 443, "/c")
+    approvals = Approvals()
+    approvals.load([request(1, key=READ), granted(2, 1, GRANT)])
+    approvals.load([
+        request(3, key=other),
+        Record(4, NOW.isoformat(), APPROVAL, {
+            "request_seq": 3, "scope": "request", "target": other.payload(),
+            "expires": (NOW + timedelta(hours=1)).isoformat(),
+        }),
+    ])  # fmt: skip
+    approvals.load([withdrawn(5, 1, NOW)])
+    assert isinstance(approvals.resolve(other, NOW), Approved)  # the user's own answer
+    assert approvals.resolve(READ, NOW) == Unrecorded()
+
+
+def test_an_answer_names_the_grants_it_comes_from() -> None:
+    approvals = Approvals()
+    approvals.load([request(1, key=READ)])
+    kind, payload = prepare_answer(
+        approvals, 1, approve=True, scope="host", hours=1, now=NOW, grants=(GRANT,)
+    )
+    assert (kind, payload["grants"]) == (APPROVAL, [GRANT])
+    approvals.load([Record(2, NOW.isoformat(), kind, payload)])
+    assert approvals.granted_by(GRANT, NOW) == [1]
+    assert approvals.granted_by(GRANT, NOW + timedelta(hours=2)) == []  # expired
+    _, plain = prepare_answer(approvals, 1, approve=True, scope="host", hours=1, now=NOW)
+    assert "grants" not in plain  # an answer from no grant is recorded as it always was

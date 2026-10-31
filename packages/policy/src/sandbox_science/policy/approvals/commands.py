@@ -28,18 +28,25 @@ def prepare_answer(
     scope: str | None,
     hours: float | None,
     now: datetime,
+    grants: tuple[str, ...] = (),
 ) -> tuple[str, dict[str, object]]:
     """The kind and payload of an approval or denial of request ``seq``; ValueError if invalid.
 
-    The scope defaults to the request itself; an approval lasts ``hours``.
+    The scope defaults to the request itself; an approval lasts ``hours``. ``grants`` names
+    the workspace's grants the answer comes from.
     """
     request = approvals.request(seq)
     if request is None:
         raise ValueError(f"no permission request {seq}")
     if approvals.withdrawn(seq):
+        if request.key.kind == "packages":
+            raise ValueError(
+                f"permission request {seq} was withdrawn: its provisioning operation has "
+                "ended, and its files can no longer be granted"
+            )
         raise ValueError(
-            f"permission request {seq} was withdrawn: its provisioning operation has ended, "
-            "and its files can no longer be granted"
+            f"permission request {seq} was withdrawn when its grant was revoked; "
+            "a new try asks again"
         )
     scope = scope or DEFAULT_SCOPES[request.key.kind]
     problem = check_scope(request.key.kind, scope)
@@ -52,7 +59,7 @@ def prepare_answer(
                 f"an approval lasts more than 0 and at most {MAX_APPROVAL_HOURS} hours"
             )
         expires = now + timedelta(hours=hours)
-    return (APPROVAL if approve else DENIAL), answer_payload(request, scope, expires)
+    return (APPROVAL if approve else DENIAL), answer_payload(request, scope, expires, grants)
 
 
 def pending(records: Iterable[RecordLike], seq: int | None = None) -> int:

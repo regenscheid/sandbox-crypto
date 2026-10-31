@@ -37,7 +37,7 @@ Routes:
   and ``stop`` answer a hold only, ``session`` names the one to stop.
   ``hours`` gives a session or project grant an expiry; without it, it lasts until revoked.
 - ``GET …/grants``: the project's grants, with when each was last used; ``POST
-  …/grants/{grant}/revoke`` ends one at once.
+  …/grants/{grant}/revoke`` ends one at once, with the answers it gave the middleware.
 
 A project grant and clearing a hold are admin-only actions (identity.py, D104): with an
 admin group configured, only its members may take them, while every user may allow once,
@@ -45,9 +45,12 @@ for the session, deny or stop. A grant's author is the user who gave or revoked 
 
 The relay answers each new request a grant covers, and notes the grant's use. It answers
 the request itself (an MCP call with its exact arguments, so a grant never stretches to a
-call of another class) or, for a host grant, the host's reads for that sandbox and policy
-revision; each such answer lasts minutes, so a revoked grant stops reaching the
-middleware soon after, and covers nothing new at once.
+call of another class, for 15 minutes) or, for a host grant, the host's reads for that
+sandbox and policy revision (for an hour); an answer never outlasts the grant's expiry.
+Every answer from grants names them, and revoking a grant has the worker withdraw the
+live answers it gave, so their requests ask again at once; a file set's answer is left to
+its operation. When the worker cannot do it, the revoke says so and the relay retries,
+while each answer still ends by its own time.
 """
 
 from __future__ import annotations
@@ -65,6 +68,7 @@ from pydantic import Field, TypeAdapter, ValidationError
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, Contract, ErrorKind, Identifier
 from sandbox_science.contracts.permission_requests import (
+    GrantWithdrawal,
     HoldAsked,
     HttpSummary,
     PackagesAsked,
@@ -103,7 +107,7 @@ answer from a grant ends by the grant's expiry, if it has one (``ledger_answer``
 HOST_HOURS: Final = 1.0
 """How long the relay's answer for a host grant lets the middleware pass the host's reads
 for one sandbox and policy revision, in hours: research code is refused once an hour at
-most, while a revoked grant stops reaching the middleware within the hour."""
+most. A revoke withdraws the answer at once; this bounds it when the worker could not."""
 ONCE_HOURS: Final = 1.0
 """How long an approval of one request (its exact arguments or body) lasts."""
 MIN_ANSWER_HOURS: Final = 1 / 3600
@@ -198,6 +202,9 @@ class Configuration:
     relayed: set[tuple[str, int]] = field(default_factory=set[tuple[str, int]])
     """Requests answered or being answered, by project: the user's answer and the relay
     each claim a request here before they send theirs, so one request is answered once."""
+    withdrawing: set[tuple[str, str]] = field(default_factory=set[tuple[str, str]])
+    """Revoked grants, by project, whose answers the worker has not yet withdrawn: the
+    relay tries again."""
 
     def claim(self, project: str, seq: int) -> bool:
         """Take the right to answer a request; false when someone else has it. No ``await``
@@ -441,13 +448,23 @@ def _within(hours: float | None, grants: Sequence[ProjectGrant], now: datetime) 
 
 
 async def _send(
-    config: Configuration, item: PendingApproval, *, approve: bool, scope: str, hours: float | None
+    config: Configuration,
+    item: PendingApproval,
+    *,
+    approve: bool,
+    scope: str,
+    hours: float | None,
+    grants: Sequence[ProjectGrant] = (),
 ) -> None:
+    """Send an answer, naming the grants it comes from, so that revoking one ends it."""
     if config.worker is None:
         raise ProjectError(ErrorKind.NOT_FOUND, "permission requests are not answered here")
+    named = [grant.grant_id for grant in grants] if approve else []
     await config.worker.answer_permission_request(
         item.seq,
-        WorkerPermissionAnswer.model_validate({"approve": approve, "scope": scope, "hours": hours}),
+        WorkerPermissionAnswer.model_validate(
+            {"approve": approve, "scope": scope, "hours": hours, "grants": named}
+        ),
     )
 
 
@@ -510,7 +527,10 @@ async def answer(request: web.Request) -> web.Response:
                 project, asked, decision.decision, author(request), now, decision.hours,
             )  # fmt: skip
         scope, hours = ledger_answer(held, decision.decision, granted, now)
-        await _send(config, held, approve=decision.decision != "deny", scope=scope, hours=hours)
+        await _send(
+            config, held, approve=decision.decision != "deny", scope=scope, hours=hours,
+            grants=granted,
+        )  # fmt: skip
     except BaseException:
         config.release(project, seq)
         raise
@@ -567,7 +587,36 @@ async def revoke(request: web.Request) -> web.Response:
     def write(store: DocumentStore) -> GrantListing:
         return ProjectGrants(store).revoke(project, grant, by, clock.now())
 
-    return await document_answer(request, write, access="write")
+    answered = await document_answer(request, write, access="write")
+    config = request.app.get(APPROVALS)
+    if answered.status != 200 or config is None or config.worker is None:
+        return answered
+    # Revoked, the grant answers nothing new; the answers it gave end now too. Revoking it
+    # again (a no-op in the store) tries this again.
+    try:
+        await _withdraw(config, project, grant)
+    except WorkerAPIError as exc:
+        raise ProjectError(
+            ErrorKind.UNAVAILABLE,
+            "the grant is revoked and answers nothing new, but the answers it already gave "
+            f"could not be withdrawn yet ({exc}); the workspace keeps trying, and each ends "
+            "by its own time anyway (at most an hour)",
+        ) from None
+    return answered
+
+
+async def _withdraw(config: Configuration, project: str, grant: str) -> None:
+    """Have the worker withdraw the live answers revoked ``grant`` gave; until it has, the
+    relay tries again."""
+    if config.worker is None:
+        return
+    try:
+        asked = GrantWithdrawal(project_id=project, grant=grant)
+    except ValidationError:
+        return  # no answer names a grant of another form
+    config.withdrawing.add((project, grant))
+    await config.worker.withdraw_permission_grant(asked)
+    config.withdrawing.discard((project, grant))
 
 
 async def _relay_one(
@@ -584,7 +633,7 @@ async def _relay_one(
     if not config.claim(project, held.seq):
         return  # the user is answering it, or has
     try:
-        await _send(config, held, approve=True, scope=ledger_scope, hours=hours)
+        await _send(config, held, approve=True, scope=ledger_scope, hours=hours, grants=found)
     except BaseException:
         config.release(project, held.seq)
         raise
@@ -628,6 +677,13 @@ async def _relay(app: web.Application) -> None:
     config = app[APPROVALS]
     store, writer = app[CONTEXT].documents, app[CONTEXT].writer
     while True:
+        for project, grant in sorted(config.withdrawing):
+            try:
+                await _withdraw(config, project, grant)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                _log.debug("a revoked grant's answers were not withdrawn this time", exc_info=True)
         try:
             projects = await asyncio.to_thread(ProjectGrants(store).projects_with_worker_grants)
             withdrawing = await asyncio.to_thread(ChildRequests(store).projects_withdrawing)

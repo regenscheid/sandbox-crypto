@@ -1,7 +1,8 @@
 <!-- SPDX-License-Identifier: MIT -->
 <!-- The project's grants (D97): what each covers (an effect class on a server, a host for
      research code's reads, or a package source), for a session or the project, when it was
-     last used, and Revoke, which ends it at once. Grants are made from the chat's cards. -->
+     last used, and Revoke, which ends it and the answers it gave at once. Grants are made from
+     the chat's cards. -->
 <script lang="ts">
   import { api } from '../lib/api';
   import type { GrantListing } from '../lib/api-types';
@@ -32,8 +33,10 @@
     try {
       listing = await api.revokeGrant(projectId, grant);
     } catch (caught) {
-      error = caught;
+      // A revoke whose answers the worker could not withdraw yet still revoked the grant:
+      // show the list as it now stands, with the server's words.
       await load();
+      error = caught;
     } finally {
       busy = false;
     }

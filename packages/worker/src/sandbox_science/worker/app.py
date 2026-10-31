@@ -103,6 +103,7 @@ from sandbox_science.contracts.logs import log_context
 from sandbox_science.contracts.mcp_traffic import WorkerMcpTraffic
 from sandbox_science.contracts.monitor import WINDOWS, MonitorWindow
 from sandbox_science.contracts.permission_requests import (
+    GrantWithdrawal,
     PermissionConfirmation,
     PermissionConfirmed,
     WorkerPermissionAnswer,
@@ -395,6 +396,7 @@ def create_app(
                 web.get("/v1/permission-requests", permission_requests),
                 web.post("/v1/permission-requests/{seq}/answer", answer_permission_request),
                 web.post("/v1/permission-requests/{seq}/confirm", confirm_permission_request),
+                web.post("/v1/permission-grants/withdraw", withdraw_permission_grant),
             ]
         )
     if classification_desk is not None:
@@ -1224,6 +1226,22 @@ async def answer_permission_request(request: web.Request) -> web.Response:
     except PermissionStoreError as exc:
         raise WorkerError(ErrorKind.UNAVAILABLE, str(exc)) from None
     return _json(answered, status=201)
+
+
+async def withdraw_permission_grant(request: web.Request) -> web.Response:
+    """End the live answers of a grant the user revoked, relayed by the workspace (D97)."""
+    desk = _desk(request)
+    asked = GrantWithdrawal.model_validate_json(await _body(request))
+    _allowed(request, asked.project_id)
+    try:
+        withdrawn = await asyncio.to_thread(
+            desk.withdraw_grant, asked, _client(request).allows, desk.clock.now()
+        )
+    except PermissionRequestError as exc:
+        raise WorkerError(ErrorKind.NOT_FOUND, str(exc)) from None
+    except PermissionStoreError as exc:
+        raise WorkerError(ErrorKind.UNAVAILABLE, str(exc)) from None
+    return _json(withdrawn)
 
 
 async def confirm_permission_request(request: web.Request) -> web.Response:

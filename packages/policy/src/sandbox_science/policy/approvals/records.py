@@ -30,7 +30,11 @@ MAX_GRANT_PATH: Final = 2048
 CONTEXT_TEXT: Final = 300
 """Characters of a ``packages`` request's context (what was asked, and why) kept to show."""
 WITHDRAWN: Final = "withdrawn"
-"""Marks the denial with which the worker closes a ``packages`` request for good."""
+"""Marks the denial with which the worker closes a request for good: a ``packages``
+request as its operation ends, or an answered ``http`` or ``mcp`` request whose grant the
+user revoked, whose approvals it ends."""
+MAX_ANSWER_GRANTS: Final = 16
+"""Grants one answer may name as its source."""
 VALID_UNTIL: Final = "valid_until"
 """A ``packages`` request's own deadline: it grants nothing after it."""
 
@@ -81,6 +85,8 @@ Time = Annotated[datetime, BeforeValidator(_time)]
 Integer = Annotated[int, BeforeValidator(_integer)]
 Shown = Annotated[str | None, BeforeValidator(_shown)]
 GrantPath = Annotated[str, StringConstraints(pattern=r"^/", max_length=MAX_GRANT_PATH)]
+GrantName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9._-]{1,64}$")]
+"""A workspace grant's id, as an answer names it."""
 
 _PACKAGES_ONLY: Final = frozenset({"files", "valid_until", "asked", "purpose"})
 
@@ -142,13 +148,15 @@ class RequestPayload(_Payload):
 
 class AnswerPayload(_Payload):
     """An ``approval`` or ``denial`` record's payload. A denial marked ``withdrawn`` is the
-    worker closing a ``packages`` request for good."""
+    worker closing a request for good. ``grants`` names the workspace's grants an answer
+    comes from (D97), so that revoking one can end it."""
 
     request_seq: Integer
     scope: str
     target: Key
     expires: Time | None = None
     withdrawn: Annotated[bool, BeforeValidator(lambda value: value is True)] = False
+    grants: Annotated[tuple[GrantName, ...], Field(max_length=MAX_ANSWER_GRANTS)] = ()
 
     @model_validator(mode="after")
     def _scope(self) -> Self:
@@ -204,27 +212,38 @@ class Answer:
     key: RequestKey
     scope: str
     expires: datetime | None
+    grants: tuple[str, ...] = ()
+    """The workspace's grants the answer comes from."""
+
+    def live(self, now: datetime) -> bool:
+        return self.expires is None or now < self.expires
 
     def applies(self, key: RequestKey, now: datetime) -> bool:
-        live = self.expires is None or now < self.expires
-        return live and self.key.covers(key, self.scope)
+        return self.live(now) and self.key.covers(key, self.scope)
 
 
 def answer_payload(
-    request: PermissionRequest, scope: str, expires: datetime | None
+    request: PermissionRequest,
+    scope: str,
+    expires: datetime | None,
+    grants: tuple[str, ...] = (),
 ) -> dict[str, object]:
-    """The payload of an approval or a denial of ``request``."""
-    return {
+    """The payload of an approval or a denial of ``request``, naming the grants it comes
+    from, if any."""
+    payload: dict[str, object] = {
         "request_seq": request.seq,
         "scope": scope,
         "target": request.key.payload(),
         "expires": expires.isoformat(timespec="seconds") if expires is not None else None,
     }
+    if grants:
+        payload["grants"] = list(grants)
+    return payload
 
 
 def withdrawal_payload(seq: int, key: RequestKey, reason: str) -> dict[str, object]:
-    """The payload of the denial with which the worker closes ``packages`` request ``seq``
-    for good, built from its key alone, so that no read of the store is needed."""
+    """The payload of the denial with which the worker closes request ``seq`` for good,
+    built from its key alone, so that no read of the store is needed."""
     return {
         "request_seq": seq,
         "scope": DEFAULT_SCOPES[key.kind],

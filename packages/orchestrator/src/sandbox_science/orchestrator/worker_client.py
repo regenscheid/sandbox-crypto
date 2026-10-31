@@ -114,6 +114,8 @@ from sandbox_science.contracts.environment_claims import EnvironmentClaim, Envir
 from sandbox_science.contracts.mcp_traffic import WorkerMcpTraffic
 from sandbox_science.contracts.monitor import MonitorWindow, WorkerMonitor
 from sandbox_science.contracts.permission_requests import (
+    GrantWithdrawal,
+    GrantWithdrawn,
     PermissionConfirmation,
     PermissionConfirmed,
     WorkerPermissionAnswer,
@@ -567,6 +569,11 @@ class WorkerClient:
         return await self._call(
             "POST", f"/v1/permission-requests/{seq}/answer", WorkerPermissionAnswered, answer
         )
+
+    async def withdraw_permission_grant(self, asked: GrantWithdrawal) -> GrantWithdrawn:
+        """End the live answers of a grant the user revoked (D97): the requests they answer
+        ask again on their next try."""
+        return await self._call("POST", "/v1/permission-grants/withdraw", GrantWithdrawn, asked)
 
     async def confirm_permission_request(
         self, seq: int, asked: PermissionConfirmation
