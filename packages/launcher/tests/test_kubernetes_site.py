@@ -854,6 +854,80 @@ def test_the_sites_worker_section_sets_label_environments(tmp_path, label):
     assert worker.openshell.environments.label_environments is label
 
 
+def test_the_sites_worker_section_renders_job_profiles(tmp_path):
+    """Job sandbox sizes come from the site file, so a ``site`` run keeps them; the worker
+    loads what is rendered with its own checks."""
+    values = site_values(tmp_path)
+    values["worker"] = {
+        "max_job_sandboxes": 1,
+        "job_retention": 86400,
+        "job_profiles": {
+            "medium": {
+                "description": "6 cores, 16 GiB memory, up to 7 days",
+                "node_selector": {"test.example/compute-tier": "high"},
+                "requests": {
+                    "cpu_millicores": 6000,
+                    "memory_mib": 16384,
+                    "ephemeral_storage_mib": 16384,
+                },
+                "limits": {
+                    "cpu_millicores": 6000,
+                    "memory_mib": 16384,
+                    "ephemeral_storage_mib": 16384,
+                },
+                "schedule_timeout": 600,
+            },
+        },
+    }
+    path = site_file(tmp_path, values)
+    output = tmp_path / "out"
+    write(output, plan(*load(path)))
+    worker = load_worker(output / "secrets/worker/worker.toml")
+    assert worker.openshell is not None
+    environments = worker.openshell.environments
+    assert environments is not None
+    medium = environments.job_profiles["medium"]
+    assert medium.runtime_class_name == "kata"
+    assert medium.node_selector == {
+        "kubernetes.io/arch": "amd64",
+        "test.example/compute-tier": "high",
+    }
+    assert medium.limits.memory_mib == 16384
+    assert medium.description.startswith("6 cores")
+    assert medium.schedule_timeout == 600
+    assert medium.wall_time_max == 7 * 24 * 3600  # the worker's default
+    assert (environments.max_job_sandboxes, environments.job_retention) == (1, 86400)
+    assert environments.job_retention_per_project == 2  # the worker's default
+    # Without the section, no size is offered.
+    del values["worker"]
+    write(tmp_path / "plain", plan(*load(site_file(tmp_path, values))))
+    plain = load_worker(tmp_path / "plain/secrets/worker/worker.toml")
+    assert plain.openshell is not None
+    assert plain.openshell.environments is not None
+    assert plain.openshell.environments.job_profiles == {}
+
+
+@pytest.mark.parametrize(
+    "size",
+    [
+        {"runtime_class_name": "runc"},  # every job sandbox runs under Kata (D92)
+        {"node_selector": {"kubernetes.io/arch": "arm64"}},
+        {"description": ""},
+        {"schedule_timeout": 0},
+        {"memory": "16Gi"},  # not a key
+    ],
+)
+def test_a_job_profile_the_worker_would_refuse_is_refused_by_site(tmp_path, size):
+    values = site_values(tmp_path)
+    base = {
+        "description": "small",
+        "requests": {"cpu_millicores": 1000, "memory_mib": 1024, "ephemeral_storage_mib": 1024},
+        "limits": {"cpu_millicores": 1000, "memory_mib": 1024, "ephemeral_storage_mib": 1024},
+    }
+    values["worker"] = {"job_profiles": {"small": {**base, **size}}}
+    _refused(tmp_path, values, "job_profiles")
+
+
 def test_the_worker_section_refuses_unknown_options(tmp_path):
     values = site_values(tmp_path)
     values["worker"] = {"label_environment": True}

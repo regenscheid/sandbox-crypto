@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: MIT
 # Merge this illustrative fragment into a PRIVATE worker config beside
 # worker-placement.toml: the sizes a big job may ask for a sandbox of its own in (D93,
-# docs/specs/job-sandboxes.md). The owner's home-cluster sizes (2026-10-22). Each must
+# docs/specs/job-sandboxes.md). On Kubernetes, give them in the site file instead
+# ([worker.job_profiles.<name>], examples/kubernetes/site.toml), which renders this. The owner's home-cluster sizes (2026-10-22). Each must
 # fit one real amd64 Kata node with room to spare.
 #
 # A project's policy grants them (docs/POLICY.md, background job resources):

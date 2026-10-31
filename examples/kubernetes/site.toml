@@ -51,6 +51,18 @@ limits = { cpu_millicores = 2000, memory_mib = 4096, ephemeral_storage_mib = 204
 # Sandbox object or Pod); confirmed on an OpenShell 0.1.5 gateway.
 # [worker]
 # label_environments = false
+# max_job_sandboxes = 2            # job sandboxes at once across the pool (D93)
+#
+# Job sandbox sizes (D93), rendered into worker.toml's openshell.environments.job_profiles;
+# a project's policy grants them (resources.job_profiles, resources.job_sandboxes). A Kata
+# placement as for [profiles.*] (kubernetes.io/arch = amd64 is added) plus a description;
+# wall_time_max, schedule_timeout, max_concurrent, stage_max_bytes and collect_max_bytes
+# are optional (examples/kubernetes/job-profiles.toml).
+# [worker.job_profiles.medium]
+# description = "6 cores, 16 GiB memory, up to 7 days"
+# node_selector = { "example.org/kata-capable" = "true" }
+# requests = { cpu_millicores = 6000, memory_mib = 16384, ephemeral_storage_mib = 16384 }
+# limits = { cpu_millicores = 6000, memory_mib = 16384, ephemeral_storage_mib = 16384 }
 
 # Research base profiles: image by digest and Kata placement (examples/kubernetes/worker-placement.toml).
 [profiles.minimal]
