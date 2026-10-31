@@ -380,6 +380,11 @@ def _restore(args: argparse.Namespace, operator: Operator) -> int:
             "give --restore-key DIR (its Secret exists only while the Job runs) or"
             " --standing-secret"
         )
+    if args.standing_secret and not operator.checkpoint.standing_restore_secret:
+        raise ValueError(
+            "--standing-secret needs the bundle's [checkpoint] standing_restore_secret = true;"
+            " otherwise pass --restore-key DIR"
+        )
     plan = operator.run_restore(manifest, target, resume=args.resume, key=key)
     print(f"restored={plan.restore_id} environment={plan.target.environment_id}")
     return 0

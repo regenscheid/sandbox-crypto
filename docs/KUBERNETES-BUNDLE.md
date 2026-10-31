@@ -913,6 +913,7 @@ run_as_group = 10001       # and the sandbox Pod's fsGroup; for checkpoint and r
 # region = "garage", prefix = "sandbox-science", addressing_style = "path"
 # upload_profile = "checkpoint-upload", verify_profile = "checkpoint-verify"
 # restore_secret = "research-checkpoint-restore"   # restore Jobs only; absent, no restore
+# standing_restore_secret = false   # true keeps that Secret for good (secrets.sh makes it)
 # restore_profile = "checkpoint-restore"
 # keep = 2, deadline_seconds = 7200, hold_seconds = 21600 (longer than the deadline)
 # job_ttl_seconds = 600 (how long Kubernetes keeps a finished Job; 0 to 604800)
@@ -931,7 +932,8 @@ Secret then also projects `checkpoint-upload.toml` and `checkpoint-kept.toml` (d
 no credential) and `checkpoint-s3-credentials`, `checkpoint-s3-config` (its read-only key);
 `site` generates them from the site file's `[checkpoint]` paths, writes the upload key's
 Secret files and its `kubectl create secret` line for the sandbox namespace (and the restore
-key's, with `restore_secret`), and writes
+key's files, with `restore_secret`, for `restore --restore-key`; its `kubectl` line only
+with `standing_restore_secret`), and writes
 `operator/checkpoint-upload.toml` and `operator/checkpoint-kept.toml`, the buckets as the
 operator's machine reaches them through `kubectl port-forward`. The keys and buckets are in
 [preparation, step 6](KUBERNETES-PREP.md#6-garage-artifacts).
@@ -1081,7 +1083,9 @@ Secret from `--restore-key` (the directory
 the digest from its log, deletes the Secret and the Job and has the worker verify the
 digest, printing the Job's log. The restore key reads every project's kept checkpoints and
 the sandbox namespace runs untrusted sandboxes, so by default its Secret exists only while a
-restore Job runs; `--standing-secret` uses one the operator keeps there instead. A Secret
+restore Job runs, and `site`'s `secrets.sh` does not make it. Keeping one there for good is
+the bundle's explicit opt-in, `standing_restore_secret = true` in `[checkpoint]`: `secrets.sh`
+then makes it and `--standing-secret` uses it (refused without the opt-in). A Secret
 the command cannot delete is reported, to be deleted by hand. A failure prints the Job's
 log, deletes the Job and the Secret, journals the failure and leaves the target held:
 `--resume` rechecks that the target is still the stopped, fresh sandbox, then runs another

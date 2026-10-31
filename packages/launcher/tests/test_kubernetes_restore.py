@@ -158,11 +158,26 @@ def test_the_site_puts_the_restore_key_in_its_own_secret(tmp_path):
         for key, value in files.items()
         if not key.startswith("secrets/checkpoint-restore/")
     )
+    # Transient by default: secrets.sh never makes the restore Secret, which would make
+    # ``restore --restore-key`` refuse; the README says to pass the directory instead.
     script = files["secrets.sh"].decode()
+    assert RESTORE_SECRET not in script
+    assert "checkpoint-restore" not in script
+    assert "restore --restore-key" in files["README.md"].decode()
+    # A standing Secret is the bundle's explicit opt-in.
+    data["checkpoint"]["standing_restore_secret"] = True
+    bundle.write_text(toml.dumps(data))
+    files = site_plan(*load_site(site_file(tmp_path, site)))
     assert (
         f"kubectl -n {SANDBOXES} create secret generic {RESTORE_SECRET} \\\n"
         "  --from-file=credentials=secrets/checkpoint-restore/credentials"
-    ) in script
+    ) in files["secrets.sh"].decode()
+    assert "restore --standing-secret" in files["README.md"].decode()
+
+
+def test_a_standing_restore_secret_needs_the_restore_secret():
+    with pytest.raises(ValueError, match="standing_restore_secret needs restore_secret"):
+        configured(standing_restore_secret=True)
 
 
 # The operator's command
@@ -330,6 +345,10 @@ def test_the_restore_command_prints_its_steps_and_asks_before_a_discard(
     apply = [*base, "--checkpoint", MANIFEST, "--target", "e-new", "--apply"]
     assert kubernetes_cli.main(apply) == 1
     assert "--restore-key" in capsys.readouterr().err
+    # A standing Secret only where the bundle keeps one.
+    assert kubernetes_cli.main([*apply, "--standing-secret"]) == 1
+    assert "standing_restore_secret" in capsys.readouterr().err
+    assert kubectl.commands == []
     assert kubernetes_cli.main([*base, "--checkpoint", MANIFEST]) == 1
     assert kubernetes_cli.main([*base, "--resume", "rst-x", "--discard", "rst-x"]) == 1
     monkeypatch.setattr("builtins.input", lambda _prompt: "no")

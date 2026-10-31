@@ -615,7 +615,13 @@ class Checkpoint(Model):
     restore_secret: Name | None = None
     """The Secret in the sandbox namespace with the restore key's SDK files (``credentials``
     and ``config``): read-only on the kept bucket, mounted only by restore Jobs. Absent,
-    no restore Job can be rendered. The operator creates it, for good or for a restore."""
+    no restore Job can be rendered. By default it exists only while a restore Job runs:
+    ``restore --restore-key`` creates and deletes it, and ``site``'s ``secrets.sh`` does not
+    make it."""
+    standing_restore_secret: bool = False
+    """Keep the restore Secret in the sandbox namespace for good instead (an explicit opt-in:
+    the key reads every project's kept checkpoints, beside untrusted sandboxes): ``site``'s
+    ``secrets.sh`` then makes it, and only then does ``restore --standing-secret`` use it."""
     restore_profile: Annotated[str, StringConstraints(pattern=_PROFILE)] = "checkpoint-restore"
     upload_bucket: Annotated[str, StringConstraints(pattern=_BUCKET)]
     kept_bucket: Annotated[str, StringConstraints(pattern=_BUCKET)]
@@ -656,6 +662,8 @@ class Checkpoint(Model):
             raise ValueError("the upload bucket is separate from the kept bucket")
         if self.restore_secret is not None and self.restore_secret == self.upload_secret:
             raise ValueError("the restore key's Secret is separate from the upload key's")
+        if self.standing_restore_secret and self.restore_secret is None:
+            raise ValueError("checkpoint.standing_restore_secret needs restore_secret")
         if self.hold_seconds <= self.deadline_seconds:
             raise ValueError("checkpoint.hold_seconds must outlast the Job's deadline")
         return self
