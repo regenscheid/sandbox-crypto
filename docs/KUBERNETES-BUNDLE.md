@@ -516,7 +516,9 @@ job's Pod like any other: the job ends `lost` ([job sandboxes](specs/job-sandbox
 JS-20). The worker labels each job sandbox itself, `sandbox-science.io/job-sandbox=true`, so
 before draining a node list them with `openshell sandbox list --selector
 sandbox-science.io/job-sandbox=true` and wait for the jobs on that node, or accept losing
-them. `job_budget = false` is still accepted in `[sandboxes]`; `true` is refused. A bundle
+them. Any node with a running sandbox drains only with `kubectl drain --force`: OpenShell's
+`os-supervisor-*` Pods in the sandbox namespace declare no controller, so without it the
+drain stops before evicting anything ([preparation, step 8](KUBERNETES-PREP.md#8-render-dry-run-apply)). `job_budget = false` is still accepted in `[sandboxes]`; `true` is refused. A bundle
 rendered before this left a budget `<name>-job-sandboxes` in the sandbox namespace that
 selects no Pod: delete it.
 
