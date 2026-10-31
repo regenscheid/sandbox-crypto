@@ -1048,12 +1048,17 @@ class Store:
             )
         return [str(found[0]) for found in gone]
 
-    def forget_package_gate(self, environment_id: str, *, binding: str | None) -> None:
-        """Clear only after confirmed sandbox deletion and durable operation drain."""
+    def forget_package_gate(
+        self, environment_id: str, *, binding: str | None, disposable: bool = False
+    ) -> None:
+        """Clear only after confirmed sandbox deletion and durable operation drain. A
+        ``disposable`` environment's (a job sandbox's) needs no proof of its binding: its
+        package state was never durable."""
         with self._transaction():
             if not self.provisioning_finished(environment_id):
                 raise WorkerError(ErrorKind.UNAVAILABLE, "old provisioning is not durably finished")
-            self._guard_package_binding(environment_id, binding)
+            if not disposable:
+                self._guard_package_binding(environment_id, binding)
             self._db.execute("DELETE FROM package_status WHERE environment_id=?", (environment_id,))
             self._db.execute(
                 "DELETE FROM workspace_prefixes WHERE environment_id=?", (environment_id,)

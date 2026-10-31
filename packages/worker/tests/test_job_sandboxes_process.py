@@ -83,12 +83,6 @@ if _argv[:2] == ["sandbox", "ssh-config"]:
     _running(_argv[2])
     print(f"Host {_argv[2]}")
     sys.exit(0)
-
-# The gateway's own state changes one command at a time: a worker runs several at once.
-import fcntl
-
-_lock = open(os.environ["FAKE_OPENSHELL_STATE"] + ".lock", "a")
-fcntl.flock(_lock, fcntl.LOCK_EX)
 '''
 
 SSH = r"""
@@ -108,10 +102,9 @@ os.execvp(command[0], command)
 PROFILE = """
 [openshell.environments.job_profiles.medium]
 description = "6 cores, 16 GiB memory, up to 7 days"
-node_selector = { "kubernetes.io/arch" = "amd64" }
+node_selector = {{ "kubernetes.io/arch" = "amd64" }}
 runtime_class_name = "kata"
-# The stand-ins have no image whose prefix the preflight could find.
-require_workspace_prefix = false
+require_workspace_prefix = {require}
 
 [openshell.environments.job_profiles.medium.requests]
 cpu_millicores = 6000
@@ -144,7 +137,9 @@ def _script(path: Path, body: str) -> None:
 class Site:
     """A worker's settings, fake gateway and sandboxes in ``root``, and the worker process."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, require_prefix: bool = False) -> None:
+        """``require_prefix`` keeps the job profile's default, a workspace package prefix
+        the stand-ins' sandboxes never have; without it, their jobs run."""
         self.root = root
         self.boxes = root / "boxes"
         self.boxes.mkdir()
@@ -189,7 +184,8 @@ class Site:
             f"env = {_inline(env)}\n\n"
             '[openshell.environments]\npolicy_store = "middleware"\n'
             f'targets = "{TARGETS}"\nceiling = "pool-ceiling.yaml"\n'
-            f'profiles = {{minimal = "{IMAGE}"}}\n' + PROFILE
+            f'profiles = {{minimal = "{IMAGE}"}}\n'
+            + PROFILE.format(require=str(require_prefix).lower())
         )
         self.process: subprocess.Popen[bytes] | None = None
         self.started = 0
@@ -428,3 +424,32 @@ async def test_deleting_the_session_environment_releases_a_running_job_sandbox(
     assert status["execution"]["job"]["sandbox"]["phase"] == "released"
     assert status["manifest"]["collection"] == "incomplete"
     assert (site.root / "deleted.runs").read_text() == "started\n"
+
+
+async def test_a_job_sandbox_failing_its_prefix_preflight_fails_and_is_released(
+    tmp_path: Path,
+) -> None:
+    # The profile's default requires the image's workspace package prefix, which these
+    # sandboxes lack: the job sandbox's executor never opens, and its package gate is
+    # held. A job sandbox is disposable, so the gate does not keep it.
+    site = Site(tmp_path, require_prefix=True)
+    try:
+        async with aiohttp.ClientSession() as http:
+            api = WorkerApi(http, site.url, TOKEN, CONTEXT)
+            await _session(site, api)
+            job = await api.submit("big-4", **_job(site.root, "prefix"))
+            ended = await _ended(api, job["execution_id"])
+            assert ended["state"] == "failed", ended
+            message = ended["result"]["error"]["message"]
+            assert message.startswith("sandbox_unavailable"), message
+            assert "workspace package prefix" in message
+            assert not (site.root / "prefix.runs").exists()  # nothing ran
+            status = await _status(api, job["execution_id"])
+            assert status["execution"]["job"]["sandbox"]["phase"] == "released"
+            assert status["manifest"]["reason"] == "sandbox_unavailable"
+            session, _ = _created(site)
+            assert set(site.gateway()["sandboxes"]) == {session}
+            await _delete_session(site, api)
+    finally:
+        await site.stop()
+        end_left_behind(site.boxes, 5.0)

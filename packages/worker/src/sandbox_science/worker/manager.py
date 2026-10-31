@@ -463,11 +463,21 @@ class ExecutionManager:
 
     async def forget_package_gate(self, environment_id: str) -> None:
         """Only confirmed deletion, after provisioning drain, may remove this fence."""
-        self._admission.forget(environment_id)
+        self._admission.forget(environment_id, disposable=self._disposable(environment_id))
 
     async def guard_package_deletion(self, environment_id: str) -> None:
-        """Require original-binding proof before any explicit guest teardown."""
+        """Require original-binding proof before any explicit guest teardown, except of a
+        job sandbox (D93): it is disposable, since its packages were replayed from the
+        session's lockfile and its outputs are the files collected and its manifest, so
+        a held package gate never keeps it from being stopped, released or deleted."""
+        if self._disposable(environment_id):
+            return
         self._admission.guard_deletion(environment_id)
+
+    def _disposable(self, environment_id: str) -> bool:
+        """Whether the environment is a job sandbox, whose package state is not durable.
+        Session and child environments keep the package guard."""
+        return self.job_sandboxes is not None and self.job_sandboxes.owns(environment_id)
 
     async def guard_package_reuse(self, environment_id: str) -> None:
         """A new VM cannot replace the unknown original held package binding."""

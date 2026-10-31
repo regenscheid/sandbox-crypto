@@ -224,10 +224,11 @@ class PackageAdmission:
             return repr(identity) if identity is not None else None
         return self.backend.binding_key(environment_id)
 
-    def forget(self, environment_id: str) -> None:
-        """Only confirmed deletion, after provisioning drain, may remove this fence."""
+    def forget(self, environment_id: str, *, disposable: bool = False) -> None:
+        """Only confirmed deletion, after provisioning drain, may remove this fence; a
+        disposable environment's needs no binding proof."""
         self.store.forget_package_gate(
-            environment_id, binding=self._deletion_binding(environment_id)
+            environment_id, binding=self._deletion_binding(environment_id), disposable=disposable
         )
 
     def guard_deletion(self, environment_id: str) -> None:
