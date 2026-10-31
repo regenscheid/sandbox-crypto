@@ -917,6 +917,59 @@ def test_a_root_that_is_no_directory_is_refused():
         checkpoint_restore.check_root(info, SANDBOX_UID, FS_GROUP)
 
 
+def modes(root: Path) -> dict[str, int]:
+    """Every entry's permission bits below ``root`` (links excepted), by relative path."""
+    return {
+        str(path.relative_to(root)): stat.S_IMODE(path.lstat().st_mode)
+        for path in sorted(root.rglob("*"))
+        if not path.is_symlink()
+    }
+
+
+def test_the_root_is_never_changed_and_members_keep_their_modes_exactly(
+    tmp_path, garage, retained, stopped
+):
+    """As on the cluster: the volume's root is set-group-ID with group write (fsGroup), its
+    directories set-group-ID too; files have the modes the sandbox gave them. The root
+    keeps its mode, so the kubelet's OnRootMismatch finds nothing to change on the next
+    start, and every member comes back with its own mode (set-user-ID and set-group-ID on
+    files dropped as always)."""
+    plan = planned(retained)
+    source = workspace(tmp_path / "source")
+    source.chmod(0o755)  # a root mode other than the target's: not the checkpoint's to set
+    shared = source / "research" / "shared"
+    shared.mkdir()
+    shared.chmod(0o2775)
+    (shared / "private").write_text("600")
+    (shared / "private").chmod(0o600)
+    (shared / "readable").write_text("644")
+    (shared / "readable").chmod(0o644)
+    (shared / "group").write_text("664")
+    (shared / "group").chmod(0o664)
+    (shared / "setgid-tool").write_text("#!/bin/sh\n")
+    (shared / "setgid-tool").chmod(0o2755)
+    (source / "research").chmod(0o2770)
+    identity, _, _ = capture_upload(source, plan.source, UPLOAD, plan.capture)
+    verify(retained, plan.checkpoint_id, identity, UPLOAD, "upload", "op")
+    checkpoint_remote.promote(UPLOAD, KEPT, identity)
+    verify(retained, plan.checkpoint_id, identity, KEPT, "kept", "op")
+    restore = restore_plan(retained, identity)
+    volume = seeded(tmp_path / "target")
+    volume.chmod(0o2775)
+    before = volume.stat()
+    tree, _ = checkpoint_restore.write(volume, restore, KEPT)
+    after = volume.stat()
+    assert tree == restore.tree_sha256
+    assert stat.S_IMODE(after.st_mode) == stat.S_IMODE(before.st_mode) == 0o2775
+    assert (after.st_uid, after.st_gid) == (before.st_uid, before.st_gid)
+    wanted = modes(source)
+    wanted["research/shared/setgid-tool"] = 0o755
+    restored = modes(volume)
+    assert restored == wanted
+    assert restored["research/shared"] == 0o2775
+    assert restored["research/shared/private"] == 0o600
+
+
 def test_an_open_upload_expiry_keeps_checkpoints_away_until_it_ends(
     tmp_path, garage, retained, stopped
 ):

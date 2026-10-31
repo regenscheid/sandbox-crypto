@@ -444,9 +444,11 @@ def decode(
                 directory = target / str(path)
                 descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
                 try:
-                    # Unchanged modes are left alone: a restore's root is the volume's own
-                    # directory, which its user may not be allowed to change.
-                    wanted = int(mode) & ~0o6000
+                    # Exactly the archive's mode, the set-group-ID bit included: on a
+                    # directory it only passes the group on to new entries, as Kubernetes'
+                    # fsGroup sets it on every directory of a volume. Set-user-ID means
+                    # nothing on a Linux directory and is never written.
+                    wanted = int(mode) & ~0o4000
                     if stat.S_IMODE(os.fstat(descriptor).st_mode) != wanted:
                         os.fchmod(descriptor, wanted)
                     os.fsync(descriptor)

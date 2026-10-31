@@ -989,7 +989,7 @@ tree. Sockets, FIFOs and devices are left out and listed in the receipt (at most
 1,000; more fail the capture), since they hold no data a restore could recreate, and so is
 a `lost+found` directory at the root that another user owns (the filesystem's, kind
 `other`), which a restore also leaves in place; a regular file the reader cannot open fails
-the capture, naming it. Restores never set set-user-ID or set-group-ID bits. Ownership becomes the invoking operator's;
+the capture, naming it. Restores never set set-user-ID or set-group-ID bits on a file; a directory keeps its set-group-ID bit, which only passes its group on to new entries. Ownership becomes the invoking operator's;
 timestamps, extended attributes and ACLs are outside this format. The initialized
 workspace sentinel and required native prefix marker must match the retained state.
 Source metadata is checked during reads and again after the whole capture.
@@ -1105,7 +1105,7 @@ the worker's part in its container, beside the serving worker, with
 | `release-hold --checkpoint-id ID --reason R --by WHO` | worker container | Lifts a hold early, recording who and why |
 | `restore-plan --manifest H --target ENV --storage F --by WHO` (or `--resume ID`) | worker container | Reads the kept checkpoint back in full and computes its tree digest, creates the target environment (new, or recorded deleted) through its own API, records the restore, which holds the sandbox stopped with no expiry, suspends it and checks nothing has run in it; prints the restore plan. `--resume` prints an unfinished restore's plan again |
 | `restore-attempt --restore-id ID --by WHO` | worker container | A new Job attempt's nonce; only the latest attempt, with no failure after it, is verified |
-| `restore-write --workspace DIR` | the restore Job | Empties the target volume (OpenShell's seed, or this restore's earlier attempt) and writes the checkpoint from the kept bucket (`SS_RESTORE_PLAN`, `SS_RESTORE_ATTEMPT`, `SS_CHECKPOINT_STORAGE`), checking every chunk and never setting set-user-ID or set-group-ID bits; a volume already holding the plan's tree is only reported. Refuses a volume whose root another uid owns. Prints `restore_tree=<sha256> restore_attempt=<nonce>` |
+| `restore-write --workspace DIR` | the restore Job | Empties the target volume (OpenShell's seed, or this restore's earlier attempt) and writes the checkpoint from the kept bucket (`SS_RESTORE_PLAN`, `SS_RESTORE_ATTEMPT`, `SS_CHECKPOINT_STORAGE`), checking every chunk, never setting set-user-ID or set-group-ID bits on a file, and never changing the volume root's owner, group or mode; a volume already holding the plan's tree is only reported. Refuses a root it can write neither as its owner nor through its group (a root-owned root must have the Job's group, group write and the set-group-ID bit, as the sandbox Pod's fsGroup makes it). Prints `restore_tree=<sha256> restore_attempt=<nonce>` |
 | `restore-verify --restore-id ID --attempt N --tree H --by WHO` | worker container | Accepts only the current attempt, once its Job is journaled (`restore-record --phase job` naming the attempt); compares the Job's digest with its own and that the target is still the fresh, stopped sandbox; records `restored` (the sandbox may start) or `failed` (it stays held, the attempt void) |
 | `restore-record --restore-id ID --phase job\|failed --detail JSON --by WHO` | worker container | Journals a restore Job, or a failure outside the worker's checks (the target stays held) |
 | `restore-discard --restore-id ID --reason R --by WHO` | worker container | Ends an unfinished restore, deleting its target environment through its own API only if the environment is still bound to the sandbox the restore created |
@@ -1129,7 +1129,7 @@ sandbox, with no expiry, and refuses a checkpoint plan of it and the deletion or
 of the checkpoint it reads; a `planned` or `failed` one refuses the target's deletion
 through the API (the discard moves it to `discarding` first). The **operations journal**, append-only like the deletion journal,
 records each restore step and upload expiry with who ran it. The tree digest is one line
-per path in byte order (kind, mode, size, content SHA-256 or link text, hardlink group),
+per path in byte order (kind, mode, size, content SHA-256 or link text, hardlink group; set-user-ID and set-group-ID bits and the root's own mode, which belongs to the volume, left out),
 computed from an archive by the decoder and from a volume by a walk that never follows a
 link, so a restored tree compares with its checkpoint whatever order the disk lists it in
 (`checkpoint_tree.py`). Verification checks the manifest's hash, each chunk's hash

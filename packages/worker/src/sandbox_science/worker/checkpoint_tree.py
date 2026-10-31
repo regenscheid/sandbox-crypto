@@ -9,8 +9,10 @@ text, and for a file its hardlink group (the smallest path sharing its inode). T
 computes it from the kept checkpoint while verifying it (``decode(tree=...)``); a restore
 Job computes it from the volume it wrote (``describe``); the worker compares the two
 (docs/KUBERNETES-BUNDLE.md#restoring-a-checkpoint). Ownership and times are outside the
-checkpoint format and outside the digest. Rows live in a temporary SQLite file, so memory
-stays bounded whatever the tree's size.
+checkpoint format and outside the digest, and so is the root's own mode: a restore writes
+into a volume's root without changing it (its owner, group and the set-group-ID bit
+Kubernetes' ``fsGroup`` gives it belong to the volume). Rows live in a temporary SQLite
+file, so memory stays bounded whatever the tree's size.
 """
 
 from __future__ import annotations
@@ -31,8 +33,10 @@ READ = 512 * 1024
 SYMLINK_MODE = 0o777
 LOST_FOUND = "lost+found"
 PRIVILEGE_BITS = 0o6000
-"""Set-user-ID and set-group-ID: a restore never writes them (``decode``), so the digest
-leaves them out on both sides."""
+"""Set-user-ID and set-group-ID: a restore never writes them on a file (``decode``), so
+the digest leaves them out on both sides."""
+ROOT = "."
+VERSION = b"sandbox-workspace-tree-v2\n"
 
 
 def foreign_lost_found(path: str, info: os.stat_result) -> bool:
@@ -69,10 +73,12 @@ class TreeIndex:
         detail: str | None = None,
         first: str | None = None,
     ) -> None:
+        # The root's mode is the volume's, which a restore never changes.
+        recorded = 0 if path == ROOT else mode & ~PRIVILEGE_BITS
         try:
             self.db.execute(
                 "INSERT INTO entries VALUES (?,?,?,?,?,?)",
-                (path, kind, mode & ~PRIVILEGE_BITS, size, detail, first),
+                (path, kind, recorded, size, detail, first),
             )
         except sqlite3.IntegrityError:
             raise ValueError(f"the tree lists {path!r} twice") from None
@@ -101,7 +107,7 @@ class TreeIndex:
         return None
 
     def digest(self) -> str:
-        checksum = hashlib.sha256(b"sandbox-workspace-tree-v1\n")
+        checksum = hashlib.sha256(VERSION)
         for row in self.db.execute(
             "SELECT e.path, e.kind, e.mode, e.size, e.detail,"
             " (SELECT min(g.path) FROM entries g WHERE g.first = e.first)"

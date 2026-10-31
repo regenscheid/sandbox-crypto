@@ -1001,7 +1001,8 @@ next use. A restore never writes into an existing environment, so it cannot over
    anything is created) and computes its **tree digest**: one line per path in byte order
    with its kind, mode, size, content SHA-256 or link text and hardlink group, which does
    not depend on the order a disk lists a directory in (set-user-ID and set-group-ID bits,
-   which a restore never writes, are left out of it); a checkpoint with a root entry named
+   which a restore never writes on a file, are left out of it, and so is the root's own
+   mode, which belongs to the volume); a checkpoint with a root entry named
    `.sandbox-science-restore` is refused. It creates the target through its own API with
    the checkpoint's project, profile and policy revision (only a new environment counts: an
    existing one returned instead is refused; the project's current policy replaces the
@@ -1036,7 +1037,8 @@ next use. A restore never writes into an existing environment, so it cannot over
    (an earlier attempt finished writing; it then only reports it). It then empties the
    volume (keeping a root `lost+found` another user owns, which the digest also leaves
    out), writes the checkpoint from the kept bucket, checking every chunk's hash and length
-   before a byte of it is written, never setting set-user-ID or set-group-ID bits, checks
+   before a byte of it is written and giving every member its archived mode, except
+   set-user-ID and set-group-ID bits on a file (a directory keeps its set-group-ID bit), checks
    the archive's counts and the prefix identity, walks the volume back from disk to compute
    its tree digest, removes the marker and prints `restore_tree=<sha256>
    restore_attempt=<nonce>`.
@@ -1046,6 +1048,17 @@ next use. A restore never writes into an existing environment, so it cannot over
    `restored` and the sandbox free to start. Its first
    executor adopts the restored prefix identity as the environment's baseline. A mismatch
    records the restore `failed`, which keeps the target held.
+
+OpenShell 0.1.5 creates every sandbox Pod with `fsGroup` set to the sandbox's group and
+`fsGroupChangePolicy: OnRootMismatch`, so on each start the kubelet gives every file of the
+volume the group and group read and write (and every directory the set-group-ID bit) only
+when the root's group, group bits or set-group-ID bit are not what `fsGroup` makes them. The
+restore never changes the root, so the kubelet leaves the restored files as written: a file
+the sandbox made `600` stays `600`. OpenShell 0.1.5's driver configuration has no field for
+the Pod's security context, so the policy is OpenShell's. The tree digest keeps the group
+bits: the worker compares it before the sandbox ever starts on the restored volume, so no
+later `fsGroup` pass can make a verified restore fail, and ignoring them would let a restore
+that wrote wrong group permissions pass.
 
 ```sh
 sandbox-science-kubernetes restore --config private.toml --checkpoint MANIFEST --target ENV   # prints the steps
