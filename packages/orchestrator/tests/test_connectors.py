@@ -74,7 +74,7 @@ metadata:
 defaults:
   action: escalate
 mcp:
-  proxy:
+  limits:
     max_argument_bytes: 1Ki
   servers:
     papers:

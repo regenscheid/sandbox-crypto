@@ -74,9 +74,6 @@ async def compile_egress(
     )
     for warning in egress.warnings():
         say(f"the agent runtime's MCP egress: {warning}")
-    for server, revision in sorted(egress.revisions.items()):
-        say(
-            f"the agent runtime's MCP egress: {server}'s tools are admitted by the project's "
-            f"accepted classification revision {revision[:12]}"
-        )
+    for note in egress.fence_notes():
+        say(f"the agent runtime's MCP egress: {note}")
     return egress

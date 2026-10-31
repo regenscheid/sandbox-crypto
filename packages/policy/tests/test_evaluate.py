@@ -2149,8 +2149,7 @@ def test_a_policy_giving_research_code_mcp_access_is_refused() -> None:
 def test_a_stored_revision_with_worker_access_loads_without_it() -> None:
     # A revision the store kept from before is read as research code is now treated.
     policy = parse_policy(HEADER + RETIRED_ACCESS, stored=True)
-    assert policy.policy.mcp.proxy.worker_access is False
-    assert policy.policy.mcp.proxy.worker_tools == "inherit"
+    assert policy.policy.mcp.limits.max_argument_bytes == 64 * 1024
     assert call_tool(policy, "web_search", origin="worker").action == Action.DENY
     assert decide_mcp(policy, "tools/list", origin="worker").action == Action.DENY
     assert call_tool(policy, "web_search", origin="orchestrator").action == Action.ALLOW

@@ -445,6 +445,15 @@ def test_a_direct_path_that_cannot_work_is_refused(
     assert message in str(error.value)
 
 
+def test_a_long_project_id_cannot_use_the_direct_path(make_config: Any) -> None:
+    long = {"id": "p" * 64, "profile": "minimal", "sessions": ["main"]}
+    with pytest.raises(LauncherError, match="cannot use \\[mcp_direct\\]") as error:
+        load_config(make_config({"projects": [long], "mcp_direct": DIRECT}))
+    assert "63 characters" in str(error.value)
+    # Without the direct path, a project made earlier keeps its ID.
+    assert load_config(make_config({"projects": [long]})).projects[0].id == "p" * 64
+
+
 @pytest.mark.parametrize(
     ("changes", "message"),
     [

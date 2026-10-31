@@ -162,9 +162,9 @@ network:
 
 mcp:
   # The agent runtime's own client reaches the servers below, through OpenShell's native
-  # rules and the policy middleware (D98); research code has no MCP access, and
-  # proxy.worker_access and worker_tools, retired with the MCP proxy, are refused.
-  proxy:
+  # rules and the policy middleware (D98); research code has no MCP access. This section
+  # was called `proxy` until 2026-10-31, and a file that still says so is read as this one.
+  limits:
     max_argument_bytes: 64Ki   # the parameters of one request, which the middleware bounds
   browser_automation: disabled     # browse calls (Firecrawl interact and agent, page actions) are denied (D96)
   # Per-class actions and the widest grant a user may give (D97), for every server

@@ -567,8 +567,8 @@ class McpServer(StrictModel):
 STORED: Final = "stored_revision"
 """Validation context key: the policy is a revision the store kept, read again. A revision
 stored before the MCP proxy retired may set ``mcp.proxy.worker_access`` or ``worker_tools``;
-it still loads, read as if it did not (``McpProxy``), so a sandbox bound to it keeps its
-policy instead of failing to load one."""
+it still loads, read as if it did not (``Mcp``), so a sandbox bound to it keeps its policy
+instead of failing to load one."""
 
 RETIRED_WORKER_ACCESS: Final = (
     "mcp.proxy.worker_access and worker_tools are retired with the MCP proxy (D98, "
@@ -576,47 +576,45 @@ RETIRED_WORKER_ACCESS: Final = (
     "(docs/POLICY.md)"
 )
 
+LEGACY_PROXY_SETTINGS: Final = ("max_response_bytes", "binary_results")
+"""Settings of the retired ``mcp.proxy`` section that nothing reads any more: accepted in
+the old section, dropped when it is read as ``mcp.limits``."""
 
-class McpProxy(StrictModel):
-    """MCP limits, named for the MCP proxy that applied them until it retired (D67, D98).
+
+class McpLimits(StrictModel):
+    """MCP request limits, which the policy middleware applies to the agent runtime's MCP
+    requests (D98).
 
     ``max_argument_bytes`` bounds the ``params`` of each request, as compact JSON (for
     ``tools/call``, the tool name and its arguments): tool arguments can carry data out,
-    as URLs can. The policy middleware applies it to the agent runtime's MCP requests.
-    ``max_response_bytes`` bounded each answer the proxy read from a server; nothing reads
-    it since the proxy retired, and the harness bounds answers at 8 MiB.
+    as URLs can. This section was ``mcp.proxy`` until 2026-10-31, named for the MCP proxy
+    that applied it; ``Mcp`` still reads the old name (a policy file or stored revision
+    that says ``proxy``), and the old section's settings the proxy alone used.
+    """
+
+    max_argument_bytes: Annotated[ByteSize, Field(gt=0)] = 64 * 1024
+
+
+def _read_legacy_proxy(legacy: object, stored: bool) -> dict[str, object]:
+    """The settings of an old ``mcp.proxy`` section, as ``mcp.limits`` takes them.
 
     ``worker_access`` and ``worker_tools`` let research code call MCP servers through the
     proxy. With the proxy retired (D98, 2026-10-26) research code has no MCP access: a
     policy may still say ``worker_access: false`` and ``worker_tools: inherit``, the
-    defaults, and is refused if it sets anything else. A stored revision read again
-    (``STORED`` in the validation context) is read with the defaults instead.
-    """
-
-    worker_access: StrictBool = False
-    worker_tools: Literal["inherit"] | tuple[ToolPattern, ...] = "inherit"
-    max_argument_bytes: Annotated[ByteSize, Field(gt=0)] = 64 * 1024
-    max_response_bytes: ByteSize = 2 * 1024 * 1024
-    binary_results: Literal["artifact"] = "artifact"
-
-    @model_validator(mode="before")
-    @classmethod
-    def _no_worker_access(cls, data: object, info: ValidationInfo) -> object:
-        if not isinstance(data, dict):
-            return data
-        fields = cast("dict[str, object]", dict(cast("dict[object, object]", data)))
-        access, tools = fields.get("worker_access", False), fields.get("worker_tools", "inherit")
-        if access is False and tools == "inherit":
-            return fields
-        context = info.context
-        if isinstance(context, dict) and cast("dict[str, object]", context).get(STORED):
-            # A stored revision is read as research code is now treated: no MCP access.
-            return {
-                key: value
-                for key, value in fields.items()
-                if key not in ("worker_access", "worker_tools")
-            }
+    defaults, and is refused if it sets anything else. A stored revision read again is
+    read with the defaults instead. ``max_response_bytes`` and ``binary_results`` are
+    read by nothing and dropped; anything else is left for ``McpLimits`` to refuse."""
+    if not isinstance(legacy, dict):
+        raise ValueError("mcp.proxy must be a mapping (it is now mcp.limits)")
+    fields = cast("dict[str, object]", dict(cast("dict[object, object]", legacy)))
+    access, tools = fields.get("worker_access", False), fields.get("worker_tools", "inherit")
+    if not (access is False and tools == "inherit") and not stored:
         raise ValueError(RETIRED_WORKER_ACCESS)
+    return {
+        key: value
+        for key, value in fields.items()
+        if key not in ("worker_access", "worker_tools", *LEGACY_PROXY_SETTINGS)
+    }
 
 
 InspectionName = Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9-]{0,39}$")]
@@ -677,7 +675,8 @@ class Mcp(StrictModel):
     """MCP servers, reached by the agent runtime's own client through OpenShell's native
     rules and the policy middleware (D98), and their limits."""
 
-    proxy: McpProxy = McpProxy()
+    limits: McpLimits = McpLimits()
+    """Request limits (the section's name until 2026-10-31 was ``proxy``)."""
     inspection: McpInspection = McpInspection()
     """Pattern checks on the answers the policy middleware inspects (D98's direct path)."""
     servers: dict[Name, McpServer] = Field(default_factory=dict[str, McpServer])
@@ -685,6 +684,23 @@ class Mcp(StrictModel):
     """Cross-server per-class actions and grant ceilings, over the shipped defaults (D97)."""
     browser_automation: Literal["disabled", "enabled"] = "disabled"
     """Whether ``browse`` calls may happen at all: disabled, they are denied (D96)."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _read_old_proxy_name(cls, data: object, info: ValidationInfo) -> object:
+        """Read ``proxy``, this section's name until 2026-10-31, as ``limits``, so that
+        policy files and stored revisions written before still load."""
+        if not isinstance(data, dict):
+            return data
+        fields = cast("dict[str, object]", dict(cast("dict[object, object]", data)))
+        if "proxy" not in fields:
+            return fields
+        if "limits" in fields:
+            raise ValueError("mcp sets both proxy (the old name) and limits: keep limits")
+        context = info.context
+        stored = isinstance(context, dict) and bool(cast("dict[str, object]", context).get(STORED))
+        fields["limits"] = _read_legacy_proxy(fields.pop("proxy"), stored)
+        return fields
 
     @model_validator(mode="after")
     def _inspected_servers_declared(self) -> Self:

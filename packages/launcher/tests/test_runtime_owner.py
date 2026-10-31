@@ -413,3 +413,12 @@ async def test_waiting_for_a_draining_runtime_is_bounded(tmp_path: Path) -> None
     async with control(tmp_path, health, tls=False) as url:
         with pytest.raises(LauncherError, match="did not settle"):
             await runtime_owner.wait_unoccupied(url, timeout=0.05, poll=0.01)
+
+
+async def test_a_project_id_that_cannot_label_the_sandbox_is_refused_before_anything_is_made(
+    store: FileOwnership, cli: FakeCli
+) -> None:
+    with pytest.raises(LauncherError, match=r"63 characters.*cannot use the direct MCP path"):
+        await create(store, cli, project="p" * 64)
+    assert store.read() is None
+    assert cli.calls == []
