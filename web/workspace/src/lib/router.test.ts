@@ -14,6 +14,8 @@ import {
   pdfHref,
   projectHref,
   sessionHref,
+  sessionUsageHref,
+  usageHref,
 } from './router';
 
 const SHA = 'ab'.repeat(32);
@@ -36,6 +38,10 @@ describe('routes', () => {
     ['#/projects/p1/sessions/a/runs/r1/events', { view: 'missing' }],
     ['#/projects/p1/sessions/a/tree', { view: 'tree', project: 'p1', session: 'a' }],
     ['#/projects/p1/sessions/a/tree/x', { view: 'missing' }],
+    ['#/projects/p1/sessions/a/usage', { view: 'session_usage', project: 'p1', session: 'a' }],
+    ['#/projects/p1/sessions/a/usage/x', { view: 'missing' }],
+    ['#/projects/p1/usage', { view: 'usage', project: 'p1' }],
+    ['#/projects/p1/usage/x', { view: 'missing' }],
     ['#/projects/p%201', { view: 'project', project: 'p 1' }],
     ['#/projects/%E0%A4%A', { view: 'missing' }],
     ['#/projects', { view: 'missing' }],
@@ -123,6 +129,12 @@ describe('routes', () => {
       project: 'p1',
       session: 's#1',
     });
+    expect(parseRoute(sessionUsageHref('p 1', 's#1'))).toEqual({
+      view: 'session_usage',
+      project: 'p 1',
+      session: 's#1',
+    });
+    expect(parseRoute(usageHref('p 1'))).toEqual({ view: 'usage', project: 'p 1' });
     expect(parseRoute(documentHref('p1', 'notes.md', 2))).toEqual({
       view: 'document',
       project: 'p1',

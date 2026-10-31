@@ -18,6 +18,7 @@
   import SkillsPage from './views/SkillsPage.svelte';
   import McpServices from './views/McpServices.svelte';
   import MonitorPage from './views/MonitorPage.svelte';
+  import ProjectUsage from './views/ProjectUsage.svelte';
   import MessageView from './views/MessageView.svelte';
   import IssueList from './views/IssueList.svelte';
   import ProjectList from './views/ProjectList.svelte';
@@ -43,7 +44,10 @@
   let navigationOpen = $state(window.innerWidth > 760);
   let narrow = $state(window.innerWidth <= 760);
   const inSession = $derived(
-    route.view === 'session' || route.view === 'review' || route.view === 'agent',
+    route.view === 'session' ||
+      route.view === 'review' ||
+      route.view === 'agent' ||
+      route.view === 'session_usage',
   );
   function closeDrawer() {
     if (window.innerWidth <= 760) navigationOpen = false;
@@ -228,6 +232,14 @@
         {:else if route.view === 'monitor'}
           {#key route.project}
             <MonitorPage projectId={routeProject} />
+          {/key}
+        {:else if route.view === 'usage'}
+          {#key route.project}
+            <ProjectUsage projectId={routeProject} />
+          {/key}
+        {:else if route.view === 'session_usage'}
+          {#key `${route.project}/${route.session}`}
+            <SessionView projectId={routeProject} sessionId={routeSession} openPanel="usage" />
           {/key}
         {:else if route.view === 'documents'}
           {#key route.project}

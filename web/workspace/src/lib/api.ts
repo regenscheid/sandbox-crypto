@@ -50,6 +50,7 @@ import type {
   McpInventory,
   ProjectMcpTraffic,
   ProjectMonitor,
+  ProjectUsageView,
   ModelSettings,
   ProjectAnswer,
   ProjectListing,
@@ -59,6 +60,7 @@ import type {
   RunEntry,
   RunTree,
   SessionDetail,
+  SessionUsageView,
   SessionView,
   SkillSettingsChange,
   SkillSettingsView,
@@ -657,6 +659,19 @@ export const api = {
   /** The project's monitor figures for a window (D103): counted by the platform, no agent text. */
   monitor: (project: string, window: '24h' | '7d', signal?: AbortSignal) =>
     get<ProjectMonitor>(`/projects/${part(project)}/monitor?` + new URLSearchParams({ window }), {
+      signal,
+    }),
+  /** The project's usage over a window (D102): sessions by spend, check-ins and loop
+   * detections, its local cost limit and notices. Reads only. */
+  projectUsage: (project: string, window: '24h' | '7d' | 'all', signal?: AbortSignal) =>
+    get<ProjectUsageView>(
+      `/projects/${part(project)}/usage/view?` + new URLSearchParams({ window }),
+      { signal },
+    ),
+  /** One session's usage over its life (D102): spend and tokens by agent and model against
+   * the soft caps, with its check-ins and loop detections. Reads only. */
+  sessionUsage: (project: string, session: string, signal?: AbortSignal) =>
+    get<SessionUsageView>(`/projects/${part(project)}/sessions/${part(session)}/usage/view`, {
       signal,
     }),
   /** A page of the project's inspected MCP calls, oldest first after `after`: arguments,

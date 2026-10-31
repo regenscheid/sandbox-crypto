@@ -10,6 +10,7 @@ from its model information; a call without one counts as unpriced, never as zero
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 
 from pydantic import Field
@@ -70,7 +71,10 @@ class UsageAccount(Contract):
 _Row = tuple[str | None, str | None, str, float | None, int, int, int]
 
 
-def _scope(rows: list[_Row], *, session: str | None = None, run: str | None = None) -> ScopeUsage:
+def scope_usage(
+    rows: Sequence[_Row], *, session: str | None = None, run: str | None = None
+) -> ScopeUsage:
+    """One scope's usage from its rows: totals and the role split."""
     costs: dict[str, float] = {}
     counts: dict[str, tuple[int, int, int]] = {}
     for _, _, role, cost, tokens, calls, unpriced in rows:
@@ -109,9 +113,25 @@ def _ranked(scopes: list[ScopeUsage]) -> tuple[ScopeUsage, ...]:
     return tuple(ranked[:MAX_SCOPES])
 
 
-def account(runs: RunState, project: str, session: str | None = None) -> UsageAccount:
-    """The project's account, or one session's; reads only, in a few snapshots."""
-    rows = runs.usage_rows(project, session)
+def cost_notices(runs: RunState, project: str) -> tuple[CostNotice, ...]:
+    """The project's notification thresholds and when each was crossed."""
+    return tuple(
+        CostNotice(
+            threshold=threshold,
+            crossed_at=None if crossed is None else datetime.fromisoformat(crossed),
+            spent=spent,
+        )
+        for threshold, crossed, spent in runs.cost_notices(project)
+    )
+
+
+def account(
+    runs: RunState, project: str, session: str | None = None, since: datetime | None = None
+) -> UsageAccount:
+    """The project's account, or one session's, of usage after ``since`` if given; reads
+    only, in a few snapshots. The limit and the notices are the project's, whatever the
+    window."""
+    rows = runs.usage_rows(project, session, since)
     sessions: dict[str, list[_Row]] = {}
     by_run: dict[tuple[str, str], list[_Row]] = {}
     for row in rows:
@@ -122,16 +142,11 @@ def account(runs: RunState, project: str, session: str | None = None) -> UsageAc
     return UsageAccount(
         project=project,
         session=session,
-        total=_scope(rows, session=session),
-        sessions=_ranked([_scope(found, session=name) for name, found in sessions.items()]),
-        runs=_ranked([_scope(found, session=key[0], run=key[1]) for key, found in by_run.items()]),
-        daily_cost_limit=runs.cost_limit(project),
-        notices=tuple(
-            CostNotice(
-                threshold=threshold,
-                crossed_at=None if crossed is None else datetime.fromisoformat(crossed),
-                spent=spent,
-            )
-            for threshold, crossed, spent in runs.cost_notices(project)
+        total=scope_usage(rows, session=session),
+        sessions=_ranked([scope_usage(found, session=name) for name, found in sessions.items()]),
+        runs=_ranked(
+            [scope_usage(found, session=key[0], run=key[1]) for key, found in by_run.items()]
         ),
+        daily_cost_limit=runs.cost_limit(project),
+        notices=cost_notices(runs, project),
     )

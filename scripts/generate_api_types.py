@@ -127,6 +127,7 @@ from sandbox_science.workspace.monitor import ProjectMonitor
 from sandbox_science.workspace.plan_edits import BodyChange, EditReceipt
 from sandbox_science.workspace.plans import WorkspacePlan
 from sandbox_science.workspace.skills import ProjectSkills, SkillSettingsChange, SkillSettingsView
+from sandbox_science.workspace.usage_view import ProjectUsageView, SessionUsageView
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "web" / "workspace" / "src" / "lib" / "api-types.ts"
@@ -136,6 +137,8 @@ MODELS: tuple[type[BaseModel], ...] = (
     StatusPage,
     ResourceRequestPage,
     UsageAccount,
+    ProjectUsageView,
+    SessionUsageView,
     HistoryChunk,
     HistoryPage,
     CapturedCalls,

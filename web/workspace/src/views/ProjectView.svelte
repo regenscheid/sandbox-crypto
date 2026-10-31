@@ -13,6 +13,7 @@
     mcpHref,
     memoryHref,
     monitorHref,
+    usageHref,
     sessionHref,
     skillsHref,
   } from '../lib/router';
@@ -45,7 +46,7 @@
       >Memory and proposal inbox</a
     ><a href={skillsHref(projectId)}>Skills</a><a href={mcpHref(projectId)}>Connectors</a><a
       href={monitorHref(projectId)}>Monitor</a
-    ><a href={settingsHref(projectId)}>Settings</a>
+    ><a href={usageHref(projectId)}>Usage</a><a href={settingsHref(projectId)}>Settings</a>
   </nav>
   {#await memory then found}<p>
       {found.memory.waiting} memory proposals await a decision.

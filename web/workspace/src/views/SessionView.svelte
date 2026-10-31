@@ -17,6 +17,7 @@
   import { idle, submit } from '../lib/submit';
   import ErrorMessage from './ErrorMessage.svelte';
   import SessionReviews from './SessionReviews.svelte';
+  import SessionUsage from './SessionUsage.svelte';
   import SessionCompute from './SessionCompute.svelte';
   import { formatTime } from '../lib/format';
   import SessionDocuments from './SessionDocuments.svelte';
@@ -41,6 +42,7 @@
     sessionId,
     reviewId = null,
     agentId = null,
+    openPanel = null,
   }: {
     projectId: string;
     sessionId: string;
@@ -48,16 +50,36 @@
     reviewId?: string | null;
     /** A delegation whose card to open in the Agents panel, as a link names it. */
     agentId?: string | null;
+    /** A tab to open, as a link names it (the Usage tab's). */
+    openPanel?: 'usage' | null;
   } = $props();
   type Panel =
-    'plan' | 'agents' | 'context' | 'reviews' | 'compute' | 'documents' | 'artifacts' | 'activity';
+    | 'plan'
+    | 'agents'
+    | 'context'
+    | 'reviews'
+    | 'compute'
+    | 'usage'
+    | 'documents'
+    | 'artifacts'
+    | 'activity';
   let panel = $state<Panel | null>(
     untrack(() =>
-      agentId ? 'agents' : reviewId ? 'reviews' : window.innerWidth > 1120 ? 'plan' : null,
+      agentId
+        ? 'agents'
+        : reviewId
+          ? 'reviews'
+          : openPanel
+            ? openPanel
+            : window.innerWidth > 1120
+              ? 'plan'
+              : null,
     ),
   );
   let visited = $state<Panel[]>(
-    untrack(() => (agentId ? ['agents'] : reviewId ? ['reviews'] : ['plan'])),
+    untrack(() =>
+      agentId ? ['agents'] : reviewId ? ['reviews'] : openPanel ? [openPanel] : ['plan'],
+    ),
   );
   /** The delegation whose card the Agents panel opens: a link's, or a chat block's. */
   let focusAgent = $state<string | null>(untrack(() => agentId));
@@ -155,6 +177,7 @@
     { id: 'context', label: 'Context', badge: 0 },
     { id: 'reviews', label: 'Reviews', badge: checks },
     { id: 'compute', label: 'Compute', badge: 0 },
+    { id: 'usage', label: 'Usage', badge: 0 },
     { id: 'documents', label: 'Documents', badge: 0 },
     { id: 'artifacts', label: 'Artifacts', badge: 0 },
     { id: 'activity', label: 'Activity log', badge: 0 },
@@ -285,6 +308,9 @@
           </div>{/if}
         {#if visited.includes('reviews')}<div hidden={panel !== 'reviews'}>
             <SessionReviews {projectId} {sessionId} {reviewId} {tree} />
+          </div>{/if}
+        {#if visited.includes('usage')}<div hidden={panel !== 'usage'}>
+            <SessionUsage {projectId} {sessionId} active={panel === 'usage'} />
           </div>{/if}
         {#if view.data}
           {@const detail = view.data}

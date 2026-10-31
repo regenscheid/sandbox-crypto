@@ -34,6 +34,24 @@ export interface AgentModelSelection {
   reasoning_effort: string | null;
 }
 
+/** One agent's use: a work of the session across its attempts, with the reviewer's calls on its runs, or (without a work record) a run on its own. */
+export interface AgentUsage {
+  key: string;
+  work: string | null;
+  runs: string[];
+  parent: string | null;
+  role: "main" | "delegated" | null;
+  state: string | null;
+  reason: string | null;
+  task: string;
+  cost: number | null;
+  tokens: number;
+  calls: number;
+  unpriced: number;
+  lines: SpendLine[];
+  caps: CapUse[];
+}
+
 /** A place a revision or work record comes from (CM-9), besides the change's own tool call: an archive message by its ID (``message``, with ``quote`` for words of the user's), or a tool result by its call (``call``), whole or the characters ``start`` to ``end`` of its output; an artifact revision (``artifact``, ``revision``, optionally its ``sha256``); a document block at a revision (``document``, ``revision``, ``block``); an entry revision (``entry``, ``revision`` defaulting to its current one); or a project memory entry at a revision (``memory``, ``mem-3@2``; PM-13), which exists but is never an observation. A PDF passage is anchored as a quote evidence link (LG-8). */
 export interface AnchorInput {
   message: string | null;
@@ -185,6 +203,13 @@ export interface CanaryRow {
   canary: McpCanary | null;
 }
 
+/** One soft cap of one work and what it has used, cumulative across its attempts. */
+export interface CapUse {
+  resource: "tokens" | "turns" | "elapsed_seconds" | "cost";
+  used: number;
+  total: number | null;
+}
+
 export interface CapturedCall {
   cursor: number;
   identity: string;
@@ -265,6 +290,16 @@ export interface ChatMessage {
   reason: string | null;
   offered: string | null;
   pins: Record<string, JsonValue>[];
+}
+
+/** How many check-ins a scope recorded and how they went. */
+export interface CheckInCounts {
+  total: number;
+  waiting: number;
+  by_resource: Record<string, number>;
+  loops: Record<string, number>;
+  answered_by: Record<string, number>;
+  actions: Record<string, number>;
 }
 
 /** The bounded state a check-in delivers: the brief, what the work produced and what it did last, with its recorded use (D102). */
@@ -1883,6 +1918,14 @@ export interface ModelCost {
   model_info_total: number | null;
 }
 
+export interface ModelLine {
+  model: string | null;
+  cost: number | null;
+  tokens: number;
+  calls: number;
+  unpriced: number;
+}
+
 export interface ModelOption {
   alias: string;
   api: "chat" | "responses" | "messages";
@@ -2221,6 +2264,23 @@ export interface ProjectSummary {
   created_at: string;
   updated_at: string;
   sessions: number;
+}
+
+export interface ProjectUsageView {
+  project: string;
+  window: "24h" | "7d" | "all";
+  since: string | null;
+  at: string;
+  total: ScopeUsage;
+  all_time: ScopeUsage;
+  unassigned: ScopeUsage;
+  by_model: ModelLine[];
+  sessions: SessionLine[];
+  more_sessions: number;
+  counts: CheckInCounts;
+  daily_cost_limit: number | null;
+  last_day_cost: number | null;
+  notices: CostNotice[];
 }
 
 export interface ProjectView {
@@ -2643,6 +2703,32 @@ export interface SessionDetail {
   runs: RunEntry[];
 }
 
+/** One session's use within the window, and its check-ins in it. */
+export interface SessionLine {
+  session: string;
+  cost: number | null;
+  tokens: number;
+  calls: number;
+  unpriced: number;
+  check_ins: number;
+  loops: number;
+  waiting: number;
+}
+
+export interface SessionUsageView {
+  project: string;
+  session: string;
+  at: string;
+  total: ScopeUsage;
+  by_model: ModelLine[];
+  agents: AgentUsage[];
+  more_agents: number;
+  check_ins: ResourceRequestPage;
+  counts: CheckInCounts;
+  daily_cost_limit: number | null;
+  notices: CostNotice[];
+}
+
 /** A session as the page sees it. Only these fields are copied from the store's record, so its lifetime marker, and any field the store adds or renames, stay out. */
 export interface SessionView {
   session_id: string;
@@ -2718,6 +2804,16 @@ export interface SourceRead {
   extent: "whole" | "partial" | "abstract_only" | "preview_only" | "unknown";
   covered: Record<string, JsonValue> | null;
   versions: string | null;
+}
+
+/** One role's use of one model. */
+export interface SpendLine {
+  role: string;
+  model: string | null;
+  cost: number | null;
+  tokens: number;
+  calls: number;
+  unpriced: number;
 }
 
 /** Recorded model use of one role or one model within the window. ``cost`` is null when the gateway priced none of its calls; ``unpriced`` counts calls with tokens and no cost. */
