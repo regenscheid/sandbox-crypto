@@ -223,6 +223,9 @@ def _build(settings: Settings, token: str, clock: Clock, lock: StateLock) -> Wor
         sandboxes = JobSandboxes(environments, store, clock=clock)
         sandboxes.port = ManagerPort(manager, provisioner)
         manager.job_sandboxes = sandboxes
+        # A session environment's job sandboxes end with it (JS-25).
+        environments.required_deleting.append(manager.end_job_sandboxes)
+        environments.given_up.append(manager.environment_given_up)
     children = None
     if environments is not None and environments.settings.child_profiles:
         children = ChildEnvironments(environments, store, clock=clock)

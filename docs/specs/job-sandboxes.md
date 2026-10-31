@@ -1,14 +1,15 @@
 # Job sandboxes
 
-Status: First increment implemented, not qualified (2026-10-24): profiles and grants,
+Status: First increment implemented, not qualified (2026-10-31): profiles and grants,
 `start_job` with `profile` and `inputs`, package replay, tier checks, collection, the
 manifest, retention and release, the schedule timeout and loss, reattachment after a
-worker restart (JS-19, JS-20, JS-26) with collection resumed without duplicates, and
-early release when the session closes (JS-25), and the GUI's profile, phase, resource and
-manifest columns with "release now" (JS-24, worker route `POST /v1/job-sandboxes/{id}/release`),
-tested against the fake OpenShell CLI only
-([background jobs](../BACKGROUND-JOBS.md#job-sandboxes)); no process test over a real
-restart and no Kata acceptance yet. Draft design of 2026-10-22. It designs D93, a confirmed owner
+worker restart (JS-19, JS-20, JS-26) with collection resumed without duplicates, early
+release when the session closes or its environment is deleted (JS-25), and the GUI's
+profile, phase, resource and manifest columns with "release now" (JS-24, worker route
+`POST /v1/job-sandboxes/{id}/release`), tested against the fake OpenShell CLI, in process
+and with the worker as a process killed and started again mid-job over local sandbox
+daemons ([background jobs](../BACKGROUND-JOBS.md#job-sandboxes)); no Kata acceptance yet
+([the cluster checklist](../KUBERNETES-PREP.md#14-job-sandboxes-on-kata-qualification)). Draft design of 2026-10-22. It designs D93, a confirmed owner
 requirement: a big [background job](../BACKGROUND-JOBS.md) (D83) may run in a new
 sandbox of its own, sized and placed by trusted profiles, inside the same cluster and
 control environment. It extends [tools](tools.md#background-jobs) as the first "batch
@@ -180,9 +181,17 @@ profiles should carry. No mounting of one sandbox's disk in another. No automati
   sandbox by identity at once. After failure, timeout, cancellation, loss or incomplete
   collection it stops the sandbox (disk kept, CPU and memory freed) and retains it for
   `job_retention` (pool setting, default 3 days), at most 2 per project (a third releases
-  the oldest early). Closing a session or deleting its environment cancels, collects and
-  releases without retention. Release deletes all that was not collected, as the tool
-  description says.
+  the oldest early). Closing a session cancels its job sandboxes' jobs, collects and
+  releases without retention. Deleting the session environment, or the worker giving it
+  up because its sandbox went, cancels them and releases their sandboxes without
+  retention, copying nothing more into the environment that is going (the manifest names
+  the files left with that reason, and `shared/` still returns by the ordinary sync), and
+  releases the environment's retained job sandboxes too, since nothing can reach their
+  files through it any more. A deletion the worker did not see through (one before a
+  restart, the offline reconciliation command's) is found at startup and by the sweep,
+  with the same effect. The job ends `cancelled` with a notice that says why, never
+  `lost`; its record and manifest are kept. Release deletes all that was not collected,
+  as the tool description says.
 - JS-26. **Ownership and orphans** reuse the environment rules: record before create, ID
   before Ready, delete only the recorded ID with confirmed absence, keep the record when
   creation or deletion is uncertain. At startup and hourly, a live job reattaches, an
@@ -214,10 +223,17 @@ profiles should carry. No mounting of one sandbox's disk in another. No automati
   once, retry idempotency, worker restart in every phase, loss without resubmission,
   retention. Process: real worker, harness and workspace server over the fake CLI with
   local daemons, through `start_job`, `wait_jobs`, a worker restart and `read_file`.
+  Process, built: `test_job_sandboxes_process.py` runs `sandbox-science-worker serve`
+  over the fake CLI, whose `sandbox exec`, `upload` and SSH stand-ins run each sandbox's
+  daemon locally in a directory of its own, and kills the worker mid-job: the job is
+  taken up running and collected once; a sandbox lost while the worker was down makes it
+  `lost` with no rerun; deleting the session environment after the restart releases it.
   Live, disposable, on Kata (amd64): admission with the profile's resources, tier 3, a
   job above the session's memory, worker restart mid-job, pod deletion giving `lost` and
   no rerun, an unplaceable profile giving `capacity_unavailable`, denied egress still
-  denied, nothing left after release. Fixtures are not live evidence.
+  denied, nothing left after release
+  ([checklist](../KUBERNETES-PREP.md#14-job-sandboxes-on-kata-qualification)). Fixtures
+  are not live evidence.
 
 ## Delivery
 

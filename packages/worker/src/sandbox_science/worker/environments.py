@@ -803,6 +803,10 @@ class Environments:
         """Required original-binding proof before any explicit deletion mutation."""
         self.reusing: list[Release] = []
         """Required original-binding checks before allocating a replacement sandbox."""
+        self.given_up: list[Callable[[str], None]] = []
+        """Told at once of each environment the worker gives up because its sandbox went
+        or was replaced; they must not block: the execution manager ends its job
+        sandboxes in the background (JS-25)."""
         self._locks: dict[str, asyncio.Lock] = {}
         self._users: dict[str, int] = {}
         """Callers holding or waiting for each environment's lock."""
@@ -1975,6 +1979,11 @@ class Environments:
                 update={"state": EnvironmentState.DELETED, "updated_at": self.clock.now()}
             )
         )
+        for told in self.given_up:
+            try:
+                told(info.environment_id)
+            except Exception:
+                _log.exception("giving up environment %s: a hook failed", info.environment_id)
         # This can be the provisioning task itself, through backend.prepare. It
         # must return to classification rather than wait for its own deletion drain.
         # Keep original revision/lockfile evidence until explicit deletion or reuse.

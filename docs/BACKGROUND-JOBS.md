@@ -94,16 +94,34 @@ the sandbox without retention. The close waits for the job for the cancel grace 
 a job still collecting goes on, and still releases its sandbox when it ends, after a
 restart too.
 
+**Deleting the session environment**, or the worker giving it up because its sandbox
+went, cancels its job sandboxes' jobs and releases their sandboxes without retention, as
+a close does, but copies nothing more into the environment that is going: collection
+stops before its next file, the manifest names what was left ("the session environment
+was deleted"), and `shared/` still returns by the ordinary sync. The job ends `cancelled`
+with a notice saying why, never `lost`, and its record and manifest stay. The
+environment's retained job sandboxes are released too, since nothing can reach their
+files through it any more. The deletion waits for the jobs for the cancel grace. A
+deletion the worker did not see (made while it was stopped, or by the offline
+reconciliation command) has the same effect when it next starts, and the hourly sweep
+releases a retained sandbox whose session environment is gone.
+
 **Releasing early.** A retained sandbox holds only disk, and the user may delete it before
 its deadline with "Release now" on the job's card in the [workspace](WORKSPACE.md#background-jobs)
 (JS-24). The worker's operator-only route deletes it by its identity as the sweep would and
 refuses one that is not retained; it never releases a running job's sandbox, which is
 cancelled first.
 
-Not yet: deleting the session environment cancels the job but does not release its
-sandbox early; live head and tail output of a running job sandbox's job, checkpoints and
-`resume_from` (increment 3), files over 100 MiB (increment 4), the process test over a real
-worker restart with local daemons, and live Kata acceptance on the cluster.
+**Tested over a real restart.** Besides the in-process tests of every phase,
+`test_job_sandboxes_process.py` runs the worker as a process over the fake OpenShell CLI,
+with each sandbox's daemon a local process that outlives the worker, kills the worker
+mid-job and starts it again: the job is taken up running and collected once, a sandbox
+lost meanwhile makes it `lost` without a rerun, and deleting the session environment
+releases it.
+
+Not yet: live head and tail output of a running job sandbox's job, checkpoints and
+`resume_from` (increment 3), files over 100 MiB (increment 4), and live Kata acceptance
+on the cluster ([checklist](KUBERNETES-PREP.md#14-job-sandboxes-on-kata-qualification)).
 
 ## Waiting and the watcher
 

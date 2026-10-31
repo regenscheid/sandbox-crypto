@@ -36,6 +36,11 @@ collects. A command lost with its sandbox, or with a daemon that came back witho
 makes the job ``lost``, and nothing runs it again. Collection records each file it
 copies back or leaves out, so a restart in the middle copies none of them twice, and an
 ended job's manifest, once stored, is the job's outcome however often it is resumed.
+
+Closing the job's session, or deleting its session environment, ends the job early and
+releases its sandbox without retention (JS-25). A close still collects into the session;
+a deletion copies nothing more into an environment that is going, and releases the
+environment's retained sandboxes too.
 """
 
 from __future__ import annotations
@@ -812,6 +817,10 @@ class JobSandboxes:
         try:
             async with asyncio.timeout(remaining):
                 for index, source, target in pending:
+                    if self._session_deleted(execution_id):
+                        found.complete = False
+                        found.not_collected.append(UncollectedFile(path=".", reason=_DELETED))
+                        break
                     copied = await self._copy_back(source, target, budget, session, job)
                     recorded = self.records.record_step(
                         execution_id, f"copy-{index}", copied.model_dump_json(), self.clock.now()
@@ -900,7 +909,15 @@ class JobSandboxes:
             )
         collection: CollectionStatus = "complete" if found.complete else "incomplete"
         self.records.update(execution_id, now=self.clock.now(), collection=collection)
-        await self._write_copy(execution, manifest, found)
+        deleted = self._session_deleted(execution_id)
+        if deleted:
+            found.notices.append(
+                "the session environment was deleted: the job was ended, nothing more was"
+                " copied back, and its sandbox is released without retention; the manifest"
+                " stays with the job"
+            )
+        else:
+            await self._write_copy(execution, manifest, found)
         if self._record(execution_id).phase not in ("released", "retained"):
             if release or self._closing(execution_id):
                 await self._release(execution_id)
@@ -1087,11 +1104,13 @@ class JobSandboxes:
             return JobSandboxReleased(execution_id=execution_id)
 
     async def sweep(self) -> list[str]:
-        """Release the retained sandboxes past their deadline; return their jobs' IDs."""
+        """Release the retained sandboxes past their deadline, or whose session environment
+        is gone; return their jobs' IDs."""
         now = self.clock.now()
         released: list[str] = []
         for row in self.records.listed(phases=frozenset({"retained"})):
-            if row.retained_until is not None and row.retained_until <= now:
+            gone = self._session_gone(row)
+            if gone or (row.retained_until is not None and row.retained_until <= now):
                 await self._release(row.execution_id)
                 if self._record(row.execution_id).phase == "released":
                     released.append(row.execution_id)
@@ -1106,19 +1125,27 @@ class JobSandboxes:
         environments' own executions: resume each job the previous worker left
         unfinished (``resume``, in a task ``spawn`` starts); retain the sandbox of an
         active one whose job ended without it, or release it if it was still being
-        created; then release overdue retentions. A row whose job is gone is kept."""
+        created or its session asked for that; then release overdue retentions. A job
+        whose session environment was deleted meanwhile is cancelled and released, as a
+        deletion seen while running would have (JS-25). A row whose job is gone is kept."""
         for row in self.records.listed():
             execution = self.store.execution(row.execution_id)
             if execution is None:
                 if row.phase in ACTIVE:
                     _log.warning("job sandbox %s has no job record; it is kept", row.environment_id)
                 continue
+            gone = row.phase in ACTIVE and self._session_gone(row)
+            if gone:
+                self._mark(row, deleted=True)
             if execution.state not in TERMINAL_STATES:
                 live = journal.live.get(row.execution_id)
                 request = self._request(row.execution_id)
                 if live is None or request is None:
                     _log.warning("job %s cannot be resumed; its sandbox is kept", row.execution_id)
                     continue
+                if gone:
+                    self.store.cancel_intent(row.execution_id)
+                    live.cancel_requested = True
                 spawn(self.resume(live, request, journal))
                 continue
             if row.phase not in ACTIVE:
@@ -1145,7 +1172,10 @@ class JobSandboxes:
                 )
                 self.records.update(row.execution_id, now=self.clock.now(), collection="incomplete")
             try:
-                await self._retain(row.execution_id)
+                if self._closing(row.execution_id):
+                    await self._release(row.execution_id)
+                else:
+                    await self._retain(row.execution_id)
             except WorkerError as error:
                 _log.warning("job sandbox %s is not reconciled: %s", row.environment_id, error)
         await self.sweep()
@@ -1167,11 +1197,13 @@ class JobSandboxes:
                 await self._sweeper
             self._sweeper = None
 
-    def release_on_close(self, execution: Execution) -> bool:
-        """Have a job sandbox's job release its sandbox when it ends, collected but not
-        retained, as closing its session asks (JS-25). Recorded, so a restarted worker
-        keeps to it. Only the job's own row, of its project and session environment, is
-        marked; returns whether it was."""
+    def release_on_close(self, execution: Execution, *, deleted: bool = False) -> bool:
+        """Have a job sandbox's job release its sandbox when it ends, not retained, as
+        closing its session asks (JS-25): collected into the session, unless ``deleted``
+        says its session environment is being deleted or was given up, which leaves
+        nothing to collect into. Recorded, so a restarted worker keeps to it. Only the
+        job's own row, of its project and session environment, is marked; returns
+        whether it was."""
         record = self.records.get(execution.execution_id)
         if (
             record is None
@@ -1179,10 +1211,39 @@ class JobSandboxes:
             or record.session_environment != execution.context.environment_id
         ):
             return False
-        self.records.record_step(
-            execution.execution_id, "release", '"session_closed"', self.clock.now()
-        )
+        self._mark(record, deleted=deleted)
         return True
+
+    def _mark(self, record: JobSandboxRecord, *, deleted: bool) -> None:
+        now = self.clock.now()
+        reason = "environment_deleted" if deleted else "session_closed"
+        self.records.record_step(record.execution_id, "release", _quoted(reason), now)
+        if deleted:
+            self.records.record_step(record.execution_id, _SESSION_DELETED, _quoted(reason), now)
+
+    async def release_retained(self, session_environment: str) -> list[str]:
+        """Release the retained sandboxes of a session environment being deleted or given
+        up (JS-25): nothing can reach their files through it any more. Returns their
+        jobs' IDs; one whose deletion is not confirmed stays retained, due at once."""
+        released: list[str] = []
+        for row in self.records.listed(phases=frozenset({"retained"})):
+            if row.session_environment != session_environment:
+                continue
+            self.records.record_step(
+                row.execution_id, _SESSION_DELETED, _quoted("environment_deleted"),
+                self.clock.now(),
+            )  # fmt: skip
+            await self._release(row.execution_id)
+            if self._record(row.execution_id).phase == "released":
+                released.append(row.execution_id)
+        return released
+
+    def _session_gone(self, record: JobSandboxRecord) -> bool:
+        """Whether the job's session environment is deleted, or its record gone: as after
+        a deletion or a give-up the worker did not see through, such as one before a
+        restart or the offline reconciliation command's."""
+        info = self.environments.records.get(record.session_environment)
+        return info is None or info.state is EnvironmentState.DELETED
 
     # Reading.
 
@@ -1207,8 +1268,14 @@ class JobSandboxes:
         return record
 
     def _closing(self, execution_id: str) -> bool:
-        """Whether closing the job's session asked for its sandbox's early release."""
+        """Whether closing the job's session, or deleting its environment, asked for its
+        sandbox's early release."""
         return "release" in self.records.steps(execution_id)
+
+    def _session_deleted(self, execution_id: str) -> bool:
+        """Whether the job's session environment was deleted or given up meanwhile, so
+        nothing more is copied into it."""
+        return _SESSION_DELETED in self.records.steps(execution_id)
 
     def _prepared(self, execution_id: str) -> _Run:
         """What the job's preparation found, as recorded before its command."""
@@ -1353,6 +1420,9 @@ async def read_whole(
 
 _RELEASE_NOW: Final = "release-now"
 """The step that holds the operation of the user's early release (JS-24)."""
+_SESSION_DELETED: Final = "session-deleted"
+"""The step that says the job's session environment was deleted or given up (JS-25)."""
+_DELETED: Final = "the session environment was deleted, so nothing more was copied back"
 
 
 def _quoted(value: str) -> str:

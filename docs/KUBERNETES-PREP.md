@@ -630,6 +630,25 @@ Qualify, in order:
 
 Rollback: delete the Jobs (`kubectl -n <sandbox-namespace> delete job -l app.kubernetes.io/component=checkpoint`), release any hold (`checkpoint release-hold`), remove `[checkpoint]` and re-apply. Checkpoint objects and the journal stay.
 
+## 14. Job sandboxes on Kata (qualification)
+
+Before big jobs are used ([job sandboxes](specs/job-sandboxes.md), JS-30), qualify them on the cluster with a disposable project whose policy grants the job profiles of [the example](../examples/kubernetes/job-profiles.toml) (`job_profiles: [medium]`, `job_sandboxes: 1`). The fake-CLI tests, the process test over a worker restart included, are not this evidence. Record each result.
+
+Prepare: the worker's `[openshell.environments.job_profiles.*]` from the example, sized from the real nodes; the gateway's `allowed_pod_labels` (step 5); the bundle's PodDisruptionBudget (step 8). A short job for each check, such as `python -c "import time; [time.sleep(10) for _ in range(90)]; open('out.txt','w').write('ok')"`.
+
+1. **Admission and placement.** `start_job` with `profile: medium`: the job's sandbox Pod has `RUNTIMECLASS` `kata`, an amd64 node, the label `sandbox-science.io/job-sandbox=true`, and the profile's requests and limits (`kubectl -n research-runtimes get pod <pod> -o jsonpath='{.spec.containers[*].resources}'`). `job_status` shows phase `running`, then the manifest with `isolation_tier` 3.
+2. **Bigger than the session.** A job allocating more memory than the session environment's limit but less than the profile's completes; the same in the session environment fails with an out-of-memory signal.
+3. **Collection and release.** After success, `.jobs/<ID>/files/out.txt` is in the session, the manifest's `collection` is `complete`, and the job's sandbox and its Pods are gone (`kubectl -n research-runtimes get pods -l sandbox-science.io/job-sandbox=true` lists none of its).
+4. **Worker restart mid-job.** `kubectl -n research rollout restart deploy/<name>-pool` while a job runs: afterwards it is still `running`, ends `succeeded`, and its command ran once (the job's log shows one start).
+5. **Pod loss.** Delete a running job's workload Pod: the job ends `lost` with `sandbox_lost`, its command is not run again, and its sandbox record is released.
+6. **No room.** A profile no node can place (its requests above any node's allocatable) with a short `schedule_timeout`: the job ends `failed` with `capacity_unavailable` after it, and no sandbox is left.
+7. **Egress.** A job that fetches a host the policy denies is still denied; an admitted one still works.
+8. **Retention and early release.** A failing job leaves its sandbox stopped with a deadline (`job_status`, the GUI card); "Release now" deletes it. Deleting the session environment releases a running job's sandbox and a retained one.
+9. **Planned drain.** With a job running, step 8's `kubectl drain <node> --dry-run=server --ignore-daemonsets --delete-emptydir-data` reports the job's Pod as one it cannot evict; then cordon and run the real `kubectl drain` with a timeout and check it waits while the job runs and finishes once the job has ended. Whether `talosctl upgrade` honours the budget is a separate check: on a node with a running job, record what it does.
+10. **Nothing left.** After the checks, every job's `job_status` shows its sandbox `released`, and `$OPENSHELL_EXEC sandbox list` (step 10) lists no `ss-` sandbox beyond the disposable project's session environments; no Pod labelled `sandbox-science.io/job-sandbox=true` remains.
+
+Rollback: delete the disposable project's environments (their job sandboxes go with them), and remove the profiles from the worker's settings if they are not to stay.
+
 ## Order of the rollback points
 
 A snapshot before each of: step 8's first apply, the bootstrap, and every image or schema change. Before restoring, stop the Pods that use a volume. The coordinated recovery set is the control PVC, the pool PVC, the manager PVC, the Garage artifact bucket and the Longhorn backups together; one alone does not authorize deleting a research PVC ([storage](KUBERNETES.md#storage-lifecycle)).

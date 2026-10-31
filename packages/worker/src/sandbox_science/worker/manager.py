@@ -340,9 +340,39 @@ class ExecutionManager:
 
     async def _release(self, environment_id: str) -> None:
         await self._publication.cancel(environment_id)
-        jobs = self._journal.running_jobs(environment_id)
+        # A job sandbox's job runs elsewhere, and its run ends it (``end_job_sandboxes``);
+        # it is never reported lost for its session environment's executor.
+        jobs = [
+            job
+            for job in self._journal.running_jobs(environment_id)
+            if not self._dispatcher.sandboxed(job)
+        ]
         await self._dispatcher.cancel_jobs(jobs)
         await self._connections.release(environment_id)
+
+    async def end_job_sandboxes(self, environment_id: str) -> None:
+        """Before a session environment's deletion: cancel its job sandboxes' jobs, which
+        then end without copying anything more into it and release their sandboxes, and
+        release its retained job sandboxes (JS-25). Waits for the jobs as a session close
+        does, for the cancel grace; one still ending goes on in the background. A deletion
+        the package guard refuses ends nothing."""
+        sandboxes = self.job_sandboxes
+        if sandboxes is None:
+            return
+        await self.guard_package_deletion(environment_id)
+        jobs = [
+            job
+            for job in self._journal.running_jobs(environment_id)
+            if self._dispatcher.sandboxed(job)
+        ]
+        await self._close_job_sandboxes(jobs, deleted=True)
+        await sandboxes.release_retained(environment_id)
+
+    def environment_given_up(self, environment_id: str) -> None:
+        """The worker gave up an environment whose sandbox went or was replaced: its job
+        sandboxes end as on its deletion, in the background."""
+        if self.job_sandboxes is not None:
+            self._spawn(self.end_job_sandboxes(environment_id))
 
     async def activity(self, environment_id: str) -> Activity | None:
         """What an environment is doing now; None when its executor cannot say."""
@@ -573,15 +603,16 @@ class ExecutionManager:
             )
             return await self._close_session(request)
 
-    async def _close_job_sandboxes(self, jobs: list[Execution]) -> None:
-        """Cancel job sandboxes' jobs, which collect and then release their sandboxes
-        without retention (JS-25). A job still collecting after the cancel grace goes on
-        in the background, and is never reported lost for it."""
+    async def _close_job_sandboxes(self, jobs: list[Execution], *, deleted: bool = False) -> None:
+        """Cancel job sandboxes' jobs, which collect (unless their session environment is
+        ``deleted``) and then release their sandboxes without retention (JS-25). A job
+        still collecting after the cancel grace goes on in the background, and is never
+        reported lost for it."""
         sandboxes = self.job_sandboxes
         if not jobs or sandboxes is None:
             return
         for job in jobs:
-            sandboxes.release_on_close(job)
+            sandboxes.release_on_close(job, deleted=deleted)
         await asyncio.gather(*(self._dispatcher.cancel(job.execution_id) for job in jobs))
         with contextlib.suppress(TimeoutError):
             async with asyncio.timeout(self._timeouts.cancel_grace):
