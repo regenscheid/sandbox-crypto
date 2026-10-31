@@ -213,12 +213,8 @@ def prepare(
         policy = direct_mcp.merged(policy, egress.fragment)
         for warning in egress.warnings():
             print(f"the agent runtime's MCP egress: {warning}", flush=True)
-        for server, revision in sorted(egress.revisions.items()):
-            print(
-                f"the agent runtime's MCP egress: {server}'s tools are admitted by the "
-                f"project's accepted classification revision {revision[:12]}",
-                flush=True,
-            )
+        for note in egress.fence_notes():
+            print(f"the agent runtime's MCP egress: {note}", flush=True)
     write_private(directory / "policy.yaml", policy.to_yaml())
     write_private(directory / "generation", generation + "\n")
     model, service = config.model, config.run_service

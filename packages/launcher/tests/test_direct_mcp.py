@@ -184,7 +184,11 @@ def test_the_fence_follows_the_projects_revision_at_each_compile(
     before, _ = admitted(*orchestrator.prepare(config, layout))
     assert READ_TOOL in before
     assert NEW_TOOL not in before
-    assert "classification revision" not in capsys.readouterr().out
+    said = capsys.readouterr().out
+    assert "classification revision" not in said
+    assert (
+        f"{SERVER}'s tools are admitted by the checked-in classification, without warnings" in said
+    )
     # A revision accepted while the runtime runs reaches the fence at the next compile,
     # which every replacement makes (``replace`` calls ``prepare``).
     hex_ = accept_revision(tmp_path, {READ_TOOL: "browse", NEW_TOOL: "read"})
@@ -212,6 +216,7 @@ def test_an_unreadable_binding_leaves_the_fence_on_the_checked_in_file(
     assert admitted(*orchestrator.prepare(config, layout)) == catalog
     out = capsys.readouterr().out
     assert "classification binding cannot be read" in out
+    assert f"{SERVER}'s tools are admitted by the checked-in classification, with a warning" in out
     assert "the policy middleware refuses the server's calls" in out
 
 

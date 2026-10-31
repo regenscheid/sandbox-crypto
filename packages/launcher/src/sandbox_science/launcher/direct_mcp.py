@@ -94,6 +94,32 @@ class DirectEgress:
             if finding.severity is not Severity.INFO
         ]
 
+    def fence_notes(self) -> list[str]:
+        """One line for each configured server saying which classification its fence
+        admits tools by: the project's accepted revision, or, when none applies (none is
+        bound, the policy names no classification for the server, or the binding or the
+        revision failed), the checked-in one, with whether a warning about the server's
+        classification came with the compile."""
+        notes: list[str] = []
+        for server in sorted(self.servers):
+            revision = self.revisions.get(server)
+            if revision is not None:
+                notes.append(
+                    f"{server}'s tools are admitted by the project's accepted "
+                    f"classification revision {revision[:12]}"
+                )
+                continue
+            subject = f"mcp.servers.{server}.classification"
+            warned = any(
+                finding.subject == subject and finding.severity is not Severity.INFO
+                for finding in self.findings
+            )
+            notes.append(
+                f"{server}'s tools are admitted by the checked-in classification, "
+                + ("with a warning above" if warned else "without warnings")
+            )
+        return notes
+
 
 def compile_direct(
     *,
