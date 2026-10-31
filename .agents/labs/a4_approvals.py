@@ -44,6 +44,7 @@ from typing import Any
 import yaml
 
 from sandbox_science.contracts.worker import PROTOCOL_HEADER, PROTOCOL_VERSION
+from sandbox_science.event_store import StoreReader
 from sandbox_science.policy import load_policy
 
 _spec = importlib.util.spec_from_file_location(
@@ -59,6 +60,10 @@ REPO = recovery.REPO
 OS_BIN = recovery.OS_BIN
 PURPOSE = "disposable A4 approvals lab: workspace answers to network and package requests"
 PROJECT = "a4lab"
+LOCK_PROJECT = "a4lock"  # a second project, under lockdown network: allowlist (D95)
+LOCK_SESSION = "l1"
+LOCK_LISTED = "example.com"
+LOCK_UNLISTED = "example.org"
 SHARED = ("s1", "s2")  # sessions in the project's default environment
 DEDICATED = "s3"  # a session with an environment (a sandbox) of its own
 PYTHON = "/opt/sandbox-science/bin/python"
@@ -97,6 +102,9 @@ def lab_policy() -> str:
     policy.pop("mcp", None)
     policy.pop("credentials", None)
     policy["packages"]["pypi"]["action"] = "escalate"
+    # Phase A/B extras (2026-10-31): conda-forge's files escalate too, so that a conda
+    # channel is an escalated package source.
+    policy["packages"]["conda"]["action"] = "escalate"
     policy["network"]["rules"].insert(
         1,
         {
@@ -106,6 +114,26 @@ def lab_policy() -> str:
             "action": "escalate",
         },
     )
+    return yaml.safe_dump(policy, sort_keys=False)
+
+
+def lockdown_policy() -> str:
+    """The example policy (without its MCP server and credential) under lockdown
+    ``network: allowlist`` with one listed host: every other host is refused by lockdown,
+    whatever the rules say (D95)."""
+    policy = yaml.safe_load((REPO / "examples/policy.yaml").read_text())
+    policy["metadata"] = {
+        "name": "a4-lockdown-lab",
+        "description": "The example under lockdown network: allowlist (one listed host)",
+    }
+    policy.pop("mcp", None)
+    policy.pop("credentials", None)
+    policy["lockdown"] = {
+        "network": "allowlist",
+        "hosts": [LOCK_LISTED],
+        "unlisted": "deny",
+        "mcp": "declared",
+    }
     return yaml.safe_dump(policy, sort_keys=False)
 
 
@@ -121,6 +149,7 @@ def prepare(static: Path) -> Path:
     )
     recovery.private(lab / "owned-sandboxes.json", "{}\n")
     recovery.private(lab / "policy.yaml", lab_policy())
+    recovery.private(lab / "policy-lock.yaml", lockdown_policy())
     return lab
 
 
@@ -333,12 +362,12 @@ profiles = {{minimal = "{image}"}}
 [[clients]]
 name = "harness"
 {lines["harness"]}
-projects = ["{PROJECT}"]
+projects = ["{PROJECT}", "{LOCK_PROJECT}"]
 
 [[clients]]
 name = "workspace"
 {lines["workspace"]}
-projects = ["{PROJECT}"]
+projects = ["{PROJECT}", "{LOCK_PROJECT}"]
 operator = true
 ''',
         )
@@ -408,11 +437,13 @@ operator = true
 
     def environment(self, session: str) -> str:
         environments = self.state()["environments"]
+        if session == LOCK_SESSION:
+            return environments[LOCK_SESSION]
         return environments[DEDICATED] if session == DEDICATED else environments["default"]
 
     def context(self, session: str) -> dict[str, str]:
         return {
-            "project_id": PROJECT,
+            "project_id": LOCK_PROJECT if session == LOCK_SESSION else PROJECT,
             "session_id": session,
             "environment_id": self.environment(session),
         }
@@ -867,6 +898,375 @@ operator = true
         self.evidence("answers", result)
         print(json.dumps(result, indent=2), flush=True)
 
+    # Phase A/B extras (2026-10-31): what the 2026-10-27 lab did not exercise
+
+    def stdout(self, session: str, script: str, *, timeout=300) -> tuple[str, Any]:
+        done = self.shell(session, script, timeout=timeout)
+        result = done.get("result") or {}
+        text = (result.get("stdout") or {}).get("text") or ""
+        return text, result.get("exit_code", done.get("state"))
+
+    def records(self, after: int = 0) -> list[dict[str, Any]]:
+        """The middleware's records after ``after``, allowlisted fields only (no bodies)."""
+        found = []
+        keys = (
+            "host", "port", "method", "path", "outcome", "reason_code", "rule",
+            "layer", "operation", "service", "request", "request_seq", "permission_request",
+            "scope", "expires", "project", "ecosystem", "channel", "sandbox_policy",
+        )  # fmt: skip
+        with StoreReader(self.path / "middleware/state/events.db") as reader:
+            for record in reader.records():
+                if record.seq <= after:
+                    continue
+                data = record.data()
+                kept: dict[str, Any] = {"seq": record.seq, "kind": record.kind}
+                for key in keys:
+                    value = data.get(key)
+                    if key in data and (isinstance(value, str | int | bool) or value is None):
+                        kept[key] = value
+                decision = data.get("decision")
+                if isinstance(decision, dict):
+                    kept["decision"] = {
+                        k: decision.get(k)
+                        for k in ("action", "layer", "rule", "reason", "reason_code", "max_grant")
+                        if k in decision
+                    }
+                target = data.get("target")
+                if isinstance(target, dict):
+                    kept["target"] = {
+                        k: target.get(k)
+                        for k in ("kind", "host", "method", "path", "ecosystem", "channel")
+                        if k in target
+                    }
+                found.append(kept)
+        return found
+
+    def last_seq(self) -> int:
+        with StoreReader(self.path / "middleware/state/events.db") as reader:
+            seq = 0
+            for record in reader.records():
+                seq = record.seq
+            return seq
+
+    def grant_rows(self) -> list[dict[str, Any]]:
+        return [
+            {
+                key: grant.get(key)
+                for key in (
+                    "grant_id",
+                    "kind",
+                    "scope",
+                    "session",
+                    "host",
+                    "methods",
+                    "ecosystem",
+                    "channel",
+                    "uses",
+                    "created_at",
+                    "expires_at",
+                    "revoked_at",
+                )
+                if key in grant
+            }
+            for grant in self.grants()
+        ]
+
+    def conda_and_git(self) -> dict[str, Any]:
+        """A conda channel as the escalated source (git from conda-forge, for s1, granted
+        for the session), a later conda operation the grant answers, then git: a fetch
+        (upload-pack, a read) and a push (receive-pack, which asks; denied)."""
+        result: dict[str, Any] = {}
+        has_git, _ = self.stdout("s1", "command -v git || echo none")
+        result["git_in_image"] = "none" not in has_git
+        provision = self.worker(
+            "POST",
+            "/v1/provisioning",
+            {
+                "operation_id": "a4-conda-" + secrets.token_hex(6),
+                "context": self.context("s1"),
+                "purpose": "A4 lab: install git from conda-forge to exercise a conda card",
+                "conda": ["git"],
+            },
+        )["provision_id"]
+        waiting = self.provisioning(
+            provision, until=lambda v: v.get("state") in ("awaiting_permission", "finished")
+        )
+        result["conda_waiting"] = self.operation(waiting)
+        if waiting.get("state") != "awaiting_permission":
+            self.evidence("extras-conda-git", result)
+            return result
+        card = self.card_for("s1", self.package_card(waiting["permission_request"]))
+        result["conda_card"] = self.shape(card)
+        result["conda_in_s3"] = card["seq"] in [c["seq"] for c in self.cards(DEDICATED)]
+        result["conda_answer"] = self.answered(*self.answer(card, "session"))
+        done = self.provisioning(provision, until=lambda v: v.get("state") == "finished")
+        result["conda_operation"] = self.operation(done)
+        second = self.worker(
+            "POST",
+            "/v1/provisioning",
+            {
+                "operation_id": "a4-conda-" + secrets.token_hex(6),
+                "context": self.context("s1"),
+                "purpose": "A4 lab: a second conda-forge install the session grant answers",
+                "conda": ["tomli"],
+            },
+        )["provision_id"]
+        started = time.monotonic()
+        second_done = self.provisioning(second, until=lambda v: v.get("state") == "finished")
+        result["conda_relayed_operation"] = self.operation(second_done)
+        result["conda_relayed_seconds"] = round(time.monotonic() - started, 1)
+        result["grants_after_conda"] = self.grant_rows()
+
+        git = "/opt/sandbox-science/bin/git"
+        found, _ = self.stdout("s1", f"test -x {git} && {git} --version || echo missing")
+        result["git_version"] = found.strip()[:60]
+        names, _ = self.stdout(
+            "s1", "env | cut -d= -f1 | grep -i -E 'proxy|ssl|cert|ca_bundle' | sort | tr '\\n' ' '"
+        )
+        result["sandbox_env_names"] = names.strip()
+        ca = (
+            'export GIT_SSL_CAINFO="${SSL_CERT_FILE:-${REQUESTS_CA_BUNDLE:-'
+            '/etc/ssl/certs/ca-certificates.crt}}"; '
+        )
+        before = self.last_seq()
+        text, _code = self.stdout(
+            "s1",
+            ca + f"{git} ls-remote https://github.com/octocat/Hello-World.git HEAD 2>&1 "
+            "| tail -n 3; echo exit=${PIPESTATUS[0]}",
+        )
+        result["git_fetch"] = {
+            "exit": (re.search(r"exit=(\d+)", text) or [None, None])[1],
+            "head_listed": bool(re.search(r"^[0-9a-f]{40}\s+HEAD", text, re.M)),
+            "reason": reason_of(text),
+        }
+        result["git_fetch_records"] = [
+            r for r in self.records(before) if "github" in str(r.get("host", ""))
+        ]
+        push = (
+            ca + "set -o pipefail; d=$(mktemp -d); cd $d; "
+            f"{git} init -q . && {git} -c user.email=lab@example.invalid -c user.name=lab "
+            "commit -q --allow-empty -m a4-lab && "
+            f"{git} push https://{WRITE_HOST}/a4lab/none.git HEAD:refs/heads/a4 2>&1 "
+            "| tail -n 4; echo exit=$?"
+        )
+        before = self.last_seq()
+        first, _ = self.stdout("s1", push)
+        card = self.card_for(
+            "s1",
+            lambda c: (
+                c["kind"] == "network"
+                and (c.get("http") or {}).get("host") == WRITE_HOST
+                and "a4lab/none.git" in str((c.get("http") or {}).get("path"))
+            ),
+            retry=lambda: self.stdout("s1", push),
+        )
+        result["git_push_first"] = {
+            "exit": (re.search(r"exit=(\d+)", first) or [None, None])[1],
+            "reason": reason_of(first),
+        }
+        result["git_push_card"] = self.shape(card)
+        result["git_push_answer"] = self.answered(*self.answer(card, "deny"))
+        retry, _ = self.stdout("s1", push)
+        result["git_push_retry"] = {
+            "exit": (re.search(r"exit=(\d+)", retry) or [None, None])[1],
+            "reason": reason_of(retry),
+        }
+        result["git_push_records"] = [
+            r
+            for r in self.records(before)
+            if WRITE_HOST in str(r.get("host", ""))
+            or WRITE_HOST in str((r.get("target") or {}).get("host", ""))
+        ]
+        self.evidence("extras-conda-git", result)
+        return result
+
+    def hours_and_revocation(self, hours: float) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        # Expiry: a project grant of example.com's reads for ``hours``.
+        url = f"https://{ONCE_HOST}/a4-hours"
+        first = self.fetch("s1", url)
+        card = self.card_for(
+            "s1", self.http_card(ONCE_HOST, "/a4-hours"), retry=lambda: self.fetch("s1", url)
+        )
+        before = self.last_seq()
+        given = self.answer(card, "project", hours=hours)
+        answered_at = time.time()
+        rows = self.grant_rows()
+        result["hours"] = {
+            "hours": hours,
+            "first_try": first,
+            "card": self.shape(card),
+            "answer": self.answered(*given),
+            "grant": [g for g in rows if g.get("host") == ONCE_HOST],
+            "middleware_answer": [
+                r for r in self.records(before) if r["kind"] in ("approval", "denial")
+            ],
+            "retry": self.fetch("s1", url),
+        }
+        wait = hours * 3600 - (time.time() - answered_at) + 15
+        time.sleep(max(wait, 0))
+        result["hours"]["after_expiry"] = {
+            "seconds_after_answer": round(time.time() - answered_at, 1),
+            "grant": [g for g in self.grant_rows() if g.get("host") == ONCE_HOST],
+            "s1_same_path": self.fetch("s1", url),
+            "s1_new_path": self.fetch("s1", f"https://{ONCE_HOST}/a4-hours-2"),
+        }
+        s3_first = self.fetch(DEDICATED, url)
+        s3_card = self.card_for(
+            DEDICATED,
+            self.http_card(ONCE_HOST, "/a4-hours"),
+            retry=lambda: self.fetch(DEDICATED, url),
+        )
+        time.sleep(15)  # five relay rounds: an expired grant must not answer it
+        still = s3_card["seq"] in [c["seq"] for c in self.cards(DEDICATED)]
+        result["hours"]["after_expiry"].update(
+            s3_first=s3_first,
+            s3_card=self.shape(s3_card),
+            s3_card_still_waiting_after_15s=still,
+            s3_retry=self.fetch(DEDICATED, url),
+        )
+        self.answer(s3_card, "deny")
+
+        # Revocation: a project grant of example.org's reads, revoked at once.
+        url = f"https://{GRANT_HOST}/a4-revoke"
+        first = self.fetch("s1", url)
+        card = self.card_for(
+            "s1", self.http_card(GRANT_HOST, "/a4-revoke"), retry=lambda: self.fetch("s1", url)
+        )
+        before = self.last_seq()
+        given = self.answer(card, "project")
+        granted = (given[1] or {}).get("granted") or []
+        retry = self.fetch("s1", url)
+        middleware = [r for r in self.records(before) if r["kind"] in ("approval", "denial")]
+        grant_id = granted[0]["grant_id"] if granted else None
+        status, after = self.api("POST", f"/api/v0/projects/{PROJECT}/grants/{grant_id}/revoke")
+        revoked_at = time.time()
+        immediately = {
+            "s1_same_path": self.fetch("s1", url),
+            "s1_new_path": self.fetch("s1", f"https://{GRANT_HOST}/a4-revoke-2"),
+        }
+        s3_first = self.fetch(DEDICATED, url)
+        s3_card = self.card_for(
+            DEDICATED,
+            self.http_card(GRANT_HOST, "/a4-revoke"),
+            retry=lambda: self.fetch(DEDICATED, url),
+        )
+        time.sleep(15)
+        still = s3_card["seq"] in [c["seq"] for c in self.cards(DEDICATED)]
+        result["revocation"] = {
+            "first_try": first,
+            "card": self.shape(card),
+            "answer": self.answered(*given),
+            "retry_before_revoke": retry,
+            "middleware_answer": middleware,
+            "revoke_status": status,
+            "revoked_listed": any(
+                g.get("grant_id") == grant_id for g in (after or {}).get("grants") or ()
+            ),
+            "after_revoke_in_answered_sandbox": immediately,
+            "s3_first": s3_first,
+            "s3_card": self.shape(s3_card),
+            "s3_card_still_waiting_after_15s": still,
+            "seconds_after_revoke": round(time.time() - revoked_at, 1),
+        }
+        self.answer(s3_card, "deny")
+        self.evidence("extras-hours-revocation", result)
+        return result
+
+    def lockdown(self) -> dict[str, Any]:
+        """A second project under lockdown network: allowlist (one listed host)."""
+        command = str(REPO / ".venv/bin/sandbox-science-worker")
+        added = recovery.run(
+            [
+                command,
+                "policy",
+                "add",
+                "--settings",
+                str(self.path / "worker/worker.toml"),
+                "--project",
+                LOCK_PROJECT,
+                str(self.path / "policy-lock.yaml"),
+            ],
+            timeout=180,
+        ).stdout
+        digest = re.search(r"sha256:[0-9a-f]{64}", added)
+        assert digest is not None, "policy add printed no digest"
+        harness = str(REPO / ".venv/bin/sandbox-science-harness")
+        scope = [
+            "--state-dir", str(self.path / "instance/control"), "--project", LOCK_PROJECT,
+        ]  # fmt: skip
+        recovery.run(
+            [
+                harness,
+                "project",
+                "create",
+                *scope,
+                "--profile",
+                "minimal",
+                "--policy",
+                digest.group(0),
+            ]
+        )
+        recovery.run([harness, "session", "open", *scope, "--session", LOCK_SESSION])
+        shown = json.loads(recovery.run([harness, "project", "show", *scope]).stdout)
+        environment = shown["default_environment_id"]
+        try:
+            self.worker(
+                "POST",
+                "/v1/environments",
+                {
+                    "environment_id": environment,
+                    "project_id": LOCK_PROJECT,
+                    "profile": "minimal",
+                    "policy": digest.group(0),
+                },
+                timeout=900,
+            )
+        finally:
+            self.remember_sandboxes()
+        state = self.state()
+        state["environments"][LOCK_SESSION] = environment
+        self.save_state(state)
+        found = self.worker(
+            "POST",
+            f"/v1/environments/{environment}/admissions",
+            {"hosts": [{"host": h, "port": 443} for h in (LOCK_LISTED, LOCK_UNLISTED)]},
+            timeout=300,
+        )
+        before = self.last_seq()
+        listed = self.fetch(LOCK_SESSION, f"https://{LOCK_LISTED}/")
+        unlisted = self.fetch(LOCK_SESSION, f"https://{LOCK_UNLISTED}/")
+        raw, _ = self.stdout(
+            LOCK_SESSION,
+            f'{PYTHON} -I -c "import urllib.request as u\ntry:\n '
+            f"u.urlopen(u.Request('https://{LOCK_UNLISTED}/',headers={{'User-Agent':'a4-lab/1'}}),"
+            'timeout=30)\nexcept Exception as e:\n print(type(e).__name__, str(e)[:300])"',
+        )
+        time.sleep(2)
+        result = {
+            "policy_digest": digest.group(0),
+            "admissions": {
+                item["host"]: {k: item.get(k) for k in ("admitted", "reason")}
+                for item in found["decisions"]
+            },
+            "listed_get": listed,
+            "unlisted_get": unlisted,
+            "unlisted_error": reason_of(raw) or raw.strip()[:200].replace("/home/", "~/"),
+            "records": [
+                r for r in self.records(before) if r.get("host") in (LOCK_LISTED, LOCK_UNLISTED)
+            ],
+        }
+        self.evidence("lockdown", result)
+        return result
+
+    def extras(self, hours: float) -> None:
+        result = {
+            "conda_and_git": self.conda_and_git(),
+            "hours_and_revocation": self.hours_and_revocation(hours),
+        }
+        self.evidence("extras", result)
+        print(json.dumps(result, indent=2), flush=True)
+
 
 def recheck(lab: A4Lab):
     """The project grant's effect again, with the fixed fetch: the first lab's fetch sent
@@ -885,7 +1285,21 @@ def recheck(lab: A4Lab):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "action", choices=("prepare", "up", "cards", "answers", "recheck", "cleanup", "abort")
+        "action",
+        choices=(
+            "prepare",
+            "up",
+            "cards",
+            "answers",
+            "recheck",
+            "extras",
+            "lockdown",
+            "cleanup",
+            "abort",
+        ),
+    )
+    parser.add_argument(
+        "--hours", type=float, default=0.02, help="extras: the expiring grant's hours"
     )
     parser.add_argument("lab", nargs="?", type=Path)
     parser.add_argument("--static", type=Path, default=REPO / "web/workspace/dist")
@@ -904,8 +1318,15 @@ def main():
         lab.answers()
     elif args.action == "recheck":
         recheck(lab)
+    elif args.action == "extras":
+        lab.extras(args.hours)
+    elif args.action == "lockdown":
+        print(json.dumps(lab.lockdown(), indent=2), flush=True)
     elif args.action == "cleanup":
-        assert (lab.path / "evidence/answers.json").exists(), "run answers first, or use abort"
+        assert any(
+            (lab.path / "evidence" / name).exists()
+            for name in ("answers.json", "extras.json", "lockdown.json")
+        ), "run answers, extras or lockdown first, or use abort"
         lab.cleanup()
     else:
         lab.abort()

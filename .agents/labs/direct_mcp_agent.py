@@ -15,6 +15,10 @@ that exec session's standard streams, one JSON object per line:
   (its binary items over ``publish_mcp_binary``), and sends ``{"t": "finish"}`` in;
 - ``{"t": "done"}`` out, last.
 
+With ``--calls`` it runs a generic plan instead of the proofs (the ``locked`` and
+``inspection`` variants): one listing, then each ``[label, tool, arguments]`` call, one step
+each, and ``done``.
+
 It never prints a credential, a placeholder's value, a URL or a response body: only
 whether each credential variable holds a placeholder, and lengths, counts and codes.
 """
@@ -25,6 +29,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import sys
 import time
 from typing import Any
@@ -110,9 +115,17 @@ class RecordingClient(DirectClient):
         return status, kind, body
 
 
+BLOCKED = re.compile(r"answer_blocked_[a-z0-9_]+")
+
+
 def failure(error: BaseException) -> dict[str, Any]:
     if isinstance(error, ConnectorError):
-        found: dict[str, Any] = {"error": error.kind, "message_chars": len(str(error))}
+        said = str(error)
+        found: dict[str, Any] = {"error": error.kind, "message_chars": len(said)}
+        blocked = BLOCKED.search(said)
+        if blocked is not None:
+            # A block's cut answers an MCP error naming its pattern (inspection).
+            found["blocked_code"] = blocked.group()
         request = error.data.get("request") if isinstance(error.data, dict) else None
         if isinstance(request, int):
             found["request"] = request
@@ -176,6 +189,12 @@ def listing_summary(tools: list[dict[str, Any]], escalated: str, denied: str) ->
     }
 
 
+def watched(tools: list[dict[str, Any]], names: list[str]) -> dict[str, bool]:
+    """Whether each watched tool is in the listing as the client shows it."""
+    listed = {str(tool.get("name")) for tool in tools}
+    return {name: name in listed for name in names}
+
+
 async def call(client: RecordingClient, args: argparse.Namespace, tool: str, arguments: dict):
     return await client.request(
         SERVER, "tools/call", {"name": tool, "arguments": arguments}, session=args.session
@@ -204,6 +223,7 @@ async def listing(client: RecordingClient, args: argparse.Namespace, step: str) 
             "more": cursor is not None,
             "seconds": round(time.monotonic() - started, 3),
             **listing_summary(tools, args.escalated, args.denied),
+            "watched": watched(tools, args.watch),
         }
     except Exception as error:
         found = {"t": "step", "step": step, "ok": False, **failure(error)}
@@ -378,6 +398,40 @@ async def run_plan(client: RecordingClient, args: argparse.Namespace) -> None:
     emit({"t": "step", "step": "answers", "answers": client.answers})
 
 
+async def run_calls(client: RecordingClient, args: argparse.Namespace) -> None:
+    """A generic plan (``--calls``): one listing, then each ``[label, tool, arguments]``
+    call, one sanitized step each (no body, URL or credential)."""
+    await listing(client, args, "listing")
+    for label, tool, arguments in json.loads(args.calls):
+        started = time.monotonic()
+        try:
+            result = await call(client, args, tool, arguments)
+            emit(
+                {
+                    "t": "step",
+                    "step": "call",
+                    "label": label,
+                    "tool": tool,
+                    "ok": not result.get("isError"),
+                    "seconds": round(time.monotonic() - started, 3),
+                    **content_summary(result),
+                }
+            )
+        except Exception as error:
+            emit(
+                {
+                    "t": "step",
+                    "step": "call",
+                    "label": label,
+                    "tool": tool,
+                    "ok": False,
+                    "seconds": round(time.monotonic() - started, 3),
+                    **failure(error),
+                }
+            )
+    emit({"t": "step", "step": "answers", "answers": client.answers})
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -387,14 +441,18 @@ async def main() -> None:
     parser.add_argument("--session", required=True)
     parser.add_argument("--run", required=True)
     parser.add_argument("--attempt", required=True)
-    parser.add_argument("--escalated", required=True)
-    parser.add_argument("--denied", required=True)
-    parser.add_argument("--invalid-tool", required=True)
-    parser.add_argument("--reads", required=True, help="JSON list of [tool, arguments]")
+    parser.add_argument("--escalated", default="")
+    parser.add_argument("--denied", default="")
+    parser.add_argument("--invalid-tool", default="")
+    parser.add_argument("--reads", default="[]", help="JSON list of [tool, arguments]")
+    parser.add_argument(
+        "--calls", help="a generic plan instead of the proofs: JSON [[label, tool, arguments]]"
+    )
+    parser.add_argument("--watch", action="append", default=[], help="a tool whose listing to note")
     parser.add_argument("--hold-seconds", type=float, default=150.0)
     parser.add_argument("--skip-error-answer", action="store_true")
     parser.add_argument("--no-identity-fallback", dest="identity_fallback", action="store_false")
-    parser.add_argument("--drift-tool", required=True)
+    parser.add_argument("--drift-tool", default="")
     parser.add_argument("--no-json-listing", dest="json_listing", action="store_false")
     args = parser.parse_args()
 
@@ -435,9 +493,12 @@ async def main() -> None:
         reporter=ControlListingReports(channel, args.attempt),
     )
     try:
-        await run_plan(client, args)
-        emit({"t": "plan_done"})
-        await asyncio.wait_for(finished.wait(), timeout=660)
+        if args.calls is not None:
+            await run_calls(client, args)
+        else:
+            await run_plan(client, args)
+            emit({"t": "plan_done"})
+            await asyncio.wait_for(finished.wait(), timeout=660)
     finally:
         await calls.close()
         await client.close()

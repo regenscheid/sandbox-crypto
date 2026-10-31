@@ -152,6 +152,20 @@ arguments, then reaches the server, which refuses them. The lab also asks once f
 listing, which the middleware reads and rewrites if the portal answers JSON. Receipts carry counts, reason codes, request numbers and tool
 names only, and are exported with a SHA-256 manifest to `/var/tmp/ss-direct-mcp-evidence-*`.
 
+`prepare --variant locked` and `prepare --variant inspection` (2026-10-31) make the same lab with
+another policy and plan, each its own root and teardown. **locked** (A3): `lockdown: {mcp: locked}`
+and a `binding_only` worker client (`manager`); `locked LAB` calls `e-print-mcp_corpus_stats` and a
+nist-csrc read, accepts mid-session a project classification revision that leaves the first out, reads
+`GET /v1/runtime-classifications` as the manager, calls again on the stale fence (the middleware
+refuses, `lockdown.mcp`), compiles the fence with the runtime manager's `compile_egress` through the
+worker and replaces the runtime sandbox as the manager does (the tool is then refused natively), and
+compiles once more against a closed port for the fallback warning. **inspection**: two project patterns
+beside the shipped defaults (a `block` on a nonce and an `alert` only the JSON-decoded reading matches);
+`inspection LAB` fetches three small httpbin `/base64/` pages through web-fetch and judges the
+`mcp-call`, `mcp-answer` and `mcp-answer-alert` records. The agent side runs a generic plan
+(`direct_mcp_agent.py --calls`). Receipts keep labels, finding names, offsets, decisions and facts about
+an excerpt (booleans), never its text or a URL.
+
 ## Workspace answers to network and package requests (A4, D97)
 
 `a4_approvals.py` shows research code's network requests and package requests reaching the
