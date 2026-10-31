@@ -48,10 +48,6 @@ APPLICATION = "sandbox-science"
 APPLICATION_LABEL = "app.kubernetes.io/name"
 LOG_FORMAT = {"SS_LOG_FORMAT": "json"}
 """Every container logs JSON lines for Loki (D103) rather than the local text format."""
-JOB_SANDBOX_LABEL = ("sandbox-science.io/job-sandbox", "true")
-"""The label the worker's job sandboxes put on their workload Pod through OpenShell's
-``allowed_pod_labels`` (``worker.settings.JOB_SANDBOX_LABEL``, which a test compares); the
-launcher never imports the worker."""
 UNIT = "sandbox-science-unit"
 UNIT_DIR = "/etc/sandbox-science"
 """Where the pool Pod's containers read the unit config (a ConfigMap, never a credential)."""
@@ -96,7 +92,6 @@ def _object(
         "NetworkPolicy": "networking.k8s.io/v1",
         "Certificate": "cert-manager.io/v1",
         "IngressRoute": "traefik.io/v1alpha1",
-        "PodDisruptionBudget": "policy/v1",
     }.get(kind, "v1")
     return {
         "apiVersion": api,
@@ -109,28 +104,6 @@ def _object(
         },
         **fields,
     }
-
-
-def _job_budget(config: BundleConfig, namespace: str) -> dict[str, object]:
-    """Makes a planned drain wait for job sandboxes (D93, JS-20): ``maxUnavailable: 0``
-    allows no voluntary eviction of a Pod with the job label, so ``kubectl drain`` blocks
-    until the job ends or the operator decides otherwise. It lives in the sandbox
-    namespace, which a PodDisruptionBudget can only select within. A job Pod that is
-    running but not Ready may be evicted (``AlwaysAllow``), so a wedged one cannot hold
-    a node forever; a Pending one never counts. It protects nothing from crashes,
-    power loss or ``--disable-eviction``."""
-    key, value = JOB_SANDBOX_LABEL
-    return _object(
-        config,
-        "PodDisruptionBudget",
-        "job-sandboxes",
-        namespace=namespace,
-        spec={
-            "maxUnavailable": 0,
-            "selector": {"matchLabels": {key: value}},
-            "unhealthyPodEvictionPolicy": "AlwaysAllow",
-        },
-    )
 
 
 def _security() -> dict[str, object]:
@@ -997,8 +970,6 @@ def render(config: BundleConfig) -> dict[str, object]:
         items.append(_service(config, "pool", "cache", ("cache", 8090)))
     if config.ingress is not None:
         items.extend(_routes(config, config.ingress))
-    if config.sandboxes is not None and config.sandboxes.job_budget:
-        items.append(_job_budget(config, config.sandboxes.namespace))
     if config.checkpoint is not None:
         items.append(kubernetes_checkpoint.network_policy(config))
     if config.maintenance is not None:

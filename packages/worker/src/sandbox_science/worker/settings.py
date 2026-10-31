@@ -105,8 +105,11 @@ class LocalBackendSettings(_Model):
 JOB_WALL_TIME_MAX: Final = 7 * 24 * 3600.0
 """The longest any job may run (D83), and so a job profile's ceiling."""
 JOB_SANDBOX_LABEL: Final = ("sandbox-science.io/job-sandbox", "true")
-"""The label on every job sandbox's workload Pod (OpenShell 0.1.5 ``allowed_pod_labels``),
-which the deployment's PodDisruptionBudget selects so a drain waits for running jobs."""
+"""The label on every job sandbox, set as the direct MCP path labels its runtime sandbox
+(``openshell sandbox create --label``): it marks the OpenShell sandbox, so ``openshell
+sandbox list --selector`` finds running jobs before a node is drained. OpenShell 0.1.5
+copies no such label onto the sandbox's Pods: a Pod's own labels come only from a
+sandbox template's labels, which its CLI never sets."""
 _KATA: Final = re.compile(r"^kata(?:-[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)?$")
 
 

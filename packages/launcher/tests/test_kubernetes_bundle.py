@@ -1475,34 +1475,15 @@ def test_no_sandboxes_section_renders_nothing_outside_the_bundle_namespace():
     assert {item["metadata"]["namespace"] for item in items} == {"research-test"}
 
 
-def test_job_sandboxes_get_a_budget_in_the_sandbox_namespace_that_allows_no_eviction():
-    items = with_sandboxes()
-    budgets = [item for item in items if item["kind"] == "PodDisruptionBudget"]
-    assert len(budgets) == 1
-    budget = budgets[0]
-    assert budget["apiVersion"] == "policy/v1"
-    # Not the bundle's namespace: a budget selects Pods of its own namespace only.
-    assert budget["metadata"]["namespace"] == "research-runtimes"
-    assert budget["metadata"]["name"] == "research-job-sandboxes"
-    assert budget["spec"] == {
-        "maxUnavailable": 0,
-        "selector": {"matchLabels": {"sandbox-science.io/job-sandbox": "true"}},
-        "unhealthyPodEvictionPolicy": "AlwaysAllow",
-    }
-    # Everything else stays in the bundle's namespace.
-    assert {i["metadata"]["namespace"] for i in items if i is not budget} == {"research-test"}
-
-
-def test_the_budget_selects_the_label_the_worker_puts_on_job_sandboxes():
-    from sandbox_science.worker.settings import JOB_SANDBOX_LABEL
-
-    budget = next(i for i in with_sandboxes() if i["kind"] == "PodDisruptionBudget")
-    assert budget["spec"]["selector"]["matchLabels"] == dict([JOB_SANDBOX_LABEL])
-
-
-def test_the_budget_can_be_left_to_another_instance_sharing_the_namespace():
-    items = with_sandboxes(job_budget=False)
-    assert "PodDisruptionBudget" not in {item["kind"] for item in items}
+def test_no_budget_is_rendered_for_job_sandboxes_whose_pods_carry_no_label_of_ours():
+    """OpenShell 0.1.5 puts no label the worker chooses on a job sandbox's Pods, so a
+    PodDisruptionBudget would select nothing; the key stays loadable when false."""
+    for items in (with_sandboxes(), with_sandboxes(job_budget=False)):
+        assert "PodDisruptionBudget" not in {item["kind"] for item in items}
+    data = values()
+    data["sandboxes"] = {"namespace": "research-runtimes", "job_budget": True}
+    with pytest.raises(ValidationError, match="job_budget"):
+        configured(data)
 
 
 @pytest.mark.parametrize("namespace", ["Not_A_Name", "", "a" * 64])

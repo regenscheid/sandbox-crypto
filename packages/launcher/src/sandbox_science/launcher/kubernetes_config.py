@@ -472,11 +472,22 @@ class Sandboxes(Model):
     operator names it: ``server.sandboxNamespace`` of the OpenShell chart."""
 
     namespace: Name
-    job_budget: bool = True
-    """Render the PodDisruptionBudget that makes a planned drain wait for job sandboxes
-    (D93, JS-20). Harmless with no job profile configured: it selects no Pod. Turn it off
-    in all but one instance that shares a sandbox namespace: two budgets selecting the same
-    Pod make every eviction of it fail."""
+    job_budget: bool = False
+    """Accepted false only, so a bundle that turned the job sandboxes' PodDisruptionBudget
+    off still loads. The bundle renders no such budget: OpenShell 0.1.5 puts no label the
+    worker chooses on a job sandbox's Pods (a Pod's own labels come only from a sandbox
+    template's, which its CLI never sets), so it would select nothing
+    (docs/KUBERNETES-BUNDLE.md, job sandboxes and node drains)."""
+
+    @field_validator("job_budget")
+    @classmethod
+    def _no_budget(cls, value: bool) -> bool:
+        if value:
+            raise ValueError(
+                "sandboxes.job_budget: OpenShell puts no label the worker chooses on a job"
+                " sandbox's Pods, so a PodDisruptionBudget would select none; remove the key"
+            )
+        return value
 
 
 class Alerts(Model):

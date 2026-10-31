@@ -563,21 +563,19 @@ def test_the_example_offers_the_owners_sizes() -> None:
     }
     assert {p.runtime_class_name for p in profiles.values()} == {"kata"}
     assert environments["max_job_sandboxes"] == 2
+    # The worker sets no Pod label, so the gateway needs none allowed.
     gateway = tomllib.loads((ROOT / "examples/kubernetes/gateway-driver.toml").read_text())
-    allowed = gateway["openshell"]["drivers"]["kubernetes"]["allowed_pod_labels"]
-    assert JOB_SANDBOX_LABEL[0] in allowed
+    assert not gateway["openshell"]["drivers"]["kubernetes"].get("allowed_pod_labels")
 
 
-def test_the_driver_config_carries_the_drain_label_and_the_profiles_own_size() -> None:
+def test_the_driver_config_carries_the_profiles_own_size_and_no_label() -> None:
     document = json.loads(launch_settings(profile()))["kubernetes"]
     pod = document["pod"]
-    assert pod["labels"] == {JOB_SANDBOX_LABEL[0]: JOB_SANDBOX_LABEL[1]}
     assert pod["runtime_class_name"] == "kata"
     # The session environment's CPU and memory caps do not narrow a job profile (JS-9).
     assert document["containers"]["agent"]["resources"]["limits"]["cpu"] == "6000m"
-    # Labels are the one key beyond OpenShell 0.1.5's typed driver config that the worker
-    # emits: allowed_pod_labels admits them (qualification item, docs/WORKER.md).
-    assert set(pod) == {"node_selector", "runtime_class_name", "labels"}
+    # OpenShell 0.1.5 refuses pod.labels ("unknown field labels"): none is sent.
+    assert set(pod) == {"node_selector", "runtime_class_name"}
 
 
 def test_the_policy_grants_profiles_and_counts_within_the_ceiling(tmp_path: Path) -> None:
@@ -734,8 +732,13 @@ async def test_a_job_runs_in_its_own_sandbox_from_the_sessions_image(pool: Pool)
     create = pool.fake.calls("sandbox", "create")[-1]
     assert create[create.index("--from") + 1] == IMAGE
     launch = json.loads(create[create.index("--driver-config-json") + 1])
-    assert launch["kubernetes"]["pod"]["labels"] == {JOB_SANDBOX_LABEL[0]: "true"}
+    assert "labels" not in launch["kubernetes"]["pod"]
     assert launch["kubernetes"]["pod"]["runtime_class_name"] == "kata"
+    # The sandbox's own label, as the direct MCP path labels its runtime sandbox.
+    labels = [create[i + 1] for i, arg in enumerate(create) if arg == "--label"]
+    assert "=".join(JOB_SANDBOX_LABEL) in labels
+    session_create = pool.fake.calls("sandbox", "create")[0]
+    assert "=".join(JOB_SANDBOX_LABEL) not in session_create  # session sandboxes have none
     assert [create[i + 1] for i, arg in enumerate(create) if arg == "--provider"] == list(
         session.providers
     )

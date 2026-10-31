@@ -12,8 +12,9 @@ import pytest
 from pydantic import ValidationError
 
 from sandbox_science.policy.model import Resources
+from sandbox_science.worker.job_sandboxes import launch_settings
 from sandbox_science.worker.kubernetes import KubernetesProfile, KubernetesResources
-from sandbox_science.worker.settings import EnvironmentSettings
+from sandbox_science.worker.settings import EnvironmentSettings, JobProfile
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -153,11 +154,29 @@ def _unaccepted_paths(document: object, allowed: object, path: str = "") -> list
     return found
 
 
-def test_driver_json_uses_only_keys_openshell_0_1_5_accepts() -> None:
+def renderings() -> list[str]:
+    """Every driver configuration the worker sends: the session environments' placements
+    and the job sandboxes' profiles (with what ``job_sandboxes`` adds), from the examples."""
     raw = tomllib.loads((ROOT / "examples/kubernetes/worker-placement.toml").read_text())
     settings = EnvironmentSettings.model_validate(raw["openshell"]["environments"])
-    for placement in [profile(), *settings.kubernetes.values()]:
-        document = json.loads(placement.driver_json(Resources()))
+    jobs = tomllib.loads((ROOT / "examples/kubernetes/job-profiles.toml").read_text())
+    profiles = [
+        JobProfile.model_validate(value)
+        for value in jobs["openshell"]["environments"]["job_profiles"].values()
+    ]
+    assert profiles
+    return [
+        *(
+            placement.driver_json(Resources())
+            for placement in [profile(), *settings.kubernetes.values()]
+        ),
+        *(launch_settings(job) for job in profiles),
+    ]
+
+
+def test_driver_json_uses_only_keys_openshell_0_1_5_accepts() -> None:
+    for rendered in renderings():
+        document = json.loads(rendered)
         assert set(document) == {"kubernetes"}
         assert _unaccepted_paths(document["kubernetes"], OPENSHELL_0_1_5_DRIVER_CONFIG) == []
         pod = document["kubernetes"]["pod"]
@@ -168,9 +187,11 @@ def test_driver_json_uses_only_keys_openshell_0_1_5_accepts() -> None:
 def test_the_schema_check_rejects_keys_openshell_0_1_5_would() -> None:
     document = json.loads(profile().driver_json(Resources()))["kubernetes"]
     document["pod"]["nodeSelector"] = {}
+    document["pod"]["labels"] = {"sandbox-science.io/job-sandbox": "true"}  # as on the cluster
     document["containers"]["agent"]["resources"]["claims"] = []
     assert set(_unaccepted_paths(document, OPENSHELL_0_1_5_DRIVER_CONFIG)) == {
         "/pod/nodeSelector",
+        "/pod/labels",
         "/containers/agent/resources/claims",
     }
 

@@ -110,7 +110,7 @@ from .errors import PrefixRecoveryError, WorkerError
 from .files import RangeWritten
 from .job_records import ACTIVE, JobSandboxRecord, manifest_digest
 from .revisions import read_lockfile
-from .settings import JOB_SANDBOX_LABEL, EnvironmentSettings, JobProfile
+from .settings import EnvironmentSettings, JobProfile
 
 if TYPE_CHECKING:
     from .journal import ExecutionJournal
@@ -292,9 +292,10 @@ def offers(settings: EnvironmentSettings, resources: Resources) -> tuple[JobProf
 
 
 def launch_settings(profile: JobProfile) -> str:
-    """The job profile's driver configuration, with the label a PodDisruptionBudget
-    selects. The session's CPU and memory caps do not narrow it (JS-9)."""
-    return profile.driver_json(Resources(), labels=dict([JOB_SANDBOX_LABEL]))
+    """The job profile's driver configuration. The session's CPU and memory caps do not
+    narrow it (JS-9). It carries no label: OpenShell 0.1.5's driver configuration has no
+    place for one, and the sandbox's own label (``JOB_SANDBOX_LABEL``) is set at creation."""
+    return profile.driver_json(Resources())
 
 
 class JobSandboxes:

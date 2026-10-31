@@ -140,25 +140,24 @@ section, with resource admission on (example: [gateway-driver.toml](../examples/
 [openshell.drivers.kubernetes]
 allow_driver_config = true
 default_runtime_class_name = "kata"
-allowed_pod_labels = ["sandbox-science.io/job-sandbox"]
 
 [openshell.drivers.kubernetes.resource_admission]
 enabled = true
 ```
 
 `allowed_pod_labels` (OpenShell 0.1.5, `openshell-driver-kubernetes` `src/config.rs`
-275-287, and the gateway runtimes page) is a list of label **keys**, not `key=value`
-pairs: each entry is an exact key or a `<domain>/*` wildcard, and keys under
-`openshell.ai` and `agents.x-k8s.io` are always refused. Empty, the default, rejects
-every label a caller sets. The one label the project sets on sandbox pods is
-`sandbox-science.io/job-sandbox` (value `true`), which the worker puts on a job
-sandbox's workload Pod through `pod.labels`; list that exact key, not a wildcard. OpenShell
-warns that labels select Pods for NetworkPolicy rules and Services, so allow only keys
-that no other rule in the sandbox namespace selects on. The chart has no dedicated value
-for it: set it through `gatewayConfig` ([preparation step 5](KUBERNETES-PREP.md#5-openshell-015)).
-The [bundle](KUBERNETES-BUNDLE.md#job-sandboxes-and-node-drains) renders the
-PodDisruptionBudget that selects the label, so a planned node drain waits for running
-job sandboxes ([job sandboxes](specs/job-sandboxes.md), JS-20).
+275-287) stays empty, its default, which refuses every Pod label a caller sets: the worker
+sets none. In 0.1.5 a sandbox's workload Pod carries, besides OpenShell's own per-sandbox
+labels, only the labels of its sandbox template (`SandboxTemplate.labels`, `driver.rs`
+`sandbox_template_to_k8s_with_validated_config`), which the CLI never sets: `sandbox create
+--label` labels the OpenShell sandbox record, and a named workload template's labels are
+the template object's. Its driver configuration has no `labels` key (`pod` has only
+`node_selector`, `runtime_class_name`, `tolerations` and `priority_class_name`). So a job
+sandbox is marked on the sandbox itself, `sandbox-science.io/job-sandbox=true` through
+`sandbox create --label`, as the direct MCP path marks its runtime sandbox with its project,
+and `openshell sandbox list --selector sandbox-science.io/job-sandbox=true` lists them; no
+PodDisruptionBudget can select their Pods, so a planned node drain does not wait for running
+job sandboxes ([job sandboxes and node drains](KUBERNETES-BUNDLE.md#job-sandboxes-and-node-drains)).
 
 With the Helm chart these are `server.drivers.kubernetes.allowDriverConfig`,
 `server.defaultRuntimeClassName` and `server.drivers.kubernetes.resourceAdmission`

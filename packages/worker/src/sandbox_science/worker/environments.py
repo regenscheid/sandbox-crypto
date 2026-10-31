@@ -86,7 +86,7 @@ from .errors import WorkerError
 from .kubernetes import check_pinned_policy
 from .provisioner import Governing
 from .recovery_fence import check_dispatch
-from .settings import EnvironmentSettings, OpenShellBackendSettings
+from .settings import JOB_SANDBOX_LABEL, EnvironmentSettings, OpenShellBackendSettings
 from .timeouts import seconds
 from .unknown_creations import (
     CREATION_ROLLED_BACK,
@@ -2176,6 +2176,8 @@ class Environments:
             label = label_value(info.environment_id)
             if self.settings.label_environments and label is not None:
                 args += ["--label", f"{ENVIRONMENT_LABEL}={label}"]
+            if info.kind == "job":
+                args += ["--label", "=".join(JOB_SANDBOX_LABEL)]
             args += ["--no-auto-providers", "--detach", "--", *_SANDBOX_COMMAND]
             await self.cli.run(*args, timeout=self.settings.create_timeout)
         finally:
