@@ -79,7 +79,7 @@ kind: ProjectPolicy
 metadata: {{name: synthetic-browser-policy}}
 defaults: {{action: deny}}
 mcp:
-  proxy: {{max_argument_bytes: 16Ki}}
+  limits: {{max_argument_bytes: 16Ki}}
   servers:
     papers:
       url: https://{SERVER_HOST}:{port}/mcp

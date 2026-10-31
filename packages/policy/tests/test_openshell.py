@@ -870,7 +870,7 @@ def test_research_code_reaches_no_mcp_server_or_proxy() -> None:
     middlewares = compiled.policy.network_middlewares
     assert middlewares is not None
     assert middlewares["sandbox-science-policy"].endpoints.exclude is None
-    assert any(finding.subject == "mcp.proxy.worker_access" for finding in compiled.findings)
+    assert any(finding.subject == "mcp.worker_access" for finding in compiled.findings)
 
 
 EXAMPLE_OPAM = "  opam:                     # OCaml: EasyCrypt, Jasmin\n    action: allow\n"

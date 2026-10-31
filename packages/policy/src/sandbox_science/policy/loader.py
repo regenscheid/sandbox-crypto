@@ -347,8 +347,9 @@ def parse_policy(
     """Parse and validate a policy file's contents. Raises PolicyLoadError.
 
     ``stored`` reads a revision the policy store kept: one stored before the MCP proxy
-    retired may set ``mcp.proxy.worker_access``, which is then read as unset (``STORED``)
-    rather than refused, so that what was bound to it still loads."""
+    retired may set ``mcp.proxy.worker_access`` (the section is ``mcp.limits`` now), which is
+    then read as unset (``STORED``) rather than refused, so that what was bound to it still
+    loads."""
     data = _as_bytes(text, _label(source, "policy"))
     document = read_yaml_mapping(data, source, "policy")
     context: dict[str, object] | None = {STORED: True} if stored else None

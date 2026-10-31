@@ -1167,7 +1167,7 @@ def compile_sandbox(
     findings.append(
         Finding(
             Severity.INFO,
-            "mcp.proxy.worker_access",
+            "mcp.worker_access",
             "worker code cannot reach MCP servers: no endpoint admits them",
         )
     )

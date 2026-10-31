@@ -687,9 +687,7 @@ def _evaluate_mcp(
         return _deny("ceiling", reason, policy)
     if operation.origin == "worker":
         # Research code has no MCP access since the MCP proxy retired (D98, 2026-10-26).
-        return _deny(
-            "policy", "worker code may not call MCP servers (mcp.proxy.worker_access)", policy
-        )
+        return _deny("policy", "worker code may not call MCP servers (D98)", policy)
     if operation.method in MCP_PROTOCOL_METHODS:
         return _decision(
             Action.ALLOW,

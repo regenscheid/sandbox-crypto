@@ -804,7 +804,7 @@ class PolicyMiddleware:
                 facts.query,
                 facts.headers,
                 facts.body,
-                max_argument_bytes=int(loaded.policy.mcp.proxy.max_argument_bytes),
+                max_argument_bytes=int(loaded.policy.mcp.limits.max_argument_bytes),
             )
         except McpRequestError as exc:
             verdict = _deny(exc.code, str(exc))

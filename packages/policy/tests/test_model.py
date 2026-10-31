@@ -67,7 +67,7 @@ def test_defaults() -> None:
     policy = parse_policy(HEADER).policy
     assert policy.defaults.action is Action.ESCALATE
     assert policy.escalation.timeout == timedelta(minutes=30)
-    assert policy.mcp.proxy.worker_access is False
+    assert policy.mcp.limits.max_argument_bytes == 64 * 1024
     assert policy.packages.conda is None
     assert policy.network.rules == ()
 
@@ -288,22 +288,40 @@ def test_accepts_placeholder_headers(headers: str) -> None:
     )
 
 
-def test_mcp_proxy_size_limits() -> None:
-    proxy = parse_policy(HEADER).policy.mcp.proxy
-    assert (proxy.max_argument_bytes, proxy.max_response_bytes) == (64 * 1024, 2 * 1024 * 1024)
+def test_mcp_size_limit() -> None:
+    assert parse_policy(HEADER).policy.mcp.limits.max_argument_bytes == 64 * 1024
+    limits = parse_policy(
+        policy_text("mcp: {limits: {max_argument_bytes: 4Ki}}\n")
+    ).policy.mcp.limits
+    assert limits.max_argument_bytes == 4096
+    with pytest.raises(PolicyLoadError, match="max_argument_bytes"):
+        parse_policy(policy_text("mcp: {limits: {max_argument_bytes: 0}}\n"))
+    with pytest.raises(PolicyLoadError, match="max_response_bytes"):
+        parse_policy(policy_text("mcp: {limits: {max_response_bytes: 1Mi}}\n"))
+
+
+def test_the_old_proxy_name_is_read_as_limits() -> None:
+    """``mcp.proxy`` was the section's name until 2026-10-31: policy files and stored
+    revisions that say it still load, with the settings nothing reads any more dropped."""
     text = policy_text("mcp: {proxy: {max_argument_bytes: 4Ki, max_response_bytes: 1Mi}}\n")
-    proxy = parse_policy(text).policy.mcp.proxy
-    assert (proxy.max_argument_bytes, proxy.max_response_bytes) == (4096, 1024 * 1024)
+    assert parse_policy(text).policy.mcp.limits.max_argument_bytes == 4096
+    assert parse_policy(text, stored=True).policy.mcp.limits.max_argument_bytes == 4096
+    assert parse_policy(policy_text("mcp: {proxy: {}}\n")).policy.mcp.limits.max_argument_bytes == (
+        64 * 1024
+    )
     with pytest.raises(PolicyLoadError, match="max_argument_bytes"):
         parse_policy(policy_text("mcp: {proxy: {max_argument_bytes: 0}}\n"))
+    with pytest.raises(PolicyLoadError, match="both proxy"):
+        parse_policy(policy_text("mcp: {proxy: {}, limits: {}}\n"))
+    with pytest.raises(PolicyLoadError, match="mapping"):
+        parse_policy(policy_text("mcp: {proxy: 3}\n"))
 
 
 def test_worker_tools_are_retired_with_the_mcp_proxy() -> None:
     for value in ("everything", "['*search*']"):
         with pytest.raises(PolicyLoadError, match="worker_tools are retired"):
             parse_policy(policy_text(f"mcp: {{proxy: {{worker_tools: {value}}}}}\n"))
-    policy = parse_policy(policy_text("mcp: {proxy: {worker_tools: inherit}}\n")).policy
-    assert policy.mcp.proxy.worker_tools == "inherit"
+    assert parse_policy(policy_text("mcp: {proxy: {worker_tools: inherit}}\n")).policy
 
 
 def test_provider_names_are_unique() -> None:
