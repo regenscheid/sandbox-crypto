@@ -1077,7 +1077,9 @@ sandbox-science-kubernetes restore --config private.toml --discard RESTORE_ID --
 With `--apply` it runs the plan (`kubectl exec` into the pool's worker container, under the
 worker's read-only key), finds the target's claim and node (refusing while a Pod mounts it),
 checks first, before planning, that the `--restore-key` files can be read and that no Secret
-of the restore Secret's name exists; then it gets the attempt's nonce, creates the restore
+of the restore Secret's name exists (a server-side dry run of its create, which the API
+server refuses with AlreadyExists, so the operator needs no right to read Secrets; a
+Secret that appears before the real create is refused the same way and left alone); then it gets the attempt's nonce, creates the restore
 Secret from `--restore-key` (the directory
 `site` writes, with `credentials` and `config`), creates the Job, journals it, waits, reads
 the digest from its log, deletes the Secret and the Job and has the worker verify the
@@ -1096,7 +1098,7 @@ the restore created (one created again since, or gone, is left alone, so a stale
 never blocks an ID). Nothing in a restore needs the keeper key, so the operator's machine
 needs no S3 SDK for it; the bundle needs `restore_secret` (`site` writes the key's files from
 the site file's `restore_credentials` and `restore_config`). The operator's rights are those
-of a checkpoint plus reading, creating and deleting Secrets in the sandbox namespace
+of a checkpoint plus creating and deleting Secrets in the sandbox namespace
 ([preparation, step 13](KUBERNETES-PREP.md#13-workspace-checkpoints-and-cleanup-qualification)).
 
 What a restore does not do: it brings back the workspace's files, installed packages and

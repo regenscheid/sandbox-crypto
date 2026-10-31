@@ -89,6 +89,11 @@ def run_command(arguments: Sequence[str], stdin: bytes | None) -> bytes:
     return done.stdout
 
 
+def _already_exists(error: OperationError) -> bool:
+    """Whether kubectl reported the API server's AlreadyExists."""
+    return "(AlreadyExists)" in str(error) or "already exists" in str(error)
+
+
 def whoami(run: Runner, kubectl: Sequence[str]) -> str:
     """Who runs the command, as the deletion journal names them: the cluster's name for the
     kubeconfig's identity, and the local account."""
@@ -569,7 +574,7 @@ class Operator:
             attempt = found[1]
             job = restore_job(self.config, plan, claim, node, attempt)
             if key is not None:
-                self.run(self._create_secret(secret, key), None)
+                self._create_restore_secret(secret, key)
                 made = True
                 self.out(f"created secret {secret} for this restore")
             created = self.run(
@@ -626,7 +631,10 @@ class Operator:
 
     def _restore_key_ready(self, secret: str, key: Path) -> None:
         """Before anything is planned: the key's files can be read, and no Secret of that
-        name exists, which this run would otherwise fail to create (or delete after)."""
+        name exists, which this run would otherwise fail to create (or delete after). The
+        check is a server-side dry run of the very create the restore makes, which the API
+        server refuses with AlreadyExists when one is there, so the operator needs no right
+        to read Secrets."""
         for part in ("credentials", "config"):
             path = key / part
             try:
@@ -636,25 +644,29 @@ class Operator:
                 raise OperationError(f"the restore key's {part} cannot be read: {error}") from None
             if not path.is_file():
                 raise OperationError(f"the restore key's {part} is not a regular file")
-        found = self.run(
-            [
-                *self.kubectl,
-                "-n",
-                self.sandbox_namespace,
-                "get",
-                "secret",
-                secret,
-                "--ignore-not-found",
-                "-o",
-                "name",
-            ],
-            None,
-        )
-        if found.strip():
+        try:
+            self.run([*self._create_secret(secret, key), "--dry-run=server", "-o", "name"], None)
+        except OperationError as error:
+            if not _already_exists(error):
+                raise
             raise OperationError(
                 f"the Secret {secret} already exists in {self.sandbox_namespace}: delete it,"
-                " or pass --standing-secret to use it"
-            )
+                " or keep it for good with the bundle's [checkpoint] standing_restore_secret"
+                " and pass --standing-secret"
+            ) from None
+
+    def _create_restore_secret(self, secret: str, key: Path) -> None:
+        """Create the restore Secret for this Job. One that appeared since the check is
+        someone else's: refused, and never deleted by this run."""
+        try:
+            self.run(self._create_secret(secret, key), None)
+        except OperationError as error:
+            if not _already_exists(error):
+                raise
+            raise OperationError(
+                f"the Secret {secret} appeared in {self.sandbox_namespace} since the check;"
+                " it is not this restore's and is left alone"
+            ) from None
 
     def _logs(self, name: str) -> bytes:
         """A Job's log, or what went wrong reading it: kept in the operator's output."""

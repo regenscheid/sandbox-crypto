@@ -231,6 +231,7 @@ def test_one_restore_command_plans_creates_journals_waits_and_has_the_worker_ver
     key = restore_key(tmp_path)
     assert operator.run_restore(MANIFEST, "crypto-restored", key=key) == a_restore()
     order = [
+        "--dry-run=server",  # the Secret's absence, before the plan
         "checkpoint restore-plan",
         "restore-attempt",
         f"create secret generic {RESTORE_SECRET}",
@@ -241,10 +242,11 @@ def test_one_restore_command_plans_creates_journals_waits_and_has_the_worker_ver
         "delete job research-restore-r1",
         f"delete secret {RESTORE_SECRET}",
     ]
-    positions = [
-        next(i for i, (c, _) in enumerate(kubectl.commands) if w in " ".join(c)) for w in order
-    ]
-    assert positions == sorted(positions)
+    position = -1
+    for words in order:  # each after the one before
+        position = next(
+            i for i, (c, _) in enumerate(kubectl.commands) if i > position and words in " ".join(c)
+        )
     planning = kubectl.ran("checkpoint restore-plan")[0]
     assert "AWS_PROFILE=checkpoint-verify" in planning  # the worker reads the kept copy itself
     assert planning[planning.index("--target") + 1] == "crypto-restored"
@@ -259,8 +261,11 @@ def test_one_restore_command_plans_creates_journals_waits_and_has_the_worker_ver
     verify = kubectl.ran("restore-verify")[0]
     assert verify[verify.index("--tree") + 1] == TREE
     assert verify[verify.index("--attempt") + 1] == ATTEMPT
-    secret = kubectl.ran("create secret generic")[0]
+    check, secret = kubectl.ran("create secret generic")
+    assert "--dry-run=server" in check
+    assert "--dry-run=server" not in secret
     assert f"--from-file=credentials={key / 'credentials'}" in secret
+    assert not kubectl.ran("get secret")
     created = json.loads(next(stdin for c, stdin in kubectl.commands if "create" in c and stdin))
     claim = created["spec"]["template"]["spec"]["volumes"][0]["persistentVolumeClaim"]
     assert claim["readOnly"] is False
@@ -287,13 +292,53 @@ def test_a_failed_restore_is_journaled_and_its_target_stays_held(failure, tmp_pa
     assert len(kubectl.ran("--phase failed")) == 1
     assert not kubectl.ran("release-hold")  # a restore's hold has no early release
     if failure == "mounted":
-        assert not kubectl.ran("create")
+        assert not kubectl.ran("create -f")
+        assert all("--dry-run=server" in c for c in kubectl.ran("create secret"))
         assert not kubectl.ran("delete secret")
     else:
         assert kubectl.ran(f"-n {SANDBOXES} delete job research-restore-r1")
         assert kubectl.ran(f"-n {SANDBOXES} delete secret {RESTORE_SECRET}")
         # The failed Job's log stays in the operator's output.
         assert any(line.startswith("job research-restore-r1: restore_tree=") for line in printed)
+
+
+ALREADY = OperationError(
+    f"kubectl -n {SANDBOXES} create … failed: Error from server (AlreadyExists): secrets"
+    f' "{RESTORE_SECRET}" already exists'
+)
+
+
+def test_an_existing_restore_secret_refuses_the_restore_before_the_plan(tmp_path):
+    kubectl, _, operator = restore_run(**{"--dry-run=server": ALREADY})
+    with pytest.raises(OperationError, match=r"already exists.*standing_restore_secret"):
+        operator.run_restore(MANIFEST, "crypto-restored", key=restore_key(tmp_path))
+    assert not kubectl.ran("restore-plan")
+    assert not kubectl.ran("delete")
+
+
+def test_a_secret_that_appears_after_the_check_is_refused_and_left_alone(tmp_path):
+    kubectl, _, operator = restore_run(
+        **{"--dry-run=server": b"secret/x created (server dry run)\n", "create secret": ALREADY}
+    )
+    with pytest.raises(OperationError, match=r"appeared .* left alone"):
+        operator.run_restore(MANIFEST, "crypto-restored", key=restore_key(tmp_path))
+    assert not kubectl.ran("delete secret")  # not this restore's
+    assert len(kubectl.ran("--phase failed")) == 1  # the target stays held
+
+
+def test_the_restore_uses_only_the_secret_verbs_the_operators_role_grants(tmp_path):
+    """The rights table in docs/KUBERNETES-PREP.md step 13 and the code agree."""
+    table = (Path(__file__).resolve().parents[3] / "docs/KUBERNETES-PREP.md").read_text()
+    row = next(line for line in table.splitlines() if line.startswith("| the sandbox namespace"))
+    granted = set(row.split("`secrets`:")[1].split("|")[0].replace(" ", "").split(","))
+    kubectl, _, operator = restore_run()
+    operator.run_restore(MANIFEST, "crypto-restored", key=restore_key(tmp_path))
+    used = {
+        command[command.index("secret") - 1]
+        for command, _ in kubectl.commands
+        if "secret" in command and "kubectl" in command[0]
+    }
+    assert used == granted == {"create", "delete"}
 
 
 def test_a_report_from_another_attempt_is_not_passed_on():
@@ -530,9 +575,7 @@ def test_the_restore_key_and_the_secrets_absence_are_checked_before_planning(tmp
         operator.run_restore(MANIFEST, "crypto-restored", key=tmp_path / "missing")
     assert not kubectl.ran("restore-plan")
     key = restore_key(tmp_path)
-    kubectl, _, operator = restore_run(
-        **{f"get secret {RESTORE_SECRET}": f"secret/{RESTORE_SECRET}\n".encode()}
-    )
+    kubectl, _, operator = restore_run(**{"--dry-run=server": ALREADY})
     with pytest.raises(OperationError, match="already exists"):
         operator.run_restore(MANIFEST, "crypto-restored", key=key)
     assert not kubectl.ran("restore-plan")

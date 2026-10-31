@@ -611,7 +611,7 @@ The operator's rights, which neither the worker nor any bundle Pod gets:
 
 | Where | Resources and verbs | For |
 | --- | --- | --- |
-| the sandbox namespace | `batch/jobs`: create, get, list, watch, delete; `pods`: get, list; `pods/log`: get; `persistentvolumeclaims`: get, list, delete; `agents.x-k8s.io/sandboxes`: get, list; `secrets`: get, create, delete | creating, watching and deleting checkpoint and restore Jobs; cleanup's survey and claim deletion; the restore Secret for the time of its Job (`restore --apply` first checks with `kubectl get secret` that none exists; without `get` it is refused) |
+| the sandbox namespace | `batch/jobs`: create, get, list, watch, delete; `pods`: get, list; `pods/log`: get; `persistentvolumeclaims`: get, list, delete; `agents.x-k8s.io/sandboxes`: get, list; `secrets`: create, delete | creating, watching and deleting checkpoint and restore Jobs; cleanup's survey and claim deletion; the restore Secret for the time of its Job (`restore --apply` first checks that none exists with a server-side dry run of its create, `kubectl create secret … --dry-run=server`, which the API server refuses with AlreadyExists; no right to read Secrets is needed) |
 | cluster | `persistentvolumes`: get, list, patch | cleanup's survey, and setting a leftover PV's reclaim policy to Delete |
 | the bundle's namespace | `pods`: get, list; `pods/exec`: create; `apps/deployments`: get | running the worker's checkpoint commands in the pool Pod |
 | Garage's namespace | `services`: get; `pods/portforward`: create | reaching the store with the keeper key |
