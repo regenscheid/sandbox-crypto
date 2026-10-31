@@ -44,7 +44,7 @@ from sandbox_science.orchestrator.loop import SYSTEM_PROMPT, Transcript
 from sandbox_science.orchestrator.notices import OUTCOME_CORRECTION
 from sandbox_science.orchestrator.session_plans import PlanOutput, SessionPlans
 
-from .loop_harness import PROJECT, SESSION, Harness, Reply, call
+from .loop_harness import AREA, PROJECT, SESSION, Harness, Reply, call
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
@@ -80,7 +80,7 @@ TASK = call(
     deliverables=DELIVERABLES,
 )
 SMALL = call("delegate", task="Say whether 17 is prime.")
-WRITE = call("write_file", path="table.txt", content="1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1\n")
+WRITE = call("write_file", path=f"{AREA}/table.txt", content="1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1\n")
 RECHECK = call(
     "ledger_change",
     reason="Left for later.",
@@ -96,8 +96,10 @@ RECHECK = call(
 D1 = {"id": "d1", "status": "produced", "path": "table.txt"}
 D2 = {"id": "d2", "status": "produced", "entry": "T-1"}
 D3 = {"id": "d3", "status": "not_produced", "reason": "I ran out of time to check a = 0."}
-FIRST = {**DONE, "deliverables": [D1, D2]}
-CORRECTED = {**DONE, "status": "partial", "deliverables": [D1, D2, D3]}
+IN_AREA = {**D1, "path": f"{AREA}/table.txt"}
+"""``D1`` as a delegated run writes it, in its write area (DA-19)."""
+FIRST = {**DONE, "deliverables": [IN_AREA, D2]}
+CORRECTED = {**DONE, "status": "partial", "deliverables": [IN_AREA, D2, D3]}
 GIVEN_UP = [
     {"id": "d1", "status": "not_produced", "reason": "The kernel did not start."},
     {"id": "d2", "status": "not_produced", "reason": "Nothing to recheck yet."},
@@ -167,7 +169,12 @@ async def test_an_omitted_deliverable_is_corrected_once_and_the_three_are_kept(
     assert found.result is not None
     assert (found.ended, found.result["status"]) == ("returned", "partial")
     accounted = listed_of(found.result["deliverables"])
-    assert [{k: v for k, v in d.items() if v is not None} for d in accounted] == [D1, D2, D3]
+    produced = {**D1, "path": f"work/{delegation_id}/table.txt"}
+    assert [{k: v for k, v in d.items() if v is not None} for d in accounted] == [
+        produced,
+        D2,
+        D3,
+    ]
     assert "set_by" not in found.result
     assert summarized(found)["deliverables"] == "2 produced, 1 not produced"
     shown = outcome(found)

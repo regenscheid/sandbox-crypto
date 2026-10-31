@@ -21,7 +21,7 @@ from sandbox_science.contracts import WriteFileRequest
 from sandbox_science.orchestrator.context.agent import AgentContext
 from sandbox_science.orchestrator.context.history import body
 from sandbox_science.orchestrator.delegation.outcome import Outcome, Proof, Target, proof_reads
-from sandbox_science.orchestrator.delegation.prompt import brief_text, check_task
+from sandbox_science.orchestrator.delegation.prompt import brief_text, check_task, write_area_text
 from sandbox_science.orchestrator.delegation.records import (
     Delegation,
     DelegationRecords,
@@ -706,7 +706,9 @@ async def test_a_main_run_checks_its_proof_by_delegation(delegating: Harness) ->
     brief = body(str(first[1]["content"]))
     assert brief.startswith("Task: Check whether ledger entry C-1 holds at revision 2, ")
     assert "- derivation (proof): entry C-2 r1 (ledger_read)" in brief
-    assert brief.endswith("The requester's note, not evidence: Mind the lemma.")
+    note, area = brief.rsplit("\n\n", 1)
+    assert note.endswith("The requester's note, not evidence: Mind the lemma.")
+    assert area == write_area_text(f"work/{started(root)[0]}")
     recorded = json.loads(results(root)[2])
     assert "error" not in recorded, recorded
     found = gate_clause(delegating)

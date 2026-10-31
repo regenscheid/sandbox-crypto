@@ -2,11 +2,12 @@
 """File requests and the shared files' sync, for the execution manager.
 
 ``Files`` reads, writes, edits, lists and searches files in an environment through its
-executor, and checks each reply like an event. A request for a path under ``shared/`` first syncs
-the project's shared files (D79); what a sync finds is told with the results of the
-calls running there, or held for the session's next result. The dispatcher runs the
-sync's steps before and after each call through ``sync``, whose failure never fails
-the call.
+executor, and checks each reply like an event. A write or an edit whose context names a
+delegated run's write area is made only below it or in ``shared/`` (DA-19). A request
+for a path under ``shared/`` first syncs the project's shared files (D79); what a sync
+finds is told with the results of the calls running there, or held for the session's
+next result. The dispatcher runs the sync's steps before and after each call through
+``sync``, whose failure never fails the call.
 """
 
 from __future__ import annotations
@@ -42,6 +43,7 @@ from sandbox_science.contracts import (
     StagePutResult,
     WriteFileRequest,
     WriteFileResult,
+    outside_write_area,
 )
 
 from .channel import ExecutorChannel, Message
@@ -168,6 +170,7 @@ class Files:
 
     async def write(self, request: WriteFileRequest) -> WriteFileResult:
         context = request.context
+        _in_write_area(context, request.path)
         async with self.connections.using(context.environment_id) as channel:
             fields: dict[str, Any] = {
                 "path": request.path,
@@ -198,6 +201,7 @@ class Files:
     async def edit(self, request: EditFileRequest) -> EditFileResult:
         """Replace a string in a text file, under the rules and the sync a write has."""
         context = request.context
+        _in_write_area(context, request.path)
         async with self.connections.using(context.environment_id) as channel:
             _file_tools(channel)
             fields: dict[str, Any] = {
@@ -442,6 +446,14 @@ def _objects(value: object) -> list[dict[str, Any]]:
     """A reply's list of objects; anything else in it is an empty object, which the
     contract then refuses."""
     return [cast(dict[str, Any], item) if isinstance(item, dict) else {} for item in _listed(value)]
+
+
+def _in_write_area(context: ExecutionContext, path: str) -> None:
+    """Refuse a delegated run's write outside its write area and ``shared/`` (DA-19),
+    before anything reaches the environment."""
+    refusal = outside_write_area(context, path)
+    if refusal is not None:
+        raise WorkerError(ErrorKind.POLICY_DENIED, refusal)
 
 
 def _file_tools(channel: ExecutorChannel) -> None:

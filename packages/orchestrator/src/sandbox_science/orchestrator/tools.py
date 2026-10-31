@@ -23,7 +23,7 @@ from dataclasses import replace
 from functools import partial
 from typing import TYPE_CHECKING, Any, Final, cast
 
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from sandbox_science.contracts import (
     MAX_ADMISSION_HOSTS,
@@ -43,6 +43,7 @@ from sandbox_science.contracts import (
     ShellRequest,
     WriteFileRequest,
 )
+from sandbox_science.contracts.context import WriteArea
 from sandbox_science.contracts.worker import (
     DEFAULT_GREP_RESULTS,
     MAX_GLOB_RESULTS,
@@ -521,6 +522,7 @@ def _harness_tool_names() -> frozenset[str]:
 
 HARNESS_TOOL_NAMES: Final = _harness_tool_names()
 """Every name the harness gives a tool of its own, which no connector tool may take."""
+_WRITE_AREA: Final = TypeAdapter(WriteArea)
 
 
 class Toolbox:
@@ -560,13 +562,18 @@ class Toolbox:
         images: ImageViewer | None = None,
         image_offer: Mapping[str, Any] | None = None,
         capabilities: caps.CapabilitySet | None = None,
+        write_area: str | None = None,
     ) -> None:
         """For a ``delegated`` run, a call to a tool it is not offered, such as a review,
         plan, delegate or question tool, is refused with ``not_permitted_for_role`` (PD-16,
         PD-41). Its connector tools are its own run's, as a main run's are (DA-3). A
         ``check`` run is offered only the reads of the documents, the ledger and the
         memory, beside its compute and file tools: it changes no entry, document or memory
-        (PD-34, LG-13, as the coordinator tightened them on 2026-10-15)."""
+        (PD-34, LG-13, as the coordinator tightened them on 2026-10-15). A delegated run's
+        ``write_area`` (``work/<delegation_id>``) goes with its ``write_file`` and
+        ``edit_file`` requests, and the worker writes them only there and in ``shared/``
+        (DA-19); the platform's own writes for the run, such as saved output, do not carry
+        it."""
         if delegated and questions is not None:
             raise ValueError("a delegated run cannot ask the user")
         if capabilities is None:
@@ -602,6 +609,7 @@ class Toolbox:
                 capabilities = caps.record_reads(capabilities)
         self.client = client
         self.context = context
+        self.write_area = None if write_area is None else _WRITE_AREA.validate_python(write_area)
         self.output_chars = output_chars
         self.languages = tuple(languages)
         self.reviews = capabilities.service(caps.REVIEWS)
@@ -1398,7 +1406,7 @@ class Toolbox:
             )
         request = WriteFileRequest.model_validate(
             {
-                "context": self.context,
+                "context": self._writer(),
                 **_known(args, "path", "create_only", "expected_sha256"),
                 "content_b64": base64.b64encode(encoded).decode(),
             }
@@ -1409,6 +1417,13 @@ class Toolbox:
             {"write": written.model_dump()},
             written=Written((request.path,)),
         )
+
+    def _writer(self) -> ExecutionContext:
+        """The context of the agent's own writes: the run's, naming its write area when
+        it is delegated (DA-19)."""
+        if self.write_area is None:
+            return self.context
+        return self.context.model_copy(update={"write_area": self.write_area})
 
     async def _edit(self, args: dict[str, Any], operation: str) -> ToolOutcome:
         for name in ("old_string", "new_string"):
@@ -1424,7 +1439,7 @@ class Toolbox:
                 )
         request = EditFileRequest.model_validate(
             {
-                "context": self.context,
+                "context": self._writer(),
                 **_known(
                     args, "path", "old_string", "new_string", "replace_all", "expected_sha256"
                 ),

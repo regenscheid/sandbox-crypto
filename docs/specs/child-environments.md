@@ -13,9 +13,11 @@ hand-back's refusal of a file over 100 MiB by its size and the limit (CE-6). Ope
 inputs from control's retained content (CE-7), copying files over 100 MiB in a
 hand-back (as JS's delivery step 4: CE-F1's 1.5 GiB file is left out, named with its
 size, and the environment retained), and read-only `inputs/` and
-`work/<id>/`: the worker's file calls set no file mode, and a sandbox's agent code runs
-as the user who owns its files and could change one back, so it needs per-run mounts
-(DA-20's open question 1). Reviewed 2026-10-26; the review's fixes are built. It designs
+`work/<id>/` for a child's processes: the worker's file calls set no file mode, and a
+sandbox's agent code runs as the user who owns its files and could change one back, so
+it needs per-run mounts (DA-20's open question 1). A child's file tools write only in its
+write area and `shared/` (DA-19, built 2026-10-31), here as in the session's
+environment. Reviewed 2026-10-26; the review's fixes are built. It designs
 backlog item B7, raised by the owner on 2026-10-24: for some projects, each subagent's
 research environment runs in a sandbox of its own, possibly on another node, for compute
 and memory; the parent, above all the main agent, owns the durable records, and a
@@ -34,8 +36,8 @@ session, the main agent's and each delegated child's, executes in that one sandb
 `run_child` copies the parent's context, environment included (`harness.py`), and each
 child gets kernels of its own inside it, keyed by session and run (PD-37, `KernelInfo.run`).
 So a session's children share one node's CPU, memory and disk, and a child's files are
-the parent's by path: `read_file` takes no run, and DA-19's `work/<delegation_id>/`
-write area is not built.
+the parent's by path: `read_file` takes no run. (DA-19's `work/<delegation_id>/` write
+area was built later, on 2026-10-31.)
 
 The worker already has what a second sandbox needs, and the job sandbox uses it: an
 environment of another kind created from the session environment's image, policy
@@ -148,7 +150,13 @@ platform places a child by the project's settings. No change to checks' evidence
   sandbox write), or past the bytes left of the profile's `collect_max_bytes`, is left
   out with a reason that gives its size and the limit, and the retained environment's
   message names the files left out for their size, the five largest first; copying them
-  waits for a ranged write (JS's delivery step 4). The parent reads handed-back files with its ordinary
+  waits for a ranged write (JS's delivery step 4). *Amended 2026-10-31 with DA-19:* a
+  child in its own environment has the same write area there, `work/<delegation_id>/`,
+  and its file tools write only in it and in `shared/`; the hand-back copies a file of the
+  write area to the same path in the session's environment, and any other below it
+  (`out/x` to `work/<delegation_id>/out/x`), so a path the child names is the path its
+  parent reads. Of two files that would land on one path, the first the request names is
+  copied and the other left out with that reason. The parent reads handed-back files with its ordinary
   file tools, at that path; the recorder records them as the parent's files, so they
   are artifacts of the session like any other.
 - CE-7. **Inputs.** The brief's `inputs` (file grants, DA-17) are copied into the child

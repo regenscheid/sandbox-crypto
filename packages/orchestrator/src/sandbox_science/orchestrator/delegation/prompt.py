@@ -199,6 +199,15 @@ REOPENED_TASK: Final = (
 (PD-46): the platform's words; the parent's message comes as an agent message."""
 
 
+def write_area_text(area: str) -> str:
+    """The platform's line of a brief that names the child's write area (DA-19)."""
+    return (
+        f"Your write area: {area}/. write_file and edit_file write only there and in "
+        "shared/ (with create_only or expected_sha256); you read every file of the "
+        "session, and your parent reads your write area, by the paths you wrote."
+    )
+
+
 def check_task(handle: str, revision: int) -> str:
     """A check's task, as the platform writes it."""
     return (

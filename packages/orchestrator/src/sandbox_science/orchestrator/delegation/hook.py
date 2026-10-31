@@ -58,7 +58,14 @@ from typing import TYPE_CHECKING, Any, Final, Literal, Protocol, cast
 
 from pydantic import JsonValue
 
-from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ErrorKind, ExecutionContext, new_id
+from sandbox_science.contracts import (
+    SYSTEM_CLOCK,
+    Clock,
+    ErrorKind,
+    ExecutionContext,
+    new_id,
+    write_area,
+)
 from sandbox_science.contracts.child_environments import RetainedFile
 from sandbox_science.orchestrator.aio import held, threaded
 from sandbox_science.orchestrator.context.history.collections import Collection, Members
@@ -81,7 +88,14 @@ from .environments import NOT_OFFERED, ChildPlacement, placement, reconcile, wai
 from .models import Choice, ModelChoice
 from .narrowing import narrow
 from .outcome import Asked, Target, asked_of, proof_reads
-from .prompt import REOPENED_TASK, brief_text, check_task, evidence_line, task_text
+from .prompt import (
+    REOPENED_TASK,
+    brief_text,
+    check_task,
+    evidence_line,
+    task_text,
+    write_area_text,
+)
 from .records import (
     Delegation,
     DelegationRecords,
@@ -464,11 +478,13 @@ class Delegations(TurnHook):
             started_at=started,
             environment_id=environment.environment_id if environment is not None else None,
         )
+        area = write_area(delegation_id)
         child = Child(
             delegation_id,
             run_id,
             started,
-            planned.text,
+            # The platform's line naming the child's write area closes its brief (DA-19).
+            f"{planned.text}\n\n{write_area_text(area)}",
             max_turns=planned.turns,
             tokens=tokens,
             target=planned.target,
@@ -514,6 +530,7 @@ class Delegations(TurnHook):
             "delegation_id": delegation_id,
             "run": delegation.run,
             "state": "running",
+            "write_area": f"{area}/",
             **planned.shown,
             "limits": {"turns": child.max_turns, "tokens": child.tokens},
         }

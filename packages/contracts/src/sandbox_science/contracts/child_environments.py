@@ -20,7 +20,7 @@ from typing import Annotated, Final, Literal
 
 from pydantic import Field, StringConstraints
 
-from .context import ExecutionContext
+from .context import WRITE_AREA_DIRECTORY, ExecutionContext, in_write_area
 from .model import Contract, Identifier, Sha256
 from .worker import (
     MAX_MANIFEST_FILES,
@@ -43,7 +43,7 @@ CHILD_WALL_TIME_MAX: Final = 7 * 24 * 3600.0
 HAND_BACK_MANIFEST: Final = ".handback/manifest.json"
 """The hand-back's manifest, under its target: a reserved name no handed-back file takes."""
 HAND_BACK_RESERVED: Final = ".handback"
-HAND_BACK_DIRECTORY: Final = "work"
+HAND_BACK_DIRECTORY: Final = WRITE_AREA_DIRECTORY
 """The session workspace directory a hand-back writes under, one directory a delegation
 (DA-19's write area, CE-6)."""
 
@@ -79,8 +79,25 @@ def is_child_environment(environment_id: str) -> bool:
 
 
 def hand_back_target(delegation_id: str) -> str:
-    """Where a delegation's hand-back writes in the session workspace (CE-6)."""
+    """Where a delegation's hand-back writes in the session workspace (CE-6): its write
+    area (DA-19)."""
     return f"{HAND_BACK_DIRECTORY}/{delegation_id}"
+
+
+def hand_back_path(delegation_id: str, path: str) -> str:
+    """Where a hand-back writes a child environment's ``path`` in the session workspace
+    (CE-6, DA-19): a file in the delegation's write area keeps its path, so the path the
+    child wrote and named is the one its parent reads; any other file goes below the
+    write area, ``x/y`` to ``work/<delegation_id>/x/y``."""
+    target = hand_back_target(delegation_id)
+    return path if in_write_area(target, path) else f"{target}/{path}"
+
+
+def hand_back_reserved(delegation_id: str, path: str) -> bool:
+    """Whether a hand-back would write ``path`` of the child environment into its own
+    ``.handback/`` (CE-6), which no handed-back file takes."""
+    inside = hand_back_path(delegation_id, path)[len(hand_back_target(delegation_id)) + 1 :]
+    return inside == HAND_BACK_RESERVED or inside.startswith(f"{HAND_BACK_RESERVED}/")
 
 
 class ChildEnvironmentRequest(Contract):
@@ -209,6 +226,8 @@ __all__ = [
     "HandBackRequest",
     "RetainedFile",
     "child_environment_id",
+    "hand_back_path",
+    "hand_back_reserved",
     "hand_back_target",
     "is_child_environment",
 ]

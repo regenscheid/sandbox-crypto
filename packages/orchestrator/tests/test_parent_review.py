@@ -46,7 +46,7 @@ from sandbox_science.orchestrator.worker_client import WorkerAPIError
 from sandbox_science.testing import FakeClock
 
 from .control_versions import older_store
-from .loop_harness import PROJECT, SESSION, Harness, Reply, call, own
+from .loop_harness import AREA, PROJECT, SESSION, Harness, Reply, call, own
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .test_delegation import children, delegation, results, started
@@ -208,10 +208,10 @@ async def test_a_reopened_task_keeps_its_environment_and_is_released_on_acceptan
         ],
         routed={
             FIRST: [
-                Reply(calls=[call("write_file", path="basis.txt", content="3 1\n1 2\n")]),
-                Reply(json.dumps({**PARTIAL, "result_files": ["basis.txt"]})),
-                Reply(calls=[call("read_file", path="basis.txt")], before=look),
-                Reply(json.dumps({**COMPLETE, "result_files": ["basis.txt"]})),
+                Reply(calls=[call("write_file", path=f"{AREA}/basis.txt", content="3 1\n1 2\n")]),
+                Reply(json.dumps({**PARTIAL, "result_files": [f"{AREA}/basis.txt"]})),
+                Reply(calls=[call("read_file", path=f"{AREA}/basis.txt")], before=look),
+                Reply(json.dumps({**COMPLETE, "result_files": [f"{AREA}/basis.txt"]})),
             ],
             SECOND: [Reply(json.dumps(DONE))],
         },
@@ -228,7 +228,7 @@ async def test_a_reopened_task_keeps_its_environment_and_is_released_on_acceptan
     assert sorted(service.ended) == sorted([found.environment_id, other.environment_id])
     backs = [b for b in service.hand_backs if b.delegation_id == first]
     assert len(backs) == 1
-    assert backs[0].files == ("basis.txt",)
+    assert backs[0].files == (f"work/{first}/basis.txt",)
     assert found.environment is not None
     assert found.environment["end"] == "released"
     assert other.environment is not None
@@ -660,8 +660,8 @@ async def test_a_reopened_task_cancelled_hands_back_its_first_results_files(
         ],
         routed={
             FIRST: [
-                Reply(calls=[call("write_file", path="basis.txt", content="3 1\n1 2\n")]),
-                Reply(json.dumps({**PARTIAL, "result_files": ["basis.txt"]})),
+                Reply(calls=[call("write_file", path=f"{AREA}/basis.txt", content="3 1\n1 2\n")]),
+                Reply(json.dumps({**PARTIAL, "result_files": [f"{AREA}/basis.txt"]})),
                 Reply(calls=[call("list_files", path=".")], before=holds),
             ]
         },
@@ -670,7 +670,7 @@ async def test_a_reopened_task_cancelled_hands_back_its_first_results_files(
     found = delegation(owning, identity)
     assert (found.ended, found.results, found.review) == ("cancelled", 2, None)
     (back,) = [b for b in service.hand_backs if b.delegation_id == identity]
-    assert back.files == ("basis.txt",)
+    assert back.files == (f"work/{identity}/basis.txt",)
     session = owning.context().environment_id
     assert (_workspace(owning, session) / "work" / identity / "basis.txt").read_text() == (
         "3 1\n1 2\n"
@@ -703,8 +703,8 @@ async def test_a_reopened_task_at_its_limit_hands_back_its_first_results_files(
         ],
         routed={
             FIRST: [
-                Reply(calls=[call("write_file", path="basis.txt", content="3 1\n1 2\n")]),
-                Reply(json.dumps({**PARTIAL, "result_files": ["basis.txt"]})),
+                Reply(calls=[call("write_file", path=f"{AREA}/basis.txt", content="3 1\n1 2\n")]),
+                Reply(json.dumps({**PARTIAL, "result_files": [f"{AREA}/basis.txt"]})),
             ]
         },
     )
@@ -716,7 +716,7 @@ async def test_a_reopened_task_at_its_limit_hands_back_its_first_results_files(
         2,
     )
     (back,) = [b for b in service.hand_backs if b.delegation_id == identity]
-    assert back.files == ("basis.txt",)
+    assert back.files == (f"work/{identity}/basis.txt",)
     session = owning.context().environment_id
     assert (_workspace(owning, session) / "work" / identity / "basis.txt").exists()
 
