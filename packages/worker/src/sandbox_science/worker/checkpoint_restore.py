@@ -260,6 +260,11 @@ def verify(
             raise RecordError(f"restore {restore_id} is {found.state}")
         if found.attempt is None or not secrets.compare_digest(found.attempt, nonce):
             raise RecordError("this report is not from the restore's current Job attempt")
+        if not records.attempt_has_job(restore_id, nonce):
+            raise RecordError(
+                "the current attempt has no journaled Job; record it (restore-record --phase"
+                " job) before its report is verified"
+            )
         try:
             _still_fresh(settings, found.plan, found.executions)
             asyncio.run(confirm_stopped(settings, found.plan.target))
@@ -371,7 +376,7 @@ def write(
     if owner != os.getuid():
         raise ValueError(
             f"the target volume belongs to uid {owner} and this Job runs as uid"
-            f" {os.getuid()}: set [checkpoint] restore_run_as_user to the sandbox's user"
+            f" {os.getuid()}: set [checkpoint] run_as_user to the sandbox's user"
         )
     marker = root / MARKER
     if marker.is_symlink() or (marker.exists() and _read_marker(marker) != restore.restore_id):

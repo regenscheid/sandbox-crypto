@@ -20,7 +20,7 @@ import socket
 import subprocess
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
@@ -488,7 +488,9 @@ class Operator:
                     checkpoint.restore_secret or "RESTORE_SECRET",
                 ]
             ),
-            "# 6. The worker compares it with the checkpoint's; only then may the sandbox start.",
+            "# 6. The worker compares it with the checkpoint's; only then may the sandbox start."
+            " Use the digest and attempt printed by THIS Job only: never one from an earlier"
+            " Job's log, which the worker refuses (each attempt has its own nonce).",
             line(self._restore_verify("RESTORE_ID", "ATTEMPT", "TREE")),
         ]
 
@@ -536,6 +538,8 @@ class Operator:
         secret = self.checkpoint.restore_secret
         if secret is None:
             raise OperationError("the bundle's [checkpoint] names no restore_secret")
+        if key is not None:
+            self._restore_key_ready(secret, key)
         if resume is not None:
             command = self.exec_worker("restore-plan", "--resume", resume, "--by", self.actor)
         elif manifest is not None and target is not None:
@@ -619,6 +623,38 @@ class Operator:
             for problem in self._delete_secret(secret):
                 self.out(problem)
         return plan
+
+    def _restore_key_ready(self, secret: str, key: Path) -> None:
+        """Before anything is planned: the key's files can be read, and no Secret of that
+        name exists, which this run would otherwise fail to create (or delete after)."""
+        for part in ("credentials", "config"):
+            path = key / part
+            try:
+                with path.open("rb") as handle:
+                    handle.read(1)
+            except OSError as error:
+                raise OperationError(f"the restore key's {part} cannot be read: {error}") from None
+            if not path.is_file():
+                raise OperationError(f"the restore key's {part} is not a regular file")
+        found = self.run(
+            [
+                *self.kubectl,
+                "-n",
+                self.sandbox_namespace,
+                "get",
+                "secret",
+                secret,
+                "--ignore-not-found",
+                "-o",
+                "name",
+            ],
+            None,
+        )
+        if found.strip():
+            raise OperationError(
+                f"the Secret {secret} already exists in {self.sandbox_namespace}: delete it,"
+                " or pass --standing-secret to use it"
+            )
 
     def _logs(self, name: str) -> bytes:
         """A Job's log, or what went wrong reading it: kept in the operator's output."""
@@ -945,7 +981,9 @@ class Operator:
         ]
 
     def apply(self, steps: list[Step]) -> None:
-        """Run the deletion steps in order and stop at the first failure, journaling it."""
+        """Run the deletion steps in order and stop at the first failure, journaling it. An
+        interruption (Ctrl-C, or a signal the command turns into one) during a step is
+        journaled as that step's failure too, then goes on."""
         for step in steps:
             command = step.command
             if step.detail_from is not None:
@@ -959,11 +997,13 @@ class Operator:
             self.out("+ " + " ".join(map(shlex.quote, command)))
             try:
                 output = self.run(command, step.stdin)
-            except OperationError as error:
+            except BaseException as error:
                 if step.on_failure is not None:
                     try:
                         self.run(step.on_failure, None)
                     except OperationError as journal:
+                        if not isinstance(error, OperationError):
+                            raise
                         raise OperationError(
                             f"{error}; and its failure was not journaled: {journal}"
                         ) from error
@@ -1013,6 +1053,9 @@ class CheckpointRow:
     retire: bool = False
     """One of the latest kept checkpoints of an environment the worker records as deleted:
     never a candidate, removed only with ``--retire-checkpoints`` for its environment."""
+    warnings: tuple[str, ...] = ()
+    """What deleting it would lose without being refused, such as the only copy of a
+    restored environment's tree."""
 
 
 @dataclass(frozen=True)
@@ -1279,7 +1322,23 @@ def survey(
         for c in found.checkpoints
         if c.state == "deleting"
     )
+    marks = [_with_warnings(mark, found) for mark in marks]
     return Survey(rows, marks, now, found.environments)
+
+
+def _with_warnings(mark: CheckpointRow, found: CheckpointInventory) -> CheckpointRow:
+    """Warn when the checkpoint is the only copy of a restored environment's tree: the
+    restore's target has no kept checkpoint of its own yet, so its workspace volume would
+    then be the only copy."""
+    warnings = tuple(
+        f"the only checkpoint of environment {r.environment_id}'s restored tree"
+        f" (restore {r.restore_id}); take a checkpoint of it first"
+        for r in found.restores
+        if r.state == "restored"
+        and r.manifest_sha256 == mark.checkpoint.manifest_sha256
+        and not any(c.sandbox == r.sandbox and c.state == "kept" for c in found.checkpoints)
+    )
+    return replace(mark, warnings=warnings) if warnings else mark
 
 
 def _retire_refusals(
@@ -1360,6 +1419,8 @@ def report(found: Survey) -> list[str]:
             verdict = f"retirable (--retire-checkpoints {c.environment_id})"
         else:
             verdict = "candidate"
+        if mark.warnings:
+            verdict += "; WARNING: " + "; ".join(mark.warnings)
         lines.append(
             f"checkpoint {c.manifest_sha256} {c.archive_size} bytes"
             f" age {_age(c.created_at, found.now)}"

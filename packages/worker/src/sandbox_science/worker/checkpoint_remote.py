@@ -14,7 +14,7 @@ from __future__ import annotations
 import io
 import tempfile
 from collections.abc import Iterator
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import BinaryIO, Literal
 
@@ -232,14 +232,22 @@ def expire(
     older_than: timedelta,
     protected: set[str],
     *,
+    stop_at: datetime | None = None,
     timeout: float = 3600,
     clock: Clock = SYSTEM_CLOCK,
 ) -> tuple[int, int]:
     """Remove the upload bucket's objects older than ``older_than`` that ``protected`` does
     not name (the worker's list of what unpromoted checkpoints still need there): manifests
     first, so no manifest is left naming a removed chunk. An object whose time the store
-    does not give is kept. Returns how many were removed and how many kept."""
+    does not give is kept. Nothing is removed at or after ``stop_at`` (the end of the
+    expiry intent's lease, after which checkpoints may run again). Returns how many were
+    removed and how many kept."""
     removed = kept = 0
+    if stop_at is not None:
+        left = (stop_at - clock.now()).total_seconds()
+        if left < 1:
+            raise TimeoutError("the upload expiry's lease has ended; journal a new intent")
+        timeout = min(timeout, left)
     with Objects(settings, timeout=timeout, clock=clock) as objects:
         cutoff = clock.now() - older_than
         kinds: tuple[Literal["chunks", "manifests"], ...] = ("manifests", "chunks")
@@ -248,6 +256,8 @@ def expire(
                 if name in protected or written is None or written >= cutoff:
                     kept += 1
                     continue
+                if stop_at is not None and clock.now() >= stop_at:
+                    raise TimeoutError("the upload expiry's lease ended while it ran")
                 objects.delete(kind, name)
                 removed += 1
     return removed, kept

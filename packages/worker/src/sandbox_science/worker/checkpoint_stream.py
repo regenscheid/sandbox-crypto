@@ -30,7 +30,7 @@ from sandbox_science.contracts.workspace_checkpoint import (
     SkippedKind,
 )
 
-from .checkpoint_tree import TreeIndex
+from .checkpoint_tree import TreeIndex, foreign_lost_found
 
 MAGIC = b"SS-WORKSPACE-CHECKPOINT-1\n"
 CHUNK = 512 * 1024
@@ -197,6 +197,16 @@ def _walk(stream: Stream, db: sqlite3.Connection, directory: int, path: str) -> 
         for entry in entries:
             relative = entry.name if path == "." else path + "/" + entry.name
             info = os.stat(entry.name, dir_fd=directory, follow_symlinks=False)
+            if foreign_lost_found(relative, info):
+                # The filesystem's, which the capture's user cannot read: listed, not read.
+                if stream.skipped is None:
+                    raise ValueError(f"checkpoint source has an unreadable {relative!r}")
+                if len(stream.skipped) >= MAX_CHECKPOINT_SKIPPED:
+                    raise ValueError(
+                        "checkpoint source has more special files than a receipt lists"
+                    )
+                stream.skipped.append(SkippedEntry(path=relative, kind="other"))
+                continue
             if not stat.S_ISDIR(info.st_mode):
                 db.execute(
                     "INSERT INTO observed VALUES (?,?,?)",
@@ -277,7 +287,9 @@ def _unchanged(db: sqlite3.Connection, directory: int, path: str) -> int:
         for entry in entries:
             relative = entry.name if path == "." else path + "/" + entry.name
             info = os.stat(entry.name, dir_fd=directory, follow_symlinks=False)
-            if stat.S_ISDIR(info.st_mode):
+            if foreign_lost_found(relative, info):
+                count += 1  # listed as skipped
+            elif stat.S_ISDIR(info.st_mode):
                 descriptor = os.open(
                     entry.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory
                 )

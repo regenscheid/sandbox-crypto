@@ -834,6 +834,17 @@ class CheckpointRecords:
         """The planned or failed restore writing into this sandbox, if any."""
         return self._open_restore(self.db, environment_id, sandbox, ("planned", "failed"))
 
+    def attempt_has_job(self, restore_id: str, nonce: str) -> bool:
+        """Whether the operator journaled the Job of this attempt (``job``, naming it)."""
+        return (
+            self.db.execute(
+                "SELECT 1 FROM operations WHERE kind='restore' AND subject=? AND phase='job'"
+                " AND json_extract(detail, '$.attempt')=?",
+                (restore_id, nonce),
+            ).fetchone()
+            is not None
+        )
+
     def reading(self, manifest: str) -> str | None:
         """An unfinished restore that reads this checkpoint, if any."""
         row = self.db.execute(
