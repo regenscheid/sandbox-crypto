@@ -40,7 +40,7 @@ import sys
 import tempfile
 import time
 import urllib.parse
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Generator, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from email.parser import HeaderParser
 from pathlib import Path
@@ -1154,6 +1154,16 @@ class State:
             raise
         return descriptor
 
+    def lock_within(self, seconds: float, poll: float = 0.05) -> int | None:
+        """The lock, held exclusively on the returned descriptor; None if it stays held
+        for ``seconds``."""
+        deadline = time.monotonic() + seconds
+        while (descriptor := self.try_lock(exclusive=True)) is None:
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(poll)
+        return descriptor
+
     def wait_lock(self) -> int:
         """The lock, held exclusively on the returned descriptor, once it is free."""
         descriptor = self._open_lock()
@@ -1489,8 +1499,67 @@ def _record_file(path: Path) -> Message | None:
     return cast(Message, record) if isinstance(record, dict) else None
 
 
-def rebase_layer(layer: Path, base: Path, identity: str, revision: str) -> Message | None:
+LAYER_LOCK_WAIT: Final = 60.0
+"""Seconds a starter waits for another to finish moving the layer onto a new base."""
+
+
+class LayerLockError(OSError):
+    """Another process kept the layer's lock for the whole wait."""
+
+
+@contextlib.contextmanager
+def layer_lock(
+    layer: Path, *, wait: float = LAYER_LOCK_WAIT, poll: float = 0.05
+) -> Generator[None]:
+    """Hold the exclusive lock on moving ``layer`` to a new base, waiting up to ``wait`` seconds.
+
+    The lock is a file beside the layer (``.<name>.lock`` in its directory, on the
+    workspace's own file system, where ``flock`` holds between processes), so two executors
+    started on the same workspace, such as after a restart, take turns. Research code can
+    delete the file; the holder checks after locking that the file is still the one it
+    holds, and locks the new one if not. Raises ``LayerLockError`` when the wait ends.
+    """
+    path = layer.with_name(f".{layer.name}.lock")
+    deadline = time.monotonic() + wait
+    flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW
+    while True:
+        descriptor = os.open(path, flags, 0o600)
+        try:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise LayerLockError(
+                        f"another process has been moving {layer} onto a new base for more than"
+                        f" {wait:g} s; try again when it has finished (lock {path})"
+                    ) from None
+                time.sleep(poll)
+                continue
+            try:
+                held = os.stat(path).st_ino == os.fstat(descriptor).st_ino
+            except FileNotFoundError:
+                held = False
+            if not held:
+                continue
+            yield
+            return
+        finally:
+            os.close(descriptor)  # closing it releases the lock
+
+
+def over_another_base(layer: Path, identity: str) -> bool:
+    """Whether the layer's marker names a base other than ``identity``."""
+    marker = _record_file(layer / LAYER_MARKER)
+    return marker is not None and marker.get("identity") != identity
+
+
+def rebase_layer(
+    layer: Path, base: Path, identity: str, revision: str, *, wait: float = LAYER_LOCK_WAIT
+) -> Message | None:
     """Move the layer onto a new image's base; None when it is over this base already.
+
+    Starters take turns (``layer_lock``): one that waited finds the layer moved and returns
+    None. A lock held for longer than ``wait`` seconds raises ``LayerLockError``.
 
     A retained workspace under a rebuilt image keeps its layer, whose copies of the base's
     records, links and copied scripts are the old base's. They are replaced by the new
@@ -1501,6 +1570,16 @@ def rebase_layer(layer: Path, base: Path, identity: str, revision: str) -> Messa
     makes: packages installed in the layer that the new base leaves without a dependency, or
     that stay over the new base's version of the same package.
     """
+    marker = _record_file(layer / LAYER_MARKER)
+    if marker is None or marker.get("identity") == identity:
+        return None
+    with layer_lock(layer, wait=wait):
+        return _move_layer(layer, base, identity, revision)
+
+
+def _move_layer(layer: Path, base: Path, identity: str, revision: str) -> Message | None:
+    """``rebase_layer``'s work, under the layer's lock: the marker is read again, since a
+    starter that held the lock first may have moved the layer."""
     marker = _record_file(layer / LAYER_MARKER)
     if marker is None or marker.get("identity") == identity:
         return None
