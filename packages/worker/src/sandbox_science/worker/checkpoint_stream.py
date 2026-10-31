@@ -371,9 +371,13 @@ def decode(
     *,
     check: Callable[[], None] | None = None,
     tree: TreeIndex | None = None,
+    keep_root: bool = False,
 ) -> StreamSummary:
     """Verify the entire stream; optionally extract into a caller-owned empty directory,
-    and describe the tree into ``tree`` for its digest (checkpoint_tree)."""
+    and describe the tree into ``tree`` for its digest (checkpoint_tree). With
+    ``keep_root``, the target directory's own mode is left as it is: a restore Job's target
+    is a volume's root, which belongs to the volume (its owner, its group and the
+    set-group-ID bit Kubernetes' ``fsGroup`` gives it), not to the checkpoint."""
     stream = Stream(handle, check)
     if stream.read(len(MAGIC)) != MAGIC:
         raise ValueError("unsupported checkpoint archive format")
@@ -435,6 +439,8 @@ def decode(
             for path, mode in db.execute(
                 "SELECT path,mode FROM members WHERE kind='directory' ORDER BY length(path) DESC"
             ):
+                if keep_root and path == ".":
+                    continue
                 directory = target / str(path)
                 descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
                 try:

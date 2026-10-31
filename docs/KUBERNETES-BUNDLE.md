@@ -909,7 +909,7 @@ upload_bucket = "research-checkpoint-upload"
 kept_bucket = "research-checkpoints"
 endpoint = "http://garage.garage.svc.cluster.local:3900"
 run_as_user = 10001        # required, no default: who owns the workspace's files (`ls -ln`),
-run_as_group = 10001       # for checkpoint and restore Jobs alike
+run_as_group = 10001       # and the sandbox Pod's fsGroup; for checkpoint and restore Jobs alike
 # region = "garage", prefix = "sandbox-science", addressing_style = "path"
 # upload_profile = "checkpoint-upload", verify_profile = "checkpoint-verify"
 # restore_secret = "research-checkpoint-restore"   # restore Jobs only; absent, no restore
@@ -1019,9 +1019,15 @@ next use. A restore never writes into an existing environment, so it cannot over
    restore-write` on the trusted worker image, hardened as the checkpoint Job (no
    service-account token, no service links, no `fsGroup`, read-only root, no capabilities,
    `RuntimeDefault` seccomp, pinned to the volume's node), as the same `run_as_user` and
-   `run_as_group` as the checkpoint Job (it refuses a volume whose root another user owns,
-   so a wrong setting fails before anything is removed), with the
-   checkpoint Jobs' labels so the same NetworkPolicy gives it DNS and the store only. It
+   `run_as_group` as the checkpoint Job, with the
+   checkpoint Jobs' labels so the same NetworkPolicy gives it DNS and the store only. An
+   OpenShell workspace volume's root belongs to root, with the sandbox Pod's `fsGroup` as
+   its group, group-writable and set-group-ID (mkfs made it for root; the kubelet's
+   `fsGroup` did the rest), and every file under it to the sandbox user: the Job writes
+   that root through its group, so `run_as_group` must be that `fsGroup`, and never
+   changes the root's owner, group or mode. It also accepts a root its user owns, and
+   refuses any other owner, a root-owned root of another group or one without group
+   write and the set-group-ID bit, so a wrong setting fails before anything is removed. It
    mounts the target's claim **read-write** and the **restore key**'s Secret, read-only on
    the kept bucket; it never sees the upload bucket. It refuses a volume that is neither
    OpenShell's seed of a fresh workspace (the `.openshell-initialized` sentinel and no prefix

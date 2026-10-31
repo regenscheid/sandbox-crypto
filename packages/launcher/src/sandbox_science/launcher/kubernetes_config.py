@@ -630,10 +630,14 @@ class Checkpoint(Model):
     """The sandbox user, who owns the workspace's files, for checkpoint and restore Jobs
     alike: a checkpoint Job reads them as it, so a file the sandbox made unreadable fails
     the checkpoint by name rather than being read with more authority, and a restore Job
-    writes them as it, refusing a volume whose root another user owns. Required, with no
-    default: the research images run as uid 1000 (D77) while the test deployment's sandbox
-    ran as 10001, so the operator confirms the owner (``ls -ln``) and sets it."""
+    writes them as it. Required, with no default: the research images run as uid 1000
+    (D77) while the test deployment's sandbox ran as 10001, so the operator confirms the
+    owner (``ls -ln``) and sets it."""
     run_as_group: Annotated[int, Field(strict=True, ge=1, le=2147483647)]
+    """The sandbox Pod's ``fsGroup`` (OpenShell sets it to the sandbox's group). A workspace
+    volume's root belongs to root with this group, group-writable and set-group-ID, so a
+    restore Job writes it through this group; it refuses a root-owned root of another
+    group."""
     deadline_seconds: Annotated[int, Field(strict=True, ge=60, le=86400)] = 7200
     keep: Annotated[int, Field(strict=True, ge=1, le=100)] = 2
     """Kept checkpoints per workspace; older ones are cleanup candidates, never removed

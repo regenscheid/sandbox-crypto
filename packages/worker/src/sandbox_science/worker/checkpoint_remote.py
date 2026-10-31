@@ -105,7 +105,9 @@ def extract(
 ) -> CheckpointReceipt:
     """``verify``, writing the tree into the empty directory ``target`` as it is read (a
     restore Job); a chunk is checked against its hash before the decoder sees a byte of it,
-    so a failure leaves a partial tree of verified bytes only."""
+    so a failure leaves a partial tree of verified bytes only. The target's own mode is
+    left as it is (``decode(keep_root=True)``): the restore writes a volume's root through
+    its group and never changes it."""
     with (
         Objects(settings, timeout=timeout, clock=clock) as objects,
         tempfile.TemporaryFile() as raw,
@@ -117,7 +119,9 @@ def extract(
             raise ValueError("checkpoint receipt does not state how it was captured")
         entries = _noted(chunks(raw, receipt), chunk_names)
         archive = RemoteArchive(objects, entries)
-        summary = decode(archive, source, target, check=objects.check, tree=tree)
+        summary = decode(
+            archive, source, target, check=objects.check, tree=tree, keep_root=target is not None
+        )
         if next(entries, None) is not None:
             raise ValueError("checkpoint manifest lists chunks past the archive's end")
         if summary != StreamSummary(

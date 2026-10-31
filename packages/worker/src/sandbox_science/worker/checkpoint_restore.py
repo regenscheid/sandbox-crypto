@@ -24,6 +24,7 @@ import asyncio
 import os
 import secrets
 import sqlite3
+import stat
 from collections.abc import Callable
 from contextlib import closing
 from pathlib import Path
@@ -358,6 +359,44 @@ def _read_marker(path: Path) -> str:
         return handle.read(64).decode(errors="replace").strip()
 
 
+FS_GROUP_ROOT = 0o2070
+"""What Kubernetes' ``fsGroup`` gives a volume's root: the set-group-ID bit and group read,
+write and search for the Pod's group."""
+
+
+def check_root(info: os.stat_result, uid: int, gid: int) -> None:
+    """Refuse a target root the restore Job, running as ``uid``/``gid`` with no
+    capabilities, does not own and cannot write through its group.
+
+    An OpenShell workspace volume's root on Kubernetes belongs to root (mkfs made it) with
+    the sandbox Pod's ``fsGroup`` as its group, group-writable and set-group-ID, a fresh
+    one too; every file under it belongs to the sandbox user. The Job writes such a root
+    through its group, so it needs ``run_as_group`` to be that group and never changes the
+    root's owner, group or mode. A root the Job's user owns is written as its owner. Any
+    other owner, or a root-owned root of another group or without group write, is refused
+    before anything is removed."""
+    if not stat.S_ISDIR(info.st_mode):
+        raise ValueError("the target volume's root is not a directory")
+    if info.st_uid == uid:
+        return
+    if info.st_uid != 0:
+        raise ValueError(
+            f"the target volume belongs to uid {info.st_uid} and this Job runs as uid"
+            f" {uid}: set [checkpoint] run_as_user to the sandbox's user"
+        )
+    if info.st_gid != gid:
+        raise ValueError(
+            f"the target volume belongs to root with group {info.st_gid} and this Job runs as"
+            f" group {gid}: set [checkpoint] run_as_group to the sandbox Pod's fsGroup"
+        )
+    if stat.S_IMODE(info.st_mode) & FS_GROUP_ROOT != FS_GROUP_ROOT:
+        raise ValueError(
+            f"the target volume's root has mode {stat.S_IMODE(info.st_mode):o}: a root-owned"
+            " workspace root must be group-readable, group-writable and set-group-ID, as the"
+            " sandbox Pod's fsGroup makes it"
+        )
+
+
 def write(
     root: Path,
     restore: RestorePlan,
@@ -371,13 +410,9 @@ def write(
     seed of a fresh workspace (its sentinel, no prefix identity) nor this restore's own
     earlier attempt (its marker), unless it already holds exactly the plan's tree (an
     earlier attempt finished writing): then it only reports it, with no receipt. Refuses
-    a volume whose root another user owns: the Job must write as the sandbox's user."""
-    owner = os.stat(root, follow_symlinks=False).st_uid
-    if owner != os.getuid():
-        raise ValueError(
-            f"the target volume belongs to uid {owner} and this Job runs as uid"
-            f" {os.getuid()}: set [checkpoint] run_as_user to the sandbox's user"
-        )
+    a root the Job can neither write as its owner nor through its group (``check_root``);
+    the root's own owner, group and mode are never changed."""
+    check_root(os.stat(root, follow_symlinks=False), os.getuid(), os.getgid())
     marker = root / MARKER
     if marker.is_symlink() or (marker.exists() and _read_marker(marker) != restore.restore_id):
         raise ValueError("the target volume carries another restore's marker")

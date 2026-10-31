@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import stat
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
@@ -871,6 +872,49 @@ def test_the_job_refuses_a_volume_another_user_owns(
     with pytest.raises(ValueError, match="run_as_user"):
         checkpoint_restore.write(volume, plan, KEPT)
     assert (volume / "image-docs").exists()
+
+
+def root_info(uid: int, gid: int, mode: int) -> os.stat_result:
+    """A volume root's ``stat`` as the restore Job sees it."""
+    return os.stat_result((stat.S_IFDIR | mode, 2, 1, 3, uid, gid, 4096, 0, 0, 0))
+
+
+SANDBOX_UID, FS_GROUP = 10001, 10001
+
+
+@pytest.mark.parametrize(
+    ("uid", "gid", "mode"),
+    [
+        (0, FS_GROUP, 0o2775),  # as Kubernetes' fsGroup makes an ext4 root mkfs made for root
+        (0, FS_GROUP, 0o2770),
+        (SANDBOX_UID, FS_GROUP, 0o2775),  # the Job's own user
+        (SANDBOX_UID, 0, 0o755),  # owned by the Job's user: written as its owner
+    ],
+)
+def test_the_job_accepts_a_root_it_owns_or_writes_through_its_fs_group(uid, gid, mode):
+    checkpoint_restore.check_root(root_info(uid, gid, mode), SANDBOX_UID, FS_GROUP)
+
+
+@pytest.mark.parametrize(
+    ("uid", "gid", "mode", "message"),
+    [
+        (1000, FS_GROUP, 0o2775, "run_as_user"),  # another user
+        (0, 0, 0o2775, "run_as_group"),  # root's own group
+        (0, 4242, 0o2775, "run_as_group"),  # another fsGroup than the Job's
+        (0, FS_GROUP, 0o0775, "set-group-ID"),  # not as the kubelet makes it
+        (0, FS_GROUP, 0o2755, "group-writable"),  # no group write
+        (0, FS_GROUP, 0o2730, "group-writable"),  # no group read
+    ],
+)
+def test_the_job_refuses_any_other_root(uid, gid, mode, message):
+    with pytest.raises(ValueError, match=message):
+        checkpoint_restore.check_root(root_info(uid, gid, mode), SANDBOX_UID, FS_GROUP)
+
+
+def test_a_root_that_is_no_directory_is_refused():
+    info = os.stat_result((stat.S_IFLNK | 0o777, 2, 1, 1, 0, FS_GROUP, 1, 0, 0, 0))
+    with pytest.raises(ValueError, match="not a directory"):
+        checkpoint_restore.check_root(info, SANDBOX_UID, FS_GROUP)
 
 
 def test_an_open_upload_expiry_keeps_checkpoints_away_until_it_ends(
