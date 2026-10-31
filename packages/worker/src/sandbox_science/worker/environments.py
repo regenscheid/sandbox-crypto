@@ -1206,6 +1206,8 @@ class Environments:
                 return info.state is EnvironmentState.STOPPED
             if self.release is not None:
                 await self.release(environment_id)
+            if not await self._own_sandbox(info, "stop"):
+                return False  # gone: nothing to stop, and its deletion confirms it
             self.records.save(
                 info.model_copy(
                     update={"state": EnvironmentState.STOPPED, "updated_at": self.clock.now()}
@@ -1720,6 +1722,8 @@ class Environments:
                 environment_id, idle_since
             ):
                 return False
+            if not await self._own_sandbox(info, "stop"):
+                return False  # gone: its next use finds out and gives the environment up
             # Recorded first: if the stop fails, or the worker stops during it, the next
             # use reads the sandbox's actual phase, and starts it or carries on.
             self.records.save(
@@ -1757,12 +1761,34 @@ class Environments:
                 return False  # in use, being created, or gone
             if await self._stopped(info, wait=False):
                 return True
+            if not await self._own_sandbox(info, "stop"):
+                return False
             try:
                 await self.cli.run("sandbox", "stop", info.sandbox)
             except WorkerError as error:
                 _log.warning("could not stop sandbox %s again: %s", info.sandbox, error.message)
                 return False
             return await self._stopped(info, wait=True)
+
+    async def _own_sandbox(self, info: EnvironmentInfo, action: str) -> bool:
+        """Before a command that names the environment's sandbox (OpenShell's lifecycle
+        commands take a name, not an ID): whether the gateway shows the sandbox the
+        record names, by its recorded identity. False when no sandbox has the name.
+        Another sandbox under the name, or a record without an identity, refuses: the
+        worker never acts on a sandbox it cannot show is its own. Read just before the
+        command, after any other await."""
+        document = await self.cli.sandbox(info.sandbox)
+        if document is None:
+            return False
+        found = document.get("id")
+        if info.sandbox_id is None or found != info.sandbox_id:
+            raise WorkerError(
+                ErrorKind.UNAVAILABLE,
+                f"sandbox {info.sandbox} is {found or 'without an identity'}, not environment"
+                f" {info.environment_id}'s {info.sandbox_id or '(identity unknown)'}; refusing"
+                f" to {action} another sandbox under its name",
+            )
+        return True
 
     async def _stopped(self, info: EnvironmentInfo, *, wait: bool) -> bool:
         """Whether OpenShell has the environment's own sandbox stopped; with ``wait``,
@@ -2074,6 +2100,9 @@ class Environments:
         """Replace the sandbox's network sections, keeping the static sections it reports."""
         filesystem, landlock = await self._live_static(info.sandbox)
         check_dispatch()
+        if not await self._own_sandbox(info, "change the policy of"):
+            raise WorkerError(ErrorKind.UNAVAILABLE, f"sandbox {info.sandbox} is gone")
+        check_dispatch()  # again: the identity read was an await
         document = compiled.policy.with_static(filesystem, landlock)
         path = self._write(info.environment_id, revision, document.to_yaml())
         await self.cli.run(

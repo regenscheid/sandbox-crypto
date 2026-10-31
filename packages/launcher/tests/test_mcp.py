@@ -220,6 +220,22 @@ def test_a_proxy_sandbox_recorded_without_an_id_goes_only_by_its_name(
     assert sandboxes(mcp["state"]) == theirs
 
 
+def test_a_proxy_sandbox_name_another_sandbox_reused_is_left_alone(
+    mcp: dict[str, Any],
+) -> None:
+    launcher = mcp["launch"](command="prepare")
+    assert launcher.finish() == 0
+    layout = Layout(load_config(launcher.config).state_dir)
+    left_behind(layout, "left-id")
+    reused = {LEFT: {"id": "someone-elses", "phase": "Ready", "image": "x"}}
+    mcp["state"].write_text(json.dumps({"providers": ["crypto-research-mcp"], "sandboxes": reused}))
+    stopped = launcher.command("down")
+    assert stopped.returncode == 0
+    assert f"left the sandbox {LEFT} alone: it is someone-elses" in stopped.stdout
+    assert sandboxes(mcp["state"]) == reused
+    assert not (layout.mcp / "sandbox.json").exists()
+
+
 MISSING = "status: 'Some requested entity was not found', self: \"sandbox not found\""
 """How OpenShell 0.1.5's CLI (tonic 0.14) shows the gateway's NotFound for a name."""
 
