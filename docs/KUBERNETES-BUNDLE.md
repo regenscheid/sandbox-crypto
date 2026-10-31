@@ -1116,7 +1116,9 @@ checkpoints are listed for retirement like a deleted environment's (`--retire-ch
 ENV`): the environment is bound to another sandbox now, so their workspace is gone from it.
 When the checkpoint a restore wrote is the only copy of that environment's tree (it has no
 kept checkpoint of its own yet), cleanup's listing adds a `WARNING` to it: take a
-checkpoint of the restored environment before retiring or deleting it.
+checkpoint of the restored environment before retiring or deleting it. Once the worker
+records that environment deleted, or its ID bound to another sandbox, its restored tree is
+gone and the warning is left out.
 
 When restoring by hand from the printed steps, verify only with the digest and attempt the
 latest Job printed: the worker refuses a report of an earlier attempt, and one whose Job was

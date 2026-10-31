@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
@@ -40,6 +40,7 @@ from .test_kubernetes_checkpoint import (
 from .test_kubernetes_site import site_file
 
 RESTORE_SECRET = "research-checkpoint-restore"
+State = Literal["creating", "ready", "stopped", "deleted"]
 TARGET_SANDBOX = "ss-fedcba9876543210"
 MANIFEST = "e" * 64
 TREE = "7" * 64
@@ -630,7 +631,7 @@ def test_retiring_the_only_copy_of_a_restored_tree_is_warned_about():
 
     from .test_kubernetes_checkpoint import environment, kept
 
-    def lines(own_checkpoint: bool) -> list[str]:
+    def lines(own_checkpoint: bool, now: tuple[str, State] = ("ss-new", "ready")) -> list[str]:
         checkpoints = [
             kept("ss-old", n).model_copy(update={"environment_id": "e-old"}) for n in (1, 2)
         ]
@@ -639,7 +640,7 @@ def test_retiring_the_only_copy_of_a_restored_tree_is_warned_about():
         inventory_ = CheckpointInventory(
             generated_at=NOW,
             keep=2,
-            environments=(environment("e-old", "ss-new", "ready"),),
+            environments=(environment("e-old", *now),),
             checkpoints=tuple(checkpoints),
             holds=(),
             restores=(
@@ -659,3 +660,8 @@ def test_retiring_the_only_copy_of_a_restored_tree_is_warned_about():
     assert f"{2:064x}" in warned[0]
     assert "take a checkpoint of it first" in warned[0]
     assert not any("WARNING" in line for line in lines(True))
+    # Once the restored environment is deleted, or its ID bound to another sandbox, its
+    # restored tree is gone: nothing is left to take a checkpoint of.
+    assert not any("WARNING" in line for line in lines(False, ("ss-new", "deleted")))
+    assert not any("WARNING" in line for line in lines(False, ("ss-newer", "ready")))
+    assert any("WARNING" in line for line in lines(False, ("ss-new", "stopped")))

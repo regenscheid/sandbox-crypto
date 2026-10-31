@@ -1341,7 +1341,15 @@ def survey(
 def _with_warnings(mark: CheckpointRow, found: CheckpointInventory) -> CheckpointRow:
     """Warn when the checkpoint is the only copy of a restored environment's tree: the
     restore's target has no kept checkpoint of its own yet, so its workspace volume would
-    then be the only copy."""
+    then be the only copy. Not once the worker records that environment deleted, or bound
+    to another sandbox since: its restored workspace is gone, and there is nothing left to
+    take a checkpoint of."""
+    gone = {
+        (info.environment_id, info.sandbox)
+        for info in found.environments
+        if info.state == "deleted"
+    }
+    current = {info.environment_id: info.sandbox for info in found.environments}
     warnings = tuple(
         f"the only checkpoint of environment {r.environment_id}'s restored tree"
         f" (restore {r.restore_id}); take a checkpoint of it first"
@@ -1349,6 +1357,8 @@ def _with_warnings(mark: CheckpointRow, found: CheckpointInventory) -> Checkpoin
         if r.state == "restored"
         and r.manifest_sha256 == mark.checkpoint.manifest_sha256
         and not any(c.sandbox == r.sandbox and c.state == "kept" for c in found.checkpoints)
+        and (r.environment_id, r.sandbox) not in gone
+        and current.get(r.environment_id, r.sandbox) == r.sandbox
     )
     return replace(mark, warnings=warnings) if warnings else mark
 
