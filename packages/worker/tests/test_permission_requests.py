@@ -117,11 +117,18 @@ async def test_a_projects_network_and_package_requests_are_listed_with_their_car
         purpose="the agent's words", asked="Conda: x",
     )  # fmt: skip
     escalate(sink, RequestKey.http("sbx-2", DIGEST, "GET", "other.org", 443, "/"))  # p2's
+    refs = "/lab/none.git/info/refs"
+    push = escalate(
+        sink, RequestKey.http("sbx-1", DIGEST, "GET", "git.org", 443, refs), caller_kind="code",
+        summary={"method": "GET", "host": "git.org", "port": 443, "path": refs, "size": 0,
+                 "git_service": "receive-pack"},
+    )  # fmt: skip
     listed = await client.get("/v1/permission-requests?project=p1", headers=headers("workspace"))
     assert listed.status == 200, await listed.text()
     requests = (await listed.json())["requests"]
-    assert [item["seq"] for item in requests] == [first, second, third]
-    network, download, install = requests
+    assert [item["seq"] for item in requests] == [first, second, third, push]
+    network, download, install, git = requests
+    assert (git["http"]["git_service"], network["http"]["git_service"]) == ("receive-pack", None)
     assert (network["kind"], network["caller_kind"], network["max_grant"]) == (
         "network", "code", "once",
     )  # fmt: skip

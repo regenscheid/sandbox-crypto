@@ -69,3 +69,28 @@ describe('titles and grant labels', () => {
     );
   });
 });
+
+describe('git requests', () => {
+  it('say whether research code pushes or fetches', () => {
+    const http = {
+      method: 'GET',
+      host: 'git.example.org',
+      port: 443,
+      path: '/lab/none.git/info/refs',
+      size: 0,
+      content_type: null,
+      fields: {},
+      git_service: 'receive-pack' as const,
+    };
+    const push: PendingApproval = { ...base, kind: 'network', caller_kind: 'code', http };
+    expect(cardTitle(push)).toBe('Let research code git push to git.example.org?');
+    expect(summaryRows(push)[0]).toEqual(['Git', 'push (git-receive-pack)']);
+    const fetch = { ...push, http: { ...http, git_service: 'upload-pack' as const } };
+    expect(cardTitle(fetch)).toBe('Let research code git fetch from git.example.org?');
+    expect(summaryRows(fetch)[0]).toEqual(['Git', 'fetch (git-upload-pack)']);
+    // Any other request is shown by its method, as before.
+    const plain = { ...push, http: { ...http, git_service: null } };
+    expect(cardTitle(plain)).toBe('Let research code GET git.example.org?');
+    expect(summaryRows(plain)[0]).toEqual(['Method', 'GET']);
+  });
+});

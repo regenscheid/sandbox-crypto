@@ -44,6 +44,8 @@ class HttpSummary(Contract):
     content_type: Text | None = None
     fields: dict[Text, Text] = Field(default_factory=dict[str, str], max_length=20)
     """A JSON body's top-level fields, each value truncated."""
+    git_service: Literal["upload-pack", "receive-pack"] | None = None
+    """A git request's service: ``receive-pack`` pushes, ``upload-pack`` fetches."""
 
 
 class PackageSource(Contract):

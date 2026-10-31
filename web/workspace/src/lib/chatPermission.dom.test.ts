@@ -60,6 +60,7 @@ const network: PendingApproval = {
     port: 443,
     path: '/v1/items',
     size: 41,
+    git_service: null,
     content_type: 'application/json',
     fields: { title: 'A draft', tags: '[2 items]' },
   },

@@ -1368,8 +1368,9 @@ def _callable_page(
 
 def _http_card(facts: HttpRequestFacts, operation: Operation | None) -> dict[str, object]:
     """What an escalated request's card shows and its grants compare (D97): research code
-    asked; its method, host, path, content type and size, and a JSON body's top-level
-    fields, never the body; the widest grant for it; and for a package file, which."""
+    asked; its method, host, path, content type and size, a git request's service, and a
+    JSON body's top-level fields, never the body; the widest grant for it; and for a
+    package file, which."""
     types = _header_values(facts.headers, "content-type")
     card: dict[str, object] = {
         "caller_kind": "code",
@@ -1380,6 +1381,7 @@ def _http_card(facts: HttpRequestFacts, operation: Operation | None) -> dict[str
             facts.path,
             types[0] if len(types) == 1 else None,
             facts.body,
+            operation.service if isinstance(operation, GitOperation) else None,
         ),
         "max_grant": network_max_grant(facts.method).value,
     }
