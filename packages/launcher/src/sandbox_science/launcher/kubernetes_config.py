@@ -617,11 +617,6 @@ class Checkpoint(Model):
     and ``config``): read-only on the kept bucket, mounted only by restore Jobs. Absent,
     no restore Job can be rendered. The operator creates it, for good or for a restore."""
     restore_profile: Annotated[str, StringConstraints(pattern=_PROFILE)] = "checkpoint-restore"
-    restore_run_as_user: Annotated[int, Field(strict=True, ge=1, le=2147483647)] = 1000
-    """Who the restore Job writes as: the owner the sandbox's files need, uid 1000 in the
-    research images (D77, docs/IMAGES.md). The Job refuses a volume whose root another
-    user owns; confirm the owner in qualification and set both this and ``run_as_user``."""
-    restore_run_as_group: Annotated[int, Field(strict=True, ge=1, le=2147483647)] = 1000
     upload_bucket: Annotated[str, StringConstraints(pattern=_BUCKET)]
     kept_bucket: Annotated[str, StringConstraints(pattern=_BUCKET)]
     prefix: Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9._-]{1,64}$")] = "sandbox-science"
@@ -631,11 +626,14 @@ class Checkpoint(Model):
     object_store: Egress
     """The object store's Pods and port: the Job's only peer besides DNS, and the pool's,
     whose worker verifies there."""
-    run_as_user: Annotated[int, Field(strict=True, ge=1, le=2147483647)] = 10001
-    """The sandbox user, who owns the workspace's files: the Job reads them as it, so a
-    file the sandbox made unreadable fails the checkpoint by name rather than being read
-    with more authority."""
-    run_as_group: Annotated[int, Field(strict=True, ge=1, le=2147483647)] = 10001
+    run_as_user: Annotated[int, Field(strict=True, ge=1, le=2147483647)]
+    """The sandbox user, who owns the workspace's files, for checkpoint and restore Jobs
+    alike: a checkpoint Job reads them as it, so a file the sandbox made unreadable fails
+    the checkpoint by name rather than being read with more authority, and a restore Job
+    writes them as it, refusing a volume whose root another user owns. Required, with no
+    default: the research images run as uid 1000 (D77) while the test deployment's sandbox
+    ran as 10001, so the operator confirms the owner (``ls -ln``) and sets it."""
+    run_as_group: Annotated[int, Field(strict=True, ge=1, le=2147483647)]
     deadline_seconds: Annotated[int, Field(strict=True, ge=60, le=86400)] = 7200
     keep: Annotated[int, Field(strict=True, ge=1, le=100)] = 2
     """Kept checkpoints per workspace; older ones are cleanup candidates, never removed

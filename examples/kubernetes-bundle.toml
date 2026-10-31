@@ -186,7 +186,9 @@ scratch_mib = 512
 # kept_bucket = "research-checkpoints"
 # endpoint = "http://garage.garage.svc.cluster.local:3900"
 # # region = "garage"; prefix = "sandbox-science"; addressing_style = "path"
-# # keep = 2; deadline_seconds = 7200; hold_seconds = 21600; run_as_user = 10001
+# run_as_user = 10001        # required: who owns the workspace's files (`ls -ln`), for
+# run_as_group = 10001       # checkpoint and restore Jobs alike; no default
+# # keep = 2; deadline_seconds = 7200; hold_seconds = 21600
 #
 # [checkpoint.object_store]
 # ports = [3900]

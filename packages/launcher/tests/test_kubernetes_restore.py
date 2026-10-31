@@ -6,6 +6,7 @@ failure, resume, discard), and cleanup's upload expiry."""
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -83,7 +84,9 @@ def test_the_restore_job_writes_the_targets_claim_with_a_read_only_key_and_no_to
     pod_spec = job["spec"]["template"]["spec"]
     assert pod_spec["automountServiceAccountToken"] is False
     assert "fsGroup" not in pod_spec["securityContext"]
-    assert pod_spec["securityContext"]["runAsUser"] == 1000  # the research images' sandbox user
+    # One setting for both Jobs: the restore writes as the checkpoint Job reads.
+    assert pod_spec["securityContext"]["runAsUser"] == 10001
+    assert container_user(job) == (10001, 10001)
     assert pod_spec["nodeSelector"] == {"kubernetes.io/arch": "amd64"}
     terms = pod_spec["affinity"]["nodeAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"]
     assert terms["nodeSelectorTerms"][0]["matchFields"][0]["values"] == ["node-b"]
@@ -200,9 +203,17 @@ def restore_run(**answers: bytes | Exception) -> tuple[Kubectl, list[str], Opera
     return kubectl, printed, operator
 
 
-def test_one_restore_command_plans_creates_journals_waits_and_has_the_worker_verify():
+def restore_key(tmp_path: Path) -> Path:
+    key = tmp_path / "checkpoint-restore"
+    key.mkdir()
+    for part in ("credentials", "config"):
+        (key / part).write_text(f"# test-secret-restore-{part}\n")
+    return key
+
+
+def test_one_restore_command_plans_creates_journals_waits_and_has_the_worker_verify(tmp_path):
     kubectl, printed, operator = restore_run()
-    key = Path("secrets/checkpoint-restore")
+    key = restore_key(tmp_path)
     assert operator.run_restore(MANIFEST, "crypto-restored", key=key) == a_restore()
     order = [
         "checkpoint restore-plan",
@@ -246,7 +257,7 @@ def test_one_restore_command_plans_creates_journals_waits_and_has_the_worker_ver
 
 
 @pytest.mark.parametrize("failure", ["mounted", "job-failed", "verify-refused"])
-def test_a_failed_restore_is_journaled_and_its_target_stays_held(failure):
+def test_a_failed_restore_is_journaled_and_its_target_stays_held(failure, tmp_path):
     answers: dict[str, bytes | Exception] = {}
     if failure == "mounted":
         answers["get pods"] = listing(pod(f"workspace-default--{TARGET_SANDBOX}"))
@@ -256,7 +267,7 @@ def test_a_failed_restore_is_journaled_and_its_target_stays_held(failure):
         answers["restore-verify"] = OperationError("the restored tree differs")
     kubectl, printed, operator = restore_run(**answers)
     with pytest.raises(OperationError, match="--resume rst-a") as raised:
-        operator.run_restore(MANIFEST, "crypto-restored", key=Path("keys"))
+        operator.run_restore(MANIFEST, "crypto-restored", key=restore_key(tmp_path))
     assert "held stopped" in str(raised.value)
     assert len(kubectl.ran("--phase failed")) == 1
     assert not kubectl.ran("release-hold")  # a restore's hold has no early release
@@ -278,9 +289,9 @@ def test_a_report_from_another_attempt_is_not_passed_on():
     assert not kubectl.ran("restore-verify")
 
 
-def test_a_secret_that_cannot_be_deleted_is_reported_loudly():
+def test_a_secret_that_cannot_be_deleted_is_reported_loudly(tmp_path):
     _, printed, operator = restore_run(**{"delete secret": OperationError("forbidden")})
-    operator.run_restore(MANIFEST, "crypto-restored", key=Path("keys"))
+    operator.run_restore(MANIFEST, "crypto-restored", key=restore_key(tmp_path))
     assert any("delete it by hand" in line for line in printed)
 
 
@@ -475,3 +486,114 @@ def test_after_a_restore_the_old_sandboxs_checkpoints_are_retirable_unless_one_i
             found("planned"), [], [], without_checkpoint=[], keeper_kept=None, retire=["e-old"]
         )
     assert not any(m.refusals for m in found("restored").checkpoints)
+
+
+def container_user(job: dict[str, Any]) -> tuple[int, int]:
+    context = job["spec"]["template"]["spec"]["containers"][0]["securityContext"]
+    return context["runAsUser"], context["runAsGroup"]
+
+
+def test_the_jobs_user_is_required_explicitly():
+    from pydantic import ValidationError
+
+    from sandbox_science.launcher.kubernetes_config import BundleConfig
+
+    for missing in ("run_as_user", "run_as_group"):
+        data = with_checkpoint()
+        del data["checkpoint"][missing]
+        with pytest.raises(ValidationError, match=missing):
+            BundleConfig.model_validate_json(json.dumps(data))
+
+
+def test_the_restore_key_and_the_secrets_absence_are_checked_before_planning(tmp_path):
+    kubectl, _, operator = restore_run()
+    with pytest.raises(OperationError, match="credentials cannot be read"):
+        operator.run_restore(MANIFEST, "crypto-restored", key=tmp_path / "missing")
+    assert not kubectl.ran("restore-plan")
+    key = restore_key(tmp_path)
+    kubectl, _, operator = restore_run(
+        **{f"get secret {RESTORE_SECRET}": f"secret/{RESTORE_SECRET}\n".encode()}
+    )
+    with pytest.raises(OperationError, match="already exists"):
+        operator.run_restore(MANIFEST, "crypto-restored", key=key)
+    assert not kubectl.ran("restore-plan")
+
+
+def test_the_restore_steps_warn_against_an_earlier_jobs_digest():
+    _, _, operator = restore_run()
+    steps = "\n".join(operator.restore_steps(MANIFEST, "crypto-restored"))
+    assert "never one from an earlier Job's log" in steps
+
+
+def test_an_interrupted_step_journals_its_failure(tmp_path):
+    kubectl = Kubectl(
+        {"upload-expiry --phase intent": b"expiry_intent_at=2026-10-31T12:00:00+00:00\n"}
+    )
+
+    def run(arguments: Sequence[str], stdin: bytes | None) -> bytes:
+        output = kubectl(arguments, stdin)
+        if "expire-objects" in arguments:
+            raise KeyboardInterrupt  # Ctrl-C while the keeper key deletes
+        return output
+
+    operator = Operator(configured(), "test-operator", run=run, out=lambda _l: None)
+    steps = operator.expire_uploads(168, Path("operator/checkpoint-upload.toml"), tmp_path)
+    with pytest.raises(KeyboardInterrupt):
+        operator.apply(steps)
+    assert kubectl.ran("upload-expiry --phase failed")
+    assert not kubectl.ran("upload-expiry --phase done")
+
+
+def test_a_termination_signal_becomes_an_interruption():
+    import os
+    import signal
+    import time
+
+    def terminated() -> None:
+        os.kill(os.getpid(), signal.SIGTERM)
+        time.sleep(5)  # the handler interrupts this at once
+
+    before = signal.getsignal(signal.SIGTERM)
+    with kubernetes_cli._signals_interrupt(), pytest.raises(KeyboardInterrupt, match="SIGTERM"):
+        terminated()
+    assert signal.getsignal(signal.SIGTERM) is before
+
+
+def test_retiring_the_only_copy_of_a_restored_tree_is_warned_about():
+    from sandbox_science.contracts.workspace_checkpoint import (
+        CheckpointInventory,
+        InventoryRestore,
+    )
+    from sandbox_science.launcher.kubernetes_operations import report, survey
+
+    from .test_kubernetes_checkpoint import environment, kept
+
+    def lines(own_checkpoint: bool) -> list[str]:
+        checkpoints = [
+            kept("ss-old", n).model_copy(update={"environment_id": "e-old"}) for n in (1, 2)
+        ]
+        if own_checkpoint:
+            checkpoints.append(kept("ss-new", 3).model_copy(update={"environment_id": "e-old"}))
+        inventory_ = CheckpointInventory(
+            generated_at=NOW,
+            keep=2,
+            environments=(environment("e-old", "ss-new", "ready"),),
+            checkpoints=tuple(checkpoints),
+            holds=(),
+            restores=(
+                InventoryRestore(
+                    restore_id="rst-" + "a" * 24,
+                    environment_id="e-old",
+                    sandbox="ss-new",
+                    manifest_sha256=f"{2:064x}",
+                    state="restored",
+                ),
+            ),
+        )
+        return report(survey([], [], [], [], inventory_, SANDBOXES, NOW))
+
+    warned = [line for line in lines(False) if "WARNING" in line]
+    assert len(warned) == 1
+    assert f"{2:064x}" in warned[0]
+    assert "take a checkpoint of it first" in warned[0]
+    assert not any("WARNING" in line for line in lines(True))

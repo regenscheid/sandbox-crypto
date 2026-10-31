@@ -29,9 +29,18 @@ from sandbox_science.contracts.workspace_checkpoint import MAX_CHECKPOINT_DEPTH
 
 READ = 512 * 1024
 SYMLINK_MODE = 0o777
+LOST_FOUND = "lost+found"
 PRIVILEGE_BITS = 0o6000
 """Set-user-ID and set-group-ID: a restore never writes them (``decode``), so the digest
 leaves them out on both sides."""
+
+
+def foreign_lost_found(path: str, info: os.stat_result) -> bool:
+    """A ``lost+found`` directory at the volume's root that another user owns (ext4 makes
+    it for root): the filesystem's, not the workspace's. Captures leave it out and list it,
+    a restore's digest ignores it and emptying a target keeps it, since the Job's user can
+    neither read nor remove it."""
+    return path == LOST_FOUND and stat.S_ISDIR(info.st_mode) and info.st_uid != os.geteuid()
 
 
 class TreeIndex:
@@ -136,6 +145,8 @@ def _walk(tree: TreeIndex, directory: int, path: str, exclude: frozenset[str], d
             continue
         relative = name if path == "." else f"{path}/{name}"
         info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+        if foreign_lost_found(relative, info):
+            continue
         if stat.S_ISDIR(info.st_mode):
             child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
             try:
@@ -195,14 +206,16 @@ def _remove(parent: int, name: str, device: int, path: str, depth: int) -> None:
 
 
 def clear(root: Path, *, keep: frozenset[str]) -> None:
-    """Empty ``root`` except the entries ``keep`` names, never following a link and never
+    """Empty ``root`` except the entries ``keep`` names and a foreign root ``lost+found``,
+    never following a link and never
     leaving its filesystem; a directory the restore's user owns but cannot write is made
     writable first. Any entry it cannot remove fails it, naming the entry."""
     descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         device = os.fstat(descriptor).st_dev
         for name in [entry.name for entry in os.scandir(descriptor)]:
-            if name not in keep:
+            info = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+            if name not in keep and not foreign_lost_found(name, info):
                 _remove(descriptor, name, device, name, 1)
         os.fsync(descriptor)
     finally:

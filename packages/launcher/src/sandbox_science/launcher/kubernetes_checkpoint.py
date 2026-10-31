@@ -199,7 +199,7 @@ def restore_job(
         profile=checkpoint.restore_profile,
         node=node,
         architecture=plan.target.architecture,
-        user=(checkpoint.restore_run_as_user, checkpoint.restore_run_as_group),
+        user=(checkpoint.run_as_user, checkpoint.run_as_group),
     )
 
 

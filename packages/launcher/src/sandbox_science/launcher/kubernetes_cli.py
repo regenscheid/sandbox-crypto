@@ -7,12 +7,14 @@ cleanup commands, which run ``kubectl`` with the operator's credentials only whe
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import shlex
+import signal
 import sys
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Generator, Sequence
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -141,6 +143,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         except (BundleError, OperationError, ValidationError, ValueError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
+        except KeyboardInterrupt as exc:
+            print(
+                f"interrupted ({exc or 'Ctrl-C'}); a step under way journaled its failure"
+                " where it has one",
+                file=sys.stderr,
+            )
+            return 130
     try:
         if args.command in ("checkpoint-job", "restore-job"):
             try:
@@ -220,7 +229,36 @@ def _keeper_ready(operator: Operator) -> None:
         ) from None
 
 
+class Interrupted(KeyboardInterrupt):
+    """A termination signal, turned into an interruption so the step under way is journaled
+    as failed (``Operator.apply``) or a restore's failure recorded, instead of the process
+    simply ending."""
+
+
+@contextlib.contextmanager
+def _signals_interrupt() -> Generator[None]:
+    def interrupt(number: int, _frame: object) -> None:
+        raise Interrupted(f"signal {signal.Signals(number).name}")
+
+    previous = {number: signal.signal(number, interrupt) for number in _SIGNALS}
+    try:
+        yield
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+
+
+_SIGNALS = (signal.SIGTERM, signal.SIGHUP)
+
+
 def _operate(args: argparse.Namespace) -> int:
+    if args.apply:
+        with _signals_interrupt():
+            return _operate_now(args)
+    return _operate_now(args)
+
+
+def _operate_now(args: argparse.Namespace) -> int:
     config = load(args.config)
     kubectl = ("kubectl", *(("--context", args.context) if args.context else ()))
     actor = args.operator or (whoami(run_command, kubectl) if args.apply else "OPERATOR")

@@ -982,8 +982,10 @@ indexes. Explicit limits are one million members, 256 MiB of member metadata,
 content and provenance are checksummed. Regular files, directories, modes, symlink
 text and existing hardlink topology survive; links are never followed out of the
 tree. Sockets, FIFOs and devices are left out and listed in the receipt (at most
-1,000; more fail the capture), since they hold no data a restore could recreate; a
-regular file the reader cannot open fails the capture, naming it. Ownership becomes the invoking operator's;
+1,000; more fail the capture), since they hold no data a restore could recreate, and so is
+a `lost+found` directory at the root that another user owns (the filesystem's, kind
+`other`), which a restore also leaves in place; a regular file the reader cannot open fails
+the capture, naming it. Restores never set set-user-ID or set-group-ID bits. Ownership becomes the invoking operator's;
 timestamps, extended attributes and ACLs are outside this format. The initialized
 workspace sentinel and required native prefix marker must match the retained state.
 Source metadata is checked during reads and again after the whole capture.
@@ -1100,11 +1102,11 @@ the worker's part in its container, beside the serving worker, with
 | `restore-plan --manifest H --target ENV --storage F --by WHO` (or `--resume ID`) | worker container | Reads the kept checkpoint back in full and computes its tree digest, creates the target environment (new, or recorded deleted) through its own API, records the restore, which holds the sandbox stopped with no expiry, suspends it and checks nothing has run in it; prints the restore plan. `--resume` prints an unfinished restore's plan again |
 | `restore-attempt --restore-id ID --by WHO` | worker container | A new Job attempt's nonce; only the latest attempt, with no failure after it, is verified |
 | `restore-write --workspace DIR` | the restore Job | Empties the target volume (OpenShell's seed, or this restore's earlier attempt) and writes the checkpoint from the kept bucket (`SS_RESTORE_PLAN`, `SS_RESTORE_ATTEMPT`, `SS_CHECKPOINT_STORAGE`), checking every chunk and never setting set-user-ID or set-group-ID bits; a volume already holding the plan's tree is only reported. Refuses a volume whose root another uid owns. Prints `restore_tree=<sha256> restore_attempt=<nonce>` |
-| `restore-verify --restore-id ID --attempt N --tree H --by WHO` | worker container | Accepts only the current attempt; compares the Job's digest with its own and that the target is still the fresh, stopped sandbox; records `restored` (the sandbox may start) or `failed` (it stays held, the attempt void) |
+| `restore-verify --restore-id ID --attempt N --tree H --by WHO` | worker container | Accepts only the current attempt, once its Job is journaled (`restore-record --phase job` naming the attempt); compares the Job's digest with its own and that the target is still the fresh, stopped sandbox; records `restored` (the sandbox may start) or `failed` (it stays held, the attempt void) |
 | `restore-record --restore-id ID --phase job\|failed --detail JSON --by WHO` | worker container | Journals a restore Job, or a failure outside the worker's checks (the target stays held) |
 | `restore-discard --restore-id ID --reason R --by WHO` | worker container | Ends an unfinished restore, deleting its target environment through its own API only if the environment is still bound to the sandbox the restore created |
 | `upload-expiry --phase intent\|done\|failed --older-than-hours N --by WHO` | worker container | Journals an upload-bucket expiry; the intent is refused while a checkpoint hold or another expiry is open and prints what unpromoted checkpoints still need there; until its end (6 hours at most) checkpoint plans and upload verifications are refused; an end needs its open intent |
-| `expire-objects --storage F --older-than-hours N --protected-file F` | operator's machine | Removes the upload bucket's objects older than N hours that the list does not name, manifests first, within 5 hours |
+| `expire-objects --storage F --older-than-hours N --protected-file F` | operator's machine | Removes the upload bucket's objects older than N hours that the list does not name, manifests first; the list's first line is the intent's time, and it stops 10 minutes before the intent's lease ends |
 | `sdk-check` | operator's machine | Whether this program's interpreter has the S3 SDK the keeper steps need |
 
 The records are `checkpoints.sqlite3` in the worker's state directory (WAL, synchronous

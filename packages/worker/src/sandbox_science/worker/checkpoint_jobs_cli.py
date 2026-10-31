@@ -40,7 +40,7 @@ import os
 import re
 import sqlite3
 import sys
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import cast
 
@@ -50,7 +50,7 @@ from sandbox_science.contracts.workspace_checkpoint import CheckpointPlan, Resto
 
 from . import checkpoint_jobs, checkpoint_remote, checkpoint_restore
 from .checkpoint_capture import capture_upload
-from .checkpoint_records import DEFAULT_KEEP, CheckpointRecords
+from .checkpoint_records import DEFAULT_KEEP, EXPIRY_LEASE, CheckpointRecords
 from .checkpoint_s3 import load, parse
 from .checkpoint_transport import MAX_CHUNKS
 from .errors import WorkerError
@@ -260,14 +260,24 @@ def _restore_write(args: argparse.Namespace) -> int:
     return 0
 
 
-def _protected(path: Path) -> set[str]:
+INTENT_LINE = "expiry_intent_at="
+
+
+def _protected(path: Path) -> tuple[datetime, set[str]]:
+    """The intent's time (its first line) and the names the expiry must keep."""
     raw = path.read_bytes()
-    if len(raw) > 65 * 4 * MAX_CHUNKS:
+    if len(raw) > 65 * 4 * MAX_CHUNKS + 128:
         raise ValueError("the protected list exceeds its bound")
-    names = raw.decode().split()
+    first, _, rest = raw.decode().partition("\n")
+    if not first.startswith(INTENT_LINE):
+        raise ValueError("the protected list does not begin with its expiry intent's time")
+    intent = datetime.fromisoformat(first.removeprefix(INTENT_LINE))
+    if intent.tzinfo is None:
+        raise ValueError("the expiry intent's time has no time zone")
+    names = rest.split()
     if any(re.fullmatch(r"[0-9a-f]{64}", name) is None for name in names):
         raise ValueError("the protected list holds something other than SHA-256 digests")
-    return set(names)
+    return intent, set(names)
 
 
 def _restore(args: argparse.Namespace, settings: Settings) -> int:
@@ -312,7 +322,11 @@ def _restore(args: argparse.Namespace, settings: Settings) -> int:
         detail = {**_detail(args.detail), "older_than_hours": args.older_than_hours}
         records = CheckpointRecords(settings.state_dir)
         try:
-            for name in records.upload_expiry(args.phase, SYSTEM_CLOCK.now(), args.actor, detail):
+            now = SYSTEM_CLOCK.now()
+            names = records.upload_expiry(args.phase, now, args.actor, detail)
+            if args.phase == "intent":
+                print(f"{INTENT_LINE}{now.isoformat()}")
+            for name in names:
                 print(name)
         finally:
             records.close()
@@ -334,11 +348,13 @@ def run(args: argparse.Namespace) -> int:
         if command == "expire-objects":
             if not 1 <= args.timeout <= MAX_EXPIRY_SECONDS:
                 raise ValueError(f"--timeout is 1 to {MAX_EXPIRY_SECONDS} seconds here")
-            protected = _protected(args.protected_file)
+            intent, protected = _protected(args.protected_file)
             removed, kept = checkpoint_remote.expire(
                 load(args.storage),
                 timedelta(hours=args.older_than_hours),
                 protected,
+                # A margin under the lease, for the clocks of two machines.
+                stop_at=intent + EXPIRY_LEASE - timedelta(minutes=10),
                 timeout=args.timeout,
             )
             # Kept counts the young objects and those of checkpoints verified but not yet

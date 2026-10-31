@@ -118,6 +118,15 @@ def restore_plan(settings: Settings, manifest: str, **options: Any) -> RestorePl
     )
 
 
+def attempted(settings: Settings, restore_id: str, actor: str) -> str:
+    """A new attempt, with its Job journaled as the operator's command does."""
+    nonce = checkpoint_restore.attempt(settings, restore_id, actor)
+    checkpoint_restore.record(
+        settings, restore_id, "job", actor, {"job": "research-restore-t", "attempt": nonce}
+    )
+    return nonce
+
+
 def blocked(settings: Settings, environment: str = TARGET) -> bool:
     try:
         begin_start(settings.state_dir, environment, datetime.now(UTC), TARGET_SANDBOX)
@@ -178,7 +187,7 @@ def test_a_kept_checkpoint_is_restored_into_a_fresh_held_environment(
             planned_like(retained, TARGET), datetime.now(UTC), "op"
         )
     volume = seeded(tmp_path / "target")
-    nonce = checkpoint_restore.attempt(retained, plan.restore_id, "test-operator")
+    nonce = attempted(retained, plan.restore_id, "test-operator")
     tree, receipt = checkpoint_restore.write(volume, plan, KEPT)
     assert receipt is not None
     assert receipt.members > 5
@@ -198,6 +207,7 @@ def test_a_kept_checkpoint_is_restored_into_a_fresh_held_environment(
     assert journal == [
         ("restore", "intent", "test-operator"),
         ("restore", "attempt", "test-operator"),
+        ("restore", "job", "test-operator"),
         ("restore", "verified", "test-operator"),
     ]
 
@@ -229,7 +239,7 @@ def test_a_wrong_tree_fails_keeps_the_target_held_and_a_retry_finishes(
 ):
     identity, original = kept_checkpoint(tmp_path, retained)
     plan = restore_plan(retained, identity)
-    nonce = checkpoint_restore.attempt(retained, plan.restore_id, "op")
+    nonce = attempted(retained, plan.restore_id, "op")
     with pytest.raises(RecordError, match="differs"):
         checkpoint_restore.verify(retained, plan.restore_id, nonce, "0" * 64, "op")
     assert blocked(retained)
@@ -245,11 +255,11 @@ def test_a_wrong_tree_fails_keeps_the_target_held_and_a_retry_finishes(
     garage.unavailable.clear()
     again = checkpoint_restore.resume(retained, plan.restore_id, "op")
     assert again == plan
-    first = checkpoint_restore.attempt(retained, plan.restore_id, "op")
+    first = attempted(retained, plan.restore_id, "op")
     tree, _ = checkpoint_restore.write(volume, again, KEPT)
     assert tree == describe(original)
     # A later attempt supersedes an earlier one's report.
-    latest = checkpoint_restore.attempt(retained, plan.restore_id, "op")
+    latest = attempted(retained, plan.restore_id, "op")
     with pytest.raises(RecordError, match="current Job attempt"):
         checkpoint_restore.verify(retained, plan.restore_id, first, tree, "op")
     # The volume is complete and its prefix has an identity: the retry only reports it.
@@ -441,7 +451,7 @@ def test_the_restore_job_command_reads_its_plan_and_storage_from_its_environment
     volume = seeded(tmp_path / "target")
     assert main(["checkpoint", "restore-write", "--workspace", str(volume)]) == 1
     assert "SS_RESTORE_ATTEMPT" in capsys.readouterr().err
-    nonce = checkpoint_restore.attempt(retained, plan.restore_id, "op")
+    nonce = attempted(retained, plan.restore_id, "op")
     monkeypatch.setenv(checkpoint_jobs_cli.ATTEMPT_VARIABLE, nonce)
     assert main(["checkpoint", "restore-write", "--workspace", str(volume)]) == 0
     line = capsys.readouterr().out.splitlines()[0]
@@ -719,7 +729,9 @@ def test_upload_expiry_command_empties_a_bucket_of_stale_leftovers(
     assert main([*intent, "--phase", "intent", *common]) == 0
     protected = tmp_path / "protected.txt"
     protected.write_text(capsys.readouterr().out)
-    assert protected.read_text() == ""  # every checkpoint was promoted
+    first, *names = protected.read_text().splitlines()
+    assert first.startswith("expiry_intent_at=")
+    assert names == []  # every checkpoint was promoted
     storage = tmp_path / "upload.toml"
     storage.write_text(
         "\n".join(f'{key} = "{value}"' for key, value in UPLOAD.model_dump().items()) + "\n"
@@ -828,7 +840,7 @@ def test_after_a_restore_recreates_an_id_the_old_sandboxs_checkpoints_are_retira
     found = inventory(retained)
     checkpoint = next(c for c in found.checkpoints if c.manifest_sha256 == identity)
     assert retire_refusals(found, checkpoint, "e") == [f"restore {plan.restore_id} reads it"]
-    nonce = checkpoint_restore.attempt(retained, plan.restore_id, "op")
+    nonce = attempted(retained, plan.restore_id, "op")
     checkpoint_restore.verify(retained, plan.restore_id, nonce, plan.tree_sha256, "op")
     found = inventory(retained)
     assert [e.state for e in found.environments if e.environment_id == "e"] == ["ready"]
@@ -856,7 +868,7 @@ def test_the_job_refuses_a_volume_another_user_owns(
     plan = restore_plan(retained, identity)
     volume = seeded(tmp_path / "target")
     monkeypatch.setattr("os.getuid", lambda: os.stat(volume).st_uid + 1)
-    with pytest.raises(ValueError, match="restore_run_as_user"):
+    with pytest.raises(ValueError, match="run_as_user"):
         checkpoint_restore.write(volume, plan, KEPT)
     assert (volume / "image-docs").exists()
 
@@ -908,3 +920,80 @@ def test_an_upload_verification_waits_for_an_open_expiry(tmp_path, garage, retai
         records.close()
     with pytest.raises(RecordError, match="upload expiry is under way"):
         verify(retained, plan.checkpoint_id, identity, UPLOAD, "upload", "op")
+
+
+# Hardening (2026-10-31)
+
+
+def test_a_report_is_verified_only_once_its_attempts_job_is_journaled(
+    tmp_path, garage, retained, stopped
+):
+    identity, _ = kept_checkpoint(tmp_path, retained)
+    plan = restore_plan(retained, identity)
+    nonce = checkpoint_restore.attempt(retained, plan.restore_id, "op")
+    with pytest.raises(RecordError, match="no journaled Job"):
+        checkpoint_restore.verify(retained, plan.restore_id, nonce, plan.tree_sha256, "op")
+    assert blocked(retained)
+    checkpoint_restore.record(retained, plan.restore_id, "job", "op", {"attempt": "0" * 32})
+    with pytest.raises(RecordError, match="no journaled Job"):  # another attempt's Job
+        checkpoint_restore.verify(retained, plan.restore_id, nonce, plan.tree_sha256, "op")
+    checkpoint_restore.record(retained, plan.restore_id, "job", "op", {"attempt": nonce})
+    checkpoint_restore.verify(retained, plan.restore_id, nonce, plan.tree_sha256, "op")
+
+
+def test_a_lost_and_found_another_user_owns_is_left_out_listed_and_kept(
+    tmp_path, garage, retained, stopped, monkeypatch
+):
+    """ext4 makes a root-owned lost+found at a volume's root, which the Jobs' user can
+    neither read nor remove: here, any directory of that name not owned by the process."""
+    plan = planned(retained)
+    root = workspace(tmp_path / "source")
+    (root / "lost+found").mkdir()
+    (root / "lost+found" / "#1234").write_text("fsck's")
+    me = os.geteuid()
+    monkeypatch.setattr("os.geteuid", lambda: me + 1)  # every directory is now "another's"
+    identity, receipt, _ = capture_upload(root, plan.source, UPLOAD, plan.capture)
+    assert [(e.path, e.kind) for e in receipt.skipped] == [("lost+found", "other")]
+    verify(retained, plan.checkpoint_id, identity, UPLOAD, "upload", "op")
+    checkpoint_remote.promote(UPLOAD, KEPT, identity)
+    verify(retained, plan.checkpoint_id, identity, KEPT, "kept", "op")
+    restore = restore_plan(retained, identity)
+    volume = seeded(tmp_path / "target")
+    (volume / "lost+found").mkdir()
+    (volume / "lost+found" / "#5678").write_text("the target's own")
+    tree, _ = checkpoint_restore.write(volume, restore, KEPT)
+    assert tree == restore.tree_sha256 == describe(root)
+    assert (volume / "lost+found" / "#5678").exists()  # kept, never emptied
+    # Owned by the Jobs' user, it is the workspace's own and goes like any other entry.
+    monkeypatch.setattr("os.geteuid", lambda: me)
+    assert describe(root) != tree
+
+
+def test_expiry_stops_at_the_end_of_its_intents_lease(
+    tmp_path, garage: Garage, retained, stopped, capsys
+):
+    from sandbox_science.testing import FakeClock
+
+    kept_checkpoint(tmp_path, retained)
+    for key in list(garage.written):
+        garage.written[key] = datetime.now(UTC) - timedelta(days=30)
+    late = datetime.now(UTC) + timedelta(hours=7)
+    with pytest.raises(TimeoutError, match="lease has ended"):
+        checkpoint_remote.expire(
+            UPLOAD, timedelta(days=7), set(), stop_at=datetime.now(UTC), clock=FakeClock(late)
+        )
+    assert garage.keys(UPLOAD.bucket, "chunks")  # nothing removed
+    storage = tmp_path / "upload.toml"
+    storage.write_text(
+        "\n".join(f'{key} = "{value}"' for key, value in UPLOAD.model_dump().items()) + "\n"
+    )
+    storage.chmod(0o600)
+    protected = tmp_path / "protected.txt"
+    stale = (datetime.now(UTC) - timedelta(hours=6)).isoformat()
+    protected.write_text(f"expiry_intent_at={stale}\n")
+    command = ["checkpoint", "expire-objects", "--storage", str(storage)]
+    assert main([*command, "--older-than-hours", "168", "--protected-file", str(protected)]) == 1
+    assert "lease" in capsys.readouterr().err
+    protected.write_text("a" * 64 + "\n")  # no intent line: refused
+    assert main([*command, "--older-than-hours", "168", "--protected-file", str(protected)]) == 1
+    assert garage.keys(UPLOAD.bucket, "chunks")

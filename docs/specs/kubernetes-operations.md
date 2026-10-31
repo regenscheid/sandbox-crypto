@@ -29,7 +29,9 @@ The complete tree includes installed native packages, research data, journals,
 prefix identity and the `.openshell-initialized` sentinel. Preserve file and
 directory modes, symlink text without following it, and existing hardlink topology.
 Do not follow filesystem links out of the tree. Leave sockets, FIFOs and devices out
-and list them in the receipt (amended 2026-10-28, C4), never claiming they were captured;
+and list them in the receipt (amended 2026-10-28, C4), never claiming they were captured,
+and likewise a root `lost+found` directory another user owns, the filesystem's own
+(amended 2026-10-31);
 fail on a regular file that cannot be read, naming it. Detect changed source files and
 fail the capture. Preserve completed immutable outputs after an interrupted attempt;
 partial archives are not committed receipts.

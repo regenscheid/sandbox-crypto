@@ -879,8 +879,10 @@ the volume beside it, and the worker checks the result in the store:
    a start is under way, and records it cannot read refuse the start.
 2. **The Job** (`checkpoint-job`, created by the operator): `sandbox-science-worker
    checkpoint capture-upload` on the trusted worker image, the workspace claim mounted
-   read-only, run as the sandbox user (10001) so that a file the sandbox made unreadable
-   fails it by name, pinned to the volume's node. It streams to the **upload bucket** with
+   read-only, run as the sandbox user (`run_as_user`) so that a file the sandbox made
+   unreadable fails it by name, pinned to the volume's node. A `lost+found` directory at
+   the volume's root that another user owns (ext4 makes it for root) is the filesystem's:
+   it is left out and listed in the receipt (`skipped`, kind `other`). It streams to the **upload bucket** with
    the upload key, re-sending only chunks that do not already read back exactly, and prints
    `checkpoint_manifest=<sha256>`. Sockets, FIFOs and devices are left out and listed in the
    receipt. No local archive: its scratch holds one chunk and the path index.
@@ -906,14 +908,14 @@ upload_secret = "research-checkpoint-upload"   # in the sandbox namespace: crede
 upload_bucket = "research-checkpoint-upload"
 kept_bucket = "research-checkpoints"
 endpoint = "http://garage.garage.svc.cluster.local:3900"
+run_as_user = 10001        # required, no default: who owns the workspace's files (`ls -ln`),
+run_as_group = 10001       # for checkpoint and restore Jobs alike
 # region = "garage", prefix = "sandbox-science", addressing_style = "path"
 # upload_profile = "checkpoint-upload", verify_profile = "checkpoint-verify"
 # restore_secret = "research-checkpoint-restore"   # restore Jobs only; absent, no restore
 # restore_profile = "checkpoint-restore"
-# restore_run_as_user = 1000, restore_run_as_group = 1000   # the images' sandbox user (D77)
 # keep = 2, deadline_seconds = 7200, hold_seconds = 21600 (longer than the deadline)
 # job_ttl_seconds = 600 (how long Kubernetes keeps a finished Job; 0 to 604800)
-# run_as_user = 10001, run_as_group = 10001
 # [checkpoint.job]: cpu/memory/ephemeral requests and limits, scratch_mib (default 1024)
 
 [checkpoint.object_store]              # the store's Pods and port
@@ -1016,9 +1018,9 @@ next use. A restore never writes into an existing environment, so it cannot over
    recorded after it, is ever verified. The Job runs `sandbox-science-worker checkpoint
    restore-write` on the trusted worker image, hardened as the checkpoint Job (no
    service-account token, no service links, no `fsGroup`, read-only root, no capabilities,
-   `RuntimeDefault` seccomp, pinned to the volume's node), as `restore_run_as_user` (1000
-   by default, the research images' sandbox user; it refuses a volume whose root another
-   user owns, so a wrong setting fails before anything is removed), with the
+   `RuntimeDefault` seccomp, pinned to the volume's node), as the same `run_as_user` and
+   `run_as_group` as the checkpoint Job (it refuses a volume whose root another user owns,
+   so a wrong setting fails before anything is removed), with the
    checkpoint Jobs' labels so the same NetworkPolicy gives it DNS and the store only. It
    mounts the target's claim **read-write** and the **restore key**'s Secret, read-only on
    the kept bucket; it never sees the upload bucket. It refuses a volume that is neither
@@ -1026,13 +1028,14 @@ next use. A restore never writes into an existing environment, so it cannot over
    identity) nor its own restore's earlier attempt (a `.sandbox-science-restore` marker with
    the restore's ID, written first), unless the volume already holds exactly the plan's tree
    (an earlier attempt finished writing; it then only reports it). It then empties the
-   volume, writes the checkpoint from the kept bucket, checking every chunk's hash and length
+   volume (keeping a root `lost+found` another user owns, which the digest also leaves
+   out), writes the checkpoint from the kept bucket, checking every chunk's hash and length
    before a byte of it is written, never setting set-user-ID or set-group-ID bits, checks
    the archive's counts and the prefix identity, walks the volume back from disk to compute
    its tree digest, removes the marker and prints `restore_tree=<sha256>
    restore_attempt=<nonce>`.
 3. **Verify** (the worker, `restore-verify`): the report must carry the current attempt's
-   nonce, the Job's digest must equal the one the worker computed from the kept copy, the
+   nonce, whose Job the operator journaled (`job`), the Job's digest must equal the one the worker computed from the kept copy, the
    target must still be the stopped, fresh sandbox it created, and only then is the restore
    `restored` and the sandbox free to start. Its first
    executor adopts the restored prefix identity as the environment's baseline. A mismatch
@@ -1049,7 +1052,9 @@ sandbox-science-kubernetes restore --config private.toml --discard RESTORE_ID --
 
 With `--apply` it runs the plan (`kubectl exec` into the pool's worker container, under the
 worker's read-only key), finds the target's claim and node (refusing while a Pod mounts it),
-gets the attempt's nonce, creates the restore Secret from `--restore-key` (the directory
+checks first, before planning, that the `--restore-key` files can be read and that no Secret
+of the restore Secret's name exists; then it gets the attempt's nonce, creates the restore
+Secret from `--restore-key` (the directory
 `site` writes, with `credentials` and `config`), creates the Job, journals it, waits, reads
 the digest from its log, deletes the Secret and the Job and has the worker verify the
 digest, printing the Job's log. The restore key reads every project's kept checkpoints and
@@ -1086,6 +1091,13 @@ nonce), `job` (its name, claim, node and attempt), `retry`, `verified` or `faile
 After a restore that created a deleted environment's ID again, the old sandbox's kept
 checkpoints are listed for retirement like a deleted environment's (`--retire-checkpoints
 ENV`): the environment is bound to another sandbox now, so their workspace is gone from it.
+When the checkpoint a restore wrote is the only copy of that environment's tree (it has no
+kept checkpoint of its own yet), cleanup's listing adds a `WARNING` to it: take a
+checkpoint of the restored environment before retiring or deleting it.
+
+When restoring by hand from the printed steps, verify only with the digest and attempt the
+latest Job printed: the worker refuses a report of an earlier attempt, and one whose Job was
+not journaled (`restore-record --phase job` with its attempt).
 
 As seen on the first cluster (2026-10-28):
 
@@ -1202,16 +1214,20 @@ no unpromoted checkpoint needs, and never touches the kept bucket:
 1. the worker journals the intent (`upload-expiry`, with the age) and refuses while any
    checkpoint hold is active or another expiry is open, since a capture under way may reuse
    an old chunk without rewriting it; it prints what it protects: the manifest and recorded
-   chunks of every checkpoint it verified in the upload bucket and that is not yet kept.
+   chunks of every checkpoint it verified in the upload bucket and that is not yet kept,
+   after a first line with the intent's time.
    Until the expiry's end is journaled (at most 6 hours), the worker refuses new checkpoint
    plans and upload verifications, so nothing can come to need an object the expiry
    removes;
 2. the keeper key (`sandbox-science-worker checkpoint expire-objects`, locally) lists the
    upload bucket with each object's time and deletes the older unprotected ones, manifests
    first, so no manifest is left naming a removed chunk; an object whose time the store
-   does not give is kept; it prints how many it removed and kept, and stops within 5 hours;
-3. the worker journals it done, with those counts, or failed if the deletion failed; an end
-   without its open intent is refused.
+   does not give is kept; it prints how many it removed and kept. It stops 10 minutes before
+   the intent's lease ends (the intent's time plus 6 hours), and refuses to start after
+   that, so it never deletes while checkpoints may run again;
+3. the worker journals it done, with those counts, or failed if the deletion failed or was
+   interrupted (Ctrl-C, or a termination signal, which the command turns into an
+   interruption of the step under way); an end without its open intent is refused.
 
 A bucket holding only leftovers, with no checkpoint under way, is emptied of everything
 older than the age except the uploads of checkpoints verified and never promoted: those stay

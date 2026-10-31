@@ -63,6 +63,8 @@ CHECKPOINT: dict[str, Any] = {
     "kept_bucket": "research-checkpoints",
     "endpoint": "http://garage.garage.svc.cluster.local:3900",
     "object_store": GARAGE,
+    "run_as_user": 10001,
+    "run_as_group": 10001,
 }
 NOW = datetime(2026, 10, 28, 12, tzinfo=UTC)
 
