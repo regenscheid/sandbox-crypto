@@ -1372,6 +1372,27 @@ async def test_a_job_sandbox_without_its_workspace_prefix_fails_and_is_released(
     assert pool.store.package_gate(pool.job_environment(ended.execution_id)).mode == "ready"
 
 
+async def test_a_job_sandbox_the_gateway_refused_is_released_at_once(pool: Pool) -> None:
+    """As on the first cluster, where OpenShell 0.1.5 refused a driver configuration: the
+    refusal is definite, so the job's record is released when the job fails, not kept
+    retained through the creation grace."""
+    pool.fake.update(
+        create_refused="status: 'Client specified an invalid argument', self: \"invalid"
+        ' kubernetes driver_config: unknown field `labels`"'
+    )
+    ended = await pool.run(pool.request())
+    assert ended.state is ExecutionState.FAILED
+    assert ended.result is not None
+    assert ended.result.error is not None
+    assert ended.result.error.message.startswith("sandbox_unavailable")
+    assert pool.port.submitted == []  # nothing ran
+    record = pool.store.job_sandboxes.get(ended.execution_id)
+    assert record is not None
+    assert record.phase == "released"
+    info = pool.environments.records.get(pool.job_environment(ended.execution_id))
+    assert info is None or info.state is EnvironmentState.DELETED
+
+
 async def test_the_sweep_releases_a_job_sandbox_whose_package_gate_is_held(
     pool: Pool,
 ) -> None:

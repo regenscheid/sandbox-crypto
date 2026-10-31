@@ -162,6 +162,8 @@ if command == ["sandbox", "create"]:
         sandboxes = state["sandboxes"]
     if state.get("fail_create"):
         fail("the VM driver could not start the sandbox")
+    if state.get("create_refused"):
+        fail(state["create_refused"])  # as the gateway refuses before recording anything
     name = option("--name")
     providers = [argv[i + 1] for i, a in enumerate(argv) if a == "--provider"]
     labels = dict(argv[i + 1].split("=", 1) for i, a in enumerate(argv) if a == "--label")

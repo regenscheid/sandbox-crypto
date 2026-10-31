@@ -202,6 +202,75 @@ async def test_delete_succeeds_by_the_same_rule(paused: Setup) -> None:
     no_sandbox_touched(paused)
 
 
+DRIVER_REFUSAL = (
+    "status: 'Client specified an invalid argument', self: \"invalid kubernetes"
+    " driver_config: unknown field `labels`, expected one of `node_selector`,"
+    ' `runtime_class_name`, `tolerations`, `priority_class_name`"'
+)
+
+
+@pytest.mark.parametrize(
+    "refusal",
+    [
+        DRIVER_REFUSAL,  # tonic 0.14, OpenShell 0.1.5
+        "status: FailedPrecondition, message: \"provider 'x' not found\"",  # older tonic
+        "status: 'The caller does not have permission to execute the specified operation'",
+    ],
+)
+async def test_a_creation_the_gateway_refused_is_rolled_back_at_once(
+    paused: Setup, refusal: str
+) -> None:
+    other, _ = await paused.environments.create(paused.request("env-2"))
+    paused.fake.update(create_refused=refusal)
+    with pytest.raises(WorkerError, match="failed"):
+        await paused.environments.create(paused.request("env-1"))
+    paused.fake.update(create_refused=None)
+    # No grace and no second read: the creation's own cleanup confirmed absence.
+    deleted = paused.environments.get("env-1")
+    assert deleted.state is EnvironmentState.DELETED
+    reconciled = paused.environments.records.reconciliation("env-1")
+    assert reconciled is not None
+    assert reconciled[1] == CREATION_ROLLED_BACK
+    assert "env-1" not in paused.environments.records.live(["p1"])
+    no_sandbox_touched(paused)
+    assert other.sandbox in paused.fake.read()["sandboxes"]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "status: 'The service is currently unavailable'",
+        "status: 'Internal error', self: \"status: 'Client specified an invalid argument'\"",
+        "status: 'Deadline expired before operation could complete'",
+    ],
+)
+async def test_any_other_failure_leaves_the_outcome_unknown(paused: Setup, failure: str) -> None:
+    paused.fake.update(create_refused=failure)
+    with pytest.raises(WorkerError, match="failed"):
+        await paused.environments.create(paused.request("env-1"))
+    paused.fake.update(create_refused=None)
+    assert paused.environments.get("env-1").state is EnvironmentState.CREATING
+    result = await paused.environments.reconcile_creation("env-1")
+    assert result.action == "inconclusive"
+    assert "less than the creation grace" in result.message
+
+
+async def test_a_refused_creation_whose_listing_cannot_show_absence_waits(
+    paused: Setup,
+) -> None:
+    await paused.environments.create(paused.request("env-2"))
+    paused.fake.update(create_refused=DRIVER_REFUSAL, list_empty=True)
+    with pytest.raises(WorkerError, match="failed"):
+        await paused.environments.create(paused.request("env-1"))
+    paused.fake.update(create_refused=None)
+    assert paused.environments.get("env-1").state is EnvironmentState.CREATING
+    result = await paused.environments.reconcile_creation("env-1")
+    assert result.action == "inconclusive"
+    paused.fake.update(list_empty=False)
+    result = await paused.environments.reconcile_creation("env-1")
+    assert result.action == "rolled_back"
+
+
 async def test_a_retried_creation_replaces_a_confirmed_absence(paused: Setup) -> None:
     await lost(paused)
     original = paused.environments.get("env-1")

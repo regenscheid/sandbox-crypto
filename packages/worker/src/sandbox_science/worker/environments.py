@@ -145,6 +145,24 @@ _MISSING: Final = re.compile(r'(?:message|self): "sandbox not found"')
 """The gateway's NotFound for a sandbox name, as tonic shows a status: ``message:`` in
 the OpenShell 0.1.3 labs, ``self:`` from tonic 0.14 (OpenShell 0.1.5). Other NotFound
 answers, such as a missing service endpoint, gateway or file, do not match."""
+_STATUS: Final = re.compile(r"status: ('[^']*'|[A-Za-z]+)")
+"""A gRPC status as the OpenShell CLI reports it: tonic 0.14 (OpenShell 0.1.5) writes the
+code's description in quotes, older tonic its name."""
+REFUSALS: Final = frozenset(
+    {
+        "'Client specified an invalid argument'",
+        "'The system is not in a state required for the operation's execution'",
+        "'The caller does not have permission to execute the specified operation'",
+        "'The request does not have valid authentication credentials'",
+        "InvalidArgument",
+        "FailedPrecondition",
+        "PermissionDenied",
+        "Unauthenticated",
+    }
+)
+"""The statuses with which the gateway refuses a request it validated: InvalidArgument,
+FailedPrecondition, PermissionDenied and Unauthenticated. OpenShell 0.1.5 checks a
+sandbox's spec, driver configuration and admission before it records the sandbox."""
 _SANDBOX_COMMAND: Final = ("sleep", "infinity")
 _POLICY_TIMEOUT: Final = 120
 _DEAD_PHASES: Final = frozenset({"Error", "Deleting", "Completed"})
@@ -217,6 +235,12 @@ class SandboxMissingError(WorkerError):
     other failure, which says nothing about whether the sandbox exists."""
 
 
+class GatewayRefusalError(WorkerError):
+    """The gateway answered the command with a refusal status (``REFUSALS``): the request
+    ended there, unlike a timeout or an unavailable gateway, which leave its outcome
+    unknown."""
+
+
 class OpenShellCli:
     """Runs ``openshell`` commands for the worker, with the backend's CLI environment."""
 
@@ -258,8 +282,13 @@ class OpenShellCli:
         if process.returncode != 0:
             text = _ANSI.sub("", (errors or output).decode("utf-8", "replace")).strip()
             # Classify the whole report: the status leads it, and the end is what is kept.
-            missing = _MISSING.search(_FRAME.sub(" ", text)) is not None
-            error = SandboxMissingError if missing else WorkerError
+            flat = _FRAME.sub(" ", text)
+            missing = _MISSING.search(flat) is not None
+            status = _STATUS.search(flat)
+            refused = status is not None and status[1] in REFUSALS
+            error = (
+                SandboxMissingError if missing else GatewayRefusalError if refused else WorkerError
+            )
             raise error(
                 ErrorKind.UNAVAILABLE, f"openshell {' '.join(args[:2])} failed: {text[-500:]}"
             )
@@ -370,6 +399,11 @@ class EnvironmentRecords:
             " environment_id TEXT NOT NULL, sandbox TEXT NOT NULL, ended_at TEXT NOT NULL,"
             " PRIMARY KEY (environment_id, sandbox))"
         )
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS creation_refusals ("
+            " environment_id TEXT NOT NULL, sandbox TEXT NOT NULL, reason TEXT NOT NULL,"
+            " PRIMARY KEY (environment_id, sandbox))"
+        )
         self._lock = threading.Lock()
 
     def observe(self, info: EnvironmentInfo, seen: Observation) -> tuple[Observation, ...]:
@@ -413,14 +447,32 @@ class EnvironmentRecords:
             for at, listed, names in rows
         )
 
-    def create_ended(self, info: EnvironmentInfo, at: datetime) -> None:
-        """Record that the create command of the environment's sandbox has ended."""
+    def create_ended(
+        self, info: EnvironmentInfo, at: datetime, *, refused: str | None = None
+    ) -> None:
+        """Record that the create command of the environment's sandbox has ended, and
+        whether the gateway refused it (``GatewayRefusalError``)."""
         with self._lock:
             self._db.execute(
                 "INSERT INTO creation_commands VALUES (?,?,?) ON CONFLICT"
                 " (environment_id, sandbox) DO UPDATE SET ended_at=excluded.ended_at",
                 (info.environment_id, info.sandbox, at.isoformat()),
             )
+            if refused is not None:
+                self._db.execute(
+                    "INSERT OR REPLACE INTO creation_refusals VALUES (?,?,?)",
+                    (info.environment_id, info.sandbox, refused[:500]),
+                )
+
+    def creation_refused(self, info: EnvironmentInfo) -> str | None:
+        """Why the gateway refused the create command of the environment's sandbox, if
+        it did."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT reason FROM creation_refusals WHERE environment_id=? AND sandbox=?",
+                (info.environment_id, info.sandbox),
+            ).fetchone()
+        return None if row is None else str(row[0])
 
     def creation_ended(self, info: EnvironmentInfo) -> datetime | None:
         """When the create command of the environment's sandbox ended; None when no end
@@ -1450,6 +1502,9 @@ class Environments:
                 message=f"{UNKNOWN_OUTCOME}: the gateway shows {info.sandbox} without an identity"
             )
         now = self.clock.now()
+        refused = self.records.creation_refused(info)
+        if refused is not None:
+            return await self._refused_outcome(info, refused)
         grace = self.settings.creation_grace
         ended = self.records.creation_ended(info)
         if ended is None:
@@ -1501,6 +1556,28 @@ class Environments:
             message=f"{UNKNOWN_OUTCOME}: seen absent {times};"
             f" a second read after {when(retry_at)} confirms it",
             retry_at=retry_at,
+        )
+
+    async def _refused_outcome(self, info: EnvironmentInfo, refused: str) -> Outcome:
+        """A creation the gateway refused: the request ended there, so no grace is needed.
+        One read of its name (by the caller) and of the complete listing that finds no
+        trace confirms absence at once; a listing that cannot show it confirms nothing."""
+        entries, complete = await self.cli.sandboxes()
+        listing = examine(
+            entries,
+            complete,
+            info,
+            self.records.identified(),
+            labelled=self.settings.label_environments,
+        )
+        if listing.sandbox_id is not None:
+            return Outcome(sandbox_id=listing.sandbox_id)
+        if listing.blocker is not None:
+            return Outcome(message=f"{UNKNOWN_OUTCOME}: {listing.blocker}")
+        return Outcome(
+            confirmed=True,
+            message=f"the gateway refused creating {info.sandbox} and shows no trace of it"
+            f" ({refused[:200]})",
         )
 
     async def _roll_back(self, info: EnvironmentInfo) -> EnvironmentInfo:
@@ -1583,7 +1660,8 @@ class Environments:
         done: list[Reconciliation] = []
         grace = timedelta(seconds=self.settings.creation_grace)
         for info in self.records.creating():
-            if info.sandbox_id is not None or self.clock.now() < info.created_at + grace:
+            young = self.clock.now() < info.created_at + grace
+            if info.sandbox_id is not None or (young and not self.records.creation_refused(info)):
                 continue  # no read is due yet; _creation_outcome counts from the command's end
             if self.busy(info.environment_id):
                 continue  # a creation or deletion under way decides it
@@ -2165,6 +2243,7 @@ class Environments:
         self, info: EnvironmentInfo, compiled: Compiled, *, timeout: float | None = None
     ) -> str:
         name, image = info.sandbox, info.image
+        refused: str | None = None
         try:
             path = self._write(name, compiled.policy_digest, compiled.policy.to_yaml())
             args = ["sandbox", "create", "--name", name, "--from", image, "--policy", str(path)]
@@ -2179,11 +2258,16 @@ class Environments:
             if info.kind == "job":
                 args += ["--label", "=".join(JOB_SANDBOX_LABEL)]
             args += ["--no-auto-providers", "--detach", "--", *_SANDBOX_COMMAND]
-            await self.cli.run(*args, timeout=self.settings.create_timeout)
+            try:
+                await self.cli.run(*args, timeout=self.settings.create_timeout)
+            except GatewayRefusalError as refusal:
+                refused = refusal.message
+                raise
         finally:
             # Ended, whatever the result: a timeout or cancellation kills and reaps the
-            # command first. The grace of an unknown outcome counts from here (B3).
-            self.records.create_ended(info, self.clock.now())
+            # command first. The grace of an unknown outcome counts from here (B3); a
+            # refusal needs none.
+            self.records.create_ended(info, self.clock.now(), refused=refused)
         if timeout is None:
             return await self._wait_ready(name, creating=info.environment_id)
         try:
