@@ -88,6 +88,20 @@ def test_session_grants_expiry_and_revocation(grants: ProjectGrants) -> None:
         grants.revoke("p1", "grant-unknown", USER, NOW)
 
 
+def test_an_expired_grant_is_not_kept_when_the_user_grants_again(
+    grants: ProjectGrants,
+) -> None:
+    [short] = grants.give("p1", write(), "project", USER, NOW, hours=0.02)
+    later = NOW + timedelta(minutes=5)
+    assert grants.covering("p1", write(), later) == []
+    [again] = grants.give("p1", write(), "project", USER, later, hours=2)
+    assert again.grant_id != short.grant_id
+    assert again.expires_at == later + timedelta(hours=2)
+    assert grants.covering("p1", write(), later) == [again]
+    # A live one is kept, whatever expiry the new answer asks for.
+    assert grants.give("p1", write(), "project", USER, later, hours=5) == [again]
+
+
 def test_a_package_request_needs_every_source_granted(grants: ProjectGrants) -> None:
     forge = Asked("packages", "agent", "s1", "project", sources=(("conda", "conda-forge"),))
     grants.give("p1", forge, "project", USER, NOW)

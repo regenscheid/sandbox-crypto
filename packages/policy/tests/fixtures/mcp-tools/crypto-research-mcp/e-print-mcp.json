@@ -1,5 +1,5 @@
 {
- "captured": "2026-10-26",
+ "captured": "2026-10-31",
  "group": "e-print-mcp",
  "server": "crypto-research-mcp",
  "tools": [
@@ -33,24 +33,31 @@
    "description": "Read a paper's BODY from the local cache, not just its abstract.\n\nIn standalone mode, the first call downloads and caches the PDF. In the\ncluster, it queues a missing PDF and waits briefly for the dedicated\nfetcher; the initial call normally returns the requested text when the\ndirect path succeeds, otherwise it returns a queue status. Responses\nlink to the archive or a verified original. PostScript text is extracted\nby an isolated worker and cached; if extraction fails, the original PS\ndownload remains available. Always pass `query` -- these are full\npapers. `ref` is accepted as an alias for paper_id for symmetry with the\nNIST tools.\n",
    "inputSchema": {
     "properties": {
-     "context": {
-      "default": 3,
-      "title": "Context",
-      "type": "integer"
-     },
      "fetch": {
       "default": true,
       "title": "Fetch",
       "type": "boolean"
      },
-     "max_passages": {
-      "default": 8,
-      "title": "Max Passages",
-      "type": "integer"
+     "include_page_images": {
+      "default": false,
+      "title": "Include Page Images",
+      "type": "boolean"
      },
      "offset": {
-      "default": 0,
-      "title": "Offset",
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Offset"
+     },
+     "page_count": {
+      "default": 1,
+      "title": "Page Count",
       "type": "integer"
      },
      "paper_id": {
@@ -58,29 +65,10 @@
       "title": "Paper Id",
       "type": "string"
      },
-     "query": {
-      "anyOf": [
-       {
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "default": null,
-      "title": "Query"
-     },
-     "ref": {
-      "anyOf": [
-       {
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "default": null,
-      "title": "Ref"
+     "start_page": {
+      "default": 1,
+      "title": "Start Page",
+      "type": "integer"
      }
     },
     "title": "eprint_fulltextArguments",
@@ -215,6 +203,43 @@
     "type": "object"
    },
    "name": "e-print-mcp_search_eprint"
+  },
+  {
+   "description": "Search one paper's body for a literal word or phrase, case-insensitively.\n\nPass words present in the paper, not a natural-language question or a paper\nID as query. Results include physical page numbers when available. No match\nmeans the phrase was not found, not that body text is unavailable. To read\nthe paper sequentially, use eprint_fulltext instead. search_eprint searches\nmetadata across the corpus; this tool searches within one paper.\n",
+   "inputSchema": {
+    "properties": {
+     "context": {
+      "default": 3,
+      "title": "Context",
+      "type": "integer"
+     },
+     "fetch": {
+      "default": true,
+      "title": "Fetch",
+      "type": "boolean"
+     },
+     "max_passages": {
+      "default": 8,
+      "title": "Max Passages",
+      "type": "integer"
+     },
+     "paper_id": {
+      "title": "Paper Id",
+      "type": "string"
+     },
+     "query": {
+      "title": "Query",
+      "type": "string"
+     }
+    },
+    "required": [
+     "paper_id",
+     "query"
+    ],
+    "title": "search_eprint_fulltextArguments",
+    "type": "object"
+   },
+   "name": "e-print-mcp_search_eprint_fulltext"
   }
  ]
 }

@@ -15,6 +15,11 @@ denial is built from the request's key, which the worker holds, so a store it ca
 does not stop it; a withdrawal that fails is tried again, and the request's own deadline
 (``valid_until``) ends the grant in any case.
 
+The user's answers the workspace relays name the grants they come from (D97). When the
+user revokes a grant, the worker withdraws the HTTP and MCP requests a live approval
+naming it answers, with the same kind of denial, which for them only ends their approvals
+(``granted_by``, ``withdraw``): the middleware asks again on the next try.
+
 The same store holds the middleware's tool-list drifts and their acceptances, which the
 classification review reads (``drifts``) and the user's acceptances, relayed by the
 workspace, add to (``record_acceptance``; docs/MCP-CONNECTORS.md, CL-3, CL-4).
@@ -172,15 +177,23 @@ class Permissions:
         return found
 
     def answer_request(
-        self, seq: int, *, approve: bool, scope: str, hours: float | None, now: datetime
+        self,
+        seq: int,
+        *,
+        approve: bool,
+        scope: str,
+        hours: float | None,
+        now: datetime,
+        grants: tuple[str, ...] = (),
     ) -> tuple[int, str]:
         """Record the user's answer to request ``seq``, which the workspace relays, as the
-        source ``workspace``: the record's number and kind. ValueError if it cannot be
-        answered so. Blocking."""
+        source ``workspace``, naming the grants it comes from: the record's number and
+        kind. ValueError if it cannot be answered so. Blocking."""
         self.refresh()
         kind, payload = prepare_answer(
-            self._approvals, seq, approve=approve, scope=scope, hours=hours, now=now
-        )
+            self._approvals, seq, approve=approve, scope=scope, hours=hours, now=now,
+            grants=grants,
+        )  # fmt: skip
         try:
             record = self._store().append(kind, ANSWERS, payload)
         except EventStoreError as exc:
@@ -220,6 +233,13 @@ class Permissions:
             self.refresh()
         except PermissionStoreError as exc:
             _log.warning("request %d was withdrawn, but the store cannot be read: %s", seq, exc)
+
+    def granted_by(self, grant: str, now: datetime) -> list[PermissionRequest]:
+        """The HTTP and MCP requests a live approval naming ``grant`` answers, not yet
+        withdrawn (``Approvals.granted_by``). Blocking."""
+        self.refresh()
+        found = (self._approvals.request(seq) for seq in self._approvals.granted_by(grant, now))
+        return [request for request in found if request is not None]
 
     def withdraw_operations(self, operations: Iterable[str], reason: str, now: datetime) -> None:
         """Close every request these operations made that is still open, those a crash or a

@@ -117,11 +117,18 @@ async def test_a_projects_network_and_package_requests_are_listed_with_their_car
         purpose="the agent's words", asked="Conda: x",
     )  # fmt: skip
     escalate(sink, RequestKey.http("sbx-2", DIGEST, "GET", "other.org", 443, "/"))  # p2's
+    refs = "/lab/none.git/info/refs"
+    push = escalate(
+        sink, RequestKey.http("sbx-1", DIGEST, "GET", "git.org", 443, refs), caller_kind="code",
+        summary={"method": "GET", "host": "git.org", "port": 443, "path": refs, "size": 0,
+                 "git_service": "receive-pack"},
+    )  # fmt: skip
     listed = await client.get("/v1/permission-requests?project=p1", headers=headers("workspace"))
     assert listed.status == 200, await listed.text()
     requests = (await listed.json())["requests"]
-    assert [item["seq"] for item in requests] == [first, second, third]
-    network, download, install = requests
+    assert [item["seq"] for item in requests] == [first, second, third, push]
+    network, download, install, git = requests
+    assert (git["http"]["git_service"], network["http"]["git_service"]) == ("receive-pack", None)
     assert (network["kind"], network["caller_kind"], network["max_grant"]) == (
         "network", "code", "once",
     )  # fmt: skip
@@ -195,6 +202,67 @@ async def test_an_answer_is_recorded_for_the_middleware_and_bounded_by_kind(
     listed = await client.get("/v1/permission-requests?project=p1", headers=headers("workspace"))
     assert seq not in [item["seq"] for item in (await listed.json())["requests"]]
     del permissions
+
+
+GRANT = "grant-" + "d" * 20
+
+
+async def test_revoking_a_grant_withdraws_its_live_answers_and_nothing_else(
+    api: tuple[TestClient[Any, Any], EventStore, Permissions],
+) -> None:
+    client, sink, _ = api
+    key = RequestKey.http("sbx-1", DIGEST, "GET", "data.org", 443, "/a", body_digest(b""))
+    granted = escalate(sink, key)
+    once = escalate(sink, RequestKey.http("sbx-1", DIGEST, "GET", "data.org", 443, "/once"))
+    other_grant = escalate(sink, RequestKey.http("sbx-1", DIGEST, "GET", "o.org", 443, "/"))
+    path = "/v1/permission-requests/{}/answer"
+    for seq, body in (
+        (granted, {"approve": True, "scope": "host", "hours": 1, "grants": [GRANT]}),
+        (once, {"approve": True, "scope": "request", "hours": 1}),
+        (other_grant, {"approve": True, "scope": "host", "hours": 1,
+                       "grants": ["grant-" + "e" * 20]}),
+    ):  # fmt: skip
+        answered = await client.post(path.format(seq), json=body, headers=headers("workspace"))
+        assert answered.status == 201, await answered.text()
+    bad = await client.post(
+        path.format(once), json={"approve": True, "scope": "host", "grants": ["mine"]},
+        headers=headers("workspace"),
+    )  # fmt: skip
+    assert bad.status == 400  # not a grant's id
+    withdraw = {"project_id": "p1", "grant": GRANT}
+    refused = await client.post(
+        "/v1/permission-grants/withdraw", json=withdraw, headers=headers("harness")
+    )
+    assert refused.status == 403  # an operator client's only
+    foreign = await client.post(
+        "/v1/permission-grants/withdraw", json={**withdraw, "project_id": "p2"},
+        headers=headers("workspace"),
+    )  # fmt: skip
+    assert foreign.status == 403
+    done = await client.post(
+        "/v1/permission-grants/withdraw", json=withdraw, headers=headers("workspace")
+    )
+    assert done.status == 200, await done.text()
+    assert (await done.json())["requests"] == [granted]
+    again = await client.post(
+        "/v1/permission-grants/withdraw", json=withdraw, headers=headers("workspace")
+    )
+    assert (await again.json())["requests"] == []  # nothing more to withdraw
+    with StoreReader(sink.path) as reader:
+        records = list(reader.records(kinds=KINDS))
+    assert (records[-1].kind, records[-1].source) == ("denial", "worker")
+    approvals = Approvals()
+    approvals.load(records)
+    now = NOW  # the desk's clock, which the answers' expiry counts from
+    elsewhere = RequestKey.http("sbx-1", DIGEST, "GET", "data.org", 443, "/b")
+    assert approvals.answer(elsewhere, now) is None  # the middleware asks again
+    assert approvals.answer(RequestKey.http("sbx-1", DIGEST, "GET", "data.org", 443, "/once"), now)
+    assert approvals.answer(RequestKey.http("sbx-1", DIGEST, "GET", "o.org", 443, "/x"), now)
+    late = await client.post(
+        path.format(granted), json={"approve": True, "scope": "host", "hours": 1},
+        headers=headers("workspace"),
+    )  # fmt: skip
+    assert late.status == 409  # a withdrawn request takes no answer again
 
 
 ARGS = "c" * 64

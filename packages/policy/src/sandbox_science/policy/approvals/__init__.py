@@ -25,6 +25,11 @@ Keys come in three kinds, each with the scopes an answer can take:
   the time after which it grants nothing (``valid_until``), whatever its answers say, so
   a withdrawal the worker failed to record still ends the grant.
 
+An answer the workspace relays names the grants it comes from (D97). When the user
+revokes one, the worker withdraws each ``http`` or ``mcp`` request a live approval naming
+it answers: a denial marked ``withdrawn``, after which the request's approvals apply no
+longer. It denies nothing, so the next try is recorded as a new request.
+
 The package's modules: ``keys`` (what a request asks for, and the scopes of answers),
 ``records`` (the typed payloads of the records), ``ledger`` (the fold of the records, and
 ``resolve``), ``grants`` (file-set grants), ``ceilings`` (how widely a user may grant a

@@ -11,8 +11,16 @@ export interface ScopeChoice {
   detail: string;
 }
 
+const GIT_SERVICES: Record<string, string> = {
+  'receive-pack': 'push (git-receive-pack)',
+  'upload-pack': 'fetch (git-upload-pack)',
+};
+
 /** The card's question. */
 export function cardTitle(request: PendingApproval): string {
+  const git = request.http?.git_service;
+  if (request.kind === 'network' && request.http && git)
+    return `Let research code git ${git === 'receive-pack' ? 'push to' : 'fetch from'} ${request.http.host}?`;
   if (request.kind === 'network' && request.http)
     return `Let research code ${request.http.method} ${request.http.host}?`;
   if (request.kind === 'packages') {
@@ -68,6 +76,8 @@ export function summaryRows(request: PendingApproval): [string, string][] {
       rows.push([names[kind] ?? kind, value]);
   } else if (request.http) {
     const http = request.http;
+    // A push's first request differs from a fetch's in its query only, which is not shown.
+    if (http.git_service) rows.push(['Git', GIT_SERVICES[http.git_service] ?? http.git_service]);
     rows.push(['Method', http.method], ['Host', `${http.host}:${http.port}`], ['Path', http.path]);
     if (http.content_type) rows.push(['Content type', http.content_type]);
     rows.push(['Size', `${http.size} bytes`]);

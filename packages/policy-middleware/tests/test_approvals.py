@@ -14,7 +14,14 @@ import pytest
 
 from sandbox_science.event_store import EventStore, StoreReader, verify_store
 from sandbox_science.policy import HardFloor, LoadedPolicy, PoolCeiling, reasons
-from sandbox_science.policy.approvals import APPROVAL, DENIAL, Approvals, RequestKey
+from sandbox_science.policy.approvals import (
+    APPROVAL,
+    DENIAL,
+    Approvals,
+    RequestKey,
+    prepare_answer,
+    withdrawal_payload,
+)
 from sandbox_science.policy_middleware import evaluator
 from sandbox_science.policy_middleware.cli import _read_records, main
 from sandbox_science.policy_middleware.evaluator import HttpRequestFacts, PolicyMiddleware
@@ -268,6 +275,35 @@ def test_requests_belong_to_their_sandbox(
     other = middleware.evaluate_http(facts(sandbox_id="sbx-0002"))
     assert other.reason_code == reasons.APPROVAL_REQUIRED
     assert request_number(other.reason) != seq
+
+
+def test_a_revoked_grants_host_answer_ends_and_the_sandbox_asks_again(
+    middleware: PolicyMiddleware, facts: FactsFactory, events: EventStore
+) -> None:
+    """The workspace's host answer from a grant (D97), then the worker's withdrawal of it
+    once the user revokes the grant: the answered sandbox's reads ask again at once."""
+    read = partial(facts, method="GET", host="reads.example.org")
+    seq = request_number(middleware.evaluate_http(read()).reason)
+    approvals = Approvals()
+    approvals.load(_read_records(events.path, 0))
+    grant = "grant-" + "a" * 20
+    kind, payload = prepare_answer(
+        approvals, seq, approve=True, scope="host", hours=1, now=datetime.now(UTC),
+        grants=(grant,),
+    )  # fmt: skip
+    events.append(kind, "workspace", payload)
+    assert middleware.evaluate_http(read(path="/v1/other", request_id="req-2")).allowed
+    approvals.load(_read_records(events.path, approvals.last_seq))
+    assert approvals.granted_by(grant, datetime.now(UTC)) == [seq]
+    request = approvals.request(seq)
+    assert request is not None
+    events.append(DENIAL, "worker", withdrawal_payload(seq, request.key, "grant revoked"))
+    again = middleware.evaluate_http(read(path="/v1/other", request_id="req-3"))
+    assert again.reason_code == reasons.APPROVAL_REQUIRED  # asked, not denied
+    assert request_number(again.reason) > seq
+    first = middleware.evaluate_http(read(request_id="req-4"))
+    assert first.reason_code == reasons.APPROVAL_REQUIRED
+    assert request_number(first.reason) > seq
 
 
 def test_answering_an_unknown_request_fails(settings: Path, events: EventStore) -> None:

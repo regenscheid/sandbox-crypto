@@ -54,8 +54,10 @@ def request_lines(approvals: Approvals, seq: int) -> list[str] | None:
     if request is None:
         return None
     answer = approvals.answer_to(seq)
-    if approvals.withdrawn(seq):
+    if approvals.withdrawn(seq) and request.key.kind == "packages":
         state = "withdrawn: its operation has ended"
+    elif approvals.withdrawn(seq):
+        state = "withdrawn: its grant was revoked"
     elif answer is None:
         state = f"waiting (after {request.timeout.total_seconds() / 60:.0f} min: "
         state += f"{request.on_timeout})"

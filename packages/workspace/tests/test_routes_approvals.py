@@ -22,6 +22,7 @@ from sandbox_science.contracts import new_id
 from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords
 from sandbox_science.orchestrator.delegation.requests import ChildRequests
 from sandbox_science.orchestrator.projects import ProjectStore
+from sandbox_science.testing import FakeClock
 from sandbox_science.testing.worker_api import fake_worker_app
 from sandbox_science.workspace import approvals
 
@@ -39,6 +40,11 @@ class FakeWorker:
     def __init__(self) -> None:
         self.waiting: list[dict[str, Any]] = []
         self.answers: list[tuple[int, dict[str, Any]]] = []
+        self.named: dict[int, list[str]] = {}
+        """The grants each answer names, kept apart from ``answers``."""
+        self.withdrawn: list[dict[str, Any]] = []
+        self.unreachable = False
+        """When set, the grant withdrawal route fails as a worker that cannot answer."""
         self.gate: asyncio.Event | None = None
         """When set, the first answer to ``gated`` waits for it before it is recorded."""
         self.gated: int | None = None
@@ -101,7 +107,16 @@ class FakeWorker:
         app = fake_worker_app()
         app.router.add_get("/v1/permission-requests", self.listing)
         app.router.add_post("/v1/permission-requests/{seq}/answer", self.answer)
+        app.router.add_post("/v1/permission-grants/withdraw", self.withdraw)
         return app
+
+    async def withdraw(self, request: web.Request) -> web.Response:
+        if self.unreachable:
+            return web.json_response(
+                {"error": {"kind": "unavailable", "message": "the store is busy"}}, status=503
+            )
+        self.withdrawn.append(await request.json())
+        return web.json_response({"requests": [1]})
 
     async def listing(self, request: web.Request) -> web.Response:
         assert request.headers["Authorization"] == f"Bearer {WORKER_TOKEN}"
@@ -112,6 +127,7 @@ class FakeWorker:
     async def answer(self, request: web.Request) -> web.Response:
         seq = int(request.match_info["seq"])
         body = await request.json()
+        self.named[seq] = body.pop("grants")
         if self.gate is not None and seq == self.gated:
             self.gated = None
             await self.gate.wait()
@@ -332,14 +348,47 @@ async def test_revoking_a_grant_stops_it_covering_at_once(
     client = await client_for(aiohttp_client, state_dir, static_dir, url)
     fake.hold(1, "submit_feedback")
     [grant] = (await post(client, ANSWER.format(1), {"decision": "project"}))["granted"]
+    assert fake.named[1] == [grant["grant_id"]]  # the answer names its grant
     revoke = f"/api/v0/projects/p1/grants/{grant['grant_id']}/revoke"
     assert (await post(client, revoke, {}))["grants"] == []
+    # The answers the grant gave are withdrawn at the middleware too.
+    assert fake.withdrawn == [{"project_id": "p1", "grant": grant["grant_id"]}]
     assert (await post(client, revoke, {}))["grants"] == []  # again: nothing changes
     await post(client, "/api/v0/projects/p1/grants/grant-nope/revoke", {}, status=404)
     fake.hold(2, "submit_feedback")
     await asyncio.sleep(0.3)
     assert [seq for seq, _ in fake.answers] == [1]  # the user is asked again
     assert 2 in await shown(client)
+
+
+async def test_a_revoke_the_worker_cannot_withdraw_says_so_and_is_retried(
+    aiohttp_client: ClientFactory,
+    state_dir: Path,
+    static_dir: Path,
+    worker: tuple[FakeWorker, str],
+) -> None:
+    desk, url = worker
+    client = await client_for(aiohttp_client, state_dir, static_dir, url)
+    desk.network(10, "data.example.org")
+    desk.network(11, "plain.example.org")
+    [host] = (await post(client, ANSWER.format(10), {"decision": "project", "kind": "network"}))[
+        "granted"
+    ]
+    await post(client, ANSWER.format(11), {"decision": "once", "kind": "network"})
+    assert (desk.named[10], desk.named[11]) == ([host["grant_id"]], [])  # once: no grant
+    desk.unreachable = True
+    revoke = f"/api/v0/projects/p1/grants/{host['grant_id']}/revoke"
+    failed = await post(client, revoke, {}, status=503)
+    assert failed["error"]["kind"] == "unavailable"
+    assert "could not be withdrawn yet" in failed["error"]["message"]
+    assert await grants(client) == []  # revoked all the same: it covers nothing new
+    desk.network(20, "data.example.org", path="/other")
+    desk.unreachable = False
+    await until(lambda: bool(desk.withdrawn))  # the relay tried again
+    assert desk.withdrawn == [{"project_id": "p1", "grant": host["grant_id"]}]
+    await asyncio.sleep(0.2)
+    assert desk.withdrawn == [{"project_id": "p1", "grant": host["grant_id"]}]  # once only
+    assert [seq for seq, _ in desk.answers] == [10, 11]
 
 
 async def test_answers_need_the_same_origin_and_the_configured_project(
@@ -421,6 +470,43 @@ async def test_the_relay_answers_network_and_package_requests_from_grants(
     assert desk.answers[2] == (
         20, {"approve": True, "scope": "host", "hours": approvals.HOST_HOURS},
     )  # fmt: skip
+
+
+async def test_an_answer_from_a_grant_never_outlasts_the_grant(
+    aiohttp_client: ClientFactory,
+    state_dir: Path,
+    static_dir: Path,
+    worker: tuple[FakeWorker, str],
+) -> None:
+    desk, worker_url = worker
+    client = await client_for(aiohttp_client, state_dir, static_dir, worker_url)
+    clock = FakeClock(datetime(2026, 10, 31, 22, 0, tzinfo=UTC))
+    client.app[approvals.APPROVALS].clock = clock
+    desk.network(10, "data.example.org")
+    desk.hold(11, "crawl")
+    desk.network(12, "plain.example.org")
+    # 72 s and 6 min: shorter than the host answer's hour and the call answer's 15 min.
+    await post(client, ANSWER.format(10), {"decision": "project", "kind": "network", "hours": 0.02})
+    await post(client, ANSWER.format(11), {"decision": "project", "hours": 0.1})
+    await post(client, ANSWER.format(12), {"decision": "project", "kind": "network", "hours": 5})
+    clock.advance(36)  # half of the host grant's 72 s left
+    desk.network(20, "data.example.org", path="/other")
+    await until(lambda: len(desk.answers) == 4)
+    assert desk.answers == [
+        (10, {"approve": True, "scope": "host", "hours": pytest.approx(0.02)}),
+        (11, {"approve": True, "scope": "call", "hours": pytest.approx(0.1)}),
+        # A grant longer than the answer's own time leaves it as it is.
+        (12, {"approve": True, "scope": "host", "hours": approvals.HOST_HOURS}),
+        (20, {"approve": True, "scope": "host", "hours": pytest.approx(0.01)}),
+    ]
+    clock.advance(37)  # the grant has expired: the next request is the user's again
+    desk.network(21, "data.example.org", path="/more")
+    await asyncio.sleep(0.3)
+    assert len(desk.answers) == 4
+    assert 21 in await shown(client)
+    # Granted again, the host gets a new grant and its own time, not the expired one's.
+    await post(client, ANSWER.format(21), {"decision": "project", "kind": "network", "hours": 2})
+    assert desk.answers[-1] == (21, {"approve": True, "scope": "host", "hours": 1.0})
 
 
 async def test_a_worker_without_permission_routes_shows_no_cards(

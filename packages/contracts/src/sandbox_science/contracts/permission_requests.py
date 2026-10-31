@@ -23,6 +23,10 @@ from .model import Contract, Identifier
 MAX_LISTED: Final = 256
 """Requests one listing carries, oldest first."""
 MAX_ANSWER_HOURS: Final = 24 * 30
+MAX_ANSWER_GRANTS: Final = 16
+"""Grants one answer may name as its source (the policy library's bound)."""
+GrantId = Annotated[str, StringConstraints(pattern=r"^grant-[0-9a-f]{20}$")]
+"""A grant in the workspace's control store (D97)."""
 Text = Annotated[str, StringConstraints(max_length=600)]
 CallerKind = Literal["agent", "code", "user"]
 """Who asked: the agent (through a tool), research code, or the user."""
@@ -40,6 +44,8 @@ class HttpSummary(Contract):
     content_type: Text | None = None
     fields: dict[Text, Text] = Field(default_factory=dict[str, str], max_length=20)
     """A JSON body's top-level fields, each value truncated."""
+    git_service: Literal["upload-pack", "receive-pack"] | None = None
+    """A git request's service: ``receive-pack`` pushes, ``upload-pack`` fetches."""
 
 
 class PackageSource(Contract):
@@ -144,6 +150,21 @@ class WorkerPermissionAnswer(Contract):
     approve: bool
     scope: Literal["request", "host", "files", "call", "session"]
     hours: Annotated[float, Field(gt=0, le=MAX_ANSWER_HOURS)] | None = None
+    grants: Annotated[tuple[GrantId, ...], Field(max_length=MAX_ANSWER_GRANTS)] = ()
+    """The grants an approval comes from, which revoking one withdraws (protocol 18)."""
+
+
+class GrantWithdrawal(Contract):
+    """Withdraw the project's answered requests whose live approval names ``grant``, which
+    the user revoked (D97): the middleware asks again on their next try."""
+
+    project_id: Identifier
+    grant: GrantId
+
+
+class GrantWithdrawn(Contract):
+    requests: list[Annotated[int, Field(ge=1)]] = Field(max_length=100_000)
+    """The requests withdrawn now; empty when none was live."""
 
 
 class WorkerPermissionAnswered(Contract):

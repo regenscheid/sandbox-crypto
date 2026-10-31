@@ -86,9 +86,17 @@ def _host(url: str) -> str | None:
 
 
 def http_summary(
-    method: str, host: str, port: int, path: str, content_type: str | None, body: bytes
+    method: str,
+    host: str,
+    port: int,
+    path: str,
+    content_type: str | None,
+    body: bytes,
+    git_service: str | None = None,
 ) -> dict[str, object]:
-    """An HTTP request as a card shows it: never the body itself."""
+    """An HTTP request as a card shows it: never the body itself. A git request names its
+    service (``receive-pack`` for a push, ``upload-pack`` for a fetch), which its path
+    alone may not show: a push's first request differs from a fetch's in the query only."""
     summary: dict[str, object] = {
         "method": shown(method, 16),
         "host": shown(host, 253),
@@ -96,6 +104,8 @@ def http_summary(
         "path": shown(path, 300),
         "size": len(body),
     }
+    if git_service is not None:
+        summary["git_service"] = git_service
     if content_type:
         summary["content_type"] = shown(content_type, 100)
     fields = _json_fields(content_type, body)

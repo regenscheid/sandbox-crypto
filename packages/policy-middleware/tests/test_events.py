@@ -29,6 +29,10 @@ network:
   rules:
     - {name: watched, operation: http, match: {hosts: [watched.example.org]}, action: alert}
     - {name: writes, operation: http, match: {hosts: ["*"], methods: [POST]}, action: escalate}
+    - name: git-push
+      operation: git
+      match: {hosts: [git.example.org], git_service: receive-pack}
+      action: escalate
 monitors:
   - {name: chatty, when: {egress_bytes_per_hour_over: 100}, action: alert}
 """
@@ -175,6 +179,22 @@ def test_a_json_bodys_top_level_fields_are_summarized_truncated(
     assert len(fields["title"]) == 160
     assert fields["title"].endswith("…")
     assert (fields["draft"], fields["tags"], fields["n"]) == ("true", "[2 items]", "3")
+
+
+def test_a_git_requests_card_names_its_service(
+    recording: PolicyMiddleware, facts: FactsFactory, events: EventStore
+) -> None:
+    # A push's first request differs from a fetch's only in its query, which is not kept.
+    verdict = recording.evaluate_http(
+        facts(
+            host="git.example.org", path="/lab/none.git/info/refs", query="service=git-receive-pack"
+        )
+    )
+    assert verdict.reason_code == reasons.APPROVAL_REQUIRED
+    recording.evaluate_http(facts(method="POST", path="/v1/items"))
+    git, plain = (cast(dict[str, Any], record[2]["summary"]) for record in stored(events))
+    assert (git["path"], git["git_service"]) == ("/lab/none.git/info/refs", "receive-pack")
+    assert "git_service" not in plain
 
 
 def test_an_alert_that_cannot_be_stored_is_denied(

@@ -78,3 +78,27 @@ it('lists grants and revokes one in one click', async () => {
   ]);
   expect(target.querySelectorAll('.grant-row')).toHaveLength(1);
 });
+
+it("keeps the server's words when a revoke could not withdraw the answers yet", async () => {
+  let revoked = false;
+  const message = 'the grant is revoked, but its answers could not be withdrawn yet';
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (_url: string, options?: RequestInit) => {
+      if (options?.method === 'POST') {
+        revoked = true;
+        const body = { error: { kind: 'unavailable', message } };
+        return new Response(JSON.stringify(body), { status: 503 });
+      }
+      return new Response(JSON.stringify({ project: 'p1', grants: revoked ? [] : [grant] }));
+    }),
+  );
+  const target = document.createElement('div');
+  document.body.append(target);
+  mounted.push(mount(GrantsPanel, { target, props: { projectId: 'p1' } }));
+  await settle();
+  target.querySelector<HTMLButtonElement>('.grant-row button')!.click();
+  await settle();
+  expect(target.querySelectorAll('.grant-row')).toHaveLength(0);
+  expect(target.textContent).toContain(message);
+});

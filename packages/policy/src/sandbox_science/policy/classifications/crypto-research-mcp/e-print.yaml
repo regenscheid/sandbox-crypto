@@ -6,7 +6,7 @@ apiVersion: sandbox-science/v0alpha1
 kind: ToolClassification
 server: crypto-research-mcp
 prefix: e-print-mcp_
-pinned: "2026-10-26"
+pinned: "2026-10-31"
 tools:
   e-print-mcp_corpus_stats:
     class: read
@@ -19,9 +19,9 @@ tools:
     significant: {title: paper_id}
   e-print-mcp_eprint_fulltext:
     class: read
-    reason: "Reads a paper's text; the first call may fetch and cache the PDF (D95: a read)."
-    sha256: 9c1a3f44d72426a6191da42c05f537b548dab98f1f6b326374de1b62bd718e38
-    significant: {title: paper_id, query: query}
+    reason: "Reads a paper's text by page; the first call may fetch and cache the PDF (D95: a read)."
+    sha256: b77b2ee26ef4230c1b397cce81f7adb107e1a307e7af58ff544cf1dd8af0a8ff
+    significant: {title: paper_id}
   e-print-mcp_get_eprint:
     class: read
     reason: "Metadata and abstract for one paper."
@@ -41,3 +41,8 @@ tools:
     reason: "Searches the ePrint corpus."
     sha256: 41cb9f4dc0bfd7e5519a00ec5b2dbf49459cfd077ab696242ed5d5c9c80f80db
     significant: {query: query}
+  e-print-mcp_search_eprint_fulltext:
+    class: read
+    reason: "Searches one paper's text for a phrase; the first call may fetch and cache the PDF (D95: a read)."
+    sha256: 4f545bafdae3639509d2a03ac0db963333f27ea3bb08d77beb70118b87a0ff62
+    significant: {title: paper_id, query: query}

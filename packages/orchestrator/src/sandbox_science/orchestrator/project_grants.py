@@ -206,8 +206,8 @@ class ProjectGrants:
         hours: float | None = None,
     ) -> list[ProjectGrant]:
         """Grant what ``asked`` asks for, for ``scope`` (session or project), within its
-        ceiling, which is checked here whatever a client sent. One grant per subject; one
-        the project already holds is kept, not repeated."""
+        ceiling, which is checked here whatever a client sent. One grant per subject; a live
+        one the project already holds is kept, not repeated."""
         _scope(project)
         if author.kind != "user":
             raise DocumentError(POLICY_DENIED, "only the user grants a project's requests")
@@ -228,14 +228,21 @@ class ProjectGrants:
                     if value is not None and re.fullmatch(_TEXT, value) is None:
                         raise DocumentError(INVALID_REQUEST, "invalid grant")
                 key = _subject(asked.kind, subject)
-                row = db.execute(
-                    "SELECT grant_id FROM project_grants WHERE project=? AND subject=? AND "
-                    "scope=? AND coalesce(session,'')=? AND revoked_at IS NULL",
+                rows = db.execute(
+                    "SELECT grant_id,expires_at FROM project_grants WHERE project=? AND "
+                    "subject=? AND scope=? AND coalesce(session,'')=? AND revoked_at IS NULL",
                     (project, key, scope, session or ""),
-                ).fetchone()
-                if row is not None:
-                    given.append(str(row[0]))
+                ).fetchall()
+                held = next((str(r[0]) for r in rows if _live_at(r[1], now)), None)
+                if held is not None:
+                    given.append(held)
                     continue
+                # An expired grant is not kept: it is closed as of its expiry, and the
+                # answer gives a new one.
+                db.executemany(
+                    "UPDATE project_grants SET revoked_at=expires_at WHERE grant_id=?",
+                    [(str(r[0]),) for r in rows],
+                )
                 if _count(db, project) >= MAX_GRANTS:
                     raise DocumentError(
                         POLICY_DENIED, f"a project holds at most {MAX_GRANTS} grants"
@@ -304,6 +311,10 @@ def _live(db: sqlite3.Connection, project: str) -> list[ProjectGrant]:
     rows = db.execute(_LIVE, (project,)).fetchall()
     names = _COLUMNS.split(",")
     return [ProjectGrant.model_validate(dict(zip(names, row, strict=True))) for row in rows]
+
+
+def _live_at(expires_at: object, now: datetime) -> bool:
+    return expires_at is None or datetime.fromisoformat(str(expires_at)) > now
 
 
 def _time(value: datetime) -> str:

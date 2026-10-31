@@ -1558,6 +1558,7 @@ export interface HttpSummary {
   size: number;
   content_type: string | null;
   fields: Record<string, string>;
+  git_service: "upload-pack" | "receive-pack" | null;
 }
 
 export interface IndexStatus {
