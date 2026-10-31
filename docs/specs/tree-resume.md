@@ -52,8 +52,13 @@ branches; it never calls an incomplete tree successfully resumed.
 
 The control service also checks the current tree's paused root for transient
 failures (D100, `continuity/transient.py`): network errors, gateway 5xx and 524, model
-timeouts, streams without a final answer, worker loss mid-operation, bridge loss and
-persistence errors. The loop saves the classification with a failed attempt
+timeouts, streams without a final answer, worker loss mid-operation, bridge loss,
+persistence errors, and a worker still busy observing an environment's kernels
+(`worker_busy`). The worker observes one environment's kernels at a time and answers
+another observation busy meanwhile, as when sibling continuations in one shared
+environment start together; a continuation's kernel check asks again after a short,
+growing wait (up to eight times, about 20 s in all), and only a busy answer that
+outlasts that is a failure, classified `worker_busy`, not `worker_loss`. The loop saves the classification with a failed attempt
 (`summaries.failure.transient`); a Resume branch ended by one is blocked with reason
 `transient:<kind>: …`; the service records a bridge loss (`transient_failure`) when its
 runtime connection ends while it is not draining. A legacy record with failure phase

@@ -28,6 +28,8 @@ from sandbox_science.orchestrator.model import (
 )
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerProtocolError
 
+from .kernels import observation_busy
+
 Transient = Literal[
     "network",
     "gateway_error",
@@ -35,11 +37,14 @@ Transient = Literal[
     "model_timeout",
     "incomplete_stream",
     "worker_loss",
+    "worker_busy",
     "bridge_loss",
     "persistence",
     "model",
 ]
-"""``model`` is a legacy model-phase failure saved before failures were classified."""
+"""``model`` is a legacy model-phase failure saved before failures were classified.
+``worker_busy`` is the worker's capacity answer to a kernel observation that its callers'
+bounded retries outlasted: the worker is there, so it is not ``worker_loss``."""
 
 TRANSIENT: Final[frozenset[str]] = frozenset(
     {
@@ -49,6 +54,7 @@ TRANSIENT: Final[frozenset[str]] = frozenset(
         "model_timeout",
         "incomplete_stream",
         "worker_loss",
+        "worker_busy",
         "bridge_loss",
         "persistence",
         "model",
@@ -77,6 +83,8 @@ def _one(error: BaseException) -> Transient | None:
     if isinstance(error, UnknownEffectError):
         return "worker_loss" if error.kind == "worker_unknown_effect" else None
     if isinstance(error, WorkerAPIError):
+        if observation_busy(error):
+            return "worker_busy"
         return "worker_loss" if error.kind is ErrorKind.UNAVAILABLE else None
     if isinstance(error, TransportError):
         if error.kind != "unavailable":
