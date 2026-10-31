@@ -182,7 +182,11 @@ class ConnectorTool:
     delegated run's fence lets such a call through, to be held for the user, under a draft
     plan (D99)."""
     digest: str = ""
-    """The listed tool's digest as the pins compute it (``mcp_wire.tool_digest``)."""
+    """The listed tool's digest as the pins compute it (``mcp_wire.tool_digest``); empty
+    for a tool that cannot be digested, which never has a class."""
+    confirmed: bool = False
+    """Whether the trusted side answered for its class (a class, or none); False while it
+    could not be asked, so it is asked again at the next call."""
 
     @property
     def group(self) -> str:
@@ -248,9 +252,13 @@ class ToolClassSource(Protocol):
     """Where the host takes listed tools' classes from: the project's classification in
     force, on the trusted side (``confinement.listings.WorkerToolClasses``, DA-7)."""
 
-    async def classes(self, server: str, tools: Mapping[str, str]) -> Mapping[str, TrustedClass]:
-        """The class of each of ``server``'s ``tools`` (name to digest) that has one: a tool
-        left out has none. Never raises for an unanswered question: it answers nothing."""
+    async def classes(
+        self, asked: Mapping[str, Mapping[str, str]], *, session: str
+    ) -> Mapping[str, Mapping[str, TrustedClass]]:
+        """For each server ``asked`` names (with its tools, name to digest) that the trusted
+        side answered, the class of each tool that has one, for a call in ``session``; a
+        tool left out has none, and a server left out was not answered. Never raises for an
+        unanswered question: it answers nothing."""
         ...
 
 
@@ -361,7 +369,7 @@ class Connectors:
             listed = await self._listed(server, LIST_ATTEMPTS)
             if listed is not None:
                 listings[server] = self._kept(server, listed, self.taken)
-        self._register(listings, await self._classes_of(listings))
+        self._register(listings, *await self._classes_of(listings))
 
     async def relist(self) -> list[str]:
         """List once more, once in the run, each server whose listing failed: the servers
@@ -374,7 +382,7 @@ class Connectors:
             listed = await self._listed(server, 1)
             if listed is not None:
                 listings[server] = self._kept(server, listed, self.taken | set(self.tools))
-        self._register(listings, await self._classes_of(listings))
+        self._register(listings, *await self._classes_of(listings))
         self.relisted.extend(listings)
         return list(listings)
 
@@ -419,38 +427,54 @@ class Connectors:
 
     async def _classes_of(
         self, listings: Mapping[str, list[tuple[str, dict[str, Any]]]]
-    ) -> dict[str, dict[str, TrustedClass]]:
-        """The class the host takes for each listed tool that has one, by server."""
-        found: dict[str, dict[str, TrustedClass]] = {}
-        for server, kept in listings.items():
-            digests = {name: tool_digest(tool) for name, tool in kept}
-            found[server] = dict(await self._classes(server, digests)) if digests else {}
-        return found
-
-    async def _classes(self, server: str, digests: Mapping[str, str]) -> Mapping[str, TrustedClass]:
-        if self.classes is None:
-            return {}
-        answered = await self.classes.classes(server, digests)
-        # Only the tools asked about, each a class of the closed set.
-        return {
-            name: found
-            for name, found in answered.items()
-            if name in digests and found.effect in EFFECT_CLASSES
+    ) -> tuple[dict[str, dict[str, TrustedClass]], set[str]]:
+        """The class the host takes for each listed tool that has one, by server, asked of
+        every server at once, and the servers the trusted side answered for."""
+        asked = {
+            server: {name: digest for name, tool in kept if (digest := _digest(server, name, tool))}
+            for server, kept in listings.items()
         }
+        return await self._classes(asked)
+
+    async def _classes(
+        self, asked: Mapping[str, Mapping[str, str]]
+    ) -> tuple[dict[str, dict[str, TrustedClass]], set[str]]:
+        if self.classes is None:
+            return {}, set()
+        answered = await self.classes.classes(
+            {server: tools for server, tools in asked.items() if tools}, session=self.session
+        )
+        # Only the servers and tools asked about, each a class of the closed set. A server
+        # with nothing to ask (none of its tools digests) is answered: none has a class.
+        found = {
+            server: {
+                name: taken
+                for name, taken in answered[server].items()
+                if name in asked[server] and taken.effect in EFFECT_CLASSES
+            }
+            for server in asked
+            if server in answered
+        }
+        return found, {*found, *(server for server, tools in asked.items() if not tools)}
 
     async def classed(self, name: str) -> ConnectorTool | None:
         """The connector tool ``name`` with its class as the host takes it now, asked again
-        of the trusted side, so a classification revision accepted since the listing
-        applies; None for a tool that is not a connector's. A delegated run's fence asks
-        before each call it decides (D99, DA-7)."""
+        of the trusted side, so a classification or policy revision, or a grant, since the
+        listing applies; None for a tool that is not a connector's. A delegated run's fence
+        asks before each call it decides (D99, DA-7), and a check's call asks itself."""
         tool = self.tools.get(name)
         if tool is None or self.classes is None:
             return tool
-        found = (await self._classes(tool.server, {name: tool.digest})).get(name)
+        if not tool.digest:
+            found, answered = {}, {tool.server}
+        else:
+            found, answered = await self._classes({tool.server: {name: tool.digest}})
+        taken = found.get(tool.server, {}).get(name)
         now = replace(
             tool,
-            effect_class=found.effect if found is not None else None,
-            escalates=found.escalates if found is not None else False,
+            effect_class=taken.effect if taken is not None else None,
+            escalates=taken.escalates if taken is not None else False,
+            confirmed=tool.server in answered,
         )
         if self.tools.get(name) is tool:
             self.tools[name] = now
@@ -460,9 +484,11 @@ class Connectors:
         self,
         listings: dict[str, list[tuple[str, dict[str, Any]]]],
         classes: Mapping[str, Mapping[str, TrustedClass]],
+        answered: set[str],
     ) -> None:
         """Offer the listed servers' tools, within the caps, each with the class the host
-        took for it (``classes``, by server), if any."""
+        took for it (``classes``, by server), if any; the trusted side did not answer for
+        the servers not ``answered``, whose tools are asked again at their calls."""
         # A name two configured servers list is neither's: one could stand in for the
         # other's tool, whichever was listed first.
         owners = Counter(name for kept in listings.values() for name, _ in kept)
@@ -487,10 +513,17 @@ class Connectors:
                     purpose(tool.get("description")),
                     taken.effect if taken is not None else None,
                     taken.escalates if taken is not None else False,
-                    tool_digest(tool),
+                    _digest(server, name, tool) or "",
+                    server in answered,
                 )
-                if self.reads_only and offered_tool.effect_class != "read":
-                    continue  # a check changes nothing outside the session (DA-1, PD-33)
+                if (
+                    self.reads_only
+                    and offered_tool.effect_class != "read"
+                    and (offered_tool.confirmed or self.classes is None)
+                ):
+                    # A check changes nothing outside the session (DA-1, PD-33). A tool the
+                    # trusted side could not be asked about stays, to be asked at its call.
+                    continue
                 if self.narrowing is not None and not self.narrowing.admits(
                     server, name, offered_tool.group
                 ):
@@ -672,6 +705,9 @@ class Connectors:
     async def call(self, name: str, arguments: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         """Call a connector tool: its text for the model, and the record to keep."""
         tool = self.tools[name]
+        if self.classes is not None and (self.reads_only or not tool.confirmed):
+            # A check calls only what is a read now; an unconfirmed class is asked again.
+            tool = await self.classed(name) or tool
         record: dict[str, Any] = {"connector": tool.server}
         if tool.effect_class is not None:
             record["effect_class"] = tool.effect_class
@@ -683,6 +719,9 @@ class Connectors:
             message = (
                 f"{name} is no longer classed as a read, and a check calls only reads: do "
                 "not call it; carry on without it, and say so if the check needs it."
+                if tool.confirmed
+                else f"{name}'s class could not be confirmed as a read just now, and a check "
+                "calls only reads: try it again later, or carry on without it and say so."
             )
             return dump({"error": {"kind": "not_permitted_for_role", "message": message}}), record
         if self.disabled is not None and tool.server in await asyncio.to_thread(self.disabled):
@@ -771,6 +810,16 @@ after. Each retry is one more audited request at the policy middleware."""
 MAX_APPROVAL_WAIT: Final = 2 * 3600.0
 """The longest a call waits for an answer; the policy's timeout usually ends it first."""
 _ANSWERED: Final = frozenset({"approval_required", "approval_denied", "escalation_timed_out"})
+
+
+def _digest(server: str, name: str, tool: Mapping[str, Any]) -> str | None:
+    """A listed tool's digest as the pins compute it, or None for one that cannot be
+    digested (text JSON cannot encode, such as a lone surrogate): it never has a class."""
+    try:
+        return tool_digest(tool)
+    except (UnicodeError, TypeError, ValueError, RecursionError):
+        _log.warning("MCP server %s's tool %s cannot be digested: it has no class", server, name)
+        return None
 
 
 def _explain(error: ConnectorError) -> str:

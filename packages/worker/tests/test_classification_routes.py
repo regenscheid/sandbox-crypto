@@ -104,6 +104,7 @@ async def api(aiohttp_client: ClientFactory, tmp_path: Path) -> AsyncIterator[Ap
     root = tmp_path / "middleware"
     store = PolicyStore(root)
     loaded = store.add_policy(EXAMPLE.read_bytes())
+    store.bind("sbx-runtime", loaded.digest, project="p1")  # the agent runtime's sandbox
     policies: dict[str, LoadedPolicy] = {"p1": loaded}
     events = EventStore(root / "events.db", timeout=5)
     permissions = Permissions(root / "events.db")
@@ -798,6 +799,10 @@ async def test_a_tool_has_a_class_only_with_its_pin_in_the_classification_in_for
     status, found = await tool_classes(api, body)
     assert status == 200, found
     assert found["classification"] == catalog(SERVER).digest
+    assert found["policy"] == api.store.binding("sbx-runtime")
+    asks = {tool["name"]: tool["asks"] for tool in found["tools"]}
+    assert asks[FEEDBACK] == [{"effect": "write", "max_grant": "project"}]
+    assert asks[SCRAPE] == []
     assert {tool["name"]: (tool["state"], tool["effect"], tool["escalates"])
             for tool in found["tools"]} == {
         SCRAPE: ("classified", "browse", False),  # an argument can make it browse

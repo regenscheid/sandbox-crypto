@@ -270,7 +270,8 @@ class DirectClient:
         try:
             listed = mcp_wire.listed_tools(result)
             _, cursor = mcp_wire.tool_names(result)
-        except McpWireError:
+        except (McpWireError, UnicodeError):
+            # A lone surrogate cannot be digested, so the listing cannot be checked.
             raise ConnectorError("unavailable", f"{server}'s tools/list is malformed") from None
         key = (server, session)
         earlier = self._pages.pop(key, None)

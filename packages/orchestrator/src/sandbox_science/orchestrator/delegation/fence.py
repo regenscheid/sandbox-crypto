@@ -17,9 +17,10 @@ project's classification in force (D96, D99; delegated agents spec DA-7), asked 
 each call, so a revision accepted during the run applies. A ``read`` stays in the session
 and passes as computation does. Another class is outward, and so is a tool with none (a
 drifted, unpinned or unclassified one). Under a draft or user-edited plan, an outward call
-still goes out when the policy asks a person first for a call of the tool: it is held, and
-the user decides it from a card attributed to the child (DA-9). One the policy would let
-through unasked, or one with no class, is refused, since nobody would see it.
+still goes out when every call of the tool asks a person first: it is held, and the user
+decides it from a card attributed to the child (DA-9). One the policy would let through
+unasked, one a grant in force would answer with no card, or one with no class, is refused,
+since nobody would see it.
 """
 
 from __future__ import annotations

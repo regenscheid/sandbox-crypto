@@ -68,6 +68,7 @@ from sandbox_science.contracts.classifications import (
     ReportedListing,
     RuntimeClassification,
     RuntimeClassifications,
+    ToolAsk,
     ToolClass,
     ToolClasses,
     ToolClassQuery,
@@ -87,6 +88,7 @@ from sandbox_science.policy.classification import (
     class_action,
     classified_names,
     listed_effect,
+    possible_classes,
     resolve,
     restrictiveness,
     revision_classification,
@@ -495,33 +497,46 @@ class ClassificationDesk:
         )
 
     def tool_classes(self, query: ToolClassQuery) -> ToolClasses:
-        """Each named tool's class under the project's classification in force, for the
-        host's connectors (DA-7): only a tool the classification names with a pin equal to
-        the digest the host computed has one, the class a call of it by name without
-        arguments resolves to (``read`` only when no argument can make a call more), and
-        whether the policy escalates that call. Nothing the listing said beyond the name and
-        the digest is taken. The caller checked the project is its own. Blocking."""
+        """Each named tool's class, for the host's connectors (DA-7), as the policy
+        middleware decides the agent runtime's calls: under the policy revision the
+        project's runtime sandboxes are bound to and the project's classification in force.
+        Only a tool the classification names with a pin equal to the digest the host
+        computed has a class: the class a call of it by name without arguments resolves to
+        (``read`` only when no argument can make a call more), whether every call of it asks
+        the user, and the classes and ceilings a grant would have to name. Nothing the
+        listing said beyond the name and the digest is taken. When the runtime sandboxes are
+        bound to none or several revisions, no tool has a class: no answer could match the
+        middleware's for every call. The caller checked the project is its own. Blocking."""
         names = [tool.name for tool in query.tools]
         if len(set(names)) != len(names):
             raise ClassificationReviewError("a tool is named twice", "invalid")
-        loaded, entry = self._server(query.project_id, query.server)
+        project, server = query.project_id, query.server
+        self._server(project, server)  # the project's own server, or not found
+        none = {"project_id": project, "server": server}
         try:
-            revision = self.store.classification(query.project_id, query.server)
+            revisions = set(self.store.runtime_bindings(project).values())
+            loaded = self.store.policy(revisions.pop()) if len(revisions) == 1 else None
+            revision = self.store.classification(project, server)
         except (StoreError, PolicyLoadError) as exc:
-            raise PermissionStoreError(f"the classification of {query.server}: {exc}") from exc
-        current = server_classification(entry, revision)
-        if current is None:
+            raise PermissionStoreError(f"the classes of {server}'s tools: {exc}") from exc
+        if loaded is None:
             return ToolClasses(
-                project_id=query.project_id,
-                server=query.server,
+                **none, tools=[ToolClass(name=name, state="unbound") for name in names]
+            )
+        entry = loaded.policy.mcp.servers.get(server)
+        current = server_classification(entry, revision) if entry is not None else None
+        if entry is None or current is None:
+            return ToolClasses(
+                **none,
+                policy=loaded.digest,
                 tools=[ToolClass(name=name, state="unclassified") for name in names],
             )
         return ToolClasses(
-            project_id=query.project_id,
-            server=query.server,
+            **none,
+            policy=loaded.digest,
             classification=current.digest,
             tools=[
-                self._class(loaded, query.server, entry, current, tool.name, tool.digest)
+                self._class(loaded, server, entry, current, tool.name, tool.digest)
                 for tool in query.tools
             ],
         )
@@ -535,7 +550,8 @@ class ClassificationDesk:
         name: str,
         digest: str,
     ) -> ToolClass:
-        found = current.tools.get(name.removeprefix(entry.tool_prefix or ""))
+        stripped = name.removeprefix(entry.tool_prefix or "")
+        found = current.tools.get(stripped)
         if found is None:
             return ToolClass(name=name, state="unclassified")
         if found.sha256 is None:
@@ -563,10 +579,29 @@ class ClassificationDesk:
         effect = listed_effect(entry, name, decision, current)
         if effect not in _EFFECTS:
             return ToolClass(name=name, state="unclassified")
+        # Every call asks only when every class its arguments can resolve it to asks or is
+        # denied: one argument that makes it an allowed class lets that call out unasked.
+        terms = [
+            (possible, class_action(loaded.policy, server, possible))
+            for possible in sorted(possible_classes(entry, stripped, current))
+        ]
+        escalates = decision.action is Action.ESCALATE and all(
+            action.action in (Action.ESCALATE, Action.DENY) for _, action in terms
+        )
+        asks = (
+            [
+                ToolAsk(effect=possible.value, max_grant=action.max_grant.value)
+                for possible, action in terms
+                if action.action is Action.ESCALATE
+            ]
+            if escalates
+            else []
+        )
         return ToolClass(
             name=name,
             effect=cast(EffectName, effect),
-            escalates=decision.action is Action.ESCALATE,
+            escalates=escalates,
+            asks=asks,
             state="classified",
         )
 

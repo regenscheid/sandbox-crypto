@@ -21,19 +21,22 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Mapping, Sequence
-from typing import Final
+from typing import Final, Protocol
 
 from pydantic import ValidationError
 
-from sandbox_science.contracts import ErrorKind
+from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ErrorKind
 from sandbox_science.contracts.classifications import (
     MAX_CLASSED_TOOLS,
     ListingReport,
     ReportedTool,
+    ToolAsk,
     ToolClassQuery,
     ToolPin,
 )
 from sandbox_science.orchestrator.connectors import TrustedClass
+from sandbox_science.orchestrator.documents import DocumentStore
+from sandbox_science.orchestrator.project_grants import Asked, ProjectGrants, covering
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 from sandbox_science.policy.mcp_wire import ListedTool
 
@@ -124,32 +127,95 @@ async def report(
     return await sink.report(value, project, session, run)
 
 
+class GrantCheck(Protocol):
+    """Whether the user's grants in force cover a call of ``server`` in ``session`` that
+    resolves to any of ``asks`` (D97); one that cannot tell says yes."""
+
+    async def __call__(self, session: str, server: str, asks: Sequence[ToolAsk]) -> bool: ...
+
+
+class ControlGrants:
+    """The project's grants in the control store (``project_grants``), read at each
+    question, so a grant given or revoked during a run applies to its next call."""
+
+    def __init__(
+        self, documents: DocumentStore, project: str, *, clock: Clock = SYSTEM_CLOCK
+    ) -> None:
+        self._grants, self._project, self._clock = ProjectGrants(documents), project, clock
+
+    async def __call__(self, session: str, server: str, asks: Sequence[ToolAsk]) -> bool:
+        try:
+            listing = await asyncio.to_thread(self._grants.listing, self._project)
+        except Exception:  # an unreadable grant could cover it: the fence then refuses
+            _log.exception("the grants of %s cannot be read", self._project)
+            return True
+        now = self._clock.now()
+        asked = [
+            Asked("mcp", "agent", session, ask.max_grant, server=server, effect=ask.effect)
+            for ask in asks
+        ]
+        return any(covering(listing.grants, one, now) for one in asked)
+
+
 class WorkerToolClasses:
     """The host's ``ToolClassSource`` on the direct path: the worker's classes of a
-    project's listed tools, by name and digest (``POST /v1/mcp-tool-classes``). A worker
-    that refuses or does not answer gives no class, which the fence treats as outward."""
+    project's listed tools, by name and digest (``POST /v1/mcp-tool-classes``), every server
+    asked at once within one deadline. A worker that refuses or does not answer gives no
+    class, and the tools are asked again at their calls. A tool every call of which asks the
+    user is marked so only when no grant in force answers such a call: a granted call goes
+    out unasked, so a child's fence refuses it under a draft plan like any other (D97,
+    D99)."""
 
-    def __init__(self, worker: WorkerClient, project: str, *, seconds: float = CLASS_SECONDS):
-        self._worker, self._project, self._seconds = worker, project, seconds
+    def __init__(
+        self,
+        worker: WorkerClient,
+        project: str,
+        grants: GrantCheck,
+        *,
+        seconds: float = CLASS_SECONDS,
+    ) -> None:
+        self._worker, self._project, self._grants = worker, project, grants
+        self._seconds = seconds
 
-    async def classes(self, server: str, tools: Mapping[str, str]) -> Mapping[str, TrustedClass]:
+    async def classes(
+        self, asked: Mapping[str, Mapping[str, str]], *, session: str
+    ) -> Mapping[str, Mapping[str, TrustedClass]]:
+        servers = list(asked)
+        try:
+            async with asyncio.timeout(self._seconds):
+                answers = await asyncio.gather(
+                    *(self._server(server, asked[server], session) for server in servers)
+                )
+        except TimeoutError:
+            _log.warning("the classes of %s's listed tools are not known: no answer in time",
+                         ", ".join(servers))  # fmt: skip
+            return {}
+        return {
+            server: found for server, found in zip(servers, answers, strict=True)
+            if found is not None
+        }  # fmt: skip
+
+    async def _server(
+        self, server: str, tools: Mapping[str, str], session: str
+    ) -> dict[str, TrustedClass] | None:
         pins = [ToolPin(name=name, digest=digest) for name, digest in tools.items()]
         found: dict[str, TrustedClass] = {}
         for start in range(0, len(pins), MAX_CLASSED_TOOLS):
-            asked = pins[start : start + MAX_CLASSED_TOOLS]
+            part = pins[start : start + MAX_CLASSED_TOOLS]
             try:
-                async with asyncio.timeout(self._seconds):
-                    answer = await self._worker.mcp_tool_classes(
-                        ToolClassQuery(project_id=self._project, server=server, tools=tuple(asked))
-                    )
-            except (WorkerAPIError, TimeoutError, ValidationError) as exc:
+                answer = await self._worker.mcp_tool_classes(
+                    ToolClassQuery(project_id=self._project, server=server, tools=tuple(part))
+                )
+            except (WorkerAPIError, ValidationError) as exc:
                 _log.warning("the classes of %s's listed tools are not known: %s", server, exc)
-                return {}
+                return None
             if answer.project_id != self._project or answer.server != server:
                 _log.warning("the worker answered the classes of another server than %s", server)
-                return {}
-            named = {pin.name for pin in asked}
+                return None
+            named = {pin.name for pin in part}
             for tool in answer.tools:
-                if tool.name in named and tool.effect is not None and tool.state == "classified":
-                    found[tool.name] = TrustedClass(tool.effect, tool.escalates)
+                if tool.name not in named or tool.effect is None or tool.state != "classified":
+                    continue
+                escalates = tool.escalates and not await self._grants(session, server, tool.asks)
+                found[tool.name] = TrustedClass(tool.effect, escalates)
         return found

@@ -323,11 +323,22 @@ class ToolClassQuery(Contract):
     tools: tuple[ToolPin, ...] = Field(max_length=MAX_CLASSED_TOOLS)
 
 
-ToolClassState = Literal["classified", "unclassified", "unpinned", "changed", "denied"]
+ToolClassState = Literal["classified", "unclassified", "unpinned", "changed", "denied", "unbound"]
 """Why a tool has its class, or none: the classification in force names it with a pin equal
 to its digest (``classified``); it names it not at all, or only the policy's ``classify``
 does (``unclassified``); it names it without a pin (``unpinned``); its pin is another digest
-(``changed``); the policy denies a call of it by name (``denied``)."""
+(``changed``); the policy denies a call of it by name (``denied``); the project's agent
+runtime sandboxes are bound to no one policy revision, so no answer could match the policy
+middleware's (``unbound``)."""
+MaxGrantName = Literal["none", "once", "session", "project"]
+
+
+class ToolAsk(Contract):
+    """A class a call of an escalated tool can resolve to, and that class's grant ceiling:
+    what a grant must name to answer such a call (D97)."""
+
+    effect: EffectName
+    max_grant: MaxGrantName
 
 
 class ToolClass(Contract):
@@ -338,16 +349,26 @@ class ToolClass(Contract):
     """The class a call by name without arguments resolves to, ``read`` only when no
     argument can make a call of it more; None unless ``classified``."""
     escalates: bool = False
-    """Whether the policy escalates a call of it by name: a ``classified`` tool's only."""
+    """Whether every call of it asks the user first: the policy escalates a call by name,
+    and every class an argument can resolve a call to is escalated or denied, none allowed.
+    A ``classified`` tool's only."""
+    asks: list[ToolAsk] = Field(default_factory=list[ToolAsk], max_length=8)
+    """For an escalated tool, the escalated classes a call can resolve to, with their grant
+    ceilings: the host checks the user's grants against them (D97)."""
     state: ToolClassState
 
 
 class ToolClasses(Contract):
     """The worker's answer: each named tool's class under the project's classification in
-    force (its accepted revision, else the checked-in file), in the order asked."""
+    force (its accepted revision, else the checked-in file) and the policy revision its agent
+    runtime sandboxes are bound to, in the order asked."""
 
     project_id: Identifier
     server: ServerName
+    policy: Text | None = None
+    """The policy revision (``sha256:``) the answer is under: the one every agent runtime
+    sandbox of the project is bound to, which the policy middleware decides their calls
+    under; None when they are bound to none or to more than one (every tool ``unbound``)."""
     classification: Text | None = None
     """The digest of the classification in force; None when the server's policy entry names
     no classification, and then no tool has a class."""

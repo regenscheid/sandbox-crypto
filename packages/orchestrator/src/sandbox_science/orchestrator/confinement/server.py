@@ -62,7 +62,7 @@ from .embeddings import CallbackEmbedder
 from .endpoints import ServerTLS, bind_address, loopback
 from .host import HostLoops
 from .lifecycle import ControlLifecycle
-from .listings import WorkerListings, WorkerToolClasses, report
+from .listings import ControlGrants, WorkerListings, WorkerToolClasses, report
 from .metadata import Metadata
 from .models import CallbackGateway, CallbackModel
 from .transport import (
@@ -437,7 +437,9 @@ def create_app(settings: ControlSettings) -> web.Application:
                         direct.index,
                         # Each listed tool's class from the project's classification in
                         # force, by name and digest, never the listing's word (DA-7).
-                        WorkerToolClasses(worker, direct.project),
+                        WorkerToolClasses(
+                            worker, direct.project, ControlGrants(documents, direct.project)
+                        ),
                     )
                 metadata = (
                     Metadata(

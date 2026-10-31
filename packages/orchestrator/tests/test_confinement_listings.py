@@ -121,6 +121,38 @@ async def test_a_listing_the_control_side_does_not_take_is_not_shown(server: str
     assert error.value.kind == "unavailable"
 
 
+async def test_a_listing_that_cannot_be_digested_is_malformed_not_a_crash() -> None:
+    """A lone surrogate in a tool's text cannot be digested for the drift check: the
+    listing is refused as malformed, never passed unchecked or raised as another error."""
+
+    async def mcp(request: web.Request) -> web.Response:
+        message = json.loads(await request.read())
+        if "id" not in message:
+            return web.Response(status=202)
+        if message["method"] == "initialize":
+            result = '{"protocolVersion": "2025-11-25", "capabilities": {}}'
+        else:
+            result = '{"tools": [{"name": "search", "description": "odd \\ud800"}]}'
+        body = f'{{"jsonrpc": "2.0", "id": {json.dumps(message["id"])}, "result": {result}}}'
+        return web.Response(text=body, content_type="application/json")
+
+    app = web.Application()
+    app.router.add_post("/mcp", mcp)
+    async with TestServer(app) as backend:
+        client = DirectClient(
+            {SERVER: DirectServer(str(backend.make_url("/mcp")), tools=RULES)},
+            project="crypto",
+            reporter=Reporter(),
+        )
+        try:
+            with pytest.raises(ConnectorError) as error:
+                await client.request(SERVER, "tools/list", {}, session="s-1")
+        finally:
+            await client.close()
+    assert error.value.kind == "unavailable"
+    assert "malformed" in error.value.message
+
+
 @dataclass
 class Sink:
     """The host's forwarder to the worker, as a fake: what it was asked."""

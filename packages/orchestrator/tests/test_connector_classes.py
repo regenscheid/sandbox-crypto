@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator, Iterator, Mapping
-from dataclasses import dataclass
+from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,6 +25,7 @@ import pytest_asyncio
 from aiohttp.test_utils import TestServer
 
 from sandbox_science.contracts import ExecutionContext
+from sandbox_science.contracts.classifications import ToolAsk, ToolClassQuery, ToolPin
 from sandbox_science.event_store import EventStore
 from sandbox_science.orchestrator.confinement.listings import WorkerToolClasses
 from sandbox_science.orchestrator.connectors import Connectors, TrustedClass
@@ -105,19 +106,50 @@ class Listing:
         return {"tools": [{**tool, "_meta": meta} for tool in listed()]}
 
 
+RUNTIME = "sbx-runtime"
+"""The agent runtime's sandbox, bound for ``PROJECT``: the middleware decides its calls
+under its binding."""
+
+
+class Grants:
+    """The user's grants, as the host's check reads them: (session, server, class)."""
+
+    def __init__(self) -> None:
+        self.given: set[tuple[str, str, str]] = set()
+        self.asked: list[tuple[str, str, tuple[str, ...]]] = []
+
+    async def __call__(self, session: str, server: str, asks: Sequence[ToolAsk]) -> bool:
+        self.asked.append((session, server, tuple(ask.effect for ask in asks)))
+        return any((session, server, ask.effect) in self.given for ask in asks)
+
+
 @dataclass
 class World:
-    """The real worker over a policy store with the example policy for ``PROJECT``."""
+    """The real worker over a policy store with the example policy for ``PROJECT``, to
+    which the project and its runtime sandbox are bound."""
 
     store: PolicyStore
+    store_root: Path
     worker: WorkerClient
+    policy: str
+    grants: Grants = field(default_factory=Grants)
 
     def classes(self) -> WorkerToolClasses:
-        return WorkerToolClasses(self.worker, PROJECT)
+        return WorkerToolClasses(self.worker, PROJECT, self.grants)
 
-    def accept(self, tools: Mapping[str, str]) -> None:
+    def writes_allowed(self) -> str:
+        """Store a revision of the example policy that allows writes unasked."""
+        text = (ROOT / "examples" / "policy.yaml").read_text()
+        marker = "  browser_automation: disabled"
+        assert marker in text
+        text = text.replace(marker, f"{marker}\n  effects:\n    write: {{action: allow}}", 1)
+        return self.store.add_policy(text.encode()).digest
+
+    def accept(
+        self, tools: Mapping[str, str], rules: Mapping[str, Sequence[str]] | None = None
+    ) -> None:
         """Put a project revision in force that classifies ``tools`` (name to class), each
-        pinned to its listed digest."""
+        pinned to its listed digest, with argument ``rules`` (YAML flow mappings)."""
         digests = {tool["name"]: tool_digest(tool) for tool in listed()}
         lines = [
             "apiVersion: sandbox-science/v0alpha1",
@@ -132,6 +164,8 @@ class World:
                 '    reason: "Reviewed."',
                 f"    sha256: {digests[name]}",
             ]
+            if rules and name in rules:
+                lines += ["    rules:", *(f"      - {rule}" for rule in rules[name])]
         acceptance = Acceptance("user", datetime(2026, 10, 31, tzinfo=UTC), "test")
         data = ("\n".join(lines) + "\n").encode()
         self.store.accept_classification(PROJECT, SERVER, data, acceptance)
@@ -146,6 +180,7 @@ async def world(tmp_path: Path) -> AsyncIterator[World]:
     )  # fmt: skip
     store = PolicyStore(tmp_path / "middleware")
     loaded = store.add_policy((ROOT / "examples" / "policy.yaml").read_bytes())
+    store.bind(RUNTIME, loaded.digest, project=PROJECT)
     policies: dict[str, LoadedPolicy] = {PROJECT: loaded}
     events = EventStore(tmp_path / "middleware" / "events.db", timeout=5)
     permissions = Permissions(events.path)
@@ -171,7 +206,7 @@ async def world(tmp_path: Path) -> AsyncIterator[World]:
     await server.start_server()
     worker = WorkerClient(str(server.make_url("/")).rstrip("/"), HARNESS)
     try:
-        yield World(store, worker)
+        yield World(store, tmp_path / "middleware", worker, loaded.digest)
     finally:
         await worker.close()
         await server.close()
@@ -216,8 +251,6 @@ async def test_a_worker_that_does_not_answer_gives_no_class(world: World) -> Non
 
 
 async def test_the_worker_names_why_a_tool_has_no_class(world: World) -> None:
-    from sandbox_science.contracts.classifications import ToolClassQuery, ToolPin
-
     digests = {tool["name"]: tool_digest(tool) for tool in listed()}
     pins = tuple(
         ToolPin(name=name, digest=digests[name])
@@ -318,14 +351,195 @@ async def test_the_source_takes_only_the_tools_asked_about() -> None:
 
     class Lying:
         async def classes(
-            self, server: str, tools: Mapping[str, str]
-        ) -> Mapping[str, TrustedClass]:
+            self, asked: Mapping[str, Mapping[str, str]], *, session: str
+        ) -> Mapping[str, Mapping[str, TrustedClass]]:
             return {
-                **{name: TrustedClass("nonsense") for name in tools},
-                "elsewhere": TrustedClass("read"),
-            }
+                server: {
+                    **{name: TrustedClass("nonsense") for name in tools},
+                    "elsewhere": TrustedClass("read"),
+                }
+                for server, tools in asked.items()
+            } | {"other-server": {READ: TrustedClass("read")}}
 
     connectors = Connectors(Listing(), [SERVER], session="s-1", classes=Lying())
     await connectors.load()
     assert {tool.effect_class for tool in connectors.tools.values()} == {None}
     assert "elsewhere" not in connectors.tools
+
+
+async def test_the_answer_is_under_the_runtime_sandboxs_binding_not_the_projects(
+    world: World,
+) -> None:
+    """The middleware decides the runtime's calls under its sandbox's binding, fixed when
+    it was bound; the project's binding may move on (a rebind of the project, a new grant
+    of a revision). The worker answers under the sandbox's, and under none while the
+    project's runtime sandboxes disagree."""
+    writes = world.writes_allowed()
+    PolicyStore(world.store_root, "projects").bind(PROJECT, writes)
+    digests = {tool["name"]: tool_digest(tool) for tool in listed()}
+    query = ToolClassQuery(
+        project_id=PROJECT, server=SERVER, tools=(ToolPin(name=WRITE, digest=digests[WRITE]),)
+    )
+    answer = await world.worker.mcp_tool_classes(query)
+    assert answer.policy == world.policy
+    assert (answer.tools[0].effect, answer.tools[0].escalates) == ("write", True)
+    # A replacement runtime bound to the new revision while the old one lives: no answer
+    # could match the middleware's for both, so no tool has a class.
+    world.store.bind("sbx-replacement", writes, project=PROJECT)
+    answer = await world.worker.mcp_tool_classes(query)
+    assert answer.policy is None
+    assert (answer.tools[0].state, answer.tools[0].effect) == ("unbound", None)
+    connectors = await connectors_for(world)
+    assert {cls for cls, _ in classes_of(connectors).values()} == {None}
+    # The old runtime is gone: the answer is under the new binding, where a write goes out
+    # unasked, which a child's fence refuses under a draft plan.
+    world.store.unbind(RUNTIME)
+    answer = await world.worker.mcp_tool_classes(query)
+    assert answer.policy == writes
+    assert (answer.tools[0].effect, answer.tools[0].escalates) == ("write", False)
+    # No runtime sandbox bound: nothing to match.
+    world.store.unbind("sbx-replacement")
+    answer = await world.worker.mcp_tool_classes(query)
+    assert answer.tools[0].state == "unbound"
+
+
+async def test_a_tool_asks_only_when_no_argument_lets_a_call_out_unasked(world: World) -> None:
+    """A write an argument rule can make a read: a call with that argument goes out
+    unasked, so the tool is not one whose calls all ask."""
+    world.accept(
+        {WRITE: "write", READ: "read"},
+        rules={WRITE: ["{argument: note, present: true, class: read}"]},
+    )
+    connectors = await connectors_for(world)
+    assert classes_of(connectors)[WRITE] == ("write", False)
+
+
+async def test_a_granted_call_is_not_one_that_asks(world: World) -> None:
+    """A grant in force answers a held call with no card: for the fence it goes out
+    unasked, and under a draft plan it is refused like any other; a grant given or revoked
+    during the run applies from the next call."""
+    connectors = await connectors_for(world)
+    assert classes_of(connectors)[WRITE] == ("write", True)
+    assert ("s-1", SERVER, ("write",)) in world.grants.asked
+    world.grants.given.add(("s-1", SERVER, "write"))
+    classed = await connectors.classed(WRITE)
+    assert classed is not None
+    assert (classed.effect_class, classed.escalates) == ("write", False)
+    world.grants.given.clear()
+    classed = await connectors.classed(WRITE)
+    assert classed is not None
+    assert classed.escalates
+
+
+async def test_the_control_stores_grants_are_read_at_each_question(tmp_path: Path) -> None:
+    from sandbox_science.orchestrator.confinement.listings import ControlGrants
+    from sandbox_science.orchestrator.documents.models import USER
+    from sandbox_science.orchestrator.project_grants import Asked, ProjectGrants
+    from sandbox_science.testing import FakeClock
+
+    projects = ProjectStore(tmp_path / "state")
+    projects.create(PROJECT, "minimal", "sha256:" + "a" * 64)
+    projects.close()
+    documents = DocumentStore(tmp_path / "state" / "control.sqlite3")
+    try:
+        now = datetime(2026, 10, 31, tzinfo=UTC)
+        check = ControlGrants(documents, PROJECT, clock=FakeClock(now))
+        asks = [ToolAsk(effect="write", max_grant="project")]
+        assert not await check("s-1", SERVER, asks)
+        asked = Asked("mcp", "agent", "s-1", "project", server=SERVER, effect="write")
+        ProjectGrants(documents).give(PROJECT, asked, "session", USER, now)
+        assert await check("s-1", SERVER, asks)
+        assert not await check("s-2", SERVER, asks)  # another session's grant
+        assert not await check("s-1", SERVER, [ToolAsk(effect="admin", max_grant="once")])
+    finally:
+        documents.close()
+
+
+async def test_a_worker_outage_at_load_is_asked_again_at_the_call(world: World) -> None:
+    """Tools left without a class because the worker did not answer at the listing are
+    asked again at their calls; a check is told the class could not be confirmed."""
+    working = world.worker
+    world.worker = WorkerClient("http://127.0.0.1:9", HARNESS)
+    try:
+        check = await connectors_for(world, reads_only=True)
+        main = await connectors_for(world)
+        assert READ in check.tools  # kept, to be asked at its call
+        assert not check.tools[READ].confirmed
+        # Still down at the call: refused, and said so.
+        text, record = await check.call(READ, {})
+        assert record["error"] == "not_permitted_for_role"
+        assert "could not be confirmed" in text
+    finally:
+        await world.worker.close()
+        world.worker = working
+    # Back: the call asks again and goes out as the read it is.
+    check.classes = main.classes = world.classes()
+    _, record = await check.call(READ, {})
+    assert "error" not in record
+    assert record["effect_class"] == "read"
+    _, record = await check.call(WRITE, {})  # a check got it while unconfirmed: a write
+    assert record["error"] == "not_permitted_for_role"
+    _, record = await main.call(READ, {})  # a main run's record asks again too
+    assert record["effect_class"] == "read"
+    assert main.tools[READ].confirmed
+
+
+async def test_every_server_is_asked_within_one_deadline(world: World) -> None:
+    calls: list[str] = []
+
+    class Slow(WorkerClient):
+        async def mcp_tool_classes(self, query: ToolClassQuery) -> Any:
+            calls.append(query.server)
+            await asyncio.sleep(3600)
+
+    slow = Slow("http://127.0.0.1:9", HARNESS)
+    try:
+        source = WorkerToolClasses(slow, PROJECT, world.grants, seconds=0.2)
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        found = await source.classes({"a": {"x": "0" * 64}, "b": {"y": "0" * 64}}, session="s")
+        assert found == {}
+        assert sorted(calls) == ["a", "b"]  # asked together, not one after another
+        assert loop.time() - started < 2
+    finally:
+        await slow.close()
+
+
+async def test_a_tool_that_cannot_be_digested_has_no_class_and_spoils_no_other() -> None:
+    """A lone surrogate cannot be digested: that tool gets no class, the others theirs."""
+
+    class Surrogate(Listing):
+        async def request(
+            self,
+            server: str,
+            method: str,
+            params: Mapping[str, object],
+            *,
+            session: str,
+            run: str | None = None,
+        ) -> dict[str, Any]:
+            if method == "tools/call":
+                return {"content": [{"type": "text", "text": "ok"}]}
+            return {
+                "tools": [
+                    {"name": "odd", "description": "bad \ud800 text", "inputSchema": {}},
+                    {"name": "fine", "description": "fine", "inputSchema": {}},
+                ]
+            }
+
+    seen: list[Mapping[str, Mapping[str, str]]] = []
+
+    class Every:
+        async def classes(
+            self, asked: Mapping[str, Mapping[str, str]], *, session: str
+        ) -> Mapping[str, Mapping[str, TrustedClass]]:
+            seen.append(asked)
+            return {server: {name: TrustedClass("read") for name in tools}
+                    for server, tools in asked.items()}  # fmt: skip
+
+    connectors = Connectors(Surrogate(), [SERVER], session="s-1", classes=Every())
+    await connectors.load()
+    assert set(seen[0][SERVER]) == {"fine"}
+    assert connectors.tools["fine"].effect_class == "read"
+    assert connectors.tools["odd"].effect_class is None
+    assert connectors.tools["odd"].confirmed
