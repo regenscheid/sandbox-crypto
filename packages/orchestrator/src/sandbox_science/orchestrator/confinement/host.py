@@ -128,6 +128,9 @@ class Prepared:
         self.log, self.folds, self.on_tool = log, folds, on_tool
         self.leases: dict[int, AbstractAsyncContextManager[None]] = {}
         self.shadow: Transcript | None = None
+        self.max_turns = given.max_turns
+        """The attempt's turn limit: the admitted one, until a hook's ``turn_limit`` sets
+        it; the runtime's loop state must carry it."""
         self.task_pending = given.task is not None
         self.tool: ToolOutcome | None = None
         self.tool_call: ToolRequest | None = None
@@ -156,7 +159,7 @@ class Prepared:
     def sync(self, state: LoopState) -> Transcript:
         """Apply loop metadata while retaining historical payloads at the host store."""
         given = self.given
-        if (state.max_turns, state.max_input_chars) != (given.max_turns, given.max_input_chars):
+        if (state.max_turns, state.max_input_chars) != (self.max_turns, given.max_input_chars):
             raise TransportError("denied", "runtime changed the admitted attempt limits")
         if self.shadow is None:
             from sandbox_science.orchestrator.context.history.memory import RunMemory
@@ -335,6 +338,11 @@ class Prepared:
                 return json_value(
                     TypeAdapter(tuple[Notice, ...]).dump_python(tuple(result), mode="json")
                 )
+            if kind is Capability.TURN_LIMIT:
+                ceiling = await hook.turn_limit(run)
+                if ceiling is not None:
+                    self.max_turns = ceiling
+                return ceiling
             if kind is Capability.HALT:
                 return await hook.halt(run)
             if kind is Capability.LAST_CALL:
@@ -879,7 +887,12 @@ class HostLoops:
             memory=options.get("memory"),
             toolbox=toolbox_given(toolbox),
             hooks=tuple(
-                HookGiven(name=hook.name, veto=hook.veto, planning=isinstance(hook, Plans))
+                HookGiven(
+                    name=hook.name,
+                    veto=hook.veto,
+                    planning=isinstance(hook, Plans),
+                    turn_limit=type(hook).turn_limit is not TurnHook.turn_limit,
+                )
                 for hook in hooks
             ),
             logged=True,

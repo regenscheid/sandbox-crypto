@@ -11,6 +11,7 @@ from typing import Any, cast
 
 from pydantic import JsonValue, TypeAdapter
 
+from sandbox_science.contracts.model import Counter
 from sandbox_science.orchestrator.aio import owned
 from sandbox_science.orchestrator.context.folding import FoldPoint, Folds
 from sandbox_science.orchestrator.context.history.memory import RunMemory
@@ -93,6 +94,7 @@ class RemoteHook(TurnHook):
     def __init__(self, channel: Channel, attempt: str, slot: int, given: HookGiven) -> None:
         self.channel, self.attempt, self.slot = channel, attempt, slot
         self.name, self.veto = given.name, given.veto
+        self.limits_turns = given.turn_limit
 
     async def ask(self, kind: Capability, run: RunView | None = None, **fields: Any) -> JsonValue:
         request = HookRequest(
@@ -114,6 +116,13 @@ class RemoteHook(TurnHook):
     async def notices(self, point: Point, run: RunView) -> Sequence[Notice]:
         return TypeAdapter(tuple[Notice, ...]).validate_python(
             await self.ask(Capability.NOTICES, run, point=point)
+        )
+
+    async def turn_limit(self, run: RunView) -> int | None:
+        if not self.limits_turns:
+            return None
+        return TypeAdapter(Counter | None).validate_python(
+            await self.ask(Capability.TURN_LIMIT, run)
         )
 
     async def halt(self, run: RunView) -> str | None:

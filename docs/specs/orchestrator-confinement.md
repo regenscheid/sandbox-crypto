@@ -259,7 +259,11 @@ Unconsumed annotation offers remain associated with their unfinished durable wor
 so explicit Resume can continue them while a new user request may start separate work.
 
 Private control protocol 3 additionally carries attempt-pinned requested model profiles
-for role-specific reasoning effort. Older control/runtime peers are refused.
+for role-specific reasoning effort. Private control protocol 4 carries a hook's turn
+limit (`turn_limit`, asked only of a hook that sets one): a child's runtime loop runs to
+its `turn_ceiling`, not to its soft turn cap, and the host holds the runtime's loop state
+to the limit the hook last gave, so a runtime cannot raise its own. Older control/runtime
+peers are refused.
 
 Unexpected capability failures retain a local diagnostic with capability name, exception
 class and stack locations, never request payloads, exception text or local variables.

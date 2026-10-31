@@ -302,11 +302,14 @@ class Resources(TurnHook):
 
     async def _check_in(self, run: RunView, point: SafePoint) -> ResourceRequest | None:
         used = {**point.used, "turns": point.prior_turns + run.turns}
+        # At its turn ceiling a child's soft turn cap asks nothing: no extension can pass a
+        # hard limit, so the run makes its report round there instead (D102).
+        ceiling = self.delegated and used["turns"] >= point.hard_turns
         due = next(
             (
                 self._due(resource, used, total, revision)
                 for resource, total, revision in point.caps
-                if used.get(resource, 0) >= total
+                if used.get(resource, 0) >= total and not (ceiling and resource == "turns")
             ),
             None,
         )

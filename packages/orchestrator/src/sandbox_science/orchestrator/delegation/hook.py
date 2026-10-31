@@ -153,6 +153,8 @@ class Child:
     task: str
     """Its first message: the brief."""
     max_turns: int
+    """Its soft turn cap, which its blueprint keeps and at which it checks in; its run's
+    hard limit is the project's ``turn_ceiling``, which its resource hook sets (D102)."""
     tokens: int
     """The tokens its calls may use."""
     target: Target | None
