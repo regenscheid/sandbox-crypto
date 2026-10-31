@@ -26,6 +26,8 @@ from sandbox_science.launcher.instance import alive, boot_id, read
 from sandbox_science.launcher.state import Layout
 from sandbox_science.launcher.supervise import start_time
 
+from .conftest import LAUNCHER_WAIT
+
 pytestmark = pytest.mark.slow
 
 LOGIN_TOKEN = "fake-login-token-0123456789abcdef"
@@ -47,7 +49,7 @@ def journal(path: Path) -> list[str]:
     return [line for line in path.read_text().splitlines() if not line.startswith("openshell ")]
 
 
-def wait_for(condition: Callable[[], bool], what: str, timeout: float = 15) -> None:
+def wait_for(condition: Callable[[], bool], what: str, timeout: float = LAUNCHER_WAIT) -> None:
     deadline = time.monotonic() + timeout
     while not condition():
         assert time.monotonic() < deadline, what
@@ -485,10 +487,10 @@ def test_autonomous_policy_recovers_owned_worker_and_agent_without_stopping_ui(
         )
 
     os.kill(identities["worker"], signal.SIGKILL)
-    wait_for(lambda: changed("worker"), "worker did not restart", 30)
+    wait_for(lambda: changed("worker"), "worker did not restart")
     os.kill(identities["agent-runtime"], signal.SIGKILL)
-    wait_for(lambda: changed("agent-runtime"), "agent did not replace", 30)
-    wait_for(lambda: launcher.command("status").returncode == 0, "recovery not ready", 30)
+    wait_for(lambda: changed("agent-runtime"), "agent did not replace")
+    wait_for(lambda: launcher.command("status").returncode == 0, "recovery not ready")
     current = read(layout)
     assert current is not None
     now = {part.name: part.pid for part in current.parts}

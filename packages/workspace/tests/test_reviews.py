@@ -390,7 +390,9 @@ async def test_the_api_serves_each_status_with_its_history_dismissal_and_success
             "operation_id": f"set-{status}",
         }
         if status == "superseded":
-            body["successor"] = finding.replace(finding[-1], "0" if finding[-1] != "0" else "1")
+            # A well-formed ID no finding has: only the last character changes (`replace`
+            # would also rewrite the prefix and make a malformed ID, a 400).
+            body["successor"] = finding[:-1] + ("0" if finding[-1] != "0" else "1")
             missing = await client.post(base + f"/findings/{finding}", json=body, headers=origin)
             assert missing.status == 404
             del body["successor"]

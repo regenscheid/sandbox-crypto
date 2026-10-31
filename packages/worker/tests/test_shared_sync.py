@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 from sandbox_science.contracts import ErrorKind
+from sandbox_science.testing import FakeClock
 from sandbox_science.worker.artifacts import Blobs
 from sandbox_science.worker.errors import WorkerError
 from sandbox_science.worker.shared_sync import SharedRecords, SharedSync
@@ -60,6 +61,9 @@ class Environment:
         """Files some process is writing."""
         self.latency = 0.0
         """Seconds each request takes, as over a real channel."""
+        self.time: FakeClock | None = None
+        """With a latency: the clock it moves instead of sleeping, so a step's time budget
+        runs out after a fixed number of requests however loaded the machine is."""
         self.log: list[tuple[str, dict[str, Any]]] = []
 
     def put(
@@ -92,7 +96,10 @@ class Environment:
     async def request(self, op: str, **fields: Any) -> dict[str, Any]:
         self.log.append((op, fields))
         if self.latency:
-            await asyncio.sleep(self.latency)
+            if self.time is not None:
+                self.time.advance(self.latency)
+            else:
+                await asyncio.sleep(self.latency)
         if op == "shared":
             return self._scan(fields)
         if op == "read":
@@ -520,13 +527,17 @@ async def test_paths_that_cannot_be_synced_are_named_once(sync: SharedSync) -> N
 
 async def test_a_large_change_arrives_over_several_steps(tmp_path: Path) -> None:
     # H1: a step that ran out of time kept nothing, so the same work was redone forever.
+    # Each request advances a fake clock by its latency, so a step's 0.05 s holds the same
+    # number of files on a loaded machine as on an idle one.
+    clock = FakeClock()
     records = SharedRecords(tmp_path / "shared.sqlite3")
-    sync = SharedSync(records, tmp_path / "shared", step_seconds=0.05)
+    sync = SharedSync(records, tmp_path / "shared", step_seconds=0.05, clock=clock)
     try:
         e1 = Environment()
         for n in range(40):
             e1.put(f"shared/f{n:02}", b"x%d" % n)
         e1.latency = 0.005  # each read takes a round trip
+        e1.time = clock
         await sync.up("p1", "e1", "s1", e1)
         first = len(records.state("p1", "e1").files)
         assert 0 < first < 40
@@ -535,6 +546,7 @@ async def test_a_large_change_arrives_over_several_steps(tmp_path: Path) -> None
         assert len(records.state("p1", "e1").files) == 40
         e2 = Environment()
         e2.latency = 0.005
+        e2.time = clock
         for _ in range(20):
             await sync.down("p1", "e2", "s2", e2)
         assert e2.files == e1.files

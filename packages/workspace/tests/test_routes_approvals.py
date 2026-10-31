@@ -39,6 +39,9 @@ class FakeWorker:
     def __init__(self) -> None:
         self.waiting: list[dict[str, Any]] = []
         self.answers: list[tuple[int, dict[str, Any]]] = []
+        self.gate: asyncio.Event | None = None
+        """When set, the first answer to ``gated`` waits for it before it is recorded."""
+        self.gated: int | None = None
 
     def hold(
         self,
@@ -109,6 +112,9 @@ class FakeWorker:
     async def answer(self, request: web.Request) -> web.Response:
         seq = int(request.match_info["seq"])
         body = await request.json()
+        if self.gate is not None and seq == self.gated:
+            self.gated = None
+            await self.gate.wait()
         self.answers.append((seq, body))
         self.waiting = [item for item in self.waiting if item["seq"] != seq]
         kind = "approval" if body["approve"] else "denial"
@@ -227,6 +233,30 @@ async def test_each_decision_sends_its_answer_and_stores_its_grant(
     await post(client, ANSWER.format(1), {"decision": "once"}, status=409)  # answered already
     await post(client, ANSWER.format(5), {"decision": "server"}, status=400)  # no such scope
     await post(client, ANSWER.format(5), {"decision": "always"}, status=400)
+
+
+async def test_the_relay_leaves_a_request_to_the_user_answering_it(
+    aiohttp_client: ClientFactory,
+    state_dir: Path,
+    static_dir: Path,
+    worker: tuple[FakeWorker, str],
+) -> None:
+    """The grant an answer stores covers its own request, which stays held until the worker
+    has the answer: the relay must not answer it too (the worker takes one answer)."""
+    fake, url = worker
+    client = await client_for(aiohttp_client, state_dir, static_dir, url)
+    fake.hold(1, "crawl")
+    fake.hold(2, "crawl")
+    fake.gate, fake.gated = asyncio.Event(), 1
+    answering = asyncio.create_task(post(client, ANSWER.format(1), {"decision": "project"}))
+    # The relay answers 2 from the new grant; it has passed over 1 by then.
+    await until(lambda: any(seq == 2 for seq, _ in fake.answers))
+    fake.gate.set()
+    result = await answering
+    assert result["decision"] == "project"
+    await asyncio.sleep(0.2)  # several relay passes more
+    assert sorted(seq for seq, _ in fake.answers) == [1, 2]
+    assert all(g["uses"] == 2 for g in await grants(client))
 
 
 async def test_a_scope_above_the_ceiling_is_refused_whatever_the_client_sends(
