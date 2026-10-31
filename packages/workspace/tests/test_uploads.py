@@ -521,15 +521,30 @@ async def test_stalled_original_download_releases_transfer_capacity_without_appe
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import asyncio
+    from types import SimpleNamespace
 
     from aiohttp import ClientPayloadError
 
+    from sandbox_science.workspace import uploads
     from sandbox_science.workspace.context import Timeouts
 
-    client = await workspace(aiohttp_client, state_dir, static_dir, timeouts=Timeouts(upload=0.1))
+    # Ordinary requests get a deadline no loaded machine misses; only the stalled download's
+    # deadline is brought forward, to the moment its write stalls (so it cannot expire before
+    # the response has started, however slow the machine).
+    client = await workspace(aiohttp_client, state_dir, static_dir, timeouts=Timeouts(upload=60))
     assert (await client.post(UPLOADS, json=body(), headers=origin(client))).status == 200
+    deadlines: list[asyncio.Timeout] = []
+
+    def timeout(delay: float | None) -> asyncio.Timeout:
+        deadlines.append(asyncio.timeout(delay))
+        return deadlines[-1]
+
+    monkeypatch.setattr(
+        uploads, "asyncio", SimpleNamespace(**{**vars(asyncio), "timeout": timeout})
+    )
 
     async def stalled(response: web.StreamResponse, data: bytes) -> None:
+        deadlines[-1].reschedule(asyncio.get_running_loop().time())
         await asyncio.Event().wait()
 
     monkeypatch.setattr(web.StreamResponse, "write", stalled)
