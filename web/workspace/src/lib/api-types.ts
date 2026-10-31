@@ -354,6 +354,19 @@ export interface ChildEnvironmentView {
   idle_release_after: string | null;
 }
 
+/** The project's child environments made within the window, each a new sandbox whose workspace is seeded from the session environment's image (CE-13), as the worker's records report them. */
+export interface ChildSeeding {
+  made: number;
+  ready: number;
+  failed: number;
+  preparing: number;
+  created: SecondsSummary | null;
+  to_ready: SecondsSummary | null;
+  alive: number;
+  retained: number;
+  counted_since: string | null;
+}
+
 /** A consistency reviewer's check of a quote (CR-4), as the entry view shows it. */
 export interface CitationCheckView {
   check_id: string;
@@ -2698,6 +2711,14 @@ export interface ScopeUsage {
   by_role: RoleUsage[];
 }
 
+/** How long some steps took: their count, median, longest and total, in seconds. */
+export interface SecondsSummary {
+  count: number;
+  median: number;
+  longest: number;
+  total: number;
+}
+
 export interface SessionDetail {
   project_id: string;
   session: SessionView;
@@ -3104,6 +3125,7 @@ export interface WorkerMonitor {
   records: MonitorRecords | null;
   unavailable: string | null;
   environments: EnvironmentTier[];
+  child_environments: ChildSeeding | null;
 }
 
 /** The worker's observation plus the project it belongs to. */

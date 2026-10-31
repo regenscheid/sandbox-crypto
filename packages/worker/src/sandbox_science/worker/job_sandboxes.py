@@ -107,6 +107,7 @@ from sandbox_science.policy.model import Resources
 
 from .environments import Environments, ScheduleTimeoutError, job_environment_id
 from .errors import PrefixRecoveryError, WorkerError
+from .files import RangeWritten
 from .job_records import ACTIVE, JobSandboxRecord, manifest_digest
 from .revisions import read_lockfile
 from .settings import JOB_SANDBOX_LABEL, EnvironmentSettings, JobProfile
@@ -155,6 +156,27 @@ class EnvironmentPort(Protocol):
     async def write_file(self, request: WriteFileRequest) -> WriteFileResult: ...
 
     async def list_files(self, request: ListFilesRequest) -> FileListing: ...
+
+    async def read_part(
+        self, context: ExecutionContext, path: str, offset: int, length: int
+    ) -> tuple[bytes, int]:
+        """A range of a file without hashing the whole file, and the file's size."""
+        ...
+
+    async def write_range(
+        self,
+        context: ExecutionContext,
+        path: str,
+        upload: str,
+        offset: int,
+        content: bytes,
+        *,
+        sha256: str | None = None,
+        size: int | None = None,
+        discard: bool = False,
+    ) -> RangeWritten:
+        """Write part of a file of the session, given its name once whole and checked."""
+        ...
 
     async def provision(self, request: ProvisionRequest) -> ProvisionOperation:
         """Run a provisioning operation to its end."""
@@ -1317,9 +1339,13 @@ class TooLargeError(Exception):
     """A file over the bytes a copy may take: its ``size``, and the ``limit`` it passed,
     100 MiB a file (``per_file``) or the bytes left of the copy's budget."""
 
-    def __init__(self, message: str, *, size: int, limit: int, per_file: bool) -> None:
+    def __init__(
+        self, message: str, *, size: int, limit: int, per_file: bool, sha256: str | None = None
+    ) -> None:
         super().__init__(message)
         self.size, self.limit, self.per_file = size, limit, per_file
+        self.sha256 = sha256
+        """The whole file's SHA-256, when the read that found its size gave it."""
 
 
 async def replay(
@@ -1404,6 +1430,7 @@ async def read_whole(
             size=first.size,
             limit=MAX_FILE_WRITE_BYTES,
             per_file=True,
+            sha256=first.sha256,
         )
     if first.size > budget:
         raise TooLargeError(
@@ -1570,6 +1597,27 @@ class ManagerPort:
 
     async def list_files(self, request: ListFilesRequest) -> FileListing:
         return await self.manager.list_files(request)
+
+    async def read_part(
+        self, context: ExecutionContext, path: str, offset: int, length: int
+    ) -> tuple[bytes, int]:
+        return await self.manager.read_part(context, path, offset, length)
+
+    async def write_range(
+        self,
+        context: ExecutionContext,
+        path: str,
+        upload: str,
+        offset: int,
+        content: bytes,
+        *,
+        sha256: str | None = None,
+        size: int | None = None,
+        discard: bool = False,
+    ) -> RangeWritten:
+        return await self.manager.write_range(
+            context, path, upload, offset, content, sha256=sha256, size=size, discard=discard
+        )
 
     async def provision(self, request: ProvisionRequest) -> ProvisionOperation:
         operation, _ = await self.provisioner.submit(request)

@@ -120,6 +120,9 @@ MAX_SEARCH_REPLY = 1024 * 1024
 FILE_TOOLS = 1
 """Said in ``hello``: this executor edits, globs and greps (``edit``, ``glob``, ``grep``).
 An older one leaves it out, and the worker then reports the tools unsupported."""
+RANGED_WRITE = 1
+"""Said in ``hello``: this executor writes a file in parts (``write_range``). An older one
+leaves it out, and the worker copies no file over 100 MiB into its environment."""
 MAX_OUTPUTS = 10_000
 """Rich outputs a cell returns; one note stands for any beyond them or the limit."""
 STREAM_CHUNK = 64 * 1024
@@ -827,6 +830,7 @@ class Executor:
             "capture_read": self.op_capture_read,
             "capture_cancel": self.op_capture_cancel,
             "write": self.op_write,
+            "write_range": self.op_write_range,
             "edit": self.op_edit,
             "list": self.op_list,
             "glob": self.op_glob,
@@ -1165,6 +1169,7 @@ class Executor:
             output_observation_protocol=1,
             kernel_revision_protocol=1,
             file_tools=FILE_TOOLS,
+            ranged_write=RANGED_WRITE,
             run_kernels=1,
             conditional_kernel_restart=1,
             environment=await self.baseline(),
@@ -2007,6 +2012,9 @@ class Executor:
 
     async def op_write(self, request: Message) -> None:
         await self.reply(request, **await self.files.write(request))
+
+    async def op_write_range(self, request: Message) -> None:
+        await self.reply(request, **await self.files.write_range(request))
 
     async def op_shared(self, request: Message) -> None:
         await self.reply(request, **await self.files.shared(request))

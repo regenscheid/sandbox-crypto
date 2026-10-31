@@ -21,8 +21,10 @@ as in a session environment: the executor, kernels, file tools and recorder are 
 worker's ordinary ones. At the delegation's end the orchestrator asks for the hand-back
 (CE-6): the worker copies the files it names into the session environment, under
 ``work/<delegation_id>/``, the delegation's write area (DA-19), where a file the child
-wrote in its write area keeps its path, within the job collection's bounds (1,000 files, 100 MiB a
-write, a 30-minute deadline, the profile's byte cap), and stores a manifest once. Then
+wrote in its write area keeps its path, within the job collection's bounds (1,000
+files, a 30-minute deadline, the profile's byte cap; a file over 100 MiB goes in parts,
+its whole digest checked before it takes its name, ``ranged_copy``), and stores a
+manifest once. Then
 the orchestrator ends it: released after a complete hand-back or a session close, kept
 stopped for ``child_retention`` otherwise (CE-4, JS-25's rule).
 
@@ -51,6 +53,7 @@ import json
 import logging
 import posixpath
 import re
+import statistics
 from collections.abc import AsyncGenerator
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final
@@ -76,13 +79,16 @@ from sandbox_science.contracts.child_environments import (
     ChildFailure,
     ChildHandBack,
     HandBackRequest,
+    InputPart,
+    InputStaged,
+    RetainedInput,
     child_environment_id,
     hand_back_path,
     hand_back_reserved,
 )
+from sandbox_science.contracts.monitor import ChildSeeding, SecondsSummary
 from sandbox_science.contracts.worker import (
     DEFAULT_COLLECT_MAX_BYTES,
-    MAX_FILE_WRITE_BYTES,
     MAX_MANIFEST_FILES,
     ManifestFile,
     ReplayedPackages,
@@ -95,7 +101,8 @@ from sandbox_science.policy.model import Resources
 from .child_records import ACTIVE, ChildRecord
 from .environments import Environments, ScheduleTimeoutError
 from .errors import WorkerError
-from .job_sandboxes import EnvironmentPort, JobFailureError, TooLargeError, read_whole, replay
+from .job_sandboxes import EnvironmentPort, JobFailureError, TooLargeError, replay
+from .ranged_copy import copy_file, upload_id
 from .settings import ChildProfile, EnvironmentSettings
 
 if TYPE_CHECKING:
@@ -141,6 +148,8 @@ class _Planned(BaseModel):
     files: tuple[str, ...] = ()
     missing: tuple[str, ...] = ()
     min_isolation_tier: int | None = None
+    retained: tuple[RetainedInput, ...] = ()
+    """The inputs from control's retained content to copy once ready (CE-7)."""
 
 
 class _Copied(BaseModel):
@@ -162,17 +171,13 @@ def size_text(size: int) -> str:
 
 
 def too_large(error: TooLargeError) -> str:
-    """Why a hand-back left a file out for its size: its size and the limit it passed."""
+    """Why a hand-back left a file out for its size: its size and the limit it passed,
+    the bytes left of the child profile's ``collect_max_bytes``."""
     size = f"{size_text(error.size)} ({error.size} bytes)"
-    if error.per_file:
-        return (
-            f"{size} is over the {size_text(MAX_FILE_WRITE_BYTES)} ({MAX_FILE_WRITE_BYTES}"
-            " bytes) a hand-back copies per file; it stays in the child environment while"
-            " that is retained"
-        )
     return (
-        f"{size} is over the {error.limit} bytes left of the child profile's hand-back"
-        " bytes; it stays in the child environment while that is retained"
+        f"{size} is over the {size_text(error.limit)} ({error.limit} bytes) left of the"
+        " child profile's hand-back bytes (collect_max_bytes); it stays in the child"
+        " environment while that is retained"
     )
 
 
@@ -192,8 +197,7 @@ def largest_left(steps: dict[str, str]) -> str:
     shown = ", ".join(f"{path} ({size_text(size)})" for size, path in found[:LARGEST_SHOWN])
     more = f" and {len(found) - LARGEST_SHOWN} more" if len(found) > LARGEST_SHOWN else ""
     return (
-        f"; {len(found)} too large to copy (over {size_text(MAX_FILE_WRITE_BYTES)} a file,"
-        f" or past the hand-back's bytes), the largest {shown}{more}"
+        f"; {len(found)} too large to copy (past the hand-back's bytes), the largest {shown}{more}"
     )
 
 
@@ -333,7 +337,7 @@ class ChildEnvironments:
                 f" was placed on {recorded}",
             )
         launch_settings(profile, resources)
-        planned = await self._plan_inputs(context, request.inputs, profile)
+        planned = await self._plan_inputs(context, request.inputs, request.retained, profile)
         async with self._admitting:
             # Counted and inserted with no await between, so two admissions cannot
             # both pass the same count.
@@ -391,10 +395,15 @@ class ChildEnvironments:
         return self.view(record)
 
     async def _plan_inputs(
-        self, context: ExecutionContext, paths: tuple[str, ...], profile: ChildProfile
+        self,
+        context: ExecutionContext,
+        paths: tuple[str, ...],
+        retained: tuple[RetainedInput, ...],
+        profile: ChildProfile,
     ) -> _Planned:
-        """The input files, and the paths that name nothing; refuses inputs over the
-        profile's staging bound, naming the file that crosses it (CE-7)."""
+        """The input files, those from control's retained content that the session's do
+        not give, and the paths that name nothing; refuses inputs over the profile's
+        staging bound, naming the file that crosses it (CE-7)."""
         files: list[tuple[str, int]] = []
         missing: list[str] = []
         for path in dict.fromkeys(paths):
@@ -409,8 +418,23 @@ class ChildEnvironments:
                     f"inputs_too_large: the inputs hold over {MAX_MANIFEST_FILES} files",
                 )
         files = list(dict.fromkeys(files))  # an input inside another named one
+        given = {path for path, _ in files}
+        kept: dict[str, RetainedInput] = {}
+        for item in retained:
+            if item.path not in given and item.path not in kept:
+                kept[item.path] = item  # the session's file, when there is one, is copied
+        if len(files) + len(kept) > MAX_MANIFEST_FILES:
+            raise WorkerError(
+                ErrorKind.INVALID_REQUEST,
+                f"inputs_too_large: the inputs hold over {MAX_MANIFEST_FILES} files",
+            )
+        missing = [
+            path
+            for path in missing
+            if not any(name == path or name.startswith(f"{path}/") for name in kept)
+        ]
         total = 0
-        for path, size in files:
+        for path, size in [*files, *((item.path, item.size) for item in kept.values())]:
             total += size
             if total > profile.stage_max_bytes:
                 raise WorkerError(
@@ -418,7 +442,11 @@ class ChildEnvironments:
                     f"inputs_too_large: input {path} brings the inputs to {total} bytes, over"
                     f" the child profile's {profile.stage_max_bytes}",
                 )
-        return _Planned(files=tuple(path for path, _ in files), missing=tuple(missing))
+        return _Planned(
+            files=tuple(path for path, _ in files),
+            missing=tuple(missing),
+            retained=tuple(kept.values()),
+        )
 
     async def _files_of(self, context: ExecutionContext, path: str) -> list[tuple[str, int]] | None:
         """The regular files at ``path`` with their sizes, following no symlink; None when
@@ -503,6 +531,7 @@ class ChildEnvironments:
         remaining = (record.ready_by - self.clock.now()).total_seconds()
         if remaining <= 0:
             raise _PrepareError("environment_unavailable", "its schedule timeout ran out")
+        creating = self.clock.now()
         try:
             await self.environments.create_child(
                 record.session_environment,
@@ -520,6 +549,10 @@ class ChildEnvironments:
                 "environment_unavailable",
                 f"the child environment could not be created: {error.message}",
             ) from error
+        now = self.clock.now()
+        # How long its sandbox took to be placed, seeded and started (CE-13's count).
+        seconds = max(0.0, (now - creating).total_seconds())
+        self.records.record_step(environment_id, "created", json.dumps(seconds), now)
         self._update(environment_id, phase="preparing")
         session = ExecutionContext(
             project_id=record.project_id,
@@ -547,7 +580,11 @@ class ChildEnvironments:
                         f" the request or the session environment needs {minimum}",
                     )
                 packages = await replay(port, _operation(environment_id), session, child)
-                inputs = await self._stage(session, child, planned.files, profile)
+                # The bound is shared with the inputs control sends once ready (CE-7).
+                retained = sum(item.size for item in planned.retained)
+                inputs = await self._stage(
+                    session, child, planned.files, profile.stage_max_bytes - retained
+                )
         except TimeoutError as error:
             raise _PrepareError(
                 "environment_unavailable",
@@ -574,30 +611,96 @@ class ChildEnvironments:
         session: ExecutionContext,
         child: ExecutionContext,
         paths: tuple[str, ...],
-        profile: ChildProfile,
+        budget: int,
     ) -> list[ManifestFile]:
-        """Copy the inputs to ``inputs/`` in the child environment (CE-7)."""
+        """Copy the session's inputs to ``inputs/`` in the child environment (CE-7), within
+        ``budget``: the staging bound less what control's retained inputs take."""
         port = self._port()
-        budget = profile.stage_max_bytes
         staged: list[ManifestFile] = []
         for path in paths:
             target = f"{INPUTS}/{path}"
             try:
                 validate_relative_path(target)
-                data, digest = await read_whole(port, session, path, budget)
-                await port.write_file(
-                    WriteFileRequest(
-                        context=child, path=target, content_b64=base64.b64encode(data).decode()
-                    )
+                copied = await copy_file(
+                    port,
+                    session,
+                    path,
+                    child,
+                    target,
+                    budget=budget,
+                    upload=upload_id("child-input", child.environment_id, path),
                 )
             except TooLargeError as error:
                 raise _PrepareError("inputs_too_large", f"input {path}: {error}") from error
             except (ValueError, WorkerError) as error:
                 message = error.message if isinstance(error, WorkerError) else str(error)
                 raise _PrepareError("staging_failed", f"input {path}: {message}") from error
-            budget -= len(data)
-            staged.append(ManifestFile(path=target, size=len(data), sha256=digest))
+            budget -= copied.size
+            staged.append(copied)
         return staged
+
+    async def stage_input(self, environment_id: str, part: InputPart) -> InputStaged:
+        """Write part of an input from control's retained content to ``inputs/<path>`` in
+        a ready child environment (CE-7): in place, after the bytes received so far, the
+        last part's write checking the whole file's SHA-256 and size as admission
+        planned them. A part not sent where those bytes end is not written."""
+        async with self._lock(environment_id):
+            record = self._owned(environment_id, part.context)
+            if record.phase != "ready":
+                raise WorkerError(
+                    ErrorKind.CONFLICT,
+                    f"the child environment is {record.phase}; inputs go to a ready one",
+                )
+            if self.store.has_executions(environment_id):
+                raise WorkerError(
+                    ErrorKind.CONFLICT,
+                    "the child's run has begun; its inputs are staged before it begins",
+                )
+            steps = self.records.steps(environment_id)
+            planned = _Planned.model_validate_json(steps["inputs"])
+            if part.index >= len(planned.retained):
+                raise WorkerError(
+                    ErrorKind.INVALID_REQUEST,
+                    f"admission planned {len(planned.retained)} retained inputs; there is no"
+                    f" input {part.index}",
+                )
+            item = planned.retained[part.index]
+            target = f"{INPUTS}/{item.path}"
+            done = steps.get(f"retained-{part.index}")
+            if done is not None:
+                staged = ManifestFile.model_validate_json(done)
+                return InputStaged(size=staged.size, accepted=True, staged=staged)
+            try:
+                data = base64.b64decode(part.content_b64, validate=True)
+            except ValueError as exc:
+                raise WorkerError(ErrorKind.INVALID_REQUEST, "content_b64 is not base64") from exc
+            end = part.offset + len(data)
+            if end > item.size:
+                raise WorkerError(
+                    ErrorKind.INVALID_REQUEST,
+                    f"input {item.path} holds {item.size} bytes; a part may not end at {end}",
+                )
+            last = end == item.size
+            child = part.context.model_copy(update={"environment_id": environment_id})
+            written = await self._port().write_range(
+                child,
+                target,
+                upload_id("child-retained", environment_id, str(part.index)),
+                part.offset,
+                data,
+                sha256=item.sha256 if last else None,
+                size=item.size if last else None,
+            )
+            if not written.committed:
+                return InputStaged(size=written.size, accepted=written.accepted)
+            staged = ManifestFile(path=target, size=item.size, sha256=item.sha256)
+            self.records.record_step(
+                environment_id,
+                f"retained-{part.index}",
+                staged.model_dump_json(),
+                self.clock.now(),
+            )
+            return InputStaged(size=item.size, accepted=True, staged=staged)
 
     # The hand-back (CE-6).
 
@@ -678,6 +781,7 @@ class ChildEnvironments:
         first: dict[str, str] = {}
         for path in paths:
             first.setdefault(hand_back_path(target, path), path)
+        inflight: tuple[str, str] | None = None
         try:
             async with asyncio.timeout(remaining):
                 for index, path in pending:
@@ -699,12 +803,18 @@ class ChildEnvironments:
                             )
                         )
                     else:
-                        copied = await self._copy(path, destination, budget, session, child)
+                        upload = upload_id("hand-back", environment_id, str(index), destination)
+                        inflight = (upload, destination)
+                        copied = await self._copy(upload, path, destination, budget, session, child)
+                        inflight = None
                     recorded = self.records.record_step(
                         environment_id, f"copy-{index}", copied.model_dump_json(), self.clock.now()
                     )
                     budget -= apply(_Copied.model_validate_json(recorded))
         except TimeoutError:
+            if inflight is not None:
+                # The copy the deadline cut short gives up: its parts go too.
+                await self._discard(session, *inflight)
             complete = False
             left.append(
                 UncollectedFile(path=".", reason="the hand-back ran past its 30-minute deadline")
@@ -727,13 +837,15 @@ class ChildEnvironments:
 
     async def _copy(
         self,
+        upload: str,
         source: str,
         target: str,
         budget: int,
         session: ExecutionContext,
         child: ExecutionContext,
     ) -> _Copied:
-        """Copy one file into the session, or say why it was left out."""
+        """Copy one file into the session, in parts when it is over 100 MiB, or say why it
+        was left out."""
 
         def leave(reason: str) -> _Copied:
             return _Copied(left=UncollectedFile(path=source[:4096], reason=reason[:300]))
@@ -743,24 +855,27 @@ class ChildEnvironments:
         except ValueError:
             return leave("its path in the session would be too long")
         try:
-            data, digest = await read_whole(self._port(), child, source, budget)
+            copied = await copy_file(
+                self._port(), child, source, session, target, budget=budget, upload=upload
+            )
         except TooLargeError as error:
-            # Writes into a sandbox take 100 MiB at most, and the worker has no ranged
-            # write yet (JS's delivery step 4): the file stays in the child environment,
-            # which is retained, and the reason names its size and the limit.
+            # Past the bytes left of the profile's collect_max_bytes: the file stays in
+            # the child environment, which is retained, and the reason names its size
+            # and the limit.
             left = leave(too_large(error))
             return left.model_copy(update={"size": error.size})
         except WorkerError as error:
-            return leave(error.message)
+            # Given up after one retry of a transient failure: its parts go too.
+            await self._discard(session, upload, target)
+            return leave(f"it was not copied: {error.message}")
+        return _Copied(collected=copied)
+
+    async def _discard(self, session: ExecutionContext, upload: str, target: str) -> None:
+        """Remove a ranged copy's parts in the session; one never started has none."""
         try:
-            await self._port().write_file(
-                WriteFileRequest(
-                    context=session, path=target, content_b64=base64.b64encode(data).decode()
-                )
-            )
+            await self._port().write_range(session, target, upload, 0, b"", discard=True)
         except WorkerError as error:
-            return leave(f"writing it to the session failed: {error.message}")
-        return _Copied(collected=ManifestFile(path=target, size=len(data), sha256=digest))
+            _log.warning("the parts of a hand-back copy were not removed: %s", error.message)
 
     async def _write_copy(self, session: ExecutionContext, manifest: ChildHandBack) -> None:
         """``work/<delegation_id>/.handback/manifest.json`` in the session: an untrusted copy,
@@ -953,6 +1068,38 @@ class ChildEnvironments:
 
     # Reading.
 
+    async def seeding(self, project_id: str, since: datetime, now: datetime) -> ChildSeeding:
+        """The project's child environments made since ``since``, as the cost view counts
+        their seeding (CE-13), from the rows the worker keeps, read off the event loop."""
+        found = await asyncio.to_thread(self.store.child_seeding_rows, project_id)
+        rows = [row for row, _ in found]
+        made = [row for row in rows if row.created_at >= since]
+        created = [
+            float(json.loads(step))
+            for row, step in found
+            if step is not None and row.created_at >= since
+        ]
+        to_ready = [
+            (row.ready_at - row.created_at).total_seconds()
+            for row in made
+            if row.ready_at is not None
+        ]
+        kept = now - timedelta(seconds=self.settings.child_retention)
+        complete = max(kept, rows[0].created_at) if len(rows) >= 1000 else kept
+        return ChildSeeding(
+            made=len(made),
+            ready=len(to_ready),
+            failed=sum(
+                1 for row in made if row.ready_at is None and row.phase in ("released", "retained")
+            ),
+            preparing=sum(1 for row in made if row.phase in ("creating", "preparing")),
+            created=_summary(created),
+            to_ready=_summary(to_ready),
+            alive=sum(1 for row in rows if row.phase in ACTIVE),
+            retained=sum(1 for row in rows if row.phase == "retained"),
+            counted_since=complete if complete > since else None,
+        )
+
     def get(self, environment_id: str, context: ExecutionContext) -> ChildEnvironment:
         return self.view(self._owned(environment_id, context))
 
@@ -967,9 +1114,16 @@ class ChildEnvironments:
         prepared = (
             _Prepared.model_validate_json(steps["prepared"]) if "prepared" in steps else _Prepared()
         )
+        planned = _Planned.model_validate_json(steps["inputs"]) if "inputs" in steps else None
         missing = prepared.missing
-        if "inputs" in steps and "prepared" not in steps:
-            missing = _Planned.model_validate_json(steps["inputs"]).missing
+        if planned is not None and "prepared" not in steps:
+            missing = planned.missing
+        retained = planned.retained if planned is not None else ()
+        staged = tuple(
+            ManifestFile.model_validate_json(steps[f"retained-{index}"])
+            for index in range(len(retained))
+            if f"retained-{index}" in steps
+        )
         return ChildEnvironment(
             environment_id=record.environment_id,
             delegation_id=record.delegation_id,
@@ -981,7 +1135,8 @@ class ChildEnvironments:
             failure=record.failure,
             message=record.message,
             isolation_tier=prepared.isolation_tier,
-            inputs=prepared.inputs,
+            inputs=(*prepared.inputs, *staged),
+            retained=retained,
             inputs_missing=missing,
             packages=prepared.packages,
             created_at=record.created_at,
@@ -1050,6 +1205,17 @@ class ChildEnvironments:
     async def _lock(self, environment_id: str) -> AsyncGenerator[None]:
         async with self._locks.setdefault(environment_id, asyncio.Lock()):
             yield
+
+
+def _summary(seconds: list[float]) -> SecondsSummary | None:
+    if not seconds:
+        return None
+    return SecondsSummary(
+        count=len(seconds),
+        median=statistics.median(seconds),
+        longest=max(seconds),
+        total=sum(seconds),
+    )
 
 
 def _operation(environment_id: str) -> str:

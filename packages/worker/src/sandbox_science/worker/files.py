@@ -18,6 +18,7 @@ import logging
 import posixpath
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any, cast
 
 from sandbox_science.contracts import (
@@ -69,6 +70,10 @@ UNSUPPORTED_FILE_TOOLS = (
     "this environment's executor predates edit_file, glob and grep; recreate the "
     "environment to use them, or use write_file, list_files and the shell meanwhile"
 )
+UNSUPPORTED_RANGED_WRITE = (
+    "this environment's executor predates ranged writes, so no file over 100 MiB is "
+    "copied into it; recreate the environment"
+)
 UNSYNCED = (
     "shared/ could not be synced with the project's other environments just now; "
     "it is synced again at the next call"
@@ -110,6 +115,17 @@ def _range_reply(reply: Message, offset: int, length: int, *, hashed: bool) -> R
         content_b64=encoded,
         eof=reply.get("eof") is True,
     )
+
+
+@dataclass(frozen=True)
+class RangeWritten:
+    """What a ranged write's executor holds: the part's size (the file's, once committed),
+    whether the content was written, and once committed, the whole file's SHA-256."""
+
+    size: int
+    accepted: bool
+    committed: bool = False
+    sha256: str | None = None
 
 
 class Files:
@@ -197,6 +213,66 @@ class Files:
             else:
                 reply = await channel.request("write", session=context.session_id, **fields)
             return checked(WriteFileResult, sha256=reply.get("sha256"), size=reply.get("size"))
+
+    async def read_part(
+        self, context: ExecutionContext, path: str, offset: int, length: int
+    ) -> tuple[bytes, int]:
+        """A range of a file without hashing the whole file, and the file's size: for a
+        copy that checks the whole file's digest once, at its end."""
+        request = ReadFileRequest(context=context, path=path, offset=offset, length=length)
+        async with self.connections.using(context.environment_id) as channel:
+            found = await self._read_range(channel, request, offset, length, hashed=False)
+        return found.data, found.size
+
+    async def write_range(
+        self,
+        context: ExecutionContext,
+        path: str,
+        upload: str,
+        offset: int,
+        content: bytes,
+        *,
+        sha256: str | None = None,
+        size: int | None = None,
+        discard: bool = False,
+    ) -> RangeWritten:
+        """Write ``content`` at ``offset`` of a file of the session written in parts; with
+        ``sha256`` and ``size``, then give the whole file its name once both match
+        (``sandbox_files.Requests.write_range``). Not for ``shared/``, which syncs whole
+        files under preconditions."""
+        if in_shared(path):
+            raise WorkerError(ErrorKind.INVALID_REQUEST, "a ranged write goes to the session")
+        _in_write_area(context, path)  # as a write's (DA-19); the platform's carry none
+        async with self.connections.using(context.environment_id) as channel:
+            if channel.hello.get("ranged_write") != 1:
+                raise WorkerError(ErrorKind.UNSUPPORTED, UNSUPPORTED_RANGED_WRITE)
+            fields: dict[str, Any] = {
+                "path": path,
+                "upload": upload,
+                "offset": offset,
+                "content_b64": base64.b64encode(content).decode(),
+            }
+            if sha256 is not None:
+                fields.update(sha256=sha256, size=size)
+            if discard:
+                fields["discard"] = True
+            reply = await channel.request("write_range", session=context.session_id, **fields)
+        held = integer(reply.get("size"), 0, 2**62)
+        found = reply.get("sha256")
+        if (
+            held is None
+            or not isinstance(reply.get("accepted"), bool)
+            or (reply.get("committed") is True and found != sha256)
+        ):
+            raise WorkerError(
+                ErrorKind.INTERNAL, "the executor sent a malformed ranged write reply"
+            )
+        return RangeWritten(
+            size=held,
+            accepted=reply.get("accepted") is True,
+            committed=reply.get("committed") is True,
+            sha256=found if isinstance(found, str) else None,
+        )
 
     async def edit(self, request: EditFileRequest) -> EditFileResult:
         """Replace a string in a text file, under the rules and the sync a write has."""

@@ -9,10 +9,11 @@ parent's review (PD-46, built 2026-10-26): a returned task keeps its environment
 closes. Built 2026-10-27, against the fake CLI: the Compute tab's children's kernels
 (CE-8), the workspace's environment views (CE-11's GUI part), the prompts' guidance
 (CE-13), `child_idle_max` checked during a main run as well as at its start (CE-4), and a
-hand-back's refusal of a file over 100 MiB by its size and the limit (CE-6). Open:
-inputs from control's retained content (CE-7), copying files over 100 MiB in a
-hand-back (as JS's delivery step 4: CE-F1's 1.5 GiB file is left out, named with its
-size, and the environment retained), and read-only `inputs/` and
+hand-back's refusal of a file over 100 MiB by its size and the limit (CE-6). Built
+2026-10-31, against the fake CLI: the worker's ranged write, which copies a hand-back
+file or an input over 100 MiB in parts with the whole file's digest checked at its end
+(CE-6, CE-7); inputs from control's retained content (CE-7); the cost view's count of
+child environments' seeding (CE-13). Open: read-only `inputs/` and
 `work/<id>/` for a child's processes: the worker's file calls set no file mode, and a
 sandbox's agent code runs as the user who owns its files and could change one back, so
 it needs per-run mounts (DA-20's open question 1). A child's file tools write only in its
@@ -146,11 +147,17 @@ platform places a child by the project's settings. No change to checks' evidence
   Files already retained in control are not copied twice: the manifest names their
   artifact revisions. A collection past its bounds is incomplete: the delegation's
   outcome lists what was left behind, the environment is retained (CE-4), and the
-  parent's outcome notice says so. *As built 2026-10-27:* a file over 100 MiB (one
-  sandbox write), or past the bytes left of the profile's `collect_max_bytes`, is left
-  out with a reason that gives its size and the limit, and the retained environment's
-  message names the files left out for their size, the five largest first; copying them
-  waits for a ranged write (JS's delivery step 4). *Amended 2026-10-31 with DA-19:* a
+  parent's outcome notice says so. *As built 2026-10-27, amended 2026-10-31:* a file is
+  copied whole up to the bytes left of the profile's `collect_max_bytes` (4 GiB unless
+  set), which is the one cap on a file's size: a file over 100 MiB (one sandbox write)
+  goes by the worker's ranged write, in parts of 8 MiB kept outside the session's
+  workspace until the whole file's SHA-256 and size are checked, then named at once; a
+  copy a worker restart cut short goes on from what its part holds, one that gives up or
+  that the deadline ends has its parts discarded, and a file that changed while it was
+  copied is left out. Over 100 MiB, the digest is the source executor's, checked by the
+  target's ([worker](../WORKER.md#child-environments)). A file past the bytes left is left out with a reason that gives its
+  size and the limit, and the retained environment's message names the files left out
+  for their size, the five largest first. *Amended 2026-10-31 with DA-19:* a
   child in its own environment has the same write area there, `work/<delegation_id>/`,
   and its file tools write only in it and in `shared/`; the hand-back copies a file of the
   write area to the same path in the session's environment, and any other below it
@@ -168,6 +175,32 @@ platform places a child by the project's settings. No change to checks' evidence
   `inputs_too_large` naming the file. `references` (PD-11, B8) are archive records and
   reach the child as today, materialized into its state block. `shared/` (D79) is
   synchronized into a child environment as into any environment.
+
+  *As built 2026-10-31:* a task's inputs are the files its `inputs` and its file
+  `references` name, by their session paths; a referenced file is copied too, since in
+  an environment of its own the child cannot read it at its path in the session's. The
+  worker copies each from the session's environment where it is there. Where it is not,
+  and control keeps the bytes of the recorded file at that path (its latest revision,
+  deleted or hash-only ones excepted), control names that revision at admission with
+  its SHA-256 and size, which the worker counts in the staging bound and refuses with
+  `inputs_too_large` as the session's files; a path one gives is not missing. A check in
+  its own environment (under `all`) gets its entry's evidence artifacts the same way, at
+  the revisions the entry pins. The worker cannot read control's store, so control sends
+  them once the environment is ready and before the run starts, in parts of 8 MiB, each
+  written by the worker's ranged write and the whole file's digest checked at its end;
+  each becomes `inputs/<path>` with the session's inputs, in the environment's record and
+  the delegation's outcome. One that cannot be sent or checked fails the delegation
+  (`staging_failed`, naming the input), and its environment is released. A Resume in a
+  new environment sends the same revisions its earlier environment planned. The child
+  is told where they are by the platform's line that closes its brief, after the write
+  area's (DA-19), added once its environment is ready and its inputs staged: each copied
+  file's session path and its copy, quoted as JSON strings and said to be file names, not
+  instructions (`"data/a.csv" is "inputs/data/a.csv"`), each at most 200 characters, the
+  first 40 within 6,000 characters and the rest counted; a child that shares the session's environment gets no such
+  line, and the pinned prompts are unchanged. By path,
+  only the session's own files and `shared/` are inputs this way, never another
+  session's; an evidence artifact of another session keeps its `sessions/<session>/`
+  prefix under `inputs/`.
 - CE-8. **Kernels and compute.** A child's kernels live in its environment. The worker's
   kernel listing and observation are per environment, so the Compute tab asks for the
   session's and for each live child environment's, and shows each kernel under its
@@ -215,7 +248,12 @@ platform places a child by the project's settings. No change to checks' evidence
   disk, or that must not disturb the session's environment; keep short tasks shared.
   The project's cost view counts child environments' seeding as the worker reports it.
   *As built 2026-10-27:* `sandbox-main-19` and `sandbox-delegated-task-17` (CE-5's
-  working memory), with the `delegate` description; the cost view's count is not built.
+  working memory), with the `delegate` description. *Built 2026-10-31:* the cost view's
+  count, in the Monitor view's spend (the worker's `GET /v1/monitor`,
+  `child_environments`): the child environments made in the window, ready, failed or
+  being made; how long their sandboxes took to be placed, seeded and started, which each
+  records once its sandbox is ready, and from admission to ready; and how many are alive
+  or kept now. It counts time, not money: the platform has no price for a sandbox.
   Many short children in own environments are a cost the owner has named; B11 (option C,
   the Python environment out of the workspace) cuts each seed to seconds, this design's
   natural prerequisite for `all`.

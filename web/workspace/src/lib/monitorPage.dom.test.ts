@@ -133,6 +133,7 @@ function figures(window: '24h' | '7d'): ProjectMonitor {
           job_id: 'exe-1',
         },
       ],
+      child_environments: null,
     },
     worker_unavailable: null,
     spend: {
@@ -277,4 +278,37 @@ it('reads the other window when the switch changes', async () => {
   await settle();
   expect(asked.at(-1)).toBe('/api/v0/projects/p1/monitor?window=7d');
   expect(week.getAttribute('aria-pressed')).toBe('true');
+});
+
+it("counts the child environments' seeding beside the spend", async () => {
+  serve((window) => {
+    const found = figures(window as '24h');
+    return {
+      ...found,
+      worker: {
+        ...found.worker!,
+        child_environments: {
+          made: 3,
+          ready: 2,
+          failed: 1,
+          preparing: 0,
+          created: { count: 2, median: 40, longest: 65, total: 105 },
+          to_ready: { count: 2, median: 70, longest: 95, total: 140 },
+          alive: 1,
+          retained: 1,
+          counted_since: '2026-10-22T12:00:00Z',
+        },
+      },
+    };
+  });
+  const target = show();
+  await settle();
+  const line = texts(target, '.child-seeding')[0]!;
+  expect(line).toContain('3 made in this window');
+  expect(line).toContain('2 ready, 1 failed before they were ready.');
+  expect(line).toContain('took 2 min in all to be placed, seeded and started');
+  expect(line).toContain('(median 40 s, longest 65 s)');
+  expect(line).toContain('median 70 s, longest 2 min');
+  expect(line).toContain('Alive now: 1, and 1 kept stopped.');
+  expect(target.querySelector('.child-counted')!.textContent).toContain('Counted from');
 });

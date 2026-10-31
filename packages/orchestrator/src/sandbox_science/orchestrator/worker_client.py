@@ -89,6 +89,8 @@ from sandbox_science.contracts.child_environments import (
     ChildEnvironmentRequest,
     ChildHandBack,
     HandBackRequest,
+    InputPart,
+    InputStaged,
 )
 from sandbox_science.contracts.classifications import (
     MAX_DRAFTS,
@@ -927,6 +929,13 @@ class WorkerClient:
             ChildHandBack,
             request,
             max_bytes=8 * 1024 * 1024,
+        )
+
+    async def stage_child_input(self, environment_id: str, part: InputPart) -> InputStaged:
+        """Part of an input from control's retained content, into a ready child
+        environment's ``inputs/`` (CE-7)."""
+        return await self._call(
+            "POST", f"/v1/child-environments/{environment_id}/inputs", InputStaged, part
         )
 
     async def end_child_environment(

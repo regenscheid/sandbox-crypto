@@ -16,7 +16,9 @@ from typing import Any
 import pytest
 import pytest_asyncio
 
+from sandbox_science.contracts import ErrorKind, ExecutionContext
 from sandbox_science.worker import executor
+from sandbox_science.worker.errors import WorkerError
 
 from .harness import Harness
 
@@ -225,3 +227,33 @@ async def test_the_executor_tree_has_the_search_helper(tmp_path: Path) -> None:
 
     assert "sandbox_search.py" in {path.name for path in SANDBOX_FILES}
     assert os.path.exists(executor.sandbox_search.__file__)
+
+
+async def test_a_ranged_write_through_the_worker(worker: Harness) -> None:
+    """The worker's ranged write reaches the executor's, which names the file once whole
+    and checked; an executor without it is refused before anything is sent (CE-6)."""
+    here = _in("env1", "s1")
+    await _write(worker, here, "a.txt", "one\n")  # opens the executor
+    context = ExecutionContext.model_validate(here)
+    data = b"0123456789" * 3
+    upload = "c" * 32
+    first = await worker.manager.write_range(context, "big/x.bin", upload, 0, data[:16])
+    assert (first.size, first.accepted, first.committed) == (16, True, False)
+    digest = hashlib.sha256(data).hexdigest()
+    done = await worker.manager.write_range(
+        context, "big/x.bin", upload, 16, data[16:], sha256=digest, size=len(data)
+    )
+    assert (done.committed, done.sha256) == (True, digest)
+    assert (worker.workspace / "big" / "x.bin").read_bytes() == data
+    part, size = await worker.manager.read_part(context, "big/x.bin", 10, 5)
+    assert (part, size) == (data[10:15], len(data))
+    # A delegated run's context is held to its write area, as its writes are (DA-19).
+    held = context.model_copy(update={"write_area": "work/dlg-" + "a" * 24})
+    with pytest.raises(WorkerError) as outside:
+        await worker.manager.write_range(held, "big/z.bin", upload, 0, b"x")
+    assert outside.value.kind is ErrorKind.POLICY_DENIED
+    del worker.view.channel("env1").hello["ranged_write"]
+    with pytest.raises(WorkerError) as caught:
+        await worker.manager.write_range(context, "big/y.bin", upload, 0, b"x")
+    assert caught.value.kind is ErrorKind.UNSUPPORTED
+    assert "recreate the environment" in caught.value.message

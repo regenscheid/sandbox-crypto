@@ -25,6 +25,7 @@ from .model import Contract, Identifier, Sha256
 from .worker import (
     MAX_MANIFEST_FILES,
     MAX_PATH_BYTES,
+    MAX_READ_BYTES,
     IsolationTier,
     JobProfileName,
     ManifestFile,
@@ -36,8 +37,13 @@ from .worker import (
 CHILD_ENVIRONMENT: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,107}-child-[0-9a-f]{12}$")
 """A child environment's ID (CE-1): ``<project>-child-<12 hex>``. No client may create an
 environment by such an ID."""
-MAX_CHILD_INPUTS: Final = 20
-"""Paths a request copies in at most: a brief's inputs (DA-17's 20)."""
+MAX_CHILD_INPUTS: Final = 60
+"""Paths a request copies in at most: a brief's inputs (DA-17's 20) and the files its
+references name (PD-11's 40)."""
+MAX_RETAINED_INPUTS: Final = 100
+"""Inputs from control's retained content a request names at most (CE-7)."""
+MAX_PART_BYTES: Final = MAX_READ_BYTES
+"""The bytes of one part of a retained input sent to the worker: one read's."""
 CHILD_WALL_TIME_MAX: Final = 7 * 24 * 3600.0
 """The longest a child environment may be kept for its run (CE-9)."""
 HAND_BACK_MANIFEST: Final = ".handback/manifest.json"
@@ -99,6 +105,20 @@ def hand_back_reserved(target: str, path: str) -> bool:
     return inside == HAND_BACK_RESERVED or inside.startswith(f"{HAND_BACK_RESERVED}/")
 
 
+class RetainedInput(Contract):
+    """An input whose content control retains (CE-7): a recorded file's or an artifact's
+    revision, copied to ``inputs/<path>`` with its SHA-256 and size. Control sends its
+    content, part by part, once the child environment is ready; the worker counts it in
+    the staging bound at admission and checks the whole file's digest at its end."""
+
+    path: RelativePath
+    """The session path it stands for: it is copied to ``inputs/<path>``."""
+    artifact_id: Identifier
+    revision: Annotated[int, Field(ge=1)]
+    sha256: Sha256
+    size: Annotated[int, Field(ge=0)]
+
+
 class ChildEnvironmentRequest(Contract):
     """Admit and create a child environment for one delegation (CE-1, CE-4).
 
@@ -120,6 +140,9 @@ class ChildEnvironmentRequest(Contract):
     inputs: tuple[RelativePath, ...] = Field(default=(), max_length=MAX_CHILD_INPUTS)
     """Session workspace paths, files or directories, copied to ``inputs/`` (CE-7). A
     path that names nothing is listed as missing, since a brief's inputs are also text."""
+    retained: tuple[RetainedInput, ...] = Field(default=(), max_length=MAX_RETAINED_INPUTS)
+    """Inputs from control's retained content (CE-7): each is copied unless the session's
+    files already give its path, and a missing path it gives is no longer missing."""
     min_isolation_tier: IsolationTier | None = None
 
 
@@ -172,6 +195,28 @@ class ChildHandBack(Contract):
     ended_at: datetime
 
 
+class InputPart(Contract):
+    """Part of a retained input's content, sent by control once its child environment is
+    ready (CE-7): ``index`` is its place in the request's ``retained``. A part not sent
+    where the input's received bytes end is not written, and the answer says where they
+    end; the last part's write checks the whole file's SHA-256 and size."""
+
+    context: ExecutionContext
+    """The session's, as the child environment's other routes take it."""
+    index: Annotated[int, Field(ge=0, lt=MAX_RETAINED_INPUTS)]
+    offset: Annotated[int, Field(ge=0)]
+    content_b64: str = Field(max_length=4 * ((MAX_PART_BYTES + 2) // 3))
+
+
+class InputStaged(Contract):
+    """Where a retained input's received bytes end, whether the part was written, and,
+    once whole and checked, the input as copied."""
+
+    size: Annotated[int, Field(ge=0)]
+    accepted: bool
+    staged: ManifestFile | None = None
+
+
 class ChildEnvironmentEnd(Contract):
     """End a child environment: release it, or keep it stopped after an incomplete
     hand-back (CE-4). A hand-back a restart cut short is finished first."""
@@ -196,7 +241,11 @@ class ChildEnvironment(Contract):
     isolation_tier: IsolationTier | None = None
     """The tier the probe measured in it, once prepared."""
     inputs: tuple[ManifestFile, ...] = Field(default=(), max_length=MAX_MANIFEST_FILES)
-    """The inputs copied, by their child environment paths under ``inputs/``."""
+    """The inputs copied, by their child environment paths under ``inputs/``: the
+    session's, then those from control's retained content as each is staged."""
+    retained: tuple[RetainedInput, ...] = Field(default=(), max_length=MAX_RETAINED_INPUTS)
+    """The inputs from control's retained content that admission planned to copy, in the
+    order ``InputPart.index`` names them; each is in ``inputs`` once staged."""
     inputs_missing: tuple[RelativePath, ...] = Field(default=(), max_length=MAX_CHILD_INPUTS)
     packages: ReplayedPackages = ReplayedPackages()
     created_at: datetime
@@ -222,6 +271,8 @@ __all__ = [
     "HAND_BACK_MANIFEST",
     "HAND_BACK_RESERVED",
     "MAX_CHILD_INPUTS",
+    "MAX_PART_BYTES",
+    "MAX_RETAINED_INPUTS",
     "ChildEndReason",
     "ChildEnvironment",
     "ChildEnvironmentEnd",
@@ -231,7 +282,10 @@ __all__ = [
     "ChildHandBack",
     "ChildPhase",
     "HandBackRequest",
+    "InputPart",
+    "InputStaged",
     "RetainedFile",
+    "RetainedInput",
     "child_environment_id",
     "hand_back_path",
     "hand_back_reserved",

@@ -11,6 +11,8 @@ listings carry file sizes. The orchestrator's side is in the orchestrator's test
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import json
 import logging
 import os
@@ -31,12 +33,10 @@ from sandbox_science.contracts import (
     EnvironmentState,
     ErrorKind,
     ExecutionContext,
-    FileContent,
     FileListing,
     IsolationEvidence,
     ListFilesRequest,
     Location,
-    ReadFileRequest,
     SessionCloseRequest,
 )
 from sandbox_science.contracts.child_environments import (
@@ -45,7 +45,9 @@ from sandbox_science.contracts.child_environments import (
     ChildEnvironmentRequest,
     ChildPhase,
     HandBackRequest,
+    InputPart,
     RetainedFile,
+    RetainedInput,
     is_child_environment,
 )
 from sandbox_science.contracts.worker import PROTOCOL_VERSION
@@ -59,6 +61,7 @@ from sandbox_science.worker.child_records import ACTIVE, ChildRecord
 from sandbox_science.worker.environments import Environments
 from sandbox_science.worker.errors import WorkerError
 from sandbox_science.worker.manager import ExecutionManager
+from sandbox_science.worker.monitor import MonitorDesk
 from sandbox_science.worker.settings import (
     ChildProfile,
     EnvironmentSettings,
@@ -305,6 +308,93 @@ async def test_a_child_environment_is_made_from_the_session_environment(pool: Po
     assert (again.environment_id, created) == (made.environment_id, False)
 
 
+def retained(path: str, data: bytes, revision: int = 1) -> RetainedInput:
+    return RetainedInput(
+        path=path,
+        artifact_id="artifact-" + hashlib.sha256(path.encode()).hexdigest()[:8],
+        revision=revision,
+        sha256=hashlib.sha256(data).hexdigest(),
+        size=len(data),
+    )
+
+
+def part(index: int, offset: int, data: bytes) -> InputPart:
+    return InputPart(
+        context=CONTEXT,
+        index=index,
+        offset=offset,
+        content_b64=base64.b64encode(data).decode(),
+    )
+
+
+async def test_inputs_from_controls_retained_content_are_planned_and_staged(
+    pool: Pool,
+) -> None:
+    """CE-7: an input whose content control retains is planned at admission, counted in
+    the staging bound, and staged part by part once ready, its digest checked; the
+    session's file wins where it exists, and a missing path one gives is not missing."""
+    report = b"# Report r2\n" * 1000
+    figure = b"\x89PNG" + bytes(5000)
+    items = (
+        retained("data/input.txt", b"older input\n"),  # the session's file is copied
+        retained("results/report.md", report, revision=2),
+        retained("shared/fig.png", figure),
+    )
+    made = await pool.ready(inputs=("data/input.txt", "results/report.md"), retained=items)
+    assert made.phase == "ready"
+    assert made.retained == items[1:]
+    assert made.inputs_missing == ()  # results/report.md comes from control
+    assert [f.path for f in made.inputs] == ["inputs/data/input.txt"]
+    child = made.environment_id
+    # Parts of the first one, out of order: the worker says where its bytes end.
+    first = await pool.children.stage_input(child, part(0, 0, report[:5000]))
+    assert (first.size, first.accepted, first.staged) == (5000, True, None)
+    skipped = await pool.children.stage_input(child, part(0, 9000, report[9000:]))
+    assert (skipped.size, skipped.accepted) == (5000, False)
+    done = await pool.children.stage_input(child, part(0, 5000, report[5000:]))
+    assert done.staged is not None
+    assert done.staged.path == "inputs/results/report.md"
+    assert done.staged.sha256 == items[1].sha256
+    assert pool.port.files[child, "inputs/results/report.md"] == report
+    # Asked again, the staged input answers the same.
+    again = await pool.children.stage_input(child, part(0, 0, b""))
+    assert again.staged == done.staged
+    # Content that is not the planned digest is refused, and its parts discarded.
+    with pytest.raises(WorkerError) as caught:
+        await pool.children.stage_input(child, part(1, 0, b"\x00" * len(figure)))
+    assert caught.value.kind is ErrorKind.CONFLICT
+    assert (child, "inputs/shared/fig.png") not in pool.port.files
+    assert not pool.port.parts
+    # A part past the input's size, or of an input not planned, is refused.
+    with pytest.raises(WorkerError, match="may not end"):
+        await pool.children.stage_input(child, part(1, 0, figure + b"x"))
+    with pytest.raises(WorkerError, match="no input 2"):
+        await pool.children.stage_input(child, part(2, 0, b"x"))
+    await pool.children.stage_input(child, part(1, 0, figure))
+    found = pool.children.get(child, CONTEXT)
+    assert [f.path for f in found.inputs] == [
+        "inputs/data/input.txt",
+        "inputs/results/report.md",
+        "inputs/shared/fig.png",
+    ]
+    # Only a ready one takes inputs.
+    await pool.children.end(child, pool.end("abandoned"))
+    with pytest.raises(WorkerError, match="inputs go to a ready one"):
+        await pool.children.stage_input(child, part(1, 0, figure))
+
+
+async def test_retained_inputs_count_in_the_staging_bound(tmp_path: Path) -> None:
+    pool = Pool(tmp_path, child_profiles={"standard": child_profile(stage_max_bytes=100)})
+    try:
+        await pool.session()
+        big = retained("results/big.bin", b"b" * 95)
+        with pytest.raises(WorkerError, match=r"inputs_too_large: input results/big\.bin"):
+            await pool.children.admit(pool.request(inputs=("data",), retained=(big,)))
+        assert pool.store.child_environments.listed() == []
+    finally:
+        await pool.close()
+
+
 async def test_no_client_may_create_an_environment_by_a_child_id(pool: Pool) -> None:
     with pytest.raises(WorkerError, match="child environments") as caught:
         await pool.environments.create(
@@ -405,6 +495,35 @@ async def test_an_unplaced_child_environment_fails_and_is_released(tmp_path: Pat
         await pool.close()
 
 
+async def test_the_cost_view_counts_child_environments_seeding(tmp_path: Path) -> None:
+    """CE-13: the child environments made within the window, how long their sandboxes took
+    to be placed, seeded and started, and from admission to ready, from the worker's
+    records; past what the worker keeps, the counts say from when they are complete."""
+    pool = Pool(tmp_path, child_profiles={"standard": child_profile(schedule_timeout=0.3)})
+    try:
+        await pool.session()
+        ready = await pool.ready()
+        pool.fake.update(phase_on_create="Provisioning")  # pending: no node has room
+        await pool.ready("dlg-" + "b" * 24)
+        now = datetime.now(UTC)
+        found = await pool.children.seeding("p1", now - timedelta(hours=24), now)
+        assert (found.made, found.ready, found.failed, found.preparing) == (2, 1, 1, 0)
+        assert found.created is not None
+        assert found.created.count == 1  # the unplaced one's sandbox was never created
+        assert found.to_ready is not None
+        assert found.to_ready.count == 1
+        assert ready.ready_at is not None
+        assert found.to_ready.longest == (ready.ready_at - ready.created_at).total_seconds()
+        assert (found.alive, found.retained, found.counted_since) == (1, 0, None)
+        # A week reaches past the 3 days released ones are kept.
+        week = await pool.children.seeding("p1", now - timedelta(days=7), now)
+        assert week.counted_since == now - timedelta(days=3)
+        # Another project's are not counted.
+        assert (await pool.children.seeding("p2", now - timedelta(hours=24), now)).made == 0
+    finally:
+        await pool.close()
+
+
 async def test_a_weaker_sandbox_than_required_is_released(pool: Pool) -> None:
     pool.port.located.clear()
     made, _ = await pool.children.admit(pool.request())
@@ -498,6 +617,26 @@ async def test_a_continuations_hand_back_goes_to_its_works_write_area(pool: Pool
     assert not any(path.startswith(f"work/{DELEGATION}/") for _, path in pool.port.files)
 
 
+async def test_large_files_go_in_parts_to_the_works_write_area(pool: Pool) -> None:
+    """The ranged hand-back keeps DA-19's targets: a continuation's files over 100 MiB go
+    to its work's area, one written there at its own path, any other below it."""
+    made = await pool.ready()
+    child = made.environment_id
+    area = "work/dlg-" + "f" * 24
+    kept, other = b"k" * LARGE, b"o" * LARGE
+    pool.port.files[child, f"{area}/big.bin"] = kept
+    pool.port.files[child, "out/big.bin"] = other
+    back = await pool.children.hand_back(
+        child, pool.back((f"{area}/big.bin", "out/big.bin"), write_area=area)
+    )
+    assert back.complete
+    assert [f.path for f in back.collected] == [f"{area}/big.bin", f"{area}/out/big.bin"]
+    assert pool.port.files[SESSION, f"{area}/big.bin"] == kept
+    assert pool.port.files[SESSION, f"{area}/out/big.bin"] == other
+    assert pool.port.range_writes == 26  # 13 parts each
+    assert not pool.port.parts
+
+
 async def test_an_incomplete_hand_back_retains_two_a_project(tmp_path: Path) -> None:
     pool = Pool(
         tmp_path,
@@ -531,38 +670,176 @@ async def test_an_incomplete_hand_back_retains_two_a_project(tmp_path: Path) -> 
         await pool.close()
 
 
-async def test_a_file_over_100_mib_is_refused_by_its_size_and_the_limit(pool: Pool) -> None:
-    """CE-F1's 1.5 GiB file: a write into a sandbox takes 100 MiB at most, so the
-    hand-back leaves it in the child environment, which is retained; the reason names its
-    size and the limit, and the environment's message the largest files left out."""
+LARGE = 100 * 1024**2 + 5
+"""Just over one 100 MiB write: copied in 13 parts of 8 MiB."""
+
+
+async def test_a_file_over_100_mib_is_handed_back_in_parts(pool: Pool) -> None:
+    """CE-F1's large file: over 100 MiB, it goes in parts of 8 MiB, and takes its name in
+    the session only once its whole SHA-256 and size are checked; the manifest names it."""
     made = await pool.ready()
     child = made.environment_id
-    for name in ("small.txt", "huge.bin", "big.bin"):
-        pool.port.files[child, name] = b"x"
-    sizes = {"huge.bin": 1536 * 1024**2, "big.bin": 200 * 1024**2}
-    read = pool.port.read_file
-
-    async def sized(request: ReadFileRequest) -> FileContent:
-        found = await read(request)
-        size = sizes.get(request.path) if request.context.environment_id == child else None
-        return found if size is None else found.model_copy(update={"size": size})
-
-    pool.port.read_file = sized
-    back = await pool.children.hand_back(child, pool.back(("small.txt", "huge.bin", "big.bin")))
-    assert not back.complete
-    assert [f.path for f in back.collected] == [f"work/{DELEGATION}/small.txt"]
-    reasons = {f.path: f.reason for f in back.not_collected}
-    assert reasons["huge.bin"] == (
-        "1.5 GiB (1610612736 bytes) is over the 100 MiB (104857600 bytes) a hand-back "
-        "copies per file; it stays in the child environment while that is retained"
-    )
-    assert reasons["big.bin"].startswith("200 MiB (209715200 bytes) is over the 100 MiB")
+    data = bytes(range(256)) * (LARGE // 256) + b"tail!"
+    assert len(data) == LARGE
+    pool.port.files[child, "huge.bin"] = data
+    pool.port.files[child, "small.txt"] = b"small\n"
+    back = await pool.children.hand_back(child, pool.back(("small.txt", "huge.bin")))
+    assert back.complete
+    target = f"work/{DELEGATION}/huge.bin"
+    found = {f.path: f for f in back.collected}
+    assert found[target].size == LARGE
+    assert found[target].sha256 == hashlib.sha256(data).hexdigest()
+    assert pool.port.files[SESSION, target] == data
+    assert pool.port.range_writes == 13
+    assert not pool.port.parts  # nothing is left of the parts
     ended = await pool.children.end(child, pool.end())
-    assert ended.phase == "retained"
-    assert ended.message == (
-        "its hand-back left 2 files behind; 2 too large to copy (over 100 MiB a file, or "
-        "past the hand-back's bytes), the largest huge.bin (1.5 GiB), big.bin (200 MiB)"
-    )
+    assert ended.phase == "released"
+
+
+async def test_a_file_past_the_hand_backs_bytes_is_left_by_its_size(tmp_path: Path) -> None:
+    """Past the bytes left of the profile's collect_max_bytes, a file stays in the child
+    environment, which is retained; the reason names its size and the limit, and the
+    environment's message the largest files left out."""
+    pool = Pool(tmp_path, child_profiles={"standard": child_profile(collect_max_bytes=1000)})
+    try:
+        await pool.session()
+        made = await pool.ready()
+        child = made.environment_id
+        pool.port.files[child, "small.txt"] = b"x" * 100
+        pool.port.files[child, "huge.bin"] = b"y" * 2048
+        pool.port.files[child, "big.bin"] = b"z" * 950
+        back = await pool.children.hand_back(child, pool.back(("small.txt", "huge.bin", "big.bin")))
+        assert not back.complete
+        assert [f.path for f in back.collected] == [f"work/{DELEGATION}/small.txt"]
+        reasons = {f.path: f.reason for f in back.not_collected}
+        assert reasons["huge.bin"] == (
+            "2 KiB (2048 bytes) is over the 900 bytes (900 bytes) left of the child "
+            "profile's hand-back bytes (collect_max_bytes); it stays in the child "
+            "environment while that is retained"
+        )
+        assert reasons["big.bin"].startswith("950 bytes (950 bytes) is over the 900 bytes")
+        ended = await pool.children.end(child, pool.end())
+        assert ended.phase == "retained"
+        assert ended.message == (
+            "its hand-back left 2 files behind; 2 too large to copy (past the hand-back's "
+            "bytes), the largest huge.bin (2 KiB), big.bin (950 bytes)"
+        )
+    finally:
+        await pool.close()
+
+
+async def test_a_large_copy_cut_short_resumes_where_its_part_ends(pool: Pool) -> None:
+    """A worker stopped during a ranged copy: the next hand-back goes on from the bytes
+    the session's part holds, sending none of them again."""
+    made = await pool.ready()
+    child = made.environment_id
+    data = b"\x07" * LARGE
+    pool.port.files[child, "huge.bin"] = data
+    pool.port.range_gates["huge.bin"] = asyncio.Event()  # never set: the worker stops
+    cut = asyncio.ensure_future(pool.children.hand_back(child, pool.back(("huge.bin",))))
+    await eventually(lambda: bool(pool.port.gated), timeout=10)
+    cut.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await cut
+    assert [len(part) for part in pool.port.parts.values()] == [8 * 1024**2]
+    del pool.port.range_gates["huge.bin"]
+    await pool.restart()
+    ended = await pool.children.end(child, pool.end())  # finishes the recorded hand-back
+    assert ended.hand_back is not None
+    assert ended.hand_back.complete
+    assert pool.port.files[SESSION, f"work/{DELEGATION}/huge.bin"] == data
+    # The first part was sent once: 13 parts in all.
+    assert pool.port.range_writes == 13
+    assert ended.phase == "released"
+
+
+async def test_a_copy_that_gives_up_discards_its_parts(pool: Pool) -> None:
+    """A part's read that fails once for a transient reason is tried again; one that
+    fails again gives the file up, and its parts in the session go with it."""
+    made = await pool.ready()
+    child = made.environment_id
+    pool.port.files[child, "a.bin"] = b"a" * LARGE
+    pool.port.files[child, "b.bin"] = b"b" * LARGE
+    read = pool.port.read_part
+    failures = {"a.bin": 1, "b.bin": 2}
+
+    async def flaky(context: ExecutionContext, path: str, offset: int, length: int):
+        if offset > 0 and failures.get(path, 0) > 0:
+            failures[path] -= 1
+            raise WorkerError(ErrorKind.UNAVAILABLE, "the executor did not answer")
+        return await read(context, path, offset, length)
+
+    pool.port.read_part = flaky
+    back = await pool.children.hand_back(child, pool.back(("a.bin", "b.bin")))
+    assert [f.path for f in back.collected] == [f"work/{DELEGATION}/a.bin"]
+    assert back.not_collected[0].path == "b.bin"
+    assert back.not_collected[0].reason == "it was not copied: the executor did not answer"
+    assert not pool.port.parts  # b.bin's first part was discarded
+
+
+async def test_a_copy_the_deadline_ends_discards_its_parts(tmp_path: Path) -> None:
+    pool = Pool(tmp_path)
+    try:
+        await pool.session()
+        pool.children.collect_timeout = 0.5
+        made = await pool.ready()
+        child = made.environment_id
+        pool.port.files[child, "huge.bin"] = b"h" * LARGE
+        pool.port.range_gates["huge.bin"] = asyncio.Event()  # never set
+        back = await pool.children.hand_back(child, pool.back(("huge.bin",)))
+        assert not back.complete
+        assert [f.path for f in back.not_collected] == ["."]
+        assert not pool.port.parts
+    finally:
+        await pool.close()
+
+
+async def test_session_inputs_share_the_bound_with_retained_ones(tmp_path: Path) -> None:
+    """Staging starts from the bound less the retained inputs' bytes: a session file that
+    grew after admission cannot take the room admission counted for them."""
+    pool = Pool(tmp_path, child_profiles={"standard": child_profile(stage_max_bytes=100)})
+    try:
+        await pool.session()
+        pool.port.located.clear()  # preparation waits before it stages
+        item = retained("results/r.bin", b"r" * 60)
+        made, _ = await pool.children.admit(
+            pool.request(inputs=("data/input.txt",), retained=(item,))
+        )
+        pool.port.files[SESSION, "data/input.txt"] = b"i" * 50  # grew: 50 + 60 > 100
+        pool.port.located.set()
+        found = await pool.settled(made.environment_id)
+        assert (found.phase, found.failure) == ("released", "inputs_too_large")
+    finally:
+        await pool.close()
+
+
+async def test_inputs_are_refused_once_the_childs_run_began(
+    pool: Pool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = b"r" * 10
+    made = await pool.ready(retained=(retained("results/r.bin", data),))
+    monkeypatch.setattr(pool.store, "has_executions", lambda environment_id: True)
+    with pytest.raises(WorkerError, match="run has begun"):
+        await pool.children.stage_input(made.environment_id, part(0, 0, data))
+
+
+async def test_a_file_changed_while_copied_is_left_out(pool: Pool) -> None:
+    """The whole file's digest is checked at its end: a file that changed while its parts
+    were copied takes no name in the session, and its parts are discarded."""
+    made = await pool.ready()
+    child = made.environment_id
+    pool.port.files[child, "huge.bin"] = b"a" * LARGE
+    pool.port.range_gates["huge.bin"] = gate = asyncio.Event()
+    copying = asyncio.ensure_future(pool.children.hand_back(child, pool.back(("huge.bin",))))
+    await eventually(lambda: bool(pool.port.gated), timeout=10)
+    pool.port.files[child, "huge.bin"] = b"b" * LARGE  # same size, other content
+    gate.set()
+    back = await copying
+    assert not back.complete
+    assert back.not_collected[0].path == "huge.bin"
+    assert back.not_collected[0].reason.startswith("it was not copied: ")
+    assert (SESSION, f"work/{DELEGATION}/huge.bin") not in pool.port.files
+    assert not pool.port.parts
 
 
 async def test_a_hand_back_must_stay_the_same(pool: Pool) -> None:
@@ -693,8 +970,11 @@ async def test_the_routes_serve_the_sessions_child_environments(
         state_dir=pool.tmp / "worker",
     )
     monkeypatch.setattr(manager, "capabilities", capabilities)
+    desk = MonitorDesk(
+        None, pool.environments.records.listed, declared_tier=3, measured_tier=lambda _: None
+    )
     client: TestClient[Any, Any] = await aiohttp_client(
-        create_app(manager, TOKEN, pool.environments, children=pool.children)
+        create_app(manager, TOKEN, pool.environments, children=pool.children, monitor_desk=desk)
     )
     headers = {"Authorization": f"Bearer {TOKEN}"}
     body = await (
@@ -715,8 +995,17 @@ async def test_the_routes_serve_the_sessions_child_environments(
         await client.get(f"/v1/child-environments/{child}?{query}", headers=headers)
     ).json()
     assert found["phase"] == "ready"
+    figures = await (await client.get("/v1/monitor?project=p1&window=24h", headers=headers)).json()
+    assert (figures["child_environments"]["made"], figures["child_environments"]["alive"]) == (1, 1)
     listed = await (await client.get(f"/v1/child-environments?{query}", headers=headers)).json()
     assert [c["environment_id"] for c in listed["environments"]] == [child]
+    response = await client.post(
+        f"/v1/child-environments/{child}/inputs",
+        json=part(0, 0, b"x").model_dump(mode="json"),
+        headers=headers,
+    )
+    assert response.status == 400  # admission planned no retained input
+    assert "no input 0" in (await response.json())["error"]["message"]
     # Another session's context does not find it, and the environment routes do not name it.
     other = query.replace("session_id=s1", "session_id=s2")
     response = await client.get(f"/v1/child-environments/{child}?{other}", headers=headers)
@@ -749,10 +1038,14 @@ async def test_the_routes_serve_the_sessions_child_environments(
 def test_a_child_contract_bounds_its_inputs() -> None:
     with pytest.raises(ValidationError):
         ChildEnvironmentRequest(
-            context=CONTEXT, delegation_id=DELEGATION, inputs=tuple(f"f{n}" for n in range(21))
+            context=CONTEXT, delegation_id=DELEGATION, inputs=tuple(f"f{n}" for n in range(61))
         )
     with pytest.raises(ValidationError):
         ChildEnvironmentRequest(context=CONTEXT, delegation_id=DELEGATION, inputs=("../up",))
+    with pytest.raises(ValidationError):
+        RetainedInput(path="/etc/x", artifact_id="a", revision=1, sha256="0" * 64, size=1)
+    with pytest.raises(ValidationError):
+        InputPart(context=CONTEXT, index=0, offset=0, content_b64="A" * (12 * 1024**2))
 
 
 # The review of 2026-10-26.
