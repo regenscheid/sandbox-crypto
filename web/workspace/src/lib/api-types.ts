@@ -1279,6 +1279,7 @@ export interface ExecutionContext {
   policy_revision: string | null;
   actor: string;
   authority: ExecutionAuthority | null;
+  write_area: string | null;
 }
 
 /** How a page shows a pinned figure file, and when its capability stops opening it: ``image``, an ``<img>`` of ``url``; ``svg``, the figure frame at ``url``, posted ``capability``; ``html``, a frame without scripts whose page is ``url``; ``pdf``, the viewer's figure mode at ``url``. */

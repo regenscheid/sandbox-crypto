@@ -47,6 +47,7 @@ from sandbox_science.contracts.child_environments import (
     ChildHandBack,
     HandBackRequest,
     RetainedFile,
+    hand_back_path,
     hand_back_target,
 )
 from sandbox_science.contracts.worker import (
@@ -86,12 +87,13 @@ from sandbox_science.worker.settings import LocalBackendSettings
 from sandbox_science.worker.store import Store
 
 from .control_versions import older_store
-from .loop_harness import PROJECT, SESSION, TOKEN, Harness, Lineage, Reply, Worker, call
+from .loop_harness import AREA, PROJECT, SESSION, TOKEN, Harness, Lineage, Reply, Worker, call
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
-from .test_delegation import children, delegation, started, wait
+from .test_delegation import children, delegation, results, started, wait
 from .test_delegation_lifecycle import _delegations
 from .test_delegation_tasks import DONE
+from .test_delegation_write_area import errors, written
 
 pytestmark = pytest.mark.slow
 
@@ -177,13 +179,14 @@ class ChildService:
             except Exception as error:
                 left.append(UncollectedFile(path=path, reason=str(error)[:300]))
                 continue
+            destination = hand_back_path(request.delegation_id, path)
             await self.manager.write_file(
                 WriteFileRequest(
-                    context=request.context, path=f"{target}/{path}", content_b64=read.content_b64
+                    context=request.context, path=destination, content_b64=read.content_b64
                 )
             )
             size = len(base64.b64decode(read.content_b64))
-            collected.append(ManifestFile(path=f"{target}/{path}", size=size, sha256=read.sha256))
+            collected.append(ManifestFile(path=destination, size=size, sha256=read.sha256))
         back = ChildHandBack(
             delegation_id=request.delegation_id,
             environment_id=environment_id,
@@ -579,8 +582,8 @@ TASK = call(
 RESULT = {
     **DONE,
     "deliverables": [
-        {"id": "d1", "status": "produced", "path": "table.txt"},
-        {"id": "d2", "status": "produced", "path": "notes.txt"},
+        {"id": "d1", "status": "produced", "path": f"{AREA}/table.txt"},
+        {"id": "d2", "status": "produced", "path": f"{AREA}/notes.txt"},
     ],
 }
 
@@ -595,9 +598,9 @@ async def test_a_task_in_its_own_environment_hands_back_and_is_released(
         "root",
         [Reply(calls=[TASK]), wait(), Reply("Done.")],
         delegated=[
-            Reply(calls=[call("write_file", path="table.txt", content="1 1 1\n")]),
-            Reply(calls=[call("write_file", path="notes.txt", content="All ones.\n")]),
-            Reply(calls=[call("publish", path="table.txt")]),
+            Reply(calls=[call("write_file", path=f"{AREA}/table.txt", content="1 1 1\n")]),
+            Reply(calls=[call("write_file", path=f"{AREA}/notes.txt", content="All ones.\n")]),
+            Reply(calls=[call("publish", path=f"{AREA}/table.txt")]),
             Reply(json.dumps(RESULT)),
         ],
     )
@@ -613,13 +616,14 @@ async def test_a_task_in_its_own_environment_hands_back_and_is_released(
             owning.tmp / "worker" / "environments" / environment / "project" / "sessions" / SESSION
         )
 
-    assert (workspace(child_environment) / "table.txt").exists()
+    area = f"work/{delegation_id}"
+    assert (workspace(child_environment) / area / "table.txt").exists()
     session = owning.context().environment_id
-    assert not (workspace(session) / "table.txt").exists()
+    assert not (workspace(session) / area / "table.txt").exists()
     # The hand-back: the unpublished deliverable copied, the published one named.
     (back,) = service.hand_backs
-    assert back.files == ("notes.txt",)
-    assert [r.path for r in back.retained] == ["table.txt"]
+    assert back.files == (f"{area}/notes.txt",)
+    assert [r.path for r in back.retained] == [f"{area}/table.txt"]
     target = workspace(session) / "work" / delegation_id
     assert (target / "notes.txt").read_text() == "All ones.\n"
     assert found.environment is not None
@@ -668,8 +672,8 @@ async def test_a_waiting_child_keeps_its_environment_until_it_ends(
         "root",
         [Reply(calls=[TASK]), wait(), Reply("Done.")],
         delegated=[
-            Reply(calls=[call("write_file", path="table.txt", content="1\n")], before=look),
-            Reply(calls=[call("write_file", path="notes.txt", content="n\n")], before=look),
+            Reply(calls=[call("write_file", path=f"{AREA}/table.txt", content="1\n")], before=look),
+            Reply(calls=[call("write_file", path=f"{AREA}/notes.txt", content="n\n")], before=look),
             Reply(json.dumps(RESULT), before=look),
         ],
     )
@@ -949,8 +953,8 @@ async def test_a_waiting_child_keeps_its_environment_and_an_ended_one_releases_i
         delegated=[
             Reply(calls=[call("message_parent", text="Partial: table.txt so far.")]),
             Reply(calls=[call("wait_agent_message", timeout_seconds=0.2)], before=look),
-            Reply(calls=[call("write_file", path="table.txt", content="1\n")], before=look),
-            Reply(calls=[call("write_file", path="notes.txt", content="n\n")]),
+            Reply(calls=[call("write_file", path=f"{AREA}/table.txt", content="1\n")], before=look),
+            Reply(calls=[call("write_file", path=f"{AREA}/notes.txt", content="n\n")]),
             Reply(json.dumps(RESULT), before=look),
         ],
     )
@@ -974,8 +978,8 @@ async def test_after_an_unavailable_environment_a_new_delegate_is_admitted(
         [Reply(calls=[TASK]), wait(), Reply(calls=[TASK], before=ready_again), wait(),
          Reply("Done.")],
         delegated=[
-            Reply(calls=[call("write_file", path="table.txt", content="1\n")]),
-            Reply(calls=[call("write_file", path="notes.txt", content="n\n")]),
+            Reply(calls=[call("write_file", path=f"{AREA}/table.txt", content="1\n")]),
+            Reply(calls=[call("write_file", path=f"{AREA}/notes.txt", content="n\n")]),
             Reply(json.dumps(RESULT)),
         ],
     )  # fmt: skip
@@ -1188,3 +1192,58 @@ async def test_a_resume_continues_in_its_environment_or_restarts_in_a_new_one(
     finally:
         documents.close()
         state.projects.close()
+
+
+# The write area in a child environment (DA-19, CE-6).
+
+
+async def test_a_child_in_its_own_environment_has_the_same_write_area(
+    owning: Harness, service: ChildService
+) -> None:
+    """DA-19 with CE-6: in its own environment the child writes in work/<id>/ there and
+    is refused elsewhere; the hand-back brings the file it named to the same path in the
+    session's environment, where its parent reads it once it accepts the task."""
+
+    root = await owning.run(
+        "root",
+        [
+            Reply(calls=[call("delegate", task="Tabulate a^16 mod 17 into notes.")]),
+            wait(),
+            Reply(
+                calls_from=lambda m: [
+                    call("accept_delegation", delegation_id=written(m).removeprefix("work/"))
+                ]
+            ),
+            Reply(calls_from=lambda m: [call("read_file", path=f"{written(m)}/notes.md")]),
+            Reply("Done."),
+        ],
+        delegated=[
+            Reply(calls=[call("write_file", path=f"{AREA}/notes.md", content="all ones\n")]),
+            Reply(calls=[call("write_file", path="table.txt", content="1\n")]),
+            Reply(json.dumps({**DONE, "result_files": [f"{AREA}/notes.md"]})),
+        ],
+    )
+    (delegation_id,) = started(root)
+    area = f"work/{delegation_id}"
+    (child_environment,) = service.made
+    (child,) = children(owning, root)
+    (refused,) = errors(child)
+    assert refused["kind"] == "policy_denied"
+    assert refused["message"].startswith("outside_write_area: 'table.txt'")
+
+    def workspace(environment: str) -> Path:
+        return (
+            owning.tmp / "worker" / "environments" / environment / "project" / "sessions" / SESSION
+        )
+
+    assert (workspace(child_environment) / area / "notes.md").read_text() == "all ones\n"
+    assert not (workspace(child_environment) / "table.txt").exists()
+    (back,) = service.hand_backs
+    assert back.files == (f"{area}/notes.md",)
+    session = owning.context().environment_id
+    assert (workspace(session) / area / "notes.md").read_text() == "all ones\n"
+    assert not (workspace(session) / area / area).exists()
+
+    # The parent reads it by the path the child named.
+    read = json.loads(results(root)[-1])
+    assert (read["path"], read["content"]) == (f"{area}/notes.md", "all ones\n")

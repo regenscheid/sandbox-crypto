@@ -18,7 +18,7 @@ from sandbox_science.orchestrator.file_settings import DEFAULT_IGNORE, ProjectFi
 from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.loop import Transcript
 
-from .loop_harness import PROJECT, Harness, Reply, call
+from .loop_harness import AREA, PROJECT, Harness, Reply, call
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
@@ -28,8 +28,10 @@ from .test_delegation_tasks import DONE
 from .test_delegation_tracks import an_issue, worked
 
 TASK = call("delegate", task="Tabulate a^16 mod 17 into table.txt.")
-WRITE = call("write_file", path="table.txt", content="1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1\n")
+WRITE = call("write_file", path=f"{AREA}/table.txt", content="1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1\n")
 RESULT = {**DONE, "result_files": ["table.txt"]}
+WRITTEN = {**DONE, "result_files": [f"{AREA}/table.txt"]}
+"""``RESULT`` as a delegated run gives it, naming the file in its write area (DA-19)."""
 
 
 def listed(files: dict[str, Any] | None, key: str) -> list[dict[str, Any]]:
@@ -48,7 +50,7 @@ async def test_a_tasks_result_files_are_pinned_in_its_outcome(delegating: Harnes
     root = await delegating.run(
         "root",
         [Reply(calls=[TASK]), wait(), Reply("Done.")],
-        delegated=[Reply(calls=[WRITE]), Reply(json.dumps(RESULT))],
+        delegated=[Reply(calls=[WRITE]), Reply(json.dumps(WRITTEN))],
     )
     (delegation_id,) = started(root)
     found = delegation(delegating, delegation_id)
@@ -56,7 +58,7 @@ async def test_a_tasks_result_files_are_pinned_in_its_outcome(delegating: Harnes
     (recorded,) = listed(found.files, "files")
     assert pinned == {k: v for k, v in recorded.items() if k not in ("deleted", "reproduced")}
     assert (pinned["path"], pinned["revision"], pinned["content_retained"]) == (
-        "table.txt",
+        f"work/{delegation_id}/table.txt",
         1,
         True,
     )
@@ -72,11 +74,11 @@ async def test_a_tasks_result_files_are_pinned_in_its_outcome(delegating: Harnes
 async def test_a_file_the_child_did_not_make_is_refused_once(delegating: Harness) -> None:
     """Its first answer names a file its calls did not write; the correction lists only
     the file they wrote."""
-    wrong = {**DONE, "result_files": ["table.txt", "missing.txt"]}
+    wrong = {**DONE, "result_files": [f"{AREA}/table.txt", "missing.txt"]}
     root = await delegating.run(
         "root",
         [Reply(calls=[TASK]), wait(), Reply("Done.")],
-        delegated=[Reply(calls=[WRITE]), Reply(json.dumps(wrong)), Reply(json.dumps(RESULT))],
+        delegated=[Reply(calls=[WRITE]), Reply(json.dumps(wrong)), Reply(json.dumps(WRITTEN))],
     )
     (child,) = children(delegating, root)
     outcome = child.summaries["outcome"]
@@ -87,7 +89,9 @@ async def test_a_file_the_child_did_not_make_is_refused_once(delegating: Harness
     assert "wrote or published no file missing.txt" in str(error)
     (delegation_id,) = started(root)
     found = delegation(delegating, delegation_id)
-    assert [r["path"] for r in listed(found.files, "results")] == ["table.txt"]
+    assert [r["path"] for r in listed(found.files, "results")] == [
+        f"work/{delegation_id}/table.txt"
+    ]
 
 
 async def test_a_deleted_file_is_no_result() -> None:
@@ -122,14 +126,14 @@ async def test_a_published_file_is_a_result_in_a_results_only_project(
         [Reply(calls=[TASK]), wait(), Reply("Done.")],
         delegated=[
             Reply(calls=[WRITE]),
-            Reply(calls=[call("publish", path="table.txt")]),
-            Reply(json.dumps(RESULT)),
+            Reply(calls=[call("publish", path=f"{AREA}/table.txt")]),
+            Reply(json.dumps(WRITTEN)),
         ],
     )
     (delegation_id,) = started(root)
     found = delegation(delegating, delegation_id)
     (pinned,) = listed(found.files, "results")
-    assert (pinned["path"], pinned["revision"]) == ("table.txt", 1)
+    assert (pinned["path"], pinned["revision"]) == (f"work/{delegation_id}/table.txt", 1)
     assert found.files is not None
     assert found.files["total"] == 0
 
@@ -137,14 +141,15 @@ async def test_a_published_file_is_a_result_in_a_results_only_project(
 async def test_an_issues_outcome_cites_the_result_files(delegating: Harness) -> None:
     issue = an_issue(delegating)
     task = call("delegate", task="Tabulate it.", issue=issue)
-    await delegating.run(
+    root = await delegating.run(
         "root",
         [Reply(calls=[task]), wait(), Reply("Done.")],
-        delegated=[Reply(calls=[WRITE]), Reply(json.dumps(RESULT))],
+        delegated=[Reply(calls=[WRITE]), Reply(json.dumps(WRITTEN))],
     )
+    (delegation_id,) = started(root)
     (outcome,) = worked(delegating, issue)
     cited = [r for r in outcome.references if "artifact" in r]
-    assert [(r["revision"], r["note"]) for r in cited] == [(1, "table.txt")]
+    assert [(r["revision"], r["note"]) for r in cited] == [(1, f"work/{delegation_id}/table.txt")]
     documents = delegating.documents()
     try:
         assert Ledger(documents).entry(PROJECT, issue).status == "open"

@@ -447,6 +447,37 @@ async def test_a_complete_hand_back_releases_the_child_environment(pool: Pool) -
     assert (await pool.children.end(child, pool.end())).phase == "released"
 
 
+async def test_a_file_of_the_write_area_keeps_its_path(pool: Pool) -> None:
+    """DA-19 with CE-6: a child in its own environment writes in its write area, and the
+    hand-back brings that file to the same path in the session, where its parent reads
+    it by the path the child named; a file elsewhere goes below the write area. Of two
+    that would land on one path, the first listed is copied, and the hand-back's own
+    directory takes none."""
+    made = await pool.ready()
+    child = made.environment_id
+    area = f"work/{DELEGATION}"
+    pool.port.files[child, f"{area}/notes.md"] = b"notes\n"
+    pool.port.files[child, "out/fig.png"] = b"png"
+    pool.port.files[child, "notes.md"] = b"elsewhere\n"
+    pool.port.files[child, f"{area}/.handback/manifest.json"] = b"{}"
+    back = await pool.children.hand_back(
+        child,
+        pool.back(
+            (f"{area}/notes.md", "out/fig.png", "notes.md", f"{area}/.handback/manifest.json")
+        ),
+    )
+    assert [f.path for f in back.collected] == [f"{area}/notes.md", f"{area}/out/fig.png"]
+    assert pool.port.files[SESSION, f"{area}/notes.md"] == b"notes\n"
+    assert (SESSION, f"{area}/{area}/notes.md") not in pool.port.files
+    reasons = {f.path: f.reason for f in back.not_collected}
+    assert reasons == {
+        "notes.md": f"'{area}/notes.md' is handed back to the same path, '{area}/notes.md'",
+        f"{area}/.handback/manifest.json": ".handback/ is the hand-back's own; no file is "
+        "copied there",
+    }
+    assert not back.complete
+
+
 async def test_an_incomplete_hand_back_retains_two_a_project(tmp_path: Path) -> None:
     pool = Pool(
         tmp_path,

@@ -14,7 +14,7 @@ import pytest
 
 from sandbox_science.orchestrator.context.history import body
 from sandbox_science.orchestrator.delegation.outcome import TASK_FORMAT, parse_task
-from sandbox_science.orchestrator.delegation.prompt import TASK_PROMPT
+from sandbox_science.orchestrator.delegation.prompt import TASK_PROMPT, write_area_text
 from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords
 from sandbox_science.orchestrator.documents import DocumentError
 from sandbox_science.orchestrator.ledger import Ledger
@@ -63,15 +63,16 @@ async def test_a_task_runs_with_its_own_prompt_brief_and_limits(delegating: Harn
     first = delegating.gateway.children[0]
     assert str(first[0]["content"]).startswith(TASK_PROMPT[:60])
     brief = body(str(first[1]["content"]))
+    (delegation_id,) = started(root)
     assert brief == (
         "Task: Tabulate a^16 mod 17 for a = 1..16 and save it as table.txt.\n\n"
         "Context from your parent: We need the table for C-1's proof.\n\n"
-        "Inputs:\n- documents/notes"
+        "Inputs:\n- documents/notes\n\n" + write_area_text(f"work/{delegation_id}")
     )
     began = json.loads(results(root)[0])
     assert began["task"] == TASK[1]["task"]
     assert began["limits"] == {"turns": 300, "tokens": 20_000_000}
-    (delegation_id,) = started(root)
+    assert began["write_area"] == f"work/{delegation_id}/"
     found = delegation(delegating, delegation_id)
     assert (found.kind, found.ended) == ("task", "returned")
     assert found.result == KEPT

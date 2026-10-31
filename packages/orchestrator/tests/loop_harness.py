@@ -15,7 +15,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Final, cast
 
 import pytest_asyncio
 from aiohttp import web
@@ -301,6 +301,8 @@ class Reply:
     before: Callable[[], Awaitable[object]] | None = None
     calls_from: Callable[[list[Message]], Sequence[tuple[str, Json]]] | None = None
     """Makes the calls from what the model saw, for arguments only the run knows."""
+    text_from: Callable[[list[Message]], str] | None = None
+    """Makes the text from what the model saw, as ``calls_from`` makes the calls."""
     status: int = 200
     error: str = "synthetic gateway failure"
     """The body of an answer that is not a 200."""
@@ -309,6 +311,22 @@ class Reply:
     """The call's cost, as LiteLLM's proxy reports it in ``x-litellm-response-cost``."""
     tokens: int | None = None
     """The prompt tokens the gateway reports for the call; by default, its messages' count."""
+
+
+AREA: Final = "@AREA@"
+"""In a delegated run's scripted calls and answers, its write area, ``work/<delegation_id>``
+as its brief names it (DA-19)."""
+_WRITE_AREA = re.compile(r"Your write area: (work/dlg-[0-9a-f]{24})/")
+
+
+def written_area(messages: list[Message]) -> str | None:
+    """The write area a delegated run's brief names, if any."""
+    for message in messages:
+        if message.get("role") == "user":
+            found = _WRITE_AREA.search(str(message.get("content", "")))
+            if found:
+                return found[1]
+    return None
 
 
 def call(name: str, /, **arguments: Any) -> tuple[str, Json]:
@@ -567,16 +585,23 @@ class Gateway:
             return web.Response(status=reply.status, text=reply.error, headers=headers)
         tool_calls: list[Json] = []
         made = reply.calls_from(messages) if reply.calls_from is not None else reply.calls
+        area = written_area(messages) if child else None
         for name, arguments in made:
             self.numbered += 1
+            encoded = json.dumps(purposed(arguments))
+            if area is not None:
+                encoded = encoded.replace(AREA, area)
             tool_calls.append(
                 {
                     "id": f"call-{self.numbered}",
                     "type": "function",
-                    "function": {"name": name, "arguments": json.dumps(purposed(arguments))},
+                    "function": {"name": name, "arguments": encoded},
                 }
             )
-        message: Json = {"role": "assistant", "content": reply.text}
+        text = reply.text_from(messages) if reply.text_from is not None else reply.text
+        if area is not None and text is not None:
+            text = text.replace(AREA, area)
+        message: Json = {"role": "assistant", "content": text}
         if tool_calls:
             message["tool_calls"] = tool_calls
         priced = {} if reply.cost is None else {"x-litellm-response-cost": reply.cost}

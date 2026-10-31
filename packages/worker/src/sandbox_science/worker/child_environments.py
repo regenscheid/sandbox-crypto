@@ -20,7 +20,8 @@ all within the profile's ``schedule_timeout``, past which it fails
 as in a session environment: the executor, kernels, file tools and recorder are the
 worker's ordinary ones. At the delegation's end the orchestrator asks for the hand-back
 (CE-6): the worker copies the files it names into the session environment, under
-``work/<delegation_id>/``, within the job collection's bounds (1,000 files, 100 MiB a
+``work/<delegation_id>/``, the delegation's write area (DA-19), where a file the child
+wrote in its write area keeps its path, within the job collection's bounds (1,000 files, 100 MiB a
 write, a 30-minute deadline, the profile's byte cap), and stores a manifest once. Then
 the orchestrator ends it: released after a complete hand-back or a session close, kept
 stopped for ``child_retention`` otherwise (CE-4, JS-25's rule).
@@ -76,6 +77,8 @@ from sandbox_science.contracts.child_environments import (
     ChildHandBack,
     HandBackRequest,
     child_environment_id,
+    hand_back_path,
+    hand_back_reserved,
     hand_back_target,
 )
 from sandbox_science.contracts.worker import (
@@ -670,10 +673,34 @@ class ChildEnvironments:
             else:
                 budget -= apply(_Copied.model_validate_json(recorded))
         remaining = max(0.0, self.collect_timeout - (now - began).total_seconds())
+        # A file of the write area keeps its path; another goes below it (DA-19, CE-6). Of
+        # two that would land on one path, such as ``x`` and ``work/<id>/x``, the first
+        # listed is copied.
+        first: dict[str, str] = {}
+        for path in paths:
+            first.setdefault(hand_back_path(request.delegation_id, path), path)
         try:
             async with asyncio.timeout(remaining):
                 for index, path in pending:
-                    copied = await self._copy(path, f"{target}/{path}", budget, session, child)
+                    destination = hand_back_path(request.delegation_id, path)
+                    if first[destination] != path:
+                        copied = _Copied(
+                            left=UncollectedFile(
+                                path=path[:4096],
+                                reason=f"{first[destination]!r} is handed back to the same "
+                                f"path, {destination!r}"[:300],
+                            )
+                        )
+                    elif hand_back_reserved(request.delegation_id, path):
+                        copied = _Copied(
+                            left=UncollectedFile(
+                                path=path[:4096],
+                                reason=f"{HAND_BACK_RESERVED}/ is the hand-back's own; no file "
+                                "is copied there",
+                            )
+                        )
+                    else:
+                        copied = await self._copy(path, destination, budget, session, child)
                     recorded = self.records.record_step(
                         environment_id, f"copy-{index}", copied.model_dump_json(), self.clock.now()
                     )
@@ -712,8 +739,6 @@ class ChildEnvironments:
         def leave(reason: str) -> _Copied:
             return _Copied(left=UncollectedFile(path=source[:4096], reason=reason[:300]))
 
-        if source == HAND_BACK_RESERVED or source.startswith(f"{HAND_BACK_RESERVED}/"):
-            return leave(f"{HAND_BACK_RESERVED}/ is the hand-back's own; no file is copied there")
         try:
             validate_relative_path(target)
         except ValueError:

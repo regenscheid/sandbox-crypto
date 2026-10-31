@@ -100,6 +100,7 @@ function detail(): OperationDetail {
         environment_id: 'e',
         policy_revision: null,
         actor: 'agent',
+        write_area: null,
       },
       purpose: '<img src=x onerror=attack()>',
       capability: null,

@@ -40,7 +40,7 @@ from sandbox_science.orchestrator.service import RunService
 from sandbox_science.orchestrator.session_plans import PlanBody, SessionPlans
 from sandbox_science.testing import FakeClock, eventually
 
-from .loop_harness import PLAN, PROJECT, SESSION, USER_PLANS, Harness, Reply, call
+from .loop_harness import AREA, PLAN, PROJECT, SESSION, USER_PLANS, Harness, Reply, call
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
@@ -160,8 +160,8 @@ async def test_a_check_keeps_the_plan_fence(delegating: Harness) -> None:
         "root",
         [Reply(calls=[CHECK]), wait(), Reply(calls=[call("plan_read")]), Reply("Fenced.")],
         delegated=[
-            Reply(calls=[call("write_file", path="check.txt", content="x")], before=plan),
-            Reply(calls=[call("publish", path="check.txt")]),
+            Reply(calls=[call("write_file", path=f"{AREA}/check.txt", content="x")], before=plan),
+            Reply(calls=[call("publish", path=f"{AREA}/check.txt")]),
             Reply(json.dumps(FENCED)),
         ],
     )

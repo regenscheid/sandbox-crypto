@@ -14,7 +14,7 @@ of its non-default fields (canonical.py). docs/COMPATIBILITY.md states the polic
 
 from .artifacts import ArtifactRef
 from .clock import SYSTEM_CLOCK, Clock, SystemClock, wait_or_sleep
-from .context import ExecutionContext
+from .context import ExecutionContext, outside_write_area, write_area
 from .documents import (
     CatalogChange,
     CatalogContentChunk,
@@ -270,7 +270,9 @@ __all__ = [
     "generation_id",
     "manifest_sha256",
     "new_id",
+    "outside_write_area",
     "project_id_label_problem",
     "validate_relative_path",
     "wait_or_sleep",
+    "write_area",
 ]

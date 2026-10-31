@@ -35,7 +35,7 @@ from sandbox_science.contracts import (
     new_id,
 )
 from sandbox_science.contracts.child_environments import RetainedFile, is_child_environment
-from sandbox_science.contracts.context import ExecutionAuthority
+from sandbox_science.contracts.context import ExecutionAuthority, write_area
 from sandbox_science.contracts.logs import log_context
 from sandbox_science.contracts.recovery import RecoveryFence
 from sandbox_science.contracts.worker import Language
@@ -2168,6 +2168,13 @@ class Harness:
             if admitted.request.target is not None
             else caps.task(bundles)
         )
+        # A delegated run's file tools write in its write area and in shared/ (DA-19),
+        # wherever it runs: in the session's environment or its own (CE-6).
+        area = None
+        if delegated:
+            if admitted.request.delegation is None:
+                raise ValueError("a delegated run needs its delegation for its write area")
+            area = write_area(admitted.request.delegation)
         return Toolbox(
             self.client,
             context,
@@ -2180,6 +2187,7 @@ class Harness:
             delegated=delegated,
             capabilities=selected,
             image_offer={"offered": accepts, "why": why},
+            write_area=area,
         )
 
     async def _reviewer_images(

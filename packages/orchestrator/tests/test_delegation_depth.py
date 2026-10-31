@@ -59,7 +59,7 @@ from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.worker_client import WorkerAPIError
 from sandbox_science.testing import eventually
 
-from .loop_harness import PROJECT, SESSION, Harness, Reply, call
+from .loop_harness import AREA, PROJECT, SESSION, Harness, Reply, call
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
@@ -83,7 +83,7 @@ from .test_run_service import serving
 
 LEAD = call("delegate", task="Lead the work.", delegate=True)
 PART = call("delegate", task="Do a part.")
-WRITE = call("write_file", path="part.txt", content="A part.\n")
+WRITE = call("write_file", path=f"{AREA}/part.txt", content="A part.\n")
 
 
 def answer(record: Any, n: int) -> dict[str, Any]:
