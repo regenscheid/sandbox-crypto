@@ -162,6 +162,11 @@ class RunInputs:
         return StartingInputs.model_validate_json(row[0])
 
 
+PINS_CHANGED: Final = "pins_changed"
+"""How a continuation stops when its prompt, tool or skill pins changed since the attempt
+it continues and only an automatic Resume started it."""
+
+
 class RecordInputs(TurnHook):
     """Mandatory start barrier: a persistence failure stops the loop before any call."""
 
@@ -185,6 +190,8 @@ class RecordInputs(TurnHook):
         self.predecessor = predecessor
         self.accept_changes, self.changed = accept_changes, changed
         self.accepted_by = accepted_by
+        self.refused = False
+        """Whether the continuation's pins differ and nobody accepted the change."""
         """Who went on past the change: the user's Resume, or a parent reopening its
         returned task (PD-46)."""
         """A continuation whose prompt, tools or skills changed since the attempt it
@@ -207,7 +214,11 @@ class RecordInputs(TurnHook):
                 )
                 if previous is not None and previous.pins != run.context.prompt_provenance:
                     if not self.accept_changes:
-                        raise ControlError(CONFLICT, "recovery prompt/tool/skill pins changed")
+                        # Not a failure: the platform changed since the attempt it
+                        # continues. The run stops before its first model call, saving
+                        # nothing, and waits for the user's Resume (``halt``).
+                        self.refused = True
+                        return ()
                     if self.changed is not None:
                         self.changed(
                             "this continuation runs with other prompt, tool or skill pins than "
@@ -225,3 +236,10 @@ class RecordInputs(TurnHook):
                 ),
             )
         return ()
+
+    async def halt(self, run: RunView) -> str | None:
+        """A continuation whose pins changed under an automatic Resume stops before its
+        first model call with ``pins_changed``: the platform was updated since the attempt
+        it continues, and the user's Resume continues it with the new prompts, tools and
+        skills (D100). Automatic recovery does not retry it."""
+        return PINS_CHANGED if self.refused else None

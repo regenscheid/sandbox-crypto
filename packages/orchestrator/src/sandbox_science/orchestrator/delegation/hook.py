@@ -244,7 +244,9 @@ def observed(end: ChildEnd) -> Ended:
             return "returned"
         case "cancelled":
             return "cancelled"
-        case "interrupted":
+        case "interrupted" | "pins_changed":
+            # A continuation an automatic Resume could not start under changed pins waits
+            # for the user's Resume, as an interrupted run does (D100).
             return "interrupted"
         case (
             "turn_limit"

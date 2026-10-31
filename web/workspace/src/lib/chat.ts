@@ -480,6 +480,8 @@ const STOPPED: Record<string, string> = {
   cancelled: 'The run was cancelled. Its background jobs keep running.',
   interrupted:
     'The run was interrupted: its process ended. Its messages are held until you resume.',
+  pins_changed:
+    'The run waits for your Resume: the platform was updated since this work last ran, so its prompts or tools changed, and an automatic Resume does not continue under changed ones. Resume continues it with the new prompts.',
   error: 'The run failed.',
 };
 

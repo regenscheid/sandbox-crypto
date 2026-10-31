@@ -518,6 +518,10 @@ describe('the transcript of a run', () => {
     expect(stoppedText({ stopped: 'error', failure: 'model' })).toBe(
       'The run failed. Failure: model.',
     );
+    // An automatic Resume after a platform update waits for the user's (D100).
+    expect(stoppedText({ stopped: 'pins_changed' })).toContain(
+      'The run waits for your Resume: the platform was updated',
+    );
     // A reason the view has no words for, such as one a newer release records (lab 41's
     // B2: a run whose answer the plan fence discarded), is shown as the run recorded it.
     expect(stoppedText({ stopped: 'constructor' })).toBe('The run stopped: constructor.');

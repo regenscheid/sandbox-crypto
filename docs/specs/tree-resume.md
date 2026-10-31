@@ -158,8 +158,13 @@ model response or erase the unknown charge. Original tool effects still require
 reconciliation before their branch can continue.
 If an earlier attempt has no saved starting-input snapshot, recovery logs the
 provenance gap and records the continuation's current prompt/tool/skill pins;
-missing historical pins alone do not block. A known mismatch with saved pins
-still blocks under the current pinning policy.
+missing historical pins alone do not block. A known mismatch with saved pins, such as
+a platform update's new prompts or tool descriptions, is the user's to accept: under an
+automatic Resume the continuation saves no inputs, makes no model call and stops
+`pins_changed`, a reason of its own rather than a failure, which the Resume record names
+("N unfinished branches: pins_changed") and the chat explains; its delegation ends
+`interrupted`, and automatic recovery does not retry it. The user's Resume continues it
+with the new pins and records that it accepted the change.
 
 ## Acceptance
 
