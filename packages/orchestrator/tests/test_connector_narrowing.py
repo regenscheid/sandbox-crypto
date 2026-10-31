@@ -48,8 +48,6 @@ CONTEXT = ExecutionContext(project_id=PROJECT, session_id="s-1", environment_id=
 class FakeClient:
     """An MCP client whose servers list ``LISTED`` and answer every call."""
 
-    classifies = False
-
     def __init__(self) -> None:
         self.asked: list[tuple[str | None, str, str]] = []
 

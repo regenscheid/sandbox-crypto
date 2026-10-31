@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: MIT
 """Delegated runs' connectors (D96, D99; delegated agents spec DA-7): the child fence reads
-each connector tool's class as its client listed it.
-
-The end-to-end tests ran through the MCP proxy, which classified its listings; it retired
-(D98, 2026-10-26), and the agent runtime's client passes the server's own listing, whose
-classes are not taken, so a child's every connector call is outward and fenced.
+each connector tool's class as the host takes it at the call (``Connectors.classed``); a
+tool with no class is outward. ``test_connector_classes.py`` covers where the classes come
+from.
 """
 
 from __future__ import annotations
@@ -29,9 +27,8 @@ class Listed:
 
 def test_the_fence_reads_each_connector_tools_class(tmp_path: Path) -> None:
     """D99: under a draft plan a connector read passes, a call held for the user goes out,
-    and one the policy would pass unasked is refused, as is one with no class, as the
-    runtime's client lists every tool (D98); once the session was opened again, none
-    passes."""
+    and one the policy would pass unasked is refused, as is one with no class (drifted,
+    unpinned or unclassified); once the session was opened again, none passes."""
     projects = ProjectStore(tmp_path)
     documents = DocumentStore(store_path(tmp_path))
     try:
@@ -49,7 +46,11 @@ def test_the_fence_reads_each_connector_tools_class(tmp_path: Path) -> None:
         context = ExecutionContext(
             project_id=PROJECT, session_id=SESSION, environment_id=session.environment_id
         )
-        fence = ChildFence(plans, projects, context, run_id="child", connectors=tools.get)
+
+        async def lookup(name: str) -> Listed | None:
+            return tools.get(name)
+
+        fence = ChildFence(plans, projects, context, run_id="child", connectors=lookup)
 
         def gate(tool: str) -> str | None:
             refused = asyncio.run(fence.gate_call(tool, "effect"))

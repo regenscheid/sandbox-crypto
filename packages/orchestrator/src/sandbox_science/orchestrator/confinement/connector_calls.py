@@ -63,10 +63,9 @@ MAX_CLIENTS: Final = 64
 
 class RuntimeMcpClient:
     """The host's ``McpClient`` on the direct path: each request goes to the runtime over
-    the attempt's ``mcp_request`` (``HostLoops.relay_mcp``). Its listings carry no class
-    the host takes (``classifies`` is false), as a server's own listing does not."""
-
-    classifies = False
+    the attempt's ``mcp_request`` (``HostLoops.relay_mcp``). Its listings' word on a tool's
+    class is not taken: the host takes each listed tool's class from the trusted side
+    (``listings.WorkerToolClasses``, DA-7)."""
 
     def __init__(self, loops: HostLoops) -> None:
         self._loops = loops

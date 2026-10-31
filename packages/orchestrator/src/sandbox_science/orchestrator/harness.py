@@ -48,7 +48,7 @@ from .artifact_publisher import ArtifactPublisher
 from .artifacts import ArtifactInventory
 from .chat import EventLog, RunChat, SessionHeld, UserMessages
 from .connector_settings import ProjectConnectors
-from .connectors import Connectors, McpClient
+from .connectors import Connectors, McpClient, ToolClassSource
 from .consistency.controller import ReviewController
 from .consistency.models import REVIEWER_MAX_RESPONSE_BYTES, ReviewConfig
 from .consistency.store import ReviewStore
@@ -384,6 +384,9 @@ class McpAccess:
     configured server, or one behind a portal (``e-print-mcp``)."""
     shown: tuple[str, ...] | None = None
     """The servers whose tools the index lists one by one; ``None`` lists every one."""
+    classes: ToolClassSource | None = None
+    """Where the listed tools' classes come from: the project's classification in force,
+    on the trusted side (DA-7); without it, no connector tool has a class."""
 
 
 class RunSink(Protocol):
@@ -1319,8 +1322,9 @@ class Harness:
                 admitted.context,
                 run_id=admitted.run_id,
                 granted=request.track[0] if request.track is not None else None,
-                # It reads each connector tool's class as its client listed it (D99).
-                connectors=connectors.tools.get if connectors is not None else None,
+                # It reads each connector tool's class as the host takes it at each call
+                # (D99, DA-7).
+                connectors=connectors.classed if connectors is not None else None,
             )
             # Its result is read from its closing answer once every other hook has had its say,
             # and accounts for the deliverables its brief lists, as written once (PD-45).
@@ -1970,6 +1974,7 @@ class Harness:
                 on_approval=self._on_approval(chat, admitted),
                 # Binary results the runtime's client gets become artifacts (D98).
                 binaries=ArtifactBinaries(self.client, context),
+                classes=self.mcp.classes,
             )
             await connectors.load(taken=HARNESS_TOOL_NAMES)
             if chat is not None and connectors.failed:

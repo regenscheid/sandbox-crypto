@@ -282,8 +282,8 @@ class ListedToolView(Contract):
 class ReportedListing(Contract):
     """The latest complete listing of a server that the agent runtime's client reported
     (``report_mcp_listing``, D98) and the worker took, with each tool as the classification
-    in force sees it now. The worker keeps the latest one per project and server in memory:
-    after it restarts there is none until a run or a canary lists the server again."""
+    in force sees it now. The worker keeps the latest one per project and server in its
+    store, so it survives a restart."""
 
     server: ServerName
     reported_at: AwareDatetime
@@ -300,6 +300,79 @@ class ReportedListings(RootModel[list[ReportedListing]]):
 
     model_config = ConfigDict(frozen=True)
     root: list[ReportedListing] = Field(max_length=MAX_SERVERS)
+
+
+MAX_CLASSED_TOOLS: Final = 1024
+"""Tools one ``POST /v1/mcp-tool-classes`` names."""
+
+
+class ToolPin(Contract):
+    """One listed tool as the host names it: its name and the digest the host computed of
+    what it listed (``mcp_wire.tool_digest``)."""
+
+    name: ToolName
+    digest: Sha256
+
+
+class ToolClassQuery(Contract):
+    """``POST /v1/mcp-tool-classes``: the host's question about a server's listed tools, by
+    name and digest only (DA-7)."""
+
+    project_id: Identifier
+    server: ServerName
+    tools: tuple[ToolPin, ...] = Field(max_length=MAX_CLASSED_TOOLS)
+
+
+ToolClassState = Literal["classified", "unclassified", "unpinned", "changed", "denied", "unbound"]
+"""Why a tool has its class, or none: the classification in force names it with a pin equal
+to its digest (``classified``); it names it not at all, or only the policy's ``classify``
+does (``unclassified``); it names it without a pin (``unpinned``); its pin is another digest
+(``changed``); the policy denies a call of it by name (``denied``); the project's agent
+runtime sandboxes are bound to no one policy revision, so no answer could match the policy
+middleware's (``unbound``)."""
+MaxGrantName = Literal["none", "once", "session", "project"]
+
+
+class ToolAsk(Contract):
+    """A class a call of an escalated tool can resolve to, and that class's grant ceiling:
+    what a grant must name to answer such a call (D97)."""
+
+    effect: EffectName
+    max_grant: MaxGrantName
+
+
+class ToolClass(Contract):
+    """One tool's class as the host may take it: only a ``classified`` tool has one."""
+
+    name: ToolName
+    effect: EffectName | None = None
+    """The class a call by name without arguments resolves to, ``read`` only when no
+    argument can make a call of it more; None unless ``classified``."""
+    escalates: bool = False
+    """Whether every call of it asks the user first: the policy escalates a call by name,
+    and every class an argument can resolve a call to is escalated or denied, none allowed.
+    A ``classified`` tool's only."""
+    asks: list[ToolAsk] = Field(default_factory=list[ToolAsk], max_length=8)
+    """For an escalated tool, the escalated classes a call can resolve to, with their grant
+    ceilings: the host checks the user's grants against them (D97)."""
+    state: ToolClassState
+
+
+class ToolClasses(Contract):
+    """The worker's answer: each named tool's class under the project's classification in
+    force (its accepted revision, else the checked-in file) and the policy revision its agent
+    runtime sandboxes are bound to, in the order asked."""
+
+    project_id: Identifier
+    server: ServerName
+    policy: Text | None = None
+    """The policy revision (``sha256:``) the answer is under: the one every agent runtime
+    sandbox of the project is bound to, which the policy middleware decides their calls
+    under; None when they are bound to none or to more than one (every tool ``unbound``)."""
+    classification: Text | None = None
+    """The digest of the classification in force; None when the server's policy entry names
+    no classification, and then no tool has a class."""
+    tools: list[ToolClass] = Field(max_length=MAX_CLASSED_TOOLS)
 
 
 MAX_RUNTIME_SERVERS: Final = 64

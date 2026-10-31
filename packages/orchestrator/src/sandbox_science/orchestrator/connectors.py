@@ -27,15 +27,16 @@ runtime's sandbox (``mcp_direct``). The MCP proxy that stood there before retire
   the reason, the first ``mcp_tools`` call lists it once more, and the run's record and
   its ``started`` event keep it (lab 41, B4: one failed listing left a run without
   connectors, and nothing said so);
-- each with the effect class ``effect``, so the plan fence applies. A client whose
-  listings carry classes the host trusts (``classifies``) gives each listed tool its D96
-  class (``sandbox-science/effect`` in its ``_meta``) and whether a call of it asks a
-  person first (``sandbox-science/escalates``), which the tool keeps and each call's
-  record names with its reach (``delegation.effects.connector_reach``); a delegated run's
-  fence reads them (D99). The runtime's client passes the server's own listing, whose
-  word on that is not taken, so no client classifies since the MCP proxy, which did,
-  retired: a delegated check gets no connector tool, and the child fence treats every
-  connector call as outward;
+- each with the effect class ``effect``, so the plan fence applies. Each listed tool
+  also has the D96 class the host gives it (``ToolClassSource``, DA-7), never one the
+  listing says: the host digests each listed tool as the pins do (``tool_digest``) and asks
+  the worker for the class the project's classification in force gives that name with
+  that pin, with whether a call of it asks a person first. A drifted, unpinned or
+  unclassified tool, and every tool when the worker does not answer, has none. The tool
+  keeps it, each call's record names it with its reach
+  (``delegation.effects.connector_reach``), and a delegated run's fence reads it, asking
+  again before each call it decides (``classed``), so a revision accepted during a run
+  applies from its next call (D99);
 - offered to main and delegated runs alike (DA-3, DA-7), through one client: every
   request names the session in ``Sandbox-Science-Session`` and the run that made it in
   ``Sandbox-Science-Run`` (DA-4), which the policy middleware records as attribution
@@ -66,10 +67,11 @@ import logging
 import re
 from collections import Counter
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Final, Protocol, cast
 
 from sandbox_science.policy.mcp_answers import binary_contents, withhold_binary
+from sandbox_science.policy.mcp_wire import tool_digest
 
 from .delegation.effects import EFFECT_CLASSES, connector_reach
 from .delegation.narrowing import Narrowing
@@ -90,12 +92,6 @@ SESSION_HEADER: Final = "Sandbox-Science-Session"
 RUN_HEADER: Final = "Sandbox-Science-Run"
 """Names the run whose agent made a call (DA-4): a main run's or a delegated run's name, as
 its record is kept. The middleware records it; it is never part of a key."""
-EFFECT_META: Final = "sandbox-science/effect"
-"""Where a classifying client's listing puts a tool's D96 class (the policy library's
-``EFFECT_META``)."""
-ESCALATES_META: Final = "sandbox-science/escalates"
-"""Where a classifying client's listing marks a tool whose call by name asks a person
-first (the policy library's ``ESCALATES_META``)."""
 MAX_ANSWER_BYTES: Final = 8 * 1024 * 1024
 MAX_DESCRIPTION: Final = 2000
 MAX_SCHEMA_BYTES: Final = 16 * 1024
@@ -179,11 +175,18 @@ class ConnectorTool:
     purpose: str = ""
     """The first line of what the server says it does, bounded: the index shows it."""
     effect_class: str | None = None
-    """The tool's D96 class as a classifying client says it, or None when none said one."""
+    """The tool's D96 class as the host took it (``ToolClassSource``), or None: no class,
+    which the fence treats as outward."""
     escalates: bool = False
-    """A classifying client says a call of it by name asks a person first; False when none
-    said so. A delegated run's fence lets such a call through, to be held for the user,
-    under a draft plan (D99)."""
+    """The policy escalates a call of it by name, as the host took it; False otherwise. A
+    delegated run's fence lets such a call through, to be held for the user, under a draft
+    plan (D99)."""
+    digest: str = ""
+    """The listed tool's digest as the pins compute it (``mcp_wire.tool_digest``); empty
+    for a tool that cannot be digested, which never has a class."""
+    confirmed: bool = False
+    """Whether the trusted side answered for its class (a class, or none); False while it
+    could not be asked, so it is asked again at the next call."""
 
     @property
     def group(self) -> str:
@@ -236,12 +239,35 @@ def purpose(description: object) -> str:
     return text if len(text) <= PURPOSE_CHARS else text[: PURPOSE_CHARS - 1].rstrip() + "…"
 
 
+@dataclass(frozen=True, slots=True)
+class TrustedClass:
+    """A listed tool's class as the trusted side gives it: the D96 class and whether a call
+    of it by name asks a person first."""
+
+    effect: str
+    escalates: bool = False
+
+
+class ToolClassSource(Protocol):
+    """Where the host takes listed tools' classes from: the project's classification in
+    force, on the trusted side (``confinement.listings.WorkerToolClasses``, DA-7)."""
+
+    async def classes(
+        self, asked: Mapping[str, Mapping[str, str]], *, session: str
+    ) -> Mapping[str, Mapping[str, TrustedClass]]:
+        """For each server ``asked`` names (with its tools, name to digest) that the trusted
+        side answered, the class of each tool that has one, for a call in ``session``; a
+        tool left out has none, and a server left out was not answered. Never raises for an
+        unanswered question: it answers nothing."""
+        ...
+
+
 class McpClient(Protocol):
     """What ``Connectors`` asks of its client: one that reaches declared servers through
     OpenShell (``mcp_direct``), or, on the host, the relay to the runtime's
     (``confinement.connector_calls``). A refusal is a ``ConnectorError`` whose kind is its
-    reason, and a held call's names its permission request in ``data["request"]``. A client
-    whose listings carry classes the host trusts sets ``classifies``."""
+    reason, and a held call's names its permission request in ``data["request"]``. Its
+    listings' word on a tool's class is never taken (``ToolClassSource``)."""
 
     async def request(
         self,
@@ -275,6 +301,7 @@ class Connectors:
         on_approval: Callable[[dict[str, object] | None], Awaitable[None]] | None = None,
         binaries: BinarySink | None = None,
         narrowing: Narrowing | None = None,
+        classes: ToolClassSource | None = None,
     ) -> None:
         self.narrowing = narrowing
         """A delegated task's narrowing (DA-6): only the tools every level admits are
@@ -287,8 +314,11 @@ class Connectors:
         )
         self.run = run
         """The run whose calls these are, named on every request (DA-4)."""
+        self.classes = classes
+        """Where the listed tools' classes come from; without it, none has a class."""
         self.reads_only = reads_only
-        """Offer only the tools classed ``read``: a delegated check's (DA-1)."""
+        """Offer only the tools classed ``read``, and call only those still classed so: a
+        delegated check's (DA-1)."""
         self.disabled = disabled
         self.on_approval = on_approval
         self.binaries = binaries
@@ -339,7 +369,7 @@ class Connectors:
             listed = await self._listed(server, LIST_ATTEMPTS)
             if listed is not None:
                 listings[server] = self._kept(server, listed, self.taken)
-        self._register(listings)
+        self._register(listings, *await self._classes_of(listings))
 
     async def relist(self) -> list[str]:
         """List once more, once in the run, each server whose listing failed: the servers
@@ -352,7 +382,7 @@ class Connectors:
             listed = await self._listed(server, 1)
             if listed is not None:
                 listings[server] = self._kept(server, listed, self.taken | set(self.tools))
-        self._register(listings)
+        self._register(listings, *await self._classes_of(listings))
         self.relisted.extend(listings)
         return list(listings)
 
@@ -395,8 +425,70 @@ class Connectors:
             kept.append((name, tool))
         return kept
 
-    def _register(self, listings: dict[str, list[tuple[str, dict[str, Any]]]]) -> None:
-        """Offer the listed servers' tools, within the caps."""
+    async def _classes_of(
+        self, listings: Mapping[str, list[tuple[str, dict[str, Any]]]]
+    ) -> tuple[dict[str, dict[str, TrustedClass]], set[str]]:
+        """The class the host takes for each listed tool that has one, by server, asked of
+        every server at once, and the servers the trusted side answered for."""
+        asked = {
+            server: {name: digest for name, tool in kept if (digest := _digest(server, name, tool))}
+            for server, kept in listings.items()
+        }
+        return await self._classes(asked)
+
+    async def _classes(
+        self, asked: Mapping[str, Mapping[str, str]]
+    ) -> tuple[dict[str, dict[str, TrustedClass]], set[str]]:
+        if self.classes is None:
+            return {}, set()
+        answered = await self.classes.classes(
+            {server: tools for server, tools in asked.items() if tools}, session=self.session
+        )
+        # Only the servers and tools asked about, each a class of the closed set. A server
+        # with nothing to ask (none of its tools digests) is answered: none has a class.
+        found = {
+            server: {
+                name: taken
+                for name, taken in answered[server].items()
+                if name in asked[server] and taken.effect in EFFECT_CLASSES
+            }
+            for server in asked
+            if server in answered
+        }
+        return found, {*found, *(server for server, tools in asked.items() if not tools)}
+
+    async def classed(self, name: str) -> ConnectorTool | None:
+        """The connector tool ``name`` with its class as the host takes it now, asked again
+        of the trusted side, so a classification or policy revision, or a grant, since the
+        listing applies; None for a tool that is not a connector's. A delegated run's fence
+        asks before each call it decides (D99, DA-7), and a check's call asks itself."""
+        tool = self.tools.get(name)
+        if tool is None or self.classes is None:
+            return tool
+        if not tool.digest:
+            found, answered = {}, {tool.server}
+        else:
+            found, answered = await self._classes({tool.server: {name: tool.digest}})
+        taken = found.get(tool.server, {}).get(name)
+        now = replace(
+            tool,
+            effect_class=taken.effect if taken is not None else None,
+            escalates=taken.escalates if taken is not None else False,
+            confirmed=tool.server in answered,
+        )
+        if self.tools.get(name) is tool:
+            self.tools[name] = now
+        return now
+
+    def _register(
+        self,
+        listings: dict[str, list[tuple[str, dict[str, Any]]]],
+        classes: Mapping[str, Mapping[str, TrustedClass]],
+        answered: set[str],
+    ) -> None:
+        """Offer the listed servers' tools, within the caps, each with the class the host
+        took for it (``classes``, by server), if any; the trusted side did not answer for
+        the servers not ``answered``, whose tools are asked again at their calls."""
         # A name two configured servers list is neither's: one could stand in for the
         # other's tool, whichever was listed first.
         owners = Counter(name for kept in listings.values() for name, _ in kept)
@@ -414,15 +506,24 @@ class Connectors:
                     self.refused.add(name)
                     continue
                 spec = _spec(server, name, tool)
+                taken = classes.get(server, {}).get(name)
                 offered_tool = ConnectorTool(
                     server,
                     spec,
                     purpose(tool.get("description")),
-                    self._effect_class(tool),
-                    self._escalates(tool),
+                    taken.effect if taken is not None else None,
+                    taken.escalates if taken is not None else False,
+                    _digest(server, name, tool) or "",
+                    server in answered,
                 )
-                if self.reads_only and offered_tool.effect_class != "read":
-                    continue  # a check changes nothing outside the session (DA-1, PD-33)
+                if (
+                    self.reads_only
+                    and offered_tool.effect_class != "read"
+                    and (offered_tool.confirmed or self.classes is None)
+                ):
+                    # A check changes nothing outside the session (DA-1, PD-33). A tool the
+                    # trusted side could not be asked about stays, to be asked at its call.
+                    continue
                 if self.narrowing is not None and not self.narrowing.admits(
                     server, name, offered_tool.group
                 ):
@@ -457,22 +558,6 @@ class Connectors:
                 "name a configured server, or SERVER/BEHIND for one behind a portal",
                 key,
             )
-
-    def _effect_class(self, tool: Mapping[str, Any]) -> str | None:
-        """The class a classifying client gives a listed tool; a server's own word is not
-        taken."""
-        if not getattr(self.client, "classifies", False):
-            return None
-        meta = tool.get("_meta")
-        said = cast(Mapping[str, Any], meta).get(EFFECT_META) if isinstance(meta, dict) else None
-        return said if isinstance(said, str) and said in EFFECT_CLASSES else None
-
-    def _escalates(self, tool: Mapping[str, Any]) -> bool:
-        """Whether a classifying client marks a listed tool as asking a person first."""
-        if not getattr(self.client, "classifies", False):
-            return False
-        meta = tool.get("_meta")
-        return isinstance(meta, dict) and cast(Mapping[str, Any], meta).get(ESCALATES_META) is True
 
     def index(self) -> str:
         """The connector tools as the model first sees them: by server, each named with
@@ -620,10 +705,25 @@ class Connectors:
     async def call(self, name: str, arguments: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         """Call a connector tool: its text for the model, and the record to keep."""
         tool = self.tools[name]
+        if self.classes is not None and (self.reads_only or not tool.confirmed):
+            # A check calls only what is a read now; an unconfirmed class is asked again.
+            tool = await self.classed(name) or tool
         record: dict[str, Any] = {"connector": tool.server}
         if tool.effect_class is not None:
             record["effect_class"] = tool.effect_class
             record["reach"] = connector_reach(tool.effect_class)
+        if self.reads_only and tool.effect_class != "read":
+            # Offered as a read, classed otherwise since (DA-1, DA-7): a check changes
+            # nothing outside the session.
+            record["error"] = "not_permitted_for_role"
+            message = (
+                f"{name} is no longer classed as a read, and a check calls only reads: do "
+                "not call it; carry on without it, and say so if the check needs it."
+                if tool.confirmed
+                else f"{name}'s class could not be confirmed as a read just now, and a check "
+                "calls only reads: try it again later, or carry on without it and say so."
+            )
+            return dump({"error": {"kind": "not_permitted_for_role", "message": message}}), record
         if self.disabled is not None and tool.server in await asyncio.to_thread(self.disabled):
             record["error"] = "connector_disabled"
             message = (
@@ -710,6 +810,16 @@ after. Each retry is one more audited request at the policy middleware."""
 MAX_APPROVAL_WAIT: Final = 2 * 3600.0
 """The longest a call waits for an answer; the policy's timeout usually ends it first."""
 _ANSWERED: Final = frozenset({"approval_required", "approval_denied", "escalation_timed_out"})
+
+
+def _digest(server: str, name: str, tool: Mapping[str, Any]) -> str | None:
+    """A listed tool's digest as the pins compute it, or None for one that cannot be
+    digested (text JSON cannot encode, such as a lone surrogate): it never has a class."""
+    try:
+        return tool_digest(tool)
+    except (UnicodeError, TypeError, ValueError, RecursionError):
+        _log.warning("MCP server %s's tool %s cannot be digested: it has no class", server, name)
+        return None
 
 
 def _explain(error: ConnectorError) -> str:

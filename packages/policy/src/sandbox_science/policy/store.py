@@ -231,6 +231,24 @@ class PolicyStore:
             check_name(project, "project")
         return check_digest(digest), project if isinstance(project, str) else None
 
+    def runtime_bindings(self, project: str) -> dict[str, str]:
+        """The agent runtime sandboxes bound for ``project`` (bound with it as their
+        project), each with its revision. Raises StoreError for a binding that cannot be
+        read, since it might be the project's."""
+        check_name(project, "project")
+        found: dict[str, str] = {}
+        try:
+            paths = sorted(self._bindings.glob("*.json"))
+        except OSError as exc:
+            raise StoreError(f"the {self._subject} bindings cannot be listed: {exc}") from exc
+        for path in paths:
+            if not NAME_RE.fullmatch(path.stem):
+                continue  # not a binding this store writes
+            entry = self.binding_entry(path.stem)
+            if entry is not None and entry[1] == project:
+                found[path.stem] = entry[0]
+        return found
+
     def add_policy(self, data: bytes) -> LoadedPolicy:
         """Validate a policy file's bytes and store them under their revision."""
         try:

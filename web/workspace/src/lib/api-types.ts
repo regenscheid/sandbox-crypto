@@ -2462,7 +2462,7 @@ export interface RemovedMath {
   block: string;
 }
 
-/** The latest complete listing of a server that the agent runtime's client reported (``report_mcp_listing``, D98) and the worker took, with each tool as the classification in force sees it now. The worker keeps the latest one per project and server in memory: after it restarts there is none until a run or a canary lists the server again. */
+/** The latest complete listing of a server that the agent runtime's client reported (``report_mcp_listing``, D98) and the worker took, with each tool as the classification in force sees it now. The worker keeps the latest one per project and server in its store, so it survives a restart. */
 export interface ReportedListing {
   server: string;
   reported_at: string;

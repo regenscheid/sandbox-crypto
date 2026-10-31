@@ -21,10 +21,14 @@ with the pin of the project's classification in force, with the library's code
 (``mcp_listings``), and appends the same ``mcp-tools-drift`` record the middleware would,
 with source ``runtime``, unless that listing is the drift in force already. The
 middleware's ``DriftLedger`` then holds the server's non-read calls as for its own reads.
-It keeps the latest listing it took of each project's server, in memory, for the
-workspace's MCP services view (``listings``), which shows each tool as the classification
-and the policy in force decide a call of it by name; a worker that restarts has none until
-a run or a canary lists the server again.
+It keeps the latest listing it took of each project's server in its store
+(``listing_reports``), for the workspace's MCP services view (``listings``), which shows
+each tool as the classification and the policy in force decide a call of it by name.
+
+For the host's connectors it answers the class the project's classification in force gives
+each tool a listing named, by name and the digest the host computed (``tool_classes``,
+DA-7): only a tool the classification names with that very pin has a class, so neither a
+drifted nor an unclassified tool is taken for a read.
 
 The project's policy is the revision the policy store binds the project to, else the one
 granted to it last (``policy add --project``). The single workspace user holds the operator
@@ -64,6 +68,10 @@ from sandbox_science.contracts.classifications import (
     ReportedListing,
     RuntimeClassification,
     RuntimeClassifications,
+    ToolAsk,
+    ToolClass,
+    ToolClasses,
+    ToolClassQuery,
     ToolRule,
 )
 from sandbox_science.policy import (
@@ -80,6 +88,7 @@ from sandbox_science.policy.classification import (
     class_action,
     classified_names,
     listed_effect,
+    possible_classes,
     resolve,
     restrictiveness,
     revision_classification,
@@ -104,6 +113,7 @@ from sandbox_science.policy.store import Acceptance, Draft, PolicyStore, StoreEr
 
 from .classification_receipts import ClassificationReceipts, ReceiptConflictError
 from .environments import Environments
+from .listing_reports import ListingReports
 from .permissions import Permissions, PermissionStoreError
 
 _log = logging.getLogger(__name__)
@@ -116,8 +126,6 @@ runs' budget."""
 REPORT_WINDOW: Final = timedelta(minutes=1)
 MAX_REPORTERS: Final = 4096
 """Callers, projects and servers whose recent reports are counted, the oldest forgotten."""
-MAX_KEPT_LISTINGS: Final = 4096
-"""Projects' servers whose latest listing is kept, the oldest forgotten."""
 RUNTIME_CALLER: Final = "agent-runtime"
 """The caller a reported listing's record names: the agent runtime's direct client."""
 ACTOR: Final = "user"
@@ -145,6 +153,7 @@ class ClassificationDesk:
         receipts: ClassificationReceipts,
         clock: Clock = SYSTEM_CLOCK,
         *,
+        listings: ListingReports,
         ceiling: PoolCeiling | None = None,
         floor: HardFloor = DEFAULT_FLOOR,
     ) -> None:
@@ -157,9 +166,9 @@ class ClassificationDesk:
         """The pool's ceiling and floor, which decide the listed tools' calls with the
         policy, as the middleware does."""
         self.floor = floor
-        self._listings: dict[tuple[str, str], tuple[ListingReport, datetime, bool]] = {}
+        self.kept = listings
         """The latest listing taken of each project's server: the report, when, and whether
-        it drifted."""
+        it drifted, in the worker's store."""
         self._reports = threading.RLock()
         """One report's check of the drifts and its records at a time."""
         self._recent: dict[tuple[str, str, str, str], deque[datetime]] = {}
@@ -406,11 +415,7 @@ class ClassificationDesk:
                 {**subject, "pin": pin, "listing": report.listing, "drifted": drift is not None},
                 kind=LISTING_REPORTED_RECORD,
             )
-            key = (report.project_id, report.server)
-            self._listings.pop(key, None)
-            self._listings[key] = (report, self.clock.now(), drift is not None)
-            if len(self._listings) > MAX_KEPT_LISTINGS:
-                self._listings.pop(next(iter(self._listings)))
+            self.kept.put(report, drift is not None, self.clock.now())
         return ListingReported(drifted=drift is not None, record=seq)
 
     def listings(self, project: str) -> list[ReportedListing]:
@@ -420,14 +425,9 @@ class ClassificationDesk:
         loaded = self.policies(project)
         if loaded is None:
             return []
-        with self._reports:
-            kept = [
-                (server, found)
-                for (owner, server), found in self._listings.items()
-                if owner == project
-            ]
         found: list[ReportedListing] = []
-        for server, (report, at, drifted) in sorted(kept, key=lambda item: item[0]):
+        for kept in self.kept.of(project):
+            report, server = kept.report, kept.report.server
             entry = loaded.policy.mcp.servers.get(server)
             if entry is None:
                 continue  # a server the project's policy no longer declares
@@ -438,11 +438,11 @@ class ClassificationDesk:
             found.append(
                 ReportedListing(
                     server=server,
-                    reported_at=at,
+                    reported_at=kept.reported_at,
                     session=report.session,
                     run=report.run,
                     listing=report.listing,
-                    drifted=drifted,
+                    drifted=kept.drifted,
                     tools=[
                         self._listed(loaded, server, entry, revision, tool.name, tool.hint)
                         for tool in report.tools
@@ -494,6 +494,115 @@ class ClassificationDesk:
             effect=cast(EffectName, effect if effect in _EFFECTS else "unclassified"),
             classified=stripped in classified_names(entry, revision),
             action=action,
+        )
+
+    def tool_classes(self, query: ToolClassQuery) -> ToolClasses:
+        """Each named tool's class, for the host's connectors (DA-7), as the policy
+        middleware decides the agent runtime's calls: under the policy revision the
+        project's runtime sandboxes are bound to and the project's classification in force.
+        Only a tool the classification names with a pin equal to the digest the host
+        computed has a class: the class a call of it by name without arguments resolves to
+        (``read`` only when no argument can make a call more), whether every call of it asks
+        the user, and the classes and ceilings a grant would have to name. Nothing the
+        listing said beyond the name and the digest is taken. When the runtime sandboxes are
+        bound to none or several revisions, no tool has a class: no answer could match the
+        middleware's for every call. The caller checked the project is its own. Blocking."""
+        names = [tool.name for tool in query.tools]
+        if len(set(names)) != len(names):
+            raise ClassificationReviewError("a tool is named twice", "invalid")
+        project, server = query.project_id, query.server
+        self._server(project, server)  # the project's own server, or not found
+        none = {"project_id": project, "server": server}
+        try:
+            revisions = set(self.store.runtime_bindings(project).values())
+            loaded = self.store.policy(revisions.pop()) if len(revisions) == 1 else None
+            revision = self.store.classification(project, server)
+        except (StoreError, PolicyLoadError) as exc:
+            raise PermissionStoreError(f"the classes of {server}'s tools: {exc}") from exc
+        if loaded is None:
+            return ToolClasses(
+                **none, tools=[ToolClass(name=name, state="unbound") for name in names]
+            )
+        entry = loaded.policy.mcp.servers.get(server)
+        current = server_classification(entry, revision) if entry is not None else None
+        if entry is None or current is None:
+            return ToolClasses(
+                **none,
+                policy=loaded.digest,
+                tools=[ToolClass(name=name, state="unclassified") for name in names],
+            )
+        return ToolClasses(
+            **none,
+            policy=loaded.digest,
+            classification=current.digest,
+            tools=[
+                self._class(loaded, server, entry, current, tool.name, tool.digest)
+                for tool in query.tools
+            ],
+        )
+
+    def _class(
+        self,
+        loaded: LoadedPolicy,
+        server: str,
+        entry: McpServer,
+        current: ServerClassification,
+        name: str,
+        digest: str,
+    ) -> ToolClass:
+        stripped = name.removeprefix(entry.tool_prefix or "")
+        found = current.tools.get(stripped)
+        if found is None:
+            return ToolClass(name=name, state="unclassified")
+        if found.sha256 is None:
+            return ToolClass(name=name, state="unpinned")
+        if found.sha256 != digest:
+            return ToolClass(name=name, state="changed")
+        message: dict[str, object] = {
+            "jsonrpc": "2.0",
+            "id": 0,
+            "method": "tools/call",
+            "params": {"name": name, "arguments": {}},
+        }
+        decision = evaluate_mcp_message(
+            server,
+            message,
+            loaded,
+            origin="orchestrator",
+            ceiling=self.ceiling,
+            floor=self.floor,
+            # The project's revision, else none: the catalog's is the policy's own.
+            classification=current if current.revision is not None else None,
+        )
+        if decision.action is Action.DENY:
+            return ToolClass(name=name, state="denied")
+        effect = listed_effect(entry, name, decision, current)
+        if effect not in _EFFECTS:
+            return ToolClass(name=name, state="unclassified")
+        # Every call asks only when every class its arguments can resolve it to asks or is
+        # denied: one argument that makes it an allowed class lets that call out unasked.
+        terms = [
+            (possible, class_action(loaded.policy, server, possible))
+            for possible in sorted(possible_classes(entry, stripped, current))
+        ]
+        escalates = decision.action is Action.ESCALATE and all(
+            action.action in (Action.ESCALATE, Action.DENY) for _, action in terms
+        )
+        asks = (
+            [
+                ToolAsk(effect=possible.value, max_grant=action.max_grant.value)
+                for possible, action in terms
+                if action.action is Action.ESCALATE
+            ]
+            if escalates
+            else []
+        )
+        return ToolClass(
+            name=name,
+            effect=cast(EffectName, effect),
+            escalates=escalates,
+            asks=asks,
+            state="classified",
         )
 
     def _admit(self, caller: str, project: str, server: str, scope: str) -> None:

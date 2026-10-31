@@ -12,18 +12,20 @@ task's progress on its track is refused once the plan is no longer the version i
 started under (PD-9). The first refusal is kept, and the delegation's outcome reports it,
 so the parent learns why the run stopped.
 
-Connector tools are judged by the class a classifying client gives each listed tool (D96,
-D99; delegated agents spec DA-7). A ``read`` stays in the session and passes as computation
-does. Another class is outward. Under a draft or user-edited plan, such a call still goes
-out when the client says a call of the tool asks a person first: it is held, and the user
+Connector tools are judged by the class the host gives each listed tool from the
+project's classification in force (D96, D99; delegated agents spec DA-7), asked again before
+each call, so a revision accepted during the run applies. A ``read`` stays in the session
+and passes as computation does. Another class is outward, and so is a tool with none (a
+drifted, unpinned or unclassified one). Under a draft or user-edited plan, an outward call
+still goes out when every call of the tool asks a person first: it is held, and the user
 decides it from a card attributed to the child (DA-9). One the policy would let through
-unasked is refused, since nobody would see it. No client classifies since the MCP proxy
-retired (D98): every connector call is outward, and fenced.
+unasked, one a grant in force would answer with no card, or one with no class, is refused,
+since nobody would see it.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Final, Protocol
 
 from sandbox_science.contracts import ExecutionContext
@@ -53,8 +55,9 @@ class ListedTool(Protocol):
     def escalates(self) -> bool: ...
 
 
-ConnectorLookup = Callable[[str], ListedTool | None]
-"""A run's connector tool by name, or None for a tool that is not a connector's."""
+ConnectorLookup = Callable[[str], Awaitable[ListedTool | None]]
+"""A run's connector tool by name with its class as the host takes it now
+(``Connectors.classed``), or None for a tool that is not a connector's."""
 
 
 class ChildFence(TurnHook):
@@ -101,7 +104,7 @@ class ChildFence(TurnHook):
             if self.granted is None:
                 return None
             refusal = await threaded(self._progress)
-        elif (listed := self._connector(tool)) is not None:
+        elif (listed := await self._connector(tool)) is not None:
             # A read stays in the session; a call held for the user is the user's to
             # decide, whatever the plan (D99).
             unfenced = listed.effect_class == "read" or listed.escalates
@@ -114,8 +117,8 @@ class ChildFence(TurnHook):
             self.refused = refusal.message
         return refusal
 
-    def _connector(self, tool: str) -> ListedTool | None:
-        return self.connectors(tool) if self.connectors is not None and tool else None
+    async def _connector(self, tool: str) -> ListedTool | None:
+        return await self.connectors(tool) if self.connectors is not None and tool else None
 
     def summary(self) -> object | None:
         return None if self.refused is None else {"refused": self.refused}
