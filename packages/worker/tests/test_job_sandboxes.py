@@ -65,7 +65,7 @@ from sandbox_science.worker.app import create_app
 from sandbox_science.worker.artifacts import Blobs
 from sandbox_science.worker.backends import LocalBackend
 from sandbox_science.worker.environments import JOB_ENVIRONMENT, Environments
-from sandbox_science.worker.errors import WorkerError
+from sandbox_science.worker.errors import PrefixRecoveryError, WorkerError
 from sandbox_science.worker.identity import execution_digest, same_execution
 from sandbox_science.worker.job_sandboxes import (
     JobFailureError,
@@ -78,6 +78,7 @@ from sandbox_science.worker.job_sandboxes import (
 )
 from sandbox_science.worker.lifecycle import EnvironmentLifecycle
 from sandbox_science.worker.manager import ExecutionManager
+from sandbox_science.worker.prefix_continuity import hold as hold_prefix
 from sandbox_science.worker.provisioner import Provisioner
 from sandbox_science.worker.settings import (
     JOB_SANDBOX_LABEL,
@@ -156,6 +157,8 @@ class FakePort:
         self.located = asyncio.Event()
         """Cleared, the probe of a job sandbox's executor waits: preparation stalls."""
         self.located.set()
+        self.opening: Callable[[str], None] = lambda environment_id: None
+        """Called as a job sandbox's executor opens, before its probe; may raise."""
         self.gates: dict[str, asyncio.Event] = {}
         """Writes to the session of a path ending so wait for the event."""
         self.gated: list[str] = []
@@ -173,6 +176,7 @@ class FakePort:
     async def location(self, environment_id: str) -> Location:
         if environment_id != SESSION:
             await self.located.wait()
+            self.opening(environment_id)
         tier = self.tiers.get(environment_id, 3)
         return Location(
             pool_id="test",
@@ -364,12 +368,20 @@ class Pool:
             self.released.append(environment_id)
             await self.manager.release(environment_id)
 
+        async def guarding(environment_id: str) -> None:
+            await self.manager.guard_package_deletion(environment_id)
+
         async def deleting(environment_id: str) -> None:
             await self.manager.end_job_sandboxes(environment_id)
 
-        # Wired to the current worker, as ``create_app`` wires the real one.
+        async def forgetting(environment_id: str) -> None:
+            await self.manager.forget_package_gate(environment_id)
+
+        # Wired to the current worker, as ``create_app`` and ``build`` wire the real one.
         self.environments.release = release
+        self.environments.required_deleting.append(guarding)
         self.environments.required_deleting.append(deleting)
+        self.environments.confirmed_deleted.append(forgetting)
         self.environments.given_up.append(lambda found: self.manager.environment_given_up(found))
         self.store = Store(tmp_path / "worker" / "worker.sqlite3")
         self.port = FakePort()
@@ -1253,6 +1265,82 @@ async def test_a_session_environment_deleted_while_the_worker_was_down(pool: Poo
     assert kept is not None
     assert kept.phase == "released"
     assert pool.sandbox_of(retained.execution_id) not in pool.fake.read()["sandboxes"]
+
+
+# A job sandbox is disposable: the package guard never keeps it (JS-25, JS-26).
+
+
+def prefix_missing(pool: Pool) -> Callable[[str], None]:
+    """The executor's preflight as it fails for an image without the workspace prefix the
+    profile requires: the job environment's package gate is held, then the open fails."""
+
+    def opening(environment_id: str) -> None:
+        hold_prefix(pool.store, environment_id)
+        raise PrefixRecoveryError(
+            ErrorKind.UNAVAILABLE, "required workspace prefix is missing or incompatible"
+        )
+
+    return opening
+
+
+async def test_a_job_sandbox_without_its_workspace_prefix_fails_and_is_released(
+    pool: Pool,
+) -> None:
+    pool.port.opening = prefix_missing(pool)
+    ended = await pool.run(pool.request())
+    assert ended.state is ExecutionState.FAILED
+    assert ended.result is not None
+    assert ended.result.error is not None
+    message = ended.result.error.message
+    assert message.startswith("sandbox_unavailable"), message
+    assert "workspace prefix" in message
+    assert pool.port.submitted == []  # nothing ran
+    record = pool.store.job_sandboxes.get(ended.execution_id)
+    assert record is not None
+    assert record.phase == "released"
+    assert pool.sandbox_of(ended.execution_id) not in pool.fake.read()["sandboxes"]
+    manifest = pool.sandboxes.manifest(ended.execution_id)
+    assert manifest is not None
+    assert manifest.reason == "sandbox_unavailable"
+    # Its package gate went with it: nothing is held for an environment that is gone.
+    assert pool.store.package_gate(pool.job_environment(ended.execution_id)).mode == "ready"
+
+
+async def test_the_sweep_releases_a_job_sandbox_whose_package_gate_is_held(
+    pool: Pool,
+) -> None:
+    pool.port.opening = prefix_missing(pool)
+    pool.fake.update(fail_delete=True)  # the first deletion fails: retained, due at once
+    ended = await pool.run(pool.request())
+    assert ended.state is ExecutionState.FAILED
+    record = pool.store.job_sandboxes.get(ended.execution_id)
+    assert record is not None
+    assert record.phase == "retained"
+    pool.fake.update(fail_delete=False)
+    assert await pool.sandboxes.sweep() == [ended.execution_id]
+    assert pool.sandbox_of(ended.execution_id) not in pool.fake.read()["sandboxes"]
+
+
+async def test_a_held_package_gate_does_not_keep_a_retained_job_sandbox(pool: Pool) -> None:
+    pool.port.exit_code = 1  # a failure retains its sandbox, stopped
+    ended = await pool.run(pool.request())
+    environment = pool.job_environment(ended.execution_id)
+    hold_prefix(pool.store, environment)  # its package state needs recovery
+    await pool.manager.guard_package_deletion(environment)  # a job sandbox's: no refusal
+    released = await pool.sandboxes.release_now(ended.execution_id, "click-1")
+    assert released.execution_id == ended.execution_id
+    assert pool.sandbox_of(ended.execution_id) not in pool.fake.read()["sandboxes"]
+
+
+async def test_a_held_package_gate_still_keeps_a_session_environment(pool: Pool) -> None:
+    hold_prefix(pool.store, SESSION)
+    with pytest.raises(WorkerError, match="no proven original sandbox binding"):
+        await pool.manager.guard_package_deletion(SESSION)
+    with pytest.raises(WorkerError):
+        await pool.environments.delete(SESSION)
+    session = pool.environments.records.get(SESSION)
+    assert session is not None
+    assert session.sandbox in pool.fake.read()["sandboxes"]
 
 
 async def test_the_workers_port_finds_an_operation_without_submitting_it(pool: Pool) -> None:

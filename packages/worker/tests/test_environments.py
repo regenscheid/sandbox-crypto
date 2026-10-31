@@ -10,6 +10,8 @@ refuses a document that removes any filesystem path.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import fcntl
 import ipaddress
 import json
 import logging
@@ -19,7 +21,7 @@ import sqlite3
 import sys
 import time
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
@@ -101,12 +103,16 @@ TOKEN = "t" * 40
 ClientFactory = Callable[..., Awaitable[TestClient[Any, Any]]]
 
 FAKE_OPENSHELL = r"""
-import json, os, sys, time, uuid
+import fcntl, json, os, sys, time, uuid
 import yaml
 
 BASELINE = {"read_only": ["/usr", "/lib", "/etc", "/var/log", "/proc", "/dev/urandom"],
             "read_write": ["/tmp", "/dev/null"]}
 path = os.environ["FAKE_OPENSHELL_STATE"]
+# One command changes the gateway's state at a time, as a worker runs several at once: a
+# read racing a deletion must not write the deleted sandbox back.
+lock = open(path + ".lock", "a")
+fcntl.flock(lock, fcntl.LOCK_EX)
 with open(path) as handle:
     state = json.load(handle)
 argv = sys.argv[1:]
@@ -142,10 +148,18 @@ command = argv[:2]
 out = None
 if command == ["sandbox", "create"]:
     if state.get("create_gate"):
-        # Hold the command until the test opens the gate, as a slow gateway does.
-        open(state["create_gate"] + ".started", "w").close()
-        while not os.path.exists(state["create_gate"]):
+        # Hold the command until the test opens the gate, as a slow gateway does; other
+        # commands go on meanwhile, and this one then works on the state as it is.
+        gate = state["create_gate"]
+        save()
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        open(gate + ".started", "w").close()
+        while not os.path.exists(gate):
             time.sleep(0.01)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        with open(path) as handle:
+            state = json.load(handle)
+        sandboxes = state["sandboxes"]
     if state.get("fail_create"):
         fail("the VM driver could not start the sandbox")
     name = option("--name")
@@ -291,14 +305,26 @@ class Fake:
         return json.loads(self.path.read_text())
 
     def write(self, state: dict[str, Any]) -> None:
+        with self.locked():
+            self._write(state)
+
+    def _write(self, state: dict[str, Any]) -> None:
         # A lifecycle timeout may kill the fake CLI during its write. Readers must
         # see the previous or next complete state, never a truncated JSON file.
         temporary = self.path.with_name(self.path.name + "." + uuid.uuid4().hex + ".tmp")
         temporary.write_text(json.dumps(state))
         temporary.replace(self.path)
 
+    @contextlib.contextmanager
+    def locked(self) -> Iterator[None]:
+        """The state's lock, which each fake CLI command holds while it runs."""
+        with self.path.with_name(self.path.name + ".lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            yield
+
     def update(self, **changes: Any) -> None:
-        self.write({**self.read(), **changes})
+        with self.locked():
+            self._write({**self.read(), **changes})
 
     def calls(self, *command: str) -> list[list[str]]:
         return [call for call in self.read()["calls"] if call[: len(command)] == list(command)]

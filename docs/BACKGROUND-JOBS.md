@@ -40,7 +40,10 @@ as any job. The worker records it, then:
    the package cache under the session's policy, and the job sandbox's lockfile must then
    hold them. A failure ends the job `package_replay_failed` or `environment_mismatch`
    before its command. Then the inputs are copied to the same paths, following no symlink,
-   within the profile's `stage_max_bytes`;
+   within the profile's `stage_max_bytes`. A sandbox whose executor cannot start because
+   its image lacks the workspace package prefix the profile requires ends the job
+   `failed` (`sandbox_unavailable`, naming the prefix) and is released at once: nothing
+   ran;
 3. **runs** the command there; the job is `queued` until now, and `running` from now;
 4. **collects**: the whole logs go to the job's usual `.jobs/<ID>/stdout.log` and
    `stderr.log`, and each file the command wrote outside `.jobs/` and `shared/` to
@@ -57,7 +60,9 @@ as any job. The worker records it, then:
    Otherwise (failure, timeout, cancellation, an incomplete collection) it stops the
    sandbox, keeping its disk and freeing CPU and memory, for `job_retention` (3 days),
    at most `job_retention_per_project` (2) per project: a third releases the oldest.
-   An hourly sweep releases overdue ones. Released files are gone.
+   An hourly sweep releases overdue ones. Released files are gone. A job sandbox is
+   disposable, so a package gate held for recovery, which keeps a session environment
+   from being stopped or deleted, never keeps a job sandbox.
 
 A deleted or evicted sandbox, found by looking at it while the job runs, ends the job
 `lost` (`sandbox_lost`); the command is never submitted again. A full count is refused at

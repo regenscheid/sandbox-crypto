@@ -106,7 +106,7 @@ from sandbox_science.contracts.worker import (
 from sandbox_science.policy.model import Resources
 
 from .environments import Environments, ScheduleTimeoutError, job_environment_id
-from .errors import WorkerError
+from .errors import PrefixRecoveryError, WorkerError
 from .job_records import ACTIVE, JobSandboxRecord, manifest_digest
 from .revisions import read_lockfile
 from .settings import JOB_SANDBOX_LABEL, EnvironmentSettings, JobProfile
@@ -462,6 +462,14 @@ class JobSandboxes:
         try:
             found.location = await port.location(record.environment_id)
             await self._check_tier(port, request, found.location)
+        except PrefixRecoveryError as error:
+            # Nothing ran, and nothing in the sandbox is worth keeping (JS-26).
+            await self._end(
+                live, journal, found, ExecutionState.FAILED, Result(), "sandbox_unavailable",
+                "the job sandbox's image has no usable workspace package prefix, which its"
+                f" profile requires; nothing ran ({error.message})", release=True,
+            )  # fmt: skip
+            return
         except JobFailureError as failure:
             await self._end(
                 live, journal, found, ExecutionState.FAILED, Result(), failure.reason,
