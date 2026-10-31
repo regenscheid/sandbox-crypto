@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping
 from decimal import ROUND_FLOOR, Decimal
 from typing import Annotated, Self, cast
 
@@ -115,13 +114,14 @@ class KubernetesProfile(BaseModel):
                 raise ValueError(f"{field} request exceeds its limit")
         return self
 
-    def driver_json(self, cap: Resources, *, labels: Mapping[str, str] | None = None) -> str:
-        """Render v0.1.3's typed config, narrowing CPU/memory by project/pool caps.
+    def driver_json(self, cap: Resources) -> str:
+        """Render OpenShell 0.1.5's typed config, narrowing CPU/memory by project/pool caps.
 
-        Ephemeral storage is not the persistent workspace's disk allowance. PVC
-        capacity and archive/restore remain separate lifecycle configuration.
-        ``labels`` go on the workload Pod, keys the gateway's ``allowed_pod_labels``
-        must list (OpenShell 0.1.5); only the worker's own constants are passed.
+        Only keys 0.1.5's Kubernetes driver accepts: ``pod`` (``node_selector``,
+        ``runtime_class_name``), ``containers.agent.resources``; it refuses any other key at
+        every level, ``pod.labels`` included. Ephemeral storage is not the persistent
+        workspace's disk allowance. PVC capacity and archive/restore remain separate
+        lifecycle configuration.
         """
         cpu = self.limits.cpu_millicores
         memory = self.limits.memory_mib * 1024**2
@@ -135,8 +135,6 @@ class KubernetesProfile(BaseModel):
         pod: dict[str, object] = {"node_selector": self.node_selector}
         if self.runtime_class_name is not None:
             pod["runtime_class_name"] = self.runtime_class_name
-        if labels:
-            pod["labels"] = dict(sorted(check_labels(dict(labels)).items()))
         resources = {
             "requests": {
                 "cpu": f"{self.requests.cpu_millicores}m",

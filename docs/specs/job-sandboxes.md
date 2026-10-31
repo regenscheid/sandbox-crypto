@@ -307,12 +307,14 @@ Two changes follow from the owner's review:
   the packages the session tested with. Copying installed bytes stays a later
   optimization if replay is too slow. This supersedes "base image's packages only" in
   question 7 and the first increment.
-- **Planned restarts wait for job sandboxes.** Job sandbox pods carry a label (OpenShell
-  0.1.5 allowed pod labels), and the deployment ships a PodDisruptionBudget for it, so
-  a node drain waits for a running job instead of evicting it. Unplanned loss (crash,
-  power, hardware) still marks the job `lost`. Whether `talosctl upgrade` honours
-  PodDisruptionBudgets as `kubectl drain` does is unverified. The bundle renders the budget in
-  the sandbox namespace ([bundle](../KUBERNETES-BUNDLE.md#job-sandboxes-and-node-drains));
-  the operator checks it with `kubectl -n <sandbox-namespace> get pdb` and
-  `kubectl drain <node> --dry-run=server`, and the gateway must list the label key in
-  `allowed_pod_labels`.
+- **Planned restarts do not wait for job sandboxes (OpenShell 0.1.5).** The plan was a
+  label on job sandbox Pods with a PodDisruptionBudget selecting it, so a node drain would
+  wait for a running job. OpenShell 0.1.5 offers the worker no way to label a sandbox's
+  Pods: its driver configuration has no `labels` key (the gateway refuses the sandbox), and
+  a Pod's own labels come only from a sandbox template's, which its CLI never sets. The
+  worker labels the OpenShell sandbox instead (`sandbox create --label
+  sandbox-science.io/job-sandbox=true`), so the operator lists running jobs before a drain
+  (`openshell sandbox list --selector ...`); a drain, planned or not, makes a running job
+  `lost`. The bundle renders no budget
+  ([bundle](../KUBERNETES-BUNDLE.md#job-sandboxes-and-node-drains)). Revisit when an
+  OpenShell version lets a caller label the workload Pod.

@@ -40,10 +40,9 @@ architecture = "arm64"
 storage_gib = 1
 openshell_gateway = "research-gateway"
 
-# Where OpenShell creates sandboxes (the chart's server.sandboxNamespace). The bundle puts
-# one PodDisruptionBudget there so a planned drain waits for running job sandboxes (D93,
-# JS-20). Remove this section to render nothing outside `namespace`; set
-# job_budget = false when another instance sharing that namespace already renders it.
+# Where OpenShell creates sandboxes (the chart's server.sandboxNamespace), for the objects
+# the bundle puts there (the checkpoint Jobs' NetworkPolicy, with [checkpoint]). Remove
+# this section to render nothing outside `namespace`.
 [sandboxes]
 namespace = "research-runtimes"
 

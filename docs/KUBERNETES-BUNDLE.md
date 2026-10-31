@@ -300,7 +300,7 @@ file:
 | `[[projects]]`, `[skills]` | As in the launcher's config (`id`, at most 63 characters, [see projects](PROJECTS-AND-SESSIONS.md#as-built-the-harnesss-project-records); `profile`, `sessions`, `skills`; `embedding_model`, `metadata_model`, `packs`); each profile must be one of `[profiles]` |
 | `[model]` | The launcher's `[model]` without `name`, `delegated` and `reviewer`, which come from the bundle's catalog with its APIs and its efforts defaulted as the workspace's options default them (`max`, reviewer `medium`): `url`, `api_key_file` (the runtime manager's key), `watcher`, and `api`/`reasoning_effort` for aliases and roles outside the catalog. `url` is https, or http to an in-cluster Service (`*.svc`, `*.svc.<cluster_domain>`), whose key then crosses the Pod network unencrypted. The agent runtime reaches it from its sandbox, so an in-cluster name must be fully qualified (`http://litellm.litellm.svc.<cluster_domain>:4000/v1`); a bare `*.svc` name is refused |
 | `[runtime]` | The `orchestrator` image by digest, its full source `revision`, `recover_infrastructure`, and its Kata placement |
-| `[worker]` | `label_environments` (default `false`): `worker.toml`'s `openshell.environments.label_environments`, which gives each sandbox the worker creates the label `sandbox-science.io/environment=<environment ID>` and lets reconciliation of an unknown creation look for it. Confirmed on the test instance's OpenShell 0.1.5 gateway on 2026-10-26: the label appears on the OpenShell sandbox, not on the Kubernetes Sandbox object or its Pod, so select by it through `openshell sandbox list`, not `kubectl` |
+| `[worker]` | `label_environments` (default `false`): `worker.toml`'s `openshell.environments.label_environments`, which gives each sandbox the worker creates the label `sandbox-science.io/environment=<environment ID>` and lets reconciliation of an unknown creation look for it. Confirmed on the test instance's OpenShell 0.1.5 gateway on 2026-10-26: the label appears on the OpenShell sandbox, not on the Kubernetes Sandbox object or its Pod, so select by it through `openshell sandbox list`, not `kubectl`; `[worker.job_profiles.<name>]`, the job sandbox sizes ([job sandboxes](WORKER.md#job-environments)): a placement (below) plus `description` and, optionally, `wall_time_max`, `schedule_timeout`, `max_concurrent`, `stage_max_bytes` and `collect_max_bytes`, rendered into `worker.toml`'s `openshell.environments.job_profiles`, so a `site` run keeps them; and `max_job_sandboxes`, `job_retention`, `job_retention_per_project` (the worker's defaults when unset). A project's policy grants the sizes |
 | `[profiles.<name>]` | Each research base profile's image by digest and Kata placement |
 | `[openshell]` | The gateway `endpoint` (`https://host:port`; only the trusted manager and worker use it, so `https://openshell.openshell.svc:8080` works on any cluster domain, and the chart's server certificate covers `openshell.openshell.svc`), `gateway_id` (`openshell`), the middleware's `registration` (`sandbox-science-policy`), optional `audience` and `admin_hosts`, `jwt_public_key` (the gateway's extension-token public key, from OpenShell's own Secrets), and the `manager` and `worker` client identities, each `ca`, `certificate` and `key` PEM paths issued by the gateway's client CA (prep step 5.1) |
 | `[cache]` | Exactly when the bundle has `secrets.cache`: the package cache's settings besides its listener, URL and directories (`cache_dir`, and `worker_state_dir`, the worker's state on the same PVC, whose environments' lockfiles pin files against eviction). It must enable at least one ecosystem (`pypi`, `conda`, `cargo`, `go`, `npm`, `opam`, `hackage`; `{}` takes that ecosystem's defaults): a cache with none answers 404 to every request, so `site` refuses it |
@@ -506,24 +506,21 @@ in force. The manager compiles before it deletes the old sandbox
 
 An optional `[sandboxes]` section names the namespace in which OpenShell creates sandboxes
 (`namespace`, the chart's `server.sandboxNamespace`; the renderer cannot derive it from the
-`network.*` peers, which select it by label). With it the bundle adds one object outside its
-own namespace: the `PodDisruptionBudget` `<name>-job-sandboxes` there, `maxUnavailable: 0`,
-selecting `sandbox-science.io/job-sandbox: "true"`, the label the worker puts on a job
-sandbox's workload Pod. A `kubectl drain` then waits for a running job instead of evicting
-it ([job sandboxes](specs/job-sandboxes.md), JS-20); a running Pod that is not Ready may
-still be evicted (`unhealthyPodEvictionPolicy: AlwaysAllow`), so a wedged one cannot hold a node.
-The budget protects nothing from crashes, power loss, `--disable-eviction` or a drain
-that gives up. The gateway must also list the label key in `allowed_pod_labels`
-([gateway settings](KUBERNETES.md#gateway-settings-for-profile-placement)), or no job
-sandbox starts.
+`network.*` peers, which select it by label), for the objects the bundle puts there (the
+checkpoint Jobs' NetworkPolicy, with `[checkpoint]`).
 
-Without `[sandboxes]` nothing is rendered outside `namespace`, and no budget exists. With
-it, applying the bundle needs permission to create a PodDisruptionBudget in the sandbox
-namespace as well as in the bundle's. A budget is per namespace: when two instances share a
-sandbox namespace, set `job_budget = false` in all but one, since two budgets selecting the
-same Pod make every eviction of it fail. A budget with no job profile configured selects no
-Pod and costs nothing. Check it with `kubectl -n <sandbox-namespace> get pdb` and
-`kubectl drain <node> --dry-run=server`.
+The bundle renders no PodDisruptionBudget for job sandboxes. OpenShell 0.1.5 puts no label
+the worker chooses on a sandbox's Pods ([gateway settings](KUBERNETES.md#gateway-settings-for-profile-placement)),
+so a budget would select none of a job's Pods, and a planned `kubectl drain` evicts a running
+job's Pod like any other: the job ends `lost` ([job sandboxes](specs/job-sandboxes.md),
+JS-20). The worker labels each job sandbox itself, `sandbox-science.io/job-sandbox=true`, so
+before draining a node list them with `openshell sandbox list --selector
+sandbox-science.io/job-sandbox=true` and wait for the jobs on that node, or accept losing
+them. Any node with a running sandbox drains only with `kubectl drain --force`: OpenShell's
+`os-supervisor-*` Pods in the sandbox namespace declare no controller, so without it the
+drain stops before evicting anything ([preparation, step 8](KUBERNETES-PREP.md#8-render-dry-run-apply)). `job_budget = false` is still accepted in `[sandboxes]`; `true` is refused. A bundle
+rendered before this left a budget `<name>-job-sandboxes` in the sandbox namespace that
+selects no Pod: delete it.
 
 ## Render, inspect, then qualify separately
 
@@ -909,10 +906,11 @@ upload_bucket = "research-checkpoint-upload"
 kept_bucket = "research-checkpoints"
 endpoint = "http://garage.garage.svc.cluster.local:3900"
 run_as_user = 10001        # required, no default: who owns the workspace's files (`ls -ln`),
-run_as_group = 10001       # for checkpoint and restore Jobs alike
+run_as_group = 10001       # and the sandbox Pod's fsGroup; for checkpoint and restore Jobs alike
 # region = "garage", prefix = "sandbox-science", addressing_style = "path"
 # upload_profile = "checkpoint-upload", verify_profile = "checkpoint-verify"
 # restore_secret = "research-checkpoint-restore"   # restore Jobs only; absent, no restore
+# standing_restore_secret = false   # true keeps that Secret for good (secrets.sh makes it)
 # restore_profile = "checkpoint-restore"
 # keep = 2, deadline_seconds = 7200, hold_seconds = 21600 (longer than the deadline)
 # job_ttl_seconds = 600 (how long Kubernetes keeps a finished Job; 0 to 604800)
@@ -931,7 +929,8 @@ Secret then also projects `checkpoint-upload.toml` and `checkpoint-kept.toml` (d
 no credential) and `checkpoint-s3-credentials`, `checkpoint-s3-config` (its read-only key);
 `site` generates them from the site file's `[checkpoint]` paths, writes the upload key's
 Secret files and its `kubectl create secret` line for the sandbox namespace (and the restore
-key's, with `restore_secret`), and writes
+key's files, with `restore_secret`, for `restore --restore-key`; its `kubectl` line only
+with `standing_restore_secret`), and writes
 `operator/checkpoint-upload.toml` and `operator/checkpoint-kept.toml`, the buckets as the
 operator's machine reaches them through `kubectl port-forward`. The keys and buckets are in
 [preparation, step 6](KUBERNETES-PREP.md#6-garage-artifacts).
@@ -1001,14 +1000,18 @@ next use. A restore never writes into an existing environment, so it cannot over
    anything is created) and computes its **tree digest**: one line per path in byte order
    with its kind, mode, size, content SHA-256 or link text and hardlink group, which does
    not depend on the order a disk lists a directory in (set-user-ID and set-group-ID bits,
-   which a restore never writes, are left out of it); a checkpoint with a root entry named
+   which a restore never writes on a file, are left out of it, and so is the root's own
+   mode, which belongs to the volume); a checkpoint with a root entry named
    `.sandbox-science-restore` is refused. It creates the target through its own API with
    the checkpoint's project, profile and policy revision (only a new environment counts: an
    existing one returned instead is refused; the project's current policy replaces the
    revision on first use, as for any environment), records the restore, which
    **holds the target's sandbox stopped with no expiry**, suspends it, confirms OpenShell
    says `Stopped`, and checks that nothing has run in it: no prefix identity, no package
-   revision, no execution since the plan began. If that check fails nothing was written
+   revision, no execution since the plan began that may have reached an executor (one that
+   ended failed or cancelled with no executor location and no start, such as a request
+   the held target refused to start for, does not count; one still under way does). The
+   same check is made again by `--resume` and before the verification. If that check fails nothing was written
    yet, so the restore is cancelled and the hold goes with it. While the restore is
    unfinished, the worker also refuses to delete the target (except through the restore's
    discard), a checkpoint plan of it, and the deletion or retirement of the checkpoint it
@@ -1019,9 +1022,15 @@ next use. A restore never writes into an existing environment, so it cannot over
    restore-write` on the trusted worker image, hardened as the checkpoint Job (no
    service-account token, no service links, no `fsGroup`, read-only root, no capabilities,
    `RuntimeDefault` seccomp, pinned to the volume's node), as the same `run_as_user` and
-   `run_as_group` as the checkpoint Job (it refuses a volume whose root another user owns,
-   so a wrong setting fails before anything is removed), with the
-   checkpoint Jobs' labels so the same NetworkPolicy gives it DNS and the store only. It
+   `run_as_group` as the checkpoint Job, with the
+   checkpoint Jobs' labels so the same NetworkPolicy gives it DNS and the store only. An
+   OpenShell workspace volume's root belongs to root, with the sandbox Pod's `fsGroup` as
+   its group, group-writable and set-group-ID (mkfs made it for root; the kubelet's
+   `fsGroup` did the rest), and every file under it to the sandbox user: the Job writes
+   that root through its group, so `run_as_group` must be that `fsGroup`, and never
+   changes the root's owner, group or mode. It also accepts a root its user owns, and
+   refuses any other owner, a root-owned root of another group or one without group
+   write and the set-group-ID bit, so a wrong setting fails before anything is removed. It
    mounts the target's claim **read-write** and the **restore key**'s Secret, read-only on
    the kept bucket; it never sees the upload bucket. It refuses a volume that is neither
    OpenShell's seed of a fresh workspace (the `.openshell-initialized` sentinel and no prefix
@@ -1030,7 +1039,8 @@ next use. A restore never writes into an existing environment, so it cannot over
    (an earlier attempt finished writing; it then only reports it). It then empties the
    volume (keeping a root `lost+found` another user owns, which the digest also leaves
    out), writes the checkpoint from the kept bucket, checking every chunk's hash and length
-   before a byte of it is written, never setting set-user-ID or set-group-ID bits, checks
+   before a byte of it is written and giving every member its archived mode, except
+   set-user-ID and set-group-ID bits on a file (a directory keeps its set-group-ID bit), checks
    the archive's counts and the prefix identity, walks the volume back from disk to compute
    its tree digest, removes the marker and prints `restore_tree=<sha256>
    restore_attempt=<nonce>`.
@@ -1040,6 +1050,17 @@ next use. A restore never writes into an existing environment, so it cannot over
    `restored` and the sandbox free to start. Its first
    executor adopts the restored prefix identity as the environment's baseline. A mismatch
    records the restore `failed`, which keeps the target held.
+
+OpenShell 0.1.5 creates every sandbox Pod with `fsGroup` set to the sandbox's group and
+`fsGroupChangePolicy: OnRootMismatch`, so on each start the kubelet gives every file of the
+volume the group and group read and write (and every directory the set-group-ID bit) only
+when the root's group, group bits or set-group-ID bit are not what `fsGroup` makes them. The
+restore never changes the root, so the kubelet leaves the restored files as written: a file
+the sandbox made `600` stays `600`. OpenShell 0.1.5's driver configuration has no field for
+the Pod's security context, so the policy is OpenShell's. The tree digest keeps the group
+bits: the worker compares it before the sandbox ever starts on the restored volume, so no
+later `fsGroup` pass can make a verified restore fail, and ignoring them would let a restore
+that wrote wrong group permissions pass.
 
 ```sh
 sandbox-science-kubernetes restore --config private.toml --checkpoint MANIFEST --target ENV   # prints the steps
@@ -1053,13 +1074,17 @@ sandbox-science-kubernetes restore --config private.toml --discard RESTORE_ID --
 With `--apply` it runs the plan (`kubectl exec` into the pool's worker container, under the
 worker's read-only key), finds the target's claim and node (refusing while a Pod mounts it),
 checks first, before planning, that the `--restore-key` files can be read and that no Secret
-of the restore Secret's name exists; then it gets the attempt's nonce, creates the restore
+of the restore Secret's name exists (a server-side dry run of its create, which the API
+server refuses with AlreadyExists, so the operator needs no right to read Secrets; a
+Secret that appears before the real create is refused the same way and left alone); then it gets the attempt's nonce, creates the restore
 Secret from `--restore-key` (the directory
 `site` writes, with `credentials` and `config`), creates the Job, journals it, waits, reads
 the digest from its log, deletes the Secret and the Job and has the worker verify the
 digest, printing the Job's log. The restore key reads every project's kept checkpoints and
 the sandbox namespace runs untrusted sandboxes, so by default its Secret exists only while a
-restore Job runs; `--standing-secret` uses one the operator keeps there instead. A Secret
+restore Job runs, and `site`'s `secrets.sh` does not make it. Keeping one there for good is
+the bundle's explicit opt-in, `standing_restore_secret = true` in `[checkpoint]`: `secrets.sh`
+then makes it and `--standing-secret` uses it (refused without the opt-in). A Secret
 the command cannot delete is reported, to be deleted by hand. A failure prints the Job's
 log, deletes the Job and the Secret, journals the failure and leaves the target held:
 `--resume` rechecks that the target is still the stopped, fresh sandbox, then runs another
@@ -1070,7 +1095,7 @@ the restore created (one created again since, or gone, is left alone, so a stale
 never blocks an ID). Nothing in a restore needs the keeper key, so the operator's machine
 needs no S3 SDK for it; the bundle needs `restore_secret` (`site` writes the key's files from
 the site file's `restore_credentials` and `restore_config`). The operator's rights are those
-of a checkpoint plus reading, creating and deleting Secrets in the sandbox namespace
+of a checkpoint plus creating and deleting Secrets in the sandbox namespace
 ([preparation, step 13](KUBERNETES-PREP.md#13-workspace-checkpoints-and-cleanup-qualification)).
 
 What a restore does not do: it brings back the workspace's files, installed packages and
@@ -1093,7 +1118,9 @@ checkpoints are listed for retirement like a deleted environment's (`--retire-ch
 ENV`): the environment is bound to another sandbox now, so their workspace is gone from it.
 When the checkpoint a restore wrote is the only copy of that environment's tree (it has no
 kept checkpoint of its own yet), cleanup's listing adds a `WARNING` to it: take a
-checkpoint of the restored environment before retiring or deleting it.
+checkpoint of the restored environment before retiring or deleting it. Once the worker
+records that environment deleted, or its ID bound to another sandbox, its restored tree is
+gone and the warning is left out.
 
 When restoring by hand from the printed steps, verify only with the digest and attempt the
 latest Job printed: the worker refuses a report of an earlier attempt, and one whose Job was

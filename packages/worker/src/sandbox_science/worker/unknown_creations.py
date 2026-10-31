@@ -19,6 +19,12 @@ when all of these hold:
   by the wall clock and, within one process, by the monotonic clock too, each recorded
   on the environment.
 
+A creation the gateway refused (an InvalidArgument, FailedPrecondition, PermissionDenied or
+Unauthenticated status, ``environments.REFUSALS``) ended there: the gateway checks a
+sandbox's spec, driver configuration and admission before it records it. Its absence is
+confirmed by one read of its name and of the complete listing that finds no trace, with no
+grace and no second read.
+
 Any read that shows the sandbox gives the environment its identity instead, and the
 ordinary deletion by identity follows; nothing here deletes a sandbox. The running
 worker checks every such environment each ``creation_recheck`` (``CreationReconciler``);

@@ -10,13 +10,26 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import stat
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
-from sandbox_science.contracts import EnvironmentInfo, EnvironmentRequest, EnvironmentState
+from sandbox_science.contracts import (
+    TERMINAL_STATES,
+    EnvironmentInfo,
+    EnvironmentRequest,
+    EnvironmentState,
+    ErrorInfo,
+    ErrorKind,
+    Execution,
+    ExecutionContext,
+    ExecutionState,
+    Location,
+    Result,
+)
 from sandbox_science.contracts.workspace_checkpoint import RestorePlan
 from sandbox_science.worker import checkpoint_jobs_cli, checkpoint_remote, checkpoint_restore
 from sandbox_science.worker.checkpoint_capture import capture_upload
@@ -284,6 +297,83 @@ def test_a_resume_rechecks_that_the_target_is_still_fresh_and_stopped(
     db.execute("INSERT INTO executions VALUES ('x1','op1','d',?,'s',1,'{}','legacy')", (TARGET,))
     db.commit()
     db.close()
+    with pytest.raises(RecordError, match="something ran"):
+        checkpoint_restore.resume(retained, plan.restore_id, "op")
+
+
+def recorded(settings: Settings, execution: Execution) -> None:
+    """An execution as the worker's store records it."""
+    db = sqlite3.connect(settings.state_dir / "worker.sqlite3")
+    db.execute(
+        "INSERT INTO executions VALUES (?,?,'d',?,'s',?,?,'legacy')",
+        (
+            execution.execution_id,
+            execution.operation_id,
+            execution.context.environment_id,
+            int(execution.state in TERMINAL_STATES),
+            execution.model_dump_json(),
+        ),
+    )
+    db.commit()
+    db.close()
+
+
+def execution(number: int, state: ExecutionState, **fields: Any) -> Execution:
+    return Execution(
+        execution_id=f"exe-{number}",
+        attempt_id=f"att-{number}",
+        operation_id=f"op-{number}",
+        kind="shell",
+        context=ExecutionContext(project_id="p", session_id="s", environment_id=TARGET),
+        state=state,
+        submitted_at=datetime.now(UTC),
+        **fields,
+    )
+
+
+def test_a_request_the_held_target_refused_never_counts_as_having_run(
+    tmp_path, garage, retained, stopped
+):
+    """The drill's own check that the held target refuses to start must not block
+    ``--resume``: such a request ends failed without ever reaching an executor."""
+    identity, _ = kept_checkpoint(tmp_path, retained)
+    plan = restore_plan(retained, identity)
+    refused = Result(
+        error=ErrorInfo(
+            kind=ErrorKind.UNAVAILABLE,
+            message=f"environment {TARGET} is held stopped while a workspace checkpoint is"
+            " restored into it; try again after that",
+        )
+    )
+    recorded(
+        retained, execution(1, ExecutionState.FAILED, ended_at=datetime.now(UTC), result=refused)
+    )
+    recorded(retained, execution(2, ExecutionState.CANCELLED, ended_at=datetime.now(UTC)))
+    assert checkpoint_restore.resume(retained, plan.restore_id, "op") == plan
+    nonce = attempted(retained, plan.restore_id, "op")
+    checkpoint_restore.verify(retained, plan.restore_id, nonce, plan.tree_sha256, "op")
+    assert not blocked(retained)
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"state": ExecutionState.QUEUED},  # still under way: it may yet reach its executor
+        {"state": ExecutionState.SUCCEEDED, "started_at": datetime.now(UTC)},
+        {"state": ExecutionState.FAILED, "started_at": datetime.now(UTC)},
+        {  # reached an executor, ended before it reported running
+            "state": ExecutionState.FAILED,
+            "location": Location(pool_id="pool", backend="openshell", hostname="h"),
+        },
+        {"state": ExecutionState.LOST},
+    ],
+)
+def test_an_execution_that_may_have_run_blocks_the_resume(
+    tmp_path, garage, retained, stopped, fields
+):
+    identity, _ = kept_checkpoint(tmp_path, retained)
+    plan = restore_plan(retained, identity)
+    recorded(retained, execution(1, **fields))
     with pytest.raises(RecordError, match="something ran"):
         checkpoint_restore.resume(retained, plan.restore_id, "op")
 
@@ -871,6 +961,102 @@ def test_the_job_refuses_a_volume_another_user_owns(
     with pytest.raises(ValueError, match="run_as_user"):
         checkpoint_restore.write(volume, plan, KEPT)
     assert (volume / "image-docs").exists()
+
+
+def root_info(uid: int, gid: int, mode: int) -> os.stat_result:
+    """A volume root's ``stat`` as the restore Job sees it."""
+    return os.stat_result((stat.S_IFDIR | mode, 2, 1, 3, uid, gid, 4096, 0, 0, 0))
+
+
+SANDBOX_UID, FS_GROUP = 10001, 10001
+
+
+@pytest.mark.parametrize(
+    ("uid", "gid", "mode"),
+    [
+        (0, FS_GROUP, 0o2775),  # as Kubernetes' fsGroup makes an ext4 root mkfs made for root
+        (0, FS_GROUP, 0o2770),
+        (SANDBOX_UID, FS_GROUP, 0o2775),  # the Job's own user
+        (SANDBOX_UID, 0, 0o755),  # owned by the Job's user: written as its owner
+    ],
+)
+def test_the_job_accepts_a_root_it_owns_or_writes_through_its_fs_group(uid, gid, mode):
+    checkpoint_restore.check_root(root_info(uid, gid, mode), SANDBOX_UID, FS_GROUP)
+
+
+@pytest.mark.parametrize(
+    ("uid", "gid", "mode", "message"),
+    [
+        (1000, FS_GROUP, 0o2775, "run_as_user"),  # another user
+        (0, 0, 0o2775, "run_as_group"),  # root's own group
+        (0, 4242, 0o2775, "run_as_group"),  # another fsGroup than the Job's
+        (0, FS_GROUP, 0o0775, "set-group-ID"),  # not as the kubelet makes it
+        (0, FS_GROUP, 0o2755, "group-writable"),  # no group write
+        (0, FS_GROUP, 0o2730, "group-writable"),  # no group read
+    ],
+)
+def test_the_job_refuses_any_other_root(uid, gid, mode, message):
+    with pytest.raises(ValueError, match=message):
+        checkpoint_restore.check_root(root_info(uid, gid, mode), SANDBOX_UID, FS_GROUP)
+
+
+def test_a_root_that_is_no_directory_is_refused():
+    info = os.stat_result((stat.S_IFLNK | 0o777, 2, 1, 1, 0, FS_GROUP, 1, 0, 0, 0))
+    with pytest.raises(ValueError, match="not a directory"):
+        checkpoint_restore.check_root(info, SANDBOX_UID, FS_GROUP)
+
+
+def modes(root: Path) -> dict[str, int]:
+    """Every entry's permission bits below ``root`` (links excepted), by relative path."""
+    return {
+        str(path.relative_to(root)): stat.S_IMODE(path.lstat().st_mode)
+        for path in sorted(root.rglob("*"))
+        if not path.is_symlink()
+    }
+
+
+def test_the_root_is_never_changed_and_members_keep_their_modes_exactly(
+    tmp_path, garage, retained, stopped
+):
+    """As on the cluster: the volume's root is set-group-ID with group write (fsGroup), its
+    directories set-group-ID too; files have the modes the sandbox gave them. The root
+    keeps its mode, so the kubelet's OnRootMismatch finds nothing to change on the next
+    start, and every member comes back with its own mode (set-user-ID and set-group-ID on
+    files dropped as always)."""
+    plan = planned(retained)
+    source = workspace(tmp_path / "source")
+    source.chmod(0o755)  # a root mode other than the target's: not the checkpoint's to set
+    shared = source / "research" / "shared"
+    shared.mkdir()
+    shared.chmod(0o2775)
+    (shared / "private").write_text("600")
+    (shared / "private").chmod(0o600)
+    (shared / "readable").write_text("644")
+    (shared / "readable").chmod(0o644)
+    (shared / "group").write_text("664")
+    (shared / "group").chmod(0o664)
+    (shared / "setgid-tool").write_text("#!/bin/sh\n")
+    (shared / "setgid-tool").chmod(0o2755)
+    (source / "research").chmod(0o2770)
+    identity, _, _ = capture_upload(source, plan.source, UPLOAD, plan.capture)
+    verify(retained, plan.checkpoint_id, identity, UPLOAD, "upload", "op")
+    checkpoint_remote.promote(UPLOAD, KEPT, identity)
+    verify(retained, plan.checkpoint_id, identity, KEPT, "kept", "op")
+    restore = restore_plan(retained, identity)
+    volume = seeded(tmp_path / "target")
+    volume.chmod(0o2775)
+    before = volume.stat()
+    tree, _ = checkpoint_restore.write(volume, restore, KEPT)
+    after = volume.stat()
+    assert tree == restore.tree_sha256
+    assert stat.S_IMODE(after.st_mode) == stat.S_IMODE(before.st_mode) == 0o2775
+    assert (after.st_uid, after.st_gid) == (before.st_uid, before.st_gid)
+    wanted = modes(source)
+    wanted["research/shared/setgid-tool"] = 0o755
+    restored = modes(volume)
+    assert restored == wanted
+    assert restored["research/shared"] == 0o2775
+    assert restored["research/shared/private"] == 0o600
 
 
 def test_an_open_upload_expiry_keeps_checkpoints_away_until_it_ends(

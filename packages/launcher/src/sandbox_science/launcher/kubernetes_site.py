@@ -332,7 +332,7 @@ def worker_settings(site: Site, bundle: BundleConfig, digests: dict[str, str]) -
             "targets": f"{PRIVATE}/targets.yaml",
             "ceiling": f"{PRIVATE}/ceiling.yaml",
             "admin_hosts": _admin_hosts(site),
-            "label_environments": site.worker.label_environments,
+            **site.worker.environments(),
             "profiles": {name: profile.image for name, profile in site.profiles.items()},
             "kubernetes": {
                 name: profile.profile().model_dump(mode="json")
@@ -817,12 +817,14 @@ def _script(bundle: BundleConfig, content: dict[str, dict[str, bytes]]) -> str:
             )
         )
     if bundle.checkpoint is not None and bundle.sandboxes is not None:
-        # The upload key lives beside the volumes, where only checkpoint Jobs mount it; the
-        # restore key, if any, where only restore Jobs do.
+        # The upload key lives beside the volumes, where only checkpoint Jobs mount it. The
+        # restore key goes there only for the time of a restore (``restore --restore-key``),
+        # unless the bundle keeps it standing.
         namespace = bundle.sandboxes.namespace
+        standing = bundle.checkpoint.standing_restore_secret
         for name, directory in (
             (bundle.checkpoint.upload_secret, "checkpoint-upload"),
-            (bundle.checkpoint.restore_secret, "checkpoint-restore"),
+            (bundle.checkpoint.restore_secret if standing else None, "checkpoint-restore"),
         ):
             if name is None:
                 continue
@@ -879,7 +881,13 @@ def _readme(site: Site, bundle: BundleConfig) -> str:
         + (
             "- `secrets/checkpoint-restore/`: the restore Jobs' key (read-only on the kept\n"
             f"  bucket), for the Secret `{bundle.checkpoint.restore_secret}` in the sandbox\n"
-            "  namespace (`secrets.sh` makes it; delete it between restores if you prefer).\n"
+            + (
+                "  namespace, kept there for good (`standing_restore_secret`; `secrets.sh`\n"
+                "  makes it, and `restore --standing-secret` uses it).\n"
+                if bundle.checkpoint.standing_restore_secret
+                else "  namespace only while a restore runs: pass this directory to\n"
+                "  `restore --restore-key`, which creates and deletes the Secret.\n"
+            )
             if bundle.checkpoint.restore_secret is not None
             else ""
         )

@@ -22,6 +22,7 @@ from urllib.parse import urlsplit
 from pydantic import Field, JsonValue, StringConstraints, ValidationError, model_validator
 from pydantic_core import ErrorDetails
 
+from sandbox_science.contracts.worker import JobProfileName
 from sandbox_science.policy.kubernetes import KubernetesProfile, KubernetesResources
 
 from .config import (
@@ -96,6 +97,40 @@ class Runtime(Placement):
     recover_infrastructure: bool = False
 
 
+class JobSize(Placement):
+    """A size a job may ask for a sandbox of its own in (D93): ``worker.toml``'s
+    ``openshell.environments.job_profiles.<name>``, a Kata amd64 placement plus what the
+    agent is told and the job's limits. Unset limits keep the worker's defaults; the
+    worker checks every bound again when it loads its settings."""
+
+    description: Annotated[str, StringConstraints(min_length=1, max_length=200)]
+    """What the agent is told, such as "12 cores, 32 GiB memory, up to 7 days"."""
+    wall_time_max: Annotated[float, Field(gt=0, le=7 * 24 * 3600)] | None = None
+    schedule_timeout: Annotated[float, Field(gt=0, le=24 * 3600)] | None = None
+    max_concurrent: Annotated[int, Field(ge=1, le=64)] | None = None
+    stage_max_bytes: Annotated[int, Field(ge=0, le=64 * 1024**3)] | None = None
+    collect_max_bytes: Annotated[int, Field(ge=0, le=256 * 1024**3)] | None = None
+
+    def settings(self) -> dict[str, JsonValue]:
+        """The worker's table for this size."""
+        limits = self.model_dump(
+            mode="json",
+            include={
+                "wall_time_max",
+                "schedule_timeout",
+                "max_concurrent",
+                "stage_max_bytes",
+                "collect_max_bytes",
+            },
+            exclude_none=True,
+        )
+        return {
+            **self.profile().model_dump(mode="json"),
+            "description": self.description,
+            **limits,
+        }
+
+
 class Worker(Model):
     """The worker's own options, ``[worker]`` in the site file."""
 
@@ -104,6 +139,34 @@ class Worker(Model):
     (``worker.toml``'s ``openshell.environments.label_environments``). The key was
     confirmed on the test instance's OpenShell 0.1.5 gateway on 2026-10-26; the label
     appears on the OpenShell sandbox, not on the Kubernetes Sandbox object or its Pod."""
+    job_profiles: dict[JobProfileName, JobSize] = Field(
+        default_factory=dict[str, JobSize], max_length=32
+    )
+    """Job sandbox sizes (``[worker.job_profiles.<name>]``), rendered into ``worker.toml``'s
+    ``openshell.environments.job_profiles``; none, the default, offers none. A project's
+    policy grants them (``resources.job_profiles``, ``resources.job_sandboxes``)."""
+    max_job_sandboxes: Annotated[int, Field(ge=0, le=64)] | None = None
+    """Job sandboxes at once across the pool; the worker's default (2) when unset."""
+    job_retention: Annotated[float, Field(ge=0, le=30 * 24 * 3600)] | None = None
+    """Seconds a failed job's stopped sandbox is kept; the worker's default when unset."""
+    job_retention_per_project: Annotated[int, Field(ge=0, le=16)] | None = None
+    """Retained job sandboxes per project; the worker's default when unset."""
+
+    def environments(self) -> dict[str, JsonValue]:
+        """What this section adds to ``worker.toml``'s ``openshell.environments``."""
+        found: dict[str, JsonValue] = {"label_environments": self.label_environments}
+        if self.job_profiles:
+            found["job_profiles"] = {
+                name: size.settings() for name, size in sorted(self.job_profiles.items())
+            }
+        found.update(
+            self.model_dump(
+                mode="json",
+                include={"max_job_sandboxes", "job_retention", "job_retention_per_project"},
+                exclude_none=True,
+            )
+        )
+        return found
 
 
 class Identity(Model):

@@ -371,9 +371,13 @@ def decode(
     *,
     check: Callable[[], None] | None = None,
     tree: TreeIndex | None = None,
+    keep_root: bool = False,
 ) -> StreamSummary:
     """Verify the entire stream; optionally extract into a caller-owned empty directory,
-    and describe the tree into ``tree`` for its digest (checkpoint_tree)."""
+    and describe the tree into ``tree`` for its digest (checkpoint_tree). With
+    ``keep_root``, the target directory's own mode is left as it is: a restore Job's target
+    is a volume's root, which belongs to the volume (its owner, its group and the
+    set-group-ID bit Kubernetes' ``fsGroup`` gives it), not to the checkpoint."""
     stream = Stream(handle, check)
     if stream.read(len(MAGIC)) != MAGIC:
         raise ValueError("unsupported checkpoint archive format")
@@ -435,12 +439,16 @@ def decode(
             for path, mode in db.execute(
                 "SELECT path,mode FROM members WHERE kind='directory' ORDER BY length(path) DESC"
             ):
+                if keep_root and path == ".":
+                    continue
                 directory = target / str(path)
                 descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
                 try:
-                    # Unchanged modes are left alone: a restore's root is the volume's own
-                    # directory, which its user may not be allowed to change.
-                    wanted = int(mode) & ~0o6000
+                    # Exactly the archive's mode, the set-group-ID bit included: on a
+                    # directory it only passes the group on to new entries, as Kubernetes'
+                    # fsGroup sets it on every directory of a volume. Set-user-ID means
+                    # nothing on a Linux directory and is never written.
+                    wanted = int(mode) & ~0o4000
                     if stat.S_IMODE(os.fstat(descriptor).st_mode) != wanted:
                         os.fchmod(descriptor, wanted)
                     os.fsync(descriptor)

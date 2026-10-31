@@ -472,11 +472,22 @@ class Sandboxes(Model):
     operator names it: ``server.sandboxNamespace`` of the OpenShell chart."""
 
     namespace: Name
-    job_budget: bool = True
-    """Render the PodDisruptionBudget that makes a planned drain wait for job sandboxes
-    (D93, JS-20). Harmless with no job profile configured: it selects no Pod. Turn it off
-    in all but one instance that shares a sandbox namespace: two budgets selecting the same
-    Pod make every eviction of it fail."""
+    job_budget: bool = False
+    """Accepted false only, so a bundle that turned the job sandboxes' PodDisruptionBudget
+    off still loads. The bundle renders no such budget: OpenShell 0.1.5 puts no label the
+    worker chooses on a job sandbox's Pods (a Pod's own labels come only from a sandbox
+    template's, which its CLI never sets), so it would select nothing
+    (docs/KUBERNETES-BUNDLE.md, job sandboxes and node drains)."""
+
+    @field_validator("job_budget")
+    @classmethod
+    def _no_budget(cls, value: bool) -> bool:
+        if value:
+            raise ValueError(
+                "sandboxes.job_budget: OpenShell puts no label the worker chooses on a job"
+                " sandbox's Pods, so a PodDisruptionBudget would select none; remove the key"
+            )
+        return value
 
 
 class Alerts(Model):
@@ -615,7 +626,13 @@ class Checkpoint(Model):
     restore_secret: Name | None = None
     """The Secret in the sandbox namespace with the restore key's SDK files (``credentials``
     and ``config``): read-only on the kept bucket, mounted only by restore Jobs. Absent,
-    no restore Job can be rendered. The operator creates it, for good or for a restore."""
+    no restore Job can be rendered. By default it exists only while a restore Job runs:
+    ``restore --restore-key`` creates and deletes it, and ``site``'s ``secrets.sh`` does not
+    make it."""
+    standing_restore_secret: bool = False
+    """Keep the restore Secret in the sandbox namespace for good instead (an explicit opt-in:
+    the key reads every project's kept checkpoints, beside untrusted sandboxes): ``site``'s
+    ``secrets.sh`` then makes it, and only then does ``restore --standing-secret`` use it."""
     restore_profile: Annotated[str, StringConstraints(pattern=_PROFILE)] = "checkpoint-restore"
     upload_bucket: Annotated[str, StringConstraints(pattern=_BUCKET)]
     kept_bucket: Annotated[str, StringConstraints(pattern=_BUCKET)]
@@ -630,10 +647,14 @@ class Checkpoint(Model):
     """The sandbox user, who owns the workspace's files, for checkpoint and restore Jobs
     alike: a checkpoint Job reads them as it, so a file the sandbox made unreadable fails
     the checkpoint by name rather than being read with more authority, and a restore Job
-    writes them as it, refusing a volume whose root another user owns. Required, with no
-    default: the research images run as uid 1000 (D77) while the test deployment's sandbox
-    ran as 10001, so the operator confirms the owner (``ls -ln``) and sets it."""
+    writes them as it. Required, with no default: the research images run as uid 1000
+    (D77) while the test deployment's sandbox ran as 10001, so the operator confirms the
+    owner (``ls -ln``) and sets it."""
     run_as_group: Annotated[int, Field(strict=True, ge=1, le=2147483647)]
+    """The sandbox Pod's ``fsGroup`` (OpenShell sets it to the sandbox's group). A workspace
+    volume's root belongs to root with this group, group-writable and set-group-ID, so a
+    restore Job writes it through this group; it refuses a root-owned root of another
+    group."""
     deadline_seconds: Annotated[int, Field(strict=True, ge=60, le=86400)] = 7200
     keep: Annotated[int, Field(strict=True, ge=1, le=100)] = 2
     """Kept checkpoints per workspace; older ones are cleanup candidates, never removed
@@ -652,6 +673,8 @@ class Checkpoint(Model):
             raise ValueError("the upload bucket is separate from the kept bucket")
         if self.restore_secret is not None and self.restore_secret == self.upload_secret:
             raise ValueError("the restore key's Secret is separate from the upload key's")
+        if self.standing_restore_secret and self.restore_secret is None:
+            raise ValueError("checkpoint.standing_restore_secret needs restore_secret")
         if self.hold_seconds <= self.deadline_seconds:
             raise ValueError("checkpoint.hold_seconds must outlast the Job's deadline")
         return self

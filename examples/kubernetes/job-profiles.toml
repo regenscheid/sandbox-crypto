@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: MIT
 # Merge this illustrative fragment into a PRIVATE worker config beside
 # worker-placement.toml: the sizes a big job may ask for a sandbox of its own in (D93,
-# docs/specs/job-sandboxes.md). The owner's home-cluster sizes (2026-10-22). Each must
+# docs/specs/job-sandboxes.md). On Kubernetes, give them in the site file instead
+# ([worker.job_profiles.<name>], examples/kubernetes/site.toml), which renders this. The owner's home-cluster sizes (2026-10-22). Each must
 # fit one real amd64 Kata node with room to spare.
 #
 # A project's policy grants them (docs/POLICY.md, background job resources):
@@ -9,9 +10,10 @@
 #     job_profiles: [medium, large]
 #     job_sandboxes: 1          # at once per project; 0 or unset keeps the feature off
 #
-# The gateway must list the job sandbox label in allowed_pod_labels
-# (gateway-driver.toml); the bundle's [sandboxes] section renders the PodDisruptionBudget
-# selecting it, so a planned drain waits for running jobs (docs/WORKER.md, job sandboxes).
+# Each job sandbox carries the OpenShell label sandbox-science.io/job-sandbox=true, so
+# `openshell sandbox list --selector sandbox-science.io/job-sandbox=true` lists running jobs
+# before a node is drained; no PodDisruptionBudget can protect them under OpenShell 0.1.5
+# (docs/KUBERNETES-BUNDLE.md, job sandboxes and node drains).
 [openshell.environments]
 max_job_sandboxes = 2            # at once across the pool
 job_retention = 259200           # seconds a failed job's stopped sandbox is kept (3 days)
