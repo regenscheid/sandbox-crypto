@@ -21,6 +21,8 @@ from pydantic import (
     model_validator,
 )
 
+from sandbox_science.contracts import project_id_label_problem
+
 from .kubernetes_models import ModelCatalog
 
 Name = Annotated[str, StringConstraints(pattern=r"^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$")]
@@ -707,6 +709,9 @@ class McpDirect(Model):
 
     @model_validator(mode="after")
     def indexed(self) -> Self:
+        problem = project_id_label_problem(self.project)
+        if problem is not None:
+            raise ValueError(f"{problem}; this project cannot use [mcp_direct]")
         for key in (*self.about, *(self.index or ())):
             if key.partition("/")[0] not in self.servers:
                 raise ValueError("mcp_direct.about and index name one of mcp_direct.servers")

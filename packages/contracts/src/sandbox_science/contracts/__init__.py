@@ -49,7 +49,14 @@ from .events import Event, OutputEvent, ResultEvent, StateEvent, StreamEvent
 from .kernel_lineage import (
     KernelBirthPin,
 )
-from .model import Contract, Identifier, new_id
+from .model import (
+    MAX_PROJECT_ID,
+    PROJECT_ID_RULE,
+    Contract,
+    Identifier,
+    new_id,
+    project_id_label_problem,
+)
 from .provision_observations import (
     AdmissionSummary,
     ProvisionDetail,
@@ -142,6 +149,8 @@ from .worker import (
 
 __all__ = [
     "MAX_ADMISSION_HOSTS",
+    "MAX_PROJECT_ID",
+    "PROJECT_ID_RULE",
     "SYSTEM_CLOCK",
     "TERMINAL_STATES",
     "AdmissionDecision",
@@ -261,6 +270,7 @@ __all__ = [
     "generation_id",
     "manifest_sha256",
     "new_id",
+    "project_id_label_problem",
     "validate_relative_path",
     "wait_or_sleep",
 ]

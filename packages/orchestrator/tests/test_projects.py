@@ -61,6 +61,20 @@ def test_a_project_is_created_once(store: ProjectStore) -> None:
     assert store.get("p1") == record
 
 
+def test_a_new_project_id_must_fit_a_label_value(store: ProjectStore) -> None:
+    """The direct MCP path labels the runtime's sandbox with the project ID, and a
+    Kubernetes label value is at most 63 characters, ending in a letter or digit."""
+    longest = "p" * 63
+    assert store.create(longest, "minimal", POLICY)[1]
+    for refused in ("p" * 64, "ends-with-dash-", "ends.", "a" * 62 + "_"):
+        with pytest.raises(ProjectError, match="label") as error:
+            store.create(refused, "minimal", POLICY)
+        assert error.value.kind is ErrorKind.INVALID_REQUEST
+        assert "63 characters" in str(error.value)
+    with pytest.raises(ProjectError):
+        store.get("p" * 64)  # nothing was created
+
+
 @pytest.mark.parametrize(
     ("project_id", "kind"),
     [("../escape", ErrorKind.INVALID_REQUEST), ("missing", ErrorKind.NOT_FOUND)],

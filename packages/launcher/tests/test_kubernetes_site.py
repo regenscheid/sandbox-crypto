@@ -507,6 +507,14 @@ def test_the_managers_worker_token_is_not_its_control_token(tmp_path):
     assert {client.token_sha256 for client in clients}.isdisjoint({_digest(control)})
 
 
+def test_a_project_id_too_long_for_a_label_cannot_use_the_direct_path():
+    from sandbox_science.launcher.kubernetes_config import McpDirect
+
+    assert McpDirect.model_validate({**DIRECT, "project": "p" * 63}).project == "p" * 63
+    with pytest.raises(ValueError, match=r"63 characters.*cannot use \[mcp_direct\]"):
+        McpDirect.model_validate({**DIRECT, "project": "p" * 64})
+
+
 def test_a_direct_path_for_another_project_is_refused(tmp_path):
     values = site_values(tmp_path, direct=True)
     bundle = tmp_path / "inputs/bundle.toml"

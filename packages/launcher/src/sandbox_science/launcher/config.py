@@ -77,6 +77,8 @@ from pydantic import (
     model_validator,
 )
 
+from sandbox_science.contracts import project_id_label_problem
+
 from .access_provider import PROVIDER
 
 Identifier = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")]
@@ -628,6 +630,9 @@ class LauncherConfig(_Strict):
                 raise ValueError("mcp_direct.project names the project whose policy applies")
             if (self.mcp_direct.project or ids[0]) not in ids:
                 raise ValueError(f"mcp_direct.project {self.mcp_direct.project!r} is not a project")
+            problem = project_id_label_problem(self.mcp_project())
+            if problem is not None:
+                raise ValueError(f"{problem}; this project cannot use [mcp_direct]")
         profiles = self.openshell.environments.profiles
         for project in self.projects:
             if project.profile not in profiles:

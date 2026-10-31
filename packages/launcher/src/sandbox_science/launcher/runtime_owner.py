@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, NamedTuple, Protocol, cast
 from urllib.parse import urlsplit
 
-from sandbox_science.contracts import SYSTEM_CLOCK, Clock
+from sandbox_science.contracts import SYSTEM_CLOCK, Clock, project_id_label_problem
 
 from .config import LauncherError
 from .mcp import DEAD_PHASES
@@ -232,6 +232,9 @@ async def create_owned(
     Every failure leaves the record for ``delete_recorded`` to reconcile. A sandbox the
     gateway reports absent after the create returned raises ``CreateRolledBackError``.
     """
+    problem = project_id_label_problem(project) if project is not None else None
+    if problem is not None:
+        raise LauncherError(f"{problem}; this project cannot use the direct MCP path")
     name = "ss-orch-" + secrets.token_hex(5)
     if await cli.sandbox(name) is not None:
         raise LauncherError("orchestrator random sandbox name is already in use")
