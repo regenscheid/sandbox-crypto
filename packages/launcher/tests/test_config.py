@@ -445,13 +445,20 @@ def test_a_direct_path_that_cannot_work_is_refused(
     assert message in str(error.value)
 
 
-def test_a_long_project_id_cannot_use_the_direct_path(make_config: Any) -> None:
-    long = {"id": "p" * 64, "profile": "minimal", "sessions": ["main"]}
-    with pytest.raises(LauncherError, match="cannot use \\[mcp_direct\\]") as error:
-        load_config(make_config({"projects": [long], "mcp_direct": DIRECT}))
-    assert "63 characters" in str(error.value)
-    # Without the direct path, a project made earlier keeps its ID.
-    assert load_config(make_config({"projects": [long]})).projects[0].id == "p" * 64
+@pytest.mark.parametrize("project_id", ["p" * 64, "ends-with-dash-"])
+def test_a_project_id_that_cannot_be_a_label_value_is_refused(
+    make_config: Any, project_id: str
+) -> None:
+    """Whether or not the config has [mcp_direct]: one rule for every project."""
+    bad = {"id": project_id, "profile": "minimal", "sessions": ["main"]}
+    for extra in ({}, {"mcp_direct": DIRECT}):
+        with pytest.raises(LauncherError, match="cannot label the agent runtime") as error:
+            load_config(make_config({"projects": [bad], **extra}))
+        assert "63 characters" in str(error.value)
+        assert "no rename tool" in str(error.value)
+        assert project_id in str(error.value)
+    ok = {"id": "p" * 63, "profile": "minimal", "sessions": ["main"]}
+    assert load_config(make_config({"projects": [ok]})).projects[0].id == "p" * 63
 
 
 @pytest.mark.parametrize(

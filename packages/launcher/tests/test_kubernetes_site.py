@@ -816,6 +816,7 @@ def test_mismatched_identity_and_open_keys_are_refused(tmp_path):
             "profiles",
         ),
         (lambda v: v["projects"][0].update(profile="unknown"), "profile is not one of"),
+        (lambda v: v["projects"][0].update(id="p" * 64), "63 characters"),
         (lambda v: v.update(cache={"pypi": {}}), r"\[cache\] exactly"),
         (lambda v: v["extra_files"]["control"].pop("s3-credentials"), "s3-credentials"),
         (lambda v: v["extra_files"].update(workspace={"x": "inputs/s3"}), "extra_files"),

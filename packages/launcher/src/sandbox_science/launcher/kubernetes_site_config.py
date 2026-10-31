@@ -20,6 +20,7 @@ from typing import Annotated, Literal, Self
 from urllib.parse import urlsplit
 
 from pydantic import Field, JsonValue, StringConstraints, ValidationError, model_validator
+from pydantic_core import ErrorDetails
 
 from sandbox_science.policy.kubernetes import KubernetesProfile, KubernetesResources
 
@@ -303,8 +304,17 @@ def load(path: Path) -> tuple[Site, BundleConfig]:
     except ValidationError as exc:
         # Field locations only, since a value may be private; a rule across fields says
         # which, in the site's own names.
-        where = sorted(
-            {".".join(str(part) for part in error["loc"]) or error["msg"] for error in exc.errors()}
-        )
+        where = sorted({_location(error) for error in exc.errors()})
         raise BundleError(f"invalid site configuration at: {'; '.join(where)}") from None
     return site, bundle
+
+
+def _location(error: ErrorDetails) -> str:
+    """Where a validation error is, in the site file's names. A project's ID is no secret
+    (the generated README lists it), so its error also says why: the ID is too long for a
+    label value, and what to do."""
+    loc = error["loc"]
+    where = ".".join(str(part) for part in loc)
+    if len(loc) == 3 and loc[0] == "projects" and loc[2] == "id":
+        return f"{where}: {error['msg']}"
+    return where or error["msg"]

@@ -358,6 +358,8 @@ class SkillsConfig(_Strict):
 
 class ProjectConfig(_Strict):
     id: Identifier
+    """At most 63 characters, so that it can label the agent runtime's sandbox
+    (``project_id_label_problem``)."""
     profile: Identifier
     """The base profile of the project's environments: a key of ``openshell.environments
     .profiles``."""
@@ -367,6 +369,18 @@ class ProjectConfig(_Strict):
     """Sessions opened for chat: a name, or ``{ id = "...", dedicated = true }``."""
     skills: tuple[SourceName, ...] = ()
     """The packs of ``[skills.packs]`` the project pins, besides the built-in skills."""
+
+    @field_validator("id")
+    @classmethod
+    def _fits_a_label(cls, value: str) -> str:
+        problem = project_id_label_problem(value)
+        if problem is not None:
+            raise ValueError(
+                f"{problem}. A project already in the state directory under this ID cannot be "
+                "renamed (there is no rename tool): list a new project with a shorter ID "
+                "instead, and leave this one out"
+            )
+        return value
 
 
 class WorkerConfig(_Strict):
@@ -630,9 +644,6 @@ class LauncherConfig(_Strict):
                 raise ValueError("mcp_direct.project names the project whose policy applies")
             if (self.mcp_direct.project or ids[0]) not in ids:
                 raise ValueError(f"mcp_direct.project {self.mcp_direct.project!r} is not a project")
-            problem = project_id_label_problem(self.mcp_project())
-            if problem is not None:
-                raise ValueError(f"{problem}; this project cannot use [mcp_direct]")
         profiles = self.openshell.environments.profiles
         for project in self.projects:
             if project.profile not in profiles:
