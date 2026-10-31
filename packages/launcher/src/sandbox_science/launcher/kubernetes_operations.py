@@ -30,10 +30,11 @@ from sandbox_science.contracts.workspace_checkpoint import (
     CheckpointPlan,
     InventoryCheckpoint,
     InventoryEnvironment,
+    RestorePlan,
 )
 
 from .kubernetes_bundle import PRIVATE
-from .kubernetes_checkpoint import CHECKPOINT, CHECKPOINT_LABEL, checkpoint_job
+from .kubernetes_checkpoint import CHECKPOINT, CHECKPOINT_LABEL, checkpoint_job, restore_job
 from .kubernetes_config import BundleConfig, Checkpoint
 
 Runner = Callable[[Sequence[str], bytes | None], bytes]
@@ -49,6 +50,7 @@ OPENSHELL_SEPARATOR = "--"
 imports the worker), so the sandbox is what follows its last occurrence."""
 WORKER_SETTINGS = f"{PRIVATE}/worker.toml"
 _MANIFEST = re.compile(r"^checkpoint_manifest=([0-9a-f]{64})\b", re.MULTILINE)
+_TREE = re.compile(r"^restore_tree=([0-9a-f]{64})\b", re.MULTILINE)
 MAX_OUTPUT = 64 * 1024 * 1024
 
 
@@ -411,6 +413,170 @@ class Operator:
                 raise OperationError(f"job {name} did not finish within its deadline")
             self.sleep(poll)
 
+    # Restoring a checkpoint
+
+    def _restore_plan(self, manifest: str, target: str) -> list[str]:
+        return self.exec_worker(
+            "restore-plan",
+            "--manifest",
+            manifest,
+            "--target",
+            target,
+            "--storage",
+            f"{PRIVATE}/checkpoint-kept.toml",
+            "--timeout",
+            str(self.checkpoint.deadline_seconds),
+            "--by",
+            self.actor,
+            key=True,
+        )
+
+    def restore_steps(self, manifest: str, target: str) -> list[str]:
+        """What ``restore --apply`` runs, for an operator to read or run by hand."""
+        sandbox_ns, checkpoint = self.sandbox_namespace, self.checkpoint
+
+        def line(arguments: Sequence[str]) -> str:
+            return " ".join(_quote(part) for part in arguments)
+
+        return [
+            "# 1. The worker reads the kept checkpoint back in full, creates the target"
+            " environment and holds it stopped (no expiry); prints the plan.",
+            line(self._restore_plan(manifest, target)) + " > restore.json",
+            "# 2. Find the new sandbox's claim and its node; nothing may mount it now.",
+            line([*self.kubectl, "-n", sandbox_ns, "get", "pvc,pods", "-o", "wide"]),
+            "# 3. Render the Job (it mounts the claim read-write and the Secret "
+            f"{checkpoint.restore_secret or 'RESTORE_SECRET'}), create it and journal it.",
+            "sandbox-science-kubernetes restore-job --config CONFIG --plan restore.json "
+            "--claim CLAIM --node NODE --output job.json",
+            line([*self.kubectl, "create", "-f", "job.json", "-o", "name"]),
+            line(self._restore_record("RESTORE_ID", "job", {"job": "JOB", "claim": "CLAIM"})),
+            "# 4. Wait for it and read the restored tree's digest from its log.",
+            line(
+                [
+                    *self.kubectl,
+                    "-n",
+                    sandbox_ns,
+                    "wait",
+                    "--for=condition=complete",
+                    "job/JOB",
+                    f"--timeout={checkpoint.deadline_seconds}s",
+                ]
+            ),
+            line([*self.kubectl, "-n", sandbox_ns, "logs", "job/JOB"]),
+            "# 5. The worker compares it with the checkpoint's; only then may the sandbox start.",
+            line(self._restore_verify("RESTORE_ID", "TREE")),
+        ]
+
+    def _restore_record(self, restore_id: str, phase: str, detail: dict[str, object]) -> list[str]:
+        return self.exec_worker(
+            "restore-record",
+            "--restore-id",
+            restore_id,
+            "--phase",
+            phase,
+            "--detail",
+            json.dumps(detail, sort_keys=True),
+            "--by",
+            self.actor,
+        )
+
+    def _restore_verify(self, restore_id: str, tree: str) -> list[str]:
+        return self.exec_worker(
+            "restore-verify", "--restore-id", restore_id, "--tree", tree, "--by", self.actor
+        )
+
+    def run_restore(
+        self,
+        manifest: str | None,
+        target: str | None,
+        *,
+        resume: str | None = None,
+        poll: float = 5.0,
+    ) -> RestorePlan:
+        """Plan (or resume an unfinished restore), create the Job, wait, have the worker
+        verify the tree. A failure deletes the Job and is journaled; the target stays held
+        stopped, for another attempt (``--resume``) or ``--discard``."""
+        if self.checkpoint.restore_secret is None:
+            raise OperationError("the bundle's [checkpoint] names no restore_secret")
+        if resume is not None:
+            command = self.exec_worker("restore-plan", "--resume", resume, "--by", self.actor)
+        elif manifest is not None and target is not None:
+            command = self._restore_plan(manifest, target)
+        else:
+            raise OperationError("name the checkpoint and the target, or --resume a restore")
+        plan = RestorePlan.model_validate_json(self.run(command, None))
+        self.out(
+            f"planned {plan.restore_id}: checkpoint {plan.manifest_sha256} into environment"
+            f" {plan.target.environment_id} (sandbox {plan.target.sandbox}), held stopped"
+        )
+        name: str | None = None
+        claim = ""
+        try:
+            claim, node = self.claim_of(plan.target.sandbox)
+            job = restore_job(self.config, plan, claim, node)
+            created = self.run(
+                [*self.kubectl, "create", "-f", "-", "-o", "name"], json.dumps(job).encode()
+            )
+            name = created.decode().strip().rpartition("/")[2]
+            self.out(f"created job {name} writing {claim}" + (f" on {node}" if node else ""))
+            self.run(
+                self._restore_record(
+                    plan.restore_id, "job", {"job": name, "claim": claim, "node": node}
+                ),
+                None,
+            )
+            self._wait(name, poll)
+            logs = self.run(
+                [*self.kubectl, "-n", self.sandbox_namespace, "logs", f"job/{name}"], None
+            )
+            match = _TREE.search(logs.decode(errors="replace"))
+            if match is None:
+                raise OperationError(f"job {name} printed no restored tree")
+            # The worker's own comparison; a mismatch is journaled there and keeps the hold.
+            self.out(
+                self.run(self._restore_verify(plan.restore_id, match[1]), None).decode().strip()
+            )
+        except BaseException as error:
+            problems: list[str] = []
+            if name is not None:
+                try:
+                    self.run(self._delete_job(name), None)
+                except OperationError as cleanup:
+                    problems.append(f"the Job {name} was not deleted: {cleanup}")
+            try:
+                self.run(
+                    self._restore_record(plan.restore_id, "failed", {"error": str(error)[:400]}),
+                    None,
+                )
+            except OperationError as journal:
+                problems.append(f"the failure was not journaled: {journal}")
+            problems.append(
+                f"environment {plan.target.environment_id} stays held stopped; retry with"
+                f" --resume {plan.restore_id} or give it up with --discard {plan.restore_id}"
+            )
+            raise OperationError(f"{error}; and {'; '.join(problems)}") from error
+        self._finish_job(name, logs, claim)
+        return plan
+
+    def discard_restore(self, restore_id: str, reason: str) -> None:
+        """Delete an unfinished restore's target environment through the worker."""
+        self.out(
+            self.run(
+                self.exec_worker(
+                    "restore-discard",
+                    "--restore-id",
+                    restore_id,
+                    "--reason",
+                    reason,
+                    "--by",
+                    self.actor,
+                ),
+                None,
+            )
+            .decode()
+            .strip()
+        )
+
     # Cleanup
 
     def inventory(self) -> CheckpointInventory:
@@ -640,6 +806,45 @@ class Operator:
                 ]
             ),
             Step(self.exec_worker("forget", "--manifest", manifest, "--done", "--by", self.actor)),
+        ]
+
+    def expire_uploads(self, hours: int, keeper_upload: Path | None, workdir: Path) -> list[Step]:
+        """The steps that remove upload-bucket objects older than ``hours`` that no
+        unpromoted checkpoint needs: the worker journals the intent (refusing while a
+        checkpoint is under way) and lists what it protects; the keeper key removes the
+        rest; the worker journals the end."""
+        if not 1 <= hours <= 8760:
+            raise OperationError("--expire-uploads takes 1 to 8760 hours")
+        protected = workdir / "protected-uploads.txt"
+
+        def journal(phase: str) -> list[str]:
+            return self.exec_worker(
+                "upload-expiry",
+                "--phase",
+                phase,
+                "--older-than-hours",
+                str(hours),
+                "--by",
+                self.actor,
+            )
+
+        return [
+            Step(journal("intent"), output=protected),
+            Step(
+                [
+                    *self.worker,
+                    "checkpoint",
+                    "expire-objects",
+                    "--storage",
+                    str(keeper_upload or Path("UPLOAD.toml")),
+                    "--older-than-hours",
+                    str(hours),
+                    "--protected-file",
+                    str(protected),
+                ],
+                journal("failed"),
+            ),
+            Step(journal("done")),
         ]
 
     def apply(self, steps: list[Step]) -> None:

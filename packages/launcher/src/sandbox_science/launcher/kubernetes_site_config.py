@@ -161,6 +161,10 @@ class SiteCheckpoint(Model):
     upload_config: ConfigPath
     verify_credentials: ConfigPath
     verify_config: ConfigPath
+    restore_credentials: ConfigPath | None = None
+    restore_config: ConfigPath | None = None
+    """The restore Jobs' key (read on the kept bucket only), given exactly when the bundle
+    names ``restore_secret``: it goes into that Secret in the sandbox namespace."""
     keeper_endpoint: Annotated[str, StringConstraints(max_length=2048)] | None = None
     """Where the operator's machine reaches the store, such as ``http://127.0.0.1:3900``
     through ``kubectl port-forward``; by default that, on the store's first port."""

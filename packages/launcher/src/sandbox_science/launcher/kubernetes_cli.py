@@ -7,6 +7,7 @@ cleanup commands, which run ``kubectl`` with the operator's credentials only whe
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import shlex
@@ -17,11 +18,11 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from sandbox_science.contracts.workspace_checkpoint import CheckpointPlan
+from sandbox_science.contracts.workspace_checkpoint import CheckpointPlan, RestorePlan
 
 from . import kubernetes_site, kubernetes_site_config
 from .kubernetes_bundle import release_job, render
-from .kubernetes_checkpoint import checkpoint_job
+from .kubernetes_checkpoint import checkpoint_job, restore_job
 from .kubernetes_config import BundleError, load
 from .kubernetes_operations import OperationError, Operator, report, run_command, whoami
 
@@ -71,7 +72,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     cleanup = commands.add_parser(
         "cleanup", help="list leftover volumes and old checkpoints; delete named ones"
     )
-    for command in (checkpoint, cleanup):
+    restore = commands.add_parser(
+        "restore", help="restore a kept checkpoint into a fresh environment (prints unless --apply)"
+    )
+    restore_render = commands.add_parser("restore-job", help="render one restore Job from a plan")
+    restore_render.add_argument("--config", type=Path, required=True)
+    restore_render.add_argument("--plan", type=Path, required=True, help="the worker's plan")
+    restore_render.add_argument("--claim", required=True, help="the target's workspace claim")
+    restore_render.add_argument("--node", help="the volume's node")
+    restore_render.add_argument("--output", type=Path, required=True)
+    for command in (checkpoint, cleanup, restore):
         command.add_argument("--config", type=Path, required=True)
         command.add_argument("--apply", action="store_true", help="run the steps")
         command.add_argument("--operator", help="who runs this, for the deletion journal")
@@ -98,19 +108,36 @@ def main(argv: Sequence[str] | None = None) -> int:
         " gone (repeatable)",
     )
     cleanup.add_argument("--keeper-kept", type=Path, help="operator/checkpoint-kept.toml")
+    cleanup.add_argument(
+        "--expire-uploads",
+        type=int,
+        metavar="HOURS",
+        help="remove upload-bucket objects older than this that no unpromoted checkpoint needs",
+    )
+    cleanup.add_argument("--keeper-upload", type=Path, help="operator/checkpoint-upload.toml")
+    restore.add_argument("--checkpoint", metavar="MANIFEST", help="a kept checkpoint's SHA-256")
+    restore.add_argument("--target", metavar="ENVIRONMENT", help="a new or deleted environment")
+    restore.add_argument("--resume", metavar="RESTORE_ID", help="retry an unfinished restore")
+    restore.add_argument("--discard", metavar="RESTORE_ID", help="delete its target environment")
+    restore.add_argument("--reason", default="discarded by the operator")
+    restore.add_argument("--yes", action="store_true", help="do not ask for confirmation")
     cleanup.add_argument("--yes", action="store_true", help="do not ask for confirmation")
     args = parser.parse_args(argv)
-    if args.command in ("checkpoint", "cleanup"):
+    if args.command in ("checkpoint", "cleanup", "restore"):
         try:
             return _operate(args)
         except (BundleError, OperationError, ValidationError, ValueError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
     try:
-        if args.command == "checkpoint-job":
+        if args.command in ("checkpoint-job", "restore-job"):
             try:
-                plan = CheckpointPlan.model_validate_json(args.plan.read_bytes())
-                rendered = checkpoint_job(load(args.config), plan, args.claim, args.node)
+                if args.command == "checkpoint-job":
+                    plan = CheckpointPlan.model_validate_json(args.plan.read_bytes())
+                    rendered = checkpoint_job(load(args.config), plan, args.claim, args.node)
+                else:
+                    restoring = RestorePlan.model_validate_json(args.plan.read_bytes())
+                    rendered = restore_job(load(args.config), restoring, args.claim, args.node)
             except (ValidationError, ValueError) as exc:
                 print(f"error: {exc}", file=sys.stderr)
                 return 1
@@ -165,16 +192,42 @@ def _confirm(prompt: str) -> bool:
         return False
 
 
+def keeper_sdk_available() -> bool:
+    """Whether this environment has the S3 SDK the keeper key's local steps need (promote,
+    checkpoint deletion, upload expiry): ``uv sync --extra s3`` installs it."""
+    return importlib.util.find_spec("boto3") is not None
+
+
+def _keeper_ready() -> None:
+    if not keeper_sdk_available():
+        raise ValueError(
+            "the keeper key's steps run on this machine and need the S3 SDK (boto3): run"
+            " `uv sync --extra s3` in the checkout first; nothing was changed"
+        )
+
+
 def _operate(args: argparse.Namespace) -> int:
     config = load(args.config)
+    if args.apply and (
+        (args.command == "checkpoint" and args.keeper_upload is not None)
+        or (
+            args.command == "cleanup"
+            and (
+                ((args.checkpoint or args.retire_checkpoints) and args.keeper_kept is not None)
+                or (args.expire_uploads is not None and args.keeper_upload is not None)
+            )
+        )
+    ):
+        _keeper_ready()
     kubectl = ("kubectl", *(("--context", args.context) if args.context else ()))
     actor = args.operator or (whoami(run_command, kubectl) if args.apply else "OPERATOR")
     operator = Operator(config, actor, run=run_command, kubectl=kubectl)
     if args.command == "checkpoint":
-        keepers = (args.keeper_upload, args.keeper_kept)
-        if (keepers[0] is None) != (keepers[1] is None):
+        upload: Path | None = args.keeper_upload
+        kept: Path | None = args.keeper_kept
+        if (upload is None) != (kept is None):
             raise ValueError("give both --keeper-upload and --keeper-kept, or neither")
-        keeper = None if keepers[0] is None else (keepers[0], keepers[1])
+        keeper = None if upload is None or kept is None else (upload, kept)
         if not args.apply:
             for line in operator.checkpoint_steps(args.environment, args.architecture, keeper):
                 print(line)
@@ -182,8 +235,12 @@ def _operate(args: argparse.Namespace) -> int:
         manifest = operator.run_checkpoint(args.environment, args.architecture, keeper)
         print(f"checkpoint_manifest={manifest}")
         return 0
+    if args.command == "restore":
+        return _restore(args, operator)
     found = operator.survey()
-    if not args.volume and not args.checkpoint and not args.retire_checkpoints:
+    hours: int | None = args.expire_uploads
+    expiring = hours is not None
+    if not args.volume and not args.checkpoint and not args.retire_checkpoints and not expiring:
         for line in report(found):
             print(line)
         return 0
@@ -198,24 +255,75 @@ def _operate(args: argparse.Namespace) -> int:
         workdir=workdir,
         retire=args.retire_checkpoints,
     )
+    if hours is not None:
+        steps.extend(operator.expire_uploads(hours, args.keeper_upload, workdir))
     if not args.apply:
         for step in steps:
             print(" ".join(shlex.quote(part) for part in step.command))
         return 0
     if (args.checkpoint or args.retire_checkpoints) and args.keeper_kept is None:
         raise ValueError("deleting a checkpoint needs --keeper-kept and the keeper key")
+    if expiring and args.keeper_upload is None:
+        raise ValueError("expiring uploads needs --keeper-upload and the keeper key")
     retiring = sum(
         1
         for mark in found.checkpoints
         if mark.retire and mark.checkpoint.environment_id in args.retire_checkpoints
     )
     named = len(args.volume) + len(args.checkpoint) + retiring
+    what = f"{named} item(s)" + (
+        f" and upload-bucket objects older than {args.expire_uploads} hours" if expiring else ""
+    )
     if not args.yes and not _confirm(
-        f"Delete {named} item(s) for good, journaled as {actor}? Type 'delete': "
+        f"Delete {what} for good, journaled as {actor}? Type 'delete': "
     ):
         print("nothing deleted")
         return 1
     operator.apply(steps)
+    return 0
+
+
+def _restore(args: argparse.Namespace, operator: Operator) -> int:
+    chosen = [args.checkpoint is not None or args.target is not None, args.resume, args.discard]
+    if sum(1 for choice in chosen if choice) != 1:
+        raise ValueError("give --checkpoint and --target, or --resume, or --discard")
+    if args.discard is not None:
+        if not args.apply:
+            print(
+                " ".join(
+                    shlex.quote(part)
+                    for part in operator.exec_worker(
+                        "restore-discard",
+                        "--restore-id",
+                        args.discard,
+                        "--reason",
+                        args.reason,
+                        "--by",
+                        operator.actor,
+                    )
+                )
+            )
+            return 0
+        if not args.yes and not _confirm(
+            f"Delete the target environment of {args.discard}, journaled as {operator.actor}?"
+            " Type 'delete': "
+        ):
+            print("nothing deleted")
+            return 1
+        operator.discard_restore(args.discard, args.reason)
+        return 0
+    manifest: str | None = args.checkpoint
+    target: str | None = args.target
+    if args.resume is None and (manifest is None or target is None):
+        raise ValueError("a restore names --checkpoint and --target")
+    if not args.apply:
+        if manifest is None or target is None:
+            raise ValueError("--resume runs with --apply")
+        for line in operator.restore_steps(manifest, target):
+            print(line)
+        return 0
+    plan = operator.run_restore(manifest, target, resume=args.resume)
+    print(f"restored={plan.restore_id} environment={plan.target.environment_id}")
     return 0
 
 

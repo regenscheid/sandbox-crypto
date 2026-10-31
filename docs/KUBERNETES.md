@@ -331,7 +331,9 @@ refusals that the worker's records also enforce, journaling who ran each deletio
 ([workspace checkpoints](KUBERNETES-BUNDLE.md#workspace-checkpoints), [cleanup](KUBERNETES-BUNDLE.md#cleanup)).
 Deleting a volume releases it to its provisioner (reclaim policy Delete); it needs a
 verified checkpoint unless the operator says otherwise, and a live or paused environment's
-volume, a hand-back's or one marked for a recovery set is never deleted.
+volume, a hand-back's or one marked for a recovery set is never deleted. A restore Job writes a
+kept checkpoint into a fresh environment the worker created and holds stopped until it has
+verified the restored tree ([restoring a checkpoint](KUBERNETES-BUNDLE.md#restoring-a-checkpoint)).
 
 A disposable Garage test verified a 128 MiB workspace archive, repeat upload of the
 same immutable identity, fetch, content hashes, modes, symlinks and hardlinks, then

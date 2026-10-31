@@ -908,6 +908,8 @@ kept_bucket = "research-checkpoints"
 endpoint = "http://garage.garage.svc.cluster.local:3900"
 # region = "garage", prefix = "sandbox-science", addressing_style = "path"
 # upload_profile = "checkpoint-upload", verify_profile = "checkpoint-verify"
+# restore_secret = "research-checkpoint-restore"   # restore Jobs only; absent, no restore
+# restore_profile = "checkpoint-restore"
 # keep = 2, deadline_seconds = 7200, hold_seconds = 21600 (longer than the deadline)
 # job_ttl_seconds = 600 (how long Kubernetes keeps a finished Job; 0 to 604800)
 # run_as_user = 10001, run_as_group = 10001
@@ -925,7 +927,8 @@ the gateway, a sandbox or the internet) and adds the store to the pool's egress.
 Secret then also projects `checkpoint-upload.toml` and `checkpoint-kept.toml` (destinations,
 no credential) and `checkpoint-s3-credentials`, `checkpoint-s3-config` (its read-only key);
 `site` generates them from the site file's `[checkpoint]` paths, writes the upload key's
-Secret files and its `kubectl create secret` line for the sandbox namespace, and writes
+Secret files and its `kubectl create secret` line for the sandbox namespace (and the restore
+key's, with `restore_secret`), and writes
 `operator/checkpoint-upload.toml` and `operator/checkpoint-kept.toml`, the buckets as the
 operator's machine reaches them through `kubectl port-forward`. The keys and buckets are in
 [preparation, step 6](KUBERNETES-PREP.md#6-garage-artifacts).
@@ -942,7 +945,9 @@ and the upload bucket's settings are its environment (`SS_CHECKPOINT_PLAN`,
 Pod with the Job's labels would get the same egress; the worker never sets
 `app.kubernetes.io` labels on sandboxes.
 
-One command does it all:
+One command does it all. The promotion runs on the operator's machine with the keeper key,
+so that machine's checkout needs the S3 SDK: `uv sync --extra s3` (or `--all-extras`); with
+keeper files given, the command refuses before anything runs when boto3 is missing.
 
 ```sh
 sandbox-science-kubernetes checkpoint --config private.toml --environment ENV          # prints the steps
@@ -975,8 +980,81 @@ holds that right: a later checkpoint controller would need its own service accou
 admission policy that pins what its Jobs may contain.
 
 Not built yet: checkpoints of running sandboxes without suspending them (Longhorn clones,
-`clone_pvc`), of volumes whose environment the worker no longer binds (a static claim on a
-Released PV), and the restore Job.
+`clone_pvc`), and of volumes whose environment the worker no longer binds (a static claim on
+a Released PV).
+
+### Restoring a checkpoint
+
+A kept checkpoint is restored into a **fresh environment** of its project: one the worker
+creates for the restore, never one that already holds research. The target is either a new
+environment ID (a drill, or a copy to look at), or the ID of an environment the worker
+records as deleted, such as a session's environment lost with its volume: the worker creates
+it again under the same ID with a new sandbox, and the session finds its files back on its
+next use. A restore never writes into an existing environment, so it cannot overwrite work.
+
+1. **Plan** (the worker, `restore-plan`): the checkpoint must be `kept`; the worker reads
+   the kept copy back in full against its recorded receipt (a damaged copy is refused before
+   anything is created) and computes its **tree digest**: one line per path in byte order
+   with its kind, mode, size, content SHA-256 or link text and hardlink group, which does
+   not depend on the order a disk lists a directory in. It creates the target through its
+   own API with the checkpoint's project, profile and policy revision (the project's current
+   policy replaces it on first use, as for any environment), records the restore, which
+   **holds the target's sandbox stopped with no expiry**, suspends it, confirms OpenShell
+   says `Stopped`, and checks that nothing has run in it: no prefix identity, no package
+   revision, no execution since the plan began. If that check fails nothing was written
+   yet, so the restore is cancelled and the hold goes with it.
+2. **The Job** (`restore-job`, created by the operator): `sandbox-science-worker checkpoint
+   restore-write` on the trusted worker image, hardened as the checkpoint Job (no
+   service-account token, no service links, no `fsGroup`, read-only root, no capabilities,
+   `RuntimeDefault` seccomp, the sandbox user 10001, pinned to the volume's node), with the
+   checkpoint Jobs' labels so the same NetworkPolicy gives it DNS and the store only. It
+   mounts the target's claim **read-write** and the **restore key**'s Secret, read-only on
+   the kept bucket; it never sees the upload bucket. It refuses a volume that is neither
+   OpenShell's seed of a fresh workspace (the `.openshell-initialized` sentinel and no prefix
+   identity) nor its own restore's earlier attempt (a `.sandbox-science-restore` marker with
+   the restore's ID, written first). It then empties the volume, writes the checkpoint from
+   the kept bucket, checking every chunk's hash and length before a byte of it is written,
+   checks the archive's counts and the prefix identity, walks the volume back from disk to
+   compute its tree digest, removes the marker and prints `restore_tree=<sha256>`.
+3. **Verify** (the worker, `restore-verify`): the Job's digest must equal the one the worker
+   computed from the kept copy, the target must still be the stopped, fresh sandbox it
+   created, and only then is the restore `restored` and the sandbox free to start. Its first
+   executor adopts the restored prefix identity as the environment's baseline. A mismatch
+   records the restore `failed`, which keeps the target held.
+
+```sh
+sandbox-science-kubernetes restore --config private.toml --checkpoint MANIFEST --target ENV   # prints the steps
+sandbox-science-kubernetes restore --config private.toml --checkpoint MANIFEST --target ENV --apply
+sandbox-science-kubernetes restore --config private.toml --resume RESTORE_ID --apply     # after a failure
+sandbox-science-kubernetes restore --config private.toml --discard RESTORE_ID --apply    # give the target up
+```
+
+With `--apply` it runs the plan (`kubectl exec` into the pool's worker container, under the
+worker's read-only key), finds the target's claim and node (refusing while a Pod mounts it),
+creates the Job, journals it, waits, reads the digest from its log and has the worker verify
+it; then it prints the Job's log and deletes the Job. A failure deletes the Job, journals the
+failure and leaves the target held: `--resume` runs another Job for the same restore (it
+empties the volume again, since the marker says it is that restore's), and `--discard` has
+the worker delete the target environment (after a typed confirmation) and end the restore.
+Nothing in a restore needs the keeper key, so the operator's machine needs no S3 SDK for it;
+the bundle needs `restore_secret` and the Secret it names (`site` generates it from the
+site file's `restore_credentials` and `restore_config`; create it for good or only for a
+restore). The operator's rights are those of a checkpoint
+([preparation, step 13](KUBERNETES-PREP.md#13-workspace-checkpoints-and-cleanup-qualification)).
+
+What a restore does not do: it brings back the workspace's files, installed packages and
+prefix, not kernels' memory, the control store's runs and documents, or a deleted session
+(the control store must still name the environment for a session to use it); timestamps,
+ownership beyond the sandbox user, extended attributes and special files are outside the
+checkpoint format. Run it while no session uses the target's ID: a session that creates the
+environment first wins, and the plan then refuses. The target's volume must be large enough
+for the checkpoint (the gateway's default workspace size); a full volume fails the Job by
+name. While a restore is unfinished, a checkpoint of its target is refused and cleanup
+refuses its volume (its environment is live).
+
+The worker journals each restore in `checkpoints.sqlite3`'s append-only operations journal
+with who ran each step: `intent` (with the checkpoint and the target), `job` (its name, claim
+and node), `retry`, `verified` or `failed`, and `cancelled`.
 
 As seen on the first cluster (2026-10-28):
 
@@ -1027,7 +1105,14 @@ AWS_PROFILE=checkpoint-keeper sandbox-science-kubernetes cleanup --config privat
   --volume PV --checkpoint MANIFEST --keeper-kept operator/checkpoint-kept.toml --apply
 AWS_PROFILE=checkpoint-keeper sandbox-science-kubernetes cleanup --config private.toml \
   --retire-checkpoints ENV --keeper-kept operator/checkpoint-kept.toml --apply
+AWS_PROFILE=checkpoint-keeper sandbox-science-kubernetes cleanup --config private.toml \
+  --expire-uploads 168 --keeper-upload operator/checkpoint-upload.toml --apply
 ```
+
+The keeper key's steps (deleting checkpoint objects, expiring uploads) run on the
+operator's machine, whose checkout needs the S3 SDK (`uv sync --extra s3`); with
+`--keeper-kept` or `--keeper-upload` given, cleanup refuses before anything runs when boto3
+is missing.
 
 Refusals, checked against a fresh survey and again by the worker:
 
@@ -1070,6 +1155,35 @@ listed again next time, and the next run finishes it even if the manifest is alr
 never changed or removed (`checkpoints.sqlite3`, beside the worker's state). Run cleanup
 when no checkpoint is being promoted: a chunk two checkpoints share is kept only if the other
 manifest is already in the kept bucket.
+
+### Upload expiry
+
+The upload bucket keeps what checkpoint Jobs wrote until something removes it: uploads that
+were promoted (the kept bucket has its own copy) and uploads that never were (a Job whose
+checkpoint failed, a run interrupted before promotion). `--expire-uploads HOURS` (1 to 8760;
+a week, 168, is a sensible value) removes the upload bucket's objects older than that which
+no unpromoted checkpoint needs, and never touches the kept bucket:
+
+1. the worker journals the intent (`upload-expiry`, with the age) and refuses while any
+   checkpoint hold is active, since a capture under way may reuse an old chunk without
+   rewriting it; it prints what it protects: the manifest and recorded chunks of every
+   checkpoint it verified in the upload bucket and that is not yet kept;
+2. the keeper key (`sandbox-science-worker checkpoint expire-objects`, locally) lists the
+   upload bucket with each object's time and deletes the older unprotected ones, manifests
+   first, so no manifest is left naming a removed chunk; an object whose time the store
+   does not give is kept; it prints how many it removed and kept;
+3. the worker journals it done, or failed if the deletion failed.
+
+A bucket holding only leftovers, with no checkpoint under way, is emptied of everything
+older than the age except the uploads of checkpoints verified and never promoted: those stay
+until they are promoted (the `promote` and `verify --stage kept` commands that `checkpoint`
+prints when it stops before promotion; `inventory` lists them as `verified`). A checkpoint planned after the intent that reuses a chunk the expiry then
+removes fails its verification and is taken again; nothing kept is affected. The keeper key
+needs write (which in Garage includes delete) on the upload bucket for this
+([preparation, step 6](KUBERNETES-PREP.md#6-garage-artifacts)). This replaces a Garage
+lifecycle rule, which Garage supports (`Expiration` only) but which needs an owner key and
+expires by age alone: a chunk a recent checkpoint reused keeps its old time and would go
+before that checkpoint is promoted.
 
 ## Two instances on one cluster
 

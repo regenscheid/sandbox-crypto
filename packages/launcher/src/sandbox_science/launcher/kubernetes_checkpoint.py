@@ -7,7 +7,9 @@ worker image, ``sandbox-science-worker checkpoint capture-upload``, the workspac
 mounted read-only, the upload key's Secret and nothing else, no service-account token,
 the sandbox user's uid, pinned to the volume's node. Its plan (the binding to write into
 the archive, from the worker) and its destination arrive as environment variables. The
-operator creates it (``kubectl create``); no service in the bundle can.
+operator creates it (``kubectl create``); no service in the bundle can. A restore Job is
+the same Pod with ``restore-write``, the fresh target's claim read-write and the restore
+key, read-only on the kept bucket, instead of the upload key.
 """
 
 from __future__ import annotations
@@ -15,18 +17,21 @@ from __future__ import annotations
 import json
 import re
 
-from sandbox_science.contracts.workspace_checkpoint import CheckpointPlan
+from sandbox_science.contracts.workspace_checkpoint import CheckpointPlan, RestorePlan
 
 from .kubernetes_config import CHECKPOINT_UPLOAD_KEYS, BundleConfig, Checkpoint, Egress
 
 CHECKPOINT = "checkpoint"
+RESTORE = "restore"
 WORKSPACE = "/mnt/workspace"
 CREDENTIALS = "/etc/sandbox-science/checkpoint-s3"
 PLAN_VARIABLE = "SS_CHECKPOINT_PLAN"
 STORAGE_VARIABLE = "SS_CHECKPOINT_STORAGE"
+RESTORE_VARIABLE = "SS_RESTORE_PLAN"
 """The variables ``checkpoint_jobs_cli`` reads (a test compares them; the launcher never
 imports the worker)."""
 CHECKPOINT_LABEL = "sandbox-science.io/checkpoint-id"
+RESTORE_LABEL = "sandbox-science.io/restore-id"
 _DNS_NAME = re.compile(r"^[a-z0-9](?:[-a-z0-9.]{0,251}[a-z0-9])?$")
 
 
@@ -139,35 +144,96 @@ def checkpoint_job(
     """One checkpoint Job for ``plan``, reading the claim ``claim`` (in the sandbox
     namespace) on ``node``, the volume's node; without a node the scheduler follows the
     volume's own affinity. ``generateName`` makes ``kubectl apply`` refuse it."""
+    checkpoint, _ = _checkpoint(config)
+    if plan.capture != "suspended_pvc":
+        raise ValueError("a checkpoint Job reads a suspended sandbox's volume")
+    return _job(
+        config,
+        name=CHECKPOINT,
+        labels={CHECKPOINT_LABEL: plan.checkpoint_id},
+        variables={
+            PLAN_VARIABLE: plan.model_dump_json(),
+            STORAGE_VARIABLE: json.dumps(
+                storage_settings(checkpoint, checkpoint.upload_bucket), sort_keys=True
+            ),
+        },
+        command=["capture-upload"],
+        claim=claim,
+        read_only=True,
+        secret=("upload-key", checkpoint.upload_secret),
+        profile=checkpoint.upload_profile,
+        node=node,
+        architecture=plan.source.architecture,
+    )
+
+
+def restore_job(
+    config: BundleConfig, plan: RestorePlan, claim: str, node: str | None
+) -> dict[str, object]:
+    """One restore Job for ``plan``: the fresh target's claim mounted read-write, the
+    restore key's Secret (read-only on the kept bucket), everything else as a checkpoint
+    Job's, including its labels, so the same NetworkPolicy gives it DNS and the store only."""
+    checkpoint, _ = _checkpoint(config)
+    if checkpoint.restore_secret is None:
+        raise ValueError("the bundle's [checkpoint] names no restore_secret")
+    return _job(
+        config,
+        name=RESTORE,
+        labels={RESTORE_LABEL: plan.restore_id},
+        variables={
+            RESTORE_VARIABLE: plan.model_dump_json(),
+            STORAGE_VARIABLE: json.dumps(
+                storage_settings(checkpoint, checkpoint.kept_bucket), sort_keys=True
+            ),
+        },
+        command=["restore-write"],
+        claim=claim,
+        read_only=False,
+        secret=("restore-key", checkpoint.restore_secret),
+        profile=checkpoint.restore_profile,
+        node=node,
+        architecture=plan.target.architecture,
+    )
+
+
+def _job(
+    config: BundleConfig,
+    *,
+    name: str,
+    labels: dict[str, str],
+    variables: dict[str, str],
+    command: list[str],
+    claim: str,
+    read_only: bool,
+    secret: tuple[str, str],
+    profile: str,
+    node: str | None,
+    architecture: str,
+) -> dict[str, object]:
     checkpoint, namespace = _checkpoint(config)
     if _DNS_NAME.fullmatch(claim) is None or len(claim) > 253:
         raise ValueError("the workspace claim is not a Kubernetes object name")
     if node is not None and (_DNS_NAME.fullmatch(node) is None or len(node) > 253):
         raise ValueError("the node is not a Kubernetes node name")
-    if plan.capture != "suspended_pvc":
-        raise ValueError("a checkpoint Job reads a suspended sandbox's volume")
-    labels = {**_labels(config), CHECKPOINT_LABEL: plan.checkpoint_id}
+    labels = {**_labels(config), **labels}
     environment = {
-        PLAN_VARIABLE: plan.model_dump_json(),
-        STORAGE_VARIABLE: json.dumps(
-            storage_settings(checkpoint, checkpoint.upload_bucket), sort_keys=True
-        ),
+        **variables,
         "AWS_SHARED_CREDENTIALS_FILE": f"{CREDENTIALS}/credentials",
         "AWS_CONFIG_FILE": f"{CREDENTIALS}/config",
-        "AWS_PROFILE": checkpoint.upload_profile,
+        "AWS_PROFILE": profile,
         "AWS_EC2_METADATA_DISABLED": "true",
         "HOME": "/tmp",  # noqa: S108 - the Pod's bounded scratch volume
         "TMPDIR": "/tmp",  # noqa: S108 - the Pod's bounded scratch volume
         "SS_LOG_FORMAT": "json",
     }
     container: dict[str, object] = {
-        "name": CHECKPOINT,
+        "name": name,
         "image": config.images.worker,
         "imagePullPolicy": "IfNotPresent",
         "command": [
             "sandbox-science-worker",
             "checkpoint",
-            "capture-upload",
+            *command,
             "--workspace",
             WORKSPACE,
             "--timeout",
@@ -186,8 +252,8 @@ def checkpoint_job(
         "resources": _resources(checkpoint),
         "terminationMessagePolicy": "File",
         "volumeMounts": [
-            {"name": "workspace", "mountPath": WORKSPACE, "readOnly": True},
-            {"name": "upload-key", "mountPath": CREDENTIALS, "readOnly": True},
+            {"name": "workspace", "mountPath": WORKSPACE, "readOnly": read_only},
+            {"name": secret[0], "mountPath": CREDENTIALS, "readOnly": True},
             {"name": "scratch", "mountPath": "/tmp"},  # noqa: S108 - bounded Pod volume
         ],
     }
@@ -204,14 +270,17 @@ def checkpoint_job(
             "runAsGroup": checkpoint.run_as_group,
             "seccompProfile": {"type": "RuntimeDefault"},
         },
-        "nodeSelector": {"kubernetes.io/arch": plan.source.architecture},
+        "nodeSelector": {"kubernetes.io/arch": architecture},
         "containers": [container],
         "volumes": [
-            {"name": "workspace", "persistentVolumeClaim": {"claimName": claim, "readOnly": True}},
             {
-                "name": "upload-key",
+                "name": "workspace",
+                "persistentVolumeClaim": {"claimName": claim, "readOnly": read_only},
+            },
+            {
+                "name": secret[0],
                 "secret": {
-                    "secretName": checkpoint.upload_secret,
+                    "secretName": secret[1],
                     "defaultMode": 0o444,
                     "items": [{"key": key, "path": key} for key in CHECKPOINT_UPLOAD_KEYS],
                 },
@@ -237,7 +306,7 @@ def checkpoint_job(
         "apiVersion": "batch/v1",
         "kind": "Job",
         "metadata": {
-            "generateName": f"{config.name}-{CHECKPOINT}-",
+            "generateName": f"{config.name}-{name}-",
             "namespace": namespace,
             "labels": labels,
         },
@@ -245,7 +314,7 @@ def checkpoint_job(
             "backoffLimit": 0,
             "activeDeadlineSeconds": checkpoint.deadline_seconds,
             # A finished Job's Pod still names the claim, which keeps a deleted claim
-            # Terminating; ``checkpoint`` deletes its Job once verified, this the rest.
+            # Terminating; ``checkpoint`` and ``restore`` delete their Job, this the rest.
             "ttlSecondsAfterFinished": checkpoint.job_ttl_seconds,
             "template": {"metadata": {"labels": labels}, "spec": spec},
         },

@@ -631,12 +631,25 @@ def plan(site: Site, bundle: BundleConfig) -> dict[str, bytes]:
     if (site.checkpoint is None) != (bundle.checkpoint is None):
         raise BundleError("give [checkpoint] exactly when the bundle has [checkpoint]")
     upload: dict[str, bytes] = {}
+    restore: dict[str, bytes] = {}
     if site.checkpoint is not None and bundle.checkpoint is not None:
         content["worker"].update(checkpoint_worker_files(site, bundle))
         upload = {
             "credentials": _read(site.checkpoint.upload_credentials, private=True),
             "config": _read(site.checkpoint.upload_config, private=True),
         }
+        given = (site.checkpoint.restore_credentials, site.checkpoint.restore_config)
+        wanted = bundle.checkpoint.restore_secret is not None
+        if any((path is not None) != wanted for path in given):
+            raise BundleError(
+                "give checkpoint.restore_credentials and restore_config exactly when the"
+                " bundle's [checkpoint] names restore_secret"
+            )
+        if given[0] is not None and given[1] is not None:
+            restore = {
+                "credentials": _read(given[0], private=True),
+                "config": _read(given[1], private=True),
+            }
     if site.extra_files.keys() - content.keys():
         raise BundleError("extra_files names a service the bundle does not run")
     files: dict[str, bytes] = {}
@@ -657,6 +670,7 @@ def plan(site: Site, bundle: BundleConfig) -> dict[str, bytes]:
     files[GATEWAY_VALUES] = _gateway_values(site, bundle).encode()
     files["bootstrap/policy.yaml"] = _read(site.worker_policy)
     files.update({f"secrets/checkpoint-upload/{key}": value for key, value in upload.items()})
+    files.update({f"secrets/checkpoint-restore/{key}": value for key, value in restore.items()})
     files.update(keeper_files(site, bundle))
     files["secrets.sh"] = _script(bundle, content).encode()
     files["README.md"] = _readme(site, bundle).encode()
@@ -803,17 +817,24 @@ def _script(bundle: BundleConfig, content: dict[str, dict[str, bytes]]) -> str:
             )
         )
     if bundle.checkpoint is not None and bundle.sandboxes is not None:
-        # The upload key lives beside the volumes, where only checkpoint Jobs mount it.
-        namespace, name = bundle.sandboxes.namespace, bundle.checkpoint.upload_secret
-        command = ["kubectl", "-n", namespace, "create", "secret", "generic", name]
-        files = [
-            f"--from-file={key}=secrets/checkpoint-upload/{key}" for key in CHECKPOINT_UPLOAD_KEYS
-        ]
-        lines.append(
-            " \\\n  ".join(
-                [" ".join(shlex.quote(part) for part in command), *map(shlex.quote, files)]
+        # The upload key lives beside the volumes, where only checkpoint Jobs mount it; the
+        # restore key, if any, where only restore Jobs do.
+        namespace = bundle.sandboxes.namespace
+        for name, directory in (
+            (bundle.checkpoint.upload_secret, "checkpoint-upload"),
+            (bundle.checkpoint.restore_secret, "checkpoint-restore"),
+        ):
+            if name is None:
+                continue
+            command = ["kubectl", "-n", namespace, "create", "secret", "generic", name]
+            files = [
+                f"--from-file={key}=secrets/{directory}/{key}" for key in CHECKPOINT_UPLOAD_KEYS
+            ]
+            lines.append(
+                " \\\n  ".join(
+                    [" ".join(shlex.quote(part) for part in command), *map(shlex.quote, files)]
+                )
             )
-        )
     return "\n".join(lines) + "\n"
 
 
@@ -855,6 +876,13 @@ def _readme(site: Site, bundle: BundleConfig) -> str:
         "- `operator/checkpoint-*.toml`: the buckets as the operator's machine reaches them\n"
         "  (through `kubectl port-forward`), for `checkpoint --apply` and `cleanup --apply`\n"
         "  with the keeper key's SDK profile (docs/KUBERNETES-BUNDLE.md#workspace-checkpoints).\n"
+        + (
+            "- `secrets/checkpoint-restore/`: the restore Jobs' key (read-only on the kept\n"
+            f"  bucket), for the Secret `{bundle.checkpoint.restore_secret}` in the sandbox\n"
+            "  namespace (`secrets.sh` makes it; delete it between restores if you prefer).\n"
+            if bundle.checkpoint.restore_secret is not None
+            else ""
+        )
         if bundle.checkpoint is not None
         else ""
     )

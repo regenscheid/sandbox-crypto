@@ -1095,7 +1095,14 @@ the worker's part in its container, beside the serving worker, with
 | `inventory [--keep N]` | worker container | JSON: every environment the worker has a record of (deleted ones too), hand-backs, checkpoints, holds |
 | `forget --manifest H --by WHO [--volume-gone [--retire ENV]] [--done]` | worker container | Journals a checkpoint's deletion; refuses the last kept checkpoint of a workspace unless its volume is gone. With `--retire`, one of the latest checkpoints of that environment, refused unless the worker records it deleted with no hand-back or hold; the journal's detail names it |
 | `record-volume --phase intent\|done\|failed --volume PV [--sandbox S] --by WHO` | worker container | Journals a volume's deletion; the intent is refused for a live or paused environment, a hand-back, a hold, or without a kept checkpoint unless `--without-checkpoint` |
-| `release-hold --checkpoint-id ID --reason R --by WHO` | worker container | Lifts a hold early |
+| `release-hold --checkpoint-id ID --reason R --by WHO` | worker container | Lifts a hold early, recording who and why |
+| `restore-plan --manifest H --target ENV --storage F --by WHO` (or `--resume ID`) | worker container | Reads the kept checkpoint back in full and computes its tree digest, creates the target environment (new, or recorded deleted) through its own API, records the restore, which holds the sandbox stopped with no expiry, suspends it and checks nothing has run in it; prints the restore plan. `--resume` prints an unfinished restore's plan again |
+| `restore-write --workspace DIR` | the restore Job | Empties the target volume (OpenShell's seed, or this restore's earlier attempt) and writes the checkpoint from the kept bucket (`SS_RESTORE_PLAN`, `SS_CHECKPOINT_STORAGE`), checking every chunk; prints `restore_tree=<sha256>`, the digest of the volume as written |
+| `restore-verify --restore-id ID --tree H --by WHO` | worker container | Compares the Job's digest with its own and that the target is still the fresh, stopped sandbox; records `restored` (the sandbox may start) or `failed` (it stays held) |
+| `restore-record --restore-id ID --phase job\|failed --detail JSON --by WHO` | worker container | Journals a restore Job, or a failure outside the worker's checks (the target stays held) |
+| `restore-discard --restore-id ID --reason R --by WHO` | worker container | Deletes an unfinished restore's target environment through its own API and ends the restore |
+| `upload-expiry --phase intent\|done\|failed --older-than-hours N --by WHO` | worker container | Journals an upload-bucket expiry; the intent is refused while a checkpoint hold is active and prints what unpromoted checkpoints still need there |
+| `expire-objects --storage F --older-than-hours N --protected-file F` | operator's machine | Removes the upload bucket's objects older than N hours that the list does not name, manifests first |
 
 The records are `checkpoints.sqlite3` in the worker's state directory (WAL, synchronous
 commits): **holds** (one active per environment; the serving worker refuses to start a
@@ -1104,7 +1111,17 @@ held sandbox until the hold is released or expires, 6 hours by default), **check
 needs a verified upload of the same manifest first), each checkpoint's chunk list, the
 last **start** of each environment's sandbox (recorded in the transaction that checks for a
 hold; any records error refuses the start) and the **deletion journal**, whose
-rows triggers make append-only. Verification checks the manifest's hash, each chunk's hash
+rows triggers make append-only. Holds record who placed and who released them (`placed_by`,
+`released_by`; an expired hold has none), checkpoints who verified and who kept them.
+**Restores** (`planned`, `failed`, `restored`, `cancelled`) keep their plan, the tree digest
+the worker computed and who placed and finished them; a `planned` or `failed` restore makes
+the serving worker refuse to start its target sandbox, with no expiry, and refuses a
+checkpoint plan of it. The **operations journal**, append-only like the deletion journal,
+records each restore step and upload expiry with who ran it. The tree digest is one line
+per path in byte order (kind, mode, size, content SHA-256 or link text, hardlink group),
+computed from an archive by the decoder and from a volume by a walk that never follows a
+link, so a restored tree compares with its checkpoint whatever order the disk lists it in
+(`checkpoint_tree.py`). Verification checks the manifest's hash, each chunk's hash
 and length before decoding it, the whole archive through the decoder (paths, links,
 bounds, the binding), the receipt's counts, the planned capture mode, and that the capture
 finished within the hold (and before an early release) (five minutes' clock skew allowed); the binding must still be the
