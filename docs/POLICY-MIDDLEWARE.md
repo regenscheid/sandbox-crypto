@@ -205,7 +205,7 @@ For local development, a registration with `allow_insecure_transport = true` sen
 
 ## Running it
 
-The middleware is deployed with the [worker](WORKER.md) and the [package cache](PACKAGE-CACHE.md) as one [unit](UNIT.md): these settings go in the unit config's `[middleware]` section, or in a file it names, and `sandbox-science-unit serve` runs the middleware. `sandbox-science-policy-middleware serve --settings middleware.toml` keeps working, as what the unit runs; starting it as a unit of its own is deprecated for one release.
+The middleware is deployed with the [worker](WORKER.md) and the [package cache](PACKAGE-CACHE.md) as one [unit](UNIT.md), `sandbox-science-unit`, which carries this configuration: the settings below go in the unit config's `[middleware]` section (written inline, or `settings_file` names a file that holds them), and `sandbox-science-unit serve` runs the middleware, checks the settings with `check` and reports its health with `status`. `sandbox-science-policy-middleware serve --settings middleware.toml` keeps working, as what the unit runs; starting it as a unit of its own is deprecated for one release.
 
 Settings are a TOML file (relative paths resolve against it):
 
