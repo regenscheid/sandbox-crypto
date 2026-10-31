@@ -1901,7 +1901,7 @@ class Environments:
                 "try again later",
             )
         started = self.clock.now()
-        await self._begin_start(info.environment_id)
+        await self._begin_start(info.environment_id, info.sandbox)
         try:
             return await self._run_start(info, started, pinned=pinned)
         finally:
@@ -1910,12 +1910,15 @@ class Environments:
                     end_start, self.state_dir, info.environment_id, self.clock.now()
                 )
 
-    async def _begin_start(self, environment_id: str) -> None:
-        """Refuse to start a sandbox a checkpoint holds stopped, and record the start in the
-        same transaction, so a plan placed meanwhile sees it (checkpoint_records). A records
-        error refuses the start too: the check never fails open."""
+    async def _begin_start(self, environment_id: str, sandbox: str) -> None:
+        """Refuse to start a sandbox a checkpoint holds stopped, or one a restore is writing
+        into, and record the start in the same transaction, so a plan placed meanwhile sees
+        it (checkpoint_records). A records error refuses the start too: the check never
+        fails open."""
         try:
-            await asyncio.to_thread(begin_start, self.state_dir, environment_id, self.clock.now())
+            await asyncio.to_thread(
+                begin_start, self.state_dir, environment_id, self.clock.now(), sandbox
+            )
         except HeldError as held:
             raise WorkerError(
                 ErrorKind.UNAVAILABLE,

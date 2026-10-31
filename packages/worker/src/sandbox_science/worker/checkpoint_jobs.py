@@ -67,6 +67,17 @@ def local_suspend(settings: Settings, environment_id: str, timeout: float = 300)
     token. The TLS peer must present exactly the worker's certificate from the settings:
     only that process holds its key."""
     path = f"/v1/environments/{quote(environment_id, safe='')}/suspend"
+    status, body = local_request(settings, "POST", path, b"", timeout)
+    if status != 200:
+        raise RecordError(f"the worker did not suspend the environment ({status})")
+    return SuspendResult.model_validate_json(body).suspended
+
+
+def local_request(
+    settings: Settings, method: str, path: str, body: bytes, timeout: float
+) -> tuple[int, bytes]:
+    """One request to the worker serving beside this command, with the pool's own token,
+    only once its TLS peer presented exactly the worker's certificate; the status and body."""
     connection: http.client.HTTPConnection
     if settings.tls is None:
         connection = http.client.HTTPConnection("127.0.0.1", settings.listen_port, timeout=timeout)
@@ -90,19 +101,17 @@ def local_suspend(settings: Settings, environment_id: str, timeout: float = 300)
             if not isinstance(socket, ssl.SSLSocket) or socket.getpeercert(True) != expected:
                 raise RecordError("the local worker presented another certificate")
         connection.request(
-            "POST",
+            method,
             path,
-            body=b"",
+            body=body,
             headers={
                 "Authorization": f"Bearer {settings.token()}",
                 PROTOCOL_HEADER: str(PROTOCOL_VERSION),
+                **({"Content-Type": "application/json"} if body else {}),
             },
         )
         response = connection.getresponse()
-        body = response.read(MAX_RESPONSE)
-    if response.status != 200:
-        raise RecordError(f"the worker did not suspend the environment ({response.status})")
-    return SuspendResult.model_validate_json(body).suspended
+        return response.status, response.read(MAX_RESPONSE)
 
 
 def source_digest(plan: CheckpointPlan) -> str:
@@ -169,7 +178,7 @@ def plan(
             if retained_source(settings, environment_id, architecture) != source:
                 raise RecordError("the environment's binding changed while it was planned")
         except BaseException as error:
-            records.release(result.checkpoint_id, clock.now(), f"plan failed: {error}")
+            records.release(result.checkpoint_id, clock.now(), f"plan failed: {error}", actor)
             raise
     finally:
         records.close()
@@ -212,7 +221,7 @@ def verify(
             ) or (hold.released_at is not None and receipt.created_at > hold.released_at):
                 raise RecordError("the checkpoint was not captured while its hold held")
             records.verified(hold.plan, manifest, receipt, clock.now(), actor, names)
-            records.release(checkpoint_id, clock.now(), "verified")
+            records.release(checkpoint_id, clock.now(), "verified", actor)
         else:
             try:
                 recorded = records.receipt(manifest)
@@ -287,6 +296,7 @@ def inventory(
             environments=tuple(environments),
             checkpoints=tuple(records.checkpoints()),
             holds=tuple(records.holds(now)),
+            restores=tuple(records.restores()),
         )
     finally:
         records.close()

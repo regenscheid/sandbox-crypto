@@ -213,6 +213,52 @@ class InventoryHold(StrictContract):
     expires_at: AwareDatetime
 
 
+RestoreId = Annotated[str, Field(pattern=r"^rst-[0-9a-f]{24}$")]
+"""A restore attempt's ID: what its plan, record, Job and journal rows share."""
+RESTORE_PLAN_FORMAT = "sandbox-workspace-restore-plan-v1"
+RestoreState = Literal["planned", "failed", "restored", "cancelled"]
+"""``planned`` from the plan on and ``failed`` once a Job or verification failed: both keep
+the target's sandbox stopped, with no expiry, since its workspace may hold a partial tree;
+``restored`` once the worker verified the restored tree; ``cancelled`` when the plan failed
+before anything was written, or the operator discarded the target environment."""
+
+
+class RestorePlan(StrictContract):
+    """What the worker hands the operator for a restore Job: the kept checkpoint to write
+    (its manifest and the binding recorded in its archive) and the fresh environment it goes
+    into, created by the worker for this restore and held stopped. The worker compares the
+    tree the Job reports with the one it computed from the kept copy, never trusting the
+    Job's word for which checkpoint it wrote."""
+
+    format: Literal["sandbox-workspace-restore-plan-v1"] = RESTORE_PLAN_FORMAT
+    restore_id: RestoreId
+    checkpoint_id: CheckpointId
+    manifest_sha256: Sha256
+    source: CheckpointSource
+    """The binding recorded in the checkpoint's archive, which the decoder checks."""
+    target: CheckpointSource
+    """The fresh environment's binding: no prefix identity or package revision yet."""
+    planned_at: AwareDatetime
+
+    @model_validator(mode="after")
+    def _distinct(self) -> "RestorePlan":
+        if self.target.sandbox == self.source.sandbox:
+            raise ValueError("a restore never writes into the checkpoint's own sandbox")
+        if self.target.architecture != self.source.architecture:
+            raise ValueError("a restore keeps the checkpoint's architecture")
+        if self.target.project_id != self.source.project_id:
+            raise ValueError("a restore stays in the checkpoint's project")
+        return self
+
+
+class InventoryRestore(StrictContract):
+    restore_id: RestoreId
+    environment_id: Identifier
+    sandbox: Annotated[str, Field(min_length=1, max_length=253)]
+    manifest_sha256: Sha256
+    state: RestoreState
+
+
 class CheckpointInventory(StrictContract):
     """The worker's records an operator's cleanup decides with (docs/WORKER.md): what
     environments exist and in what state, which hand-backs still reference a volume, which
@@ -224,3 +270,5 @@ class CheckpointInventory(StrictContract):
     environments: Annotated[tuple[InventoryEnvironment, ...], Field(max_length=MAX_INVENTORY_ROWS)]
     checkpoints: Annotated[tuple[InventoryCheckpoint, ...], Field(max_length=MAX_INVENTORY_ROWS)]
     holds: Annotated[tuple[InventoryHold, ...], Field(max_length=MAX_INVENTORY_ROWS)]
+    restores: Annotated[tuple[InventoryRestore, ...], Field(max_length=MAX_INVENTORY_ROWS)] = ()
+    """Restores into fresh environments; an unfinished one keeps its target stopped."""

@@ -14,6 +14,8 @@ from __future__ import annotations
 import io
 import tempfile
 from collections.abc import Iterator
+from datetime import timedelta
+from pathlib import Path
 from typing import BinaryIO, Literal
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock
@@ -22,9 +24,12 @@ from sandbox_science.contracts.workspace_checkpoint import CheckpointReceipt, Ch
 from .checkpoint_s3 import Objects, Storage
 from .checkpoint_stream import StreamSummary, decode
 from .checkpoint_transport import CHUNK_BYTES, MAX_MANIFEST_BYTES, Chunk, chunks, header
+from .checkpoint_tree import TreeIndex
 
 MAX_KEPT_MANIFESTS = 4096
 """Manifests a deletion reads to find which chunks other checkpoints still use."""
+MAX_EXPIRED_OBJECTS = 1_000_000
+"""Objects of one kind an upload expiry lists; more is an error, never a partial pass."""
 
 
 class RemoteArchive:
@@ -67,12 +72,40 @@ def verify(
     source: CheckpointSource,
     *,
     chunk_names: list[str] | None = None,
+    tree: TreeIndex | None = None,
     timeout: float = 3600,
     clock: Clock = SYSTEM_CLOCK,
 ) -> CheckpointReceipt:
     """The receipt of the checkpoint whose manifest has SHA-256 ``identity``, once every
     byte read back matches it and ``source``; any difference raises ValueError. With
-    ``chunk_names``, the manifest's chunks are appended there in order."""
+    ``chunk_names``, the manifest's chunks are appended there in order; with ``tree``, the
+    archive's tree is described there."""
+    return extract(
+        settings,
+        identity,
+        source,
+        None,
+        chunk_names=chunk_names,
+        tree=tree,
+        timeout=timeout,
+        clock=clock,
+    )
+
+
+def extract(
+    settings: Storage,
+    identity: str,
+    source: CheckpointSource,
+    target: Path | None,
+    *,
+    chunk_names: list[str] | None = None,
+    tree: TreeIndex | None = None,
+    timeout: float = 3600,
+    clock: Clock = SYSTEM_CLOCK,
+) -> CheckpointReceipt:
+    """``verify``, writing the tree into the empty directory ``target`` as it is read (a
+    restore Job); a chunk is checked against its hash before the decoder sees a byte of it,
+    so a failure leaves a partial tree of verified bytes only."""
     with (
         Objects(settings, timeout=timeout, clock=clock) as objects,
         tempfile.TemporaryFile() as raw,
@@ -84,7 +117,7 @@ def verify(
             raise ValueError("checkpoint receipt does not state how it was captured")
         entries = _noted(chunks(raw, receipt), chunk_names)
         archive = RemoteArchive(objects, entries)
-        summary = decode(archive, source, check=objects.check)
+        summary = decode(archive, source, target, check=objects.check, tree=tree)
         if next(entries, None) is not None:
             raise ValueError("checkpoint manifest lists chunks past the archive's end")
         if summary != StreamSummary(
@@ -192,3 +225,29 @@ def delete(
                 removed += 1
         objects.delete("manifests", identity)
         return removed
+
+
+def expire(
+    settings: Storage,
+    older_than: timedelta,
+    protected: set[str],
+    *,
+    timeout: float = 3600,
+    clock: Clock = SYSTEM_CLOCK,
+) -> tuple[int, int]:
+    """Remove the upload bucket's objects older than ``older_than`` that ``protected`` does
+    not name (the worker's list of what unpromoted checkpoints still need there): manifests
+    first, so no manifest is left naming a removed chunk. An object whose time the store
+    does not give is kept. Returns how many were removed and how many kept."""
+    removed = kept = 0
+    with Objects(settings, timeout=timeout, clock=clock) as objects:
+        cutoff = clock.now() - older_than
+        kinds: tuple[Literal["chunks", "manifests"], ...] = ("manifests", "chunks")
+        for kind in kinds:
+            for name, written in objects.listing(kind, MAX_EXPIRED_OBJECTS):
+                if name in protected or written is None or written >= cutoff:
+                    kept += 1
+                    continue
+                objects.delete(kind, name)
+                removed += 1
+    return removed, kept

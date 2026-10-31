@@ -11,6 +11,7 @@ import stat
 import tomllib
 from collections.abc import Callable, Generator
 from contextlib import closing, contextmanager, suppress
+from datetime import datetime
 from pathlib import Path
 from types import TracebackType
 from typing import (
@@ -352,8 +353,14 @@ class Objects:
     def names(self, kind: Literal["chunks", "manifests"], limit: int) -> list[str]:
         """The digests stored under ``kind``, at most ``limit``; more is an error, not a
         silently shorter list, since a deletion decides by what is absent from it."""
+        return [name for name, _ in self.listing(kind, limit)]
+
+    def listing(
+        self, kind: Literal["chunks", "manifests"], limit: int
+    ) -> list[tuple[str, datetime | None]]:
+        """``names``, each with the time the store last wrote it, if it said."""
         prefix = self.settings.key(kind, "0" * 64)[:-64]
-        found: list[str] = []
+        found: list[tuple[str, datetime | None]] = []
         token: str | None = None
         while True:
             self.check()
@@ -382,7 +389,8 @@ class Objects:
                     or re.fullmatch(r"[0-9a-f]{64}", name) is None
                 ):
                     raise ValueError("checkpoint object listing names a foreign key")
-                found.append(name)
+                written = cast(dict[str, object], item).get("LastModified")
+                found.append((name, written if isinstance(written, datetime) else None))
                 if len(found) > limit:
                     raise ValueError("checkpoint object listing exceeds its bound")
             following = page.get("NextContinuationToken")

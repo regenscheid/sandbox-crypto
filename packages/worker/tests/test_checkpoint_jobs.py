@@ -72,12 +72,15 @@ class Garage:
         self.before_copy: Any = None
         self.unavailable: set[str] = set()
         self.fail_delete: set[str] = set()
+        self.written: dict[tuple[str, str], datetime] = {}
+        self.now = datetime.now(UTC)
 
     def put_object(self, **arguments: Any) -> None:
         data = arguments["Body"].read()
         assert len(data) == arguments["ContentLength"]
         self.calls.append(("put", arguments["Bucket"], arguments["Key"]))
         self.objects[(arguments["Bucket"], arguments["Key"])] = data
+        self.written[(arguments["Bucket"], arguments["Key"])] = self.now
 
     def get_object(self, **arguments: Any) -> dict[str, Any]:
         location = (arguments["Bucket"], arguments["Key"])
@@ -98,6 +101,7 @@ class Garage:
         if arguments["CopySourceIfMatch"] != etag(data):
             raise FakeSdkError("PreconditionFailed")
         self.objects[(arguments["Bucket"], arguments["Key"])] = data
+        self.written[(arguments["Bucket"], arguments["Key"])] = self.now
 
     def delete_object(self, **arguments: Any) -> None:
         self.calls.append(("delete", arguments["Bucket"], arguments["Key"]))
@@ -116,7 +120,10 @@ class Garage:
         page = keys[start : start + 2]
         more = start + 2 < len(keys)
         return {
-            "Contents": [{"Key": key} for key in page],
+            "Contents": [
+                {"Key": key, "LastModified": self.written.get((arguments["Bucket"], key), self.now)}
+                for key in page
+            ],
             "IsTruncated": more,
             **({"NextContinuationToken": str(start + 2)} if more else {}),
         }
@@ -313,7 +320,9 @@ def test_a_running_environment_is_suspended_first_and_one_in_use_is_left_running
     planned(retained, suspend=suspend)
     assert asked == ["e"]
     records = CheckpointRecords(retained.state_dir)
-    records.release(records.holds(datetime.now(UTC))[0].checkpoint_id, datetime.now(UTC), "test")
+    records.release(
+        records.holds(datetime.now(UTC))[0].checkpoint_id, datetime.now(UTC), "test", "op"
+    )
     records.close()
     stopped[:] = ["Running"]
     with pytest.raises(RecordError, match="in use"):
@@ -688,7 +697,7 @@ def test_a_capture_after_an_early_release_is_not_recorded(tmp_path, garage, reta
     """Finding 4: once the hold was lifted the sandbox may have run again."""
     plan = planned(retained)
     records = CheckpointRecords(retained.state_dir)
-    records.release(plan.checkpoint_id, datetime.now(UTC), "operator")
+    records.release(plan.checkpoint_id, datetime.now(UTC), "operator", "op")
     records.close()
     later = FakeClock(datetime.now(UTC) + timedelta(minutes=1))
     identity, _, _ = capture_upload(
@@ -712,7 +721,7 @@ def test_a_start_and_a_plan_cannot_interleave(retained, stopped):
     with pytest.raises(HeldError):
         begin_start(retained.state_dir, "e", datetime.now(UTC))
     records = CheckpointRecords(retained.state_dir)
-    records.release(plan.checkpoint_id, datetime.now(UTC), "test")
+    records.release(plan.checkpoint_id, datetime.now(UTC), "test", "op")
     records.close()
     begin_start(retained.state_dir, "e", now - timedelta(hours=1))  # never ended
     assert planned(retained, clock=FakeClock(now)).source.environment_id == "e"

@@ -73,9 +73,11 @@ def _connect(path: Path) -> sqlite3.Connection:
 
 
 def retained_source(
-    settings: Settings, environment: str, architecture: Architecture
+    settings: Settings, environment: str, architecture: Architecture, *, fresh: bool = False
 ) -> CheckpointSource:
-    """Read original allocation records without schema upgrades or hold mutations."""
+    """Read original allocation records without schema upgrades or hold mutations. With
+    ``fresh``, the environment must have no prefix baseline and no package revision yet:
+    nothing has run in it, as a restore's target needs."""
     with closing(_connect(settings.state_dir / "environments.sqlite3")) as db:
         row = db.execute(
             "SELECT substr(document,1,65537) FROM environments WHERE environment_id=?",
@@ -123,7 +125,9 @@ def retained_source(
             "SELECT substr(fingerprint,1,128) FROM environment_revisions WHERE environment_id=?",
             (environment,),
         ).fetchone()
-    if required and (prefix is None or revision is None):
+    if fresh and (prefix is not None or revision is not None):
+        raise ValueError("the restore target has run something: it is not a fresh environment")
+    if not fresh and required and (prefix is None or revision is None):
         raise ValueError("checkpoint required prefix has no known retained baseline")
     return CheckpointSource(
         project_id=info.project_id,

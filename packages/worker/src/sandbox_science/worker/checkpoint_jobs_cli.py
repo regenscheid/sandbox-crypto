@@ -14,6 +14,14 @@ checkpoint forget --settings S --manifest H --by WHO [--volume-gone [--retire EN
     [--done --detail JSON]
 checkpoint record-volume --settings S --phase intent|done|failed --volume PV [--sandbox S] --by WHO
 checkpoint release-hold --settings S --checkpoint-id ID --by WHO --reason TEXT
+checkpoint restore-plan --settings S --manifest H --target ENV --storage F --by WHO
+checkpoint restore-plan --settings S --resume ID --by WHO
+checkpoint restore-write --workspace /mnt/workspace                       # the restore Job
+checkpoint restore-verify --settings S --restore-id ID --tree H --by WHO
+checkpoint restore-record --settings S --restore-id ID --phase job|failed --by WHO
+checkpoint restore-discard --settings S --restore-id ID --reason TEXT --by WHO
+checkpoint upload-expiry --settings S --phase intent|done|failed --older-than-hours N --by WHO
+checkpoint expire-objects --storage F --older-than-hours N --protected-file F  # operator
 ```
 
 Each prints one line of ``key=value`` pairs, or JSON for ``plan`` and ``inventory``; errors
@@ -29,22 +37,24 @@ import os
 import re
 import sqlite3
 import sys
+from datetime import timedelta
 from pathlib import Path
 from typing import cast
 
 from sandbox_science.contracts import SYSTEM_CLOCK
 from sandbox_science.contracts.jsonio import strict_loads
-from sandbox_science.contracts.workspace_checkpoint import CheckpointPlan
+from sandbox_science.contracts.workspace_checkpoint import CheckpointPlan, RestorePlan
 
-from . import checkpoint_jobs, checkpoint_remote
+from . import checkpoint_jobs, checkpoint_remote, checkpoint_restore
 from .checkpoint_capture import capture_upload
 from .checkpoint_records import DEFAULT_KEEP, CheckpointRecords
 from .checkpoint_s3 import load, parse
 from .checkpoint_transport import MAX_CHUNKS
 from .errors import WorkerError
-from .settings import SettingsError, load_settings
+from .settings import Settings, SettingsError, load_settings
 
 PLAN_VARIABLE = "SS_CHECKPOINT_PLAN"
+RESTORE_VARIABLE = "SS_RESTORE_PLAN"
 STORAGE_VARIABLE = "SS_CHECKPOINT_STORAGE"
 TERMINATION_LOG = Path("/dev/termination-log")
 MAX_DETAIL = 8192
@@ -103,6 +113,36 @@ def parser(command: argparse.ArgumentParser) -> None:
     release = actions.add_parser("release-hold", help="lift a checkpoint's hold")
     release.add_argument("--checkpoint-id", required=True)
     release.add_argument("--reason", required=True)
+    restore = actions.add_parser(
+        "restore-plan", help="create a fresh environment and hold it for a restore Job"
+    )
+    restore.add_argument("--manifest")
+    restore.add_argument("--target", metavar="ENVIRONMENT")
+    restore.add_argument("--storage", type=Path, help="the kept bucket's settings")
+    restore.add_argument("--resume", metavar="RESTORE_ID", help="an unfinished restore's plan")
+    restore.add_argument("--timeout", type=float, default=3600)
+    write = actions.add_parser("restore-write", help="(the restore Job) write a checkpoint")
+    write.add_argument("--workspace", type=Path, required=True)
+    write.add_argument("--timeout", type=float, default=3600)
+    restored = actions.add_parser("restore-verify", help="check a restored tree; let it start")
+    restored.add_argument("--restore-id", required=True)
+    restored.add_argument("--tree", required=True)
+    noted = actions.add_parser("restore-record", help="journal a restore Job or its failure")
+    noted.add_argument("--restore-id", required=True)
+    noted.add_argument("--phase", choices=("job", "failed"), required=True)
+    noted.add_argument("--detail", default="{}")
+    dropped = actions.add_parser("restore-discard", help="delete an unfinished restore's target")
+    dropped.add_argument("--restore-id", required=True)
+    dropped.add_argument("--reason", required=True)
+    expiry = actions.add_parser("upload-expiry", help="journal an upload-bucket expiry")
+    expiry.add_argument("--phase", choices=("intent", "done", "failed"), required=True)
+    expiry.add_argument("--older-than-hours", type=int, choices=range(1, 8761), required=True)
+    expiry.add_argument("--detail", default="{}")
+    expire = actions.add_parser("expire-objects", help="remove old unpromoted uploads")
+    expire.add_argument("--storage", type=Path, required=True)
+    expire.add_argument("--older-than-hours", type=int, choices=range(1, 8761), required=True)
+    expire.add_argument("--protected-file", type=Path, required=True)
+    expire.add_argument("--timeout", type=float, default=3600)
     for name in (
         "plan",
         "verify",
@@ -111,9 +151,25 @@ def parser(command: argparse.ArgumentParser) -> None:
         "record-volume",
         "release-hold",
         "chunks",
+        "restore-plan",
+        "restore-verify",
+        "restore-record",
+        "restore-discard",
+        "upload-expiry",
     ):
         actions.choices[name].add_argument("--settings", type=Path, required=True)
-    for name in ("plan", "verify", "forget", "record-volume", "release-hold"):
+    for name in (
+        "plan",
+        "verify",
+        "forget",
+        "record-volume",
+        "release-hold",
+        "restore-plan",
+        "restore-verify",
+        "restore-record",
+        "restore-discard",
+        "upload-expiry",
+    ):
         actions.choices[name].add_argument(
             "--by", dest="actor", required=True, help="who runs this, as the journal names them"
         )
@@ -170,12 +226,102 @@ def _capture(args: argparse.Namespace) -> int:
     return 0
 
 
+def _restore_write(args: argparse.Namespace) -> int:
+    planned = RestorePlan.model_validate_json(_variable(RESTORE_VARIABLE))
+    storage = parse(_variable(STORAGE_VARIABLE))
+    tree, receipt = checkpoint_restore.write(args.workspace, planned, storage, timeout=args.timeout)
+    print(
+        f"restore_tree={tree} restore_id={planned.restore_id}"
+        f" manifest={planned.manifest_sha256} members={receipt.members}"
+        f" content_bytes={receipt.content_bytes}",
+        flush=True,
+    )
+    with contextlib.suppress(OSError):
+        TERMINATION_LOG.write_text(f"restore_tree={tree}\n")
+    return 0
+
+
+def _protected(path: Path) -> set[str]:
+    raw = path.read_bytes()
+    if len(raw) > 65 * 4 * MAX_CHUNKS:
+        raise ValueError("the protected list exceeds its bound")
+    names = raw.decode().split()
+    if any(re.fullmatch(r"[0-9a-f]{64}", name) is None for name in names):
+        raise ValueError("the protected list holds something other than SHA-256 digests")
+    return set(names)
+
+
+def _restore(args: argparse.Namespace, settings: Settings) -> int:
+    command: str = args.checkpoint_command
+    if command == "restore-plan":
+        if args.resume is not None:
+            if args.manifest or args.target or args.storage:
+                raise ValueError("--resume takes no --manifest, --target or --storage")
+            planned = checkpoint_restore.resume(settings, args.resume, args.actor)
+        else:
+            if not (args.manifest and args.target and args.storage):
+                raise ValueError("a restore names --manifest, --target and --storage")
+            planned = checkpoint_restore.plan(
+                settings,
+                args.manifest,
+                args.target,
+                load(args.storage),
+                args.actor,
+                timeout=args.timeout,
+            )
+        print(planned.model_dump_json())
+    elif command == "restore-verify":
+        planned = checkpoint_restore.verify(settings, args.restore_id, args.tree, args.actor)
+        print(
+            f"restored={args.restore_id} environment={planned.target.environment_id}"
+            f" manifest={planned.manifest_sha256}"
+        )
+    elif command == "restore-record":
+        checkpoint_restore.record(
+            settings, args.restore_id, args.phase, args.actor, _detail(args.detail)
+        )
+        print(f"journaled restore={args.restore_id} phase={args.phase}")
+    elif command == "restore-discard":
+        checkpoint_restore.discard(settings, args.restore_id, args.actor, args.reason)
+        print(f"discarded={args.restore_id}")
+    else:
+        detail = {**_detail(args.detail), "older_than_hours": args.older_than_hours}
+        records = CheckpointRecords(settings.state_dir)
+        try:
+            now = SYSTEM_CLOCK.now()
+            if args.phase == "intent" and (held := records.holds(now)):
+                raise ValueError(
+                    f"checkpoint {held[0].checkpoint_id} is under way; expire uploads when none is"
+                )
+            records.operation(now, args.actor, "upload-expiry", "upload", args.phase, detail)
+            if args.phase == "intent":
+                for name in records.protected_uploads():
+                    print(name)
+        finally:
+            records.close()
+    return 0
+
+
 def run(args: argparse.Namespace) -> int:
     """Run one ``checkpoint`` subcommand."""
     command: str = args.checkpoint_command
     try:
         if command == "capture-upload":
             return _capture(args)
+        if command == "restore-write":
+            return _restore_write(args)
+        if command == "expire-objects":
+            protected = _protected(args.protected_file)
+            removed, kept = checkpoint_remote.expire(
+                load(args.storage),
+                timedelta(hours=args.older_than_hours),
+                protected,
+                timeout=args.timeout,
+            )
+            # Kept counts the young objects and those of checkpoints verified but not yet
+            # promoted, which stay until they are promoted or their record is forgotten.
+            print(f"expired={removed} kept={kept} protected_names={len(protected)}")
+            return 0
         if command == "promote":
             receipt, copied = checkpoint_remote.promote(
                 load(args.source), load(args.target), args.manifest, timeout=args.timeout
@@ -195,6 +341,8 @@ def run(args: argparse.Namespace) -> int:
             print(f"deleted={args.manifest} chunks_removed={removed}")
             return 0
         settings = load_settings(args.settings)
+        if command.startswith("restore-") or command == "upload-expiry":
+            return _restore(args, settings)
         if command == "plan":
             planned = checkpoint_jobs.plan(
                 settings,
@@ -246,7 +394,7 @@ def run(args: argparse.Namespace) -> int:
                 for name in records.chunk_names(args.manifest):
                     print(name)
             elif command == "release-hold":
-                released = records.release(args.checkpoint_id, now, f"{args.actor}: {args.reason}")
+                released = records.release(args.checkpoint_id, now, args.reason, args.actor)
                 print(f"released={args.checkpoint_id if released else 'none'}")
             elif args.done:
                 records.deleted(args.manifest, now, args.actor, _detail(args.detail))
