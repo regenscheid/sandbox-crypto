@@ -105,6 +105,8 @@ from sandbox_science.contracts.classifications import (
     ListingReported,
     ReportedListing,
     ReportedListings,
+    ToolClasses,
+    ToolClassQuery,
 )
 from sandbox_science.contracts.environment_claims import EnvironmentClaim, EnvironmentClaimResult
 from sandbox_science.contracts.mcp_traffic import WorkerMcpTraffic
@@ -577,6 +579,13 @@ class WorkerClient:
         """Report a listing the agent runtime's direct client read, for the worker to compare
         with the project's pin and record a drift (D98): any client, for its own projects."""
         return await self._call("POST", "/v1/mcp-listings", ListingReported, report)
+
+    async def mcp_tool_classes(self, query: ToolClassQuery) -> ToolClasses:
+        """The class the project's classification in force gives each listed tool, by name
+        and the digest the host computed (DA-7): any client, for its own projects."""
+        return await self._call(
+            "POST", "/v1/mcp-tool-classes", ToolClasses, query, max_bytes=1024 * 1024
+        )
 
     async def mcp_listings(self, project_id: str) -> list[ReportedListing]:
         """The latest listing the agent runtime's client reported of each of the project's

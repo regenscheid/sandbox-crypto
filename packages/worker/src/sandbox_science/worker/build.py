@@ -244,6 +244,7 @@ def _build(settings: Settings, token: str, clock: Clock, lock: StateLock) -> Wor
             partial(project_policy, environments),
             store.classification_receipts,
             manager.clock,
+            listings=store.listing_reports,
             ceiling=environments.ceiling,
             floor=environments.floor,
         )

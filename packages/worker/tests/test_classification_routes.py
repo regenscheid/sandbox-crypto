@@ -108,7 +108,12 @@ async def api(aiohttp_client: ClientFactory, tmp_path: Path) -> AsyncIterator[Ap
     events = EventStore(root / "events.db", timeout=5)
     permissions = Permissions(root / "events.db")
     desk = ClassificationDesk(
-        store, permissions, policies.get, worker.classification_receipts, FakeClock(NOW)
+        store,
+        permissions,
+        policies.get,
+        worker.classification_receipts,
+        FakeClock(NOW),
+        listings=worker.listing_reports,
     )
     environments = cast(
         Environments,
@@ -695,3 +700,138 @@ async def test_the_worker_client_reads_the_reported_listings(api: Api) -> None:
     assert listing.server == SERVER
     assert not listing.drifted
     assert {tool.action for tool in listing.tools} >= {"allow", "escalate"}
+
+
+def test_reported_listings_survive_a_restart(tmp_path: Path) -> None:
+    """The latest listing of each project's server is kept in the worker's store, with the
+    time it was taken and whether it drifted, so the services view survives a restart."""
+    from sandbox_science.contracts.classifications import ListingReport
+
+    root = tmp_path / "middleware"
+    store = PolicyStore(root)
+    policies: dict[str, LoadedPolicy] = {"p1": store.add_policy(EXAMPLE.read_bytes())}
+    events = EventStore(root / "events.db", timeout=5)
+    permissions = Permissions(root / "events.db")
+
+    def desk(worker: Store, now: datetime) -> ClassificationDesk:
+        return ClassificationDesk(
+            store, permissions, policies.get, worker.classification_receipts, FakeClock(now),
+            listings=worker.listing_reports,
+        )  # fmt: skip
+
+    try:
+        worker = Store(tmp_path / "worker.sqlite3")
+        try:
+            before = desk(worker, NOW)
+            before.report_listing(ListingReport.model_validate(reported()), "harness")
+            drifted = ListingReport.model_validate(reported({"brand_new": "1" * 64}))
+            before.report_listing(drifted, "harness")
+        finally:
+            worker.close()
+        worker = Store(tmp_path / "worker.sqlite3")
+        try:
+            (kept,) = desk(worker, datetime(2026, 10, 26, tzinfo=UTC)).listings("p1")
+        finally:
+            worker.close()
+    finally:
+        permissions.close()
+        events.close()
+    assert (kept.server, kept.listing, kept.drifted) == (SERVER, drifted.listing, True)
+    assert kept.reported_at == NOW
+    assert (kept.session, kept.run) == ("s1", drifted.run)
+    assert "brand_new" in {tool.name for tool in kept.tools}
+
+
+def test_kept_listings_are_one_per_server_and_bounded(tmp_path: Path) -> None:
+    from sandbox_science.contracts.classifications import ListingReport
+    from sandbox_science.worker.listing_reports import ListingReports
+
+    worker = Store(tmp_path / "worker.sqlite3")
+    try:
+        kept = ListingReports(worker.listing_reports.db, keep=2)
+
+        def put(project: str, server: str, minute: int, drifted: bool = False) -> None:
+            body = {**reported(project=project, server=server), "session": None, "run": None}
+            at = datetime(2026, 10, 25, 12, minute, tzinfo=UTC)
+            kept.put(ListingReport.model_validate(body), drifted, at)
+
+        put("p1", SERVER, 0)
+        put("p1", SERVER, 1, drifted=True)  # the newest replaces the last
+        assert [(k.report.server, k.drifted) for k in kept.of("p1")] == [(SERVER, True)]
+        put("p1", "other-server", 2)
+        put("p2", SERVER, 3)  # past the bound: the least recently reported is forgotten
+        assert [k.report.server for k in kept.of("p1")] == ["other-server"]
+        assert [k.report.server for k in kept.of("p2")] == [SERVER]
+        with pytest.raises(ValueError, match="aware"):
+            kept.put(ListingReport.model_validate(reported()), False, datetime(2026, 10, 25))
+    finally:
+        worker.close()
+
+
+# Classes on direct listings the host trusts (DA-7).
+
+
+async def tool_classes(api: Api, body: Mapping[str, object], who: str = "harness") -> Any:
+    response = await api.client.post(
+        "/v1/mcp-tool-classes", data=json.dumps(body), headers=headers(who)
+    )
+    return response.status, await response.json()
+
+
+def pins_of(*names: str, digest: str | None = None) -> list[dict[str, str]]:
+    pins = catalog(SERVER).pins
+    return [{"name": name, "digest": digest or pins.get(name, "0" * 64)} for name in names]
+
+
+async def test_a_tool_has_a_class_only_with_its_pin_in_the_classification_in_force(
+    api: Api,
+) -> None:
+    body = {
+        "project_id": "p1",
+        "server": SERVER,
+        "tools": [
+            *pins_of(SCRAPE, FEEDBACK, "firecrawl-mcp_firecrawl_map", "portal_toggle_servers"),
+            *pins_of("brand_new"),
+            *pins_of("firecrawl-mcp_firecrawl_parse", digest="1" * 64),
+        ],
+    }
+    status, found = await tool_classes(api, body)
+    assert status == 200, found
+    assert found["classification"] == catalog(SERVER).digest
+    assert {tool["name"]: (tool["state"], tool["effect"], tool["escalates"])
+            for tool in found["tools"]} == {
+        SCRAPE: ("classified", "browse", False),  # an argument can make it browse
+        FEEDBACK: ("classified", "write", True),
+        "firecrawl-mcp_firecrawl_map": ("classified", "read", False),
+        "portal_toggle_servers": ("denied", None, False),
+        "brand_new": ("unclassified", None, False),
+        "firecrawl-mcp_firecrawl_parse": ("changed", None, False),
+    }  # fmt: skip
+    # A project revision in force replaces the catalog's, a tool without a pin has no class.
+    mapped = "firecrawl-mcp_firecrawl_map"
+    text = classification((mapped, "write", catalog(SERVER).pins[mapped]), (SCRAPE, "read", None))
+    from sandbox_science.policy.store import Acceptance
+
+    api.store.accept_classification("p1", SERVER, text.encode(), Acceptance("user", NOW, "test"))
+    status, found = await tool_classes(api, body)
+    assert status == 200, found
+    states = {tool["name"]: (tool["state"], tool["effect"]) for tool in found["tools"]}
+    assert states["firecrawl-mcp_firecrawl_map"] == ("classified", "write")
+    assert states[SCRAPE] == ("unpinned", None)
+    assert states[FEEDBACK] == ("unclassified", None)  # the revision stands for the server
+
+
+@pytest.mark.parametrize(
+    ("body", "who", "status"),
+    [
+        ({"project_id": "p2", "server": SERVER, "tools": []}, "harness", 403),
+        ({"project_id": "p1", "server": "other-server", "tools": []}, "harness", 404),
+        ({"project_id": "p1", "server": SERVER, "tools": pins_of(SCRAPE, SCRAPE)}, "harness", 400),
+        ({"project_id": "p1", "server": SERVER, "tools": [], "extra": 1}, "harness", 400),
+    ],
+)
+async def test_tool_classes_are_a_clients_own_projects_servers_only(
+    api: Api, body: dict[str, Any], who: str, status: int
+) -> None:
+    found = await tool_classes(api, body, who)
+    assert found[0] == status, found

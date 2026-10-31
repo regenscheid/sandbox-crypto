@@ -271,7 +271,7 @@ async def test_an_allowed_call_answers_with_the_servers_text(
 ) -> None:
     text, record = await connectors.call("search", {"query": "lattices"})
     assert text == "search: ok"
-    assert record == {"connector": "papers"}  # the runtime's client classifies nothing
+    assert record == {"connector": "papers"}  # no class source: no class
     assert gated.fake.tool_calls() == ["search"]
     image, _ = await connectors.call("image", {})
     assert image.startswith("a figure")
@@ -913,7 +913,7 @@ class Listed(Connectors):
     """Connectors whose servers list what a test says, with no client in between."""
 
     def __init__(self, listings: dict[str, list[dict[str, Any]]], **options: Any) -> None:
-        super().__init__(ListingClient(classifies=False), list(listings), **options)
+        super().__init__(ListingClient(), list(listings), **options)
         self.listings = listings
 
     async def _list(self, server: str) -> list[dict[str, Any]]:
@@ -1294,10 +1294,8 @@ async def test_a_denied_call_stops_waiting_and_says_not_to_call_again(
 
 
 class ListingClient:
-    """A client whose servers list two tools, each with a class in its ``_meta``."""
-
-    def __init__(self, *, classifies: bool) -> None:
-        self.classifies = classifies
+    """A client whose servers list two tools, each with a class in its ``_meta``, as a
+    runtime or a server could write one."""
 
     async def request(
         self,
@@ -1319,18 +1317,12 @@ class ListingClient:
         }
 
 
-@pytest.mark.parametrize("classifies", [True, False])
-async def test_a_connector_calls_reach_follows_a_classifying_clients_class(
-    classifies: bool,
-) -> None:
-    """D96: only a classifying client's word on a tool's class is taken; a read stays in
-    the session. The runtime's client does not classify (D98)."""
-    connectors = Connectors(ListingClient(classifies=classifies), ["papers"], session="s-1")
+async def test_a_listings_own_word_on_a_class_is_never_taken() -> None:
+    """D96, DA-7: a listed tool's class comes from the trusted side only; what the listing's
+    ``_meta`` says is not believed (``test_connector_classes.py`` has the host's join)."""
+    connectors = Connectors(ListingClient(), ["papers"], session="s-1")
     await connectors.load()
     _, found = await connectors.call("find", {})
     _, posted = await connectors.call("post", {})
-    if classifies:
-        assert (found["effect_class"], found["reach"]) == ("read", "session")
-    else:
-        assert "effect_class" not in found  # a server's own listing is not believed
-    assert "effect_class" not in posted  # not a class
+    assert "effect_class" not in found
+    assert "effect_class" not in posted

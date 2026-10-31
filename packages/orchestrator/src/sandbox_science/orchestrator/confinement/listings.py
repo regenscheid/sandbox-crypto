@@ -10,22 +10,42 @@ digest and hint, and the listing's digest) over ``report_mcp_listing``
 or for the canaries' client the canaries' project) and forwards the report to the worker
 (``WorkerListings``), which compares it with the project's pin and records a drift as the
 middleware would. The runtime reports; the trusted side decides drift.
+
+The host also takes each listed tool's class from the trusted side, never from the listing
+(DA-7): ``WorkerToolClasses`` asks the worker, by each tool's name and the digest the host
+computed of what it listed, for the class the project's classification in force gives it.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import asyncio
+import logging
+from collections.abc import Mapping, Sequence
+from typing import Final
+
+from pydantic import ValidationError
 
 from sandbox_science.contracts import ErrorKind
-from sandbox_science.contracts.classifications import ListingReport, ReportedTool
+from sandbox_science.contracts.classifications import (
+    MAX_CLASSED_TOOLS,
+    ListingReport,
+    ReportedTool,
+    ToolClassQuery,
+    ToolPin,
+)
+from sandbox_science.orchestrator.connectors import TrustedClass
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 from sandbox_science.policy.mcp_wire import ListedTool
 
 from .transport import Capability, Channel, TransportError
 from .wire import ListingReportReply, ListingReportRequest, payload, typed
 
+_log = logging.getLogger(__name__)
+
 REPORT_SECONDS = 30.0
 """How long the runtime waits for the worker's word on one listing."""
+CLASS_SECONDS: Final = 10.0
+"""How long the host waits for the worker's classes of one server's listed tools."""
 
 
 class ControlListingReports:
@@ -102,3 +122,34 @@ async def report(
     if value.server not in servers:
         raise TransportError("denied", "the server is not one this caller lists")
     return await sink.report(value, project, session, run)
+
+
+class WorkerToolClasses:
+    """The host's ``ToolClassSource`` on the direct path: the worker's classes of a
+    project's listed tools, by name and digest (``POST /v1/mcp-tool-classes``). A worker
+    that refuses or does not answer gives no class, which the fence treats as outward."""
+
+    def __init__(self, worker: WorkerClient, project: str, *, seconds: float = CLASS_SECONDS):
+        self._worker, self._project, self._seconds = worker, project, seconds
+
+    async def classes(self, server: str, tools: Mapping[str, str]) -> Mapping[str, TrustedClass]:
+        pins = [ToolPin(name=name, digest=digest) for name, digest in tools.items()]
+        found: dict[str, TrustedClass] = {}
+        for start in range(0, len(pins), MAX_CLASSED_TOOLS):
+            asked = pins[start : start + MAX_CLASSED_TOOLS]
+            try:
+                async with asyncio.timeout(self._seconds):
+                    answer = await self._worker.mcp_tool_classes(
+                        ToolClassQuery(project_id=self._project, server=server, tools=tuple(asked))
+                    )
+            except (WorkerAPIError, TimeoutError, ValidationError) as exc:
+                _log.warning("the classes of %s's listed tools are not known: %s", server, exc)
+                return {}
+            if answer.project_id != self._project or answer.server != server:
+                _log.warning("the worker answered the classes of another server than %s", server)
+                return {}
+            named = {pin.name for pin in asked}
+            for tool in answer.tools:
+                if tool.name in named and tool.effect is not None and tool.state == "classified":
+                    found[tool.name] = TrustedClass(tool.effect, tool.escalates)
+        return found

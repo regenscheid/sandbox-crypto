@@ -282,8 +282,8 @@ class ListedToolView(Contract):
 class ReportedListing(Contract):
     """The latest complete listing of a server that the agent runtime's client reported
     (``report_mcp_listing``, D98) and the worker took, with each tool as the classification
-    in force sees it now. The worker keeps the latest one per project and server in memory:
-    after it restarts there is none until a run or a canary lists the server again."""
+    in force sees it now. The worker keeps the latest one per project and server in its
+    store, so it survives a restart."""
 
     server: ServerName
     reported_at: AwareDatetime
@@ -300,6 +300,58 @@ class ReportedListings(RootModel[list[ReportedListing]]):
 
     model_config = ConfigDict(frozen=True)
     root: list[ReportedListing] = Field(max_length=MAX_SERVERS)
+
+
+MAX_CLASSED_TOOLS: Final = 1024
+"""Tools one ``POST /v1/mcp-tool-classes`` names."""
+
+
+class ToolPin(Contract):
+    """One listed tool as the host names it: its name and the digest the host computed of
+    what it listed (``mcp_wire.tool_digest``)."""
+
+    name: ToolName
+    digest: Sha256
+
+
+class ToolClassQuery(Contract):
+    """``POST /v1/mcp-tool-classes``: the host's question about a server's listed tools, by
+    name and digest only (DA-7)."""
+
+    project_id: Identifier
+    server: ServerName
+    tools: tuple[ToolPin, ...] = Field(max_length=MAX_CLASSED_TOOLS)
+
+
+ToolClassState = Literal["classified", "unclassified", "unpinned", "changed", "denied"]
+"""Why a tool has its class, or none: the classification in force names it with a pin equal
+to its digest (``classified``); it names it not at all, or only the policy's ``classify``
+does (``unclassified``); it names it without a pin (``unpinned``); its pin is another digest
+(``changed``); the policy denies a call of it by name (``denied``)."""
+
+
+class ToolClass(Contract):
+    """One tool's class as the host may take it: only a ``classified`` tool has one."""
+
+    name: ToolName
+    effect: EffectName | None = None
+    """The class a call by name without arguments resolves to, ``read`` only when no
+    argument can make a call of it more; None unless ``classified``."""
+    escalates: bool = False
+    """Whether the policy escalates a call of it by name: a ``classified`` tool's only."""
+    state: ToolClassState
+
+
+class ToolClasses(Contract):
+    """The worker's answer: each named tool's class under the project's classification in
+    force (its accepted revision, else the checked-in file), in the order asked."""
+
+    project_id: Identifier
+    server: ServerName
+    classification: Text | None = None
+    """The digest of the classification in force; None when the server's policy entry names
+    no classification, and then no tool has a class."""
+    tools: list[ToolClass] = Field(max_length=MAX_CLASSED_TOOLS)
 
 
 MAX_RUNTIME_SERVERS: Final = 64

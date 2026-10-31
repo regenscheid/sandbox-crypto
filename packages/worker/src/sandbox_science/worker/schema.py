@@ -43,6 +43,7 @@ from .classification_receipts import create_schema as _classification_receipts
 from .errors import WorkerError
 from .job_records import create_progress_schema as _job_progress
 from .job_records import create_schema as _job_sandboxes
+from .listing_reports import create_schema as _listing_reports
 
 BASELINE: Final = 1
 """The version ``baseline.sql`` creates."""
@@ -274,6 +275,7 @@ MIGRATIONS: list[Migration] = [
     _job_progress,
     _classification_receipts,
     _child_environments,
+    _listing_reports,
 ]
 """Steps after the baseline: the one at index ``i`` takes a store to ``BASELINE + i + 1``."""
 

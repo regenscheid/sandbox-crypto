@@ -62,6 +62,7 @@ async def registered_routes(tmp_path: Path) -> set[Route]:
             permissions,
             lambda _project: None,
             store.classification_receipts,
+            listings=store.listing_reports,
         )
         app = create_app(
             manager,

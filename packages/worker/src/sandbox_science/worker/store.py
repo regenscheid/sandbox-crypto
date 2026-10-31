@@ -38,6 +38,7 @@ from .classification_receipts import ClassificationReceipts
 from .errors import WorkerError
 from .job_records import JobSandboxRecords
 from .kernel_revisions import KernelStarts
+from .listing_reports import ListingReports
 from .output_observations import ObservationJournal
 from .package_gate import PackageGate, checked
 from .provision_observations import ProvisionObservations
@@ -111,6 +112,7 @@ class Store:
         self.classification_receipts = ClassificationReceipts(self._db)
         self.job_sandboxes = JobSandboxRecords(self._db)
         self.child_environments = ChildRecords(self._db)
+        self.listing_reports = ListingReports(self._db)
         # Each start closes the gate of every environment with an unfinished operation
         # until the provisioner classifies it, and holds one marked for recovery:
         # never infer readiness from the absence of a gate row. A store from before

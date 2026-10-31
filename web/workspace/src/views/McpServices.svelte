@@ -342,7 +342,7 @@
             </ul>
           {:else if current.listing_state === 'none'}<p>
               No listing has been reported yet: the agent runtime's client reports one each time a
-              run or a canary lists the service, and the worker keeps the latest until it restarts.
+              run or a canary lists the service, and the worker keeps the latest.
             </p>
           {:else}<p>
               The reported listings are unavailable: the worker could not be asked. No tool names
