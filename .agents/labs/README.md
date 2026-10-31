@@ -152,6 +152,20 @@ arguments, then reaches the server, which refuses them. The lab also asks once f
 listing, which the middleware reads and rewrites if the portal answers JSON. Receipts carry counts, reason codes, request numbers and tool
 names only, and are exported with a SHA-256 manifest to `/var/tmp/ss-direct-mcp-evidence-*`.
 
+`prepare --variant locked` and `prepare --variant inspection` (2026-10-31) make the same lab with
+another policy and plan, each its own root and teardown. **locked** (A3): `lockdown: {mcp: locked}`
+and a `binding_only` worker client (`manager`); `locked LAB` calls `e-print-mcp_corpus_stats` and a
+nist-csrc read, accepts mid-session a project classification revision that leaves the first out, reads
+`GET /v1/runtime-classifications` as the manager, calls again on the stale fence (the middleware
+refuses, `lockdown.mcp`), compiles the fence with the runtime manager's `compile_egress` through the
+worker and replaces the runtime sandbox as the manager does (the tool is then refused natively), and
+compiles once more against a closed port for the fallback warning. **inspection**: two project patterns
+beside the shipped defaults (a `block` on a nonce and an `alert` only the JSON-decoded reading matches);
+`inspection LAB` fetches three small httpbin `/base64/` pages through web-fetch and judges the
+`mcp-call`, `mcp-answer` and `mcp-answer-alert` records. The agent side runs a generic plan
+(`direct_mcp_agent.py --calls`). Receipts keep labels, finding names, offsets, decisions and facts about
+an excerpt (booleans), never its text or a URL.
+
 ## Workspace answers to network and package requests (A4, D97)
 
 `a4_approvals.py` shows research code's network requests and package requests reaching the
@@ -180,6 +194,12 @@ example.com, example.org and www.example.com escalated and PyPI's files escalate
 keep status and reason codes, request numbers, offered scopes, card shapes and grant rows,
 and are exported with a SHA-256 manifest to `/var/tmp/ss-a4lab-evidence-*`
 ([report](../docs/agent-reports/babbage-a4-approvals-lab-2026-10-27.md)).
+
+`a4_approvals.py extras LAB [--hours H]` (2026-10-31) adds the cases the first run left out: a
+conda-forge package card and a session grant on the channel, git (`ls-remote` passes as a read, a push
+asks and is denied), a project grant with fractional `hours` and what the middleware does after it
+expires, and a revoked host grant. `lockdown LAB` runs research code in a second project, `a4lock`,
+under `lockdown: {network: allowlist}` (its policy is `policy-lock.yaml`, written by `prepare`).
 
 Lab32's `provisioning_revision_packages.py` reads exact recorded package/license
 inventories. Root-owned acceptance on signed `6d4c448`/helper `c85126d4` passed
@@ -609,3 +629,29 @@ claimed. Preserve original failures, identities and owners before any retry.
 ## Context-management lab, round 1: the continuity probes
 
 The kit for the acceptance condition of context management's first build: a scripted research scenario on synthetic sources, a driver that records its seed once with folding off and runs each arm (250,000 and 600,000, and the skeleton-only control) from a copy of it, within per-arm caps and the round's budget, and a scorer for CM-P1 to CM-P9. Round 1 runs OpenAI models alone, through the gateway's `arrcodex` aliases, within USD 500; the Claude arms are deferred. It waits for steps (f2b) and (f3). Its runbook, with the models, each arm's configuration, the expected cost and the teardown, is [cm-lab-round-1.md](cm-lab-round-1.md); the code is in `cm_lab/`, run through `cm_drive.py` and `cm_score.py`.
+
+## Real-model lab of the Phase A/B items (2026-10-31)
+
+`model_lab.py` brings up the whole product with `sandbox-science up` in a marked
+`/var/tmp/ss-modellab-*` root (its own gateway, middleware with `mcp_listings`, cache, worker, control,
+workspace and agent runtime), `[mcp_direct]` on the owner's portal (the provider registered by the
+launcher from the owner's Cloudflare Access file, by path) and the gateway's `sandbox-orchestrator`
+alias for every role, read with the key file's path from the personal config at `prepare`; the key is
+never opened by the fixture. The project's local daily cost limit is set to USD 15. Steps are small,
+since a real model is not scripted: `send LAB SESSION STAGE` (a prompt from `PROMPTS`, once), `wait`,
+`api` (one workspace call as the browser makes it), `sql` (read-only), `delegation` (project settings,
+after `--`), `revision` (a classification revision accepted mid-session), `replace` (runtime deleted,
+`replace-orchestrator`, Resume; a child's long shell call can make the replacement refuse until the old
+control connection drains), `capture` (a sanitized receipt of a session), `fence` (the launcher's fence
+note lines), and `cleanup` or `abort`.
+
+```bash
+.venv/bin/python -I .agents/labs/model_lab.py prepare
+.venv/bin/python -I .agents/labs/model_lab.py up "$LAB"
+.venv/bin/python -I .agents/labs/model_lab.py send "$LAB" review review
+.venv/bin/python -I .agents/labs/model_lab.py wait "$LAB" review
+.venv/bin/python -I .agents/labs/model_lab.py capture "$LAB" review review-final
+.venv/bin/python -I .agents/labs/model_lab.py cleanup "$LAB"
+```
+
+[Report](../docs/agent-reports/babbage-phase-ab-labs-2026-10-31.md).

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# Disposable labs only (recovery_acceptance.py, direct_mcp.py, a4_approvals.py), which generate
+# Disposable labs only (recovery_acceptance.py, direct_mcp.py, a4_approvals.py, model_lab.py), which generate
 # the required environment. MIDDLEWARE_EXTRA, if set, adds lines to the middleware's settings;
 # LAB_POLICY, if set, is the project policy compiled and stored in place of the example's.
 set -euo pipefail
 
 : "${R:?}" "${LAB:?}" "${LAB_UNIT:?}" "${OS_BIN:?}"
-test "${LAB%/*}" = /var/tmp && [[ "${LAB##*/}" = ss-recovery-* || "${LAB##*/}" = ss-direct-mcp-* || "${LAB##*/}" = ss-a4lab-* ]]
+test "${LAB%/*}" = /var/tmp && [[ "${LAB##*/}" = ss-recovery-* || "${LAB##*/}" = ss-direct-mcp-* || "${LAB##*/}" = ss-a4lab-* || "${LAB##*/}" = ss-modellab-* ]]
 test -f "$LAB/identity.json" && test -f "$LAB/env.sh"
 test ! -e "$LAB/gateway.toml" || { echo 'already prepared' >&2; exit 1; }
 # shellcheck source=/dev/null
