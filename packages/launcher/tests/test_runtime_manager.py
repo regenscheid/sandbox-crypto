@@ -13,7 +13,7 @@ import secrets
 import signal
 import subprocess
 import sys
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -39,11 +39,12 @@ from sandbox_science.launcher.runtime_manager.manager import request_deadline
 from sandbox_science.launcher.runtime_manager.records import ManagerRequest, Result, Status
 from sandbox_science.launcher.state import private_dir
 from sandbox_science.policy.store import Acceptance, PolicyStore
-from sandbox_science.testing import eventually
+from sandbox_science.testing import eventually as _eventually
 from sandbox_science.worker.classifications import runtime_classifications
 
 from .conftest import openshell_stand_in
 from .manager_support import (
+    WAIT,
     FakeControl,
     LocalTls,
     live_runtimes,
@@ -52,6 +53,17 @@ from .manager_support import (
 )
 
 pytestmark = pytest.mark.slow
+
+
+async def eventually[T](
+    predicate: Callable[[], Awaitable[T | None]] | Callable[[], T | None],
+    *,
+    timeout: float = WAIT,
+    describe: str = "the condition",
+) -> T:
+    """``sandbox_science.testing.eventually`` with this module's bound for a loaded host."""
+    return await _eventually(predicate, timeout=timeout, describe=describe)
+
 
 RUNTIME = "sandbox_science.orchestrator.confinement.runtime"
 SERVE = (sys.executable, "-m", "sandbox_science.launcher.runtime_manager")
@@ -137,12 +149,12 @@ class Site:
                 return None
             return found if found.nonce == selected.nonce else None
 
-        return (await eventually(answered, timeout=60)).error
+        return (await eventually(answered, timeout=WAIT)).error
 
     async def ticks(self, count: int = 5) -> None:
         """Let the manager look at control ``count`` more times."""
         seen = self.control.health_calls
-        await eventually(lambda: self.control.health_calls >= seen + count, timeout=30)
+        await eventually(lambda: self.control.health_calls >= seen + count, timeout=WAIT)
 
 
 @pytest.fixture
@@ -162,7 +174,7 @@ async def serving(manager: RuntimeManager) -> AsyncIterator[RuntimeManager]:
         yield manager
     finally:
         manager.stopping.set()
-        await asyncio.wait_for(task, 30)
+        await asyncio.wait_for(task, WAIT)
 
 
 async def bootstrapped(site: Site) -> dict[str, Any]:
@@ -591,7 +603,7 @@ async def test_automatic_attempts_stop_after_ten(site: Site) -> None:
     await bootstrapped(site)
     site.set_fake(behaviour="exec-fails")
     async with serving(site.manager()):
-        await eventually(lambda: site.recovery()["blocked"], timeout=60)
+        await eventually(lambda: site.recovery()["blocked"], timeout=WAIT)
         await site.ticks()
     assert site.recovery()["attempts"] == 10
     assert sum(RUNTIME in step for step in site.steps()) == 1 + 10
@@ -635,7 +647,7 @@ async def test_no_replacement_without_confirmed_absence(site: Site, trouble: str
             assert "Unavailable" in site.status()["note"]
             assert site.recovery()["attempts"] == 0
         else:
-            await eventually(lambda: settled(site.recovery()), timeout=60)
+            await eventually(lambda: settled(site.recovery()), timeout=WAIT)
             assert "not confirmed" in site.recovery()["error"]
     assert site.record() == record
     assert site.count("openshell sandbox create") == 1
@@ -714,7 +726,7 @@ def test_a_second_serve_on_one_state_directory_is_refused(tmp_path: Path) -> Non
             [*SERVE, "--settings", str(settings), "serve"],
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=WAIT,
             check=False,
         )
     finally:
@@ -800,12 +812,12 @@ async def test_sigterm_during_a_stop_still_ends_the_exec(site: Site) -> None:
         asking = asyncio.create_task(site.ask(manager, "stop"))
         await eventually(lambda: any("ignores SIGTERM" in step for step in site.steps()))
         manager.stopping.set()  # SIGTERM while the teardown waits for the exec
-        await asyncio.wait_for(task, 30)
+        await asyncio.wait_for(task, WAIT)
         asking.cancel()
         await asyncio.gather(asking, return_exceptions=True)
     finally:
         manager.stopping.set()
-        await asyncio.wait_for(task, 30)
+        await asyncio.wait_for(task, WAIT)
     assert live_runtimes(site.tmp_path) == []
 
 
@@ -849,7 +861,7 @@ async def test_a_starting_manager_names_itself_before_its_first_reconcile(site: 
     await bootstrapped(site)
     site.control.occupied = True  # the first attach waits for the old runtime to drain
     async with serving(site.manager(stop_timeout=60)) as manager:
-        await eventually(lambda: site.status()["instance"] == manager.instance, timeout=10)
+        await eventually(lambda: site.status()["instance"] == manager.instance, timeout=WAIT)
         assert site.status()["runtime"] == "starting"
         site.control.occupied = None
         await eventually(running(site))
@@ -1044,12 +1056,12 @@ def test_serve_stays_up_while_the_gateway_refuses_at_start(tmp_path: Path) -> No
                 return False
             return found["note_kind"] == "gateway_unreachable"
 
-        asyncio.run(eventually(waiting, timeout=60))
+        asyncio.run(eventually(waiting, timeout=WAIT))
         status = json.loads((root / "status.json").read_text())
         assert "Connection refused" in status["note"]
         assert status["note_since"] is not None
         manager.send_signal(signal.SIGTERM)
-        output, _ = manager.communicate(timeout=60)
+        output, _ = manager.communicate(timeout=WAIT)
     finally:
         if manager.poll() is None:
             manager.kill()
@@ -1072,7 +1084,7 @@ def test_an_unusable_state_directory_is_still_fatal(tmp_path: Path) -> None:
             [*SERVE, "--settings", str(settings), "serve"],
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=WAIT,
             check=False,
             env=os.environ | {"PATH": f"{openshell_dir(tmp_path)}:{os.environ['PATH']}"},
         )

@@ -30,6 +30,10 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
+WAIT = 120.0
+"""The longest a test waits for the manager or a fake runtime, in seconds: a bound for a
+broken manager, not a delay, since each wait returns when its condition holds. A host that
+runs the whole suite beside other jobs needs several times the time an idle one does."""
 MANAGER_TOKEN = "test-secret-manager-capability-0123456789abcdef"
 REVISION = "a" * 40
 IMAGE = "registry.example.test/orchestrator@sha256:" + "0" * 64
