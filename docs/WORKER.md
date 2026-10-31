@@ -1097,12 +1097,14 @@ the worker's part in its container, beside the serving worker, with
 | `record-volume --phase intent\|done\|failed --volume PV [--sandbox S] --by WHO` | worker container | Journals a volume's deletion; the intent is refused for a live or paused environment, a hand-back, a hold, or without a kept checkpoint unless `--without-checkpoint` |
 | `release-hold --checkpoint-id ID --reason R --by WHO` | worker container | Lifts a hold early, recording who and why |
 | `restore-plan --manifest H --target ENV --storage F --by WHO` (or `--resume ID`) | worker container | Reads the kept checkpoint back in full and computes its tree digest, creates the target environment (new, or recorded deleted) through its own API, records the restore, which holds the sandbox stopped with no expiry, suspends it and checks nothing has run in it; prints the restore plan. `--resume` prints an unfinished restore's plan again |
-| `restore-write --workspace DIR` | the restore Job | Empties the target volume (OpenShell's seed, or this restore's earlier attempt) and writes the checkpoint from the kept bucket (`SS_RESTORE_PLAN`, `SS_CHECKPOINT_STORAGE`), checking every chunk; prints `restore_tree=<sha256>`, the digest of the volume as written |
-| `restore-verify --restore-id ID --tree H --by WHO` | worker container | Compares the Job's digest with its own and that the target is still the fresh, stopped sandbox; records `restored` (the sandbox may start) or `failed` (it stays held) |
+| `restore-attempt --restore-id ID --by WHO` | worker container | A new Job attempt's nonce; only the latest attempt, with no failure after it, is verified |
+| `restore-write --workspace DIR` | the restore Job | Empties the target volume (OpenShell's seed, or this restore's earlier attempt) and writes the checkpoint from the kept bucket (`SS_RESTORE_PLAN`, `SS_RESTORE_ATTEMPT`, `SS_CHECKPOINT_STORAGE`), checking every chunk and never setting set-user-ID or set-group-ID bits; a volume already holding the plan's tree is only reported. Refuses a volume whose root another uid owns. Prints `restore_tree=<sha256> restore_attempt=<nonce>` |
+| `restore-verify --restore-id ID --attempt N --tree H --by WHO` | worker container | Accepts only the current attempt; compares the Job's digest with its own and that the target is still the fresh, stopped sandbox; records `restored` (the sandbox may start) or `failed` (it stays held, the attempt void) |
 | `restore-record --restore-id ID --phase job\|failed --detail JSON --by WHO` | worker container | Journals a restore Job, or a failure outside the worker's checks (the target stays held) |
-| `restore-discard --restore-id ID --reason R --by WHO` | worker container | Deletes an unfinished restore's target environment through its own API and ends the restore |
-| `upload-expiry --phase intent\|done\|failed --older-than-hours N --by WHO` | worker container | Journals an upload-bucket expiry; the intent is refused while a checkpoint hold is active and prints what unpromoted checkpoints still need there |
-| `expire-objects --storage F --older-than-hours N --protected-file F` | operator's machine | Removes the upload bucket's objects older than N hours that the list does not name, manifests first |
+| `restore-discard --restore-id ID --reason R --by WHO` | worker container | Ends an unfinished restore, deleting its target environment through its own API only if the environment is still bound to the sandbox the restore created |
+| `upload-expiry --phase intent\|done\|failed --older-than-hours N --by WHO` | worker container | Journals an upload-bucket expiry; the intent is refused while a checkpoint hold or another expiry is open and prints what unpromoted checkpoints still need there; until its end (6 hours at most) checkpoint plans and upload verifications are refused; an end needs its open intent |
+| `expire-objects --storage F --older-than-hours N --protected-file F` | operator's machine | Removes the upload bucket's objects older than N hours that the list does not name, manifests first, within 5 hours |
+| `sdk-check` | operator's machine | Whether this program's interpreter has the S3 SDK the keeper steps need |
 
 The records are `checkpoints.sqlite3` in the worker's state directory (WAL, synchronous
 commits): **holds** (one active per environment; the serving worker refuses to start a
@@ -1113,10 +1115,12 @@ last **start** of each environment's sandbox (recorded in the transaction that c
 hold; any records error refuses the start) and the **deletion journal**, whose
 rows triggers make append-only. Holds record who placed and who released them (`placed_by`,
 `released_by`; an expired hold has none), checkpoints who verified and who kept them.
-**Restores** (`planned`, `failed`, `restored`, `cancelled`) keep their plan, the tree digest
-the worker computed and who placed and finished them; a `planned` or `failed` restore makes
-the serving worker refuse to start its target sandbox, with no expiry, and refuses a
-checkpoint plan of it. The **operations journal**, append-only like the deletion journal,
+**Restores** (`planned`, `failed`, `discarding`, `restored`, `cancelled`) keep their plan,
+the tree digest the worker computed, the current Job attempt's nonce and who placed and
+finished them; an unfinished restore makes the serving worker refuse to start its target
+sandbox, with no expiry, and refuses a checkpoint plan of it and the deletion or retirement
+of the checkpoint it reads; a `planned` or `failed` one refuses the target's deletion
+through the API (the discard moves it to `discarding` first). The **operations journal**, append-only like the deletion journal,
 records each restore step and upload expiry with who ran it. The tree digest is one line
 per path in byte order (kind, mode, size, content SHA-256 or link text, hardlink group),
 computed from an archive by the decoder and from a volume by a walk that never follows a

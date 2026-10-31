@@ -7,7 +7,6 @@ cleanup commands, which run ``kubectl`` with the operator's credentials only whe
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import os
 import shlex
@@ -80,6 +79,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     restore_render.add_argument("--plan", type=Path, required=True, help="the worker's plan")
     restore_render.add_argument("--claim", required=True, help="the target's workspace claim")
     restore_render.add_argument("--node", help="the volume's node")
+    restore_render.add_argument("--attempt", required=True, help="the worker's attempt nonce")
     restore_render.add_argument("--output", type=Path, required=True)
     for command in (checkpoint, cleanup, restore):
         command.add_argument("--config", type=Path, required=True)
@@ -121,6 +121,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     restore.add_argument("--discard", metavar="RESTORE_ID", help="delete its target environment")
     restore.add_argument("--reason", default="discarded by the operator")
     restore.add_argument("--yes", action="store_true", help="do not ask for confirmation")
+    restore.add_argument(
+        "--restore-key",
+        type=Path,
+        metavar="DIR",
+        help="the restore key's credentials and config (site's secrets/checkpoint-restore/):"
+        " its Secret exists only while the Job runs",
+    )
+    restore.add_argument(
+        "--standing-secret",
+        action="store_true",
+        help="use the restore Secret already in the sandbox namespace instead",
+    )
     cleanup.add_argument("--yes", action="store_true", help="do not ask for confirmation")
     args = parser.parse_args(argv)
     if args.command in ("checkpoint", "cleanup", "restore"):
@@ -137,7 +149,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     rendered = checkpoint_job(load(args.config), plan, args.claim, args.node)
                 else:
                     restoring = RestorePlan.model_validate_json(args.plan.read_bytes())
-                    rendered = restore_job(load(args.config), restoring, args.claim, args.node)
+                    rendered = restore_job(
+                        load(args.config), restoring, args.claim, args.node, args.attempt
+                    )
             except (ValidationError, ValueError) as exc:
                 print(f"error: {exc}", file=sys.stderr)
                 return 1
@@ -192,22 +206,25 @@ def _confirm(prompt: str) -> bool:
         return False
 
 
-def keeper_sdk_available() -> bool:
-    """Whether this environment has the S3 SDK the keeper key's local steps need (promote,
-    checkpoint deletion, upload expiry): ``uv sync --extra s3`` installs it."""
-    return importlib.util.find_spec("boto3") is not None
-
-
-def _keeper_ready() -> None:
-    if not keeper_sdk_available():
+def _keeper_ready(operator: Operator) -> None:
+    """The keeper key's steps (promote, checkpoint deletion, upload expiry) run
+    ``sandbox-science-worker`` on this machine: ask that very program whether its
+    interpreter has the S3 SDK before anything changes."""
+    try:
+        operator.run([*operator.worker, "checkpoint", "sdk-check"], None)
+    except OperationError as error:
         raise ValueError(
-            "the keeper key's steps run on this machine and need the S3 SDK (boto3): run"
-            " `uv sync --extra s3` in the checkout first; nothing was changed"
-        )
+            "the keeper key's steps run sandbox-science-worker on this machine, which needs"
+            f" the S3 SDK (boto3): run `uv sync --extra s3` in the checkout first ({error});"
+            " nothing was changed"
+        ) from None
 
 
 def _operate(args: argparse.Namespace) -> int:
     config = load(args.config)
+    kubectl = ("kubectl", *(("--context", args.context) if args.context else ()))
+    actor = args.operator or (whoami(run_command, kubectl) if args.apply else "OPERATOR")
+    operator = Operator(config, actor, run=run_command, kubectl=kubectl)
     if args.apply and (
         (args.command == "checkpoint" and args.keeper_upload is not None)
         or (
@@ -218,10 +235,7 @@ def _operate(args: argparse.Namespace) -> int:
             )
         )
     ):
-        _keeper_ready()
-    kubectl = ("kubectl", *(("--context", args.context) if args.context else ()))
-    actor = args.operator or (whoami(run_command, kubectl) if args.apply else "OPERATOR")
-    operator = Operator(config, actor, run=run_command, kubectl=kubectl)
+        _keeper_ready(operator)
     if args.command == "checkpoint":
         upload: Path | None = args.keeper_upload
         kept: Path | None = args.keeper_kept
@@ -322,7 +336,13 @@ def _restore(args: argparse.Namespace, operator: Operator) -> int:
         for line in operator.restore_steps(manifest, target):
             print(line)
         return 0
-    plan = operator.run_restore(manifest, target, resume=args.resume)
+    key: Path | None = args.restore_key
+    if (key is None) == (not args.standing_secret):
+        raise ValueError(
+            "give --restore-key DIR (its Secret exists only while the Job runs) or"
+            " --standing-secret"
+        )
+    plan = operator.run_restore(manifest, target, resume=args.resume, key=key)
     print(f"restored={plan.restore_id} environment={plan.target.environment_id}")
     return 0
 

@@ -28,10 +28,12 @@ CREDENTIALS = "/etc/sandbox-science/checkpoint-s3"
 PLAN_VARIABLE = "SS_CHECKPOINT_PLAN"
 STORAGE_VARIABLE = "SS_CHECKPOINT_STORAGE"
 RESTORE_VARIABLE = "SS_RESTORE_PLAN"
+ATTEMPT_VARIABLE = "SS_RESTORE_ATTEMPT"
 """The variables ``checkpoint_jobs_cli`` reads (a test compares them; the launcher never
 imports the worker)."""
 CHECKPOINT_LABEL = "sandbox-science.io/checkpoint-id"
 RESTORE_LABEL = "sandbox-science.io/restore-id"
+_ATTEMPT = re.compile(r"^[0-9a-f]{32}$")
 _DNS_NAME = re.compile(r"^[a-z0-9](?:[-a-z0-9.]{0,251}[a-z0-9])?$")
 
 
@@ -164,11 +166,12 @@ def checkpoint_job(
         profile=checkpoint.upload_profile,
         node=node,
         architecture=plan.source.architecture,
+        user=(checkpoint.run_as_user, checkpoint.run_as_group),
     )
 
 
 def restore_job(
-    config: BundleConfig, plan: RestorePlan, claim: str, node: str | None
+    config: BundleConfig, plan: RestorePlan, claim: str, node: str | None, attempt: str
 ) -> dict[str, object]:
     """One restore Job for ``plan``: the fresh target's claim mounted read-write, the
     restore key's Secret (read-only on the kept bucket), everything else as a checkpoint
@@ -176,12 +179,15 @@ def restore_job(
     checkpoint, _ = _checkpoint(config)
     if checkpoint.restore_secret is None:
         raise ValueError("the bundle's [checkpoint] names no restore_secret")
+    if _ATTEMPT.fullmatch(attempt) is None:
+        raise ValueError("the attempt is the worker's nonce for this Job")
     return _job(
         config,
         name=RESTORE,
         labels={RESTORE_LABEL: plan.restore_id},
         variables={
             RESTORE_VARIABLE: plan.model_dump_json(),
+            ATTEMPT_VARIABLE: attempt,
             STORAGE_VARIABLE: json.dumps(
                 storage_settings(checkpoint, checkpoint.kept_bucket), sort_keys=True
             ),
@@ -193,6 +199,7 @@ def restore_job(
         profile=checkpoint.restore_profile,
         node=node,
         architecture=plan.target.architecture,
+        user=(checkpoint.restore_run_as_user, checkpoint.restore_run_as_group),
     )
 
 
@@ -209,6 +216,7 @@ def _job(
     profile: str,
     node: str | None,
     architecture: str,
+    user: tuple[int, int],
 ) -> dict[str, object]:
     checkpoint, namespace = _checkpoint(config)
     if _DNS_NAME.fullmatch(claim) is None or len(claim) > 253:
@@ -245,8 +253,8 @@ def _job(
             "readOnlyRootFilesystem": True,
             "capabilities": {"drop": ["ALL"]},
             "runAsNonRoot": True,
-            "runAsUser": checkpoint.run_as_user,
-            "runAsGroup": checkpoint.run_as_group,
+            "runAsUser": user[0],
+            "runAsGroup": user[1],
             "seccompProfile": {"type": "RuntimeDefault"},
         },
         "resources": _resources(checkpoint),
@@ -266,8 +274,8 @@ def _job(
         # No fsGroup: the kubelet would otherwise change the workspace's group ownership.
         "securityContext": {
             "runAsNonRoot": True,
-            "runAsUser": checkpoint.run_as_user,
-            "runAsGroup": checkpoint.run_as_group,
+            "runAsUser": user[0],
+            "runAsGroup": user[1],
             "seccompProfile": {"type": "RuntimeDefault"},
         },
         "nodeSelector": {"kubernetes.io/arch": architecture},

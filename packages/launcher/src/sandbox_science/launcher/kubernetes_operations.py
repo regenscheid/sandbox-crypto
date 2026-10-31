@@ -50,7 +50,8 @@ OPENSHELL_SEPARATOR = "--"
 imports the worker), so the sandbox is what follows its last occurrence."""
 WORKER_SETTINGS = f"{PRIVATE}/worker.toml"
 _MANIFEST = re.compile(r"^checkpoint_manifest=([0-9a-f]{64})\b", re.MULTILINE)
-_TREE = re.compile(r"^restore_tree=([0-9a-f]{64})\b", re.MULTILINE)
+_TREE = re.compile(r"^restore_tree=([0-9a-f]{64}) restore_attempt=([0-9a-f]{32})\b", re.MULTILINE)
+_ATTEMPT = re.compile(r"^restore_attempt=([0-9a-f]{32})$", re.MULTILINE)
 MAX_OUTPUT = 64 * 1024 * 1024
 
 
@@ -67,6 +68,9 @@ class Step:
     stdin: bytes | None = None
     output: Path | None = None
     """Where the command's output is kept, for a later step to read."""
+    detail_from: Path | None = None
+    """An earlier step's kept output whose ``key=number`` pairs this step journals
+    (``--detail``), such as an expiry's counts."""
 
 
 def run_command(arguments: Sequence[str], stdin: bytes | None) -> bytes:
@@ -444,10 +448,20 @@ class Operator:
             line(self._restore_plan(manifest, target)) + " > restore.json",
             "# 2. Find the new sandbox's claim and its node; nothing may mount it now.",
             line([*self.kubectl, "-n", sandbox_ns, "get", "pvc,pods", "-o", "wide"]),
-            "# 3. Render the Job (it mounts the claim read-write and the Secret "
-            f"{checkpoint.restore_secret or 'RESTORE_SECRET'}), create it and journal it.",
+            "# 3. A new attempt for the Job; render the Job (it mounts the claim read-write"
+            " and the restore Secret), create the Secret for it, create the Job, journal it.",
+            line(
+                self.exec_worker(
+                    "restore-attempt", "--restore-id", "RESTORE_ID", "--by", self.actor
+                )
+            ),
             "sandbox-science-kubernetes restore-job --config CONFIG --plan restore.json "
-            "--claim CLAIM --node NODE --output job.json",
+            "--claim CLAIM --node NODE --attempt ATTEMPT --output job.json",
+            line(
+                self._create_secret(
+                    checkpoint.restore_secret or "RESTORE_SECRET", Path("RESTORE_KEY_DIR")
+                )
+            ),
             line([*self.kubectl, "create", "-f", "job.json", "-o", "name"]),
             line(self._restore_record("RESTORE_ID", "job", {"job": "JOB", "claim": "CLAIM"})),
             "# 4. Wait for it and read the restored tree's digest from its log.",
@@ -463,8 +477,19 @@ class Operator:
                 ]
             ),
             line([*self.kubectl, "-n", sandbox_ns, "logs", "job/JOB"]),
-            "# 5. The worker compares it with the checkpoint's; only then may the sandbox start.",
-            line(self._restore_verify("RESTORE_ID", "TREE")),
+            "# 5. Delete the Secret (it reads every kept checkpoint) and the Job.",
+            line(
+                [
+                    *self.kubectl,
+                    "-n",
+                    sandbox_ns,
+                    "delete",
+                    "secret",
+                    checkpoint.restore_secret or "RESTORE_SECRET",
+                ]
+            ),
+            "# 6. The worker compares it with the checkpoint's; only then may the sandbox start.",
+            line(self._restore_verify("RESTORE_ID", "ATTEMPT", "TREE")),
         ]
 
     def _restore_record(self, restore_id: str, phase: str, detail: dict[str, object]) -> list[str]:
@@ -480,9 +505,17 @@ class Operator:
             self.actor,
         )
 
-    def _restore_verify(self, restore_id: str, tree: str) -> list[str]:
+    def _restore_verify(self, restore_id: str, attempt: str, tree: str) -> list[str]:
         return self.exec_worker(
-            "restore-verify", "--restore-id", restore_id, "--tree", tree, "--by", self.actor
+            "restore-verify",
+            "--restore-id",
+            restore_id,
+            "--attempt",
+            attempt,
+            "--tree",
+            tree,
+            "--by",
+            self.actor,
         )
 
     def run_restore(
@@ -491,12 +524,17 @@ class Operator:
         target: str | None,
         *,
         resume: str | None = None,
+        key: Path | None = None,
         poll: float = 5.0,
     ) -> RestorePlan:
         """Plan (or resume an unfinished restore), create the Job, wait, have the worker
-        verify the tree. A failure deletes the Job and is journaled; the target stays held
-        stopped, for another attempt (``--resume``) or ``--discard``."""
-        if self.checkpoint.restore_secret is None:
+        verify the tree. With ``key`` (a directory holding the restore key's
+        ``credentials`` and ``config``), the restore Secret exists only while the Job runs:
+        created just before it and deleted after it, whatever happened; without, a
+        standing Secret is used. A failure prints the Job's log, deletes the Job and is
+        journaled; the target stays held stopped, for ``--resume`` or ``--discard``."""
+        secret = self.checkpoint.restore_secret
+        if secret is None:
             raise OperationError("the bundle's [checkpoint] names no restore_secret")
         if resume is not None:
             command = self.exec_worker("restore-plan", "--resume", resume, "--by", self.actor)
@@ -511,9 +549,25 @@ class Operator:
         )
         name: str | None = None
         claim = ""
+        logs = b""
+        made = False
         try:
             claim, node = self.claim_of(plan.target.sandbox)
-            job = restore_job(self.config, plan, claim, node)
+            raw = self.run(
+                self.exec_worker(
+                    "restore-attempt", "--restore-id", plan.restore_id, "--by", self.actor
+                ),
+                None,
+            )
+            found = _ATTEMPT.search(raw.decode(errors="replace"))
+            if found is None:
+                raise OperationError("the worker gave no attempt for the Job")
+            attempt = found[1]
+            job = restore_job(self.config, plan, claim, node, attempt)
+            if key is not None:
+                self.run(self._create_secret(secret, key), None)
+                made = True
+                self.out(f"created secret {secret} for this restore")
             created = self.run(
                 [*self.kubectl, "create", "-f", "-", "-o", "name"], json.dumps(job).encode()
             )
@@ -521,28 +575,33 @@ class Operator:
             self.out(f"created job {name} writing {claim}" + (f" on {node}" if node else ""))
             self.run(
                 self._restore_record(
-                    plan.restore_id, "job", {"job": name, "claim": claim, "node": node}
+                    plan.restore_id,
+                    "job",
+                    {"job": name, "claim": claim, "node": node, "attempt": attempt},
                 ),
                 None,
             )
-            self._wait(name, poll)
-            logs = self.run(
-                [*self.kubectl, "-n", self.sandbox_namespace, "logs", f"job/{name}"], None
-            )
-            match = _TREE.search(logs.decode(errors="replace"))
-            if match is None:
-                raise OperationError(f"job {name} printed no restored tree")
+            try:
+                self._wait(name, poll)
+            finally:
+                logs = self._logs(name)
+            reported = _TREE.search(logs.decode(errors="replace"))
+            if reported is None or reported[2] != attempt:
+                raise OperationError(f"job {name} printed no restored tree for its attempt")
             # The worker's own comparison; a mismatch is journaled there and keeps the hold.
-            self.out(
-                self.run(self._restore_verify(plan.restore_id, match[1]), None).decode().strip()
-            )
+            verified = self.run(self._restore_verify(plan.restore_id, attempt, reported[1]), None)
+            self.out(verified.decode().strip())
         except BaseException as error:
             problems: list[str] = []
+            for line in logs.decode(errors="replace").splitlines():
+                self.out(f"job {name}: {line}")
             if name is not None:
                 try:
                     self.run(self._delete_job(name), None)
                 except OperationError as cleanup:
                     problems.append(f"the Job {name} was not deleted: {cleanup}")
+            if made:
+                problems.extend(self._delete_secret(secret))
             try:
                 self.run(
                     self._restore_record(plan.restore_id, "failed", {"error": str(error)[:400]}),
@@ -556,7 +615,43 @@ class Operator:
             )
             raise OperationError(f"{error}; and {'; '.join(problems)}") from error
         self._finish_job(name, logs, claim)
+        if made:
+            for problem in self._delete_secret(secret):
+                self.out(problem)
         return plan
+
+    def _logs(self, name: str) -> bytes:
+        """A Job's log, or what went wrong reading it: kept in the operator's output."""
+        try:
+            return self.run(
+                [*self.kubectl, "-n", self.sandbox_namespace, "logs", f"job/{name}"], None
+            )
+        except OperationError as error:
+            return f"(its log could not be read: {error})".encode()
+
+    def _create_secret(self, name: str, key: Path) -> list[str]:
+        return [
+            *self.kubectl,
+            "-n",
+            self.sandbox_namespace,
+            "create",
+            "secret",
+            "generic",
+            name,
+            *(f"--from-file={part}={key / part}" for part in ("credentials", "config")),
+        ]
+
+    def _delete_secret(self, name: str) -> list[str]:
+        """Remove the restore Secret; what went wrong, if anything, for the output."""
+        try:
+            self.run([*self.kubectl, "-n", self.sandbox_namespace, "delete", "secret", name], None)
+        except OperationError as error:
+            return [
+                f"the Secret {name} was not deleted ({error}): delete it by hand, it reads"
+                " every kept checkpoint"
+            ]
+        self.out(f"deleted secret {name}")
+        return []
 
     def discard_restore(self, restore_id: str, reason: str) -> None:
         """Delete an unfinished restore's target environment through the worker."""
@@ -652,7 +747,7 @@ class Operator:
             info = next((e for e in found.environments if e.environment_id == environment), None)
             if info is None:
                 refused.append(f"{environment}: the worker has no record of this environment")
-            elif info.state != "deleted":
+            elif not retiring and info.state != "deleted":
                 refused.append(f"{environment}: environment {environment} is {info.state}")
             elif not retiring:
                 refused.append(f"{environment}: no kept checkpoints left to retire")
@@ -816,6 +911,7 @@ class Operator:
         if not 1 <= hours <= 8760:
             raise OperationError("--expire-uploads takes 1 to 8760 hours")
         protected = workdir / "protected-uploads.txt"
+        counts = workdir / "expired-uploads.txt"
 
         def journal(phase: str) -> list[str]:
             return self.exec_worker(
@@ -843,16 +939,26 @@ class Operator:
                     str(protected),
                 ],
                 journal("failed"),
+                output=counts,
             ),
-            Step(journal("done")),
+            Step(journal("done"), detail_from=counts),
         ]
 
     def apply(self, steps: list[Step]) -> None:
         """Run the deletion steps in order and stop at the first failure, journaling it."""
         for step in steps:
-            self.out("+ " + " ".join(map(shlex.quote, step.command)))
+            command = step.command
+            if step.detail_from is not None:
+                counts = {
+                    key: int(value)
+                    for key, value in re.findall(
+                        r"\b([a-z_]+)=([0-9]+)\b", step.detail_from.read_text(errors="replace")
+                    )
+                }
+                command = [*command, "--detail", json.dumps(counts, sort_keys=True)]
+            self.out("+ " + " ".join(map(shlex.quote, command)))
             try:
-                output = self.run(step.command, step.stdin)
+                output = self.run(command, step.stdin)
             except OperationError as error:
                 if step.on_failure is not None:
                     try:
@@ -1138,16 +1244,32 @@ def survey(
             s for s in (_sandbox_owner(pvc), claim_sandbox(_name(pvc))) if s is not None
         )
     marks: list[CheckpointRow] = []
+    reading = {
+        r.manifest_sha256: r.restore_id
+        for r in found.restores
+        if r.state in ("planned", "failed", "discarding")
+    }
     by_sandbox: dict[str, list[InventoryCheckpoint]] = {}
     for checkpoint in kept:
         by_sandbox.setdefault(checkpoint.sandbox, []).append(checkpoint)
     recorded = {info.environment_id: info for info in found.environments}
     for sandbox, listed in by_sandbox.items():
         listed.sort(key=lambda c: c.created_at, reverse=True)
-        marks.extend(CheckpointRow(c, sandbox in volume_sandboxes) for c in listed[found.keep :])
+        marks.extend(
+            CheckpointRow(
+                c,
+                sandbox in volume_sandboxes,
+                (f"restore {reading[c.manifest_sha256]} reads it",)
+                if c.manifest_sha256 in reading
+                else (),
+            )
+            for c in listed[found.keep :]
+        )
         for c in listed[: found.keep]:
             info = recorded.get(c.environment_id)
-            if info is not None and info.state == "deleted":
+            # The workspace is gone from the environment: deleted, or bound to another
+            # sandbox since (a restore created it again).
+            if info is not None and (info.state == "deleted" or info.sandbox != c.sandbox):
                 exists = sandbox in volume_sandboxes
                 marks.append(
                     CheckpointRow(c, exists, tuple(_retire_refusals(c, found, exists)), retire=True)
@@ -1169,13 +1291,20 @@ def _retire_refusals(
     environment = checkpoint.environment_id
     reasons = ["its volume still exists"] if volume_exists else []
     for info in found.environments:
-        if info.environment_id == environment and info.hand_back is not None:
+        if (
+            info.environment_id == environment
+            and info.sandbox == checkpoint.sandbox
+            and info.hand_back is not None
+        ):
             reasons.append(f"environment {environment}'s hand-back is {info.hand_back}")
-    if any(
-        hold.environment_id == environment or hold.sandbox == checkpoint.sandbox
-        for hold in found.holds
-    ):
+    if any(hold.sandbox == checkpoint.sandbox for hold in found.holds):
         reasons.append("a checkpoint holds it")
+    reasons.extend(
+        f"restore {r.restore_id} reads it"
+        for r in found.restores
+        if r.manifest_sha256 == checkpoint.manifest_sha256
+        and r.state in ("planned", "failed", "discarding")
+    )
     return reasons
 
 

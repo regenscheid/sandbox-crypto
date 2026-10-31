@@ -401,7 +401,8 @@ def decode(
                         left -= len(chunk)
                     if writer is not None:
                         writer.flush()
-                        os.fchmod(writer.fileno(), member.mode)
+                        # Never set-user-ID or set-group-ID: an archive does not grant them.
+                        os.fchmod(writer.fileno(), member.mode & ~0o6000)
                         os.fsync(writer.fileno())
                 finally:
                     if writer is not None:
@@ -427,8 +428,9 @@ def decode(
                 try:
                     # Unchanged modes are left alone: a restore's root is the volume's own
                     # directory, which its user may not be allowed to change.
-                    if stat.S_IMODE(os.fstat(descriptor).st_mode) != int(mode):
-                        os.fchmod(descriptor, int(mode))
+                    wanted = int(mode) & ~0o6000
+                    if stat.S_IMODE(os.fstat(descriptor).st_mode) != wanted:
+                        os.fchmod(descriptor, wanted)
                     os.fsync(descriptor)
                 finally:
                     os.close(descriptor)

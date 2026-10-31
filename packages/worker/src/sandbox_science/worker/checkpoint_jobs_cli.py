@@ -17,11 +17,13 @@ checkpoint release-hold --settings S --checkpoint-id ID --by WHO --reason TEXT
 checkpoint restore-plan --settings S --manifest H --target ENV --storage F --by WHO
 checkpoint restore-plan --settings S --resume ID --by WHO
 checkpoint restore-write --workspace /mnt/workspace                       # the restore Job
-checkpoint restore-verify --settings S --restore-id ID --tree H --by WHO
+checkpoint restore-attempt --settings S --restore-id ID --by WHO
+checkpoint restore-verify --settings S --restore-id ID --attempt N --tree H --by WHO
 checkpoint restore-record --settings S --restore-id ID --phase job|failed --by WHO
 checkpoint restore-discard --settings S --restore-id ID --reason TEXT --by WHO
 checkpoint upload-expiry --settings S --phase intent|done|failed --older-than-hours N --by WHO
 checkpoint expire-objects --storage F --older-than-hours N --protected-file F  # operator
+checkpoint sdk-check                                                      # operator
 ```
 
 Each prints one line of ``key=value`` pairs, or JSON for ``plan`` and ``inventory``; errors
@@ -32,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import importlib
 import json
 import os
 import re
@@ -55,6 +58,9 @@ from .settings import Settings, SettingsError, load_settings
 
 PLAN_VARIABLE = "SS_CHECKPOINT_PLAN"
 RESTORE_VARIABLE = "SS_RESTORE_PLAN"
+ATTEMPT_VARIABLE = "SS_RESTORE_ATTEMPT"
+MAX_EXPIRY_SECONDS = 5 * 3600
+"""``expire-objects`` ends within the expiry's lease (``checkpoint_records.EXPIRY_LEASE``)."""
 STORAGE_VARIABLE = "SS_CHECKPOINT_STORAGE"
 TERMINATION_LOG = Path("/dev/termination-log")
 MAX_DETAIL = 8192
@@ -124,9 +130,13 @@ def parser(command: argparse.ArgumentParser) -> None:
     write = actions.add_parser("restore-write", help="(the restore Job) write a checkpoint")
     write.add_argument("--workspace", type=Path, required=True)
     write.add_argument("--timeout", type=float, default=3600)
+    attempt = actions.add_parser("restore-attempt", help="a new restore Job attempt's nonce")
+    attempt.add_argument("--restore-id", required=True)
     restored = actions.add_parser("restore-verify", help="check a restored tree; let it start")
     restored.add_argument("--restore-id", required=True)
+    restored.add_argument("--attempt", required=True)
     restored.add_argument("--tree", required=True)
+    actions.add_parser("sdk-check", help="whether this interpreter has the S3 SDK")
     noted = actions.add_parser("restore-record", help="journal a restore Job or its failure")
     noted.add_argument("--restore-id", required=True)
     noted.add_argument("--phase", choices=("job", "failed"), required=True)
@@ -142,7 +152,7 @@ def parser(command: argparse.ArgumentParser) -> None:
     expire.add_argument("--storage", type=Path, required=True)
     expire.add_argument("--older-than-hours", type=int, choices=range(1, 8761), required=True)
     expire.add_argument("--protected-file", type=Path, required=True)
-    expire.add_argument("--timeout", type=float, default=3600)
+    expire.add_argument("--timeout", type=float, default=3600)  # at most MAX_EXPIRY_SECONDS
     for name in (
         "plan",
         "verify",
@@ -152,6 +162,7 @@ def parser(command: argparse.ArgumentParser) -> None:
         "release-hold",
         "chunks",
         "restore-plan",
+        "restore-attempt",
         "restore-verify",
         "restore-record",
         "restore-discard",
@@ -165,6 +176,7 @@ def parser(command: argparse.ArgumentParser) -> None:
         "record-volume",
         "release-hold",
         "restore-plan",
+        "restore-attempt",
         "restore-verify",
         "restore-record",
         "restore-discard",
@@ -229,15 +241,22 @@ def _capture(args: argparse.Namespace) -> int:
 def _restore_write(args: argparse.Namespace) -> int:
     planned = RestorePlan.model_validate_json(_variable(RESTORE_VARIABLE))
     storage = parse(_variable(STORAGE_VARIABLE))
+    nonce = _variable(ATTEMPT_VARIABLE)
+    if re.fullmatch(r"[0-9a-f]{32}", nonce) is None:
+        raise ValueError(f"{ATTEMPT_VARIABLE} is not an attempt's nonce")
     tree, receipt = checkpoint_restore.write(args.workspace, planned, storage, timeout=args.timeout)
+    written = (
+        "already_written=true"
+        if receipt is None
+        else f"members={receipt.members} content_bytes={receipt.content_bytes}"
+    )
+    line = f"restore_tree={tree} restore_attempt={nonce}"
     print(
-        f"restore_tree={tree} restore_id={planned.restore_id}"
-        f" manifest={planned.manifest_sha256} members={receipt.members}"
-        f" content_bytes={receipt.content_bytes}",
+        f"{line} restore_id={planned.restore_id} manifest={planned.manifest_sha256} {written}",
         flush=True,
     )
     with contextlib.suppress(OSError):
-        TERMINATION_LOG.write_text(f"restore_tree={tree}\n")
+        TERMINATION_LOG.write_text(line + "\n")
     return 0
 
 
@@ -270,8 +289,13 @@ def _restore(args: argparse.Namespace, settings: Settings) -> int:
                 timeout=args.timeout,
             )
         print(planned.model_dump_json())
+    elif command == "restore-attempt":
+        nonce = checkpoint_restore.attempt(settings, args.restore_id, args.actor)
+        print(f"restore_attempt={nonce}")
     elif command == "restore-verify":
-        planned = checkpoint_restore.verify(settings, args.restore_id, args.tree, args.actor)
+        planned = checkpoint_restore.verify(
+            settings, args.restore_id, args.attempt, args.tree, args.actor
+        )
         print(
             f"restored={args.restore_id} environment={planned.target.environment_id}"
             f" manifest={planned.manifest_sha256}"
@@ -282,21 +306,14 @@ def _restore(args: argparse.Namespace, settings: Settings) -> int:
         )
         print(f"journaled restore={args.restore_id} phase={args.phase}")
     elif command == "restore-discard":
-        checkpoint_restore.discard(settings, args.restore_id, args.actor, args.reason)
-        print(f"discarded={args.restore_id}")
+        deleted = checkpoint_restore.discard(settings, args.restore_id, args.actor, args.reason)
+        print(f"discarded={args.restore_id} target_deleted={str(deleted).lower()}")
     else:
         detail = {**_detail(args.detail), "older_than_hours": args.older_than_hours}
         records = CheckpointRecords(settings.state_dir)
         try:
-            now = SYSTEM_CLOCK.now()
-            if args.phase == "intent" and (held := records.holds(now)):
-                raise ValueError(
-                    f"checkpoint {held[0].checkpoint_id} is under way; expire uploads when none is"
-                )
-            records.operation(now, args.actor, "upload-expiry", "upload", args.phase, detail)
-            if args.phase == "intent":
-                for name in records.protected_uploads():
-                    print(name)
+            for name in records.upload_expiry(args.phase, SYSTEM_CLOCK.now(), args.actor, detail):
+                print(name)
         finally:
             records.close()
     return 0
@@ -310,7 +327,13 @@ def run(args: argparse.Namespace) -> int:
             return _capture(args)
         if command == "restore-write":
             return _restore_write(args)
+        if command == "sdk-check":
+            importlib.import_module("boto3")
+            print("s3_sdk=available")
+            return 0
         if command == "expire-objects":
+            if not 1 <= args.timeout <= MAX_EXPIRY_SECONDS:
+                raise ValueError(f"--timeout is 1 to {MAX_EXPIRY_SECONDS} seconds here")
             protected = _protected(args.protected_file)
             removed, kept = checkpoint_remote.expire(
                 load(args.storage),
@@ -410,6 +433,12 @@ def run(args: argparse.Namespace) -> int:
                 print(f"journaled checkpoint={args.manifest} phase=intent")
         finally:
             records.close()
+    except ImportError:
+        print(
+            "error: this interpreter lacks the S3 SDK (boto3): `uv sync --extra s3`",
+            file=sys.stderr,
+        )
+        return 1
     except (SettingsError, WorkerError, OSError, ValueError, sqlite3.Error) as error:
         message = error.message if isinstance(error, WorkerError) else str(error)
         print(f"error: {message}", file=sys.stderr)

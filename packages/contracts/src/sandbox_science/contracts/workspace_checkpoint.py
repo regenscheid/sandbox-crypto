@@ -216,11 +216,13 @@ class InventoryHold(StrictContract):
 RestoreId = Annotated[str, Field(pattern=r"^rst-[0-9a-f]{24}$")]
 """A restore attempt's ID: what its plan, record, Job and journal rows share."""
 RESTORE_PLAN_FORMAT = "sandbox-workspace-restore-plan-v1"
-RestoreState = Literal["planned", "failed", "restored", "cancelled"]
+RestoreState = Literal["planned", "failed", "discarding", "restored", "cancelled"]
 """``planned`` from the plan on and ``failed`` once a Job or verification failed: both keep
-the target's sandbox stopped, with no expiry, since its workspace may hold a partial tree;
-``restored`` once the worker verified the restored tree; ``cancelled`` when the plan failed
-before anything was written, or the operator discarded the target environment."""
+the target's sandbox stopped, with no expiry, since its workspace may hold a partial tree,
+and refuse its deletion except through a discard; ``discarding`` while the operator's
+discard deletes the target (still held stopped); ``restored`` once the worker verified the
+restored tree; ``cancelled`` when the plan failed before anything was written, or the
+discard ended the restore."""
 
 
 class RestorePlan(StrictContract):
@@ -238,6 +240,10 @@ class RestorePlan(StrictContract):
     """The binding recorded in the checkpoint's archive, which the decoder checks."""
     target: CheckpointSource
     """The fresh environment's binding: no prefix identity or package revision yet."""
+    tree_sha256: Sha256
+    """The tree digest the worker computed from the kept copy. A Job that finds a volume
+    already holding exactly this tree (a complete earlier attempt) only reports it; the
+    worker compares the Job's report with its own record, never with this field."""
     planned_at: AwareDatetime
 
     @model_validator(mode="after")

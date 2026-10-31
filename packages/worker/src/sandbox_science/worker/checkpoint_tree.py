@@ -29,6 +29,9 @@ from sandbox_science.contracts.workspace_checkpoint import MAX_CHECKPOINT_DEPTH
 
 READ = 512 * 1024
 SYMLINK_MODE = 0o777
+PRIVILEGE_BITS = 0o6000
+"""Set-user-ID and set-group-ID: a restore never writes them (``decode``), so the digest
+leaves them out on both sides."""
 
 
 class TreeIndex:
@@ -59,7 +62,8 @@ class TreeIndex:
     ) -> None:
         try:
             self.db.execute(
-                "INSERT INTO entries VALUES (?,?,?,?,?,?)", (path, kind, mode, size, detail, first)
+                "INSERT INTO entries VALUES (?,?,?,?,?,?)",
+                (path, kind, mode & ~PRIVILEGE_BITS, size, detail, first),
             )
         except sqlite3.IntegrityError:
             raise ValueError(f"the tree lists {path!r} twice") from None
@@ -73,6 +77,9 @@ class TreeIndex:
         if row is None:
             raise ValueError(f"hardlink {path!r} names no earlier file")
         self.add(path, "file", int(row[0]), size=int(row[1]), detail=str(row[2]), first=row[3])
+
+    def has(self, path: str) -> bool:
+        return self.db.execute("SELECT 1 FROM entries WHERE path=?", (path,)).fetchone() is not None
 
     def seen(self, device: int, inode: int, path: str) -> str | None:
         """The first path of an inode with several links, recording this one if new."""

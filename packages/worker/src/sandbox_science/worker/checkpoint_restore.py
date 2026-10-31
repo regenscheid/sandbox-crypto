@@ -68,8 +68,9 @@ def local_create(settings: Settings, request: EnvironmentRequest) -> Environment
         request.model_dump_json().encode(),
         CREATE_TIMEOUT,
     )
-    if status not in (200, 201):
-        raise RecordError(f"the worker did not create the environment ({status}: {body[:300]!r})")
+    if status != 201:
+        # 200 is an environment that existed: never the fresh one a restore needs.
+        raise RecordError(f"the worker did not create a new environment ({status}: {body[:300]!r})")
     return EnvironmentInfo.model_validate_json(body)
 
 
@@ -141,6 +142,8 @@ def plan(
             kept, manifest, source, tree=tree, timeout=timeout, clock=clock
         )
         expected = tree.digest()
+        if tree.has(MARKER):
+            raise RecordError(f"the checkpoint has an entry {MARKER!r} a restore cannot write")
     if receipt != recorded:
         raise RecordError("the kept copy differs from the verified checkpoint")
     existing = _known(settings, target)
@@ -172,12 +175,13 @@ def plan(
         manifest_sha256=manifest,
         source=source,
         target=retained_source(settings, target, source.architecture, fresh=True),
+        tree_sha256=expected,
         planned_at=clock.now(),
     )
     records = CheckpointRecords(settings.state_dir)
     try:
         # Held first: the sandbox must never start on a partly written workspace.
-        records.place_restore(restored, expected, before, clock.now(), actor)
+        records.place_restore(restored, before, clock.now(), actor)
         try:
             try:
                 asyncio.run(confirm_stopped(settings, restored.target))
@@ -210,30 +214,52 @@ def _still_fresh(settings: Settings, restore: RestorePlan, executions: int) -> N
 def resume(
     settings: Settings, restore_id: str, actor: str, *, clock: Clock = SYSTEM_CLOCK
 ) -> RestorePlan:
-    """An unfinished restore's plan again, for another Job; journaled as a retry."""
+    """An unfinished restore's plan again, for another Job, once its target is still the
+    stopped sandbox the plan created with nothing run in it; journaled as a retry."""
     records = CheckpointRecords(settings.state_dir)
     try:
         found = records.restore(restore_id)
         if found.state not in ("planned", "failed"):
             raise RecordError(f"restore {restore_id} is {found.state}")
+        _still_fresh(settings, found.plan, found.executions)
+        asyncio.run(confirm_stopped(settings, found.plan.target))
         records.operation(clock.now(), actor, "restore", restore_id, "retry", {})
         return found.plan
     finally:
         records.close()
 
 
+def attempt(settings: Settings, restore_id: str, actor: str, *, clock: Clock = SYSTEM_CLOCK) -> str:
+    """A new Job attempt's nonce: the Job prints it beside its tree, and only the latest
+    attempt, with no failure recorded after it, is verified."""
+    records = CheckpointRecords(settings.state_dir)
+    try:
+        return records.attempt(restore_id, clock.now(), actor)
+    finally:
+        records.close()
+
+
 def verify(
-    settings: Settings, restore_id: str, tree: str, actor: str, *, clock: Clock = SYSTEM_CLOCK
+    settings: Settings,
+    restore_id: str,
+    nonce: str,
+    tree: str,
+    actor: str,
+    *,
+    clock: Clock = SYSTEM_CLOCK,
 ) -> RestorePlan:
-    """Let the target start once the tree on its volume is the checkpoint's: the Job's
-    digest must be the one the worker computed from the kept copy, the target still the
-    stopped, fresh sandbox the plan created. A mismatch is recorded as a failure, which
-    keeps the target held."""
+    """Let the target start once the tree on its volume is the checkpoint's: the report
+    must come from the restore's current Job attempt, its digest must be the one the
+    worker computed from the kept copy, and the target must still be the stopped, fresh
+    sandbox the plan created. A mismatch is recorded as a failure, which keeps the target
+    held and voids the attempt."""
     records = CheckpointRecords(settings.state_dir)
     try:
         found = records.restore(restore_id)
         if found.state not in ("planned", "failed"):
             raise RecordError(f"restore {restore_id} is {found.state}")
+        if found.attempt is None or not secrets.compare_digest(found.attempt, nonce):
+            raise RecordError("this report is not from the restore's current Job attempt")
         try:
             _still_fresh(settings, found.plan, found.executions)
             asyncio.run(confirm_stopped(settings, found.plan.target))
@@ -241,10 +267,12 @@ def verify(
                 raise RecordError("the restored tree differs from the checkpoint")
         except (RecordError, ValueError) as error:
             records.finish_restore(
-                restore_id, "failed", clock.now(), actor, {"error": str(error)[:500], "tree": tree}
+                restore_id, "failed", clock.now(), actor, {"error": str(error)[:500]}
             )
             raise
-        records.finish_restore(restore_id, "restored", clock.now(), actor, {"tree": tree})
+        records.finish_restore(
+            restore_id, "restored", clock.now(), actor, {"attempt": nonce}, attempt=nonce
+        )
         return found.plan
     finally:
         records.close()
@@ -281,18 +309,37 @@ def discard(
     *,
     delete: Delete = local_delete,
     clock: Clock = SYSTEM_CLOCK,
-) -> None:
-    """Delete an unfinished restore's target environment, then end the restore: its
-    workspace may hold a partial tree, so it never runs."""
+) -> bool:
+    """End an unfinished restore, deleting its target environment if the environment is
+    still bound to the sandbox the restore created (its workspace may hold a partial tree,
+    so it never runs); an environment bound to another sandbox since, or gone, is left
+    alone and only the restore ends. Whether the target was deleted."""
     records = CheckpointRecords(settings.state_dir)
     try:
         found = records.restore(restore_id)
-        if found.state not in ("planned", "failed"):
+        if found.state not in ("planned", "failed", "discarding"):
             raise RecordError(f"restore {restore_id} is {found.state}")
-        delete(settings, found.plan.target.environment_id)
-        records.finish_restore(
-            restore_id, "cancelled", clock.now(), actor, {"reason": reason[:500], "deleted": True}
+        target = found.plan.target
+        info = _known(settings, target.environment_id)
+        owned = (
+            info is not None
+            and info.state is not EnvironmentState.DELETED
+            and (info.sandbox, info.sandbox_id) == (target.sandbox, target.sandbox_id)
         )
+        if owned:
+            # Still held, but deletable: the deletion guard refuses only planned and failed.
+            records.finish_restore(
+                restore_id, "discarding", clock.now(), actor, {"reason": reason[:500]}
+            )
+            delete(settings, target.environment_id)
+        records.finish_restore(
+            restore_id,
+            "cancelled",
+            clock.now(),
+            actor,
+            {"reason": reason[:500], "deleted": owned},
+        )
+        return owned
     finally:
         records.close()
 
@@ -313,16 +360,26 @@ def write(
     *,
     timeout: float = 3600,
     clock: Clock = SYSTEM_CLOCK,
-) -> tuple[str, CheckpointReceipt]:
+) -> tuple[str, CheckpointReceipt | None]:
     """Empty the target volume and write the checkpoint into it; the tree digest of what
     is then on the volume, and the receipt. Refuses a volume that is neither OpenShell's
     seed of a fresh workspace (its sentinel, no prefix identity) nor this restore's own
-    earlier attempt (its marker)."""
+    earlier attempt (its marker), unless it already holds exactly the plan's tree (an
+    earlier attempt finished writing): then it only reports it, with no receipt. Refuses
+    a volume whose root another user owns: the Job must write as the sandbox's user."""
+    owner = os.stat(root, follow_symlinks=False).st_uid
+    if owner != os.getuid():
+        raise ValueError(
+            f"the target volume belongs to uid {owner} and this Job runs as uid"
+            f" {os.getuid()}: set [checkpoint] restore_run_as_user to the sandbox's user"
+        )
     marker = root / MARKER
     if marker.is_symlink() or (marker.exists() and _read_marker(marker) != restore.restore_id):
         raise ValueError("the target volume carries another restore's marker")
     if not marker.exists():
         if os.path.lexists(root / PREFIX_MARKER):
+            if describe(root) == restore.tree_sha256:
+                return restore.tree_sha256, None
             raise ValueError(
                 "the target volume is not a fresh workspace: its prefix has an identity"
             )

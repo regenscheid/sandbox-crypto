@@ -204,6 +204,8 @@ def verify(
         hold = records.hold(checkpoint_id)
         source = hold.plan.source
         if stage == "upload":
+            if records.expiry_open(clock.now()):
+                raise RecordError("an upload expiry is under way; verify after it ends")
             if retained_source(settings, source.environment_id, source.architecture) != source:
                 raise RecordError("the environment's binding changed since it was planned")
             names: list[str] = []
@@ -343,10 +345,12 @@ def retire_refusals(
     found: CheckpointInventory, checkpoint: InventoryCheckpoint, environment_id: str
 ) -> list[str]:
     """Why the worker's records forbid retiring ``checkpoint``, one of the latest kept
-    checkpoints of ``environment_id``; empty if none. Retiring needs the environment
-    recorded deleted and nothing referencing its workspace: no hand-back and no hold (no
-    other environment can record its sandbox). Whether the volume is gone is the operator's survey
-    (``--volume-gone``): the worker holds no Kubernetes right to look."""
+    checkpoints of ``environment_id``; empty if none. Retiring needs the checkpoint's
+    workspace gone from the environment: the environment recorded deleted, or bound to
+    another sandbox since (a restore created it again), and nothing referencing the
+    workspace: no hand-back, no hold and no unfinished restore reading the checkpoint.
+    Whether the volume is gone is the operator's survey (``--volume-gone``): the worker
+    holds no Kubernetes right to look."""
     reasons: list[str] = []
     if checkpoint.environment_id != environment_id:
         reasons.append(
@@ -355,15 +359,19 @@ def retire_refusals(
     info = next((e for e in found.environments if e.environment_id == environment_id), None)
     if info is None:
         reasons.append(f"the worker has no record of environment {environment_id}")
-    elif info.state != EnvironmentState.DELETED.value:
+    elif info.state != EnvironmentState.DELETED.value and info.sandbox == checkpoint.sandbox:
         reasons.append(f"environment {environment_id} is {info.state}")
-    if info is not None and info.hand_back is not None:
+    if info is not None and info.hand_back is not None and info.sandbox == checkpoint.sandbox:
         reasons.append(f"environment {environment_id}'s hand-back is {info.hand_back}")
-    if any(
-        hold.environment_id == environment_id or hold.sandbox == checkpoint.sandbox
-        for hold in found.holds
-    ):
+    if any(hold.sandbox == checkpoint.sandbox for hold in found.holds):
         reasons.append("a checkpoint holds it")
+    for restore in found.restores:
+        if restore.manifest_sha256 == checkpoint.manifest_sha256 and restore.state in (
+            "planned",
+            "failed",
+            "discarding",
+        ):
+            reasons.append(f"restore {restore.restore_id} reads it")
     return reasons
 
 

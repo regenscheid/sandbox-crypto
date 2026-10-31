@@ -12,7 +12,7 @@ import os
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -57,6 +57,10 @@ def kept_checkpoint(tmp_path: Path, settings: Settings) -> tuple[str, Path]:
     (root / "research" / "private" / "key.txt").chmod(0o600)
     os.link(root / "research" / "notes", root / "research" / "notes-again")
     (root / "research" / "empty").write_bytes(b"")
+    (root / "research" / "tool").write_text("#!/bin/sh\n")
+    (root / "research" / "tool").chmod(0o4755)  # set-user-ID is never restored
+    (root / ".sandbox-science-prefix").mkdir()
+    (root / ".sandbox-science-prefix" / ".sandbox-science-prefix-id").write_text("prefix-test")
     identity, _, _ = capture_upload(root, plan.source, UPLOAD, plan.capture)
     verify(settings, plan.checkpoint_id, identity, UPLOAD, "upload", "test-operator")
     checkpoint_remote.promote(UPLOAD, KEPT, identity)
@@ -174,12 +178,15 @@ def test_a_kept_checkpoint_is_restored_into_a_fresh_held_environment(
             planned_like(retained, TARGET), datetime.now(UTC), "op"
         )
     volume = seeded(tmp_path / "target")
+    nonce = checkpoint_restore.attempt(retained, plan.restore_id, "test-operator")
     tree, receipt = checkpoint_restore.write(volume, plan, KEPT)
+    assert receipt is not None
     assert receipt.members > 5
-    assert describe(volume) == describe(original) == tree
+    assert describe(volume) == describe(original) == tree == plan.tree_sha256
+    assert (volume / "research" / "tool").stat().st_mode & 0o7777 == 0o755
     assert not (volume / checkpoint_restore.MARKER).exists()
     assert not (volume / "image-docs").exists()  # the seed is gone
-    checkpoint_restore.verify(retained, plan.restore_id, tree, "test-operator")
+    checkpoint_restore.verify(retained, plan.restore_id, nonce, tree, "test-operator")
     assert not blocked(retained)
     found = inventory(retained)
     assert [(r.restore_id, r.state) for r in found.restores] == [(plan.restore_id, "restored")]
@@ -190,6 +197,7 @@ def test_a_kept_checkpoint_is_restored_into_a_fresh_held_environment(
         records.close()
     assert journal == [
         ("restore", "intent", "test-operator"),
+        ("restore", "attempt", "test-operator"),
         ("restore", "verified", "test-operator"),
     ]
 
@@ -221,9 +229,13 @@ def test_a_wrong_tree_fails_keeps_the_target_held_and_a_retry_finishes(
 ):
     identity, original = kept_checkpoint(tmp_path, retained)
     plan = restore_plan(retained, identity)
+    nonce = checkpoint_restore.attempt(retained, plan.restore_id, "op")
     with pytest.raises(RecordError, match="differs"):
-        checkpoint_restore.verify(retained, plan.restore_id, "0" * 64, "test-operator")
+        checkpoint_restore.verify(retained, plan.restore_id, nonce, "0" * 64, "op")
     assert blocked(retained)
+    # The failure voided the attempt: even the right tree is not accepted under it.
+    with pytest.raises(RecordError, match="current Job attempt"):
+        checkpoint_restore.verify(retained, plan.restore_id, nonce, plan.tree_sha256, "op")
     # A partial tree from an interrupted Job: the marker lets the retry empty it again.
     volume = seeded(tmp_path / "target")
     garage.unavailable.add(sorted(garage.keys(KEPT.bucket, "chunks"))[2])
@@ -231,14 +243,39 @@ def test_a_wrong_tree_fails_keeps_the_target_held_and_a_retry_finishes(
         checkpoint_restore.write(volume, plan, KEPT)
     assert (volume / checkpoint_restore.MARKER).read_text().strip() == plan.restore_id
     garage.unavailable.clear()
-    again = checkpoint_restore.resume(retained, plan.restore_id, "test-operator")
+    again = checkpoint_restore.resume(retained, plan.restore_id, "op")
     assert again == plan
+    first = checkpoint_restore.attempt(retained, plan.restore_id, "op")
     tree, _ = checkpoint_restore.write(volume, again, KEPT)
     assert tree == describe(original)
-    checkpoint_restore.verify(retained, plan.restore_id, tree, "test-operator")
+    # A later attempt supersedes an earlier one's report.
+    latest = checkpoint_restore.attempt(retained, plan.restore_id, "op")
+    with pytest.raises(RecordError, match="current Job attempt"):
+        checkpoint_restore.verify(retained, plan.restore_id, first, tree, "op")
+    # The volume is complete and its prefix has an identity: the retry only reports it.
+    reported, receipt = checkpoint_restore.write(volume, again, KEPT)
+    assert (reported, receipt) == (plan.tree_sha256, None)
+    checkpoint_restore.verify(retained, plan.restore_id, latest, reported, "op")
     assert not blocked(retained)
     with pytest.raises(RecordError, match="restored"):
-        checkpoint_restore.resume(retained, plan.restore_id, "test-operator")
+        checkpoint_restore.resume(retained, plan.restore_id, "op")
+
+
+def test_a_resume_rechecks_that_the_target_is_still_fresh_and_stopped(
+    tmp_path, garage, retained, stopped
+):
+    identity, _ = kept_checkpoint(tmp_path, retained)
+    plan = restore_plan(retained, identity)
+    stopped[:] = ["Running"]
+    with pytest.raises(ValueError, match="not confirmed Stopped"):
+        checkpoint_restore.resume(retained, plan.restore_id, "op")
+    stopped[:] = ["Stopped"]
+    db = sqlite3.connect(retained.state_dir / "worker.sqlite3")
+    db.execute("INSERT INTO executions VALUES ('x1','op1','d',?,'s',1,'{}','legacy')", (TARGET,))
+    db.commit()
+    db.close()
+    with pytest.raises(RecordError, match="something ran"):
+        checkpoint_restore.resume(retained, plan.restore_id, "op")
 
 
 def test_the_job_refuses_a_volume_that_is_not_a_fresh_seed(tmp_path, garage, retained, stopped):
@@ -335,26 +372,49 @@ def test_a_plan_that_finds_something_ran_is_cancelled_and_holds_nothing(
 def test_a_discarded_restore_deletes_its_target_and_holds_it_no_more(
     tmp_path, garage, retained, stopped
 ):
+    from sandbox_science.worker.checkpoint_records import restore_refusing_deletion
+
     identity, _ = kept_checkpoint(tmp_path, retained)
     plan = restore_plan(retained, identity)
+    assert restore_refusing_deletion(retained.state_dir, TARGET, TARGET_SANDBOX) == plan.restore_id
     deleted: list[str] = []
-    checkpoint_restore.discard(
-        retained,
-        plan.restore_id,
-        "test-operator",
-        "bad volume",
-        delete=lambda _s, e: deleted.append(e),
-    )
+
+    def delete(settings: Settings, environment_id: str) -> None:
+        # The discard marks the restore first, so the deletion guard lets it through,
+        # while the sandbox stays held.
+        assert restore_refusing_deletion(settings.state_dir, environment_id, TARGET_SANDBOX) is None
+        assert blocked(settings)
+        deleted.append(environment_id)
+
+    assert checkpoint_restore.discard(retained, plan.restore_id, "op", "bad volume", delete=delete)
     assert deleted == [TARGET]
     assert not blocked(retained)
     with pytest.raises(RecordError, match="cancelled"):
-        checkpoint_restore.verify(retained, plan.restore_id, "0" * 64, "op")
-    # A later environment of the ID with another sandbox is never held by the old record.
+        checkpoint_restore.verify(retained, plan.restore_id, "0" * 32, "0" * 64, "op")
     records = CheckpointRecords(retained.state_dir)
     try:
+        assert [o.phase for o in records.operations()][-2:] == ["discarding", "cancelled"]
         assert records.operations()[-1].detail == {"reason": "bad volume", "deleted": True}
     finally:
         records.close()
+
+
+def test_a_discard_never_deletes_an_environment_the_restore_no_longer_owns(
+    tmp_path, garage, retained, stopped
+):
+    """The target was deleted and created again with another sandbox: the stale restore
+    only ends, and no longer blocks the ID."""
+    identity, _ = kept_checkpoint(tmp_path, retained)
+    plan = restore_plan(retained, identity)
+    save_environment(retained, TARGET, "ss-a-later-sandbox", EnvironmentState.READY)
+
+    def delete(_settings: Settings, _environment_id: str) -> None:
+        raise AssertionError("not the restore's environment")
+
+    assert not checkpoint_restore.discard(retained, plan.restore_id, "op", "stale", delete=delete)
+    assert [r.state for r in inventory(retained).restores] == ["cancelled"]
+    save_environment(retained, TARGET, "ss-a-later-sandbox", EnvironmentState.DELETED)
+    assert restore_plan(retained, identity).restore_id != plan.restore_id  # the ID is free
 
 
 def test_a_held_restore_target_holds_only_its_own_sandbox(tmp_path, garage, retained, stopped):
@@ -379,11 +439,15 @@ def test_the_restore_job_command_reads_its_plan_and_storage_from_its_environment
     monkeypatch.setenv(checkpoint_jobs_cli.RESTORE_VARIABLE, plan.model_dump_json())
     monkeypatch.setenv(checkpoint_jobs_cli.STORAGE_VARIABLE, KEPT.model_dump_json())
     volume = seeded(tmp_path / "target")
+    assert main(["checkpoint", "restore-write", "--workspace", str(volume)]) == 1
+    assert "SS_RESTORE_ATTEMPT" in capsys.readouterr().err
+    nonce = checkpoint_restore.attempt(retained, plan.restore_id, "op")
+    monkeypatch.setenv(checkpoint_jobs_cli.ATTEMPT_VARIABLE, nonce)
     assert main(["checkpoint", "restore-write", "--workspace", str(volume)]) == 0
     line = capsys.readouterr().out.splitlines()[0]
     tree = line.split()[0].removeprefix("restore_tree=")
     assert tree == describe(original)
-    assert log.read_text() == f"restore_tree={tree}\n"
+    assert log.read_text() == f"restore_tree={tree} restore_attempt={nonce}\n"
     assert f"restore_id={plan.restore_id}" in line
 
 
@@ -668,3 +732,179 @@ def test_upload_expiry_command_empties_a_bucket_of_stale_leftovers(
     assert not garage.keys(UPLOAD.bucket, "manifests")
     assert garage.keys(KEPT.bucket, "manifests")  # the kept bucket is never touched
     assert main([*intent, "--phase", "done", *common]) == 0
+
+
+# Review findings (2026-10-31)
+
+
+def test_the_app_refuses_deleting_an_environment_a_restore_writes_into(
+    tmp_path, garage, retained, stopped
+):
+    import asyncio
+
+    from sandbox_science.worker.app import _restore_guard
+    from sandbox_science.worker.errors import WorkerError
+
+    identity, _ = kept_checkpoint(tmp_path, retained)
+    plan = restore_plan(retained, identity)
+
+    class Known:
+        state_dir = retained.state_dir
+
+        def get(self, environment_id: str) -> Any:
+            return type("Info", (), {"sandbox": TARGET_SANDBOX})()
+
+    guard = _restore_guard(cast(Any, Known()))
+
+    async def check(environment_id: str) -> None:
+        await guard(environment_id)
+
+    with pytest.raises(WorkerError, match=f"restore {plan.restore_id}"):
+        asyncio.run(check(TARGET))
+    asyncio.run(check("e"))  # another environment is not concerned
+
+
+def test_an_existing_environment_returned_by_create_is_refused(tmp_path, retained):
+    import http.server
+    import threading
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.send_response(200)  # the environment already existed
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        own = retained.model_copy(update={"listen": f"127.0.0.1:{server.server_address[1]}"})
+        request = EnvironmentRequest(
+            environment_id=TARGET,
+            project_id="p",
+            profile="crypto-base",
+            policy="sha256:" + "2" * 64,
+        )
+        with pytest.raises(RecordError, match="new environment"):
+            checkpoint_restore.local_create(own, request)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_a_checkpoint_a_restore_reads_is_neither_forgotten_nor_retired(
+    tmp_path, garage, retained, stopped
+):
+    from sandbox_science.worker.checkpoint_jobs import retire_refusals
+
+    identity, _ = kept_checkpoint(tmp_path, retained)
+    plan = restore_plan(retained, identity)
+    records = CheckpointRecords(retained.state_dir)
+    try:
+        with pytest.raises(RecordError, match=f"restore {plan.restore_id} reads"):
+            records.forget(identity, datetime.now(UTC), "op", volume_gone=True)
+    finally:
+        records.close()
+    save_environment(retained, "e", "ss-checkpoint-test", EnvironmentState.DELETED)
+    found = inventory(retained)
+    checkpoint = next(c for c in found.checkpoints if c.manifest_sha256 == identity)
+    assert f"restore {plan.restore_id} reads it" in retire_refusals(found, checkpoint, "e")
+
+
+def test_after_a_restore_recreates_an_id_the_old_sandboxs_checkpoints_are_retirable(
+    tmp_path, garage, retained, stopped
+):
+    from sandbox_science.worker.checkpoint_jobs import retire_refusals
+
+    identity, _ = kept_checkpoint(tmp_path, retained)
+    save_environment(retained, "e", "ss-checkpoint-test", EnvironmentState.DELETED)
+    plan = checkpoint_restore.plan(
+        retained, identity, "e", KEPT, "op", create=Created(retained), suspend=suspended
+    )
+    found = inventory(retained)
+    checkpoint = next(c for c in found.checkpoints if c.manifest_sha256 == identity)
+    assert retire_refusals(found, checkpoint, "e") == [f"restore {plan.restore_id} reads it"]
+    nonce = checkpoint_restore.attempt(retained, plan.restore_id, "op")
+    checkpoint_restore.verify(retained, plan.restore_id, nonce, plan.tree_sha256, "op")
+    found = inventory(retained)
+    assert [e.state for e in found.environments if e.environment_id == "e"] == ["ready"]
+    assert retire_refusals(found, checkpoint, "e") == []  # the old workspace is gone from "e"
+
+
+def test_a_checkpoint_naming_the_restore_marker_is_refused(tmp_path, garage, retained, stopped):
+    plan = planned(retained)
+    root = workspace(tmp_path / "source")
+    (root / checkpoint_restore.MARKER).write_text("rst-" + "0" * 24)
+    identity, _, _ = capture_upload(root, plan.source, UPLOAD, plan.capture)
+    verify(retained, plan.checkpoint_id, identity, UPLOAD, "upload", "op")
+    checkpoint_remote.promote(UPLOAD, KEPT, identity)
+    verify(retained, plan.checkpoint_id, identity, KEPT, "kept", "op")
+    create = Created(retained)
+    with pytest.raises(RecordError, match="cannot write"):
+        restore_plan(retained, identity, create=create)
+    assert create.requests == []
+
+
+def test_the_job_refuses_a_volume_another_user_owns(
+    tmp_path, garage, retained, stopped, monkeypatch
+):
+    identity, _ = kept_checkpoint(tmp_path, retained)
+    plan = restore_plan(retained, identity)
+    volume = seeded(tmp_path / "target")
+    monkeypatch.setattr("os.getuid", lambda: os.stat(volume).st_uid + 1)
+    with pytest.raises(ValueError, match="restore_run_as_user"):
+        checkpoint_restore.write(volume, plan, KEPT)
+    assert (volume / "image-docs").exists()
+
+
+def test_an_open_upload_expiry_keeps_checkpoints_away_until_it_ends(
+    tmp_path, garage, retained, stopped
+):
+    from sandbox_science.testing import FakeClock
+
+    now = datetime.now(UTC)
+    records = CheckpointRecords(retained.state_dir)
+    try:
+        with pytest.raises(RecordError, match="intent is missing"):
+            records.upload_expiry("done", now, "op", {})
+        records.upload_expiry("intent", now, "op", {"older_than_hours": 168})
+        with pytest.raises(RecordError, match="another upload expiry"):
+            records.upload_expiry("intent", now, "op", {})
+    finally:
+        records.close()
+    with pytest.raises(RecordError, match="upload expiry is under way"):
+        planned(retained)
+    # An intent whose end never came stops counting after its lease.
+    later = FakeClock(now + timedelta(hours=7))
+    assert planned(retained, clock=later).source.environment_id == "e"
+    records = CheckpointRecords(retained.state_dir)
+    try:
+        with pytest.raises(RecordError, match="intent is missing or old"):
+            records.upload_expiry("done", later.now(), "op", {})
+        held = records.holds(later.now())[0]
+        records.release(held.checkpoint_id, later.now(), "test", "op")
+        records.upload_expiry("intent", later.now(), "op", {"older_than_hours": 168})
+        records.upload_expiry("done", later.now(), "op", {"expired": 3, "kept": 1})
+        phases = [(o.phase, o.detail) for o in records.operations()]
+    finally:
+        records.close()
+    assert phases[-1] == ("done", {"expired": 3, "kept": 1})
+
+
+def test_an_upload_verification_waits_for_an_open_expiry(tmp_path, garage, retained, stopped):
+    plan = planned(retained)
+    identity, _, _ = capture_upload(workspace(tmp_path / "v"), plan.source, UPLOAD, plan.capture)
+    records = CheckpointRecords(retained.state_dir)
+    try:
+        # As if the intent had been placed between the plan and the verification.
+        records._operation(
+            records.db, datetime.now(UTC), "op", "upload-expiry", "upload", "intent", {}
+        )
+    finally:
+        records.close()
+    with pytest.raises(RecordError, match="upload expiry is under way"):
+        verify(retained, plan.checkpoint_id, identity, UPLOAD, "upload", "op")
