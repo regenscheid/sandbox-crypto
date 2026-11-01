@@ -226,6 +226,21 @@ class WorkRecords:
             else Ownership(project=project, session=session, work=row[0], run=run, epoch=row[1])
         )
 
+    def session_owner(self, project: str, session: str) -> Ownership | None:
+        """The session's current authority: its research tree's root work, that work's
+        current run and the session's epoch, which the worker's recovery fence admits.
+        ``None`` for a session no run has started, which the worker has not fenced."""
+        with self.control.read() as tx:
+            row = tx.sql.execute(
+                "SELECT w.work,w.current,s.epoch FROM research_sessions s "
+                "JOIN research_work w ON w.project=s.project AND w.session=s.session "
+                "AND w.work=s.root WHERE s.project=? AND s.session=?",
+                (project, session),
+            ).fetchone()
+        if row is None:
+            return None
+        return Ownership(project=project, session=session, work=row[0], run=row[1], epoch=row[2])
+
     def admit(
         self,
         project: str,

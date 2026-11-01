@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import json
 import logging
@@ -33,11 +34,17 @@ from sandbox_science.contracts import (
     EnvironmentState,
     ErrorKind,
     ExecutionContext,
+    FileContent,
     FileListing,
     IsolationEvidence,
     ListFilesRequest,
     Location,
+    ProvisionOperation,
+    ProvisionRequest,
+    ReadFileRequest,
     SessionCloseRequest,
+    WriteFileRequest,
+    WriteFileResult,
 )
 from sandbox_science.contracts.child_environments import (
     ChildEnvironment,
@@ -50,6 +57,8 @@ from sandbox_science.contracts.child_environments import (
     RetainedInput,
     is_child_environment,
 )
+from sandbox_science.contracts.context import ExecutionAuthority
+from sandbox_science.contracts.recovery import RecoveryFence
 from sandbox_science.contracts.worker import PROTOCOL_VERSION
 from sandbox_science.policy import effective_resources, load_ceiling, load_policy
 from sandbox_science.testing import eventually
@@ -60,8 +69,10 @@ from sandbox_science.worker.child_environments import ChildEnvironments
 from sandbox_science.worker.child_records import ACTIVE, ChildRecord
 from sandbox_science.worker.environments import Environments
 from sandbox_science.worker.errors import WorkerError
+from sandbox_science.worker.files import RangeWritten
 from sandbox_science.worker.manager import ExecutionManager
 from sandbox_science.worker.monitor import MonitorDesk
+from sandbox_science.worker.recovery_fence import OPERATOR, RecoveryFences, operator_scope
 from sandbox_science.worker.settings import (
     ChildProfile,
     EnvironmentSettings,
@@ -93,11 +104,53 @@ def child_profile(**changes: Any) -> ChildProfile:
 
 class SizedPort(FakePort):
     """A ``FakePort`` whose listings carry each file's size, and whose probe gives its
-    evidence, as the worker's do; ``unprobed`` environments report none."""
+    evidence, as the worker's do; ``unprobed`` environments report none. With ``fences``,
+    every call that names a context passes the worker's recovery fence first, as the
+    execution manager's do."""
 
     def __init__(self) -> None:
         super().__init__()
         self.unprobed: set[str] = set()
+        self.fences: RecoveryFences | None = None
+
+    def _fenced(self, context: ExecutionContext) -> None:
+        if self.fences is not None:
+            self.fences.check(context, operator=OPERATOR.get())
+
+    async def read_file(self, request: ReadFileRequest) -> FileContent:
+        self._fenced(request.context)
+        return await super().read_file(request)
+
+    async def write_file(self, request: WriteFileRequest) -> WriteFileResult:
+        self._fenced(request.context)
+        return await super().write_file(request)
+
+    async def read_part(
+        self, context: ExecutionContext, path: str, offset: int, length: int
+    ) -> tuple[bytes, int]:
+        self._fenced(context)
+        return await super().read_part(context, path, offset, length)
+
+    async def write_range(
+        self,
+        context: ExecutionContext,
+        path: str,
+        upload: str,
+        offset: int,
+        content: bytes,
+        *,
+        sha256: str | None = None,
+        size: int | None = None,
+        discard: bool = False,
+    ) -> RangeWritten:
+        self._fenced(context)
+        return await super().write_range(
+            context, path, upload, offset, content, sha256=sha256, size=size, discard=discard
+        )
+
+    async def provision(self, request: ProvisionRequest) -> ProvisionOperation:
+        self._fenced(request.context)
+        return await super().provision(request)
 
     async def location(self, environment_id: str) -> Location:
         found = await super().location(environment_id)
@@ -107,6 +160,7 @@ class SizedPort(FakePort):
         return found.model_copy(update={"isolation_evidence": evidence})
 
     async def list_files(self, request: ListFilesRequest) -> FileListing:
+        self._fenced(request.context)
         listing = await super().list_files(request)
         environment = request.context.environment_id
         prefix = "" if request.path == "." else request.path + "/"
@@ -156,6 +210,7 @@ class Pool:
         self.environments.release = release
         self.store = Store(tmp_path / "worker" / "worker.sqlite3")
         self.port = SizedPort()
+        self.port.fences = self.store.recovery_fences
         self.children = self._children()
         self.policy = self.add(granting(tmp_path))
 
@@ -1211,6 +1266,122 @@ async def test_a_session_close_after_the_hand_back_finds_nothing(pool: Pool) -> 
     await pool.children.hand_back(made.environment_id, pool.back(()))
     assert (await pool.children.end(made.environment_id, pool.end())).phase == "released"
     assert await pool.children.close_session(CONTEXT) == []
+
+
+# The recovery fence (docs/specs/worker-recovery-authority.md): a session a run has
+# fenced admits only calls with its current epoch's authority.
+
+
+def owned(epoch: int) -> ExecutionContext:
+    """The session's context with the research authority of a run of ``epoch``."""
+    authority = ExecutionAuthority(work="w-root", run=f"r-{epoch}", epoch=epoch)
+    return CONTEXT.model_copy(update={"authority": authority})
+
+
+async def test_a_fenced_sessions_calls_with_its_authority_are_admitted(pool: Pool) -> None:
+    """A session whose runs have fenced it (a second run: epoch 2): the delegation's
+    admission with inputs, their copies, a retained input's parts, the hand-back, the
+    end and the session's close all carry the current run's authority and are admitted;
+    the same calls without it, or with the first run's, are refused."""
+    pool.store.recovery_fences.install(RecoveryFence(project_id="p1", session_id="s1", epoch=2))
+    current, stale = owned(2), owned(1)
+    report = b"# Report\n"
+    request = pool.request(
+        inputs=("data/input.txt",), retained=(retained("results/report.md", report),)
+    )
+    for refused in (request, request.model_copy(update={"context": stale})):
+        with pytest.raises(WorkerError, match="missing or superseded research authority"):
+            await pool.children.admit(refused)
+    assert pool.store.child_environments.listed() == []
+    made, created = await pool.children.admit(request.model_copy(update={"context": current}))
+    assert created
+    made = await pool.settled(made.environment_id)
+    assert (made.phase, [f.path for f in made.inputs]) == ("ready", ["inputs/data/input.txt"])
+    child = made.environment_id
+    data = base64.b64encode(report).decode()
+    for context in (CONTEXT, stale):
+        with pytest.raises(WorkerError, match="superseded"):
+            await pool.children.stage_input(
+                child, InputPart(context=context, index=0, offset=0, content_b64=data)
+            )
+    staged = await pool.children.stage_input(
+        child, InputPart(context=current, index=0, offset=0, content_b64=data)
+    )
+    assert staged.staged is not None
+    pool.port.files[child, "out/notes.md"] = b"notes\n"
+    for context in (CONTEXT, stale):
+        with pytest.raises(WorkerError, match="superseded"):
+            await pool.children.hand_back(child, pool.back(("out/notes.md",), context=context))
+        with pytest.raises(WorkerError, match="superseded"):
+            await pool.children.end(
+                child, ChildEnvironmentEnd(context=context, reason="delegation_ended")
+            )
+    back = await pool.children.hand_back(child, pool.back(("out/notes.md",), context=current))
+    assert back.complete
+    assert pool.port.files[SESSION, f"work/{DELEGATION}/out/notes.md"] == b"notes\n"
+    ended = await pool.children.end(
+        child, ChildEnvironmentEnd(context=current, reason="delegation_ended")
+    )
+    assert ended.phase == "released"
+    # Another delegation's, ended by the session's close with its current authority.
+    other, _ = await pool.children.admit(pool.request("dlg-" + "b" * 24, context=current))
+    await pool.settled(other.environment_id)
+    assert await pool.children.close_session(current) == [other.environment_id]
+    assert pool.children.get(other.environment_id, CONTEXT).phase == "released"
+
+
+async def test_a_later_run_finishes_a_hand_back_an_earlier_one_asked_for(pool: Pool) -> None:
+    """The hand-back is the same whichever run of the session asks: a later run (a newer
+    epoch) asking again is no other hand-back, and ending it copies with its authority."""
+    fences = pool.store.recovery_fences
+    fences.install(RecoveryFence(project_id="p1", session_id="s1", epoch=1))
+    made, _ = await pool.children.admit(pool.request(context=owned(1)))
+    child = (await pool.settled(made.environment_id)).environment_id
+    pool.port.files[child, "a.txt"] = b"a"
+    pool.port.gates["a.txt"] = gate = asyncio.Event()
+    first = asyncio.ensure_future(
+        pool.children.hand_back(child, pool.back(("a.txt",), context=owned(1)))
+    )
+    await eventually(lambda: bool(pool.port.gated), timeout=10)
+    first.cancel()  # the first run's process stopped while it copied
+    with contextlib.suppress(asyncio.CancelledError):
+        await first
+    assert pool.children.get(child, CONTEXT).phase == "collecting"
+    fences.install(RecoveryFence(project_id="p1", session_id="s1", epoch=2))
+    gate.set()
+    back = await pool.children.hand_back(child, pool.back(("a.txt",), context=owned(2)))
+    assert back.complete
+    ended = await pool.children.end(
+        child, ChildEnvironmentEnd(context=owned(2), reason="delegation_ended")
+    )
+    assert ended.phase == "released"
+
+
+async def test_preparation_keeps_the_admitting_runs_authority(pool: Pool) -> None:
+    """Preparation goes on after admission answered: its copies in both environments
+    carry the admitting run's authority, and a newer epoch installed meanwhile refuses
+    them, so the child environment fails instead of acting for a superseded run."""
+    fences = pool.store.recovery_fences
+    fences.install(RecoveryFence(project_id="p1", session_id="s1", epoch=3))
+    pool.port.located.clear()  # preparation waits at the probe
+    made, _ = await pool.children.admit(pool.request(inputs=("data",), context=owned(3)))
+    fences.install(RecoveryFence(project_id="p1", session_id="s1", epoch=4))
+    pool.port.located.set()
+    found = await pool.settled(made.environment_id)
+    assert found.phase == "released"
+    assert found.failure is not None
+    assert "superseded" in (found.message or "")
+
+
+async def test_an_operator_client_acts_without_research_authority(pool: Pool) -> None:
+    """The worker's explicit operator permission is the only way past the fence without
+    the current authority (an operator's maintenance, the workspace's user actions)."""
+    pool.store.recovery_fences.install(RecoveryFence(project_id="p1", session_id="s1", epoch=2))
+    with operator_scope(True):
+        made = await pool.ready()
+        ended = await pool.children.end(made.environment_id, pool.end("abandoned"))
+    assert ended.phase == "released"
+    assert not OPERATOR.get()
 
 
 def _manager(pool: Pool) -> ExecutionManager:

@@ -86,6 +86,7 @@ from sandbox_science.contracts.child_environments import (
     hand_back_path,
     hand_back_reserved,
 )
+from sandbox_science.contracts.context import ExecutionAuthority
 from sandbox_science.contracts.monitor import ChildSeeding, SecondsSummary
 from sandbox_science.contracts.worker import (
     DEFAULT_COLLECT_MAX_BYTES,
@@ -103,6 +104,7 @@ from .environments import Environments, ScheduleTimeoutError
 from .errors import WorkerError
 from .job_sandboxes import EnvironmentPort, JobFailureError, TooLargeError, replay
 from .ranged_copy import copy_file, upload_id
+from .recovery_fence import OPERATOR
 from .settings import ChildProfile, EnvironmentSettings
 
 if TYPE_CHECKING:
@@ -150,6 +152,10 @@ class _Planned(BaseModel):
     min_isolation_tier: int | None = None
     retained: tuple[RetainedInput, ...] = ()
     """The inputs from control's retained content to copy once ready (CE-7)."""
+    authority: ExecutionAuthority | None = None
+    """The admitting run's research authority, which preparation keeps: its replay and
+    copies in the session's and the child's environments pass the recovery fence with
+    it, as every deferred step of the worker's keeps its original authority."""
 
 
 class _Copied(BaseModel):
@@ -287,6 +293,7 @@ class ChildEnvironments:
         """Admit a child environment and start making it; the existing one for the same
         delegation. Refuses with the reason, creating nothing (CE-9)."""
         context = request.context
+        self._admits(context)
         existing = self.records.for_delegation(context.project_id, request.delegation_id)
         if existing is not None:
             return self._same(existing, context), False
@@ -379,7 +386,12 @@ class ChildEnvironments:
                 updated_at=now,
             )
             self.records.insert(record)
-            stored = planned.model_copy(update={"min_isolation_tier": request.min_isolation_tier})
+            stored = planned.model_copy(
+                update={
+                    "min_isolation_tier": request.min_isolation_tier,
+                    "authority": context.authority,
+                }
+            )
             self.records.record_step(record.environment_id, "inputs", stored.model_dump_json(), now)
         self._spawn(record.environment_id)
         return self.view(record), True
@@ -554,13 +566,14 @@ class ChildEnvironments:
         seconds = max(0.0, (now - creating).total_seconds())
         self.records.record_step(environment_id, "created", json.dumps(seconds), now)
         self._update(environment_id, phase="preparing")
+        planned = _Planned.model_validate_json(self.records.steps(environment_id)["inputs"])
         session = ExecutionContext(
             project_id=record.project_id,
             session_id=record.session_id,
             environment_id=record.session_environment,
+            authority=planned.authority,
         )
         child = session.model_copy(update={"environment_id": environment_id})
-        planned = _Planned.model_validate_json(self.records.steps(environment_id)["inputs"])
         remaining = (record.ready_by - self.clock.now()).total_seconds()
         try:
             async with asyncio.timeout(max(0.0, remaining)):
@@ -644,6 +657,7 @@ class ChildEnvironments:
         a ready child environment (CE-7): in place, after the bytes received so far, the
         last part's write checking the whole file's SHA-256 and size as admission
         planned them. A part not sent where those bytes end is not written."""
+        self._admits(part.context)
         async with self._lock(environment_id):
             record = self._owned(environment_id, part.context)
             if record.phase != "ready":
@@ -707,11 +721,14 @@ class ChildEnvironments:
     async def hand_back(self, environment_id: str, request: HandBackRequest) -> ChildHandBack:
         """Copy the named files into the session's ``work/<delegation_id>/``; the stored
         manifest when it was made already. A hand-back cut short goes on."""
+        self._admits(request.context)
         async with self._lock(environment_id):
             record = self._owned(environment_id, request.context)
             text = request.model_dump_json()
             recorded = self.records.steps(environment_id).get("request")
-            if recorded is not None and recorded != text:
+            if recorded is not None and _unowned(
+                HandBackRequest.model_validate_json(recorded)
+            ) != _unowned(request):
                 raise WorkerError(
                     ErrorKind.CONFLICT, "another hand-back of this child environment is recorded"
                 )
@@ -897,13 +914,18 @@ class ChildEnvironments:
     async def end(self, environment_id: str, request: ChildEnvironmentEnd) -> ChildEnvironment:
         """Release the child environment, or keep it stopped after an incomplete hand-back.
         Ending one that has ended already answers its record."""
+        self._admits(request.context)
         self._owned(environment_id, request.context)
         await self._stop_preparing(environment_id)
         async with self._lock(environment_id):
             record = self._owned(environment_id, request.context)
-            return self.view(await self._end(record, request.reason))
+            return self.view(await self._end(record, request.reason, request.context))
 
-    async def _end(self, record: ChildRecord, reason: ChildEndReason) -> ChildRecord:
+    async def _end(
+        self, record: ChildRecord, reason: ChildEndReason, context: ExecutionContext | None = None
+    ) -> ChildRecord:
+        """End it for ``reason``; a hand-back cut short is finished first, with the
+        authority of ``context``, the caller's, or else the one it was asked with."""
         environment_id = record.environment_id
         if record.phase in ("released", "retained"):
             return record
@@ -915,9 +937,10 @@ class ChildEnvironments:
         closing = "release" in self.records.steps(environment_id)
         manifest = self.records.hand_back(environment_id)
         if record.phase == "collecting" and manifest is None and "request" in steps:
-            manifest = await self._collect(
-                record, HandBackRequest.model_validate_json(steps["request"])
-            )
+            asked = HandBackRequest.model_validate_json(steps["request"])
+            if context is not None:
+                asked = asked.model_copy(update={"context": context})
+            manifest = await self._collect(record, asked)
         if record.phase in ("creating", "preparing"):
             if record.failure is None:
                 self._update(
@@ -1000,7 +1023,7 @@ class ChildEnvironments:
                 continue
             await self._stop_preparing(row.environment_id)
             async with self._lock(row.environment_id):
-                await self._end(self._record(row.environment_id), "session_closed")
+                await self._end(self._record(row.environment_id), "session_closed", context)
             ended.append(row.environment_id)
         return ended
 
@@ -1183,6 +1206,13 @@ class ChildEnvironments:
             raise WorkerError(ErrorKind.NOT_FOUND, f"no child environment {environment_id!r}")
         return record
 
+    def _admits(self, context: ExecutionContext) -> None:
+        """Refuse a call without the session's current research authority once a run has
+        fenced the session, as every effect in its environments is (the recovery fence):
+        the orchestrator acts for the run whose delegation it is, an operator client for
+        itself."""
+        self.store.recovery_fences.check(context, operator=OPERATOR.get())
+
     def _owned(self, environment_id: str, context: ExecutionContext) -> ChildRecord:
         """The row, when the context is its session's; another's is ``not_found``."""
         record = self.records.get(environment_id)
@@ -1215,6 +1245,14 @@ def _summary(seconds: list[float]) -> SecondsSummary | None:
         median=statistics.median(seconds),
         longest=max(seconds),
         total=sum(seconds),
+    )
+
+
+def _unowned(request: HandBackRequest) -> HandBackRequest:
+    """A hand-back request without its caller's authority: the same hand-back, whichever
+    run of the session asks for it."""
+    return request.model_copy(
+        update={"context": request.context.model_copy(update={"authority": None})}
     )
 
 

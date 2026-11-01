@@ -524,7 +524,8 @@ class Recovery:
         )
         context, session_environment = self._context(blueprint.context), None
         if delegation is not None:
-            own = await self._own_environment(work, request, context, delegation)
+            # Its child environment is placed with this attempt's authority (CE-12).
+            own = await self._own_environment(work, request, authorized_context, delegation)
             if own is not None:
                 session_environment = context.environment_id
                 context = context.model_copy(update={"environment_id": own})
@@ -545,7 +546,8 @@ class Recovery:
     ) -> str | None:
         """Where a delegated continuation works (CE-12): in the child environment its
         work's last delegation had, while it is still ready; in a new one, with its inputs
-        copied again, when that one is gone; in the session's when it had none."""
+        copied again, when that one is gone; in the session's when it had none.
+        ``context`` carries this attempt's authority, which the worker's fence checks."""
         control = self.stores.projects.control
         records = DelegationRecords(control, clock=self.harness.clock)
         previous = await threaded(records.work_environment, self.project, self.session, work.work)

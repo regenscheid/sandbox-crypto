@@ -23,7 +23,13 @@ Implementation contract for tree Resume (worker protocol 8). This extends
   it does not cancel or replay commands admitted earlier. This is an admission
   boundary, not a process-lifetime lock.
 - Execution, jobs, provisioning installer steps, file writes and shared sync,
-  staging/sealing, kernel restart and session close use that boundary. Passive
+  staging/sealing, kernel restart and session close use that boundary. So do child
+  environments' admission, input staging, hand-back and end: the orchestrator sends
+  the authority of the run on whose behalf it acts (the parent at admission, the
+  delegated run at its end, the Resume attempt for a continuation's environment),
+  and `session close` the session's current authority (its root work, that work's
+  current run, the session's epoch); a child environment's background preparation
+  keeps its admitting run's authority. Passive
   observations do not acquire effect authority. Cleanup that changes guest state
   needs current authority or the explicit operator path; stale cleanup cannot
   terminate a newer attempt's kernel.

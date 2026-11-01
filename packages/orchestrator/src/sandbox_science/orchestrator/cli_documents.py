@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from sandbox_science.contracts import ErrorKind, ExecutionContext, new_id
+from sandbox_science.contracts.context import ExecutionAuthority
 
 from .context.history.reads import Register, shown
 from .documents import USER, Author, DocumentError, DocumentStore, store_path
@@ -272,8 +273,18 @@ async def _session_action(args: argparse.Namespace, store: ProjectStore) -> int:
     if session is None:
         print(f"error: project {args.project} has no session {args.session}", file=sys.stderr)
         return 1
+    from .continuity.records import WorkRecords
+
+    # The close acts with the session's current authority, as its runs do: the worker's
+    # recovery fence refuses a close without it once a run has started there.
+    owner = WorkRecords(store.control).session_owner(args.project, args.session)
     context = ExecutionContext(
-        project_id=args.project, session_id=args.session, environment_id=session.environment_id
+        project_id=args.project,
+        session_id=args.session,
+        environment_id=session.environment_id,
+        authority=None
+        if owner is None
+        else ExecutionAuthority(work=owner.work, run=owner.run, epoch=owner.epoch),
     )
     async with WorkerClient(args.worker, read_secret(args.token_file)) as client:
         # Returned tasks that await review are accepted first, their environments handed

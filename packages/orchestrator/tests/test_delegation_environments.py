@@ -55,13 +55,16 @@ from sandbox_science.contracts.child_environments import (
     hand_back_path,
     hand_back_target,
 )
+from sandbox_science.contracts.context import ExecutionAuthority
 from sandbox_science.contracts.worker import (
     PROTOCOL_VERSION,
     Feature,
     ManifestFile,
     UncollectedFile,
 )
+from sandbox_science.orchestrator import cli
 from sandbox_science.orchestrator.context.agent import AgentContext
+from sandbox_science.orchestrator.continuity.records import WorkRecords
 from sandbox_science.orchestrator.delegation.environments import (
     NOT_OFFERED,
     OWN_UNDER_OFF,
@@ -82,12 +85,14 @@ from sandbox_science.orchestrator.delegation.records import (
 from sandbox_science.orchestrator.delegation.specs import SPECS
 from sandbox_science.orchestrator.loop import SYSTEM_PROMPT, Transcript
 from sandbox_science.orchestrator.projects import ProjectStore
-from sandbox_science.orchestrator.worker_client import WorkerAPIError
+from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 from sandbox_science.testing import FakeClock
 from sandbox_science.worker.app import create_app
 from sandbox_science.worker.artifacts import Blobs
 from sandbox_science.worker.backends import LocalBackend
+from sandbox_science.worker.errors import WorkerError
 from sandbox_science.worker.manager import ExecutionManager
+from sandbox_science.worker.recovery_fence import OPERATOR, operator_scope
 from sandbox_science.worker.settings import LocalBackendSettings
 from sandbox_science.worker.store import Store
 
@@ -129,6 +134,8 @@ class ChildService:
     parts: list[InputPart] = field(default_factory=list[InputPart])
     stall: asyncio.Event | None = None
     """When set, a part's answer waits for it."""
+    refusals: list[str] = field(default_factory=list[str])
+    """What the routes refused, as the worker would have."""
 
     def alive(self) -> list[ChildEnvironment]:
         return [c for c in self.made.values() if c.phase in ("creating", "ready", "collecting")]
@@ -302,8 +309,23 @@ class ChildService:
 
     # As the worker's routes, for the end-to-end tests.
 
+    def fenced(self, context: ExecutionContext) -> None:
+        """The worker's recovery fence, as its child environment routes pass it."""
+        if self.manager is not None:
+            self.manager.store.recovery_fences.check(context, operator=OPERATOR.get())
+
     @web.middleware
     async def routes(
+        self,
+        request: web.Request,
+        handler: Callable[[web.Request], Awaitable[web.StreamResponse]],
+    ) -> web.StreamResponse:
+        # The harness's own client, as a deployment gives it: it may install recovery
+        # epochs, and is no operator, so the fence applies to all it asks.
+        with operator_scope(False):
+            return await self._routes(request, handler)
+
+    async def _routes(
         self,
         request: web.Request,
         handler: Callable[[web.Request], Awaitable[web.StreamResponse]],
@@ -324,21 +346,26 @@ class ChildService:
         try:
             if path == "/v1/child-environments" and request.method == "POST":
                 body = ChildEnvironmentRequest.model_validate_json(await request.read())
+                self.fenced(body.context)
                 return _json(self.admit(body), 201)
             if path == "/v1/child-environments":
                 return _json(ChildEnvironmentList(environments=tuple(self.made.values())))
             environment_id = path.split("/")[3]
             if path.endswith("/inputs"):
                 body = InputPart.model_validate_json(await request.read())
+                self.fenced(body.context)
                 return _json(await self.stage(environment_id, body))
             if path.endswith("/hand-back"):
                 body = HandBackRequest.model_validate_json(await request.read())
+                self.fenced(body.context)
                 return _json(await self.hand_back(environment_id, body))
             if path.endswith("/end"):
                 body = ChildEnvironmentEnd.model_validate_json(await request.read())
+                self.fenced(body.context)
                 return _json(self.end(environment_id, body))
             return _json(self.made[environment_id])
-        except WorkerAPIError as error:
+        except (WorkerAPIError, WorkerError) as error:
+            self.refusals.append(error.message)
             return web.json_response(
                 {"error": {"kind": error.kind.value, "message": error.message}},
                 status=403 if error.kind is ErrorKind.POLICY_DENIED else 409,
@@ -687,6 +714,65 @@ async def test_a_task_in_its_own_environment_hands_back_and_is_released(
     # The parent's outcome says so.
     (child,) = children(owning, root)
     assert child.parent is not None
+
+
+async def test_a_session_that_ran_before_delegates_hands_back_and_closes(
+    owning: Harness, service: ChildService
+) -> None:
+    """Under the worker's recovery fence, as the harness's own client meets it (no
+    operator permission): in a session whose first run fenced it, a second run's
+    delegation with inputs is admitted, its hand-back made and its environment released,
+    every call carrying that run's authority; the session's close carries the session's
+    current authority; a call with the first run's epoch, or none, is refused."""
+    await owning.run("first", [Reply("Nothing to delegate yet.")])
+    root = await owning.run(
+        "root",
+        [Reply(calls=[TASK]), wait(), Reply("Done.")],
+        delegated=[
+            Reply(calls=[call("write_file", path=f"{AREA}/table.txt", content="1 1 1\n")]),
+            Reply(calls=[call("write_file", path=f"{AREA}/notes.txt", content="All ones.\n")]),
+            Reply(json.dumps(RESULT)),
+        ],
+    )
+    assert service.refusals == []
+    (delegation_id,) = started(root)
+    found = delegation(owning, delegation_id)
+    (child_environment,) = service.made
+    assert service.requests[0].inputs == ("data/primes.txt",)
+    assert found.environment is not None
+    assert found.environment["end"] == "released"
+    (back,) = service.hand_backs
+    assert set(back.files) == {
+        f"work/{delegation_id}/{name}" for name in ("table.txt", "notes.txt")
+    }
+    epochs = {
+        part.authority.epoch if part.authority is not None else None
+        for part in (service.requests[0].context, back.context)
+    }
+    store = ProjectStore(owning.state)
+    try:
+        current = WorkRecords(store.control).session_owner(PROJECT, SESSION)
+    finally:
+        store.close()
+    assert current is not None
+    assert current.epoch == 2  # the second run's
+    assert epochs == {current.epoch}
+    # A superseded run's call, or one without authority, is refused.
+    context = owning.context()
+    stale = ExecutionAuthority(work=current.work, run=current.run, epoch=1)
+    async with WorkerClient(owning.worker.url, TOKEN) as client:
+        for authority in (stale, None):
+            placement = ChildPlacement(client, context.model_copy(update={"authority": authority}))
+            with pytest.raises(WorkerAPIError, match="missing or superseded research authority"):
+                await placement.end(child_environment, "abandoned")
+    # The session's close, as the user runs it, carries the session's current authority.
+    token = owning.tmp / "worker.token"
+    closing = [
+        "session", "close", "--state-dir", str(owning.state), "--project", PROJECT,
+        "--session", SESSION, "--worker", owning.worker.url, "--token-file", str(token),
+    ]  # fmt: skip
+    assert await asyncio.to_thread(cli.main, closing) == 0
+    assert len(service.refusals) == 2
 
 
 async def test_an_environment_never_ready_fails_the_delegation(
@@ -1424,6 +1510,12 @@ async def test_a_resume_continues_in_its_environment_or_restarts_in_a_new_one(
         assert back.delegation_id == continuation.delegation_id
         assert continuation.environment["end"] == "released"
         assert works.get("p", "s", child_run).state == "completed"
+        # The Resume's calls for its child environment carry its own authority, the
+        # session's current epoch, which the worker's recovery fence admits.
+        current = works.session_owner("p", "s")
+        assert current is not None
+        placed = [back.context, *(r.context for r in service.requests[1:])]
+        assert {c.authority.epoch if c.authority else None for c in placed} == {current.epoch}
         if reopened:
             # The first result's file comes back in the environment's one hand-back,
             # once, and the reopened delegation's account says with whom (PD-46).
