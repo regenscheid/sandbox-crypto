@@ -76,7 +76,9 @@ REPO = recovery.REPO
 OS_BIN = recovery.OS_BIN
 PURPOSE = "disposable real-model Phase A/B lab"
 PROJECT = "modellab"
-SESSIONS = ("connectors", "review", "checkin", "kernel")
+SESSIONS = ("connectors", "review", "checkin", "kernel", "held", "delegate")
+"""``held`` is the DA-20 lab's scripted session (no model, ``da20_probes.py``) and
+``delegate`` its real-model session (stage ``delegate``)."""
 MODEL = "sandbox-orchestrator"
 SERVER = "crypto-research-mcp"
 CONFIG = Path.home() / ".config/sandbox-science"
@@ -131,6 +133,12 @@ PROMPTS: dict[str, str] = {
     "resume-child": """Delegate one TASK whose brief is: "Write the file delta.md containing the line: delta before the pause. Then run the shell command sleep 240 (one call, wait for it). Then edit delta.md you wrote earlier: append the line delta after the pause. Then return with the file's path." Wait for its result and accept it, then answer with the file's path.""",
     "checkin": """This is a platform lab of usage check-ins. Do this as separate steps, one tool call per step, and do not combine steps: run twenty separate python cells, the n-th of which prints n squared, for n from 1 to 20. After each cell, say in one short sentence what it printed. Then answer with the sum of the twenty values.""",
     "checkin-child": """Delegate one TASK whose brief is: "Run twelve separate python cells, one tool call each, the n-th printing 2 to the power n, for n from 1 to 12. Then return the twelve values." Wait for it. If it checks in about its usage, decide it with resource_decide: extend it once. Then answer with its result.""",
+    "delegate": """This is a platform lab of delegated agents doing ordinary research work. Delegate three TASKS at once, then wait for all three results.
+Brief A: "Use python cells (one tool call per cell). Cell 1: compute the primes below 20000 with a simple sieve and print how many there are. Cell 2: compute the sum of those primes and print it. Then run one shell command, ls -la, and report what it lists. Write a file results/a.json with the keys count and sum. Then return the file's path and the two numbers."
+Brief B: "Compute the Smith normal form of the integer matrix [[2, 4, 4], [-6, 6, 12], [10, -4, -16]] and the factorization of x^8 - 1 over the integers, using the sympy package (install it if it is missing; do not write the algorithms yourself). Write both results to results/b.txt, then return the file's path and the results."
+Brief C: "Start one background job (start_job) that runs this shell command: python3 -c 'import time, json; time.sleep(20); json.dump({"collatz_27": 111}, open("job-out.json", "w"))' and wait for it to finish. Then, with a python cell, read job-out.json, check the number 111 by computing the Collatz stopping time of 27 yourself, and write results/c.md with one line saying whether they agree. Return the file's path and that line."
+When all three have returned, read each child's results file with read_file (at the path it reported), accept each task with accept_delegation, and answer with the three files' contents and paths.""",
+    "delegate2": """Delegate one more TASK, D, and wait for its result. Brief D: "Using the networkx package (install it if it is missing; do not write the graph algorithms yourself), build the Petersen graph and compute its diameter, girth and number of spanning trees. Check the package version with one shell command that runs python3 and imports networkx. Write the three numbers to results/d.txt, then return the file's path and the numbers." When it returns, read its results file with read_file, accept it with accept_delegation, and answer with the file's contents and path.""",
     "kernel": """Compute, iteratively and checking each step, the first ten terms of the sequence a(1)=7, a(n+1)=(a(n)^2+1) mod 1000003, then the smallest n<=10 for which a(n) is divisible by 3, if any. Keep your intermediate state as you go, and answer with the ten terms and the result.""",
 }
 

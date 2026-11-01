@@ -655,3 +655,35 @@ note lines), and `cleanup` or `abort`.
 ```
 
 [Report](../docs/agent-reports/babbage-phase-ab-labs-2026-10-31.md).
+
+## DA-20 on real OpenShell: a child's processes held to its write area (2026-11-01)
+
+`da20_probes.py` sends a parent run's and a child's requests straight to the worker of a
+`model_lab.py` root (its own gateway, VM driver), with no model: project `modellab`'s
+environment, session `held`, a parent with no write area, a child in `work/dlg-da20a` and a
+sibling's area `work/dlg-da20b`. Its parts are `seed` (the environment, created as the
+harness's `ensure_environment` does, and the parent's, input, sibling and shared files),
+`hello` (`sandbox_confine.abi()` and `--probe` run in the sandbox as the executor's `hello`
+runs them, and the seccomp filter count of a parent's and a child's process), `shell`, `cell`
+(with a kernel restart and the `kernel_confinement` refusals), `job`, `network`, `process`
+(limits, priority, ptrace, signals, locks and a lease on the parent's kernel and the executor,
+then a SIGTERM to the parent's kernel), `provision` (sympy through `/v1/provisioning`, then
+`pip install` in the child's shell) and `parent` (the same shell probe unheld). Each part's
+requests and answers are evidence `da20-<part>`, exported by `cleanup` with the root's
+manifest. The `process` part ends the parent's kernel on purpose.
+
+`model_lab.py` adds the sessions `held` and `delegate` and the stages `delegate` (three tasks:
+cells and a shell command, sympy, a background job) and `delegate2` (a task needing networkx,
+which the environment lacks).
+
+```bash
+.venv/bin/python -I .agents/labs/model_lab.py prepare --model arr-claude-opus-5.5 --api messages
+.venv/bin/python -I .agents/labs/model_lab.py up "$LAB"
+.venv/bin/python -I .agents/labs/da20_probes.py "$LAB"            # all parts, in order
+.venv/bin/python -I .agents/labs/model_lab.py send "$LAB" delegate delegate
+.venv/bin/python -I .agents/labs/model_lab.py wait "$LAB" delegate
+.venv/bin/python -I .agents/labs/model_lab.py capture "$LAB" delegate delegate-final
+.venv/bin/python -I .agents/labs/model_lab.py cleanup "$LAB"
+```
+
+[Report](../docs/agent-reports/babbage-da20-lab-2026-11-01.md).
