@@ -217,10 +217,11 @@ jobs:
           --timeout=300 --timeout-method=thread -o faulthandler_timeout=280
           ${{ matrix.stage.selection }}
 
-  # Nightly: the slow tier twice, to measure how often its tests flake. One repetition of
-  # the whole tier takes about 15 minutes on the runner, so the tier is divided into five
-  # shards by test module, each a job that runs its tests twice. Each job's summary gives
-  # the flake rate it observed; add the five for the night's rate.
+  # Nightly: the slow tier four times, to measure how often its tests flake. One repetition
+  # of the whole tier takes about 15 minutes on the runner, so the tier is divided into five
+  # shards by test module, each a job that runs its tests four times (the slowest shard
+  # about 26 minutes). Each job's summary gives the flake rate it observed; add the five
+  # for the night's rate.
   repeat:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
@@ -240,7 +241,7 @@ jobs:
           enable-cache: true
       - run: uv sync --locked
       - run: >-
-          scripts/ci_pytest.sh 2400 slow --shard=${{ matrix.shard }}/5 -n auto --count 2
+          scripts/ci_pytest.sh 2400 slow --shard=${{ matrix.shard }}/5 -n auto --count 4
           -o tmp_path_retention_policy=failed --timeout=300 --timeout-method=thread
           -o faulthandler_timeout=280
           --ignore=packages/orchestrator/tests/test_skills_staging.py
@@ -248,7 +249,7 @@ jobs:
       - if: always()
         run: >-
           python3 scripts/flake_report.py "${RUNNER_TEMP}/pytest.txt"
-          --title "Slow tier, shard ${{ matrix.shard }}/5 (2 repetitions)"
+          --title "Slow tier, shard ${{ matrix.shard }}/5 (4 repetitions)"
 
   # The isolated staging modules, five repetitions in each of two jobs. One module takes
   # about three minutes a repetition on the runner.

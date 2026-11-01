@@ -2,7 +2,7 @@
 
 ## 2026-11-01
 
-- CI divides the test tiers into shards by test module (`tiers.py run --shard I/N`): three each for the fast and slow tiers on pull requests, four for the serial suite on each Python, and five for the nightly slow-tier repeat, which now runs each slow test twice instead of ten times ([conventions](CONVENTIONS.md#testing)).
+- CI divides the test tiers into shards by test module (`tiers.py run --shard I/N`): three each for the fast and slow tiers on pull requests, four for the serial suite on each Python, and five for the nightly slow-tier repeat, which runs each slow test four times; before, each of the five jobs ran the whole tier twice ([conventions](CONVENTIONS.md#testing)).
 
 ## 2026-10-23
 
