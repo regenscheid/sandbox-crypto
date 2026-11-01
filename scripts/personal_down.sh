@@ -27,7 +27,7 @@ active() { systemctl --user is-active -q "$1" 2>/dev/null; }
 status=0
 
 if [ -f "$CONFIG" ]; then
-  "$R/.venv/bin/sandbox-science" down --config "$CONFIG" "${KEEP[@]}" || status=$?
+  "$R/.venv/bin/sandbox-science" down --config "$CONFIG" ${KEEP[@]+"${KEEP[@]}"} || status=$?
 fi
 for _ in $(seq 1 60); do active "$UNIT-launcher" || break; sleep 1; done
 if active "$UNIT-launcher"; then

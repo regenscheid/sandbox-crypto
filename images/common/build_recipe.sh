@@ -37,7 +37,7 @@ prepare_image_build() {
     done
     image_contexts+=(--build-context "wheels=$image_work/wheels")
   fi
-  image_args=("${image_builder[@]}" --platform "$image_platform" \
+  image_args=(${image_builder[@]+"${image_builder[@]}"} --platform "$image_platform" \
     --file "$image_here/Containerfile" --target "$profile" \
     "${image_contexts[@]}" \
     --build-arg "REVISION=$revision" --build-arg "VERSION=$short" \
