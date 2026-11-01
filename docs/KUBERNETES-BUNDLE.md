@@ -54,7 +54,7 @@ and the explicit `app.architecture` / `pool.architecture` (`amd64` or `arm64`).
 Set an existing namespace, bundle name, each `storage_gib` and optional
 `storage_class`. `image_pull_secret` (default `ghcr-pull`) names the registry Secret in
 that namespace that every rendered Pod lists in `imagePullSecrets` (the app, the pool, the
-runtime manager, the maintenance CronJob's, the release Job's and the checkpoint Jobs' Pods,
+runtime manager, the maintenance CronJob's, the release and worker-command Jobs' and the checkpoint Jobs' Pods,
 init containers included), since the images are private; checkpoint Jobs run in the sandbox
 namespace, so the Secret must exist there too ([preparation, step 1](KUBERNETES-PREP.md#1-namespaces-and-the-pull-secret)). Use block-backed SQLite-compatible storage; RWX/NFS does not make
 independent SQLite writers safe. An omitted class uses the cluster default. The
@@ -767,7 +767,9 @@ control-cache trimming, rendered into the bundle by an opt-in `[maintenance]` se
 the offline worker replica release, a Job the operator creates by hand. Neither Pod mounts
 a service-account token or has any cluster authority, and both run the app's or pool's
 image with the same security context and JSON logs (`SS_LOG_FORMAT=json`) as the
-Deployments. Neither is qualified on a cluster yet.
+Deployments. Neither is qualified on a cluster yet. The worker's other offline commands, those that
+reach the OpenShell gateway, have a Job of their own ([offline worker
+commands](#offline-worker-commands)).
 
 ### Cache trimming (opt-in)
 
@@ -870,6 +872,66 @@ refused the same way. The Job has no preflight that lists Pods, which would need
 service account with authority to read them. Online release, beside a serving worker,
 is not built: it still needs the reader and writer fences
 ([Kubernetes work](KUBERNETES.md)).
+
+### Offline worker commands
+
+Two of the worker's operator commands ([WORKER](WORKER.md#child-environments),
+[environments](WORKER.md#environments)) delete or confirm sandboxes through the OpenShell
+gateway, with the worker stopped: `child-environments release` (and `child-environments
+list`, which opens the same records) and `environments reconcile`. The release Job above
+has no network, so it cannot run them. This renders a Job that can:
+
+```sh
+sandbox-science-kubernetes worker-job --config private.toml --output list.json child-environments list [--phase retained]
+sandbox-science-kubernetes worker-job --config private.toml --output release.json child-environments release [--superseded] ENVIRONMENT_ID
+sandbox-science-kubernetes worker-job --config private.toml --output reconcile.json environments reconcile [--no-wait] ENVIRONMENT_ID
+```
+
+Only these three commands, with the flags the worker documents for them, are rendered;
+the environment ID is one name of letters, digits, `.`, `_` and `-`. Each file is one Job
+with `generateName: <name>-worker-operation-` (so `kubectl create -f` makes a new one and
+`kubectl apply` refuses it), never part of `render`. It runs
+`sandbox-science-worker <command> --settings /private/worker.toml …` on the worker image
+with the same pool PVC, copied worker Secret, security context, JSON logs, `backoffLimit: 0`
+and one-hour deadline as the release Job, and an hour before the finished Job is deleted
+(read its log first). The
+gateway client identity is the worker's own: the OpenShell CLI tree on the pool PVC that
+`openshell.env` in `worker.toml` names, and `HOME`/`XDG_CONFIG_HOME` from the worker
+container's environment, so the Job reaches the gateway as the running worker does.
+
+**Network.** The Job's Pod is labelled `app.kubernetes.io/component: pool`, so the pool's
+NetworkPolicy selects it beside the default-deny one: DNS, the gateway and the pool's other
+approved egress, and no ingress anything can use. A second label,
+`sandbox-science.io/offline-job: worker-operation`, names it for `kubectl` and is in no
+selector. The pool's Services select the `pool` label too, which is harmless while the pool
+is at zero and is why the pool must be: with it running, the Pod would be a second endpoint
+that serves nothing. The Job itself carries the label `app.kubernetes.io/component:
+worker-operation`.
+
+**The guard** is the one of the release Job: each command takes the exclusive `StateLock`
+on the pool's state directory and refuses (exit 1, "another worker uses the state
+directory") while a worker holds it, and the ReadWriteOnce volume keeps a Pod on another
+node from mounting it beside the pool Pod.
+
+The sequence:
+
+1. Scale the pool to zero and wait for its Pod: `kubectl -n <namespace> scale
+   deploy/<name>-pool --replicas=0`, then `kubectl -n <namespace> wait --for=delete pod -l
+   app.kubernetes.io/component=pool --timeout=300s`.
+2. `kubectl -n <namespace> create -f list.json`, wait (`kubectl -n <namespace> wait
+   --for=condition=complete job/<generated name> --timeout=600s`), read
+   `kubectl -n <namespace> logs job/<generated name>`.
+3. Create and read the release or reconcile Job the same way. The release also records
+   the deletion hooks the worker owes; the next worker start runs them before it serves.
+4. Delete each finished Job by name, `kubectl -n <namespace> delete job/<generated
+   name>`: its Pod carries the pool's label, so until it goes (an hour after it ends) a
+   `wait --for=delete pod -l app.kubernetes.io/component=pool` waits for it too. Then scale
+   the pool back: `kubectl -n <namespace> scale deploy/<name>-pool --replicas=1`.
+
+A Job still running when the pool is scaled up holds the volume and the lock, so wait for
+it or delete it first. To find an environment's ID without stopping the pool,
+`kubectl exec` into the worker container: `environments list --settings
+/private/worker.toml` does not take the lock.
 
 ## Workspace checkpoints
 

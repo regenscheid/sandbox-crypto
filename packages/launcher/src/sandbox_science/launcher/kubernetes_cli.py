@@ -22,7 +22,7 @@ from pydantic import ValidationError
 from sandbox_science.contracts.workspace_checkpoint import CheckpointPlan, RestorePlan
 
 from . import kubernetes_site, kubernetes_site_config
-from .kubernetes_bundle import release_job, render
+from .kubernetes_bundle import CHILD_PHASES, release_job, render, worker_operation_job
 from .kubernetes_checkpoint import checkpoint_job, restore_job
 from .kubernetes_config import BundleError, load
 from .kubernetes_operations import OperationError, Operator, report, run_command, whoami
@@ -50,7 +50,7 @@ def write_bundle(path: Path, content: bytes) -> None:
 def main(argv: Sequence[str] | None = None) -> int:
     """Validate site-private TOML, write one deterministic Kubernetes List, generate the
     Secrets' contents into a new private directory, or write the offline worker replica
-    release Job for the operator to create by hand."""
+    release Job or an offline worker command's Job for the operator to create by hand."""
     parser = argparse.ArgumentParser(prog="sandbox-science-kubernetes", description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     for name in ("check", "render", "site", "release-job"):
@@ -61,6 +61,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     release = commands.choices["release-job"]
     release.add_argument("--preview", action="store_true", help="report without releasing")
     release.add_argument("--after", help="the previous report's next_after")
+    operation = commands.add_parser(
+        "worker-job",
+        help="render one offline worker command that needs the OpenShell gateway as a Job",
+    )
+    operation.add_argument("--config", type=Path, required=True)
+    operation.add_argument("--output", type=Path, required=True)
+    groups = operation.add_subparsers(dest="group", required=True)
+    children = groups.add_parser("child-environments").add_subparsers(dest="action", required=True)
+    children.add_parser("list").add_argument("--phase", choices=CHILD_PHASES)
+    release_child = children.add_parser("release")
+    release_child.add_argument("--superseded", action="store_true")
+    release_child.add_argument("environment_id")
+    environments = groups.add_parser("environments").add_subparsers(dest="action", required=True)
+    reconcile = environments.add_parser("reconcile")
+    reconcile.add_argument("--no-wait", action="store_true")
+    reconcile.add_argument("environment_id")
     job = commands.add_parser("checkpoint-job", help="render one checkpoint Job from a plan")
     job.add_argument("--config", type=Path, required=True)
     job.add_argument("--plan", type=Path, required=True, help="the worker's checkpoint plan")
@@ -175,6 +191,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(
                 f"generated the Secrets' contents in {args.output}; read its README.md, "
                 "which lists what is left to the operator; no cluster changes made"
+            )
+            return 0
+        if args.command == "worker-job":
+            words = [args.group, args.action]
+            words += ["--phase", args.phase] if getattr(args, "phase", None) else []
+            words += ["--superseded"] if getattr(args, "superseded", False) else []
+            words += ["--no-wait"] if getattr(args, "no_wait", False) else []
+            words += [args.environment_id] if hasattr(args, "environment_id") else []
+            try:
+                job = worker_operation_job(load(args.config), words)
+            except ValueError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 1
+            write_bundle(args.output, (json.dumps(job, indent=2, sort_keys=True) + "\n").encode())
+            print(
+                "rendered offline; scale the pool to zero, then kubectl create -f the file "
+                "(docs/KUBERNETES-BUNDLE.md#offline-worker-commands)"
             )
             return 0
         if args.command == "release-job":
