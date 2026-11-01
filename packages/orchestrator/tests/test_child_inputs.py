@@ -23,7 +23,7 @@ from sandbox_science.orchestrator.delegation.child_inputs import (
     send_input,
     session_path,
 )
-from sandbox_science.orchestrator.delegation.prompt import inputs_text
+from sandbox_science.orchestrator.delegation.prompt import inputs_text, write_area_text
 
 from .test_artifact_review import build, publish
 
@@ -168,6 +168,23 @@ async def test_content_shorter_than_its_size_fails_by_its_path() -> None:
 
     with pytest.raises(StagingError, match="another sender"):
         await send_input(content, 0, content.item("a.bin"), refusing)
+
+
+def test_the_write_area_line_is_true_of_each_placement() -> None:
+    """In the session's environment a child reads every file of the session; in an
+    environment of its own it does not, and the files of its area come back at the end."""
+    shared = write_area_text("work/dlg-1")
+    assert "you read every file of the session" in shared
+    assert shared == (
+        "Your write area: work/dlg-1/. write_file and edit_file write only there and in "
+        "shared/ (with create_only or expected_sha256); you read every file of the "
+        "session, and your parent reads your write area, by the paths you wrote."
+    )
+    own = write_area_text("work/dlg-1", own_environment=True)
+    assert own.startswith("Your write area: work/dlg-1/, in your own environment.")
+    assert "every file of the session" not in own
+    assert "not the session's other files" in own
+    assert "copied to the same paths in the session" in own
 
 
 def test_the_briefs_line_maps_each_input_to_its_copy() -> None:
