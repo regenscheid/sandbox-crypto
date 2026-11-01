@@ -143,25 +143,41 @@ When all three have returned, read each child's results file with read_file (at 
 }
 
 
-def prepare(static: Path, personal: Path, model: str = MODEL, api: str = "responses") -> Path:
+def prepare(
+    static: Path,
+    personal: Path,
+    model: str = MODEL,
+    api: str = "responses",
+    no_model: bool = False,
+) -> Path:
+    """The lab's root and config. With ``no_model`` (scripted labs such as
+    ``da20_probes.py``) the personal config is not read: the model is a loopback port
+    nothing listens on, its key a synthetic file in the root, and there is no direct MCP
+    path, so the owner's credentials are named nowhere."""
     if not (static / "index.html").is_file():
         raise ValueError("build web/workspace first (npm run build), or pass --static")
-    direct = _module("direct_mcp", "direct_mcp.py")
     images = {profile: recovery.image_recipe(profile) for profile in ("orchestrator", "minimal")}
-    settings = tomllib.loads(personal.read_text())
-    gateway_url = settings["model"]["url"]
-    key_file = Path(settings["model"]["api_key_file"]).expanduser()
-    assert key_file.is_absolute()
-    portal = direct.portal_url(personal)
+    if no_model:
+        gateway_url, key_file, portal = "http://127.0.0.1:9/v1", None, "https://portal.invalid/mcp"
+    else:
+        direct = _module("direct_mcp", "direct_mcp.py")
+        settings = tomllib.loads(personal.read_text())
+        gateway_url = settings["model"]["url"]
+        key_file = Path(settings["model"]["api_key_file"]).expanduser()
+        assert key_file.is_absolute()
+        portal = direct.portal_url(personal)
     lab, ports, values = recovery.make_root(
         "ss-modellab-",
         PURPOSE,
         ("gateway", "middleware", "cache", "unused", "worker", "workspace", "preview", "control"),
         {"images": images, "static": str(static.resolve()), "model": model, "api": api},
     )
-    recovery.private(
-        lab / "private.json", json.dumps({"gateway": gateway_url, "portal": portal}) + "\n"
-    )
+    # Nothing is private without a model: loopback and .invalid addresses are not.
+    private_urls = {} if no_model else {"gateway": gateway_url, "portal": portal}
+    recovery.private(lab / "private.json", json.dumps(private_urls) + "\n")
+    if key_file is None:
+        key_file = lab / "model.key"
+        recovery.private(key_file, "test-secret-modellab-no-model\n")
     policy = yaml.safe_load((REPO / "examples/policy.yaml").read_text())
     policy["metadata"] = {
         "name": "model-lab",
@@ -234,6 +250,8 @@ def prepare(static: Path, personal: Path, model: str = MODEL, api: str = "respon
             "provider_profile": str(PROFILE),
         },
     }
+    if no_model:
+        del data["mcp_direct"]
     recovery.private(lab / "sandbox-science.toml", toml.dumps(data))
     load_config(lab / "sandbox-science.toml")
     recovery.private(lab / "owned-sandboxes.json", "{}\n")
@@ -553,9 +571,12 @@ def main():
     parser.add_argument("--seconds", type=float, default=1800)
     parser.add_argument("--model", default=MODEL, help="the gateway alias for every role")
     parser.add_argument("--api", default="responses", choices=("chat", "responses", "messages"))
+    parser.add_argument(
+        "--no-model", action="store_true", help="scripted labs: no model, no direct MCP"
+    )
     args = parser.parse_args()
     if args.action == "prepare":
-        print(prepare(args.static, args.personal, args.model, args.api))
+        print(prepare(args.static, args.personal, args.model, args.api, args.no_model))
         return
     if args.lab is None:
         parser.error("lab is required")

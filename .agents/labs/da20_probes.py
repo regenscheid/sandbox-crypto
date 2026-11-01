@@ -8,7 +8,8 @@ Scripted, no model. Run with the virtualenv of the fixed checkout against a root
     .venv/bin/python -I .agents/labs/da20_probes.py LAB [PART ...]
 
 Parts (default: all, in this order): ``seed``, ``hello``, ``shell``, ``cell``, ``job``,
-``network``, ``process``, ``provision``, ``parent``. Each sends worker API requests as the
+``network``, ``process``, ``signals`` (the recheck of the signal fix, added the same day),
+``provision``, ``parent``. Each sends worker API requests as the
 harness does, in project ``modellab``'s environment, session ``held``: a parent run's
 requests name no write area; a child's name ``work/dlg-da20a``; a sibling's area is
 ``work/dlg-da20b``. Each part's requests and answers are written as the root's evidence
@@ -360,6 +361,183 @@ time.sleep(HOLD)
 """
 
 
+SIGNALS = r"""
+import ctypes, errno, fcntl, json, os, signal, socket, subprocess, sys, time
+found = {}
+libc = ctypes.CDLL(None, use_errno=True)
+NR = {"x86_64": {"kill": 62, "tkill": 200, "tgkill": 234, "rt_sigqueueinfo": 129, "rt_tgsigqueueinfo": 297, "ioctl": 16, "fcntl": 72},
+      "aarch64": {"kill": 129, "tkill": 130, "tgkill": 131, "rt_sigqueueinfo": 138, "rt_tgsigqueueinfo": 240, "ioctl": 29, "fcntl": 25}}[os.uname().machine]
+def outcome(call):
+    try:
+        call()
+        return "done"
+    except OSError as error:
+        return errno.errorcode.get(error.errno, str(error.errno))
+def raw(name, *args):
+    words = [ctypes.c_long(a) if isinstance(a, int) else a for a in args]
+    result = libc.syscall(ctypes.c_long(NR[name]), *words)
+    return "done" if result >= 0 else errno.errorcode.get(ctypes.get_errno(), "?")
+def info(sig):
+    buffer = (ctypes.c_int * 32)()
+    buffer[0], buffer[2], buffer[4], buffer[5] = sig, -1, os.getpid(), os.getuid()  # SI_QUEUE
+    return buffer
+def probe():
+    for label, pid in (("kernel", KERNEL), ("executor", EXECUTOR), ("parent job", TARGET)):
+        for sig in (0, signal.SIGCONT, signal.SIGUSR1):
+            found[f"os.kill {label} {sig}"] = outcome(lambda: os.kill(pid, sig))
+            found[f"raw kill {label} {sig}"] = raw("kill", pid, sig)
+            found[f"tkill {label} {sig}"] = raw("tkill", pid, sig)
+            found[f"tgkill {label} {sig}"] = raw("tgkill", pid, pid, sig)
+            found[f"rt_sigqueueinfo SI_QUEUE {label} {sig}"] = raw("rt_sigqueueinfo", pid, sig, info(sig))
+            found[f"rt_tgsigqueueinfo SI_QUEUE {label} {sig}"] = raw("rt_tgsigqueueinfo", pid, pid, sig, info(sig))
+        found[f"killpg {label} group USR1"] = outcome(lambda: os.killpg(os.getpgid(pid), signal.SIGUSR1))
+        found[f"raw kill -group {label} USR1"] = raw("kill", -os.getpgid(pid), signal.SIGUSR1)
+        left, right = socket.socketpair()
+        found[f"F_SETOWN {label}"] = raw("fcntl", left.fileno(), 8, pid)
+        found[f"F_SETOWN_EX {label}"] = raw("fcntl", left.fileno(), 15, ctypes.byref((ctypes.c_int * 2)(1, pid)))
+        found[f"F_SETSIG"] = raw("fcntl", left.fileno(), 10, signal.SIGUSR1)
+        found[f"FIOSETOWN {label}"] = raw("ioctl", left.fileno(), 0x8901, ctypes.byref(ctypes.c_int(pid)))
+        left.close(); right.close()
+    found["os.kill -1 USR1 (the shim)"] = outcome(lambda: os.kill(-1, signal.SIGUSR1))
+    found["raw kill -1 USR1"] = raw("kill", -1, signal.SIGUSR1)
+    found["os.kill kernel TERM"] = outcome(lambda: os.kill(KERNEL, signal.SIGTERM))
+    # Its own processes, through the signal shim.
+    child = subprocess.Popen(["sleep", "30"]); child.terminate(); found["own terminate"] = child.wait()
+    child = subprocess.Popen(["sleep", "30"]); child.kill(); found["own kill"] = child.wait()
+    group = subprocess.Popen(["sh", "-c", "sleep 30 & sleep 30 & wait"], start_new_session=True)
+    time.sleep(0.5); os.killpg(group.pid, signal.SIGTERM); found["own killpg"] = group.wait()
+    got = []
+    signal.signal(signal.SIGUSR2, lambda *_: got.append(1))
+    os.kill(0, signal.SIGUSR2); found["own kill(0) reached self"] = len(got)
+import multiprocessing, concurrent.futures
+def square(x):
+    return x * x
+if __name__ == "__main__":
+    probe()
+    with multiprocessing.Pool(2) as pool:
+        found["multiprocessing pool"] = sum(pool.map(square, range(10)))
+    pool = multiprocessing.Pool(2); pool.terminate(); pool.join(); found["pool terminate"] = "ok"
+    with concurrent.futures.ProcessPoolExecutor(2) as executor:
+        found["process pool"] = sum(executor.map(square, range(10)))
+    try:
+        import joblib
+        found["joblib"] = sum(joblib.Parallel(n_jobs=2)(joblib.delayed(square)(x) for x in range(10)))
+        found["joblib backend"] = joblib.parallel.get_active_backend()[0].__class__.__name__
+    except Exception as error:
+        found["joblib"] = f"{type(error).__name__}: {error}"[:300]
+    print(json.dumps(found))
+"""
+
+TARGET_JOB = r"""
+import os, signal, time
+marks = os.path.join(os.environ["SESSION_WORKSPACE"], "sources/signals-received.txt")
+def note(number, _frame):
+    with open(marks, "a") as out:
+        out.write(f"{number}\n")
+for number in (signal.SIGUSR1, signal.SIGCONT):
+    signal.signal(number, note)
+open(os.path.join(os.environ["SESSION_WORKSPACE"], "sources/target.pid"), "w").write(f"{os.getpid()}\n")
+time.sleep(HOLD)
+"""
+
+
+def provision(p: Probe, name: str, packages: list[str]) -> dict[str, Any]:
+    """Install ``packages`` with Conda through the worker, as the ``provision`` tool does."""
+    status, operation = p.call(
+        "POST",
+        "/v1/provisioning",
+        {
+            "operation_id": p.op(f"provision-{name}"),
+            "context": p.context(actor="agent"),
+            "purpose": f"DA-20 recheck: a child needs {name}",
+            "conda": packages,
+        },
+    )
+    if status not in (200, 201, 202):
+        return {"http": status, "body": operation}
+    start = time.monotonic()
+    while operation.get("state") != "finished" and time.monotonic() - start < 900:
+        if operation.get("state") == "awaiting_permission":
+            break
+        _, operation = p.call(
+            "GET",
+            f"/v1/provisioning/{operation['provision_id']}?after={operation['seq']}&wait=10",
+        )
+    return {k: operation.get(k) for k in ("state", "outcome", "error", "revision_after")}
+
+
+def part_signals(p: Probe) -> None:
+    """The recheck of the signal fix: every way to signal the parent's kernel, the
+    executor and a parent's job (which records any SIGUSR1 or SIGCONT it gets) from a
+    child's shell, raw and through the signal shim; then the child's own processes,
+    pools and joblib, the shell's kill and timeout, and a SIGTERM to the parent's kernel."""
+    joblib = provision(p, "joblib", ["joblib"])
+    parent = brief(
+        p.run(
+            "signals-parent-pids", None, kind="cell", code="import os; (os.getpid(), os.getppid())"
+        )
+    )
+    text = parent["outputs"][0]["data"]["text/plain"]
+    kernel, executor = json.loads(text.replace("(", "[").replace(")", "]"))
+    target = p.submit(
+        "signals-target", None, kind="job",
+        script=f"python3 - <<'PY'\nHOLD = 120\n{TARGET_JOB}\nPY",
+        purpose="DA-20 recheck: a parent's process that records signals", expected_progress="none",
+    )  # fmt: skip
+    p.wait_running(target)
+    target_pid = None
+    for _ in range(60):
+        found = p.read("sources/target.pid")
+        if found and found.endswith("\n"):
+            target_pid = int(found)
+            break
+        time.sleep(0.5)
+    code = f"KERNEL, EXECUTOR, TARGET = {kernel}, {executor}, {target_pid}\n" + SIGNALS
+    held = brief(
+        p.run(
+            "signals-child-python", AREA, kind="shell", timeout_seconds=300,
+            # A file, not standard input: the image's Python starts pools with forkserver,
+            # whose workers import the main module by its path.
+            script=f"cat > signals.py <<'PY'\n{code}\nPY\nexec python3 signals.py",
+        )
+    )  # fmt: skip
+    shell = brief(
+        p.run(
+            "signals-child-shell", AREA, kind="shell", timeout_seconds=120,
+            script=(
+                "sleep 30 & own=$!; kill -TERM $own; wait $own; echo own-$?\n"
+                "timeout 1 sleep 10; echo timeout-$?\n"
+                f"kill -TERM {kernel} 2>&1; echo kill-kernel-$?\n"
+                f"kill -CONT -- -$(awk '{{print $5}}' /proc/{kernel}/stat) 2>&1; echo kill-kernel-group-$?\n"
+                f"kill -USR1 {target_pid} 2>&1; echo kill-target-$?\n"
+                "kill -USR1 -1 2>&1; echo kill-all-$?\n"
+            ),
+        )
+    )  # fmt: skip
+    time.sleep(2)
+    received = p.read("sources/signals-received.txt")
+    after = brief(p.run("signals-parent-after", None, kind="cell", code="os.getpid()"))
+    p.call("POST", f"/v1/executions/{target['execution_id']}/cancel", {"context": p.context()})
+    ended = brief(p.wait(target, 60))
+    value = {
+        "parent_kernel_pid": kernel,
+        "executor_pid": executor,
+        "target_pid": target_pid,
+        "joblib_provision": joblib,
+        "child_python": held,
+        "child_shell": shell,
+        "target_received": received,
+        "parent_kernel_after": after,
+        "target_job": ended,
+    }
+    p.save("signals", value)
+    print("joblib:", joblib)
+    print("child python:", held["state"], held["stdout"][-6000:], held["stderr"][-1500:])
+    print("child shell:", shell["state"], shell["stdout"], shell["stderr"][-500:])
+    print("target received:", repr(received))
+    print("parent kernel after:", after["state"], after["outputs"], "was", kernel)
+
+
 def ensure_environment(p: Probe) -> dict[str, Any]:
     """The session's environment, created as the harness's ``ensure_environment`` does
     when the worker has none yet (the first run of a session creates it)."""
@@ -684,6 +862,7 @@ PARTS = {
     "job": part_job,
     "network": part_network,
     "process": part_process,
+    "signals": part_signals,
     "provision": part_provision,
     "parent": part_parent,
 }

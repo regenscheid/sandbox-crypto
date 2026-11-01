@@ -104,3 +104,27 @@ All of it is outside git. Each directory has a `SHA256.json`; the SHA-256 of tha
 | B and C (probe answers, session capture, cleanup) | `/var/tmp/ss-modellab-evidence-c29fbb4d/` | `224450d717dad6538351cfc292352223953f6e54333f7f9db811ad8e1f6ff2a4` |
 
 `cleanup` deleted both owned sandboxes (the runtime's and the environment's) and stopped the six units. It checked that the gateway was empty, the ports closed, the processes gone and the driver directory removed, and then removed the root. No `ss-modellab-c29fbb4d-*` unit remains, and the root is gone.
+
+## Addendum: live recheck of the fixes (2026-11-01, branch `b7/held-signals`)
+
+Defects 1 and 2 and finding 3 were fixed on `b7/held-signals`: the held run's seccomp filter refuses `kill`, `rt_sigqueueinfo` and descriptor owners (OpenShell 0.1.5's supervisor carries out the first two with its own `pidfd_send_signal`, per its source), a preloaded signal shim gives held programs `kill` back through `tgkill`, the probe checks that no signal leaves (confinement protocol 2), TCP is recorded as not covered, and a refused package command names `provision`. Rechecked between 19:00 and 19:10 UTC in a fresh disposable root (`model_lab.py prepare --no-model`: no model, no direct MCP, no personal config read), OpenShell 0.1.5, VM driver, guest kernel 6.12.109, with `sandbox-science/minimal:2c057abb` and `sandbox-science/orchestrator:2c057abb` built locally from the branch and never pushed. `images/test.sh minimal` passed in both modes first, `signal-shim` and `held-run` included.
+
+| # | Check | Result | Evidence (one line) |
+| --- | --- | --- | --- |
+| R1 (B1, B12) | `hello` in the sandbox | PASS | `abi (6, None) protocol 2`; `--probe` printed `{"tcp": false}` and exited 0: every signal call to the executor was refused, and TCP is reported not held. Held requests ran (protocol 2 accepted). |
+| R2 (B8) | Signals from a held child to the parent's kernel, the executor and a parent's job that records what it gets | PASS | Through the shim and as raw calls: `kill`, `tkill`, `tgkill`, `rt_sigqueueinfo` and `rt_tgsigqueueinfo` with `si_code = SI_QUEUE`, each with 0, `SIGCONT` and `SIGUSR1`; `killpg` and `kill(-pgid)` of each one's group; `F_SETOWN`, `F_SETOWN_EX`, `F_SETSIG`, `FIOSETOWN`: all 70 `EPERM`. Raw `kill(-1, SIGUSR1)` `EPERM`; through the shim it returned 0 having reached nothing outside. The parent's job recorded no signal. |
+| R3 (B8) | A child's `kill -TERM` of the parent's kernel | PASS | `kill: (777) - Operation not permitted` from the shell and from Python; the kernel group's `kill -CONT -- -777` refused too. The parent's next cell ran in the same kernel (pid 777, execution count 7). |
+| R4 | A child signals its own processes | PASS | Shell: `kill -TERM` of its `sleep` (status 143), `timeout 1 sleep 10` (124). Python: `Popen.terminate` (-15), `kill` (-9), `os.killpg` of its own group (-15), `kill(0)` reached itself; a `multiprocessing` pool (285) and its `terminate`, a `ProcessPoolExecutor` (285), and joblib's `Parallel` on loky (285, joblib provisioned first). |
+| R5 (B12) | TCP in a held child | As documented | Bound and listened on 127.0.0.1 and reached github.com with no proxy variable: not held under OpenShell, now in DA-20's *Not covered*. MPTCP, SCTP 93; AF_SMC 97; io_uring 38 (unchanged). |
+| R6 (B14) | `pip install six` in a held shell | PASS | Exit 126, "pip: cannot run …/pip: [Errno 13] Permission denied: '…/provisioning/lock'" and "sandbox-science: a delegated run's processes cannot change the installed packages; install them with the provision tool instead". `provision` of sympy still worked (revision 1 to 2) and the held kernel and shell imported it. |
+| R7 (B3–B7, B9, B10) | Files, cells, restart, job, limits, locks | PASS (no regression) | Same lines as before: area and `$TMPDIR` written, every other write `Permission denied`, files unchanged; 12 other kernel sockets refused; restart generation 2 held; `kernel_confinement` and `invalid_request` refusals; `prlimit`, `setpriority`, `ioprio_set`, `ptrace` `EPERM`; locks no-ops, the parent got its lock; lease `EPERM`. |
+| R8 (B15) | The parent is not held | PASS | The parent's shell wrote every path and its job wrote `sources/job.md`; 5 seccomp filters in its process, 6 in a child's. |
+
+Not rechecked: crypto-base (its image was not rebuilt; `held-run` there runs in the image checks), and a real model (part C).
+
+Teardown: the first `cleanup` deleted both owned sandboxes, stopped the six `ss-modellab-6516dced-*` units and checked the gateway empty, ports closed, processes and the driver directory gone; its export then refused the no-model root's loopback model address as a private word (fixed in `model_lab.py`), so the receipts were exported and the root removed by the same steps by hand. No `ss-modellab-6516dced-*` unit or process remains, and the root is gone. The personal instance stayed stopped and the cluster was not touched.
+
+| Part | Directory | Manifest SHA-256 |
+| --- | --- | --- |
+| Builds, image checks, probe output, teardown logs | `~/.cache/pt/lab-b7sig-logs/` | `6724df9d3d81dbd54416fec1be4cb645efd404b2710e372a941cf79bad6395b1` |
+| Probe answers and receipts | `/var/tmp/ss-modellab-evidence-6516dced/` | `89833b3df1fefa33eab3f2a788e9faf124c8a68e3b08c88c3c37362d2caf6f1a` |

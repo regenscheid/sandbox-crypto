@@ -298,6 +298,7 @@ async def test_h2_a_missing_openshell_cli_fails_the_attempt(tmp_path: Path) -> N
         cli=str(tmp_path / "missing" / "openshell"),
         isolation_tier=3,
         sched_shim=False,
+        signal_shim=False,
         sandboxes={"env1": "research-1"},
     )
     started = await Harness.start(tmp_path, backend=OpenShellBackend(settings, tmp_path))

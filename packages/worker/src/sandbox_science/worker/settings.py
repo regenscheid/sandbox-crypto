@@ -100,6 +100,11 @@ class LocalBackendSettings(_Model):
     python: str = sys.executable
     daemon: bool = False
     """Opt into the reconnectable executor for development tests; still no isolation."""
+    signal_shim: bool = True
+    """Build the signal shim with ``cc`` on a Linux host, so that a delegated run's
+    processes can signal their own (DA-20). Without it, their ``kill`` is ``EPERM``."""
+    cc: str = "cc"
+    """The C compiler that builds the signal shim."""
 
 
 JOB_WALL_TIME_MAX: Final = 7 * 24 * 3600.0
@@ -296,8 +301,11 @@ class OpenShellBackendSettings(_Model):
     are set, shares a node's kernel: tier 1 at most, as for the worker host's boot ID."""
     sched_shim: bool = True
     """Preload a shim that lets libzmq (Jupyter) start under OpenShell's seccomp filter."""
+    signal_shim: bool = True
+    """Validate the sandbox's signal shim, which a delegated run's processes preload to
+    signal their own (DA-20)."""
     cc: str = "cc"
-    """The C compiler that builds the shim on the worker host."""
+    """The C compiler that builds the shims on the worker host for older images."""
     package_cache: Annotated[str, AfterValidator(check_cache_url)] | None = None
     """The package cache's URL as sandboxes reach it; the package clients are pointed at it.
     With ``environments``, it must name the host and port the targets file gives the cache."""

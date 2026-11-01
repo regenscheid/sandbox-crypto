@@ -503,6 +503,20 @@ def test_research_images_ship_a_target_native_versioned_scheduler_shim() -> None
         assert "COPY --from=scheduler-shim" not in stages[profile]
 
 
+def test_research_images_ship_the_signal_shim_beside_it() -> None:
+    """The library a delegated run's processes preload for ``kill`` (DA-20), built and
+    versioned like the scheduler shim, and checked in each research image."""
+    build = _stages()["scheduler-shim"]
+    assert "from=binding-inventory,source=shim/signal_self.c" in build
+    assert "sha256sum /tmp/signal_self.c" in build
+    assert "SANDBOX_SCIENCE_SIGNAL_SOURCE_SHA256" in build
+    assert '-o "/output/$revision/libsandbox-science-signal.so" /tmp/signal_self.c' in build
+    source = "../packages/worker/src/sandbox_science/worker/shim/signal_self.c"
+    for profile in RESEARCH_PROFILES:
+        assert source in _recipe_inputs(profile)
+        assert "signal-shim" in checks.planned(profile, landlock=True, network=False)
+
+
 def test_only_the_research_layer_is_seeded_into_workspace_without_changing_services() -> None:
     stages = _stages()
     research = stages["research-base"]

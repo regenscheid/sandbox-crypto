@@ -686,4 +686,16 @@ which the environment lacks).
 .venv/bin/python -I .agents/labs/model_lab.py cleanup "$LAB"
 ```
 
-[Report](../docs/agent-reports/babbage-da20-lab-2026-11-01.md).
+The fixes' recheck added the part `signals` (every signal call against the parent's kernel, the
+executor and a parent's job that records what it gets, then the child's own processes, pools and
+joblib) and `model_lab.py prepare --no-model`, which reads no personal config and names no
+credentials (the model is a loopback port nothing listens on; no direct MCP path), for scripted labs:
+
+```bash
+.venv/bin/python -I .agents/labs/model_lab.py prepare --no-model
+.venv/bin/python -I .agents/labs/model_lab.py up "$LAB"
+.venv/bin/python -I .agents/labs/da20_probes.py "$LAB"
+.venv/bin/python -I .agents/labs/model_lab.py cleanup "$LAB"
+```
+
+[Report](../docs/agent-reports/babbage-da20-lab-2026-11-01.md), with the recheck as its addendum.
