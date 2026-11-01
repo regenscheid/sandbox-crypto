@@ -116,6 +116,12 @@ PROMPTS: dict[str, str] = {
 3. Delegate a CHECK of that entry (its handle, revision 1) with the note: "Call mcp_tools with the query 'firecrawl monitor', then with the query 'eprint corpus', and report every connector tool name you are offered or that loads."
 4. Delegate a TASK whose brief is: "(a) Run the shell command sleep 120 (one call; wait for it). (b) Load {ESCALATED_WRITE} with mcp_tools (names) and call it with the arguments {{"id": "{NOWHERE}"}} once. Report the exact outcome." The user granted that write tool's class for this session; the earlier denial was of a different tool.
 5. Wait for both, then answer with their results verbatim.""",
+    "mcp": """This is a platform lab of connector calls. Do exactly these steps and nothing else.
+1. Use mcp_tools to find and load the IACR ePrint corpus statistics tool, then call it once and say how many papers the corpus holds.
+2. Use mcp_tools to find and load the NIST CSRC search tool, then call it once with the query "FIPS 203" and name the first publication it returns.
+3. Delegate one TASK whose brief is: "Use mcp_tools to find and load the NIST CSRC search tool, call it once with the query SP 800-208, and report the title of the first result. Do nothing else." Wait for it, accept it with accept_delegation, then answer with the three results.""",
+    "area": """Delegate one TASK whose brief is: "Write the file results/outside.md, at exactly that path relative to the project root (not under work/), containing the single line: outside first. If that write is refused, write the same file where the refusal says you may write, and report both outcomes exactly." Wait for its result, accept it with accept_delegation, then answer with the outcomes it reported.""",
+    "checkin-seq": """Delegate one TASK whose brief is: "Start from x = 3. Run twelve python cells one after another, one cell per turn and never two tool calls at once: each cell sets x to (x*x + 1) % 1009 from the value the previous cell printed, and prints x. You cannot know a value before the previous cell has printed it. Then return the twelve values." Wait for it. If it checks in about its usage, decide it with resource_decide: extend it once. Then answer with its result.""",
     "review": """This is a platform lab of parent review of delegated tasks. Follow these steps exactly.
 1. Delegate three TASKS at once, A, B and C. Brief A: "Write a file named alpha.md containing the single line: alpha first version. Then return." Brief B: "Write a file named notes/beta.md containing the single line: beta first version. Then return." Brief C: "Write a file named gamma.md containing the single line: gamma first version. Then return." Do not tell them where to write; they will find out.
 2. Wait for all three results.
@@ -246,6 +252,10 @@ class ModelLab(recovery.Lab):
         """The owned root's teardown; no run may hold a lease unless abandoning."""
         if not incomplete:
             assert not self.read("SELECT run FROM run_leases"), "a run still holds a lease"
+        if (self.path / "gateway.toml").exists():
+            # The worker creates the project's environment sandboxes after ``up``, on this
+            # lab's own gateway: they are the lab's too (2026-10-31, Messages API lab).
+            self.remember_sandboxes()
         recovery.OwnedRoot.cleanup(self, incomplete=incomplete)
 
     def harness(self, sub: str, *args: str, check=True):
@@ -501,12 +511,19 @@ class ModelLab(recovery.Lab):
 def sanitize_tool(item: dict[str, Any]) -> dict[str, Any]:
     """A tool record's name, run, arguments' keys and outcome, never bodies over 600 chars."""
     keep: dict[str, Any] = {
-        key: item.get(key) for key in ("tool", "run", "message_id", "reconciled") if key in item
+        key: item.get(key)
+        for key in ("tool", "run", "message_id", "reconciled", "purpose")
+        if key in item
     }
     arguments = item.get("arguments")
+    if isinstance(arguments, str):  # the journal keeps the call's arguments as JSON text
+        try:
+            arguments = json.loads(arguments)
+        except ValueError:
+            keep["arguments"] = arguments[:200]
     if isinstance(arguments, dict):
         keep["arguments"] = {k: str(v)[:200] for k, v in arguments.items()}
-    for key in ("error", "result", "content", "output", "execution", "refusal"):
+    for key in ("error", "result", "content", "output", "execution", "refusal", "effect"):
         if key in item:
             keep[key] = json.dumps(item[key], default=str)[:600]
     return keep
