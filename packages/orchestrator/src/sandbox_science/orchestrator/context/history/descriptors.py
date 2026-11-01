@@ -7,9 +7,13 @@ what part of which source it returned; each is written against the tool's publis
 description and its results as the server returned them on 2026-10-16:
 
 - the e-print server: ``get_eprint`` is a catalog record (``abstract_only``);
-  ``eprint_fulltext`` returns the record and the passages matching a query (``partial``,
-  or ``abstract_only`` when none matched); ``eprint_file`` only links the PDF, which the
-  PDF tools then read;
+  ``eprint_fulltext`` reads pages of a paper (``partial``, with the pages and the paper's
+  page count, which add up to ``whole``; since 2026-10-31, as the server returned it
+  then); ``search_eprint_fulltext`` returns the passages of one paper matching a phrase
+  (``partial``; none matched reads nothing); ``eprint_file`` only links the PDF, which the
+  PDF tools then read. Before 2026-10-31 ``eprint_fulltext`` returned the record and the
+  passages matching a query (``partial``, or ``abstract_only`` when none matched), which
+  archives of then still hold;
 - the web-fetch server: ``web_fetch`` and ``fetch_page`` return a page, ``whole`` unless
   it ends ``[Truncated. Call fetch_continue(document_id='…', offset=N) …]``;
   ``fetch_continue`` returns the next part as JSON, ``next_offset`` null at the end. The
@@ -42,6 +46,8 @@ no source, and ``None`` for a result the descriptor cannot place."""
 _PAPER: Final = re.compile(r"\A\[([^\]\n]{1,64})\]")
 _MATCHED: Final = re.compile(r"^(\d+) passage\(s\) matching ", re.M)
 _NONE_MATCHED: Final = re.compile(r"^No passage matching ", re.M)
+_PAGES: Final = re.compile(r"Physical pages (\d{1,6})-(\d{1,6}) of (\d{1,6})\.")
+"""A page read's range, on the line under its header (2026-10-31)."""
 _FETCHED: Final = re.compile(r"\A\[[a-z_-]{1,32}\] (\S{1,4096}) \(HTTP (\d{3})\)")
 _TRUNCATED: Final = re.compile(
     r"\n\[Truncated\. Call fetch_continue\(document_id='([^'\n]{1,128})', "
@@ -87,6 +93,14 @@ def _eprint_fulltext(arguments: Json, text: str) -> list[Read] | None:
     paper = _PAPER.match(text)
     if paper is None:
         return [] if "queue" in text.casefold() else None  # queued: nothing read yet
+    lines = text.split("\n", 2)
+    read = _PAGES.fullmatch(lines[1]) if len(lines) > 1 else None
+    if read is not None:
+        first, last, of = (int(n) for n in read.groups())
+        detail: Json = {"pages": list(range(first, min(last, of) + 1)), "of": of}
+        extent = "whole" if first <= 1 and last >= of else "partial"
+        return [Read("eprint", paper.group(1), extent, detail, label=paper.group(1))]
+    # As the tool answered before 2026-10-31: the passages matching a query.
     matched = _MATCHED.search(text)
     if matched is not None:
         detail: Json = {"passages": int(matched.group(1)), "query": str(arguments.get("query"))}
@@ -94,6 +108,17 @@ def _eprint_fulltext(arguments: Json, text: str) -> list[Read] | None:
     if _NONE_MATCHED.search(text) is not None:
         return [Read("eprint", paper.group(1), "abstract_only", {}, label=paper.group(1))]
     return None
+
+
+def _eprint_search(arguments: Json, text: str) -> list[Read] | None:
+    paper = _PAPER.match(text)
+    if paper is None:
+        return [] if "queue" in text.casefold() else None  # queued: nothing read yet
+    matched = _MATCHED.search(text)
+    if matched is None:
+        return []  # no passage matched: nothing of the paper was read
+    detail: Json = {"passages": int(matched.group(1)), "query": str(arguments.get("query"))}
+    return [Read("eprint", paper.group(1), "partial", detail, label=paper.group(1))]
 
 
 def _web_fetch(arguments: Json, text: str) -> list[Read] | None:
@@ -195,6 +220,7 @@ def _no_read(arguments: Json, text: str) -> list[Read] | None:
 DESCRIPTORS: Final[dict[str, Descriptor]] = {
     "e-print-mcp_get_eprint": _eprint_record,
     "e-print-mcp_eprint_fulltext": _eprint_fulltext,
+    "e-print-mcp_search_eprint_fulltext": _eprint_search,
     "e-print-mcp_eprint_file": _no_read,
     "e-print-mcp_search_eprint": _no_read,
     "e-print-mcp_recent_eprint": _no_read,

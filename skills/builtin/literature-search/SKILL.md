@@ -19,8 +19,8 @@ On this platform's crypto deployment, the crypto-research-mcp connector offers t
 ```text
 e-print-mcp       IACR ePrint archive
                   e-print-mcp_search_eprint, e-print-mcp_get_eprint,
-                  e-print-mcp_eprint_fulltext, e-print-mcp_recent_eprint,
-                  e-print-mcp_corpus_stats
+                  e-print-mcp_search_eprint_fulltext, e-print-mcp_eprint_fulltext,
+                  e-print-mcp_recent_eprint, e-print-mcp_corpus_stats
 nist-csrc-mcp     NIST CSRC publications
                   nist-csrc-mcp_nist_search, nist-csrc-mcp_nist_get_publication,
                   nist-csrc-mcp_nist_read, nist-csrc-mcp_nist_get_pdf,
@@ -65,19 +65,19 @@ A claim or result taken from the literature has origin published. It cites its r
 
 ## Quoting an ePrint passage
 
-The e-print server's full-text tool (e-print-mcp_eprint_fulltext in the list above) returns a header, then the passages that match your query. The header holds the paper's ID in brackets, the title, the authors, a Date line, the category and the abstract. A line such as "2 passage(s) matching ..." echoes the query, and the passages follow it. The citation check looks for a quote inside one returned passage of that paper with that date stamp. So:
+The e-print server has two tools for a paper's own text. e-print-mcp_search_eprint_fulltext searches one paper (paper_id) for a literal word or phrase (query, words that are in the paper, not a question) and returns the passages that hold it, each under a "Physical page" line; a line such as "2 passage(s) matching ..." echoes the phrase. e-print-mcp_eprint_fulltext reads the paper page by page (start_page, page_count), each page under a "## Page" heading, and ends by naming the next pages to read. Neither prints the paper's date stamp: e-print-mcp_get_eprint does, on its Date line. The citation check looks for a quote inside one passage or page of that paper that a tool returned in this session, with a date stamp get_eprint gave that paper in this session. So:
 
-- quote from a passage, never from the header, the abstract or the echoed query;
+- call get_eprint for the paper in this session, and give its Date line's value as the quote's date stamp, exactly as printed;
+- quote from one passage or one page, never from a header, the abstract or the echoed phrase; a quote that runs across a page break is not found, so keep it within a page;
 - a quote of exactly what you searched for counts only when its passage holds more than that, so search for a phrase and quote the sentence around it;
 - copy the passage's words exactly; only white space may differ;
-- give the Date line's value as the quote's date stamp, exactly as printed;
-- read the passage in this session before recording the quote: the check reads this session's tool results.
+- read the passage or page in this session before recording the quote: the check reads this session's tool results.
 
 ```json
 {"role": "supports", "type": "source_claim", "entry": "new:ref",
  "scope": "The attack's cost for the 128-bit parameter set",
  "quote": {"source": "eprint", "dated": "2015-06-30T18:41:29Z; 2015-06-30T20:25:17Z",
-           "text": "the sentence as the returned passage gives it, at least 20 characters"}}
+           "text": "the sentence as the returned passage or page gives it, at least 20 characters"}}
 ```
 
 A quote of an ePrint passage can confirm a published result through the citation check alone. A PDF quote needs the user to vouch for the PDF first (see the pdf-reading skill). The ledger names an ePrint by its ID and date stamp, as the server reports them, not by a hash of its text.

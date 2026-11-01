@@ -5,25 +5,37 @@ decided on 2026-10-15, and his review of it).
 A ledger entry's quote of a reference names what it quotes: a PDF's page and lines,
 pinned by the PDF's SHA-256, or an ePrint passage, named by the paper and the date stamp
 the e-print tools gave it. When an agent's run calls ``pdf_pages`` or ``pdf_search``, or
-the e-print server's ``e-print-mcp_eprint_fulltext`` through a connector the project
-configures, the review controller records the call it executed and its result as a
-``source`` observation: the tool, its arguments, and the result's structure, not its text
-for the model. For a PDF, the PDF's SHA-256 and path as the sandbox's
-helper reported them, and each line it returned, with its page index, label and number;
-for an ePrint, the paper and the date stamp from the result's header, and the passages
-the server returned as matching, apart from the header (title, authors, abstract) and the
-query it echoes. Call and result come from the same run.
+one of the e-print server's tools that return a paper's text or its date stamp through a
+connector the project configures, the review controller records the call it executed and
+its result as a ``source`` observation: the tool, its arguments, and the result's
+structure, not its text for the model. For a PDF, the PDF's SHA-256 and path as the
+sandbox's helper reported them, and each line it returned, with its page index, label and
+number. For an ePrint, the paper from the result's header, and:
+
+- ``search_eprint_fulltext`` (since 2026-10-31): the passages it returned as matching the
+  phrase, each with its physical page, apart from the header and the phrase it echoes;
+- ``eprint_fulltext`` (since 2026-10-31): the pages it read, each page's text apart from
+  the header and the server's pointer to the next pages;
+- ``get_eprint``: the date stamp from its ``Date`` line, and no text. Neither tool above
+  prints the date stamp, so a quote of their text names the one ``get_eprint`` gave the
+  paper in the same session;
+- ``eprint_fulltext`` as it was before 2026-10-31, in records and archives of then: the
+  date stamp from its header and the passages it returned as matching its query.
+
+Call and result come from the same run.
 
 The platform looks for a quote in those records: a PDF quote in lines ``first_line`` to
 ``last_line`` of its page, under the PDF's hash, spanning them (it begins in the first
-and ends in the last); an ePrint quote inside one passage of a result for the paper with
-that date stamp; the query the server echoes is never a passage, and a quote the call
-sent counts only in a passage that holds more than what was sent. White space is read as
-one space. Each quote reads the newest records of its mark in the session, by the feed's
-key index. A quote found brings its record beside the entry in its review, once in each
-window (raw sources are not review evidence); a quote not found has no source, and its
-citation cannot be confirmed. What a tool returned may still be an agent's own: a PDF the
-agent made, unless the PDF is vouched for (LG-16).
+and ends in the last); an ePrint quote inside one passage or page of a result for the
+paper, with the date stamp the record holds or, for a record without one, a date stamp a
+``get_eprint`` record of the session gave that paper; the phrase or query the server
+echoes is never a passage, and a quote the call sent counts only in a passage that holds
+more than what was sent. White space is read as one space. Each quote reads the newest
+records of its mark in the session, by the feed's key index. A quote found brings its
+record beside the entry in its review, once in each window (raw sources are not review
+evidence); a quote not found has no source, and its citation cannot be confirmed. What a
+tool returned may still be an agent's own: a PDF the agent made, unless the PDF is
+vouched for (LG-16).
 """
 
 from __future__ import annotations
@@ -49,7 +61,15 @@ MAX_LINES: Final = 4000
 PDF_TOOLS: Final = ("pdf_pages", "pdf_search")
 EPRINT_TOOL: Final = "e-print-mcp_eprint_fulltext"
 """The e-print server's full-text tool, under the name its portal lists it: the
-``e-print-mcp_`` prefix names the e-print server behind it."""
+``e-print-mcp_`` prefix names the e-print server behind it. Since 2026-10-31 it reads a
+paper by page; before, it returned the passages matching a query."""
+EPRINT_SEARCH: Final = "e-print-mcp_search_eprint_fulltext"
+"""The e-print server's search of one paper's text for a phrase (since 2026-10-31)."""
+EPRINT_RECORD: Final = "e-print-mcp_get_eprint"
+"""The e-print server's catalog record of a paper: its date stamp, and no text."""
+EPRINT_TOOLS: Final = (EPRINT_TOOL, EPRINT_SEARCH, EPRINT_RECORD)
+EPRINT_TEXT_TOOLS: Final = (EPRINT_TOOL, EPRINT_SEARCH)
+"""The e-print tools whose results hold a paper's own text."""
 
 # The server echoes the query as ``repr`` gives it: in single quotes, or in double quotes
 # when it holds a single quote. ``repr`` keeps it on one line.
@@ -57,6 +77,13 @@ _MARKER: Final = re.compile(r"""\n\n\d+ passage\(s\) matching (?:'.*'|".*"):\n""
 _PASSAGE: Final = re.compile(r"\n?[ \t]*\.\.\.\n")
 _PAPER: Final = re.compile(r"\A\[([^\]\n]{1,64})\]")
 _DATED: Final = re.compile(r"^Date: (.{1,128})$", re.M)
+# A search's passages (2026-10-31): each begins with its physical page, after a blank line.
+_SEARCH_PASSAGE: Final = re.compile(r"(?:\A\n*|\n\n)Physical page (\d{1,6})\n")
+# A page read (2026-10-31): its range under the header, then each page under its heading,
+# then a pointer to the next pages or the end.
+_PAGES: Final = re.compile(r"\A[^\n]*\nPhysical pages (\d{1,6})-(\d{1,6}) of (\d{1,6})\.\n")
+_PAGE: Final = re.compile(r"(?:\A|\n)\n?## Page (\d{1,6})\n")
+_TRAILER: Final = re.compile(r"\n+(?:Next: eprint_fulltext\(.*\)\.|End of paper\.)\s*\Z")
 
 
 def squash(text: str) -> str:
@@ -109,27 +136,68 @@ def pdf_record(tool: str, arguments: Json, result: Json) -> Json | None:
 
 
 def eprint_record(tool: str, arguments: Json, text: str) -> Json | None:
-    """The source record of an ``eprint_fulltext`` call: the paper and date stamp from
-    the result's header, and the passages the server returned as matching."""
-    if tool != EPRINT_TOOL:
+    """The source record of an e-print call: the paper from the result's header, the date
+    stamp where the result prints one, and the passages or pages of the paper's text it
+    returned. None for a result that names no paper, and for a ``get_eprint`` record
+    without a date stamp."""
+    if tool not in EPRINT_TOOLS:
         return None
     paper = _PAPER.match(text)
-    found = _MARKER.search(text)
     if paper is None:
         return None
-    header = text if found is None else text[: found.start()]
+    found = _MARKER.search(text)
+    read = _PAGES.match(text) if tool == EPRINT_TOOL else None
+    # Only the header's Date line: a page of the paper may hold a line like one.
+    header = text[: read.end()] if read else text if found is None else text[: found.start()]
     dated = _DATED.search(header)
-    rest = "" if found is None else text[found.end() :]
-    passages = [squash(block) for block in _PASSAGE.split(rest) if block.strip()]
-    return {
-        "tool": tool,
-        "arguments": arguments,
-        "eprint": {
-            "paper": paper.group(1),
-            "dated": None if dated is None else dated.group(1).strip(),
-            "passages": passages,
-        },
+    passages: list[str] = []
+    pages: list[int | None] = []
+    if tool == EPRINT_RECORD:
+        if dated is None:
+            return None
+    elif read is not None:
+        pages, passages = _page_texts(_TRAILER.sub("", text[read.end() :]))
+    elif found is not None and tool == EPRINT_SEARCH:
+        pages, passages = _search_passages(text[found.end() :])
+    elif found is not None and tool == EPRINT_TOOL:
+        # eprint_fulltext as it was before 2026-10-31: passages after the query's echo.
+        rest = text[found.end() :]
+        passages = [squash(block) for block in _PASSAGE.split(rest) if block.strip()]
+        pages = [None] * len(passages)
+    record: Json = {
+        "paper": paper.group(1),
+        "dated": None if dated is None else dated.group(1).strip(),
+        "passages": passages,
     }
+    if any(page is not None for page in pages):
+        record["pages"] = pages
+    return {"tool": tool, "arguments": arguments, "eprint": record}
+
+
+def _search_passages(rest: str) -> tuple[list[int | None], list[str]]:
+    """A search's passages, each with the physical page it is on."""
+    parts = _SEARCH_PASSAGE.split(rest)
+    pages: list[int | None] = []
+    passages: list[str] = []
+    for index in range(1, len(parts) - 1, 2):
+        block = squash(parts[index + 1])
+        if block:
+            pages.append(int(parts[index]))
+            passages.append(block)
+    return pages, passages
+
+
+def _page_texts(rest: str) -> tuple[list[int | None], list[str]]:
+    """A page read's pages, each with its number."""
+    parts = _PAGE.split(rest)
+    pages: list[int | None] = []
+    passages: list[str] = []
+    for index in range(1, len(parts) - 1, 2):
+        block = squash(parts[index + 1])
+        if block:
+            pages.append(int(parts[index]))
+            passages.append(block)
+    return pages, passages
 
 
 def source(
@@ -161,20 +229,37 @@ def source(
             (project, session, prefix, prefix[:-1] + ";", MAX_CANDIDATES),
         )
     ]
+    rows: list[tuple[Json, Json]] = []
     for seq in candidates:
         raw_locator, raw_payload = db.execute(
             "SELECT locator,payload FROM review_feed WHERE seq=? AND kind='source'", (seq,)
         ).fetchone() or (None, None)
-        if raw_payload is None:
-            continue
-        payload = stored_json(raw_payload)
-        held = (
-            _pdf_holds(payload, link.sha256, locator, text)
-            if locator.get("source") == "pdf"
-            else _eprint_holds(payload, str(named["eprint"]), str(locator["dated"]), text)
+        if raw_payload is not None:
+            rows.append((stored_json(str(raw_locator)), stored_json(raw_payload)))
+    if locator.get("source") == "pdf":
+        return next(
+            (
+                (at, payload)
+                for at, payload in rows
+                if _pdf_holds(payload, link.sha256, locator, text)
+            ),
+            None,
         )
-        if held:
-            return stored_json(str(raw_locator)), payload
+    eprint, dated = str(named["eprint"]), str(locator["dated"])
+    # The date stamps get_eprint gave the paper in this session: what dates the text of a
+    # record that prints none.
+    stamped = any(
+        payload.get("tool") == EPRINT_RECORD
+        and cast(Json, payload.get("eprint") or {}).get("paper") == eprint
+        and cast(Json, payload.get("eprint") or {}).get("dated") == dated
+        for _, payload in rows
+    )
+    for at, payload in rows:
+        if _eprint_holds(payload, eprint, dated, text, stamped=stamped):
+            if cast(Json, payload.get("eprint") or {}).get("dated") is None:
+                # Say what dates it: the record of the same session that gave the stamp.
+                payload = {**payload, "dated_by": {"tool": EPRINT_RECORD, "dated": dated}}
+            return at, payload
     return None
 
 
@@ -227,16 +312,20 @@ def _pdf_holds(payload: Json, sha256: str | None, locator: Json, text: str) -> b
     )
 
 
-def _eprint_holds(payload: Json, eprint: str, dated: str, text: str) -> bool:
+def _eprint_holds(
+    payload: Json, eprint: str, dated: str, text: str, *, stamped: bool = False
+) -> bool:
     """Whether an e-print record for ``eprint`` with date stamp ``dated`` holds ``text``
-    in one of its passages. The server's echo of the query is never a passage; and a
+    in one of its passages or pages. A record that prints no date stamp (the tools of
+    2026-10-31) holds it only when ``stamped``: a ``get_eprint`` record of the session
+    gave the paper that stamp. The server's echo of the query is never a passage; and a
     quote the call sent (in its arguments, as decoded strings) counts only in a passage
     that holds more than what was sent, so a server that answered with the query alone
     vouches for nothing, while a search for a phrase, then its quote, works."""
     record = cast(Json, payload.get("eprint") or {})
-    if payload.get("tool") != EPRINT_TOOL:
+    if payload.get("tool") not in EPRINT_TEXT_TOOLS or record.get("paper") != eprint:
         return False
-    if record.get("paper") != eprint or record.get("dated") != dated:
+    if record.get("dated") != dated and not (record.get("dated") is None and stamped):
         return False
     sent = [s for s in _strings(payload.get("arguments", {})) if text.casefold() in s.casefold()]
     return any(

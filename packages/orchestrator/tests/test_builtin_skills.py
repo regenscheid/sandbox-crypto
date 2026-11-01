@@ -24,7 +24,7 @@ from markdown_it import MarkdownIt
 from markdown_it.token import Token
 
 from sandbox_science.orchestrator.consistency.controller import AUTHOR_SPECS
-from sandbox_science.orchestrator.consistency.quotes import EPRINT_TOOL, PDF_TOOLS
+from sandbox_science.orchestrator.consistency.quotes import EPRINT_TOOLS, PDF_TOOLS
 from sandbox_science.orchestrator.delegation.tracks import SPECS as TRACK_SPECS
 from sandbox_science.orchestrator.loop import SYSTEM_PROMPT
 from sandbox_science.orchestrator.plan_tools import NAMES as PLAN_NAMES
@@ -162,7 +162,7 @@ def test_the_skills_name_the_tools_the_citation_check_reads() -> None:
     tools' results (CR-4): a renamed source tool fails here."""
     pdf = inline_code(body("pdf-reading"))
     assert all(tool in pdf for tool in PDF_TOOLS)
-    assert EPRINT_TOOL in body("literature-search")
+    assert all(tool in body("literature-search") for tool in EPRINT_TOOLS)
 
 
 @pytest.mark.parametrize("skill", sorted(ROLES))
