@@ -74,7 +74,7 @@ case "$mode" in
     config=()
     if $with_config; then config=(--config-dir "$(dirname "$CONFIG")"); fi
     exec "$PY" "$TOOL" restore "$target" --launcher-state "$LAUNCHER" \
-      --middleware-state "$MIDDLEWARE" "${config[@]}" "${apply[@]}"
+      --middleware-state "$MIDDLEWARE" ${config[@]+"${config[@]}"} ${apply[@]+"${apply[@]}"}
     ;;
 esac
 
@@ -87,12 +87,15 @@ for file in "$CONFIG" "$(dirname "$CONFIG")/personal-policy.yaml"; do
 done
 previous=
 if [ -d "$BACKUPS" ]; then
-  previous=$(find "$BACKUPS" -mindepth 2 -maxdepth 2 -name MANIFEST.json -printf '%h\n' | sort | tail -n 1)
+  previous=$(find "$BACKUPS" -mindepth 2 -maxdepth 2 -name MANIFEST.json \
+    | sed 's|/MANIFEST.json$||' | sort | tail -n 1)
 fi
 link=()
 if [ -n "$previous" ]; then link=(--link-from "$previous"); fi
+# ${a[@]+"${a[@]}"}: macOS's bash 3.2 calls an empty array unbound under set -u.
 made=$("$PY" "$TOOL" backup --dest "$BACKUPS" --launcher-state "$LAUNCHER" \
-  --middleware-state "$MIDDLEWARE" --repository "$R" "${files[@]}" "${link[@]}" \
-  "${label[@]}" "${live[@]}")
+  --middleware-state "$MIDDLEWARE" --repository "$R" \
+  ${files[@]+"${files[@]}"} ${link[@]+"${link[@]}"} \
+  ${label[@]+"${label[@]}"} ${live[@]+"${live[@]}"})
 "$PY" "$TOOL" verify "$made"
 echo "$made"
