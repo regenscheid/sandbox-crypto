@@ -172,9 +172,9 @@ def prepare(
         ("gateway", "middleware", "cache", "unused", "worker", "workspace", "preview", "control"),
         {"images": images, "static": str(static.resolve()), "model": model, "api": api},
     )
-    recovery.private(
-        lab / "private.json", json.dumps({"gateway": gateway_url, "portal": portal}) + "\n"
-    )
+    # Nothing is private without a model: loopback and .invalid addresses are not.
+    private_urls = {} if no_model else {"gateway": gateway_url, "portal": portal}
+    recovery.private(lab / "private.json", json.dumps(private_urls) + "\n")
     if key_file is None:
         key_file = lab / "model.key"
         recovery.private(key_file, "test-secret-modellab-no-model\n")
