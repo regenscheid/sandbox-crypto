@@ -548,7 +548,7 @@ SIGNAL_CALLS = {
 @pytest.mark.parametrize("machine", sorted(ARCHES))
 def test_the_seccomp_filter_answers_each_call_as_the_spec_says(machine: str) -> None:
     arch, prlimit, fcntl, socket_nr, socketpair = ARCHES[machine]
-    program = sandbox_confine.seccomp_program(machine, 4321)
+    program = sandbox_confine.seccomp_program(machine)
 
     def answer(nr: int, *args: int, audit: int = arch) -> int:
         words = [*args, *([0] * (6 - len(args)))]
@@ -556,8 +556,14 @@ def test_the_seccomp_filter_answers_each_call_as_the_spec_says(machine: str) -> 
         return _run_filter(program, data + b"".join(w.to_bytes(8, "little") for w in words))
 
     allow, kill, errno = 0x7FFF0000, 0x80000000, lambda e: 0x50000 | e
-    assert answer(prlimit, 0) == answer(prlimit, 4321) == allow
+    assert answer(prlimit, 0) == allow
     assert answer(prlimit, 999) == answer(prlimit, (1 << 32) | 999) == errno(1)
+    # A pid is never trusted, the caller's own included: the run's first process's pid
+    # may be an outside process's once it has exited.
+    setpriority = {"x86_64": 141, "aarch64": 140}[machine]
+    assert answer(prlimit, os.getpid()) == errno(1)
+    assert answer(setpriority, 0, 0) == allow
+    assert answer(setpriority, 0, os.getpid()) == errno(1)
     assert answer(fcntl, 3, 6) == answer(fcntl, 3, 38) == errno(0)  # locks: no-ops
     assert answer(fcntl, 3, 1024) == errno(1)  # F_SETLEASE
     assert answer(fcntl, 3, 3) == allow  # F_GETFL
@@ -575,7 +581,7 @@ def test_the_seccomp_filter_answers_each_call_as_the_spec_says(machine: str) -> 
         assert answer(0x40000000 | 41, 2, 1, 262) == kill  # x32
     assert answer(1) == allow
     with pytest.raises(sandbox_confine.ConfinementError):
-        sandbox_confine.seccomp_program("riscv64", 1)
+        sandbox_confine.seccomp_program("riscv64")
 
 
 @pytest.mark.parametrize("machine", sorted(ARCHES))
@@ -588,7 +594,7 @@ def test_the_seccomp_filter_refuses_the_signal_calls_a_supervisor_carries_out(
     arch = ARCHES[machine][0]
     fcntl = ARCHES[machine][2]
     kill, sigqueueinfo, ioctl, tkill, tgkill, tgsigqueueinfo = SIGNAL_CALLS[machine]
-    program = sandbox_confine.seccomp_program(machine, 4321)
+    program = sandbox_confine.seccomp_program(machine)
 
     def answer(nr: int, *args: int) -> int:
         words = [arg % (1 << 64) for arg in (*args, *([0] * (6 - len(args))))]

@@ -214,9 +214,11 @@ class _SockFprog(ctypes.Structure):
     _fields_ = [("len", ctypes.c_ushort), ("filter", ctypes.POINTER(_SockFilter))]
 
 
-def seccomp_program(machine: str, self_pid: int) -> list[tuple[int, int, int, int]]:
-    """The filter: a call in ``_TARGET`` passes only for the calling process (0) or
-    ``self_pid``, else ``EPERM`` or, for scheduling, success doing nothing; ``flock``
+def seccomp_program(machine: str) -> list[tuple[int, int, int, int]]:
+    """The filter: a call in ``_TARGET`` passes only for the calling process, named 0,
+    else ``EPERM`` or, for scheduling, success doing nothing. A pid, even the caller's
+    own, is never trusted: the filter cannot tell whose it is now, and the run's first
+    process's pid, once it has exited, may be an outside process's; ``flock``
     and fcntl's locks succeed doing nothing; a lease and a descriptor's owner or signal
     (``F_SETOWN``, ``F_SETSIG``, ``F_SETOWN_EX``, ``FIOSETOWN``, ``SIOCSPGRP``) are
     ``EPERM``; so are ``kill`` and ``rt_sigqueueinfo``, whatever they name; io_uring is
@@ -229,7 +231,7 @@ def seccomp_program(machine: str, self_pid: int) -> list[tuple[int, int, int, in
     refuse = [(_RET, 0, 0, _ERRNO | _EPERM)]
     rules: list[list[tuple[int, int, int, int]]] = []
     for name, (index, which, answer) in _TARGET.items():
-        body = [(_LD, 0, 0, 16 + 8 * index), (_JEQ, 2, 0, 0), (_JEQ, 1, 0, self_pid)]
+        body = [(_LD, 0, 0, 16 + 8 * index), (_JEQ, 1, 0, 0)]
         body += [(_RET, 0, 0, _ERRNO | answer), *done]
         if which is not None:
             body = [(_LD, 0, 0, 16 + 8 * which[0]), (_JEQ, 1, 0, which[1]), *refuse, *body]
@@ -299,7 +301,7 @@ def _socket_rule() -> list[tuple[int, int, int, int]]:
 
 
 def _seccomp(libc: ctypes.CDLL) -> None:
-    program = seccomp_program(os.uname().machine, os.getpid())
+    program = seccomp_program(os.uname().machine)
     filters = (_SockFilter * len(program))(*(_SockFilter(*op) for op in program))
     fprog = _SockFprog(len(program), ctypes.cast(filters, ctypes.POINTER(_SockFilter)))
     if libc.prctl(_PR_SET_SECCOMP, _SECCOMP_MODE_FILTER, ctypes.byref(fprog), 0, 0) != 0:
@@ -450,9 +452,10 @@ def escapes(target: int) -> list[str]:
     """The ways this process signalled ``target``, a process outside its ruleset, or
     made it a descriptor's owner: each call that succeeded, by name. Held, there are none.
 
-    The signals are 0, which delivers nothing, and ``SIGCONT``, which a running process
-    ignores and which OpenShell's supervisor handles apart from the others; process
-    groups and every process get 0 alone."""
+    The signals are 0, which delivers nothing; ``SIGCONT``, which a running process
+    ignores and which OpenShell's supervisor handles apart from the others; and
+    ``SIGURG``, which a process ignores unless it asks for it, standing for any other
+    signal. Process groups and every process get 0 alone."""
     libc = _libc()
     numbers = _ARCHES.get(os.uname().machine, (0, {}))[1]
     if not numbers:
@@ -468,7 +471,7 @@ def escapes(target: int) -> list[str]:
         return _SigInfo(sig, 0, _SI_QUEUE, 0, os.getpid(), os.getuid())
 
     group = os.getpgid(target)
-    for sig in (0, int(signal.SIGCONT)):
+    for sig in (0, int(signal.SIGCONT), int(signal.SIGURG)):
         attempt(f"kill({target}, {sig})", numbers["kill"], target, sig)
         attempt(f"tkill({target}, {sig})", numbers["tkill"], target, sig)
         attempt(f"tgkill({target}, {sig})", numbers["tgkill"], target, target, sig)
