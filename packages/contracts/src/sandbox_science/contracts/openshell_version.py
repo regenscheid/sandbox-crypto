@@ -8,8 +8,9 @@ release imports or reads this constant: the launcher refuses another CLI at star
 trusted images' check compares ``openshell --version`` with it, and the babbage and Mac
 scripts read this file (``scripts/personal_up.sh`` with ``sed``, ``scripts/mac_local.py``
 with a regular expression, since neither can import the package). Documentation names the
-release in prose; ``packages/contracts/tests/test_openshell_version.py`` fails when a
-version literal appears in code instead.
+release in prose, and ``packages/contracts/tests/test_openshell_version.py`` fails when a
+version literal appears in code instead, or when a page that states the required release
+(an install directory, an installer line, "requires v...") names another one.
 
 To move to another release, change ``OPENSHELL_VERSION`` here, then ``OPENSHELL_VERSION``
 in ``images/Containerfile``, the installer digest in ``scripts/mac_local.py`` and the
