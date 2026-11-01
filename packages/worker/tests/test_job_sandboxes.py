@@ -30,8 +30,10 @@ from aiohttp.test_utils import TestClient
 from pydantic import ValidationError
 
 from sandbox_science.contracts import (
+    SYSTEM_CLOCK,
     TERMINAL_STATES,
     Capabilities,
+    Clock,
     EnvironmentRequest,
     EnvironmentState,
     ErrorKind,
@@ -396,10 +398,37 @@ class FakePort:
         return found, hashlib.sha256(found.model_dump_json().encode()).hexdigest()
 
 
+class JumpClock:
+    """The system clock, except that a test can move its monotonic time forward.
+
+    A sandbox no node has room for is seen as one only after its create command and the
+    lookup that names it have run, as subprocesses of the fake CLI. With a short schedule
+    timeout, a slow machine can end the creation first, and then its outcome is unknown.
+    Under a long timeout and this clock, the test waits until the worker has seen the
+    sandbox, then jumps past the deadline, so the timeout runs out where it should
+    whatever the speed of the subprocesses.
+    """
+
+    def __init__(self) -> None:
+        self.skipped = 0.0
+
+    def monotonic(self) -> float:
+        return time.monotonic() + self.skipped
+
+    def now(self) -> datetime:
+        return datetime.now(UTC)
+
+    async def sleep(self, seconds: float) -> None:
+        await asyncio.sleep(seconds)
+
+    def jump(self, seconds: float) -> None:
+        self.skipped += seconds
+
+
 class Pool:
     """A worker's environments, store, manager and job sandboxes over the fake CLI."""
 
-    def __init__(self, tmp_path: Path, **settings: Any) -> None:
+    def __init__(self, tmp_path: Path, clock: Clock = SYSTEM_CLOCK, **settings: Any) -> None:
         self.tmp = tmp_path
         tmp_path.mkdir(parents=True, exist_ok=True)
         self.fake = Fake(tmp_path)
@@ -424,7 +453,12 @@ class Pool:
         assert self.backend.environments is not None
         env = {"FAKE_OPENSHELL_STATE": str(self.fake.path), "PATH": os.environ["PATH"]}
         self.environments = Environments(
-            self.backend, self.backend.environments, tmp_path / "worker", env, poll_seconds=0.05
+            self.backend,
+            self.backend.environments,
+            tmp_path / "worker",
+            env,
+            poll_seconds=0.05,
+            clock=clock,
         )
         self.released: list[str] = []
 
@@ -507,6 +541,12 @@ class Pool:
     async def run(self, request: JobRequest) -> Execution:
         execution, _ = await self.manager.submit(request)
         return await asyncio.wait_for(self.manager.wait(execution.execution_id), 30)
+
+    def seen(self, environment_id: str) -> bool:
+        """Whether the worker has seen the environment's sandbox: its create command has
+        ended and a lookup has named the sandbox's identity."""
+        info = self.environments.records.get(environment_id)
+        return info is not None and info.sandbox_id is not None
 
     def job_environment(self, execution_id: str) -> str:
         record = self.store.job_sandboxes.get(execution_id)
@@ -888,11 +928,17 @@ async def test_copy_back_keeps_to_its_cap_and_an_incomplete_one_retains(tmp_path
 
 
 async def test_an_unplaced_sandbox_fails_after_its_schedule_timeout(tmp_path: Path) -> None:
-    pool = Pool(tmp_path, job_profiles={"medium": profile(schedule_timeout=0.3)})
+    clock = JumpClock()
+    pool = Pool(tmp_path, clock, job_profiles={"medium": profile(schedule_timeout=60)})
     try:
         await pool.session()
         pool.fake.update(phase_on_create="Provisioning")  # pending: no node has room
-        ended = await pool.run(pool.request())
+        execution, _ = await pool.manager.submit(pool.request())
+        identifier = execution.execution_id
+        await eventually(lambda: pool.store.job_sandboxes.get(identifier), timeout=20)
+        await eventually(lambda: pool.seen(pool.job_environment(identifier)), timeout=20)
+        clock.jump(61)  # the schedule timeout runs out while the sandbox is pending
+        ended = await asyncio.wait_for(pool.manager.wait(identifier), 30)
         assert ended.state is ExecutionState.FAILED
         assert ended.result is not None
         assert ended.result.error is not None
