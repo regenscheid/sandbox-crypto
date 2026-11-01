@@ -302,16 +302,21 @@ class Site(Model):
         return self
 
 
-def _efforts(catalog: ModelCatalog) -> tuple[dict[str, str], dict[str, str]]:
-    """The APIs the catalog names and its roles' efforts, defaulted as the workspace's
-    options default them (``ModelCatalog.workspace_arguments``), so control and the GUI
-    agree."""
+def _efforts(
+    catalog: ModelCatalog,
+) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
+    """The APIs the catalog names, its roles' efforts and their defaults on Messages where
+    those differ, defaulted as the workspace's options default them
+    (``ModelCatalog.workspace_arguments``), so control and the GUI agree."""
     efforts: dict[str, str] = {}
+    on_messages: dict[str, str] = {}
     for role in _CATALOG_ROLES:
         profile = getattr(catalog, role)
         if profile is not None:
             efforts[role] = profile.requested_effort(role)
-    return catalog.apis(), efforts
+            if (effort := profile.messages_effort(role)) is not None:
+                on_messages[role] = effort
+    return catalog.apis(), efforts, on_messages
 
 
 def _model(raw: object, catalog: ModelCatalog) -> dict[str, object]:
@@ -322,7 +327,7 @@ def _model(raw: object, catalog: ModelCatalog) -> dict[str, object]:
     model: dict[str, object] = dict(raw)  # pyright: ignore[reportUnknownArgumentType]
     if {"name", "delegated", "reviewer"} & model.keys():
         raise BundleError("the main, delegated and reviewer models come from the bundle's catalog")
-    apis, efforts = _efforts(catalog)
+    apis, efforts, on_messages = _efforts(catalog)
     extra_apis = model.get("api", {})
     extra_efforts = model.get("reasoning_effort", {})
     if not isinstance(extra_apis, dict) or not isinstance(extra_efforts, dict):
@@ -340,6 +345,10 @@ def _model(raw: object, catalog: ModelCatalog) -> dict[str, object]:
         model["reviewer"] = catalog.reviewer.alias
     model["api"] = {**apis, **extra_apis}
     model["reasoning_effort"] = {**efforts, **extra_efforts}
+    extra_on_messages = model.get("messages_reasoning_effort", {})
+    if not isinstance(extra_on_messages, dict) or set(_CATALOG_ROLES) & extra_on_messages.keys():
+        raise BundleError("the bundle's catalog sets its roles' efforts on Messages")
+    model["messages_reasoning_effort"] = {**on_messages, **extra_on_messages}
     # The run service chooses the API of an alias the catalog names none for (CM-41).
     model.setdefault("default_api", DEFAULT_API)
     return model

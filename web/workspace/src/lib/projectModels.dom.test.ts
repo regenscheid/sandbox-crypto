@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import ModelPicker from '../views/ModelPicker.svelte';
 import ProjectModels from '../views/ProjectModels.svelte';
 import type { ModelSettings } from './api-types';
 import { setViewer } from './viewer.svelte';
@@ -41,15 +42,16 @@ const settings = (revision = 0): ModelSettings => ({
   project: 'p1',
   revision,
   roles: {
-    main: { alias: 'sol', reasoning_effort: 'max' },
-    delegated: { alias: 'sol', reasoning_effort: 'max' },
-    reviewer: { alias: 'luna', reasoning_effort: 'medium' },
+    main: { alias: 'sol', reasoning_effort: 'max', deployment_default: false },
+    delegated: { alias: 'sol', reasoning_effort: 'max', deployment_default: false },
+    reviewer: { alias: 'luna', reasoning_effort: 'medium', deployment_default: false },
   },
   defaults: {
-    main: { alias: 'sol', reasoning_effort: 'max' },
-    delegated: { alias: 'sol', reasoning_effort: 'max' },
-    reviewer: { alias: 'luna', reasoning_effort: 'medium' },
+    main: { alias: 'sol', reasoning_effort: 'max', deployment_default: false },
+    delegated: { alias: 'sol', reasoning_effort: 'max', deployment_default: false },
+    reviewer: { alias: 'luna', reasoning_effort: 'medium', deployment_default: false },
   },
+  default_efforts: {},
   available: [
     { alias: 'luna', api: 'responses', effort_supported: true },
     { alias: 'sol', api: 'responses', effort_supported: true },
@@ -87,8 +89,63 @@ it('shows all three role choices and saves an independent reviewer effort', asyn
   save!.click();
   await settle();
   const body = JSON.parse(String(requests[0]!.body));
-  expect(body.roles.reviewer).toEqual({ alias: 'luna', reasoning_effort: 'low' });
+  expect(body.roles.reviewer).toEqual({
+    alias: 'luna',
+    reasoning_effort: 'low',
+    deployment_default: false,
+  });
   expect(target.textContent).toContain('New research trees will use them');
+});
+
+it('keeps a default that depends on the API the run service chooses', async () => {
+  const requests: RequestInit[] = [];
+  const chosen = (): ModelSettings => {
+    const base = settings();
+    const main = { alias: 'claude', reasoning_effort: null, deployment_default: true };
+    return {
+      ...base,
+      roles: { ...base.roles, main },
+      defaults: { ...base.defaults, main },
+      default_efforts: { main: { effort: 'max', messages: 'high' } },
+      available: [...base.available, { alias: 'claude', api: null, effort_supported: true }],
+    };
+  };
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (_url: string, init: RequestInit = {}) => {
+      if (init.method === 'POST') requests.push(init);
+      return new Response(JSON.stringify(chosen()));
+    }),
+  );
+  const target = document.createElement('div');
+  document.body.append(target);
+  mounted.push(mount(ProjectModels, { target, props: { projectId: 'p1' } }));
+  await settle();
+  const effort = target.querySelectorAll<HTMLSelectElement>('select')[1]!;
+  expect(effort.value).toBe('@deployment');
+  expect(effort.selectedOptions[0]!.textContent).toBe(
+    'Deployment default (high on Messages, else max)',
+  );
+  const save = [...target.querySelectorAll('button')].find((button) =>
+    button.textContent?.includes('Save agent models'),
+  );
+  save!.click();
+  await settle();
+  const body = JSON.parse(String(requests[0]!.body));
+  expect(body.roles.main).toEqual({
+    alias: 'claude',
+    reasoning_effort: null,
+    deployment_default: true,
+  });
+  effort.value = 'medium';
+  effort.dispatchEvent(new Event('change', { bubbles: true }));
+  save!.click();
+  await settle();
+  expect(JSON.parse(String(requests[1]!.body)).roles.main).toEqual({
+    alias: 'claude',
+    reasoning_effort: 'medium',
+    deployment_default: false,
+  });
 });
 
 it('retries an uncertain save with the exact operation and locks the pending draft', async () => {
@@ -147,4 +204,43 @@ it('disables saving the models for a user outside the admin group (D104)', async
   expect(save.disabled).toBe(true);
   expect(save.title).toContain('atlas-admins');
   expect(target.querySelector('.admin-only')?.textContent).toContain('decide spend');
+});
+
+it('lets the composer picker keep or replace an API-dependent default', async () => {
+  const requests: RequestInit[] = [];
+  const base = settings();
+  const main = { alias: 'claude', reasoning_effort: null, deployment_default: true };
+  const chosen: ModelSettings = {
+    ...base,
+    roles: { ...base.roles, main },
+    defaults: { ...base.defaults, main },
+    default_efforts: { main: { effort: 'max', messages: 'high' } },
+    available: [...base.available, { alias: 'claude', api: null, effort_supported: true }],
+  };
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (_url: string, init: RequestInit = {}) => {
+      if (init.method === 'POST') requests.push(init);
+      return new Response(JSON.stringify(chosen));
+    }),
+  );
+  const target = document.createElement('div');
+  document.body.append(target);
+  mounted.push(mount(ModelPicker, { target, props: { projectId: 'p1' } }));
+  await settle();
+  const trigger = target.querySelector<HTMLButtonElement>('.model-trigger')!;
+  expect(trigger.textContent).toContain('Deployment default');
+  trigger.click();
+  await settle();
+  const efforts = [...target.querySelectorAll<HTMLButtonElement>('.effort-group button')];
+  const keep = efforts.find((item) => item.textContent === 'Deployment default')!;
+  expect(keep.getAttribute('aria-checked')).toBe('true');
+  expect(keep.title).toBe('high on the Messages API');
+  efforts.find((item) => item.textContent === 'Medium')!.click();
+  await settle();
+  expect(JSON.parse(String(requests[0]!.body)).roles.main).toEqual({
+    alias: 'claude',
+    reasoning_effort: 'medium',
+    deployment_default: false,
+  });
 });

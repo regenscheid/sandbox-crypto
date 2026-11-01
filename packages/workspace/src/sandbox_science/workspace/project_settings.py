@@ -6,7 +6,7 @@ shared. Changing the model settings changes spend and model choice, an admin-onl
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from aiohttp import web
 
@@ -27,6 +27,8 @@ class ModelConfiguration:
     available: dict[str, ApiKind | None]
     """Each catalog alias's adapter as the deployment names it, or ``None`` when the run
     service chooses it from the gateway (CM-41)."""
+    messages_defaults: dict[AgentModelRole, str] = field(default_factory=dict[AgentModelRole, str])
+    """A role's default effort for an alias called through Messages, where it differs."""
 
 
 MODEL_CONFIGURATION = web.AppKey("model-configuration", ModelConfiguration)
@@ -95,7 +97,12 @@ async def model_settings(request: web.Request) -> web.Response:
         request,
         lambda store: (
             ProjectModels(store)
-            .get(request.match_info["project"], configured.defaults, configured.available)
+            .get(
+                request.match_info["project"],
+                configured.defaults,
+                configured.available,
+                configured.messages_defaults,
+            )
             .model_dump(mode="json")
         ),
     )
@@ -113,6 +120,7 @@ async def change_models(request: web.Request) -> web.Response:
             author(request),
             defaults=configured.defaults,
             available=configured.available,
+            messages_defaults=configured.messages_defaults,
         )
         return {**settings.model_dump(mode="json"), "replayed": replayed}
 

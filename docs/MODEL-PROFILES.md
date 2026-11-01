@@ -18,6 +18,12 @@ the consistency reviewer, whatever its API, since every API takes an effort (Cla
 5.5's own default is `medium` too). Main and delegated roles retain provider defaults
 when omitted. An explicit deployment value still wins.
 
+`[model.messages_reasoning_effort]` gives a role's default for an alias called through
+Messages where it differs, by role as above; empty by default. The run service applies it
+once it has chosen the alias's API ([context management](specs/context-management.md),
+CM-41). The Kubernetes bundle uses it for its research roles: `max`, and `high` on
+Messages.
+
 These are requested values, not a declaration that a gateway or model supports every
 example value. Names are bounded lowercase wire values; the configured value is sent
 verbatim. A provider refusal remains an error: the tool never substitutes a lower level.
@@ -52,7 +58,11 @@ catalog (the aliases configured for those three roles), and every one of them ta
 effort, whichever adapter the run service chooses for it. The browser cannot choose an
 adapter, endpoint or credential. A save applies to the next root research tree. That
 tree's children and reviews inherit its immutable profile snapshot, and ordinary
-Resume keeps it; an edit never changes a running tree. The separate math-repair caller
+Resume keeps it; an edit never changes a running tree. Where a role's default effort
+differs on Messages and the run service chooses the alias's API, the editor offers
+"Deployment default (high on Messages, else max)": saved as such
+(`deployment_default`), the run service resolves it on the alias's API when the tree
+starts, and pins the result. The separate math-repair caller
 continues to use its deployment reviewer setting.
 
 Fold narratives and overview narratives use independent profiles. Native model-switch

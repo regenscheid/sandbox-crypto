@@ -557,6 +557,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     agents.add_argument("--agent-model", action="append", default=[], type=_agent_model)
     agents.add_argument("--agent-effort", action="append", default=[], type=_agent_effort)
+    agents.add_argument(
+        "--agent-messages-effort",
+        action="append",
+        default=[],
+        type=_agent_effort,
+        help="ROLE=EFFORT: the role's default effort for an alias called through Messages, "
+        "where it differs from --agent-effort's",
+    )
     agents.add_argument("--agent-api", action="append", default=[], type=_agent_api)
     repairs = command.add_argument_group(
         "math repairs", "repairs of LaTeX that KaTeX rejects, by the reviewer model"
@@ -597,6 +605,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(str(exc))
     role_items = dict(args.agent_model)
     effort_items = dict(args.agent_effort)
+    messages_items = dict(args.agent_messages_effort)
     api_items = dict(args.agent_api)
     if len(role_items) != len(args.agent_model) or len(effort_items) != len(args.agent_effort):
         parser.error("agent model and effort roles may be named only once")
@@ -606,6 +615,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("agent models need main and delegated roles")
     if not set(effort_items).issubset(role_items):
         parser.error("agent effort needs a configured agent model role")
+    if len(messages_items) != len(args.agent_messages_effort) or not set(messages_items).issubset(
+        role_items
+    ):
+        parser.error("agent Messages effort names each configured role at most once")
     unknown_apis = set(api_items).difference(role_items.values())
     if unknown_apis:
         parser.error("agent API aliases must be in the agent model catalog")
@@ -620,6 +633,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 for role, alias in role_items.items()
             },
             available={alias: api_items.get(alias) for alias in set(role_items.values())},
+            messages_defaults=messages_items,
         )
         if role_items
         else None

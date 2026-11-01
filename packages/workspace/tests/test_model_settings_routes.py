@@ -56,6 +56,7 @@ async def test_read_and_change_agent_models(client) -> None:
     assert shown["roles"]["reviewer"] == {
         "alias": "luna",
         "reasoning_effort": "medium",
+        "deployment_default": False,
     }
     roles = {
         "main": {"alias": "sol", "reasoning_effort": "high"},
@@ -68,7 +69,8 @@ async def test_read_and_change_agent_models(client) -> None:
     changed = await client.post(base, json=value, headers=headers)
     assert changed.status == 200
     body = await changed.json()
-    assert (body["revision"], body["roles"], body["replayed"]) == (1, roles, False)
+    kept = {role: {**selection, "deployment_default": False} for role, selection in roles.items()}
+    assert (body["revision"], body["roles"], body["replayed"]) == (1, kept, False)
     replay = await client.post(base, json=value, headers=headers)
     assert (await replay.json())["replayed"] is True
     stale = await client.post(base, json={**value, "operation_id": "models-2"}, headers=headers)

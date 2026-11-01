@@ -118,6 +118,7 @@ def control_models(model: ModelConfig, skills: SkillsConfig, revision: str) -> d
         "apis": model.api,
         "default_api": model.default_api,
         "reasoning_effort": model.effective_efforts(),
+        "messages_reasoning_effort": model.messages_reasoning_effort,
         "reviewer": model.reviewer,
         "watcher": model.watcher,
         "delegated": model.delegated,

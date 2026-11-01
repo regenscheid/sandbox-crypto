@@ -40,6 +40,20 @@ def profiles(values: Mapping[ModelRole, ModelProfile]) -> Generator[None]:
         PROFILES.reset(token)
 
 
+def default_effort(
+    role: ModelRole,
+    api: str,
+    efforts: Mapping[ModelRole, str],
+    messages_efforts: Mapping[ModelRole, str],
+) -> str | None:
+    """A role's requested effort as the deployment sets it: ``messages_efforts``' for an
+    alias called through Messages when it names the role (a default that differs there,
+    as the Kubernetes bundle's ``high`` for research roles), else ``efforts``'."""
+    if api == "messages" and role in messages_efforts:
+        return messages_efforts[role]
+    return efforts.get(role)
+
+
 def requested(alias: str, api: str = "chat", reasoning_effort: str | None = None) -> ModelProfile:
     """Validate a deployment-selected profile before use."""
     return ModelProfile.model_validate(

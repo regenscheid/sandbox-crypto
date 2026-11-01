@@ -36,11 +36,19 @@
     );
   });
 
-  async function choose(alias: string, effort: string | null) {
+  /** Whether the deployment's default effort differs on Messages, so that keeping it
+   * depends on the API the run service chooses for the alias. */
+  const onMessages = $derived(settings?.default_efforts?.['main']?.messages ?? null);
+
+  async function choose(alias: string, effort: string | null, deploymentDefault = false) {
     if (!settings || saving) return;
     const supported = settings.available.find((item) => item.alias === alias)?.effort_supported;
     const roles = $state.snapshot(settings.roles);
-    roles['main'] = { alias, reasoning_effort: supported === false ? null : effort };
+    roles['main'] = {
+      alias,
+      reasoning_effort: supported === false || deploymentDefault ? null : effort,
+      deployment_default: deploymentDefault,
+    };
     saving = true;
     failure = null;
     try {
@@ -81,7 +89,9 @@
     >
       <strong>{visible(main.alias)}</strong>
       {#if option?.effort_supported !== false}<span class="muted"
-          >{effortLabel(main.reasoning_effort)}</span
+          >{main.deployment_default
+            ? 'Deployment default'
+            : effortLabel(main.reasoning_effort)}</span
         >{/if}
       <Icon name="down" size={14} />
     </button>
@@ -98,7 +108,8 @@
               role="radio"
               aria-checked={candidate.alias === main.alias}
               disabled={saving}
-              onclick={() => choose(candidate.alias, main.reasoning_effort)}
+              onclick={() =>
+                choose(candidate.alias, main.reasoning_effort, main.deployment_default)}
               ><span>{visible(candidate.alias)}</span>{#if candidate.alias === main.alias}<Icon
                   name="check"
                   size={14}
@@ -111,11 +122,21 @@
         <div>
           <span class="eyebrow">Reasoning effort</span>
           <div class="effort-group" role="radiogroup" aria-label="Reasoning effort">
+            {#if onMessages !== null || main.deployment_default}
+              <button
+                type="button"
+                role="radio"
+                aria-checked={main.deployment_default}
+                title={onMessages === null ? undefined : `${onMessages} on the Messages API`}
+                disabled={saving}
+                onclick={() => choose(main.alias, null, true)}>Deployment default</button
+              >
+            {/if}
             {#each [null, ...settings.known_efforts] as effort (effort ?? '')}
               <button
                 type="button"
                 role="radio"
-                aria-checked={main.reasoning_effort === effort}
+                aria-checked={!main.deployment_default && main.reasoning_effort === effort}
                 disabled={saving}
                 onclick={() => choose(main.alias, effort)}>{effortLabel(effort)}</button
               >

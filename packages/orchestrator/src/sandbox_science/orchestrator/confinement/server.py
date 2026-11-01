@@ -140,6 +140,11 @@ class ControlSettings(Contract):
     """The adapter of an alias ``apis`` leaves out, unless the runtime reports that the
     gateway lists it as Anthropic's (CM-41)."""
     reasoning_effort: dict[ModelRole, Effort] = Field(default_factory=dict[ModelRole, Effort])
+    messages_reasoning_effort: dict[ModelRole, Effort] = Field(
+        default_factory=dict[ModelRole, Effort]
+    )
+    """A role's default effort for an alias called through Messages, where it differs
+    from ``reasoning_effort``'s (the Kubernetes bundle's research roles)."""
     main: ModelAlias
     reviewer: ModelAlias | None = None
     watcher: ModelAlias | None = None
@@ -427,6 +432,7 @@ def create_app(settings: ControlSettings) -> web.Application:
                     apis=settings.apis,
                     default_api=settings.default_api,
                     reasoning_effort=settings.reasoning_effort,
+                    messages_effort=settings.messages_reasoning_effort,
                 )
                 stores = Stores(
                     projects,

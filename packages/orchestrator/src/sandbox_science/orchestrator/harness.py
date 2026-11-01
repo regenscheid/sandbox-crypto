@@ -789,6 +789,8 @@ class Harness:
         if self.gateway is None:
             raise ModelError(f"project cannot change {role} model without a gateway")
         profile = self.gateway.profile(selection.alias, role=role)
+        if selection.deployment_default:
+            return profile  # the role's default on the alias's API (CM-41)
         return profile.model_copy(update={"reasoning_effort": selection.reasoning_effort})
 
     def role(self, request: RunRequest) -> Role:

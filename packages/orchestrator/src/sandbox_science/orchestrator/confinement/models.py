@@ -157,9 +157,11 @@ class CallbackGateway(ModelGateway):
         apis: dict[str, str] | None = None,
         default_api: str = DEFAULT_API,
         reasoning_effort: dict[ModelRole, str] | None = None,
+        messages_effort: dict[ModelRole, str] | None = None,
     ) -> None:
         self.channel, self.scope = channel, scope
         self.apis, self.reasoning_effort = dict(apis or {}), reasoning_effort or {}
+        self.messages_effort = dict(messages_effort or {})
         self.default_api, self.named = default_api, frozenset(self.apis)
 
     def adopt(self, chosen: Mapping[str, str] | None) -> None:
@@ -193,7 +195,7 @@ class CallbackGateway(ModelGateway):
             profile=(
                 (lambda: self.profile(alias, role=role))
                 if api is None
-                else self.profile(alias, role=role).model_copy(update={"api": api})
+                else self.profile(alias, role=role, api=api)
             ),
         )
 

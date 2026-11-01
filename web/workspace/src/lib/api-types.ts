@@ -32,6 +32,7 @@ export interface AgentMessageView {
 export interface AgentModelSelection {
   alias: string;
   reasoning_effort: string | null;
+  deployment_default: boolean;
 }
 
 /** One agent's use: a work of the session across its attempts, with the reviewer's calls on its runs, or (without a work record) a run on its own. */
@@ -1952,6 +1953,7 @@ export interface ModelSettings {
   revision: number;
   roles: Record<string, AgentModelSelection>;
   defaults: Record<string, AgentModelSelection>;
+  default_efforts: Record<string, RoleDefault>;
   available: ModelOption[];
   known_efforts: string[];
 }
@@ -2658,6 +2660,12 @@ export interface RoleCost {
   role: "main" | "delegated" | "reviewer" | "watcher" | "embeddings" | "metadata";
   last_day: number | null;
   total: number;
+}
+
+/** The deployment's default effort for a role, and, where it differs, on Messages. */
+export interface RoleDefault {
+  effort: string | null;
+  messages: string | null;
 }
 
 export interface RoleUsage {

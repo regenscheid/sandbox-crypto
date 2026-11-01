@@ -220,13 +220,18 @@ class ModelConfig(_Strict):
     launcher's effective profile defaults a configured reviewer to ``medium``, whatever
     its API, since every API takes an effort."""
 
+    messages_reasoning_effort: dict[str, str] = Field(default_factory=dict[str, str], max_length=7)
+    """Requested effort by caller role for an alias called through ``messages``, in place
+    of ``reasoning_effort``'s: a default that differs there, such as the Kubernetes
+    bundle's ``high`` for the research roles. Empty by default."""
+
     def effective_efforts(self) -> dict[str, str]:
         result = dict(self.reasoning_effort)
         if self.reviewer:
             result.setdefault("reviewer", "medium")
         return result
 
-    @field_validator("reasoning_effort")
+    @field_validator("reasoning_effort", "messages_reasoning_effort")
     @classmethod
     def _efforts(cls, values: dict[str, str]) -> dict[str, str]:
         roles = {"main", "delegated", "reviewer", "watcher", "fold", "overview", "skills_metadata"}

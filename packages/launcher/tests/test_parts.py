@@ -172,6 +172,31 @@ def test_the_reviewer_defaults_to_medium_effort_on_every_api(
         assert workspace[workspace.index("--reviewer-effort") + 1] == "medium"
 
 
+def test_a_role_s_effort_on_messages_reaches_the_run_service_and_the_workspace(
+    make_config: Any, commands: Path
+) -> None:
+    """``[model] messages_reasoning_effort``: a role's effort where an alias is called
+    through Messages, which the run service applies once it has chosen the API. The
+    launcher sets none by default."""
+    model = {"messages_reasoning_effort": {"main": "high", "watcher": "low"}}
+    config = load_config(make_config({"bin_dir": str(commands), "model": model}))
+    layout = Layout(config.state_dir)
+    harness = parts.harness_argv(config, layout)
+    given = [
+        harness[i + 1] for i, flag in enumerate(harness) if flag == "--messages-reasoning-effort"
+    ]
+    assert given == ["main=high", "watcher=low"]
+    workspace = parts.workspace_argv(config, layout)
+    agents = [
+        workspace[i + 1] for i, flag in enumerate(workspace) if flag == "--agent-messages-effort"
+    ]
+    assert agents == ["main=high"]
+    plain = load_config(make_config({"bin_dir": str(commands)}))
+    assert "--messages-reasoning-effort" not in parts.harness_argv(plain, Layout(plain.state_dir))
+    with pytest.raises(LauncherError, match="reasoning_effort"):
+        load_config(make_config({"model": {"messages_reasoning_effort": {"embedding": "high"}}}))
+
+
 def test_only_the_named_apis_reach_the_run_service_and_the_workspace(
     make_config: Any, commands: Path
 ) -> None:

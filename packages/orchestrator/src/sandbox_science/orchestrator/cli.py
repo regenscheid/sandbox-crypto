@@ -100,7 +100,7 @@ from .model import (
     ScriptedModel,
     gateway_model,
 )
-from .model_profiles import Effort, ModelRole, requested
+from .model_profiles import Effort, ModelRole, default_effort, requested
 from .projects import ProjectError, ProjectStore, run_name
 from .runstate import RunState
 from .service import POLL_SECONDS, RunService
@@ -142,7 +142,14 @@ def _gateway(
         options=_options(args).get(api),
         max_tokens=max_tokens,
         max_response_bytes=max_response_bytes,
-    ).for_role(role, requested(alias=alias, api=api, reasoning_effort=_efforts(args).get(role)))
+    ).for_role(
+        role,
+        requested(
+            alias=alias,
+            api=api,
+            reasoning_effort=default_effort(role, api, _efforts(args), _messages_efforts(args)),
+        ),
+    )
 
 
 def _efforts(args: argparse.Namespace) -> dict[ModelRole, str]:
@@ -152,6 +159,11 @@ def _efforts(args: argparse.Namespace) -> dict[ModelRole, str]:
     if getattr(args, "reviewer_model", None) is not None:
         result.setdefault("reviewer", "medium")
     return result
+
+
+def _messages_efforts(args: argparse.Namespace) -> dict[ModelRole, str]:
+    """A role's default effort for an alias called through Messages, where it differs."""
+    return dict(getattr(args, "messages_reasoning_effort", None) or [])
 
 
 def effort_setting(value: str) -> tuple[ModelRole, str]:
@@ -383,6 +395,7 @@ def _harness(
             default_api=_default_api(args),
             options=_options(args),
             reasoning_effort=_efforts(args),
+            messages_effort=_messages_efforts(args),
         )
         closing(stack, interruption, gateway.close)
     vectors = None
@@ -530,6 +543,15 @@ def _agent_arguments(command: argparse.ArgumentParser) -> None:
         "descriptions runs are given; none without it",
     )
     command.add_argument("--reasoning-effort", type=effort_setting, action="append", default=[])
+    command.add_argument(
+        "--messages-reasoning-effort",
+        type=effort_setting,
+        action="append",
+        default=[],
+        metavar="ROLE=EFFORT",
+        help="a role's effort for an alias called through Messages, in place of "
+        "--reasoning-effort's, as a default that differs there",
+    )
     command.add_argument("--api-key-file", type=Path)
     command.add_argument("--min-isolation-tier", type=int, default=3)
     command.add_argument("--allow-unisolated", action="store_true")
@@ -715,6 +737,11 @@ def _check_agent(parser: argparse.ArgumentParser, args: argparse.Namespace) -> N
         parser.error("--reasoning-effort needs --model-url")
     if len({role for role, _ in efforts}) != len(efforts):
         parser.error("--reasoning-effort repeats a role")
+    on_messages = getattr(args, "messages_reasoning_effort", [])
+    if on_messages and args.model_url is None:
+        parser.error("--messages-reasoning-effort needs --model-url")
+    if len({role for role, _ in on_messages}) != len(on_messages):
+        parser.error("--messages-reasoning-effort repeats a role")
     if args.api and args.model_url is None:
         parser.error("--api needs --model-url")
     if len({alias for alias, _ in args.api}) < len(set(args.api)):

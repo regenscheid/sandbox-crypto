@@ -565,6 +565,11 @@ def test_workspace_role_catalog_defaults_and_explicit_efforts_reach_cli():
     assert "delegated=research-delegated" in command
     assert "reviewer=research-reviewer" in command
     assert "main=max" in command
+    # Its API is the run service's choice: on Messages the research role takes high.
+    on_messages = [
+        command[i + 1] for i, flag in enumerate(command) if flag == "--agent-messages-effort"
+    ]
+    assert on_messages == ["main=high"]  # delegated set its own; the reviewer's is the same
     assert "delegated=high" in command
     assert "reviewer=medium" in command
     assert "--api-key-file" not in command
@@ -580,8 +585,10 @@ def test_shared_alias_has_one_adapter_and_messages_take_the_same_efforts():
     arguments = configured(data).models.workspace_arguments()
     assert arguments.count("--agent-api") == 1
     assert "research-shared=messages" in arguments
-    assert "main=max" in arguments
+    # A research role on Messages defaults to high, not max; an explicit effort wins.
+    assert "main=high" in arguments
     assert "delegated=high" in arguments
+    assert "--agent-messages-effort" not in arguments
     assert not any(argument.startswith("reviewer=") for argument in arguments)
 
 
