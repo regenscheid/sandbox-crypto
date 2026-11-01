@@ -171,6 +171,15 @@ the only state that counts as a checkpoint; ``deleting`` from the moment an oper
 to remove it (it no longer counts); ``deleted`` once its objects are gone."""
 
 
+InventoryPhase = Literal[
+    "creating", "preparing", "ready", "running", "collecting", "released", "retained"
+]
+InventoryEnd = Literal["complete", "never_ran", "retention_ended", "incomplete"]
+DISPOSABLE_ENDS: Final[frozenset[InventoryEnd]] = frozenset(
+    {"complete", "never_ran", "retention_ended"}
+)
+
+
 class InventoryEnvironment(StrictContract):
     """An environment the worker has a record of, deleted ones included, so that a volume
     can be traced to its project and session."""
@@ -188,18 +197,33 @@ class InventoryEnvironment(StrictContract):
     last_started_at: AwareDatetime | None = None
     """When the worker last started its sandbox, if it recorded it: any work after a
     checkpoint needs a start, so a later one means the checkpoint is out of date."""
+    phase: InventoryPhase | None = None
+    """A job sandbox's or child environment's own phase, while the worker keeps its row."""
+    ended: InventoryEnd | None = None
+    """How a released job sandbox or child environment ended, while the worker keeps its
+    row: ``complete``, its collection or hand-back complete; ``never_ran``, it failed
+    before anything ran in it (a job before its command, a child environment before it
+    was ready); ``retention_ended``, a child environment kept after an incomplete
+    hand-back and released at the end of its retention; ``incomplete``, any other end
+    (a lost sandbox, a session close or an operator's release before a complete
+    hand-back). None while it has not ended, and for a session environment."""
 
 
 def disposable(environments: Iterable[InventoryEnvironment], sandbox: str) -> bool:
-    """Whether the volume of ``sandbox`` is a deleted job sandbox's or child environment's,
-    which needs no checkpoint to be deleted: a job sandbox is disposable (JS-26), its
-    durable outputs collected, and a child environment is released only after a complete
-    hand-back, as nothing will use it, or past its retention (CE-4). Every environment
-    the worker records with that sandbox must be one, deleted, with no hand-back left;
-    a sandbox it records none for is not."""
+    """Whether the volume of ``sandbox`` may go without a checkpoint: every environment
+    the worker records with that sandbox is a job sandbox or child environment, deleted,
+    with no hand-back left, whose end left nothing the volume alone holds: its collection
+    or hand-back was complete, nothing ran in it, or (a child environment's) its
+    retention ended, which discards what its incomplete hand-back left by design (CE-4,
+    JS-25). Any other end (a lost sandbox, a session close or an operator's release
+    before a complete hand-back), an end the worker no longer knows (its row pruned) and
+    a sandbox it records nothing for may hold the only copy of work: not disposable."""
     found = [info for info in environments if info.sandbox == sandbox]
     return bool(found) and all(
-        info.kind in ("job", "child") and info.state == "deleted" and info.hand_back is None
+        info.kind in ("job", "child")
+        and info.state == "deleted"
+        and info.hand_back is None
+        and info.ended in DISPOSABLE_ENDS
         for info in found
     )
 

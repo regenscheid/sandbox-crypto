@@ -1561,6 +1561,9 @@ async def test_the_sweep_runs_while_rows_are_left_without_profiles(tmp_path: Pat
         found = parts.store.child_environments.get(made.environment_id)
         assert found is not None
         assert found.phase == "released"
+        # Its retention ended: cleanup may delete its volume without a checkpoint.
+        steps = parts.store.child_environments.steps(made.environment_id)
+        assert json.loads(steps["expired"]) == "retention"
         with pytest.raises(WorkerError, match="no child profiles"):
             await parts.children.admit(pool.request("dlg-" + "c" * 24))
     finally:

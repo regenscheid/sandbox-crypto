@@ -216,9 +216,14 @@ profiles should carry. No mounting of one sandbox's disk in another. No automati
   exist). The claim is deleted with the sandbox, so with a class that retains volumes,
   as the research class must for session workspaces, each job sandbox (and each child
   environment) leaves a Released volume of the gateway's size. The operator's
-  `cleanup` names these by the job or child environment that owned them and, once the
-  worker records that environment deleted with no hand-back left, lets them go
-  without a checkpoint ([cleanup](../KUBERNETES-BUNDLE.md#cleanup)).
+  `cleanup` names these by the job or child environment that owned them, and lets one
+  go without a checkpoint only when the worker records that environment deleted and its
+  end left nothing in the volume alone: a job whose collection was complete or whose
+  command never ran, a child environment whose hand-back was complete, that was never
+  ready, or whose retention ended. Any other end (a lost sandbox, a session close or
+  an operator's release before a complete hand-back), or one the worker no longer
+  keeps (a released child environment's row is pruned after `child_retention`), still
+  needs `--without-checkpoint` ([cleanup](../KUBERNETES-BUNDLE.md#cleanup)).
 
 ## Contracts, configuration and code
 

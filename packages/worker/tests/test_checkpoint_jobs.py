@@ -471,12 +471,55 @@ def test_volume_deletion_refusals_and_journal(tmp_path, garage, retained, stoppe
     db.close()
     with pytest.raises(RecordError, match="hand-back is retained"):
         record(retained, "intent", "pv-4", "ss-child", "op", without_checkpoint=True, detail={})
-    # A deleted job sandbox's volume, or a released child environment's, needs no
-    # checkpoint: both are disposable (JS-26, CE-4).
-    save_environment(retained, "job", "ss-job", EnvironmentState.DELETED, kind="job")
-    save_environment(retained, "kid", "ss-kid", EnvironmentState.DELETED, kind="child")
-    record(retained, "intent", "pv-5", "ss-job", "op", without_checkpoint=False, detail={})
-    record(retained, "intent", "pv-6", "ss-kid", "op", without_checkpoint=False, detail={})
+    # A deleted job sandbox's or child environment's volume needs no checkpoint only when
+    # its end left nothing there alone (JS-26, CE-4): a complete collection or hand-back,
+    # nothing run, or a child's retention ended. Any other end needs the flag.
+    db = sqlite3.connect(retained.state_dir / "worker.sqlite3")
+    for name, phase, collection, prepared in (
+        ("job", "released", "complete", True),
+        ("job-early", "released", "pending", False),
+        ("job-lost", "released", "incomplete", True),
+    ):
+        save_environment(retained, name, f"ss-{name}", EnvironmentState.DELETED, kind="job")
+        db.execute(
+            "INSERT INTO job_sandboxes VALUES (?,'p','e',?,'medium',?,?,NULL,'t','t')",
+            (f"x-{name}", name, phase, collection),
+        )
+        if prepared:
+            db.execute("INSERT INTO job_progress VALUES (?,'prepared','{}','t')", (f"x-{name}",))
+    for name, ready_at, step in (
+        ("kid-early", None, None),
+        ("kid-expired", "t", "expired"),
+        ("kid-closed", "t", "release"),
+    ):
+        save_environment(retained, name, f"ss-{name}", EnvironmentState.DELETED, kind="child")
+        db.execute(
+            "INSERT INTO child_environments VALUES (?,?,'p','s','e','crypto-base','released',"
+            "NULL,NULL,'t','t',?,NULL,'t','t')",
+            (name, f"d-{name}", ready_at),
+        )
+        if step is not None:
+            db.execute("INSERT INTO child_progress VALUES (?,?,'\"x\"','t')", (name, step))
+    db.commit()
+    db.close()
+    for name in ("job", "job-early", "kid-early", "kid-expired"):
+        record(retained, "intent", f"pv-{name}", f"ss-{name}", "op", without_checkpoint=False,
+               detail={})  # fmt: skip
+    for name in ("job-lost", "kid-closed"):
+        with pytest.raises(RecordError, match="no verified checkpoint"):
+            record(retained, "intent", f"pv-{name}", f"ss-{name}", "op",
+                   without_checkpoint=False, detail={})  # fmt: skip
+    ends = {e.environment_id: e.ended for e in checkpoint_jobs.inventory(retained).environments}
+    assert {name: ends[name] for name in ("job", "job-early", "job-lost")} == {
+        "job": "complete",
+        "job-early": "never_ran",
+        "job-lost": "incomplete",
+    }
+    assert {name: ends[name] for name in ("kid-early", "kid-expired", "kid-closed")} == {
+        "kid-early": "never_ran",
+        "kid-expired": "retention_ended",
+        "kid-closed": "incomplete",
+    }
     # A hold refuses too.
     planned(retained)
     found = checkpoint_jobs.inventory(retained)
@@ -485,8 +528,8 @@ def test_volume_deletion_refusals_and_journal(tmp_path, garage, retained, stoppe
     journal = CheckpointRecords(retained.state_dir).deletions()
     assert [(d.subject, d.phase, d.actor, d.detail["sandbox"]) for d in journal] == [
         ("pv-2", "intent", "op", "ss-gone"),
-        ("pv-5", "intent", "op", "ss-job"),
-        ("pv-6", "intent", "op", "ss-kid"),
+        *((f"pv-{n}", "intent", "op", f"ss-{n}") for n in ("job", "job-early", "kid-early")),
+        ("pv-kid-expired", "intent", "op", "ss-kid-expired"),
         ("pv-2", "done", "op", "ss-gone"),
     ]
 

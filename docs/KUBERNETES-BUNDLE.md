@@ -1166,9 +1166,13 @@ As seen on the first cluster (2026-10-28):
   environment's volume names its owner by kind ("job sandbox environment …", "child
   environment …"): OpenShell 0.1.5 gives every sandbox's workspace the gateway's one
   storage class, so with a class that retains volumes each one leaves its volume
-  behind. Once the worker records that environment deleted with no hand-back left,
-  the volume is disposable and needs no checkpoint (no `--without-checkpoint`; the
-  worker's journal checks the same);
+  behind. The worker's inventory gives each one's phase and how it ended (`phase`,
+  `ended`): the volume needs no checkpoint (no `--without-checkpoint`; the worker's
+  journal checks the same) only once the environment is deleted and its end was
+  `complete` (collection or hand-back), `never_ran` or `retention_ended` (a child kept
+  after an incomplete hand-back, released at the end of its retention); an
+  `incomplete` end, or one the worker no longer keeps, may hold the only copy of work
+  and needs the flag;
 - **checkpoints beyond the kept count**: kept checkpoints of a workspace older than its
   latest `keep`, and deletions that began and did not finish;
 - **retirable checkpoints**: the latest `keep` checkpoints of an environment the worker

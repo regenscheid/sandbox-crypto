@@ -1045,6 +1045,7 @@ class ChildEnvironments:
         surplus = max(0, len(retained) - self.settings.child_retention_per_project)
         for row in retained[:surplus]:
             if row.environment_id == environment_id:
+                self._expire(environment_id, "retention_per_project")
                 kept = await self._release(environment_id)
                 continue
             # Never waits for another child environment's lock while holding this one's:
@@ -1054,6 +1055,7 @@ class ChildEnvironments:
                 continue
             async with other:
                 if self._record(row.environment_id).phase == "retained":
+                    self._expire(row.environment_id, "retention_per_project")
                     await self._release(row.environment_id)
         return kept
 
@@ -1083,6 +1085,8 @@ class ChildEnvironments:
                 current = self._record(row.environment_id)
                 if current.phase == "retained":
                     due = current.retained_until is not None and current.retained_until <= now
+                    if due:
+                        self._expire(row.environment_id, "retention")
                     if due and (await self._release(row.environment_id)).phase == "released":
                         released.append(row.environment_id)
                 elif now >= current.expires_at + timedelta(seconds=WALL_TIME_GRACE):
@@ -1250,6 +1254,12 @@ class ChildEnvironments:
         if record is None:
             raise WorkerError(ErrorKind.NOT_FOUND, f"no child environment {environment_id!r}")
         return record
+
+    def _expire(self, environment_id: str, why: str) -> None:
+        """Record that a retained child environment's retention ended (step ``expired``):
+        what its incomplete hand-back left goes with it by design, so cleanup may delete
+        its volume without a checkpoint (``disposable``)."""
+        self.records.record_step(environment_id, "expired", json.dumps(why), self.clock.now())
 
     def _current(self, context: ExecutionContext) -> bool:
         """Whether ``context``'s authority is the session's current one, or the session is
