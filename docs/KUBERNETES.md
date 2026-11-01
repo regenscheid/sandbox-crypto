@@ -228,7 +228,7 @@ not configurable), or the gateway rolls the sandbox back. A rolled-back creation
 whose response the worker lost never appears, and the worker marks it deleted
 (`creation_rolled_back`) once two reads past `creation_grace` find no trace of it;
 with the worker stopped, `sandbox-science-worker environments reconcile` does the same
-([environments](WORKER.md#environments)). On the owner's cluster
+([environments](WORKER.md#environments); on Kubernetes, as a Job: [offline worker commands](KUBERNETES-BUNDLE.md#offline-worker-commands)). On the owner's cluster
 seeding `crypto-base`'s prefix (about 100k files) into a 2-replica Longhorn volume took
 over 4 minutes, and a single-replica `strict-local` class about 2.5 minutes in all,
 of which the copy (`workspace-init`) was 111 s; with the slimmed image below the copy took 69 s

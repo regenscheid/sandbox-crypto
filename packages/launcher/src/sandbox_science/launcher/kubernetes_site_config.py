@@ -147,6 +147,13 @@ class ChildSize(JobSize):
 class Worker(Model):
     """The worker's own options, ``[worker]`` in the site file."""
 
+    max_environments: Annotated[int, Field(ge=1, le=1000)] | None = None
+    """The most session environments (not job sandboxes or child environments, which have
+    caps of their own; deleted ones aside) that the projects of each of control's and the
+    workspace's worker clients may have at once: ``max_environments`` of their
+    ``[[clients]]`` entries in ``worker.toml``. The worker keeps a limit per client so that
+    one cannot fill the pool's host, each environment being a sandbox. The worker's default
+    (8) when unset."""
     label_environments: bool = False
     """Give each sandbox the worker creates the label ``sandbox-science.io/environment``
     (``worker.toml``'s ``openshell.environments.label_environments``). The key was

@@ -1799,6 +1799,162 @@ def test_cli_writes_the_release_job_without_overwriting(tmp_path, capsys):
     assert not bad.exists()
 
 
+def operation(words, config: BundleConfig | None = None) -> dict:
+    from sandbox_science.launcher.kubernetes_bundle import worker_operation_job
+
+    return json.loads(json.dumps(worker_operation_job(config or configured(), words)))
+
+
+def pod_of(job: dict) -> dict:
+    return job["spec"]["template"]["spec"]
+
+
+def selects(policy: dict, labels: dict) -> bool:
+    return set(policy["spec"]["podSelector"]["matchLabels"].items()) <= set(labels.items())
+
+
+def test_worker_operation_job_runs_the_command_on_the_pool_volume_like_the_release_job():
+    job = operation(["child-environments", "release", "--superseded", "p1-child-0123456789ab"])
+    assert (job["apiVersion"], job["kind"]) == ("batch/v1", "Job")
+    assert "name" not in job["metadata"]
+    assert job["metadata"]["generateName"] == "research-worker-operation-"
+    assert job["metadata"]["namespace"] == "research-test"
+    spec = job["spec"]
+    assert (spec["backoffLimit"], spec["activeDeadlineSeconds"]) == (0, 3600)
+    pod_spec = pod_of(job)
+    assert pod_spec["restartPolicy"] == "Never"
+    assert pod_spec["automountServiceAccountToken"] is False
+    (container,) = pod_spec["containers"]
+    assert container["command"] == [
+        "sandbox-science-worker",
+        "child-environments",
+        "release",
+        "--settings",
+        "/private/worker.toml",
+        "--superseded",
+        "p1-child-0123456789ab",
+    ]
+    volumes = {volume["name"]: volume for volume in pod_spec["volumes"]}
+    assert volumes["data"]["persistentVolumeClaim"]["claimName"] == "research-pool-data"
+    assert volumes["worker-source"]["secret"]["secretName"] == "test-worker"
+    assert [init["name"] for init in pod_spec["initContainers"]] == ["copy-worker"]
+    assert {"name": "SS_LOG_FORMAT", "value": "json"} in container["env"]
+
+
+def test_worker_operation_job_has_the_release_jobs_hardening_and_the_workers_environment():
+    released = pod_of(release())["containers"][0]
+    (container,) = pod_of(operation(["environments", "reconcile", "p1-env"]))["containers"]
+    for key in ("securityContext", "resources", "env", "volumeMounts", "imagePullPolicy", "image"):
+        assert container[key] == released[key]
+    assert pod_of(operation(["environments", "reconcile", "p1-env"])) == {
+        **pod_of(release()),
+        "containers": [{**released, "name": "worker-operation", "command": container["command"]}],
+    }
+    assert container["securityContext"]["readOnlyRootFilesystem"] is True
+
+
+def test_worker_operation_pod_gets_the_pools_network_and_no_service_account_token():
+    job = operation(["child-environments", "list"])
+    labels = job["spec"]["template"]["metadata"]["labels"]
+    assert labels["app.kubernetes.io/component"] == "pool"
+    assert labels["sandbox-science.io/offline-job"] == "worker-operation"
+    # The Job itself is not labelled as the pool, so a selector for the pool never lists it.
+    assert job["metadata"]["labels"]["app.kubernetes.io/component"] == "worker-operation"
+    selecting = {
+        item["metadata"]["name"]: item
+        for item in objects()
+        if item["kind"] == "NetworkPolicy" and selects(item, labels)
+    }
+    assert set(selecting) == {"research-deny", "research-pool"}
+    # The pool's egress is what admits the gateway.
+    assert any(GATEWAY_PODS in rule["to"] for rule in selecting["research-pool"]["spec"]["egress"])
+    # The default-deny policy alone selects a release Job, which has no network.
+    plain = release()["spec"]["template"]["metadata"]["labels"]
+    assert {
+        item["metadata"]["name"]
+        for item in objects()
+        if item["kind"] == "NetworkPolicy" and selects(item, plain)
+    } == {"research-deny"}
+
+
+def test_worker_operation_job_is_never_part_of_the_applied_bundle():
+    assert not any("worker-operation" in json.dumps(item) for item in objects())
+
+
+@pytest.mark.parametrize(
+    ("words", "tail"),
+    [
+        (["child-environments", "list"], []),
+        (["child-environments", "list", "--phase", "retained"], ["--phase", "retained"]),
+        (["child-environments", "release", "p1-child-1"], ["p1-child-1"]),
+        (["environments", "reconcile", "--no-wait", "p1-env.2"], ["--no-wait", "p1-env.2"]),
+    ],
+)
+def test_rendered_worker_operation_commands_parse_as_the_workers_own(words, tail):
+    from sandbox_science.worker.cli import main as worker
+
+    command = pod_of(operation(words))["containers"][0]["command"]
+    head = ["sandbox-science-worker", *words[:2], "--settings", "/private/worker.toml"]
+    assert command == [*head, *tail]
+    # The settings file does not exist here: the command fails reading it, not parsing.
+    assert worker(command[1:]) == 1
+
+
+@pytest.mark.parametrize(
+    "words",
+    [
+        [],
+        ["child-environments"],
+        ["environments", "list"],
+        ["policy", "add", "p1"],
+        ["artifact-retention"],
+        ["serve", "--settings", "/private/worker.toml"],
+        ["child-environments", "release"],
+        ["child-environments", "release", "a", "b"],
+        ["child-environments", "release", "--settings", "x", "a"],
+        ["child-environments", "release", "--superseded", "--superseded", "a"],
+        ["child-environments", "release", "-x", "a"],
+        ["child-environments", "release", "../escape"],
+        ["child-environments", "release", "a b"],
+        ["child-environments", "release", "-rf"],
+        ["child-environments", "release", "a;rm"],
+        ["child-environments", "release", "x" * 129],
+        ["child-environments", "list", "--phase", "weird"],
+        ["child-environments", "list", "--phase"],
+        ["child-environments", "list", "extra"],
+        ["environments", "reconcile", "--superseded", "p1-env"],
+        ["environments", "reconcile", "p1-env", "--no-wait"],
+    ],
+)
+def test_worker_operation_job_refuses_anything_but_the_documented_commands(words):
+    with pytest.raises(ValueError, match=r"offline Job runs|takes"):
+        operation(words)
+
+
+def test_cli_writes_the_worker_operation_job_without_overwriting(tmp_path, capsys):
+    config = tmp_path / "deployment.toml"
+    config.write_text(toml.dumps(values()))
+    output = tmp_path / "operation.json"
+    base = ["worker-job", "--config", str(config), "--output", str(output)]
+    arguments = [*base, "child-environments", "release", "--superseded", "p1-child-1"]
+    assert main(arguments) == 0
+    command = json.loads(output.read_text())["spec"]["template"]["spec"]["containers"][0]["command"]
+    assert command[-2:] == ["--superseded", "p1-child-1"]
+    assert "kubectl create -f" in capsys.readouterr().out
+    assert main(arguments) == 1  # no overwrite
+    other = tmp_path / "other.json"
+    base = ["worker-job", "--config", str(config), "--output", str(other)]
+    assert main([*base, "environments", "reconcile", "--no-wait", "p1-env"]) == 0
+    assert json.loads(other.read_text())["spec"]["template"]["spec"]["containers"][0]["command"][
+        1:3
+    ] == ["environments", "reconcile"]
+    bad = tmp_path / "bad.json"
+    base = ["worker-job", "--config", str(config), "--output", str(bad)]
+    assert main([*base, "environments", "reconcile", "../x"]) == 1
+    assert not bad.exists()
+    assert "environment ID" in capsys.readouterr().err
+
+
 DIRECT = {
     "project": "crypto",
     "servers": {

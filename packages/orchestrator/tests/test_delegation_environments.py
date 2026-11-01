@@ -75,7 +75,7 @@ from sandbox_science.orchestrator.delegation.environments import (
     placement,
 )
 from sandbox_science.orchestrator.delegation.hook import Child, ChildEnd, observed
-from sandbox_science.orchestrator.delegation.prompt import TASK_PROMPT
+from sandbox_science.orchestrator.delegation.prompt import TASK_PROMPT, write_area_text
 from sandbox_science.orchestrator.delegation.records import (
     Delegation,
     DelegationRecords,
@@ -1045,6 +1045,9 @@ async def test_a_task_reads_an_input_control_retains_in_its_own_environment(
         'instructions: "data/primes.txt" is "inputs/data/primes.txt".'
     )
     assert "Your write area: work/" in brief
+    # O4: it is not told it reads every file of the session, which its environment lacks.
+    assert write_area_text("work/x", own_environment=True).split("work/x")[1] in brief
+    assert "you read every file of the session" not in brief
 
 
 # The review of 2026-10-26.

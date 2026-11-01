@@ -856,6 +856,39 @@ def test_the_sites_worker_section_sets_label_environments(tmp_path, label):
     assert worker.openshell.environments.label_environments is label
 
 
+def _generated_clients(tmp_path, worker_section, *, direct=False):
+    values = site_values(tmp_path, direct=direct)
+    values["worker"] = worker_section
+    output = tmp_path / "out"
+    write(output, plan(*load(site_file(tmp_path, values))))
+    return {
+        client.name: client for client in load_worker(output / "secrets/worker/worker.toml").clients
+    }
+
+
+def test_the_sites_worker_section_raises_the_session_environment_limit(tmp_path):
+    """Control's and the workspace's clients get the site's ``max_environments``; the
+    runtime manager's binding-only client makes no environment and keeps the default."""
+    clients = _generated_clients(tmp_path, {"max_environments": 24}, direct=True)
+    assert clients["harness"].max_environments == 24
+    assert clients["workspace"].max_environments == 24
+    assert clients["manager"].max_environments == 8
+
+
+def test_the_session_environment_limit_is_the_workers_default_unless_the_site_sets_it(tmp_path):
+    clients = _generated_clients(tmp_path, {})
+    assert {client.max_environments for client in clients.values()} == {8}
+    assert "max_environments" not in (tmp_path / "out/secrets/worker/worker.toml").read_text()
+
+
+@pytest.mark.parametrize("limit", [0, -1, 1001, "many", 2.5, True])
+def test_the_sites_session_environment_limit_is_a_bounded_count(tmp_path, limit):
+    values = site_values(tmp_path)
+    values["worker"] = {"max_environments": limit}
+    with pytest.raises((BundleError, ValueError)):
+        plan(*load(site_file(tmp_path, values)))
+
+
 def test_the_sites_worker_section_renders_job_profiles(tmp_path):
     """Job sandbox sizes come from the site file, so a ``site`` run keeps them; the worker
     loads what is rendered with its own checks."""

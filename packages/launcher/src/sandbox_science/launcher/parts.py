@@ -183,11 +183,15 @@ def worker_settings(
     }
 
 
-def worker_client(name: str, digest: str, projects: list[str]) -> dict[str, Any]:
+def worker_client(
+    name: str, digest: str, projects: list[str], max_environments: int | None = None
+) -> dict[str, Any]:
     """One of ``CLIENTS`` in the worker's settings: the run service (``harness``) alone
     installs recovery epochs and acknowledges retention; the workspace and the launcher are
     operators; the Kubernetes runtime manager (``manager``) may only bind and unbind the
-    runtime's sandbox on the direct MCP path (``binding_only``)."""
+    runtime's sandbox on the direct MCP path (``binding_only``). ``max_environments`` is
+    the client's limit on live environments across its projects; unset, the worker's own
+    default (8) applies."""
     client: dict[str, Any] = {
         "name": name,
         "token_sha256": digest,
@@ -196,6 +200,8 @@ def worker_client(name: str, digest: str, projects: list[str]) -> dict[str, Any]
         "artifact_retention": name == "harness",
         "operator": name in {"workspace", "launcher"},
     }
+    if max_environments is not None:
+        client["max_environments"] = max_environments
     if name == "manager":
         client["binding_only"] = True
     return client

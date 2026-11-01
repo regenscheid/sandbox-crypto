@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Sequence
 from typing import cast
 
 import yaml
@@ -985,6 +986,18 @@ def render(config: BundleConfig) -> dict[str, object]:
 
 MAINTENANCE = "maintenance"
 RELEASE = "worker-release"
+OPERATION = "worker-operation"
+OPERATION_LABEL = "sandbox-science.io/offline-job"
+"""Names the Pod of an operator's offline worker command: not part of any selector."""
+CHILD_PHASES = ("creating", "preparing", "ready", "collecting", "released", "retained")
+OPERATIONS: dict[tuple[str, str], tuple[tuple[str, ...], dict[str, tuple[str, ...]], bool]] = {
+    ("child-environments", "list"): ((), {"--phase": CHILD_PHASES}, False),
+    ("child-environments", "release"): (("--superseded",), {}, True),
+    ("environments", "reconcile"): (("--no-wait",), {}, True),
+}
+"""The worker commands ``worker_operation_job`` renders: switches, valued flags with the
+values they take, and whether the command ends with one environment ID."""
+_OPERATION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 CONTROL_DATABASE = f"{DATA}/control/control.sqlite3"
 MAINTENANCE_DIR = f"{UNIT_DIR}/maintenance"
 MAINTENANCE_POLICY = "artifact-retention.toml"
@@ -993,6 +1006,9 @@ STORAGE_FILES = ("AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE", "AWS_CA_BUNDL
 STORAGE_ENVIRONMENT = (*STORAGE_FILES, "AWS_PROFILE", "AWS_REGION")
 RELEASE_DEADLINE = 3600
 RELEASE_KEEP = 7 * 86400
+OPERATION_KEEP = 3600
+"""An operator's worker command Job is read when it ends and then deleted; its Pod carries
+the pool's label, so it is not kept for days."""
 """How long a finished release Job (and its log, the report) stays for the operator."""
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 
@@ -1237,25 +1253,106 @@ def release_job(
     it). Online release, beside a serving worker, still needs reader and writer fences."""
     if after is not None and _SHA256.fullmatch(after) is None:
         raise ValueError("--after takes a lowercase SHA-256 from the previous report")
+    command = [
+        "sandbox-science-worker",
+        "artifact-retention",
+        "--settings",
+        f"{PRIVATE}/worker.toml",
+        "--limit",
+        "100",
+        *(["--apply"] if apply else []),
+        *(["--after", after] if after is not None else []),
+    ]
+    return _offline_worker_job(config, RELEASE, RELEASE, command, {}, RELEASE_KEEP)
+
+
+def worker_operation_job(config: BundleConfig, operation: Sequence[str]) -> dict[str, object]:
+    """One offline worker command that needs the OpenShell gateway, as a Job the operator
+    creates by hand with the pool scaled to zero: ``child-environments list``,
+    ``child-environments release [--superseded] ID`` and ``environments reconcile
+    [--no-wait] ID`` (docs/WORKER.md). Anything else is refused, so the Job runs only
+    what the worker documents for an operator.
+
+    Like ``release_job`` it has the pool's state volume, the worker's settings Secret
+    and the hardening of every Pod, and the guard is the worker's own state lock (these
+    commands refuse, exiting 1, while a worker holds it) together with the ReadWriteOnce
+    volume. Unlike it, the Pod must reach the gateway with the worker's client identity
+    (the CLI tree on the volume, ``openshell.env`` in ``worker.toml``), so it carries the
+    pool's component label, which the pool's NetworkPolicy selects: DNS, the gateway and
+    the pool's other approved egress. No ingress is open to it, but the pool's Services
+    select the label too, which does nothing while the pool is at zero; a second label
+    names the Job's Pod for ``kubectl`` and is not part of any selector."""
+    group, action, *arguments = _operation(operation)
+    command = [
+        "sandbox-science-worker",
+        group,
+        action,
+        "--settings",
+        f"{PRIVATE}/worker.toml",
+        *arguments,
+    ]
+    return _offline_worker_job(
+        config, OPERATION, "pool", command, {OPERATION_LABEL: OPERATION}, OPERATION_KEEP
+    )
+
+
+def _operation(words: Sequence[str]) -> list[str]:
+    """``words`` checked against ``OPERATIONS``: the command's two words, then its flags
+    (each at most once, a valued one with a value from its list), then the environment
+    ID where it takes one. The result keeps that order, which is the worker's."""
+    if len(words) < 2 or (words[0], words[1]) not in OPERATIONS:
+        known = ", ".join(" ".join(key) for key in OPERATIONS)
+        raise ValueError(f"the offline Job runs one of: {known}")
+    command = f"{words[0]} {words[1]}"
+    switches, valued, takes_id = OPERATIONS[words[0], words[1]]
+    rest = list(words[2:])
+    given: list[str] = []
+    seen: set[str] = set()
+    while rest and rest[0].startswith("-"):
+        flag = rest.pop(0)
+        if flag in seen:
+            raise ValueError(f"{command} takes {flag} once")
+        if flag in switches:
+            given.append(flag)
+        elif flag in valued and rest and rest[0] in valued[flag]:
+            given.extend((flag, rest.pop(0)))
+        elif flag in valued:
+            raise ValueError(f"{command}: {flag} takes one of {', '.join(valued[flag])}")
+        else:
+            raise ValueError(f"{command} takes no {flag}")
+        seen.add(flag)
+    if takes_id:
+        if len(rest) != 1 or _OPERATION_ID.fullmatch(rest[0]) is None:
+            raise ValueError(f"{command} takes one environment ID (letters, digits, . _ -)")
+        given.append(rest[0])
+    elif rest:
+        raise ValueError(f"{command} takes no argument {rest[0]!r}")
+    return [words[0], words[1], *given]
+
+
+def _offline_worker_job(
+    config: BundleConfig,
+    name: str,
+    component: str,
+    command: list[str],
+    extra_labels: dict[str, str],
+    keep_seconds: int,
+) -> dict[str, object]:
+    """A one-shot Job of the worker image on the pool's volume: the worker's Secret copied
+    as in the pool Pod, no service-account token, the Pods' security context, a deadline
+    and ``keep_seconds`` before the finished Job goes. Its Pod carries ``component``'s labels, which
+    decide the network it gets."""
     image = config.images.worker
     init, private = _credentials(config, "worker", config.secrets.worker, image)
     capacity = config.worker
     environment = {**_environment(capacity), **LOG_FORMAT}
-    labels = {**_identity(config), **_labels(config, RELEASE)}
+    pod_labels = {**_identity(config), **_labels(config, component), **extra_labels}
+    labels = {**pod_labels, **_labels(config, name)}
     container: dict[str, object] = {
-        "name": RELEASE,
+        "name": name,
         "image": image,
         "imagePullPolicy": "IfNotPresent",
-        "command": [
-            "sandbox-science-worker",
-            "artifact-retention",
-            "--settings",
-            f"{PRIVATE}/worker.toml",
-            "--limit",
-            "100",
-            *(["--apply"] if apply else []),
-            *(["--after", after] if after is not None else []),
-        ],
+        "command": command,
         "securityContext": _security(),
         "resources": _resources(capacity),
         "env": [{"name": key, "value": environment[key]} for key in sorted(environment)],
@@ -1269,13 +1366,13 @@ def release_job(
         _object(
             config,
             "Job",
-            RELEASE,
+            name,
             spec={
                 "backoffLimit": 0,
                 "activeDeadlineSeconds": RELEASE_DEADLINE,
-                "ttlSecondsAfterFinished": RELEASE_KEEP,
+                "ttlSecondsAfterFinished": keep_seconds,
                 "template": {
-                    "metadata": {"labels": labels},
+                    "metadata": {"labels": pod_labels},
                     "spec": {
                         "restartPolicy": "Never",
                         "automountServiceAccountToken": False,
@@ -1302,7 +1399,7 @@ def release_job(
         )
     )
     metadata = {
-        "generateName": f"{config.name}-{RELEASE}-",
+        "generateName": f"{config.name}-{name}-",
         "namespace": config.namespace,
         "labels": labels,
     }

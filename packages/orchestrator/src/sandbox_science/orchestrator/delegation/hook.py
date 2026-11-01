@@ -494,7 +494,7 @@ class Delegations(TurnHook):
             run_id,
             started,
             # The platform's line naming the child's write area closes its brief (DA-19).
-            f"{planned.text}\n\n{write_area_text(area)}",
+            f"{planned.text}\n\n{write_area_text(area, own_environment=environment is not None)}",
             max_turns=planned.turns,
             tokens=tokens,
             target=planned.target,
