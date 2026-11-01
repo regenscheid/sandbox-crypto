@@ -44,7 +44,14 @@ from sandbox_science.orchestrator.continuity.resources import (
     ResourceRequests,
     SafePoint,
 )
-from sandbox_science.orchestrator.hooks import Closing, Notice, Point, RunView, TurnHook
+from sandbox_science.orchestrator.hooks import (
+    DECISION_WAIT_SECONDS,
+    Closing,
+    Notice,
+    Point,
+    RunView,
+    TurnHook,
+)
 from sandbox_science.orchestrator.model import ToolSpec
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.worker_client import dump
@@ -61,8 +68,10 @@ IDLE_TURNS: Final = 30
 """Model calls in a row with no new evidence, file or plan change, nor a new call."""
 SAME_OUTPUT: Final = 4
 """Answers in a row with the same text: a child whose output stopped changing."""
-WAIT_SECONDS: Final = 1800.0
-"""How long a child waits for its parent's decision before the root's rule decides."""
+WAIT_SECONDS: Final = DECISION_WAIT_SECONDS
+"""How long a child waits for its parent's decision before the root's rule decides, from
+the start of the ``halt`` that checked in; a confined runtime waits longer for that
+``halt`` (``HALT_TIMEOUT_SECONDS``)."""
 POLLS: Final = frozenset(
     {
         "wait_jobs",
@@ -357,22 +366,28 @@ class Resources(TurnHook):
             step=point.turn_block if resource == "turns" and not self.delegated else 0,
         )
 
-    async def _decided(self, request: ResourceRequest) -> ResourceDecision | str:
+    async def _decided(self, request: ResourceRequest, halting: float) -> ResourceDecision | str:
         """Wait for the parent's decision without model calls; ``"ended"`` once Stop or
-        an ending reached the work."""
+        an ending reached the work. The automatic decision is made ``wait_seconds`` after
+        ``halting``, the start of the ``halt`` that checked in, never a poll later, so it
+        answers within the time a confined runtime waits for that ``halt``."""
         started = self.clock.monotonic()
+        deadline = halting + self.wait_seconds
         try:
             while True:
                 found = await threaded(self.store.awaited, self.owner, request.request_id)
                 if found is not None:
                     return found
-                if self.clock.monotonic() - started >= self.wait_seconds:
+                if self.clock.monotonic() >= deadline:
                     decision = await threaded(
                         self.store.self_check, self.owner, request, ask_user=False
                     )
                     if decision is not None:
                         return decision
-                await self.clock.sleep(self.poll_seconds)
+                remaining = deadline - self.clock.monotonic()
+                await self.clock.sleep(
+                    min(self.poll_seconds, remaining) if remaining > 0 else self.poll_seconds
+                )
         finally:
             self.waited += self.clock.monotonic() - started
 
@@ -408,6 +423,7 @@ class Resources(TurnHook):
         return await self._point(run)
 
     async def halt(self, run: RunView) -> str | None:
+        halting = self.clock.monotonic()
         decisions = await threaded(self.store.decisions, self.owner)
         if any(d.request.action == "pause" for d in decisions):
             return "resource_pause"
@@ -459,7 +475,7 @@ class Resources(TurnHook):
                 f"(cap now {decision.total:,}); nothing was stopped.",
             )
             return None
-        found = await self._decided(request)
+        found = await self._decided(request, halting)
         if found == "ended":
             return "cancelled"
         if isinstance(found, ResourceDecision) and found.request.action == "pause":

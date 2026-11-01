@@ -20,6 +20,7 @@ from typing import Annotated, Final, Literal
 from aiohttp import WSMsgType, web
 from pydantic import Field, JsonValue, TypeAdapter
 
+from sandbox_science.contracts import SYSTEM_CLOCK, Clock
 from sandbox_science.contracts.model import Contract, Counter
 from sandbox_science.orchestrator.aio import owned
 from sandbox_science.orchestrator.context.history.limits import WorkingMemoryLimitError
@@ -130,8 +131,10 @@ class Channel:
     there would deadlock. ``close`` wakes local waiters and joins admitted handlers.
     """
 
-    def __init__(self, send: Sender, handler: Handler) -> None:
+    def __init__(self, send: Sender, handler: Handler, *, clock: Clock = SYSTEM_CLOCK) -> None:
         self._send, self._handler = send, handler
+        self.clock = clock
+        """The time a request's timeout is measured in."""
         self._next = 0
         self._pending: dict[int, asyncio.Future[JsonValue]] = {}
         self._received: set[int] = set()
@@ -158,10 +161,16 @@ class Channel:
         self._pending[identity] = future
         try:
             await self._write(Request(id=identity, capability=capability, payload=payload))
-            async with asyncio.timeout(timeout):
+            if timeout is None:
                 return await asyncio.shield(future)
-        except TimeoutError as error:
-            raise TransportError("unavailable", "control request outcome is unknown") from error
+            expiry = asyncio.ensure_future(self.clock.sleep(timeout))
+            try:
+                await asyncio.wait((future, expiry), return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                expiry.cancel()
+            if not future.done():
+                raise TransportError("unavailable", "control request outcome is unknown")
+            return future.result()
         finally:
             self._pending.pop(identity, None)
             # An error arriving concurrently with cancellation must not leave an

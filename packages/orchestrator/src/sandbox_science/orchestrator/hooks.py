@@ -65,6 +65,13 @@ conversation is past the run's budget."""
 type ToolHandler = Callable[[ToolCall, str], Awaitable[ToolOutcome]]
 """The next step of a tool call, given the call and its operation ID: its outcome."""
 
+DECISION_WAIT_SECONDS: Final = 1800.0
+"""How long a child's check-in waits at a safe point for its parent's decision before the
+automatic decision is made for it (D102)."""
+HALT_TIMEOUT_SECONDS: Final = DECISION_WAIT_SECONDS + 600.0
+"""How long a confined runtime waits for a hook's ``halt``, where a check-in waits: the
+decision's wait, measured from the start of ``halt``, plus a margin for the check-in's own
+reads and the automatic decision, so that decision always answers first."""
 RESPONSE_ROUNDS: Final = 2
 """Closing answers a run may take back to respond to findings, whatever their source."""
 

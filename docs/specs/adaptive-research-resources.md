@@ -74,7 +74,10 @@ artifact revisions, plan progress records and completed descendants. Model calls
 resource decisions are not progress.
 
 A parent that does not answer within 30 minutes gets the root's rule applied for it: one
-automatic step while the child has evidence or extensions left, otherwise a stop. A
+automatic step while the child has evidence or extensions left, otherwise a stop. The 30
+minutes run from the start of the safe point that checked in, and a confined runtime waits
+40 minutes for that safe point's answer, so the automatic decision always reaches the child
+before its runtime would give up on the wait. A
 parent that needs a decision it cannot make escalates with `message_parent`, or, at the
 root, asks the user.
 
