@@ -2284,8 +2284,7 @@ class Environments:
         included, ends there with ``ScheduleTimeoutError``."""
         name, image = info.sandbox, info.image
         refused: str | None = None
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + (timeout or 0.0)
+        deadline = self.clock.monotonic() + (timeout or 0.0)
         try:
             path = self._write(name, compiled.policy_digest, compiled.policy.to_yaml())
             args = ["sandbox", "create", "--name", name, "--from", image, "--policy", str(path)]
@@ -2317,7 +2316,7 @@ class Environments:
             return await self._wait_ready(name, creating=info.environment_id)
         try:
             return await self._wait_ready(
-                name, max(0.0, deadline - loop.time()), creating=info.environment_id
+                name, max(0.0, deadline - self.clock.monotonic()), creating=info.environment_id
             )
         except NotReadyError as exc:
             raise _not_placed(timeout) from exc
@@ -2330,27 +2329,26 @@ class Environments:
         and is ended at it, and either end is ``ScheduleTimeoutError``. The profile's
         timeout replaces the pool's ``create_timeout`` here, longer or shorter. A sandbox
         it recorded is then deleted by identity, as after any failed creation."""
-        loop = asyncio.get_running_loop()
         try:
             await self.cli.run(
                 *args,
-                timeout=max(0.0, deadline - loop.time()),
+                timeout=max(0.0, deadline - self.clock.monotonic()),
                 env={"OPENSHELL_PROVISION_TIMEOUT": str(max(1, math.ceil(timeout)))},
             )
         except GatewayRefusalError:
             raise
         except WorkerError as error:
-            if _PROVISION_TIMEOUT in error.message or loop.time() >= deadline:
+            if _PROVISION_TIMEOUT in error.message or self.clock.monotonic() >= deadline:
                 raise _not_placed(timeout) from error
             raise
 
     async def _wait_ready(
         self, name: str, timeout: float | None = None, *, creating: str | None = None
     ) -> str:
-        """Wait until the sandbox is ready; return its ID. Phases that cannot lead there fail."""
-        loop = asyncio.get_running_loop()
+        """Wait until the sandbox is ready; return its ID. Phases that cannot lead there fail.
+        The deadline is by the environments' clock; the polls are real time apart."""
         limit = self.settings.create_timeout if timeout is None else timeout
-        deadline = loop.time() + limit
+        deadline = self.clock.monotonic() + limit
         while True:
             document = await self.cli.sandbox(name)
             if document is None:
@@ -2372,7 +2370,7 @@ class Environments:
                     )
             if document.get("phase") == "Ready" and isinstance(sandbox_id, str) and sandbox_id:
                 return sandbox_id
-            if loop.time() > deadline:
+            if self.clock.monotonic() > deadline:
                 raise NotReadyError(
                     ErrorKind.UNAVAILABLE, f"sandbox {name} was not ready after {limit:.0f} s"
                 )

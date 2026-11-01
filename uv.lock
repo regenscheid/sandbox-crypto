@@ -1856,6 +1856,7 @@ source = { editable = "packages/testing" }
 dependencies = [
     { name = "aiohttp" },
     { name = "cryptography" },
+    { name = "pytest" },
     { name = "sandbox-science-contracts" },
 ]
 
@@ -1863,6 +1864,7 @@ dependencies = [
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.10" },
     { name = "cryptography", specifier = ">=43" },
+    { name = "pytest", specifier = ">=8.3" },
     { name = "sandbox-science-contracts", editable = "packages/contracts" },
 ]
 

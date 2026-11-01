@@ -307,29 +307,64 @@ def free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def test_serve_twice_and_captures_against_a_running_serve(tmp_path: Path) -> None:
-    worker = [str(Path(sys.executable).parent / "sandbox-science-worker")]
+def serving(worker: list[str], tmp_path: Path) -> tuple[subprocess.Popen[bytes], Path, Path]:
+    """A ``serve`` that is serving, its settings file and the file its stderr goes to.
+
+    A port ``free_port`` found can be taken before ``serve`` binds it, for instance by
+    another test's outgoing connection, since both come from the ephemeral range; then
+    ``serve`` exits, and a new port is tried, up to three. A ``serve`` that exits for
+    another reason, or is not serving within 60 s, fails the test with its stderr.
+    """
     (tmp_path / "worker.token").write_text(secrets.token_hex(32) + "\n")
     settings = tmp_path / "worker.toml"
-    settings.write_text(
-        'token_file = "worker.token"\nstate_dir = "state"\n'
-        f'listen = "127.0.0.1:{free_port()}"\n\n[local]\n'
-    )
-    first = subprocess.Popen(
-        [*worker, "serve", "--settings", str(settings)], stderr=subprocess.PIPE, text=True
-    )
-    try:
-        assert first.stderr is not None
-        deadline = time.monotonic() + 30
-        while time.monotonic() < deadline and "worker API on" not in first.stderr.readline():
-            pass
-        second = subprocess.run(
-            [*worker, "serve", "--settings", str(settings)],
-            capture_output=True,
-            text=True,
-            timeout=60,
+    log = tmp_path / "first-serve.txt"
+    code: int | None = None
+    for _ in range(3):
+        settings.write_text(
+            'token_file = "worker.token"\nstate_dir = "state"\n'
+            f'listen = "127.0.0.1:{free_port()}"\n\n[local]\n'
         )
-        assert second.returncode == 1
+        with log.open("wb") as stderr:
+            process = subprocess.Popen(
+                [*worker, "serve", "--settings", str(settings)],
+                stdout=subprocess.DEVNULL,
+                stderr=stderr,
+            )
+        deadline = time.monotonic() + 60
+        while process.poll() is None and time.monotonic() < deadline:
+            if "worker API on" in log.read_text():
+                return process, settings, log
+            time.sleep(0.05)
+        code = process.poll()
+        if code is None:
+            process.kill()
+            process.wait()
+            pytest.fail(f"serve was not serving after 60 s:\n{log.read_text()}")
+        if "address already in use" not in log.read_text():
+            break
+    pytest.fail(f"serve exited with {code} before serving:\n{log.read_text()}")
+
+
+def test_serve_twice_and_captures_against_a_running_serve(tmp_path: Path) -> None:
+    worker = [str(Path(sys.executable).parent / "sandbox-science-worker")]
+    first, settings, log = serving(worker, tmp_path)
+    try:
+        try:
+            second = subprocess.run(
+                [*worker, "serve", "--settings", str(settings)],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        except subprocess.TimeoutExpired as error:
+            stderr = error.stderr.decode() if isinstance(error.stderr, bytes) else error.stderr
+            state = "running" if first.poll() is None else f"ended with {first.returncode}"
+            pytest.fail(
+                f"a second serve still ran after 60 s; its stderr:\n{stderr}\n"
+                f"the first ({state}):\n{log.read_text()}"
+            )
+        assert first.poll() is None, log.read_text()
+        assert second.returncode == 1, second.stderr
         assert "another worker uses the state directory" in second.stderr
         assert second.stderr.count("\n") == 1, second.stderr  # one line, no traceback
         listed = subprocess.run(

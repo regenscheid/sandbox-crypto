@@ -29,7 +29,9 @@ from aiohttp.test_utils import TestClient
 from pydantic import ValidationError
 
 from sandbox_science.contracts import (
+    SYSTEM_CLOCK,
     Capabilities,
+    Clock,
     EnvironmentRequest,
     EnvironmentState,
     ErrorKind,
@@ -85,11 +87,14 @@ from sandbox_science.worker.settings import (
 from sandbox_science.worker.store import Store
 
 from .test_environments import EXAMPLE, IMAGE, TARGETS, TOKEN, ClientFactory, Fake
-from .test_job_sandboxes import SESSION, FakePort, granting, lockfile
+from .test_job_sandboxes import SESSION, FakePort, JumpClock, granting, lockfile
 
 pytestmark = pytest.mark.slow
 
 DELEGATION = "dlg-" + "a" * 24
+UNPLACED = 60.0
+"""The schedule timeout of tests whose sandbox is never placed: long enough for a slow
+machine to create a sandbox and become ready; ``JumpClock`` runs it out."""
 CONTEXT = ExecutionContext(project_id="p1", session_id="s1", environment_id=SESSION)
 
 
@@ -181,7 +186,7 @@ class SizedPort(FakePort):
 class Pool:
     """A worker's environments, store and child environments over the fake CLI."""
 
-    def __init__(self, tmp_path: Path, **settings: Any) -> None:
+    def __init__(self, tmp_path: Path, clock: Clock = SYSTEM_CLOCK, **settings: Any) -> None:
         self.tmp = tmp_path
         tmp_path.mkdir(parents=True, exist_ok=True)
         self.fake = Fake(tmp_path)
@@ -203,7 +208,12 @@ class Pool:
         assert self.backend.environments is not None
         env = {"FAKE_OPENSHELL_STATE": str(self.fake.path), "PATH": os.environ["PATH"]}
         self.environments = Environments(
-            self.backend, self.backend.environments, tmp_path / "worker", env, poll_seconds=0.05
+            self.backend,
+            self.backend.environments,
+            tmp_path / "worker",
+            env,
+            poll_seconds=0.05,
+            clock=clock,
         )
         self.released: list[str] = []
 
@@ -248,6 +258,21 @@ class Pool:
     async def ready(self, delegation: str = DELEGATION, **fields: Any) -> ChildEnvironment:
         made, created = await self.children.admit(self.request(delegation, **fields))
         assert created
+        return await self.settled(made.environment_id)
+
+    async def unplaced(self, clock: JumpClock, delegation: str = DELEGATION) -> ChildEnvironment:
+        """A child environment whose sandbox no node has room for, settled: once the worker
+        has seen the pending sandbox, ``clock`` jumps past the profile's schedule timeout
+        (``UNPLACED`` seconds)."""
+        made, created = await self.children.admit(self.request(delegation))
+        assert created
+
+        def seen() -> bool:
+            info = self.environments.records.get(made.environment_id)
+            return info is not None and info.sandbox_id is not None
+
+        await eventually(seen, timeout=20)
+        clock.jump(UNPLACED + 1)
         return await self.settled(made.environment_id)
 
     async def settled(self, environment_id: str) -> ChildEnvironment:
@@ -536,11 +561,13 @@ async def test_the_pool_and_profile_counts_apply(tmp_path: Path) -> None:
 
 async def test_an_unplaced_child_environment_fails_and_is_released(tmp_path: Path) -> None:
     """CE-F4's worker side: not ready within the profile's schedule timeout."""
-    pool = Pool(tmp_path, child_profiles={"standard": child_profile(schedule_timeout=0.3)})
+    clock = JumpClock()
+    profiles = {"standard": child_profile(schedule_timeout=UNPLACED)}
+    pool = Pool(tmp_path, clock, child_profiles=profiles)
     try:
         await pool.session()
         pool.fake.update(phase_on_create="Provisioning")  # pending: no node has room
-        made = await pool.ready()
+        made = await pool.unplaced(clock)
         assert (made.phase, made.failure) == ("released", "environment_unavailable")
         assert made.message is not None
         assert "not placed" in made.message
@@ -557,12 +584,14 @@ async def test_the_cost_view_counts_child_environments_seeding(tmp_path: Path) -
     """CE-13: the child environments made within the window, how long their sandboxes took
     to be placed, seeded and started, and from admission to ready, from the worker's
     records; past what the worker keeps, the counts say from when they are complete."""
-    pool = Pool(tmp_path, child_profiles={"standard": child_profile(schedule_timeout=0.3)})
+    clock = JumpClock()
+    profiles = {"standard": child_profile(schedule_timeout=UNPLACED)}
+    pool = Pool(tmp_path, clock, child_profiles=profiles)
     try:
         await pool.session()
         ready = await pool.ready()
         pool.fake.update(phase_on_create="Provisioning")  # pending: no node has room
-        await pool.ready("dlg-" + "b" * 24)
+        await pool.unplaced(clock, "dlg-" + "b" * 24)
         now = datetime.now(UTC)
         found = await pool.children.seeding("p1", now - timedelta(hours=24), now)
         assert (found.made, found.ready, found.failed, found.preparing) == (2, 1, 1, 0)

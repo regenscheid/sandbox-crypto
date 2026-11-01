@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: MIT
 name: ci
 
-# Pull requests run the static checks, the fast and slow test tiers on Python 3.13, and the
-# web app. Pushes to main also run the whole suite serially on every supported Python; the
-# nightly run does that too, and repeats the slow tier to measure flakiness.
+# Pull requests run the static checks, the fast and slow test tiers on Python 3.13, each in
+# shards of its own (scripts/tiers.py run --shard), and the web app. Pushes to main also run
+# the whole suite serially on every supported Python, in shards; the nightly run does that
+# too, and repeats the slow tier to measure flakiness.
 on:
   push:
     branches: [main]
@@ -54,17 +55,63 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # The fast and slow tiers are each divided into three shards by test module. On
+        # the four-CPU runner (two xdist workers) the fast tier took about 1,130 s and the
+        # slow tier about 1,100 s in one job each, past the 972 s session deadline; a
+        # shard of either is about 400 s.
         include:
-          - name: fast
+          - name: fast 1/3
             tier: fast
+            shard: --shard=1/3
             deadline: 1080
             workers: auto
             distribution: load
             selection: ""
             test_timeout: 120
             stack_dump: 100
-          - name: slow
+          - name: fast 2/3
+            tier: fast
+            shard: --shard=2/3
+            deadline: 1080
+            workers: auto
+            distribution: load
+            selection: ""
+            test_timeout: 120
+            stack_dump: 100
+          - name: fast 3/3
+            tier: fast
+            shard: --shard=3/3
+            deadline: 1080
+            workers: auto
+            distribution: load
+            selection: ""
+            test_timeout: 120
+            stack_dump: 100
+          - name: slow 1/3
             tier: slow
+            shard: --shard=1/3
+            deadline: 1080
+            workers: auto
+            distribution: load
+            selection: >-
+              --ignore=packages/orchestrator/tests/test_skills_staging.py
+              --ignore=packages/worker/tests/test_skill_staging.py
+            test_timeout: 300
+            stack_dump: 280
+          - name: slow 2/3
+            tier: slow
+            shard: --shard=2/3
+            deadline: 1080
+            workers: auto
+            distribution: load
+            selection: >-
+              --ignore=packages/orchestrator/tests/test_skills_staging.py
+              --ignore=packages/worker/tests/test_skill_staging.py
+            test_timeout: 300
+            stack_dump: 280
+          - name: slow 3/3
+            tier: slow
+            shard: --shard=3/3
             deadline: 1080
             workers: auto
             distribution: load
@@ -75,6 +122,7 @@ jobs:
             stack_dump: 280
           - name: staging-orchestrator
             tier: slow
+            shard: ""
             deadline: 600
             workers: 1
             distribution: load
@@ -83,6 +131,7 @@ jobs:
             stack_dump: 280
           - name: staging-worker
             tier: slow
+            shard: ""
             deadline: 600
             workers: 1
             distribution: load
@@ -104,12 +153,14 @@ jobs:
       # stuck); xdist names the test. The run stops at 18 minutes, before the job's limit,
       # so its output is printed either way.
       - run: >-
-          scripts/ci_pytest.sh ${{ matrix.deadline }} ${{ matrix.tier }} -n ${{ matrix.workers }}
+          scripts/ci_pytest.sh ${{ matrix.deadline }} ${{ matrix.tier }} ${{ matrix.shard }}
+          -n ${{ matrix.workers }}
           --dist=${{ matrix.distribution }} --durations=25
           --timeout=${{ matrix.test_timeout }} --timeout-method=thread
           -o faulthandler_timeout=${{ matrix.stack_dump }} ${{ matrix.selection }}
 
-  # The suite runs serially on every supported Python. Process-heavy staging modules
+  # The suite runs serially on every supported Python, in four shards by test module: the
+  # whole of it serially is over an hour on the runner. Process-heavy staging modules
   # remain in their isolated jobs below so executor contention cannot stall this runner.
   full:
     if: github.event_name != 'pull_request'
@@ -119,6 +170,8 @@ jobs:
       fail-fast: false
       matrix:
         python: ["3.12", "3.13"]
+        shard: [1, 2, 3, 4]
+    name: full (${{ matrix.python }}, ${{ matrix.shard }}/4)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -130,9 +183,11 @@ jobs:
       - run: uv sync --locked
       - run: >-
           uv run pytest --durations=50 --session-timeout=2640
+          -p sandbox_science.testing.shards --shard=${{ matrix.shard }}/4
           --ignore=packages/orchestrator/tests/test_skills_staging.py
           --ignore=packages/worker/tests/test_skill_staging.py
-      - run: uv run python scripts/check_licenses.py
+      - if: matrix.shard == 1
+        run: uv run python scripts/check_licenses.py
 
   full-staging:
     if: github.event_name != 'pull_request'
@@ -162,10 +217,11 @@ jobs:
           --timeout=300 --timeout-method=thread -o faulthandler_timeout=280
           ${{ matrix.stage.selection }}
 
-  # Nightly: the slow tier ten times, to measure how often its tests flake. One job running
-  # all ten repetitions on the two-CPU runner needed about 78 minutes (9038 of 9750 runs in
-  # 72, then the session deadline), so the repetitions are five jobs of two. Each job's
-  # summary gives the flake rate it observed; add the five for the night's rate.
+  # Nightly: the slow tier four times, to measure how often its tests flake. One repetition
+  # of the whole tier takes about 15 minutes on the runner, so the tier is divided into five
+  # shards by test module, each a job that runs its tests four times (the slowest shard
+  # about 26 minutes). Each job's summary gives the flake rate it observed; add the five
+  # for the night's rate.
   repeat:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
@@ -185,7 +241,7 @@ jobs:
           enable-cache: true
       - run: uv sync --locked
       - run: >-
-          scripts/ci_pytest.sh 2400 slow -n auto --count 2
+          scripts/ci_pytest.sh 2400 slow --shard=${{ matrix.shard }}/5 -n auto --count 4
           -o tmp_path_retention_policy=failed --timeout=300 --timeout-method=thread
           -o faulthandler_timeout=280
           --ignore=packages/orchestrator/tests/test_skills_staging.py
@@ -193,7 +249,7 @@ jobs:
       - if: always()
         run: >-
           python3 scripts/flake_report.py "${RUNNER_TEMP}/pytest.txt"
-          --title "Slow tier, shard ${{ matrix.shard }}/5 (2 repetitions)"
+          --title "Slow tier, shard ${{ matrix.shard }}/5 (4 repetitions)"
 
   # The isolated staging modules, five repetitions in each of two jobs. One module takes
   # about three minutes a repetition on the runner.
