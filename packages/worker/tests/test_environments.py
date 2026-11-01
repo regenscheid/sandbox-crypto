@@ -10,6 +10,8 @@ refuses a document that removes any filesystem path.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import fcntl
 import ipaddress
 import json
 import logging
@@ -19,7 +21,7 @@ import sqlite3
 import sys
 import time
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
@@ -27,6 +29,7 @@ from typing import Any, cast
 import pytest
 import pytest_asyncio
 from aiohttp.test_utils import TestClient
+from pydantic import ValidationError
 
 from sandbox_science.contracts import (
     SYSTEM_CLOCK,
@@ -42,6 +45,7 @@ from sandbox_science.contracts import (
 )
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 from sandbox_science.policy import HardFloor
+from sandbox_science.policy.store import Acceptance, PolicyStore
 from sandbox_science.testing import FakeClock
 from sandbox_science.worker import environments as environments_module
 from sandbox_science.worker import suspend as suspend_module
@@ -65,12 +69,15 @@ from sandbox_science.worker.environments import (
     Admission,
     EnvironmentRecords,
     Environments,
+    SandboxMissingError,
     new_sandbox_name,
 )
 from sandbox_science.worker.errors import WorkerError
+from sandbox_science.worker.kubernetes import KubernetesProfile, KubernetesResources
 from sandbox_science.worker.lifecycle import EnvironmentLifecycle
 from sandbox_science.worker.manager import ExecutionManager
-from sandbox_science.worker.provisioner import Provisioner, _Op
+from sandbox_science.worker.provision_types import Operation as _Op
+from sandbox_science.worker.provisioner import Provisioner
 from sandbox_science.worker.settings import (
     ClientSettings,
     EnvironmentSettings,
@@ -96,12 +103,16 @@ TOKEN = "t" * 40
 ClientFactory = Callable[..., Awaitable[TestClient[Any, Any]]]
 
 FAKE_OPENSHELL = r"""
-import json, os, sys, uuid
+import fcntl, json, os, sys, time, uuid
 import yaml
 
 BASELINE = {"read_only": ["/usr", "/lib", "/etc", "/var/log", "/proc", "/dev/urandom"],
             "read_write": ["/tmp", "/dev/null"]}
 path = os.environ["FAKE_OPENSHELL_STATE"]
+# One command changes the gateway's state at a time, as a worker runs several at once: a
+# read racing a deletion must not write the deleted sandbox back.
+lock = open(path + ".lock", "a")
+fcntl.flock(lock, fcntl.LOCK_EX)
 with open(path) as handle:
     state = json.load(handle)
 argv = sys.argv[1:]
@@ -136,10 +147,26 @@ def enrich(fs):
 command = argv[:2]
 out = None
 if command == ["sandbox", "create"]:
+    if state.get("create_gate"):
+        # Hold the command until the test opens the gate, as a slow gateway does; other
+        # commands go on meanwhile, and this one then works on the state as it is.
+        gate = state["create_gate"]
+        save()
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        open(gate + ".started", "w").close()
+        while not os.path.exists(gate):
+            time.sleep(0.01)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        with open(path) as handle:
+            state = json.load(handle)
+        sandboxes = state["sandboxes"]
     if state.get("fail_create"):
         fail("the VM driver could not start the sandbox")
+    if state.get("create_refused"):
+        fail(state["create_refused"])  # as the gateway refuses before recording anything
     name = option("--name")
     providers = [argv[i + 1] for i, a in enumerate(argv) if a == "--provider"]
+    labels = dict(argv[i + 1].split("=", 1) for i, a in enumerate(argv) if a == "--label")
     for provider in providers:
         if provider not in state["providers"]:
             fail(f"provider '{provider}' not found")
@@ -150,19 +177,45 @@ if command == ["sandbox", "create"]:
     policy["filesystem_policy"] = enrich(policy.get("filesystem_policy"))
     sandboxes[name] = {"id": str(uuid.uuid4()), "name": name, "image": option("--from"),
                        "providers": providers, "policy": policy, "version": 1,
-                       "phase": state.get("phase_on_create", "Ready")}
+                       "phase": state.get("phase_on_create", "Ready"),
+                       **({"labels": labels} if labels else {})}
     if state.get("fail_create_after"):
         fail("synthetic creation response lost")
+    if state.get("create_waits") and sandboxes[name]["phase"] != "Ready":
+        # As OpenShell 0.1.5's command does, --detach or not: it waits for the sandbox
+        # to be provisioned until its own idle deadline, OPENSHELL_PROVISION_TIMEOUT.
+        limit = os.environ.get("OPENSHELL_PROVISION_TIMEOUT")
+        state.setdefault("provision_timeouts", []).append(limit)
+        save()
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        waited = int(limit or 300)
+        time.sleep(state.get("create_waits_for", waited))
+        print(f"Error:   x sandbox provisioning timed out after {waited}s", file=sys.stderr)
+        sys.exit(1)
     out = "created"
 elif command == ["sandbox", "get"]:
     if state.get("fail_get"):
-        fail("synthetic gateway unavailable")
+        fail(state.get("get_error", "synthetic gateway unavailable"))
     name = argv[2]
     if name not in sandboxes:
         fail("code: 'Some requested entity was not found', message: \"sandbox not found\"")
     box = sandboxes[name]
     out = json.dumps({"id": box["id"], "name": name, "phase": box.get("phase", "Ready"),
-                      "configuration_admission": {"state": "accepted", "error": ""}})
+                      "configuration_admission": {"state": "accepted", "error": ""},
+                      **({"labels": box["labels"]} if "labels" in box else {})})
+elif command == ["sandbox", "list"]:
+    if state.get("fail_list"):
+        fail("synthetic gateway unavailable")
+    listed = [] if state.get("list_empty") else [
+        {"id": box["id"], "name": name, "phase": box.get("phase", "Ready"),
+         **({"labels": box["labels"]} if "labels" in box else {})}
+        for name, box in sorted(sandboxes.items())]
+    listed += state.get("extra_listed", [])
+    size = int(option("--page-size")) if "--page-size" in argv else 100
+    start = int(option("--page-token")) if "--page-token" in argv else 0
+    end = start + size
+    token = str(end) if end < len(listed) or state.get("endless_pages") else ""
+    out = json.dumps({"sandboxes": listed[start:end], "next_page_token": token})
 elif command == ["sandbox", "stop"]:
     if state.get("fail_stop"):
         fail("synthetic stop failure")
@@ -199,6 +252,8 @@ elif command == ["policy", "set"]:
     )
     if not kept:
         fail("message: \"filesystem policy cannot be removed on a live sandbox\"")
+    if box["policy"].get("landlock") != policy.get("landlock"):
+        fail("landlock policy cannot be changed on a live sandbox (applied at startup)")
     box["policy"], box["version"] = policy, box["version"] + 1
     out = "set"
 elif command == ["rule", "get"]:
@@ -263,14 +318,26 @@ class Fake:
         return json.loads(self.path.read_text())
 
     def write(self, state: dict[str, Any]) -> None:
+        with self.locked():
+            self._write(state)
+
+    def _write(self, state: dict[str, Any]) -> None:
         # A lifecycle timeout may kill the fake CLI during its write. Readers must
         # see the previous or next complete state, never a truncated JSON file.
         temporary = self.path.with_name(self.path.name + "." + uuid.uuid4().hex + ".tmp")
         temporary.write_text(json.dumps(state))
         temporary.replace(self.path)
 
+    @contextlib.contextmanager
+    def locked(self) -> Iterator[None]:
+        """The state's lock, which each fake CLI command holds while it runs."""
+        with self.path.with_name(self.path.name + ".lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            yield
+
     def update(self, **changes: Any) -> None:
-        self.write({**self.read(), **changes})
+        with self.locked():
+            self._write({**self.read(), **changes})
 
     def calls(self, *command: str) -> list[list[str]]:
         return [call for call in self.read()["calls"] if call[: len(command)] == list(command)]
@@ -425,6 +492,102 @@ async def test_create_is_idempotent_and_refuses_another_request(setup: Setup) ->
     assert refused.value.kind is ErrorKind.CONFLICT
 
 
+async def test_kubernetes_creation_pins_trusted_settings_and_resume_keeps_allocation(
+    setup: Setup,
+) -> None:
+    requests = KubernetesResources(cpu_millicores=1000, memory_mib=512, ephemeral_storage_mib=256)
+    limits = KubernetesResources(cpu_millicores=4000, memory_mib=4096, ephemeral_storage_mib=1024)
+    placement = KubernetesProfile(
+        node_selector={"kubernetes.io/arch": "amd64", "example.org/capacity": "large"},
+        requests=requests,
+        limits=limits,
+    )
+    original_settings = setup.environments.settings
+    setup.environments.settings = original_settings.model_copy(
+        update={"kubernetes": {"minimal": placement}}
+    )
+    info, _ = await setup.environments.create(setup.request())
+    [call] = setup.fake.calls("sandbox", "create")
+    pinned = call[call.index("--driver-config-json") + 1]
+    assert json.loads(pinned)["kubernetes"]["pod"]["node_selector"] == {
+        "kubernetes.io/arch": "amd64",
+        "example.org/capacity": "large",
+    }
+    assert setup.environments.records.driver_config(info.sandbox) == pinned
+    assert setup.environments.requires_workspace_prefix(info.environment_id)
+    setup.environments.close()
+    restarted = Environments(
+        setup.settings,
+        original_settings,
+        setup.state_dir,
+        {"FAKE_OPENSHELL_STATE": str(setup.fake.path), "PATH": os.environ["PATH"]},
+    )
+    try:
+        same, created = await restarted.create(setup.request())
+        assert (same.sandbox, created) == (info.sandbox, False)
+        assert restarted.records.driver_config(info.sandbox) == pinned
+        assert restarted.requires_workspace_prefix(info.environment_id)
+        assert len(setup.fake.calls("sandbox", "create")) == 1
+        with pytest.raises(WorkerError, match="launch settings changed"):
+            restarted.records.save(same, driver_config="{}")
+        assert restarted.records.driver_config(info.sandbox) == pinned
+    finally:
+        restarted.close()
+
+
+@pytest.mark.parametrize("change", ["revision", "ceiling"])
+async def test_kubernetes_existing_allocation_cannot_claim_tighter_resource_caps(
+    setup: Setup,
+    change: str,
+) -> None:
+    requests = KubernetesResources(cpu_millicores=1000, memory_mib=512, ephemeral_storage_mib=256)
+    limits = KubernetesResources(cpu_millicores=4000, memory_mib=4096, ephemeral_storage_mib=1024)
+    configured = setup.environments.settings.model_copy(
+        update={
+            "kubernetes": {
+                "minimal": KubernetesProfile(
+                    node_selector={"kubernetes.io/arch": "amd64"},
+                    requests=requests,
+                    limits=limits,
+                )
+            }
+        }
+    )
+    setup.environments.settings = configured
+    info, _ = await setup.environments.create(setup.request())
+    if change == "revision":
+        policy = setup.tmp / "smaller.yaml"
+        policy.write_text(
+            EXAMPLE.read_text()
+            .replace("cpu: 16", "cpu: 0.5")
+            .replace("memory: 64Gi", "memory: 256Mi")
+        )
+        revision = setup.add(policy)
+        with pytest.raises(WorkerError, match="saved Kubernetes allocation exceeds"):
+            await setup.environments.revise(info.environment_id, revision)
+        assert setup.environments.get(info.environment_id).policy == info.policy
+        assert not setup.fake.calls("policy", "set")
+    else:
+        setup.environments.close()
+        configured.ceiling.write_text(
+            "apiVersion: sandbox-science/v0alpha1\nkind: PoolCeiling\n"
+            "resources: {cpu: 0.5, memory: 256Mi}\n"
+        )
+        restarted = Environments(
+            setup.settings,
+            configured,
+            setup.state_dir,
+            {"FAKE_OPENSHELL_STATE": str(setup.fake.path), "PATH": os.environ["PATH"]},
+        )
+        try:
+            with pytest.raises(WorkerError, match="saved Kubernetes allocation exceeds"):
+                await restarted.create(setup.request())
+            assert restarted.get(info.environment_id).sandbox == info.sandbox
+        finally:
+            restarted.close()
+    assert len(setup.fake.calls("sandbox", "create")) == 1
+
+
 @pytest.mark.parametrize(
     ("changes", "kind"),
     [
@@ -480,6 +643,25 @@ async def test_a_revision_carries_the_live_filesystem_section_and_rebinds(setup:
     assert setup.environments.store.binding(info.sandbox_id) == revision
     await setup.environments.revise("env-1", revision)
     assert len(setup.fake.calls("policy", "set")) == 1
+
+
+async def test_a_revision_keeps_the_live_landlock_section(setup: Setup) -> None:
+    info, _ = await setup.environments.create(setup.request())
+    state = setup.fake.read()
+    box = state["sandboxes"][info.sandbox]
+    assert box["policy"]["landlock"] == {"compatibility": "hard_requirement"}
+    # A sandbox created before compiled policies carried a Landlock section has none, and
+    # OpenShell refuses a revision that adds one.
+    del box["policy"]["landlock"]
+    setup.fake.write(state)
+    revision = setup.add(variant(setup.tmp, "v2.yaml", extra_rule=True))
+    await setup.environments.revise("env-1", revision)
+    revised = setup.fake.read()["sandboxes"][info.sandbox]["policy"]
+    assert "landlock" not in revised
+    assert (
+        revised["network_middlewares"]["sandbox-science-policy"]["config"]["policy"]["digest"]
+        == revision
+    )
 
 
 async def test_a_revision_with_other_providers_is_refused(setup: Setup) -> None:
@@ -808,8 +990,45 @@ async def test_policy_add_stores_revisions_for_environments(
     assert main(["policy", "add", "--settings", str(settings), str(broken)]) == 1
 
 
+MISSING = "status: 'Some requested entity was not found', self: \"sandbox not found\""
+"""How OpenShell 0.1.5's CLI (tonic 0.14) shows the gateway's NotFound for a name."""
+
+
+@pytest.mark.parametrize(
+    "said",
+    [
+        MISSING,
+        MISSING + ", metadata: " + "x" * 600,
+        "status: 'Some requested entity was not found', self: \"sandbox not\n  │ found\"",
+    ],
+)
+async def test_only_the_gateways_not_found_for_the_name_means_absent(
+    setup: Setup, said: str
+) -> None:
+    setup.fake.update(fail_get=True, get_error=said)
+    assert await setup.environments.cli.sandbox("missing") is None
+
+
+@pytest.mark.parametrize(
+    "said",
+    [
+        "status: 'Some requested entity was not found', self: \"service endpoint not found\"",
+        "gateway 'babbage' not found",
+        "error: /home/user/.config/openshell/client.pem: file not found",
+        "sandbox research-1 not found",
+        "synthetic gateway unavailable",
+    ],
+)
+async def test_other_failures_never_count_as_absence(setup: Setup, said: str) -> None:
+    setup.fake.update(fail_get=True, get_error=said)
+    with pytest.raises(WorkerError, match="openshell sandbox get failed") as raised:
+        await setup.environments.cli.sandbox("missing")
+    assert not isinstance(raised.value, SandboxMissingError)
+
+
 async def test_sandbox_names_fit_openshells_limit_and_are_random() -> None:
-    # OpenShell v0.1.3 refuses names over 19 characters (lab 12), and uses "--" itself.
+    # OpenShell refuses names over 19 characters (v0.1.3 in lab 12, unchanged in v0.1.5),
+    # and uses "--" itself.
     # A name derived from the ID had room for 32 bits of a hash, so another ID could be
     # found to share it (review of D78); 64 random bits cannot be matched.
     names = {new_sandbox_name() for _ in range(1000)}
@@ -884,18 +1103,18 @@ def admitted_endpoints(setup: Setup, sandbox: str) -> list[str]:
 
 async def test_unnamed_hosts_the_policy_reaches_are_admitted_on_demand(setup: Setup) -> None:
     info, _ = await setup.environments.create(setup.request())
-    eprint = setup.fake.draft(info.sandbox, "eprint.iacr.org:443")
+    eprint = setup.fake.draft(info.sandbox, "eprint.example.net:443")
     registry = setup.fake.draft(info.sandbox, "pypi.org:443", "/usr/bin/python3.13")
     lan = setup.fake.draft(info.sandbox, "printer.local:443")
     decisions = await DraftWatcher(setup.environments, 1.0).check("env-1", info.sandbox)
     assert {(d.host, d.admitted) for d in decisions} == {
-        ("eprint.iacr.org", True),
+        ("eprint.example.net", True),
         ("pypi.org", False),
         ("printer.local", False),
     }
     # One revision of the same policy names the admitted host, with the address ranges.
     assert len(setup.fake.calls("policy", "set")) == 1
-    assert admitted_endpoints(setup, info.sandbox) == ["eprint.iacr.org"]
+    assert admitted_endpoints(setup, info.sandbox) == ["eprint.example.net"]
     box = setup.fake.read()["sandboxes"][info.sandbox]["policy"]
     [endpoint] = box["network_policies"]["sandbox-science-admitted"]["endpoints"]
     assert (
@@ -903,7 +1122,7 @@ async def test_unnamed_hosts_the_policy_reaches_are_admitted_on_demand(setup: Se
         == box["network_policies"]["sandbox-science-egress"]["endpoints"][0]["allowed_ips"]
     )
     revised = setup.environments.get("env-1")
-    assert revised.admitted_hosts == ("eprint.iacr.org",)
+    assert revised.admitted_hosts == ("eprint.example.net",)
     assert revised.policy == setup.policy
     assert setup.environments.store.binding(info.sandbox_id or "") == setup.policy
     # Every draft is rejected, never approved, with the decision as the reason.
@@ -915,7 +1134,7 @@ async def test_unnamed_hosts_the_policy_reaches_are_admitted_on_demand(setup: Se
     assert setup.fake.calls("rule", "approve") == []
     recorded = setup.environments.records.admissions("env-1")
     assert {(a.host, a.port, a.admitted) for a in recorded} == {
-        ("eprint.iacr.org", 443, True),
+        ("eprint.example.net", 443, True),
         ("pypi.org", 443, False),
         ("printer.local", 443, False),
     }
@@ -924,11 +1143,11 @@ async def test_unnamed_hosts_the_policy_reaches_are_admitted_on_demand(setup: Se
 async def test_drafts_for_admitted_hosts_need_no_revision(setup: Setup) -> None:
     info, _ = await setup.environments.create(setup.request())
     watcher = DraftWatcher(setup.environments, 1.0)
-    setup.fake.draft(info.sandbox, "eprint.iacr.org:443")
+    setup.fake.draft(info.sandbox, "eprint.example.net:443")
     await watcher.check("env-1", info.sandbox)
     # Another program, raced with the revision; a name the policy names, refused by
     # OpenShell's address check; and nothing pending at all.
-    again = setup.fake.draft(info.sandbox, "eprint.iacr.org:443", "/usr/bin/wget")
+    again = setup.fake.draft(info.sandbox, "eprint.example.net:443", "/usr/bin/wget")
     private = setup.fake.draft(
         info.sandbox,
         "github.com:443",
@@ -941,7 +1160,60 @@ async def test_drafts_for_admitted_hosts_need_no_revision(setup: Setup) -> None:
     drafts = setup.fake.drafts(info.sandbox)
     assert "admitted already" in drafts[again]["reason"]
     assert "not public" in drafts[private]["reason"]
-    assert setup.environments.get("env-1").admitted_hosts == ("eprint.iacr.org",)
+    assert setup.environments.get("env-1").admitted_hosts == ("eprint.example.net",)
+
+
+async def test_other_ports_are_admitted_on_demand(setup: Setup) -> None:
+    # D95: the example's reads are for any port, and OpenShell endpoints list their
+    # ports, so a refused connection to another port admits that port for that host.
+    info, _ = await setup.environments.create(setup.request())
+    watcher = DraftWatcher(setup.environments, 1.0)
+    setup.fake.draft(info.sandbox, "papers.example.net:8080")
+    setup.fake.draft(info.sandbox, "github.com:8443")  # pre-admitted, on another port
+    control = setup.fake.draft(info.sandbox, "papers.example.net:6443")
+    decisions = await watcher.check("env-1", info.sandbox)
+    assert {(d.host, d.port, d.admitted) for d in decisions} == {
+        ("papers.example.net", 8080, True),
+        ("github.com", 8443, True),
+        ("papers.example.net", 6443, False),
+    }
+    assert "port 6443 is not admitted" in setup.fake.drafts(info.sandbox)[control]["reason"]
+    revised = setup.environments.get("env-1")
+    assert revised.admitted_hosts == ("github.com:8443", "papers.example.net:8080")
+    policies = setup.fake.read()["sandboxes"][info.sandbox]["policy"]["network_policies"]
+    ports = {
+        endpoint["host"]: endpoint["ports"]
+        for section in ("sandbox-science-egress", "sandbox-science-admitted")
+        for endpoint in policies[section]["endpoints"]
+    }
+    assert ports["papers.example.net"] == [8080]
+    assert ports["github.com"] == [80, 8443]  # its HTTPS port is its credential endpoint's
+    # The same port again needs no revision; the default ports of that host do.
+    setup.fake.draft(info.sandbox, "papers.example.net:8080", "/usr/bin/wget")
+    await watcher.check("env-1", info.sandbox)
+    assert len(setup.fake.calls("policy", "set")) == 1
+    setup.fake.draft(info.sandbox, "papers.example.net:443")
+    await watcher.check("env-1", info.sandbox)
+    assert setup.environments.get("env-1").admitted_hosts == (
+        "github.com:8443",
+        "papers.example.net",
+        "papers.example.net:8080",
+    )
+
+
+async def test_the_admission_cap_is_a_setting_above_what_fits() -> None:
+    default = EnvironmentSettings.model_fields["max_admitted_hosts"].default
+    assert default == 128
+    with pytest.raises(ValidationError):
+        EnvironmentSettings.model_validate(
+            {
+                "policy_store": "s",
+                "targets": "t",
+                "ceiling": "c",
+                "profiles": {"minimal": "i"},
+                "max_admitted_hosts": 1025,
+            }
+        )
 
 
 async def test_admission_stops_at_the_environments_limit(setup: Setup) -> None:
@@ -957,27 +1229,27 @@ async def test_admission_stops_at_the_environments_limit(setup: Setup) -> None:
 
 
 async def test_a_revision_decides_recorded_hosts_again(setup: Setup) -> None:
-    blocked = setup.add(deny_variant(setup.tmp, "blocked.yaml", "eprint.iacr.org"))
+    blocked = setup.add(deny_variant(setup.tmp, "blocked.yaml", "eprint.example.net"))
     info, _ = await setup.environments.create(setup.request(policy=blocked))
-    setup.fake.draft(info.sandbox, "eprint.iacr.org:443")
+    setup.fake.draft(info.sandbox, "eprint.example.net:443")
     setup.fake.draft(info.sandbox, "papers.example.net:443")
     await DraftWatcher(setup.environments, 1.0).check("env-1", info.sandbox)
     assert setup.environments.get("env-1").admitted_hosts == ("papers.example.net",)
     # The example policy no longer denies the host: the next revision admits it too.
     revised = await setup.environments.revise("env-1", setup.policy)
-    assert revised.admitted_hosts == ("eprint.iacr.org", "papers.example.net")
-    assert admitted_endpoints(setup, info.sandbox) == ["eprint.iacr.org", "papers.example.net"]
+    assert revised.admitted_hosts == ("eprint.example.net", "papers.example.net")
+    assert admitted_endpoints(setup, info.sandbox) == ["eprint.example.net", "papers.example.net"]
     # And back: a revision that denies it drops it again.
     again = await setup.environments.revise("env-1", blocked)
     assert again.admitted_hosts == ("papers.example.net",)
     assert admitted_endpoints(setup, info.sandbox) == ["papers.example.net"]
     decisions = {a.host: a for a in setup.environments.records.admissions("env-1")}
-    assert not decisions["eprint.iacr.org"].admitted
+    assert not decisions["eprint.example.net"].admitted
 
 
 async def test_a_gateway_failure_pauses_admission_for_the_environment(setup: Setup) -> None:
     info, _ = await setup.environments.create(setup.request())
-    setup.fake.draft(info.sandbox, "eprint.iacr.org:443")
+    setup.fake.draft(info.sandbox, "eprint.example.net:443")
     setup.fake.update(fail_rules=True)
     watcher = DraftWatcher(setup.environments, 1.0)
     await watcher.check_all()
@@ -1006,7 +1278,7 @@ async def test_a_draft_that_cannot_be_rejected_does_not_stop_the_others(setup: S
 async def test_deleted_environments_are_not_watched(setup: Setup) -> None:
     info, _ = await setup.environments.create(setup.request())
     await setup.environments.delete("env-1")
-    setup.fake.draft(info.sandbox, "eprint.iacr.org:443")
+    setup.fake.draft(info.sandbox, "eprint.example.net:443")
     await DraftWatcher(setup.environments, 1.0).check_all()
     assert setup.fake.calls("rule", "get") == []
 
@@ -1236,6 +1508,59 @@ async def test_a_suspended_environment_keeps_its_sandbox_and_resumes_on_use(setu
     assert len(setup.fake.calls("sandbox", "start")) == 1
     # The middleware's binding never changed.
     assert setup.environments.store.binding(info.sandbox_id or "") == setup.policy
+
+
+async def test_a_checkpoint_hold_keeps_a_stopped_sandbox_stopped(setup: Setup) -> None:
+    """While a checkpoint Job reads its volume, nothing starts the sandbox again; the hold
+    ends when released, or by itself when it expires."""
+    from sandbox_science.contracts.workspace_checkpoint import CheckpointPlan, CheckpointSource
+    from sandbox_science.worker.checkpoint_records import CheckpointRecords
+
+    info, _ = await setup.environments.create(setup.request())
+    setup.environments.release_idle = always
+    assert await setup.environments.suspend("env-1", time.monotonic())
+    source = CheckpointSource(
+        project_id="p1",
+        environment_id="env-1",
+        sandbox=info.sandbox,
+        sandbox_id=info.sandbox_id or "",
+        profile="minimal",
+        image=IMAGE,
+        policy=setup.policy,
+        launch_settings=None,
+        architecture="amd64",
+        require_workspace_prefix=False,
+        prefix_identity=None,
+        package_fingerprint=None,
+    )
+    plan = CheckpointPlan(
+        checkpoint_id="ckpt-" + "a" * 24,
+        source=source,
+        source_sha256="b" * 64,
+        capture="suspended_pvc",
+        hold_expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    records = CheckpointRecords(setup.state_dir)
+    records.place(plan, datetime.now(UTC), "test-operator")
+    with pytest.raises(WorkerError, match="held stopped for a workspace checkpoint") as held:
+        await setup.environments.resume("env-1")
+    assert held.value.kind is ErrorKind.UNAVAILABLE
+    assert setup.fake.calls("sandbox", "start") == []
+    records.release(plan.checkpoint_id, datetime.now(UTC), "verified", "op")
+    records.close()
+    await setup.environments.resume("env-1")
+    assert setup.environments.get("env-1").state is EnvironmentState.READY
+
+
+async def test_unreadable_checkpoint_records_refuse_a_start(setup: Setup) -> None:
+    """The hold check fails closed: records it cannot read never let a sandbox start."""
+    await setup.environments.create(setup.request())
+    setup.environments.release_idle = always
+    assert await setup.environments.suspend("env-1", time.monotonic())
+    (setup.state_dir / "checkpoints.sqlite3").write_bytes(b"not a database, " * 64)
+    with pytest.raises(WorkerError, match="cannot check checkpoint holds"):
+        await setup.environments.resume("env-1")
+    assert setup.fake.calls("sandbox", "start") == []
 
 
 async def test_an_environment_in_use_is_not_suspended(setup: Setup) -> None:
@@ -1478,10 +1803,12 @@ async def test_a_failed_suspension_leaves_the_others_to_go_on(paused: Setup) -> 
     suspender.started = long_ago
     real = paused.environments.cli.run
 
-    async def flaky(*args: str, timeout: float = 120.0) -> str:
+    async def flaky(
+        *args: str, timeout: float = 120.0, env: Mapping[str, str] | None = None
+    ) -> str:
         if args[:2] == ("sandbox", "stop") and args[2] == paused.environments.get("env-a").sandbox:
             raise WorkerError(ErrorKind.UNAVAILABLE, "openshell sandbox stop failed")
-        return await real(*args, timeout=timeout)
+        return await real(*args, timeout=timeout, env=env)
 
     paused.environments.cli.run = flaky
     assert await suspender.check() == ["env-b"]
@@ -1497,16 +1824,16 @@ async def test_a_failed_suspension_leaves_the_others_to_go_on(paused: Setup) -> 
 async def test_admission_notices_say_what_was_admitted_and_refused(setup: Setup) -> None:
     info, _ = await setup.environments.create(setup.request())
     before = datetime.now(UTC)
-    setup.fake.draft(info.sandbox, "eprint.iacr.org:443")
+    setup.fake.draft(info.sandbox, "eprint.example.net:443")
     setup.fake.draft(info.sandbox, "pypi.org:443")
     watcher = DraftWatcher(setup.environments, 1.0)
     await watcher.check("env-1", info.sandbox)
     notices = [text for _, text in setup.environments.notices("env-1", before)]
-    assert notices[0].startswith("eprint.iacr.org was admitted on demand")
+    assert notices[0].startswith("eprint.example.net was admitted on demand")
     assert notices[1].startswith("pypi.org:443 was not admitted: ")
     seen = max(at for at, _ in setup.environments.notices("env-1", before))
     # Another program for an admitted host is no news.
-    setup.fake.draft(info.sandbox, "eprint.iacr.org:443", "/usr/bin/wget")
+    setup.fake.draft(info.sandbox, "eprint.example.net:443", "/usr/bin/wget")
     await watcher.check("env-1", info.sandbox)
     assert setup.environments.notices("env-1", seen) == []
 
@@ -1515,7 +1842,7 @@ async def test_operators_can_list_an_environments_admissions(
     setup: Setup, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     info, _ = await setup.environments.create(setup.request())
-    setup.fake.draft(info.sandbox, "eprint.iacr.org:443")
+    setup.fake.draft(info.sandbox, "eprint.example.net:443")
     setup.fake.draft(info.sandbox, "pypi.org:443")
     await DraftWatcher(setup.environments, 1.0).check("env-1", info.sandbox)
     settings = tmp_path / "worker.toml"
@@ -1527,7 +1854,7 @@ async def test_operators_can_list_an_environments_admissions(
     )
     assert main(["admissions", "--settings", str(settings), "--environment", "env-1"]) == 0
     out = capsys.readouterr().out
-    assert "admitted eprint.iacr.org" in out
+    assert "admitted eprint.example.net" in out
     assert "pypi.org:443 refused: " in out
     assert main(["admissions", "--settings", str(settings), "--environment", "nope"]) == 1
 
@@ -1624,6 +1951,9 @@ CLIENTS = (
 )
 
 
+LAUNCHER_TOKEN = "test-secret-launcher-" + "0" * 24
+
+
 def bearer(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
@@ -1658,6 +1988,339 @@ class Api:
 
     def environment(self, environment_id: str, project_id: str = "p1") -> dict[str, Any]:
         return self.setup.request(environment_id, project_id=project_id).model_dump(mode="json")
+
+
+def runtime_sandbox(setup: Setup, sandbox_id: str, project: str | None) -> None:
+    """A sandbox in the fake gateway as the launcher or the runtime manager makes the agent
+    runtime's: named ``ss-orch-…``, labelled with its project (none with ``project`` None)."""
+    state = setup.fake.read()
+    labels = {"sandbox-science.io/project": project} if project is not None else None
+    state["sandboxes"][f"ss-orch-{sandbox_id}"] = {
+        "id": sandbox_id, "name": f"ss-orch-{sandbox_id}", "phase": "Ready",
+        **({"labels": labels} if labels is not None else {}),
+    }  # fmt: skip
+    setup.fake.write(state)
+
+
+async def test_the_runtime_sandbox_is_bound_to_the_projects_revision_for_an_operator(
+    setup: Setup, aiohttp_client: ClientFactory, tmp_path: Path
+) -> None:
+    manager = idle_manager(tmp_path / "worker-api")
+    await manager.start()
+    launcher = ClientSettings(
+        name="launcher", token_sha256=token_digest(LAUNCHER_TOKEN), projects=("p1",), operator=True
+    )
+    client = await aiohttp_client(
+        create_app(manager, TOKEN, setup.environments, (*CLIENTS, launcher))
+    )
+    api = Api(client, setup)
+    store = setup.environments.store
+    runtime_sandbox(setup, "sbx-agent", "p1")
+    body = {"project_id": "p1", "sandbox_id": "sbx-agent"}
+    # Neither a client that is no operator, nor an operator for another project.
+    assert await api.refused("POST", "/v1/runtime-sandboxes", A_TOKEN, body) == (
+        403,
+        "policy_denied",
+    )
+    other = {"project_id": "p2", "sandbox_id": "sbx-agent"}
+    assert await api.refused("POST", "/v1/runtime-sandboxes", LAUNCHER_TOKEN, other) == (
+        403,
+        "policy_denied",
+    )
+    # A project with no revision has nothing to bind to.
+    assert await api.refused("POST", "/v1/runtime-sandboxes", LAUNCHER_TOKEN, body) == (
+        404,
+        "not_found",
+    )
+    assert store.binding("sbx-agent") is None
+    # The revision granted to it last, until the store binds the project to another.
+    setup.environments.records.grant("p1", setup.policy)
+    status, bound = await api.call("POST", "/v1/runtime-sandboxes", LAUNCHER_TOKEN, body)
+    assert (status, bound["policy"]) == (200, setup.policy)
+    assert store.binding("sbx-agent") == setup.policy
+    newer = setup.add(variant(setup.tmp, "no-providers.yaml", providers=False))
+    PolicyStore(setup.environments.settings.policy_store, "projects").bind("p1", newer)
+    status, bound = await api.call("POST", "/v1/runtime-sandboxes", LAUNCHER_TOKEN, body)
+    assert (status, bound["policy"]) == (200, newer)
+    assert store.binding("sbx-agent") == newer
+    # A research environment's sandbox is bound by its own steps: never by this route.
+    info, _ = await setup.environments.create(setup.request())
+    assert info.sandbox_id is not None
+    taken = {"project_id": "p1", "sandbox_id": info.sandbox_id}
+    assert await api.refused("POST", "/v1/runtime-sandboxes", LAUNCHER_TOKEN, taken) == (
+        409,
+        "conflict",
+    )
+    path = f"/v1/runtime-sandboxes/{info.sandbox_id}"
+    assert (await api.refused("DELETE", path, LAUNCHER_TOKEN))[0] == 409
+    assert store.binding(info.sandbox_id) == setup.policy
+    # Unbinding is the operator's too, and unbinding twice is no error.
+    path = "/v1/runtime-sandboxes/sbx-agent"
+    assert (await api.refused("DELETE", path, A_TOKEN))[0] == 403
+    assert await api.call("DELETE", path, LAUNCHER_TOKEN) == (
+        200,
+        {"sandbox_id": "sbx-agent", "unbound": True},
+    )
+    assert store.binding("sbx-agent") is None
+    # A second unbind finds no runtime sandbox for the client: not found, as an unknown ID.
+    assert await api.refused("DELETE", path, LAUNCHER_TOKEN) == (404, "not_found")
+    # The pool's own token may unbind any, and nothing to unbind is no error for it.
+    assert (await api.call("DELETE", path, TOKEN))[1]["unbound"] is False
+
+
+BINDER_TOKEN = "test-secret-binder-" + "0" * 24
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    [
+        ("GET", "/v1/permission-requests?project=p1", None),
+        ("POST", "/v1/permission-requests/1/answer", {"approve": True, "scope": "call"}),
+        ("POST", "/v1/permission-requests/1/confirm", {}),
+        ("POST", "/v1/classifications/papers/drafts/" + "a" * 64 + "/accept", {}),
+        ("POST", "/v1/classifications/papers/drift/accept", {}),
+        ("POST", "/v1/mcp-listings", {}),
+        ("POST", "/v1/job-sandboxes/exec-1/release", {}),
+        ("POST", "/v1/recovery/fence", {}),
+        ("GET", "/v1/environments", None),
+        ("POST", "/v1/environments", {}),
+        ("DELETE", "/v1/environments/env-1", None),
+        ("GET", "/v1/ready", None),
+        ("GET", "/v1/runtime-sandboxes", None),
+        ("GET", "/v1/no-such-route", None),
+    ],
+)
+async def test_a_binding_only_client_reaches_the_runtime_binding_routes_alone(
+    setup: Setup,
+    aiohttp_client: ClientFactory,
+    tmp_path: Path,
+    method: str,
+    path: str,
+    body: object,
+) -> None:
+    """Review of a2/direct-wiring: the Kubernetes runtime manager's worker client binds and
+    unbinds the runtime's sandbox for its project and does nothing else."""
+    manager = idle_manager(tmp_path / "worker-api")
+    await manager.start()
+    binder = ClientSettings(
+        name="manager", token_sha256=token_digest(BINDER_TOKEN), projects=("p1",),
+        binding_only=True,
+    )  # fmt: skip
+    client = await aiohttp_client(
+        create_app(manager, TOKEN, setup.environments, (*CLIENTS, binder))
+    )
+    api = Api(client, setup)
+    try:
+        assert await api.refused(method, path, BINDER_TOKEN, body) == (403, "policy_denied")
+        setup.environments.records.grant("p1", setup.policy)
+        runtime_sandbox(setup, "sbx-agent", "p1")
+        bound = {"project_id": "p1", "sandbox_id": "sbx-agent"}
+        status, reply = await api.call("POST", "/v1/runtime-sandboxes", BINDER_TOKEN, bound)
+        assert (status, reply["policy"]) == (200, setup.policy)
+        other = {"project_id": "p2", "sandbox_id": "sbx-agent"}
+        assert await api.refused("POST", "/v1/runtime-sandboxes", BINDER_TOKEN, other) == (
+            403,
+            "policy_denied",
+        )
+        status, reply = await api.call("DELETE", "/v1/runtime-sandboxes/sbx-agent", BINDER_TOKEN)
+        assert (status, reply["unbound"]) == (200, True)
+    finally:
+        await manager.close()
+        manager.store.close()
+
+
+async def test_a_project_scoped_client_unbinds_only_its_own_projects_runtime_sandbox(
+    setup: Setup, aiohttp_client: ClientFactory, tmp_path: Path
+) -> None:
+    """A manager of project p1 cannot unbind p2's runtime sandbox, can unbind its own, and
+    learns nothing of another project's from an unknown sandbox ID."""
+    manager = idle_manager(tmp_path / "worker-api")
+    await manager.start()
+    clients = [
+        ClientSettings(
+            name=f"manager-{project}",
+            token_sha256=token_digest(f"{BINDER_TOKEN}-{project}"),
+            projects=(project,),
+            binding_only=True,
+        )
+        for project in ("p1", "p2")
+    ]
+    client = await aiohttp_client(
+        create_app(manager, TOKEN, setup.environments, (*CLIENTS, *clients))
+    )
+    api = Api(client, setup)
+    one, two = f"{BINDER_TOKEN}-p1", f"{BINDER_TOKEN}-p2"
+    store = setup.environments.store
+    try:
+        for project, token in (("p1", one), ("p2", two)):
+            runtime_sandbox(setup, f"sbx-{project}", project)
+            setup.environments.records.grant(project, setup.policy)
+            body = {"project_id": project, "sandbox_id": f"sbx-{project}"}
+            assert (await api.call("POST", "/v1/runtime-sandboxes", token, body))[0] == 200
+        assert store.binding_entry("sbx-p2") == (setup.policy, "p2")
+        # p2's runtime sandbox cannot be rebound to p1 by p1's manager (review probe).
+        claim = {"project_id": "p1", "sandbox_id": "sbx-p2"}
+        status, reply = await api.call("POST", "/v1/runtime-sandboxes", one, claim)
+        assert (status, reply["error"]["kind"]) == (403, "policy_denied")
+        assert "p2" not in reply["error"]["message"].replace("sbx-p2", "")
+        assert store.binding_entry("sbx-p2") == (setup.policy, "p2")
+        # Its own runtime sandbox may move to a new revision.
+        newer = setup.add(variant(setup.tmp, "no-providers.yaml", providers=False))
+        setup.environments.records.grant("p1", newer)
+        own = {"project_id": "p1", "sandbox_id": "sbx-p1"}
+        status, reply = await api.call("POST", "/v1/runtime-sandboxes", one, own)
+        assert (status, reply["policy"]) == (200, newer)
+        assert store.binding_entry("sbx-p1") == (newer, "p1")
+        # p2's runtime sandbox: refused to p1's manager, naming only p1.
+        status, reply = await api.call("DELETE", "/v1/runtime-sandboxes/sbx-p2", one)
+        assert (status, reply["error"]["kind"]) == (403, "policy_denied")
+        assert "p1" in reply["error"]["message"]
+        assert "p2" not in reply["error"]["message"].replace("sbx-p2", "")
+        assert store.binding("sbx-p2") == setup.policy
+        # An unknown ID is not found, as a sandbox it may not see would not be.
+        status, reply = await api.call("DELETE", "/v1/runtime-sandboxes/sbx-nowhere", one)
+        assert (status, reply["error"]["kind"]) == (404, "not_found")
+        assert "p2" not in reply["error"]["message"]
+        # Its own: unbound.
+        status, reply = await api.call("DELETE", "/v1/runtime-sandboxes/sbx-p1", one)
+        assert (status, reply["unbound"]) == (200, True)
+        assert store.binding("sbx-p1") is None
+        # A research environment's sandbox stays refused as before.
+        info, _ = await setup.environments.create(setup.request())
+        assert info.sandbox_id is not None
+        path = f"/v1/runtime-sandboxes/{info.sandbox_id}"
+        assert (await api.refused("DELETE", path, one))[0] == 409
+    finally:
+        await manager.close()
+        manager.store.close()
+
+
+@pytest.mark.parametrize(
+    ("label", "known"), [("p1", True), ("p2", True), (None, True), ("p1", False)]
+)
+async def test_a_scoped_client_binds_only_a_sandbox_the_gateway_labels_for_its_project(
+    setup: Setup,
+    aiohttp_client: ClientFactory,
+    tmp_path: Path,
+    label: str | None,
+    known: bool,
+) -> None:
+    """The gateway's own word: a sandbox labelled for the caller's project is bound; one
+    labelled for another project, an unlabelled one and one the gateway does not list are
+    refused, naming only the caller's project. The pool's own token binds any."""
+    manager = idle_manager(tmp_path / "worker-api")
+    await manager.start()
+    binder = ClientSettings(
+        name="manager", token_sha256=token_digest(BINDER_TOKEN), projects=("p1",),
+        binding_only=True,
+    )  # fmt: skip
+    client = await aiohttp_client(
+        create_app(manager, TOKEN, setup.environments, (*CLIENTS, binder))
+    )
+    api = Api(client, setup)
+    try:
+        setup.environments.records.grant("p1", setup.policy)
+        if known:
+            runtime_sandbox(setup, "sbx-runtime", label)
+        body = {"project_id": "p1", "sandbox_id": "sbx-runtime"}
+        status, reply = await api.call("POST", "/v1/runtime-sandboxes", BINDER_TOKEN, body)
+        store = setup.environments.store
+        if label == "p1" and known:
+            assert (status, reply["policy"]) == (200, setup.policy)
+            assert store.binding_entry("sbx-runtime") == (setup.policy, "p1")
+            assert setup.fake.calls("sandbox", "get")[-1][2] == "ss-orch-sbx-runtime"
+            return
+        assert (status, reply["error"]["kind"]) == (403, "policy_denied")
+        assert "p1" in reply["error"]["message"]
+        assert "p2" not in reply["error"]["message"]
+        assert store.binding("sbx-runtime") is None
+        # The pool's own token keeps binding any sandbox it names.
+        status, _ = await api.call("POST", "/v1/runtime-sandboxes", TOKEN, body)
+        assert status == 200
+    finally:
+        await manager.close()
+        manager.store.close()
+
+
+async def test_a_binding_only_client_reads_its_projects_classifications_in_force(
+    setup: Setup, aiohttp_client: ClientFactory, tmp_path: Path
+) -> None:
+    """The Kubernetes runtime manager's one read: each named server's revision in force
+    for its own project, the file as stored, for compiling the runtime's fence (A3)."""
+    manager = idle_manager(tmp_path / "worker-api")
+    await manager.start()
+    binder = ClientSettings(
+        name="manager", token_sha256=token_digest(BINDER_TOKEN), projects=("p1",),
+        binding_only=True,
+    )  # fmt: skip
+    client = await aiohttp_client(
+        create_app(manager, TOKEN, setup.environments, (*CLIENTS, binder))
+    )
+    api = Api(client, setup)
+    data = (
+        b"apiVersion: sandbox-science/v0alpha1\nkind: ToolClassification\nserver: papers\n"
+        b'tools:\n  papers_search:\n    class: read\n    reason: "Reviewed."\n'
+    )
+    store = setup.environments.store
+    accepted = store.accept_classification(
+        "p1", "papers", data, Acceptance("user", datetime.now(UTC), "reviewed")
+    )
+    path = "/v1/runtime-classifications?project=p1&server=papers&server=other"
+    try:
+        status, reply = await api.call("GET", path, BINDER_TOKEN)
+        assert status == 200
+        assert reply == {
+            "project_id": "p1",
+            "servers": [
+                {
+                    "server": "papers",
+                    "revision": accepted.revision,
+                    "classification": data.decode(),
+                    "error_kind": None,
+                    "error": None,
+                },
+                {
+                    "server": "other",
+                    "revision": None,
+                    "classification": None,
+                    "error_kind": None,
+                    "error": None,
+                },
+            ],
+        }
+        # An unreadable binding is reported with why, never as none.
+        current = setup.environments.settings.policy_store / "classifications/p1/papers"
+        (current / "current.json").write_text("not json")
+        status, reply = await api.call("GET", path, BINDER_TOKEN)
+        first = reply["servers"][0]
+        assert (first["revision"], first["error_kind"]) == (None, "binding")
+        assert str(setup.environments.settings.policy_store) not in first["error"]  # no paths
+        assert "/" not in first["error"]
+        # A revision the binding names but the store lacks is the revision's error.
+        (current / "current.json").write_text('{"revision": "' + "e" * 64 + '"}')
+        status, reply = await api.call("GET", path, BINDER_TOKEN)
+        first = reply["servers"][0]
+        assert (first["revision"], first["error_kind"]) == (None, "revision")
+        assert "/" not in first["error"]
+        # Its own project only, and named servers only; an execution client reads none.
+        other = "/v1/runtime-classifications?project=p2&server=papers"
+        assert await api.refused("GET", other, BINDER_TOKEN) == (403, "policy_denied")
+        for bad in ("?project=p1", "?project=p1&server=Bad_Name", "?project=p1&server=a&x=1"):
+            refused = await api.refused("GET", "/v1/runtime-classifications" + bad, BINDER_TOKEN)
+            assert refused == (400, "invalid_request")
+        assert (await api.refused("GET", path, A_TOKEN))[0] == 403
+    finally:
+        await manager.close()
+        manager.store.close()
+
+
+async def test_a_binding_only_client_has_no_other_permission() -> None:
+    for extra in ("operator", "recovery_control", "artifact_retention", "document_catalog"):
+        with pytest.raises(ValueError, match="binding_only"):
+            ClientSettings(
+                name="manager", token_sha256="0" * 64, projects=("p1",),
+                binding_only=True, **{extra: True},
+            )  # fmt: skip
 
 
 async def start_api(
@@ -2251,6 +2914,53 @@ async def test_delete_never_certifies_or_mutates_same_name_replacement(setup: Se
     assert setup.fake.read()["sandboxes"][original.sandbox].get("phase", "Ready") == "Ready"
 
 
+def reuse_name(setup: Setup, sandbox: str) -> None:
+    """Another sandbox now has the environment's sandbox's name, as after the original
+    went and a new one took its name."""
+    state = setup.fake.read()
+    state["sandboxes"][sandbox]["id"] = "healthy-replacement"
+    state["sandboxes"][sandbox]["phase"] = "Ready"
+    setup.fake.write(state)
+
+
+async def test_suspension_never_stops_a_sandbox_that_reused_the_name(setup: Setup) -> None:
+    original, _ = await setup.environments.create(setup.request())
+    setup.environments.release_idle = always
+    reuse_name(setup, original.sandbox)
+    with pytest.raises(WorkerError, match="refusing to stop another sandbox"):
+        await setup.environments.suspend("env-1", time.monotonic())
+    assert setup.fake.calls("sandbox", "stop") == []
+    assert setup.environments.get("env-1").state is EnvironmentState.READY
+    assert setup.fake.read()["sandboxes"][original.sandbox]["phase"] == "Ready"
+
+
+async def test_stopping_again_on_request_never_stops_a_sandbox_that_reused_the_name(
+    setup: Setup,
+) -> None:
+    original, _ = await setup.environments.create(setup.request())
+    setup.environments.release_idle = always
+    assert await setup.environments.stop_now("env-1", time.monotonic())
+    stops = setup.fake.calls("sandbox", "stop")
+    reuse_name(setup, original.sandbox)  # recorded stopped; another runs under the name
+    with pytest.raises(WorkerError, match="refusing to stop another sandbox"):
+        await setup.environments.stop_now("env-1", time.monotonic())
+    assert setup.fake.calls("sandbox", "stop") == stops
+    assert setup.fake.read()["sandboxes"][original.sandbox]["phase"] == "Ready"
+
+
+async def test_admission_never_changes_the_policy_of_a_sandbox_that_reused_the_name(
+    setup: Setup,
+) -> None:
+    original, _ = await setup.environments.create(setup.request())
+    version = setup.fake.read()["sandboxes"][original.sandbox]["version"]
+    reuse_name(setup, original.sandbox)
+    with pytest.raises(WorkerError, match="refusing to change the policy of another sandbox"):
+        await setup.environments.admit("env-1", [("eprint.example.net", 443)])
+    assert setup.fake.calls("policy", "set") == []
+    assert setup.fake.read()["sandboxes"][original.sandbox]["version"] == version
+    assert setup.environments.get("env-1").admitted_hosts == original.admitted_hosts
+
+
 async def test_a_known_environment_never_falls_back_to_a_sandbox_made_by_hand(
     tmp_path: Path,
 ) -> None:
@@ -2274,13 +2984,13 @@ async def test_a_known_environment_never_falls_back_to_a_sandbox_made_by_hand(
 
 async def test_a_busy_environment_does_not_hold_up_admission(setup: Setup) -> None:
     info, _ = await setup.environments.create(setup.request())
-    setup.fake.draft(info.sandbox, "eprint.iacr.org:443")
+    setup.fake.draft(info.sandbox, "eprint.example.net:443")
     watcher = DraftWatcher(setup.environments, 1.0)
     lock = setup.environments._lock("env-1")
     async with lock:
         assert await watcher.check("env-1", info.sandbox) == ()
     decisions = await watcher.check("env-1", info.sandbox)
-    assert [(d.host, d.admitted) for d in decisions] == [("eprint.iacr.org", True)]
+    assert [(d.host, d.admitted) for d in decisions] == [("eprint.example.net", True)]
 
 
 async def test_clients_are_named_by_their_tokens_digests(
@@ -2371,14 +3081,14 @@ async def test_clients_are_named_by_their_tokens_digests(
 async def test_admission_does_not_wait_for_a_change_under_way(setup: Setup) -> None:
     # One client's revisions must not hold up admission for every project (review of D78).
     info, _ = await setup.environments.create(setup.request())
-    setup.fake.draft(info.sandbox, "eprint.iacr.org:443")
+    setup.fake.draft(info.sandbox, "eprint.example.net:443")
     real = setup.environments.cli.run
     release = asyncio.Event()
 
-    async def slow(*args: str, timeout: float = 120.0) -> str:
+    async def slow(*args: str, timeout: float = 120.0, env: Mapping[str, str] | None = None) -> str:
         if args[:2] == ("policy", "set"):
             await release.wait()
-        return await real(*args, timeout=timeout)
+        return await real(*args, timeout=timeout, env=env)
 
     setup.environments.cli.run = slow
     revision = setup.add(variant(setup.tmp, "v2.yaml", extra_rule=True))
@@ -2388,7 +3098,9 @@ async def test_admission_does_not_wait_for_a_change_under_way(setup: Setup) -> N
     watcher = DraftWatcher(setup.environments, 1.0)
     started = time.monotonic()
     assert await watcher.check("env-1", info.sandbox) == ()
-    assert await setup.environments.admit("env-1", [("eprint.iacr.org", 443)], wait=False) is None
+    assert (
+        await setup.environments.admit("env-1", [("eprint.example.net", 443)], wait=False) is None
+    )
     assert time.monotonic() - started < 5
     release.set()
     await revising
@@ -2396,7 +3108,7 @@ async def test_admission_does_not_wait_for_a_change_under_way(setup: Setup) -> N
     setup.environments.cli.run = real
     assert not setup.environments.busy("env-1")
     decisions = await watcher.check("env-1", info.sandbox)
-    assert [(d.host, d.admitted) for d in decisions] == [("eprint.iacr.org", True)]
+    assert [(d.host, d.admitted) for d in decisions] == [("eprint.example.net", True)]
 
 
 async def test_changes_are_logged_by_route_and_cannot_be_forged(
@@ -2506,15 +3218,17 @@ async def test_a_worker_built_on_managed_environments_gets_their_lifecycle(setup
 async def test_hosts_are_admitted_ahead_of_use(api: Api) -> None:
     assert (await api.call("POST", "/v1/environments", A_TOKEN, api.environment("env-a")))[0] == 201
     path = "/v1/environments/env-a/admissions"
-    body = {"hosts": [{"host": "EPrint.iacr.org"}, {"host": "pypi.org"}, {"host": "printer.local"}]}
+    body = {
+        "hosts": [{"host": "EPrint.example.net"}, {"host": "pypi.org"}, {"host": "printer.local"}]
+    }
     status, result = await api.call("POST", path, A_TOKEN, body)
     assert status == 200, result
     assert {(d["host"], d["port"], d["admitted"]) for d in result["decisions"]} == {
-        ("eprint.iacr.org", 443, True),
+        ("eprint.example.net", 443, True),
         ("pypi.org", 443, False),
         ("printer.local", 443, False),
     }
-    assert result["environment"]["admitted_hosts"] == ["eprint.iacr.org"]
+    assert result["environment"]["admitted_hosts"] == ["eprint.example.net"]
     # One revision for the batch, and none when nothing new is admitted.
     assert len(api.setup.fake.calls("policy", "set")) == 1
     assert (await api.call("POST", path, A_TOKEN, body))[0] == 200
@@ -2558,9 +3272,11 @@ async def test_a_client_has_at_most_its_limit_of_environments(
     cli, serial = setup.environments.cli, asyncio.Lock()
     run = cli.run
 
-    async def run_serially(*args: str, timeout: float = 120.0) -> str:
+    async def run_serially(
+        *args: str, timeout: float = 120.0, env: Mapping[str, str] | None = None
+    ) -> str:
         async with serial:  # every CLI call, sandbox() included, goes through run()
-            return await run(*args, timeout=timeout)
+            return await run(*args, timeout=timeout, env=env)
 
     cli.run = run_serially
     try:

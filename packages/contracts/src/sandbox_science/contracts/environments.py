@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Annotated, Final
+from typing import Annotated, Final, Literal
 
 from pydantic import Field, StringConstraints
 
@@ -49,6 +49,32 @@ class PolicyRevisionRequest(Contract):
     policy: PolicyRevision
 
 
+class RuntimeSandboxRequest(Contract):
+    """Bind the agent runtime's sandbox to its project's policy revision.
+
+    The runtime's sandbox is the launcher's, not the worker's: the worker only tells the
+    policy middleware's store which revision decides the sandbox's requests.
+    """
+
+    project_id: Identifier
+    sandbox_id: Identifier
+    """The gateway's immutable ID of the sandbox, not its name."""
+
+
+class RuntimeSandboxBinding(Contract):
+    """The revision the runtime's sandbox is now bound to."""
+
+    sandbox_id: Identifier
+    project_id: Identifier
+    policy: PolicyRevision
+
+
+class RuntimeSandboxUnbound(Contract):
+    sandbox_id: Identifier
+    unbound: bool
+    """Whether the sandbox had a binding to remove."""
+
+
 class EnvironmentInfo(Contract):
     environment_id: Identifier
     project_id: Identifier
@@ -66,9 +92,22 @@ class EnvironmentInfo(Contract):
     """What the policy compiler reported, such as rules OpenShell cannot express exactly."""
     admitted_hosts: tuple[str, ...] = ()
     """Hosts the worker admitted on demand (D69): names the policy reaches without naming
-    them, which the sandbox can resolve only once admitted."""
+    them, which the sandbox can resolve only once admitted, and ``host:port`` for another
+    port of a host that a rule for any port reaches (D95)."""
     created_at: datetime
     updated_at: datetime
+    kind: Literal["session", "job", "child"] = "session"
+    """``job`` for a job sandbox (D93): made by the worker for one job, from a session
+    environment's image and policy, and named by no agent tool (JS-1). ``child`` for a
+    child environment (CE-1): made the same way for one delegated run, which works in it
+    as in a session environment."""
+    job_id: Identifier | None = None
+    """For a job sandbox: the job's execution ID."""
+    delegation_id: Identifier | None = None
+    """For a child environment: the delegation it was made for (CE-1, CE-11)."""
+    session_id: Identifier | None = None
+    """For a child environment: the session whose delegated run works in it; only that
+    session's contexts may name it."""
 
 
 class HostPort(Contract):

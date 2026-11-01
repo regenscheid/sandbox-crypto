@@ -181,7 +181,7 @@ def resolve(
     """Each anchor as the record keeps it, checked to exist where its author may look
     (``scope``): an archive message by its ID or a tool result by its call, an artifact
     revision with its SHA-256, a document block at a revision by the document's ID, or
-    an entry revision."""
+    an entry revision, or a project memory entry at a revision (``mem-3@2``)."""
     kept: list[Json] = []
     for anchor in anchors:
         try:
@@ -220,12 +220,29 @@ def _resolved(
         assert anchor.block is not None  # noqa: S101 - the model requires it
         document = block(anchor.document, anchor.revision, anchor.block)
         return {"document": document, "revision": anchor.revision, "block": anchor.block}
+    if anchor.memory is not None:
+        return _remembered(db, project, anchor.memory)
     assert anchor.entry is not None  # noqa: S101 - one target is named
     entry, head = find(anchor.entry)
     revision = anchor.revision or head
     if not 1 <= revision <= head:
         raise refused(f"no entry {anchor.entry} at revision {revision} in this project")
     return {"entry": entry, "revision": revision}
+
+
+def _remembered(db: sqlite3.Connection, project: str, name: str) -> Json:
+    """A memory entry at a revision (PM-13), which must exist: a version of the entry with
+    that revision holds text. It is an anchor that exists and no more: the number check
+    reads tool results, artifacts and PDFs only, so it never makes a change observed."""
+    entry, _, revision = name.partition("@")
+    found = db.execute(
+        "SELECT 1 FROM memory_versions WHERE project=? AND entry_id=? AND revision=? "
+        "AND text IS NOT NULL LIMIT 1",
+        (project, entry, int(revision)),
+    ).fetchone()
+    if found is None:
+        raise refused(f"no memory entry {name} in this project")
+    return {"memory": entry, "revision": int(revision)}
 
 
 def _archived(
@@ -469,6 +486,24 @@ def _artifact(db: sqlite3.Connection, project: str, artifact: str, revision: int
 
 def _lines(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def label(anchor: Json) -> str:
+    """An anchor as one short name: a message by its ID (with the range of an output), an
+    artifact revision, a document block at a revision, an entry at a revision, or a memory
+    entry as ``mem-3@2`` (PM-13)."""
+    if "memory" in anchor:
+        return f"{anchor['memory']}@{anchor['revision']}"
+    if "message" in anchor:
+        span = f"[{anchor['start']}:{anchor['end']}]" if "start" in anchor else ""
+        return f"{anchor['message']}{span}"
+    if "artifact" in anchor:
+        return f"{anchor['artifact']}@{anchor['revision']}"
+    if "document" in anchor:
+        return f"{anchor['document']}#{anchor['block']}@{anchor['revision']}"
+    if "entry" in anchor:
+        return f"{anchor['entry']}@{anchor['revision']}"
+    return next(iter(map(str, anchor.values())), "")
 
 
 def encoded(anchors: list[Json]) -> str:

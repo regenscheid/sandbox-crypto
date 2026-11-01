@@ -160,7 +160,8 @@ async def test_lazy_refresh_stale_ack_and_dependency_only_budget(stores):
     await drain(reviews, ScriptedChecker())
     patch(docs, doc, r"\unknown{second}", "patch2")
     await drain(reviews, ScriptedChecker())
-    assert (get(reviews)[0]["reflags"], get(reviews)[0]["status"]) == (2, "unaddressed")
+    found = get(reviews)[0]
+    assert (found["reflags"], found["status"], found["at_bound"]) == (2, "open", True)
 
 
 @pytest.mark.asyncio
@@ -231,7 +232,7 @@ async def test_response_project_context_and_confirmation_macro_cas(stores):
     read_confirmation(reviews, confirm)
     change(docs, {r"\F": "different"})
     with pytest.raises(DocumentError, match="macro context changed"):
-        Findings(reviews).confirm(
+        Findings(reviews).decide(
             "p",
             "s",
             confirm,
@@ -239,24 +240,29 @@ async def test_response_project_context_and_confirmation_macro_cas(stores):
             {
                 "finding": finding,
                 "expected": decision,
-                "decision": "confirm",
+                "decision": "resolved",
                 "explanation": "Stale context",
-                "anchors": [anchor(reviews, confirm, "finding")],
+                "anchors": [anchor(reviews, confirm, "document", revision=2)],
                 "operation_id": "stale-confirm",
             },
         )
-    assert Findings(reviews).get("p", "s", finding)["status"] == "claimed fixed"
+    unanswered = Findings(reviews).get("p", "s", finding)
+    assert (unanswered["status"], unanswered["recheck"]["cause"]) == ("open", "fix")
 
 
-def test_new_macro_context_queues_a_new_confirmation_without_spending_old_retries(stores):
+def test_an_unanswered_recheck_is_tried_again_under_its_new_macro_context(stores):
+    """A re-check review that ends without an answer records an inconclusive attempt; the
+    next dispatch tries the re-check again, keyed by the macro context it now has."""
     docs, reviews, _ = stores
     finding, decision = response(reviews, body=r"$\F$", action="fix")
     first = dispatch(reviews, "confirmation")
     first_key = reviews.run("p", "s", first)["confirmation_key"]
     reviews.finish("p", "s", first, "owner", "inconclusive", "Unconfirmed exact context")
-    assert reviews.confirmation_targets("p", "s") == []
+    tried = Findings(reviews).get("p", "s", finding)
+    assert (tried["latest_recheck"]["answer"], tried["recheck"]["attempts"]) == ("inconclusive", 1)
+    assert tried["revision"] == decision + 1
     change(docs, {r"\F": "new"})
-    assert reviews.confirmation_targets("p", "s") == [(finding, decision)]
+    assert reviews.confirmation_targets("p", "s") == [(finding, decision + 1)]
     second = dispatch(reviews, "confirmation")
     assert reviews.run("p", "s", second)["confirmation_key"] != first_key
 
@@ -302,7 +308,7 @@ async def test_anchored_response_agreement_or_explicit_ambiguity(stores, same):
         {
             "finding": scientific["finding_id"],
             "expected": 1,
-            "action": "rebut",
+            "action": "dismiss",
             "explanation": r"$\F$",
             "operation_id": "response",
         },
@@ -326,7 +332,7 @@ async def test_anchored_response_agreement_or_explicit_ambiguity(stores, same):
         assert latest["macro_context_status"] == "held"
         assert effective["held"]
         assert "Conflicting" in effective["problems"][0]
-    assert Findings(reviews).get("p", "s", scientific["finding_id"])["status"] == "open"
+    assert Findings(reviews).get("p", "s", scientific["finding_id"])["status"] == "dismissed"
     pinned_review = dispatch(reviews)
     assert reviews.run("p", "s", pinned_review)["coverage_complete"] == int(same)
     item = next(
@@ -339,25 +345,25 @@ async def test_anchored_response_agreement_or_explicit_ambiguity(stores, same):
 
 
 @pytest.mark.parametrize("context", ["agreed", "conflicting", "unknown"])
-@pytest.mark.parametrize("decision", ["confirm", "reject", "inconclusive"])
-def test_confirmation_requires_exact_available_explanation_context(
+@pytest.mark.parametrize("decision", ["resolved", "unresolved", "inconclusive"])
+def test_a_recheck_answer_requires_exact_available_explanation_context(
     stores, monkeypatch, context, decision
 ):
+    """A re-check answers a fix only when the fix's explanation has a known, agreed macro
+    context; otherwise the answer is refused and the user may still decide. A re-check
+    review that ends without an answer is an inconclusive attempt, whatever the context."""
     from sandbox_science.orchestrator.consistency import response_bodies
 
     docs, reviews, _ = stores
     change(docs, {r"\F": "project"})
     documents = []
+    texts = []
     for name in ("one", "two"):
         definition = name if context == "conflicting" else "agreed"
+        texts.append(f"---\nmacros:\n  '\\F': '{definition}'\n---\n\nEvidence.")
         documents.append(
             docs.create(
-                "p",
-                name=name,
-                title=name,
-                session_id="s",
-                author=MAIN,
-                text=f"---\nmacros:\n  '\\F': '{definition}'\n---\n\nEvidence.",
+                "p", name=name, title=name, session_id="s", author=MAIN, text=texts[-1]
             ).document_id
         )
     reviews.ingest_documents("p", "s")
@@ -369,6 +375,16 @@ def test_confirmation_requires_exact_available_explanation_context(
         reviews, original, anchors=[{"evidence": e["evidence"]} for e in evidence]
     )["finding_id"]
     reviews.finish("p", "s", original, "owner", "findings", "Original anchored finding")
+    # The fix is a later revision of the first document.
+    docs.edit_source(
+        "p",
+        documents[0],
+        base=1,
+        text=texts[0] + "\n\nCorrected.",
+        author=USER,
+        reason="Correct",
+        operation_id="correct",
+    )
     api = Findings(reviews)
     with monkeypatch.context() as legacy:
         if context == "unknown":
@@ -382,25 +398,36 @@ def test_confirmation_requires_exact_available_explanation_context(
                 "expected": 1,
                 "action": "fix",
                 "explanation": r"Corrected $\F$",
-                "revisions": [(documents[0], 1)],
-                "operation_id": "claim",
+                "revisions": [(documents[0], 2)],
+                "operation_id": "fix",
             },
             MAIN,
         )
     confirmation = dispatch(reviews, "confirmation")
     read_confirmation(reviews, confirmation)
+    if decision == "inconclusive":
+        reviews.finish("p", "s", confirmation, "owner", "inconclusive", "No answer")
+        found = api.get("p", "s", finding)
+        assert (found["status"], found["latest_recheck"]["answer"]) == ("open", "inconclusive")
+        return
+    fixed = next(
+        e["evidence"]
+        for e in reviews.manifest("p", "s", confirmation, limit=50)["evidence"]
+        if e["kind"] == "document"
+        and (e["locator"].get("document"), e["locator"].get("revision")) == (documents[0], 2)
+    )
     payload = {
         "finding": finding,
         "expected": 2,
         "decision": decision,
         "explanation": "Exact pinned explanation assessment",
-        "anchors": [anchor(reviews, confirmation, "finding")],
+        "anchors": [{"evidence": fixed}],
         "operation_id": "decide",
     }
-    if context != "agreed" and decision != "inconclusive":
+    if context != "agreed":
         with pytest.raises(DocumentError, match="macro context is held or unknown"):
-            api.confirm("p", "s", confirmation, "owner", payload)
-        assert api.get("p", "s", finding)["status"] == "claimed fixed"
+            api.decide("p", "s", confirmation, "owner", payload)
+        assert api.get("p", "s", finding)["status"] == "open"
         # The diagnostic context creates no new restriction on explicit USER decisions.
         user_decision = api.respond(
             "p",
@@ -408,23 +435,19 @@ def test_confirmation_requires_exact_available_explanation_context(
             {
                 "finding": finding,
                 "expected": 2,
-                "action": "confirm",
+                "action": "set",
+                "status": "fixed",
                 "explanation": "Explicit USER decision",
                 "operation_id": "user-confirm",
             },
             USER,
         )
-        assert user_decision["status"] == "confirmed fixed"
+        assert user_decision["status"] == "fixed"
     else:
-        result = api.confirm("p", "s", confirmation, "owner", payload)
-        assert (
-            result["status"]
-            == {
-                "confirm": "confirmed fixed",
-                "reject": "open",
-                "inconclusive": "inconclusive",
-            }[decision]
-        )
+        result = api.decide("p", "s", confirmation, "owner", payload)
+        assert result["status"] == {"resolved": "fixed", "unresolved": "superseded"}[decision]
+        if decision == "unresolved":
+            assert api.get("p", "s", result["successor"])["status"] == "open"
 
 
 def test_cli_explicit_settings_and_safe_invalid_input(stores, tmp_path, capsys):
@@ -554,7 +577,8 @@ def _raise(reviews, review, anchors, op):
 
 
 async def _explained_then_reflagged(docs, reviews):
-    """A finding on two agreeing documents, explained (rebut), its rebuttal rejected,
+    """A finding on two agreeing documents, dismissed with an explanation, its dismissal
+    rejected,
     then raised again by a later review naming the same anchors in the other order."""
     one, two = (
         docs.create(
@@ -578,9 +602,9 @@ async def _explained_then_reflagged(docs, reviews):
         {
             "finding": finding,
             "expected": 1,
-            "action": "rebut",
+            "action": "dismiss",
             "explanation": r"Not so: $\F$",
-            "operation_id": "rebut",
+            "operation_id": "dismiss",
         },
         MAIN,
     )
@@ -593,7 +617,7 @@ async def _explained_then_reflagged(docs, reviews):
         for i in _every(reviews, second)
         if i["kind"] == "finding" and i["locator"]["finding"] == finding
     )
-    Findings(reviews).confirm(
+    Findings(reviews).decide(
         "p",
         "s",
         second,
@@ -601,8 +625,8 @@ async def _explained_then_reflagged(docs, reviews):
         {
             "finding": finding,
             "expected": 2,
-            "decision": "reject_rebuttal",
-            "explanation": "The rebuttal does not hold.",
+            "decision": "reject_dismissal",
+            "explanation": "The dismissal does not hold.",
             "anchors": [{"evidence": item["evidence"]}],
             "operation_id": "decide",
         },
@@ -778,6 +802,34 @@ def test_a_version_9_store_from_the_code_before_answers_as_that_code_did(tmp_pat
         answers = macro_answers(docs, reviews, lambda jobs, job: jobs.effective_context(job))
     finally:
         docs.close()
+    lifecycle(answers, expected)
     assert answers.keys() == expected.keys()
     for key in expected:
         assert answers[key] == expected[key], key
+
+
+_FINDING_LIFECYCLE = ("superseded_by", "latest_recheck", "dismissal", "recheck", "at_bound")
+"""A finding's lifecycle columns (version 83), after the code before B-12."""
+_HISTORY_LIFECYCLE = ("actor_kind", "former_status", "answer", "review", "recheck")
+
+
+def lifecycle(answers: dict[str, Any], expected: dict[str, Any]) -> None:
+    """Bring the version-9 code's answers to the finding lifecycle (version 83): each of
+    its eight statuses is one of five, the history keeping the former one, and an
+    unaddressed finding is open at its bound. The lifecycle's fields, which that code did
+    not have, are checked here and then left out of ``answers``."""
+    legacy = migrations._LEGACY_STATUS
+    for finding, found in expected["findings"].items():
+        before, after = found["finding"], answers["findings"][finding]["finding"]
+        assert after.pop("at_bound") is (before["status"] in ("unaddressed", "challenged"))
+        before["status"] = legacy[before["status"]]
+        for column in _FINDING_LIFECYCLE[:-1]:
+            after.pop(column)
+        for old, new in zip(before["history"], after["history"], strict=True):
+            former = old["status"]
+            old["status"] = legacy[former]
+            assert new.pop("former_status") == (None if legacy[former] == former else former)
+            for key in _HISTORY_LIFECYCLE:
+                new.pop(key, None)
+    for run in answers["runs"].values():
+        assert run.pop("dismissals_rejected") == 0

@@ -13,16 +13,16 @@ from pydantic import JsonValue
 from sandbox_science.orchestrator.confinement.paid import PaidModel
 from sandbox_science.orchestrator.confinement.transport import Capability, Channel
 from sandbox_science.orchestrator.confinement.wire import ModelIntent, WireMessage
-from sandbox_science.orchestrator.continuity.models import IntentModel, ModelIntents
-from sandbox_science.orchestrator.continuity.records import WorkRecords
-from sandbox_science.orchestrator.control import ControlError
-from sandbox_science.orchestrator.history.capture import (
+from sandbox_science.orchestrator.context.history.capture import (
     ContextMessage,
     Origin,
     prompt_pins,
     request,
 )
-from sandbox_science.orchestrator.history.captured import CapturedContexts
+from sandbox_science.orchestrator.context.history.captured import CapturedContexts
+from sandbox_science.orchestrator.continuity.models import IntentModel, ModelIntents
+from sandbox_science.orchestrator.continuity.records import WorkRecords
+from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.model import (
     AssistantMessage,
     Message,
@@ -215,8 +215,8 @@ async def test_oversized_diagnostic_does_not_stop_a_valid_dispatch(projects, tex
 
 
 def test_too_small_unicode_chunk_is_refused_instead_of_stalling_cursor(projects):
+    from sandbox_science.orchestrator.context.history.capture import CapturedPart, CapturedRequest
     from sandbox_science.orchestrator.documents import DocumentError
-    from sandbox_science.orchestrator.history.capture import CapturedPart, CapturedRequest
 
     owner = WorkRecords(projects.control).admit("p", "s", RUN)
     value = CapturedRequest(
@@ -230,7 +230,7 @@ def test_too_small_unicode_chunk_is_refused_instead_of_stalling_cursor(projects)
 
 
 def test_large_capture_pages_do_not_materialize_the_full_sqlite_value(projects, monkeypatch):
-    from sandbox_science.orchestrator.history.capture import CapturedPart, CapturedRequest
+    from sandbox_science.orchestrator.context.history.capture import CapturedPart, CapturedRequest
 
     original = "x" * (2 * 1024 * 1024) + "tail-witness"
     owner = WorkRecords(projects.control).admit("p", "s", RUN)

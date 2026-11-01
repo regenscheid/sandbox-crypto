@@ -1060,7 +1060,7 @@ async def test_an_idle_kernel_is_stopped_once_it_has_been_unused_long_enough(
     assert ready["ok"]
     try:
         assert (await cell(1, "x = 1"))["state"] == "succeeded"
-        kernel = instance.kernels[("s1", "", "python")]
+        kernel = instance.lifecycle.kernels[("s1", "", "python")]
         reaper = instance.spawn(instance.reap_idle_kernels(10))
         await eventually(lambda: clock.sleepers == 1)
         clock.advance(5)  # the reaper looks, and keeps a kernel used 5 s ago

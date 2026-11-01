@@ -2,7 +2,7 @@
 """Disposable pinned-artifact GUI/API acceptance; no worker or real model requests.
 
 create STATE requires a new directory. The marker contains an exact corrected artifact
-ref for the authenticated finding API. confirm STATE checks that exact claim using only
+ref for the authenticated finding API. confirm STATE re-checks that exact fix using only
 ScriptedModel and immutable control evidence. This proves plumbing, not model judgment.
 """
 
@@ -249,9 +249,12 @@ async def confirm(path: Path) -> None:
         inventory = ArtifactInventory(documents)
         reviews = ReviewStore(documents, artifacts=inventory)
         found = Findings(reviews).get(PROJECT, SESSION, marker["finding"])
-        if found["status"] != "claimed fixed" or found["history"][-1]["payload"].get(
-            "artifact_revisions"
-        ) != [marker["corrected"]]:
+        queued = found.get("recheck") or {}
+        if (
+            found["status"] != "open"
+            or queued.get("cause") != "fix"
+            or found["history"][-1]["payload"].get("artifact_revisions") != [marker["corrected"]]
+        ):
             raise ValueError(
                 "claim only the exact seeded corrected artifact through the finding API"
             )
@@ -278,7 +281,15 @@ async def confirm(path: Path) -> None:
         assert review is not None
         items = reviews.manifest(PROJECT, SESSION, review, limit=20)["evidence"]
         changed = next(i for i in items if i["locator"].get("artifact") == marker["corrected"])
-        calls = [{"name": "review_read", "arguments": {"evidence": i["evidence"]}} for i in items]
+        # Every call names its purpose (docs/specs/tools.md, Purpose 1).
+        reading = "Reading one evidence item of the snapshot"
+        calls = [
+            {
+                "name": "review_read",
+                "arguments": {"purpose_note": reading, "evidence": i["evidence"]},
+            }
+            for i in items
+        ]
         turns = [
             {"tool_calls": calls},
             {
@@ -286,9 +297,10 @@ async def confirm(path: Path) -> None:
                     {
                         "name": "review_decide",
                         "arguments": {
+                            "purpose_note": "Confirming the claimed fix of the finding",
                             "finding": marker["finding"],
                             "expected": found["revision"],
-                            "decision": "confirm",
+                            "decision": "resolved",
                             "explanation": "Scripted fixture: exact16 to15; synthetic only.",
                             "anchors": [{"evidence": changed["evidence"]}],
                             "operation_id": "fixture-confirm",
@@ -301,6 +313,7 @@ async def confirm(path: Path) -> None:
                     {
                         "name": "review_checked",
                         "arguments": {
+                            "purpose_note": "Recording the corrected count as checked",
                             "statement": "Synthetic exact corrected count agrees with fixture15.",
                             "evidence": [changed["evidence"], marker["evidence"]],
                         },
@@ -315,7 +328,7 @@ async def confirm(path: Path) -> None:
         ended = reviews.run(PROJECT, SESSION, review)
         final = Findings(reviews).get(PROJECT, SESSION, marker["finding"])
         assert ended["state"] == "passed"
-        assert final["status"] == "confirmed fixed"
+        assert final["status"] == "fixed"
         with documents.control.read() as tx:
             db = tx.sql
             audited = {

@@ -19,9 +19,7 @@ from typing import Any, cast
 import pytest
 
 from sandbox_science.contracts import ExecutionContext
-from sandbox_science.orchestrator.control import ControlError, ControlStore
-from sandbox_science.orchestrator.documents.tool import REQUESTS_TASK
-from sandbox_science.orchestrator.history import (
+from sandbox_science.orchestrator.context.history import (
     Archive,
     Archived,
     Entry,
@@ -33,8 +31,10 @@ from sandbox_science.orchestrator.history import (
     session_view,
     settle,
 )
-from sandbox_science.orchestrator.history.record import FORMAT
-from sandbox_science.orchestrator.history.view import ABORTED
+from sandbox_science.orchestrator.context.history.record import FORMAT
+from sandbox_science.orchestrator.context.history.view import ABORTED
+from sandbox_science.orchestrator.control import ControlError, ControlStore
+from sandbox_science.orchestrator.documents.tool import REQUESTS_TASK
 from sandbox_science.orchestrator.notices import (
     DIGEST,
     FOLD_REGION,

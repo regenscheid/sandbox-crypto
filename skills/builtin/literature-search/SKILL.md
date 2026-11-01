@@ -7,7 +7,7 @@ description: Finding papers, standards and known results through the project's M
 
 ## Connector tools
 
-The project's MCP servers are reached through `mcp_tools`. Its description carries an index of the servers' tools, grouped by server, each with a short purpose in the server's own words. A main run has it when the project configures connectors. A delegated run has no connector tools, so the main run does the searching and gives a task what it found as files.
+The project's MCP servers are reached through `mcp_tools`. Its description carries an index of the servers' tools, grouped by server, each with a short purpose in the server's own words. Main and delegated runs have it when the project configures connectors; a delegated check is offered only the tools that read, which are most of a research server's.
 
 - A query lists the tools that match it, and loads none.
 - Names, at most 16 a call, load tools. A loaded tool joins your tools for the rest of the run, and you call it by its name.
@@ -19,8 +19,8 @@ On this platform's crypto deployment, the crypto-research-mcp connector offers t
 ```text
 e-print-mcp       IACR ePrint archive
                   e-print-mcp_search_eprint, e-print-mcp_get_eprint,
-                  e-print-mcp_eprint_fulltext, e-print-mcp_recent_eprint,
-                  e-print-mcp_corpus_stats
+                  e-print-mcp_search_eprint_fulltext, e-print-mcp_eprint_fulltext,
+                  e-print-mcp_recent_eprint, e-print-mcp_corpus_stats
 nist-csrc-mcp     NIST CSRC publications
                   nist-csrc-mcp_nist_search, nist-csrc-mcp_nist_get_publication,
                   nist-csrc-mcp_nist_read, nist-csrc-mcp_nist_get_pdf,
@@ -48,7 +48,7 @@ A search with no hits shows only that this query found nothing in that source as
 
 ## Refusals
 
-The project's policy decides each connector call. A call refused with `approval_required` waits for an operator to approve it: say so, go on with other work, and call again with the same arguments once it is approved. Any other refusal is the policy's decision: do not repeat it unchanged, or reach the same content through another tool or server. A call whose answer could not be read may still have run on the server, so check before calling again.
+The project's policy decides each connector call. A call that needs approval waits for the user's answer, which the user gives in the session's chat; where the call cannot wait, it is refused with `approval_required`: say so, go on with other work, and call again with the same arguments once it is approved. A denial, and any other refusal, is the policy's or the user's decision: do not repeat it unchanged, or reach the same content through another tool or server. A call whose answer could not be read may still have run on the server, so check before calling again.
 
 ## Recording a reference
 
@@ -65,19 +65,19 @@ A claim or result taken from the literature has origin published. It cites its r
 
 ## Quoting an ePrint passage
 
-The e-print server's full-text tool (e-print-mcp_eprint_fulltext in the list above) returns a header, then the passages that match your query. The header holds the paper's ID in brackets, the title, the authors, a Date line, the category and the abstract. A line such as "2 passage(s) matching ..." echoes the query, and the passages follow it. The citation check looks for a quote inside one returned passage of that paper with that date stamp. So:
+The e-print server has two tools for a paper's own text. e-print-mcp_search_eprint_fulltext searches one paper (paper_id) for a literal word or phrase (query, words that are in the paper, not a question) and returns the passages that hold it, each under a "Physical page" line; a line such as "2 passage(s) matching ..." echoes the phrase. e-print-mcp_eprint_fulltext reads the paper page by page (start_page, page_count), each page under a "## Page" heading, and ends by naming the next pages to read. Neither prints the paper's date stamp: e-print-mcp_get_eprint does, on its Date line. The citation check looks for a quote inside one passage or page of that paper that a tool returned in this session, with a date stamp get_eprint gave that paper in this session. So:
 
-- quote from a passage, never from the header, the abstract or the echoed query;
+- call get_eprint for the paper in this session, and give its Date line's value as the quote's date stamp, exactly as printed;
+- quote from one passage or one page, never from a header, the abstract or the echoed phrase; a quote that runs across a page break is not found, so keep it within a page;
 - a quote of exactly what you searched for counts only when its passage holds more than that, so search for a phrase and quote the sentence around it;
 - copy the passage's words exactly; only white space may differ;
-- give the Date line's value as the quote's date stamp, exactly as printed;
-- read the passage in this session before recording the quote: the check reads this session's tool results.
+- read the passage or page in this session before recording the quote: the check reads this session's tool results.
 
 ```json
 {"role": "supports", "type": "source_claim", "entry": "new:ref",
  "scope": "The attack's cost for the 128-bit parameter set",
  "quote": {"source": "eprint", "dated": "2015-06-30T18:41:29Z; 2015-06-30T20:25:17Z",
-           "text": "the sentence as the returned passage gives it, at least 20 characters"}}
+           "text": "the sentence as the returned passage or page gives it, at least 20 characters"}}
 ```
 
 A quote of an ePrint passage can confirm a published result through the citation check alone. A PDF quote needs the user to vouch for the PDF first (see the pdf-reading skill). The ledger names an ePrint by its ID and date stamp, as the server reports them, not by a hash of its text.

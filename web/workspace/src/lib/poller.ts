@@ -52,7 +52,10 @@ export interface PollOptions<T> {
 }
 
 export const POLL_INTERVAL_MS = 3000;
-export const POLL_DEADLINE_MS = 8000;
+/** How long a read may take before the view says it is unavailable. Long, because an
+ * investigation's computations often keep the host's CPUs busy and slow the workspace
+ * down (owner, 2026-10-21): a slow read is not a failed one. */
+export const POLL_DEADLINE_MS = 30_000;
 const MAX_BACKOFF_MS = 30_000;
 
 /** The statuses that end a poller by default; other failures are 'unavailable'. */
@@ -72,6 +75,8 @@ export class Poller<T> {
   private stopped = false;
   private epoch = 0;
   private busy = false;
+  /** Read again as soon as the read in flight ends: it may have missed a write. */
+  private again = false;
   private failures = 0;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private deadline: ReturnType<typeof setTimeout> | undefined;
@@ -107,6 +112,17 @@ export class Poller<T> {
     } else this.emit('paused');
   }
 
+  /** Read now, rather than at the next interval: after a write the reader waits to see. */
+  poke(): void {
+    if (this.stopped || !this.visible) return;
+    if (this.busy) {
+      this.again = true;
+      return;
+    }
+    clearTimeout(this.timer);
+    void this.refresh();
+  }
+
   stop(): void {
     this.stopped = true;
     this.epoch++;
@@ -136,6 +152,7 @@ export class Poller<T> {
   private async refresh(): Promise<void> {
     if (this.stopped || !this.visible || this.busy) return;
     this.busy = true;
+    this.again = false;
     this.emit(this.state.phase);
     const epoch = this.epoch,
       controller = new AbortController();
@@ -189,7 +206,7 @@ export class Poller<T> {
       if (!this.stopped && this.visible && (epoch !== this.epoch || this.options.repeat !== false))
         this.timer = setTimeout(
           () => void this.refresh(),
-          epoch !== this.epoch
+          epoch !== this.epoch || this.again
             ? 0
             : Math.min(
                 MAX_BACKOFF_MS,

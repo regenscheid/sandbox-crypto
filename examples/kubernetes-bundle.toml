@@ -1,0 +1,198 @@
+# SPDX-License-Identifier: MIT
+# Copy outside the checkout. This template deliberately has no runnable image pins.
+# Set [images].app and .worker to approved trusted-app/trusted-worker digest URLs.
+name = "research-workbench"
+namespace = "research"
+# image_pull_secret = "ghcr-pull"  # the registry Secret every Pod names (the default)
+
+[images]
+# app = "YOUR_REGISTRY/trusted-app@sha256:YOUR_VERIFIED_DIGEST"
+# worker = "YOUR_REGISTRY/trusted-worker@sha256:YOUR_VERIFIED_DIGEST"
+
+# Each role's api is optional: left out, the agent runtime calls an alias the gateway lists
+# as Anthropic's through "messages", any other through "responses". Without an effort,
+# a research role takes high on Messages and max on the other APIs; the reviewer medium.
+[models.main]
+alias = "research-main"
+api = "responses"
+effort = "max"
+
+[models.delegated]
+alias = "research-delegated"
+api = "responses"
+effort = "max"
+
+[models.reviewer]
+alias = "research-reviewer"
+api = "responses"
+effort = "medium"
+
+[app]
+architecture = "arm64"
+storage_gib = 10
+# storage_class = "YOUR_BLOCK_STORAGE_CLASS"
+
+[pool]
+architecture = "amd64"
+storage_gib = 20
+
+# The runtime manager: its own Pod and small PVC. It holds the OpenShell gateway
+# profile named here and creates the agent runtime's Kata sandbox on request.
+[runtime_manager]
+architecture = "arm64"
+storage_gib = 1
+openshell_gateway = "research-gateway"
+
+# Where OpenShell creates sandboxes (the chart's server.sandboxNamespace), for the objects
+# the bundle puts there (the checkpoint Jobs' NetworkPolicy, with [checkpoint]). Remove
+# this section to render nothing outside `namespace`.
+[sandboxes]
+namespace = "research-runtimes"
+
+# Optional: the first Loki alert rules over the services' logs (D103), one ConfigMap for
+# Loki's ruler (docs/KUBERNETES-BUNDLE.md#alert-rules; loading it, docs/KUBERNETES-PREP.md
+# step 11). Off without this section.
+# [alerts]
+# namespace = "monitoring"                  # Loki's namespace; by default the bundle's
+# tenant = "fake"                           # single-tenant Loki
+# configmap_labels = { loki_rule = "true" } # what Loki's rules sidecar selects
+# error_threshold = 10
+# canary_window_minutes = 20               # longer than the canaries' interval
+
+[secrets.control]
+name = "workbench-control"
+extra_files = []
+
+[secrets.workspace]
+name = "workbench-workspace"
+
+[secrets.worker]
+name = "workbench-worker"
+extra_files = ["pool-token", "ceiling.yaml", "targets.yaml"]
+
+[secrets.middleware]
+name = "workbench-middleware"
+extra_files = ["ceiling.yaml", "targets.yaml", "gateway-public.pem"]
+
+[secrets.runtime_manager]
+name = "workbench-runtime-manager"
+
+# Add [secrets.cache] name = "workbench-cache" and approved network.sandboxes
+# peers to enable the optional co-located package cache.
+
+[network.dns]
+namespace_labels = { "kubernetes.io/metadata.name" = "kube-system" }
+pod_labels = { "k8s-app" = "kube-dns" }
+
+# The runtime reaches control from its sandbox's supervisor Pod; OpenShell fixes those
+# labels, so select this gateway's supervisors (KRB-4).
+[[network.runtimes]]
+namespace_labels = { "kubernetes.io/metadata.name" = "research-runtimes" }
+pod_labels = { "openshell.ai/component" = "supervisor", "openshell.ai/gateway-id" = "YOUR_GATEWAY_ID" }
+
+[[network.supervisors]]
+namespace_labels = { "kubernetes.io/metadata.name" = "research-runtimes" }
+pod_labels = { "openshell.ai/component" = "supervisor" }   # the label OpenShell gives supervisor Pods
+
+# The OpenShell gateway's Pods and ports. The runtime manager and the worker reach it, each
+# with its own client identity (the worker creates every research sandbox), and the
+# gateway may reach the middleware on 50051: it connects to it at startup.
+[network.gateway]
+ports = [8080]
+peer.namespace_labels = { "kubernetes.io/metadata.name" = "openshell" }
+peer.pod_labels = { "app.kubernetes.io/name" = "openshell" }
+
+# Add explicit [[network.app_egress]] and [[network.pool_egress]] entries for
+# approved gateway/S3/package destinations. No external egress is enabled here.
+# ports = [443]
+# peer.cidr = "192.0.2.10/32"  # documentation-only address; replace privately
+
+[worker]
+cpu_request_millis = 500
+cpu_limit_millis = 2000
+memory_request_mib = 512
+memory_limit_mib = 2048
+ephemeral_request_mib = 256
+ephemeral_limit_mib = 2048
+scratch_mib = 512
+
+# Optional, after the operator prepares the OpenShell CLI tree on the pool PVC:
+# [worker.environment]
+# HOME = "/var/lib/sandbox-science/worker-home"
+# XDG_CONFIG_HOME = "/var/lib/sandbox-science/worker-config"
+#
+# Standard S3 credentials require projected extra_files plus explicit discovery:
+# [workspace.environment]
+# AWS_SHARED_CREDENTIALS_FILE = "/private/s3-credentials"
+# AWS_CONFIG_FILE = "/private/s3-config"
+# AWS_PROFILE = "artifact-reader"
+# Add s3-credentials/s3-config to secrets.workspace.extra_files first.
+
+# Optional: serve the workspace and its preview origin through the cluster's Traefik,
+# over TLS and behind Authentik, instead of `kubectl port-forward`. Off by default.
+# Host names here are documentation-only; Authentik, the forward-auth Middleware, DNS and
+# the issuer are the operator's (docs/KUBERNETES-PREP.md step 12). The workspace does not
+# yet support writes or the PDF viewer behind a TLS proxy (docs/KUBERNETES-BUNDLE.md).
+# [workspace]
+# allow_remote = true   # required with [ingress], refused without it
+#
+# [ingress]
+# workspace_host = "workspace.example.org"
+# preview_host = "preview.example.org"     # a separate origin: a name of its own
+# issuer = "YOUR_CLUSTER_ISSUER"           # cert-manager; issuer_kind = "Issuer" for a namespaced one
+# authentik_middleware = "authentik-forward-auth"   # a Traefik Middleware in this namespace
+# # entry_point = "websecure"
+# # ingress_class = "traefik-public"
+#
+# [[ingress.traefik]]   # the controller's Pods: the only peers let in to ports 8200 and 8201
+# namespace_labels = { "kubernetes.io/metadata.name" = "traefik-public" }
+# pod_labels = { "app.kubernetes.io/name" = "traefik" }
+#
+# # Optional: login through Authentik without the login link (D104, docs/KUBERNETES-BUNDLE.md).
+# # Authentik 2026.8's proxy providers sign with their client secret (HS256), which the site
+# # file's forward_auth_secret supplies. The middleware must pass X-authentik-jwt on.
+# [ingress.forward_auth]
+# # enabled = true
+# algorithm = "HS256"                      # or "RS256", with jwks_url and authentik below
+# issuer = "https://YOUR_AUTHENTIK_HOST/application/o/YOUR_APP_SLUG/"
+# audience = "YOUR_PROVIDER_CLIENT_ID"     # public: the provider's client ID, not its secret
+# user_group = "atlas-users"
+# # admin_group = "atlas-admins"           # absent: every user may take the admin-only actions
+# # header = "X-authentik-jwt"
+# # RS256 only: the provider's JWKS, and Authentik's server Pods the app Pod may fetch it from.
+# # jwks_url = "http://authentik-server.authentik.svc/application/o/YOUR_APP_SLUG/jwks/"
+# # authentik_ports = [9000]
+# # authentik = { namespace_labels = { "kubernetes.io/metadata.name" = "authentik" }, pod_labels = { "app.kubernetes.io/name" = "authentik", "app.kubernetes.io/component" = "server" } }
+
+# Optional: the direct MCP path (D98, docs/KUBERNETES-BUNDLE.md#the-direct-mcp-path-opt-in):
+# the agent's connector calls made by the runtime's own client, with the provider registered
+# from a Secret the operator makes with `kubectl create secret generic … --from-env-file`
+# (docs/KUBERNETES-PREP.md). Without it the cluster's agent has no connectors.
+# [mcp_direct]
+# project = "crypto"
+# provider = "crypto-research-mcp"
+# provider_secret = "research-mcp-provider"
+#
+# [mcp_direct.servers.crypto-research-mcp]
+# credentials = { "CF-Access-Client-Id" = "CF_ACCESS_CLIENT_ID", "CF-Access-Client-Secret" = "CF_ACCESS_CLIENT_SECRET" }
+
+# Optional: workspace checkpoints by Job (D92, docs/KUBERNETES-BUNDLE.md#workspace-checkpoints).
+# Needs [sandboxes]. The bundle renders the Jobs' NetworkPolicy in the sandbox namespace and the
+# pool's egress to the store; `sandbox-science-kubernetes checkpoint` renders and runs each Job.
+# The upload key (write on upload_bucket only) is the Secret upload_secret in the sandbox
+# namespace; the worker's key (read on both buckets) is in its own Secret; the keeper key (read
+# on the upload bucket, write on the kept one) stays on the operator's machine.
+# [checkpoint]
+# upload_secret = "research-checkpoint-upload"
+# upload_bucket = "research-checkpoint-upload"
+# kept_bucket = "research-checkpoints"
+# endpoint = "http://garage.garage.svc.cluster.local:3900"
+# # region = "garage"; prefix = "sandbox-science"; addressing_style = "path"
+# run_as_user = 10001        # required: who owns the workspace's files (`ls -ln`), for
+# run_as_group = 10001       # checkpoint and restore Jobs alike; no default
+# # keep = 2; deadline_seconds = 7200; hold_seconds = 21600
+#
+# [checkpoint.object_store]
+# ports = [3900]
+# peer.namespace_labels = { "kubernetes.io/metadata.name" = "garage" }
+# peer.pod_labels = { "app.kubernetes.io/name" = "garage" }

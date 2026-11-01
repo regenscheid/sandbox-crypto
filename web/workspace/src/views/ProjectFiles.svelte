@@ -12,7 +12,7 @@
   import { idle } from '../lib/submit';
   import ErrorMessage from './ErrorMessage.svelte';
 
-  let { projectId }: { projectId: string } = $props();
+  let { projectId, open = false }: { projectId: string; open?: boolean } = $props();
   const form = $state<SettingsForm>({
     expected: 0,
     head: 0,
@@ -42,7 +42,7 @@
   }
 </script>
 
-<details>
+<details {open}>
   <summary>Files executions write</summary>
   {#await loading}<p>Loading the file settings…</p>{:then}
     <fieldset>

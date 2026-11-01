@@ -14,6 +14,7 @@ from pydantic import TypeAdapter
 
 from sandbox_science.contracts import ExecutionContext, new_id
 from sandbox_science.orchestrator.agent_messages import AgentMailbox, AgentMessageStore
+from sandbox_science.orchestrator.context.agent import AgentContext
 from sandbox_science.orchestrator.continuity.blueprints import Blueprint, Blueprints
 from sandbox_science.orchestrator.continuity.plans import Plans
 from sandbox_science.orchestrator.continuity.records import WorkRecords
@@ -196,7 +197,7 @@ async def test_prepared_parent_receives_old_messages_and_wait_wakes_without_cons
         expected = [messages[0].message_id, messages[2].message_id]
         assert json.loads(result) == {"state": "available", "message_ids": expected}
         assert [m.message_id for m in store.pending("p", "s", delegation)] == expected
-        notices = await hook.notices("turn", Transcript(messages=[]))
+        notices = await hook.notices("turn", Transcript(context=AgentContext(messages=[])))
         assert [n.ids[0] for n in notices] == expected
         store.acknowledge("p", "s", delegation, child.run, expected)
         assert store.pending("p", "s", ids[CHILD]) == []

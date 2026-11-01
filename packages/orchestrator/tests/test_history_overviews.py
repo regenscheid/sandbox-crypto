@@ -16,7 +16,9 @@ from typing import Any, cast
 
 import pytest
 
-from sandbox_science.orchestrator.history import (
+from sandbox_science.orchestrator.context.agent import AgentContext
+from sandbox_science.orchestrator.context.folding import FoldPoint
+from sandbox_science.orchestrator.context.history import (
     Archive,
     Archived,
     Entry,
@@ -29,10 +31,10 @@ from sandbox_science.orchestrator.history import (
     register_reads,
     session_view,
 )
-from sandbox_science.orchestrator.history.markers import Held
-from sandbox_science.orchestrator.history.overview import asked, merge, verify
-from sandbox_science.orchestrator.history.reads import Read, Register
-from sandbox_science.orchestrator.history.view import _left_markers
+from sandbox_science.orchestrator.context.history.markers import Held
+from sandbox_science.orchestrator.context.history.overview import asked, merge, verify
+from sandbox_science.orchestrator.context.history.reads import Read, Register
+from sandbox_science.orchestrator.context.history.view import _left_markers
 from sandbox_science.orchestrator.loop import Transcript
 from sandbox_science.orchestrator.model import ModelTurn
 from sandbox_science.orchestrator.notices import FOLD_OVERVIEW, FOLD_REGION
@@ -183,9 +185,11 @@ async def test_a_region_over_its_budget_merges_its_oldest_records_again_and_agai
     assert view.folds_left_out
     made = Folder(archive, CONTEXT, run="r", view=view, start=start, ceiling=100_000,
                   chunk=50_000)  # fmt: skip
-    made.per_token = lambda run: 1.0  # type: ignore[method-assign]
-    transcript = Transcript(messages=[{"role": "system", "content": "s"}, *view.messages])
-    assert await made.before_call(transcript)
+    made.per_token = lambda point: 1.0  # type: ignore[method-assign]
+    transcript = Transcript(
+        context=AgentContext(messages=[{"role": "system", "content": "s"}, *view.messages])
+    )
+    assert await made.before_call(FoldPoint(transcript.context, transcript.turns))
     merges = [fold for fold in made.folds if "parts" in fold]
     assert merges
     assert all(fold["state"] == "code_merge" for fold in merges)
@@ -229,19 +233,23 @@ async def test_the_runs_model_updates_an_overviews_narrative_and_never_its_marke
     model = Updating()
     made = Folder(archive, CONTEXT, run="r", view=view, start=start, ceiling=400_000,
                   chunk=30_000, model=cast(Any, model))  # fmt: skip
-    made.per_token = lambda run: 1.0  # type: ignore[method-assign]
+    made.per_token = lambda point: 1.0  # type: ignore[method-assign]
     events: list[Json] = []
 
     async def write(data: Json) -> None:
         events.append(data)
 
     made.events = write
-    transcript = Transcript(messages=[{"role": "system", "content": "s"}, *view.messages])
-    assert await made.before_call(transcript)
+    transcript = Transcript(
+        context=AgentContext(messages=[{"role": "system", "content": "s"}, *view.messages])
+    )
+    assert await made.before_call(FoldPoint(transcript.context, transcript.turns))
     assert made.running is not None
     assert made.running.task is not None
     await made.running.task
-    assert await made.before_call(transcript)  # the ready merge is applied
+    assert await made.before_call(
+        FoldPoint(transcript.context, transcript.turns)
+    )  # the ready merge is applied
     assert [e["state"] for e in events] == ["started", "applied"]
     (prompt,) = model.asked
     assert str(prompt["content"]).startswith(FOLD_OVERVIEW.text)
@@ -278,13 +286,17 @@ async def test_at_the_wall_a_running_merge_is_built_by_code_at_once(archive: Arc
     view = session_view(archive, CONTEXT, geometry=start, per_token=1.0)
     made = Folder(archive, CONTEXT, run="r", view=view, start=start, ceiling=400_000,
                   chunk=30_000, model=cast(Any, Silent()), wait=3_600)  # fmt: skip
-    made.per_token = lambda run: 1.0  # type: ignore[method-assign]
-    transcript = Transcript(messages=[{"role": "system", "content": "s"}, *view.messages])
-    assert await made.before_call(transcript)
+    made.per_token = lambda point: 1.0  # type: ignore[method-assign]
+    transcript = Transcript(
+        context=AgentContext(messages=[{"role": "system", "content": "s"}, *view.messages])
+    )
+    assert await made.before_call(FoldPoint(transcript.context, transcript.turns))
     assert made.running is not None
     assert made.running.parts
-    transcript.messages.append({"role": "user", "content": "x" * 380_000})
-    await asyncio.wait_for(made.before_call(transcript), 30)  # no ten-minute wait
+    transcript.context.messages.append({"role": "user", "content": "x" * 380_000})
+    await asyncio.wait_for(
+        made.before_call(FoldPoint(transcript.context, transcript.turns)), 30
+    )  # no ten-minute wait
     merges = [fold for fold in made.folds if "parts" in fold]
     assert [(m["state"], m["reason"]) for m in merges] == [
         ("code_merge", "built by code: it was not ready")
@@ -566,16 +578,18 @@ async def test_markers_that_alone_pass_the_region_are_not_merged_again_and_again
     assert view.wanted > int(start.region)
     made = Folder(archive, CONTEXT, run="r", view=view, start=start, ceiling=100_000,
                   chunk=50_000)  # fmt: skip
-    made.per_token = lambda run: 1.0  # type: ignore[method-assign]
+    made.per_token = lambda point: 1.0  # type: ignore[method-assign]
     events: list[Json] = []
 
     async def write(data: Json) -> None:
         events.append(data)
 
     made.events = write
-    transcript = Transcript(messages=[{"role": "system", "content": "s"}, *view.messages])
+    transcript = Transcript(
+        context=AgentContext(messages=[{"role": "system", "content": "s"}, *view.messages])
+    )
     for _ in range(3):
-        assert await made.before_call(transcript)
+        assert await made.before_call(FoldPoint(transcript.context, transcript.turns))
     assert made.folds == []
     # Since step (f2b), the caveats spill instead (CM-21b), and the region fits.
     assert [e["state"] for e in events] == ["spilled", "region_over_budget"]
@@ -593,17 +607,19 @@ async def test_a_fold_due_while_a_merge_runs_builds_the_merge_by_code(archive: A
     view = session_view(archive, CONTEXT, geometry=start, per_token=1.0)
     made = Folder(archive, CONTEXT, run="r", view=view, start=start, ceiling=400_000,
                   chunk=30_000, model=cast(Any, Silent()), wait=3_600)  # fmt: skip
-    made.per_token = lambda run: 1.0  # type: ignore[method-assign]
-    transcript = Transcript(messages=[{"role": "system", "content": "s"}, *view.messages])
-    assert await made.before_call(transcript)
+    made.per_token = lambda point: 1.0  # type: ignore[method-assign]
+    transcript = Transcript(
+        context=AgentContext(messages=[{"role": "system", "content": "s"}, *view.messages])
+    )
+    assert await made.before_call(FoldPoint(transcript.context, transcript.turns))
     assert made.running is not None
     assert made.running.parts
     mark = said(archive, "More work.")
     for n in range(40):  # past the trigger, under the wall
         worked(archive, "later", n, 8_000)
     added = archive.messages(PROJECT, SESSION, start=mark.position)
-    transcript.messages += [row.chat() for row in added]
-    assert await made.before_call(transcript)
+    transcript.context.messages.extend(row.chat() for row in added)
+    assert await made.before_call(FoldPoint(transcript.context, transcript.turns))
     merges = [fold for fold in made.folds if "parts" in fold]
     assert [m["state"] for m in merges] == ["code_merge"]
     assert made.running is not None

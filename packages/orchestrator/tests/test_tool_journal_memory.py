@@ -15,8 +15,8 @@ from pathlib import Path
 
 import pytest
 
-from sandbox_science.orchestrator.history import Archive, Entry
-from sandbox_science.orchestrator.history.operations import ToolRecord
+from sandbox_science.orchestrator.context.history import Archive, Entry
+from sandbox_science.orchestrator.context.history.operations import ToolRecord
 from sandbox_science.orchestrator.projects import ProjectStore
 
 pytestmark = [
@@ -28,7 +28,7 @@ READER = """
 import hashlib, json, sys, tracemalloc
 from pathlib import Path
 from sandbox_science.orchestrator.control import ControlStore
-from sandbox_science.orchestrator.history import Archive
+from sandbox_science.orchestrator.context.history import Archive
 
 store = ControlStore(Path(sys.argv[1]), readonly=True)
 store.initialize()

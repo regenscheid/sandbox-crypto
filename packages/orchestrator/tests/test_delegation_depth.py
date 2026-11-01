@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 """Two levels of delegation (plans-and-delegation spec, PD-9, PD-15, PD-32, PD-35,
 PD-37 to PD-40): a main run's task it allows may delegate tasks once more, never checks
-and on no track, with tokens carved from what it has left; the second level delegates
+and on no track, each with its own soft token cap (D102); the second level delegates
 nothing; handbacks go to the direct parent, and no run takes another's; the root holds
 the session for its whole tree and its kernel check spares it; the cap counts the whole
 tree, even for delegations started at once; cancels, lost leases and turn limits go down
@@ -22,6 +22,7 @@ from typing import Any, cast
 import pytest
 
 from sandbox_science.contracts import ErrorKind, ExecutionContext
+from sandbox_science.orchestrator.context.agent import AgentContext
 from sandbox_science.orchestrator.continuity.records import WorkRecords
 from sandbox_science.orchestrator.continuity.resources import (
     Action,
@@ -58,7 +59,7 @@ from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.worker_client import WorkerAPIError
 from sandbox_science.testing import eventually
 
-from .loop_harness import PROJECT, SESSION, Harness, Reply, call
+from .loop_harness import AREA, PROJECT, SESSION, Harness, Reply, call
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
@@ -68,6 +69,7 @@ from .test_delegation import (
     awaiting_children,
     children,
     configure,
+    decide,
     delegation,
     kept,
     name,
@@ -81,7 +83,7 @@ from .test_run_service import serving
 
 LEAD = call("delegate", task="Lead the work.", delegate=True)
 PART = call("delegate", task="Do a part.")
-WRITE = call("write_file", path="part.txt", content="A part.\n")
+WRITE = call("write_file", path=f"{AREA}/part.txt", content="A part.\n")
 
 
 def answer(record: Any, n: int) -> dict[str, Any]:
@@ -120,9 +122,9 @@ async def test_a_task_delegates_once_more_and_its_child_hands_back_to_it(
     assert json.loads(results(child)[1])["delegations"][0]["delegation_id"] == part
     found = delegation(delegating, part)
     assert (found.parent, found.acknowledged) == (name(child), name(child))
-    # Its tokens were carved from what its parent had left.
+    # Its tokens are a soft cap of its own, not carved from its parent's (D102).
     given = [cast(dict[str, int], delegation(delegating, i).brief["limits"]) for i in (lead, part)]
-    assert given[1]["tokens"] < given[0]["tokens"]
+    assert given[1]["tokens"] == given[0]["tokens"] == 20_000_000
     briefs = [str(m[1]["content"]) for m in delegating.gateway.children]
     assert any("You may delegate tasks of your own" in b for b in briefs)
     store = ProjectStore(delegating.state)
@@ -300,7 +302,6 @@ class Tree:
         *,
         parent: str = ROOT,
         depth: int = 0,
-        tokens: int | None = None,
         stop_by: Deadline | None = None,
         **limits: Any,
     ) -> Delegations:
@@ -314,7 +315,6 @@ class Tree:
             offer=True,
             limits=DelegationSettings.model_validate({"depth": 2, **limits}),
             depth=depth,
-            tokens=tokens,
             stop_by=stop_by,
         )
 
@@ -364,39 +364,6 @@ async def test_delegations_started_at_once_keep_the_cap(tmp_path: Path) -> None:
             free.set()
 
 
-async def test_nested_grant_refreshes_fold_usage_after_awaited_admission(tmp_path: Path) -> None:
-    extra = 5000
-    dispatched: list[int] = []
-
-    async def auxiliary() -> int:
-        return extra
-
-    async def held(child: Child, stop: asyncio.Event) -> ChildEnd:
-        dispatched.append(child.tokens)
-        return ChildEnd("answered", False, json.dumps(DONE))
-
-    async def gate() -> bool:
-        nonlocal extra
-        # A fold response plus its retry hold arrive during an earlier tool or
-        # model-choice/admission await, without another foreground model return.
-        extra += 40000
-        return False
-
-    with tree(tmp_path) as found:
-        lead = found.hook(held, parent=CHILD, depth=1, tokens=100000)
-        lead.auxiliary_tokens = auxiliary
-        lead.over_budget = gate
-        async with lead.lease():
-            await lead.model_returned(
-                Transcript(messages=[], usage=[ModelUsage(input_tokens=20000, output_tokens=0)])
-            )
-            text, _ = await lead.call("delegate", {"task": "Do a part."})
-            assert json.loads(text)["limits"]["tokens"] == 35000
-            with pytest.raises(WorkerAPIError, match="no tokens left"):
-                await lead.call("delegate", {"task": "Another part."})
-            await eventually(lambda: dispatched == [35000])
-
-
 def test_a_track_is_busy_while_any_delegation_of_the_session_runs_on_it(tmp_path: Path) -> None:
     with tree(tmp_path) as found:
         records = found.records
@@ -417,9 +384,10 @@ def test_a_track_is_busy_while_any_delegation_of_the_session_runs_on_it(tmp_path
         assert records.running(PROJECT, SESSION) == [GRANDCHILD, SIBLING]
 
 
-async def test_a_delegated_runs_children_get_at_most_the_tokens_it_has_left(
+async def test_a_delegated_runs_children_get_their_own_soft_cap_whatever_it_used(
     tmp_path: Path,
 ) -> None:
+    """D102: nothing is carved or refused for tokens; each child checks in at its own cap."""
     free = asyncio.Event()
 
     async def held(child: Child, stop: asyncio.Event) -> ChildEnd:
@@ -427,22 +395,16 @@ async def test_a_delegated_runs_children_get_at_most_the_tokens_it_has_left(
         return ChildEnd("answered", False, json.dumps(DONE))
 
     with tree(tmp_path) as found:
-        lead = found.hook(held, parent=CHILD, depth=1, tokens=80_000)
+        lead = found.hook(held, parent=CHILD, depth=1, task_tokens=80_000)
         try:
             async with lead.lease():
-                text, _ = await lead.call("delegate", {"task": "Do a part."})
-                assert json.loads(text)["limits"]["tokens"] == 80_000
-                used = ModelUsage(input_tokens=30_000, output_tokens=1_000)
-                await lead.model_returned(Transcript(messages=[], usage=[used]))
-                text, _ = await lead.call("delegate", {"task": "Do another."})
-                assert json.loads(text)["limits"]["tokens"] == 49_000
                 spent = ModelUsage(input_tokens=79_000, output_tokens=1_000)
-                await lead.model_returned(Transcript(messages=[], usage=[spent]))
-                with pytest.raises(WorkerAPIError) as refused:
-                    await lead.call("delegate", {"task": "One more."})
-                assert refused.value.message == (
-                    "limit_reached: this run has no tokens left to give a delegated run"
+                await lead.model_returned(
+                    Transcript(context=AgentContext(messages=[], usage=[spent]))
                 )
+                for task in ("Do a part.", "Do another."):
+                    text, _ = await lead.call("delegate", {"task": task})
+                    assert json.loads(text)["limits"]["tokens"] == 80_000
         finally:
             free.set()
 
@@ -473,7 +435,7 @@ async def test_no_run_reads_or_takes_another_parents_outcome(tmp_path: Path) -> 
         root = found.hook(unused)
         for read in (sibling, part):
             await root.call("delegation_status", {"delegation_id": read.delegation_id})
-        await root.model_returned(Transcript(messages=[]))
+        await root.model_returned(Transcript(context=AgentContext(messages=[])))
         now = datetime.now(UTC)
         saved = RunRecord.model_validate(
             {
@@ -496,7 +458,7 @@ async def test_no_run_reads_or_takes_another_parents_outcome(tmp_path: Path) -> 
         # Once the lead ends, its notice names the outcome it never received.
         lead_id = made(1, ROOT, CHILD).delegation_id
         records.end(PROJECT, SESSION, lead_id, Ending("limit_reached", "turn_limit"))
-        (notice,) = await root.notices("turn", Transcript(messages=[]))
+        (notice,) = await root.notices("turn", Transcript(context=AgentContext(messages=[])))
         (shown,) = cast(list[dict[str, Any]], notice.payload)
         assert (shown["delegation_id"], shown["unreceived"]) == (lead_id, [part.delegation_id])
         # Nor does a delegated run take one of the root's.
@@ -594,7 +556,8 @@ def _below(harness: Harness, parent: str) -> list[RunRecord]:
 async def test_a_leads_turn_limit_keeps_its_child_and_hands_the_unconsumed_outcome_up(
     delegating: Harness,
 ) -> None:
-    """A limited lead waits for its child, whose unconsumed result accompanies its own."""
+    """A lead its parent stopped at a check-in waits for its child, whose unconsumed
+    result accompanies its own (D102)."""
     configure(delegating, depth=2, task_turns=2)
     working, free, part_answer = _working()
 
@@ -604,7 +567,7 @@ async def test_a_leads_turn_limit_keeps_its_child_and_hands_the_unconsumed_outco
     task = asyncio.create_task(
         delegating.run(
             "root",
-            [Reply(calls=[LEAD]), wait(), Reply("Done.")],
+            [Reply(calls=[LEAD]), wait(), decide("stop"), wait(), Reply("Done.")],
             status=3,
             routed={
                 "Lead the work.": [
@@ -624,7 +587,7 @@ async def test_a_leads_turn_limit_keeps_its_child_and_hands_the_unconsumed_outco
     root = await task
     (child,) = children(delegating, root)
     (grandchild,) = children(delegating, child)
-    assert (child.stopped, grandchild.stopped) == ("turn_limit", "answered")
+    assert (child.stopped, grandchild.stopped) == ("resource_report", "answered")
     assert root.stopped == "unfinished_children"
     with contextlib.closing(ProjectStore(delegating.state)) as projects:
         works = WorkRecords(projects.control)

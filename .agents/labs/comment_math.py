@@ -190,9 +190,9 @@ async def create(args: argparse.Namespace) -> None:
         snapshot = audit(documents, store, metadata)
         by_entry = {f["anchors"][0]["locator"].get("comment"): f for f in snapshot["findings"]}
         for name, status in (
-            ("accepted", "confirmed fixed"),
-            ("removed", "confirmed fixed"),
-            ("unaddressed", "unaddressed"),
+            ("accepted", "fixed"),
+            ("removed", "fixed"),
+            ("unaddressed", "open"),
             ("unavailable", "open"),
         ):
             if by_entry[cases[name]["entry"]]["status"] != status:

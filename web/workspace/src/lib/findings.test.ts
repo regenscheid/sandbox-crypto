@@ -8,11 +8,12 @@ import type { Finding, Transition } from './reviews';
 const finding = { finding_id: 'f1', revision: 4 } as Finding;
 
 describe("a user's response to a finding", () => {
-  it("starts as an empty rebuttal on the finding's revision, unless a draft was kept", () => {
+  it("starts as an empty dismissal on the finding's revision, unless a draft was kept", () => {
     expect(startResponse(finding, null)).toEqual({
       expected: 4,
       explanation: '',
-      action: 'rebut',
+      successor: '',
+      action: 'dismiss',
       references: '',
     });
     const kept = { expected: 2, explanation: 'Kept', action: 'fix', references: '' };
@@ -29,6 +30,28 @@ describe("a user's response to a finding", () => {
       '{"finding":"f1","expected":4,"action":"fix","explanation":"Fixed","revisions":[["doc-0123456789abcdef01234567",3]]}',
     );
   });
+  it('sends a set decision with its status and no revisions', () => {
+    const draft = {
+      expected: 4,
+      explanation: 'Checked by hand.',
+      action: 'set:fixed',
+      references: 'ignored',
+    };
+    expect(JSON.stringify(findingResponse(finding, draft))).toBe(
+      '{"finding":"f1","expected":4,"action":"set","status":"fixed","explanation":"Checked by hand."}',
+    );
+  });
+  it('sends a dismissal with no revisions, even when the draft has references', () => {
+    const draft = {
+      expected: 4,
+      explanation: 'Not a defect.',
+      action: 'dismiss',
+      references: 'junk',
+    };
+    expect(JSON.stringify(findingResponse(finding, draft))).toBe(
+      '{"finding":"f1","expected":4,"action":"dismiss","explanation":"Not a defect."}',
+    );
+  });
   it('refuses a reference that names no revision', () => {
     const draft = { expected: 4, explanation: 'Fixed', action: 'fix', references: 'doc-1' };
     expect(() => findingResponse(finding, draft)).toThrow();
@@ -43,6 +66,7 @@ describe("a user's response to a finding", () => {
     expect(afterResponse(draft, { revision: 5 })).toEqual({
       expected: 5,
       explanation: '',
+      successor: '',
       action: 'fix',
       references: '',
     });

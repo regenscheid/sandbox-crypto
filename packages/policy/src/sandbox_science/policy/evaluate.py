@@ -7,12 +7,21 @@ docs/POLICY.md defines the semantics; the section names in comments refer to it.
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
 from typing import Final, NamedTuple, assert_never
 
 from .ceiling import PoolCeiling
+from .classification import (
+    CallClass,
+    ServerClassification,
+    class_action,
+    named,
+    resolve,
+    restrictiveness,
+)
 from .decision import Action, Alert, Decision, EscalationTerms, Layer, most_restrictive
+from .effects import ClassAction, EffectClass, MaxGrant
 from .errors import ClassificationError
 from .floor import HardFloor
 from .hosts import HostKind, address_forms, is_public, parse_ip
@@ -88,6 +97,7 @@ def evaluate(
     ceiling: PoolCeiling,
     floor: HardFloor = DEFAULT_FLOOR,
     resolved: Sequence[str] = (),
+    classification: ServerClassification | None = None,
 ) -> Decision:
     """Decide what happens to one operation.
 
@@ -96,6 +106,8 @@ def evaluate(
     the egress or MCP proxy is about to connect to for the operation's host
     (or the MCP server's host). The floor, the ceiling's deny list and the
     public/non-public rule apply to each of them as well as to the name.
+    ``classification`` is the project's accepted revision of an MCP operation's
+    server's classification, which replaces the catalog's (``server_classification``).
     """
     for address in resolved:
         if parse_ip(address) is None:
@@ -106,7 +118,7 @@ def evaluate(
         case HttpOperation() | GitOperation():
             return _evaluate_network(operation, policy, ceiling, floor, resolved)
         case McpOperation():
-            return _evaluate_mcp(operation, policy, ceiling, floor, resolved)
+            return _evaluate_mcp(operation, policy, ceiling, floor, resolved, classification)
         case PackageOperation():
             return _evaluate_package(operation, policy, ceiling, floor)
         case _:
@@ -217,13 +229,27 @@ def evaluate_mcp_message(
     ceiling: PoolCeiling,
     floor: HardFloor = DEFAULT_FLOOR,
     resolved: Sequence[str] = (),
+    hints: Mapping[str, EffectClass] | None = None,
+    classification: ServerClassification | None = None,
 ) -> Decision:
-    """Classify and evaluate one MCP JSON-RPC message; unclassifiable messages are denied."""
+    """Classify and evaluate one MCP JSON-RPC message; unclassifiable messages are denied.
+
+    ``hints`` are the classes the server's latest listing declares, by tool name
+    (``mcp_wire.tool_hints``); a tool the policy does not classify takes its hint (D96).
+    ``classification`` is the project's accepted revision of the server's classification.
+    """
     try:
-        operation = classify_mcp_message(server, message, origin=origin)
+        operation = classify_mcp_message(server, message, origin=origin, hints=hints)
     except ClassificationError as exc:
         return _deny("classification", str(exc), policy)
-    return evaluate(operation, policy, ceiling=ceiling, floor=floor, resolved=resolved)
+    return evaluate(
+        operation,
+        policy,
+        ceiling=ceiling,
+        floor=floor,
+        resolved=resolved,
+        classification=classification,
+    )
 
 
 def evaluate_monitors(policy: LoadedPolicy, usage: EgressUsage) -> tuple[Alert, ...]:
@@ -283,10 +309,11 @@ def _rule_terms(
 
     The shortest timeout applies. The operation proceeds as an alert on timeout
     only if every tied rule is read-only and permits it, and no tied rule's limit
-    is exceeded. A request that may carry a credential proceeds only if every
-    tied rule also sets ``allow_credentialed``. The model already restricts
-    ``on_timeout: allow`` to read-only rules; this rechecks it so a hand-built
-    model cannot widen it.
+    is exceeded. A read-only rule permits it unless it sets ``on_timeout: deny``
+    (D95: reads are free and recorded). A request that may carry a credential
+    proceeds only if every tied rule also sets ``allow_credentialed``. The model
+    already restricts ``on_timeout: allow`` to read-only rules; this rechecks it so
+    a hand-built model cannot widen it.
     """
     default = policy.policy.escalation.timeout
     timeout = min(
@@ -295,12 +322,7 @@ def _rule_terms(
         else default
         for rule in rules
     )
-    permitted = all(
-        rule.read_only
-        and rule.escalation is not None
-        and rule.escalation.on_timeout is OnTimeout.ALLOW
-        for rule in rules
-    )
+    permitted = all(rule.read_only and _read_proceeds_on_timeout(rule) for rule in rules)
     credentials_permitted = not credentialed or all(
         rule.escalation is not None and rule.escalation.allow_credentialed for rule in rules
     )
@@ -308,6 +330,11 @@ def _rule_terms(
         Action.ALERT if permitted and credentials_permitted and not limit_exceeded else Action.DENY
     )
     return EscalationTerms(timeout=timeout, on_timeout=on_timeout)
+
+
+def _read_proceeds_on_timeout(rule: HttpRule | GitRule) -> bool:
+    """Whether a read-only rule lets an unanswered request proceed: unless it says deny."""
+    return rule.escalation is None or rule.escalation.on_timeout is not OnTimeout.DENY
 
 
 def _match_rule(
@@ -323,7 +350,9 @@ def _match_rule(
                 host_key = key
     if host_key is None:
         return None
-    if match.ports:
+    if match.ports == "any":
+        pass  # every port (D95): ports are a condition only, never specificity
+    elif match.ports:
         if operation.port not in match.ports:
             return None
     elif operation.port != DEFAULT_PORTS[operation.scheme]:
@@ -476,7 +505,10 @@ def reserved_host_reason(host: str, policy: LoadedPolicy) -> str | None:
         return reason
     for name, server in policy.policy.mcp.servers.items():
         if server.host == host:
-            return f"{host} hosts MCP server {name!r}, reachable only through the MCP proxy"
+            return (
+                f"{host} hosts MCP server {name!r}, reachable only by the agent runtime's "
+                "MCP client"
+            )
     return None
 
 
@@ -514,8 +546,8 @@ def _evaluate_network(
     if server is not None:
         return _deny(
             "floor",
-            f"{operation.host} hosts MCP server {server!r}, which is reachable only through "
-            "the MCP proxy (D67)",
+            f"{operation.host} hosts MCP server {server!r}, which is reachable only by the "
+            "agent runtime's MCP client (D98)",
             policy,
         )
     # Otherwise a read rule would let workers fetch packages around the package
@@ -525,6 +557,16 @@ def _evaluate_network(
     )
     if reason is not None:
         return _deny("floor", reason, policy)
+    lockdown = policy.policy.lockdown
+    if not lockdown.listed(operation.host):
+        # An allowlist holds whatever the rules say (D95): only listed hosts are reachable.
+        return _decision(
+            lockdown.unlisted,
+            "policy",
+            f"{operation.host} is not on the project's network allowlist",
+            policy,
+            rule="lockdown.network",
+        )
 
     operation_class = "http" if isinstance(operation, HttpOperation) else "git"
     candidates: list[_Candidate] = []
@@ -594,6 +636,11 @@ def _evaluate_network(
             policy,
             rule=decision.rule,
         )
+    terms = decision.escalation
+    if terms is not None and terms.on_timeout is Action.ALERT and not exact_host and not public:
+        # Proceeding unanswered is an allow, which a wildcard never grants a non-public
+        # destination.
+        return replace(decision, escalation=replace(terms, on_timeout=Action.DENY))
     return decision
 
 
@@ -626,6 +673,7 @@ def _evaluate_mcp(
     ceiling: PoolCeiling,
     floor: HardFloor,
     resolved: Sequence[str],
+    classification: ServerClassification | None = None,
 ) -> Decision:
     mcp = policy.policy.mcp
     server = mcp.servers.get(operation.server)
@@ -637,10 +685,9 @@ def _evaluate_mcp(
     reason = ceiling.check_mcp_server(operation.server) or ceiling.check_host(server.host, resolved)
     if reason is not None:
         return _deny("ceiling", reason, policy)
-    if operation.origin == "worker" and not mcp.proxy.worker_access:
-        return _deny(
-            "policy", "worker code may not call MCP servers (mcp.proxy.worker_access)", policy
-        )
+    if operation.origin == "worker":
+        # Research code has no MCP access since the MCP proxy retired (D98, 2026-10-26).
+        return _deny("policy", "worker code may not call MCP servers (D98)", policy)
     if operation.method in MCP_PROTOCOL_METHODS:
         return _decision(
             Action.ALLOW,
@@ -661,14 +708,20 @@ def _evaluate_mcp(
                 "policy", f"tool {tool!r} is outside the server's tool prefix {prefix!r}", policy
             )
         name = tool.removeprefix(prefix)
-    worker_tools = mcp.proxy.worker_tools
-    if (
-        operation.origin == "worker"
-        and worker_tools != "inherit"
-        and not any(tool_pattern_matches(pattern, name) for pattern in worker_tools)
-    ):
-        return _deny("policy", f"tool {tool!r} is not in mcp.proxy.worker_tools", policy)
+    if policy.policy.lockdown.mcp == "locked" and not named(server, name, classification):
+        return _deny(
+            "policy",
+            f"tool {tool!r} is not named in the policy, and MCP is locked (lockdown.mcp)",
+            policy,
+            rule="lockdown.mcp",
+        )
 
+    # A narrower grant ceiling is the more restrictive treatment of two escalations.
+    rank = restrictiveness(policy.policy, operation.server)
+    call = resolve(
+        server, name, operation.arguments, rank, hint=operation.hint, project=classification
+    )
+    terms = class_action(policy.policy, operation.server, call.effect)
     lists = (
         ("allow", Action.ALLOW, server.tools.allow),
         ("escalate", Action.ESCALATE, server.tools.escalate),
@@ -682,15 +735,45 @@ def _evaluate_mcp(
     ]
     exact = [entry for entry in matches if "*" not in entry[2]]
     pool = exact or matches
+    class_label = f"mcp.effects.{call.effect}"
     if not pool:
-        action = policy.policy.defaults.action
-        return _decision(
-            action, "default", f"no tool rule matched {tool!r}; defaults.action is {action}", policy
+        # The class decides a tool no tool rule names (D97).
+        layer: Layer = "default" if call.source == "none" and call.rule is None else "policy"
+        return _mcp_decision(
+            terms.action, layer, f"tool {tool!r} is {call.label}", policy, class_label, call, terms
         )
     action = most_restrictive(entry[1] for entry in pool)
     list_name, _, pattern = next(entry for entry in pool if entry[1] is action)
     label = f"mcp.servers.{operation.server}.tools.{list_name}[{pattern}]"
-    return _decision(action, "policy", f"tool {tool!r} matched {label}", policy, rule=label)
+    if call.rule is not None and terms.action.restrictiveness > action.restrictiveness:
+        # An argument rule changes what the call does, so it is never looser than its class.
+        return _mcp_decision(
+            terms.action,
+            "policy",
+            f"tool {tool!r} matched {label}, but is {call.label}",
+            policy,
+            class_label,
+            call,
+            terms,
+        )
+    return _mcp_decision(
+        action, "policy", f"tool {tool!r} matched {label}", policy, label, call, terms
+    )
+
+
+def _mcp_decision(
+    action: Action,
+    layer: Layer,
+    reason: str,
+    policy: LoadedPolicy,
+    rule: str,
+    call: CallClass,
+    terms: ClassAction,
+) -> Decision:
+    """A tool call's decision with its class and, for an escalation, its grant ceiling."""
+    decision = _decision(action, layer, reason, policy, rule=rule)
+    grant = terms.max_grant if action is Action.ESCALATE else MaxGrant.NONE
+    return replace(decision, effect=call.effect.value, max_grant=grant.value)
 
 
 def _evaluate_package(

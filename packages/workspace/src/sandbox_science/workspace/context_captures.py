@@ -9,13 +9,13 @@ from aiohttp import web
 from pydantic import Field, TypeAdapter, ValidationError
 
 from sandbox_science.contracts import Contract
+from sandbox_science.orchestrator.context.history.captured import CapturedContexts
+from sandbox_science.orchestrator.context.history.inspector_index import InspectorIndex
 from sandbox_science.orchestrator.documents import DocumentError, DocumentStore
-from sandbox_science.orchestrator.history.captured import CapturedContexts
-from sandbox_science.orchestrator.history.inspector_index import InspectorIndex
 from sandbox_science.orchestrator.projects import RunName
 
-from . import documents
 from .context import CONTEXT, identifier, session_record
+from .requests import document_answer
 
 BASE = "/api/v0/projects/{project}/sessions/{session}/runs/{run}/context"
 _RUN = TypeAdapter[str](RunName)
@@ -68,7 +68,7 @@ def scope(request: web.Request) -> tuple[str, str, str]:
 
 async def calls(request: web.Request) -> web.Response:
     given = query(request, CaptureQuery)
-    return await documents.answer(
+    return await document_answer(
         request,
         lambda store: (
             CapturedContexts(store)
@@ -84,7 +84,7 @@ async def calls(request: web.Request) -> web.Response:
 
 async def parts(request: web.Request) -> web.Response:
     given = query(request, PartQuery)
-    return await documents.answer(
+    return await document_answer(
         request,
         lambda store: (
             CapturedContexts(store)
@@ -103,7 +103,7 @@ async def text(request: web.Request) -> web.Response:
     raw = request.match_info["ordinal"]
     if not raw.isascii() or not raw.isdecimal() or len(raw) > 6:
         raise DocumentError("invalid_request", "invalid captured part ordinal")
-    return await documents.answer(
+    return await document_answer(
         request,
         lambda store: (
             CapturedContexts(store)
@@ -127,4 +127,4 @@ async def backfill(request: web.Request) -> web.Response:
         )
         return IndexStatus(chunks=progress.chunks, pending=progress.pending).model_dump(mode="json")
 
-    return await documents.answer(request, write, writer=True)
+    return await document_answer(request, write, access="write")

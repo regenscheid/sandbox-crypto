@@ -1,0 +1,294 @@
+# SPDX-License-Identifier: MIT
+"""Worker API types for child environments (docs/specs/child-environments.md, CE-1).
+
+A child environment is an environment of kind ``child`` that the worker makes, from a
+session environment, for one delegated run: from the session environment's image, policy
+revision, providers and admitted hosts, placed by a trusted child profile, with the
+session's packages replayed and the brief's inputs copied in before it is ready. The run
+works in it as in a session environment. At the delegation's end the worker copies what
+the parent needs into the session environment at ``work/<delegation_id>/`` (the
+hand-back), then releases the child environment, or keeps it stopped when the hand-back
+was incomplete.
+"""
+
+from __future__ import annotations
+
+import re
+import secrets
+from datetime import datetime
+from typing import Annotated, Final, Literal
+
+from pydantic import Field, StringConstraints
+
+from .context import WRITE_AREA_DIRECTORY, ExecutionContext, WriteArea, in_write_area
+from .model import Contract, Identifier, Sha256
+from .worker import (
+    MAX_MANIFEST_FILES,
+    MAX_PATH_BYTES,
+    MAX_READ_BYTES,
+    IsolationTier,
+    JobProfileName,
+    ManifestFile,
+    RelativePath,
+    ReplayedPackages,
+    UncollectedFile,
+)
+
+CHILD_ENVIRONMENT: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,107}-child-[0-9a-f]{12}$")
+"""A child environment's ID (CE-1): ``<project>-child-<12 hex>``. No client may create an
+environment by such an ID."""
+MAX_CHILD_INPUTS: Final = 60
+"""Paths a request copies in at most: a brief's inputs (DA-17's 20) and the files its
+references name (PD-11's 40)."""
+MAX_RETAINED_INPUTS: Final = 100
+"""Inputs from control's retained content a request names at most (CE-7)."""
+MAX_PART_BYTES: Final = MAX_READ_BYTES
+"""The bytes of one part of a retained input sent to the worker: one read's."""
+CHILD_WALL_TIME_MAX: Final = 7 * 24 * 3600.0
+"""The longest a child environment may be kept for its run (CE-9)."""
+HAND_BACK_MANIFEST: Final = ".handback/manifest.json"
+"""The hand-back's manifest, under its target: a reserved name no handed-back file takes."""
+HAND_BACK_RESERVED: Final = ".handback"
+HAND_BACK_DIRECTORY: Final = WRITE_AREA_DIRECTORY
+"""The session workspace directory a hand-back writes under, one directory a delegation
+(DA-19's write area, CE-6)."""
+
+ChildPhase = Literal["creating", "preparing", "ready", "collecting", "released", "retained"]
+"""Where a child environment is (CE-4): being placed, then packages and inputs, then the
+run's; the hand-back; then deleted, or stopped and kept until a deadline."""
+ChildFailure = Literal[
+    "environment_unavailable",
+    "isolation_insufficient",
+    "package_replay_failed",
+    "environment_mismatch",
+    "inputs_too_large",
+    "staging_failed",
+    "worker_restarted",
+    "wall_time",
+]
+"""Why a child environment never became ready, or was ended by the worker."""
+ChildEndReason = Literal["delegation_ended", "session_closed", "abandoned"]
+"""Why the orchestrator ends a child environment: its delegation ended (released after a
+complete hand-back, kept otherwise); its session closed (released without retention,
+JS-25's rule); or nothing will use it again, such as one admitted for a delegation that
+was never written, or an interrupted run's left idle (released without retention)."""
+
+
+def child_environment_id(project_id: str) -> str:
+    """A new child environment ID for the project, within the 128 characters of an ID."""
+    return f"{project_id[:108]}-child-{secrets.token_hex(6)}"
+
+
+def is_child_environment(environment_id: str) -> bool:
+    """Whether the ID has a child environment's shape."""
+    return CHILD_ENVIRONMENT.fullmatch(environment_id) is not None
+
+
+def hand_back_target(delegation_id: str) -> str:
+    """Where a delegation's hand-back writes in the session workspace (CE-6): its write
+    area (DA-19)."""
+    return f"{HAND_BACK_DIRECTORY}/{delegation_id}"
+
+
+def hand_back_path(target: str, path: str) -> str:
+    """Where a hand-back into ``target`` (a write area, ``work/<delegation_id>``) writes a
+    child environment's ``path`` in the session workspace (CE-6, DA-19): a file in the
+    write area keeps its path, so the path the child wrote and named is the one its
+    parent reads; any other file goes below it, ``x/y`` to ``work/<delegation_id>/x/y``."""
+    return path if in_write_area(target, path) else f"{target}/{path}"
+
+
+def hand_back_reserved(target: str, path: str) -> bool:
+    """Whether a hand-back into ``target`` would write ``path`` of the child environment
+    into its own ``.handback/`` (CE-6), which no handed-back file takes."""
+    inside = hand_back_path(target, path)[len(target) + 1 :]
+    return inside == HAND_BACK_RESERVED or inside.startswith(f"{HAND_BACK_RESERVED}/")
+
+
+class RetainedInput(Contract):
+    """An input whose content control retains (CE-7): a recorded file's or an artifact's
+    revision, copied to ``inputs/<path>`` with its SHA-256 and size. Control sends its
+    content, part by part, once the child environment is ready; the worker counts it in
+    the staging bound at admission and checks the whole file's digest at its end."""
+
+    path: RelativePath
+    """The session path it stands for: it is copied to ``inputs/<path>``."""
+    artifact_id: Identifier
+    revision: Annotated[int, Field(ge=1)]
+    sha256: Sha256
+    size: Annotated[int, Field(ge=0)]
+
+
+class ChildEnvironmentRequest(Contract):
+    """Admit and create a child environment for one delegation (CE-1, CE-4).
+
+    Refused at once, before anything is created, with the reason: a pool without child
+    profiles, a profile the pool does not offer or whose tier is below
+    ``min_isolation_tier``, the policy's ``child_environments_max`` or the pool's or the
+    profile's count reached (``limit_reached``), or inputs over the profile's staging
+    bound (``inputs_too_large``). Once admitted, it is created in the background; its
+    record says when it is ready. The same delegation again returns the same record."""
+
+    context: ExecutionContext
+    """The session's: its environment is the one the child environment is made from."""
+    delegation_id: Identifier
+    profile: JobProfileName | None = None
+    """A child profile the pool offers; ``None`` for the project's (CE-3)."""
+    project_profile: JobProfileName | None = None
+    """The project's own child profile (its delegation setting); ``None`` for the pool's
+    default. Where the policy grants no list of child profiles, it is the one granted."""
+    inputs: tuple[RelativePath, ...] = Field(default=(), max_length=MAX_CHILD_INPUTS)
+    """Session workspace paths, files or directories, copied to ``inputs/`` (CE-7). A
+    path that names nothing is listed as missing, since a brief's inputs are also text."""
+    retained: tuple[RetainedInput, ...] = Field(default=(), max_length=MAX_RETAINED_INPUTS)
+    """Inputs from control's retained content (CE-7): each is copied unless the session's
+    files already give its path, and a missing path it gives is no longer missing."""
+    min_isolation_tier: IsolationTier | None = None
+
+
+class RetainedFile(Contract):
+    """A file whose content control retains already: a hand-back names its revision
+    instead of copying it (CE-6)."""
+
+    path: RelativePath
+    artifact_id: Identifier
+    revision: Annotated[int, Field(ge=1)]
+    sha256: Sha256 | None = None
+
+
+class HandBackRequest(Contract):
+    """Copy a delegation's files from its child environment into the session's (CE-6).
+
+    The first request is recorded, and every later one must be the same: a hand-back a
+    restart cut short goes on from the last file it recorded, and copies none twice."""
+
+    context: ExecutionContext
+    """The session's: the hand-back writes into its environment."""
+    delegation_id: Identifier
+    """The delegation handed back: a continuation's own after a Resume (CE-12). Its
+    files go to its research work's write area (``write_area``), by default its own."""
+    files: tuple[RelativePath, ...] = Field(default=(), max_length=2 * MAX_MANIFEST_FILES)
+    """Child environment paths to copy, in order: past 1,000 they are left out."""
+    retained: tuple[RetainedFile, ...] = Field(default=(), max_length=MAX_MANIFEST_FILES)
+    write_area: WriteArea | None = Field(default=None, exclude_if=lambda v: v is None)
+    """Where the files go when it is not ``work/<delegation_id>/``: the write area of the
+    delegation's research work, a continuation's after a Resume (DA-19, CE-12)."""
+
+    @property
+    def target(self) -> str:
+        """The session directory the files go to (CE-6, DA-19)."""
+        return self.write_area or hand_back_target(self.delegation_id)
+
+
+class ChildHandBack(Contract):
+    """A hand-back's manifest: stored once, and written to
+    ``work/<delegation_id>/.handback/manifest.json`` in the session (an untrusted copy)."""
+
+    delegation_id: Identifier
+    environment_id: Identifier
+    target: Annotated[str, StringConstraints(max_length=MAX_PATH_BYTES)]
+    collected: tuple[ManifestFile, ...] = Field(default=(), max_length=MAX_MANIFEST_FILES)
+    """Copied, by their session paths under ``target``."""
+    retained: tuple[RetainedFile, ...] = Field(default=(), max_length=MAX_MANIFEST_FILES)
+    not_collected: tuple[UncollectedFile, ...] = Field(default=(), max_length=MAX_MANIFEST_FILES)
+    complete: bool
+    ended_at: datetime
+
+
+class InputPart(Contract):
+    """Part of a retained input's content, sent by control once its child environment is
+    ready (CE-7): ``index`` is its place in the request's ``retained``. A part not sent
+    where the input's received bytes end is not written, and the answer says where they
+    end; the last part's write checks the whole file's SHA-256 and size."""
+
+    context: ExecutionContext
+    """The session's, as the child environment's other routes take it."""
+    index: Annotated[int, Field(ge=0, lt=MAX_RETAINED_INPUTS)]
+    offset: Annotated[int, Field(ge=0)]
+    content_b64: str = Field(max_length=4 * ((MAX_PART_BYTES + 2) // 3))
+
+
+class InputStaged(Contract):
+    """Where a retained input's received bytes end, whether the part was written, and,
+    once whole and checked, the input as copied."""
+
+    size: Annotated[int, Field(ge=0)]
+    accepted: bool
+    staged: ManifestFile | None = None
+
+
+class ChildEnvironmentEnd(Contract):
+    """End a child environment: release it, or keep it stopped after an incomplete
+    hand-back (CE-4). A hand-back a restart cut short is finished first."""
+
+    context: ExecutionContext
+    reason: ChildEndReason = "delegation_ended"
+
+
+class ChildEnvironment(Contract):
+    """A child environment's record, as the worker keeps it (CE-11)."""
+
+    environment_id: Identifier
+    delegation_id: Identifier
+    project_id: Identifier
+    session_id: Identifier
+    session_environment: Identifier
+    profile: JobProfileName
+    phase: ChildPhase
+    failure: ChildFailure | None = None
+    message: Annotated[str, StringConstraints(max_length=1000)] | None = None
+    """Why it failed or was kept, in words."""
+    isolation_tier: IsolationTier | None = None
+    """The tier the probe measured in it, once prepared."""
+    inputs: tuple[ManifestFile, ...] = Field(default=(), max_length=MAX_MANIFEST_FILES)
+    """The inputs copied, by their child environment paths under ``inputs/``: the
+    session's, then those from control's retained content as each is staged."""
+    retained: tuple[RetainedInput, ...] = Field(default=(), max_length=MAX_RETAINED_INPUTS)
+    """The inputs from control's retained content that admission planned to copy, in the
+    order ``InputPart.index`` names them; each is in ``inputs`` once staged."""
+    inputs_missing: tuple[RelativePath, ...] = Field(default=(), max_length=MAX_CHILD_INPUTS)
+    packages: ReplayedPackages = ReplayedPackages()
+    created_at: datetime
+    ready_by: datetime
+    """When it must be ready, by its profile's ``schedule_timeout``."""
+    ready_at: datetime | None = None
+    expires_at: datetime
+    """When its profile's ``wall_time_max`` runs out: the run ends ``limit_reached``."""
+    retained_until: datetime | None = None
+    hand_back: ChildHandBack | None = None
+
+
+class ChildEnvironmentList(Contract):
+    """A session's child environments, ended ones included, oldest first."""
+
+    environments: tuple[ChildEnvironment, ...] = Field(max_length=1000)
+
+
+__all__ = [
+    "CHILD_ENVIRONMENT",
+    "CHILD_WALL_TIME_MAX",
+    "HAND_BACK_DIRECTORY",
+    "HAND_BACK_MANIFEST",
+    "HAND_BACK_RESERVED",
+    "MAX_CHILD_INPUTS",
+    "MAX_PART_BYTES",
+    "MAX_RETAINED_INPUTS",
+    "ChildEndReason",
+    "ChildEnvironment",
+    "ChildEnvironmentEnd",
+    "ChildEnvironmentList",
+    "ChildEnvironmentRequest",
+    "ChildFailure",
+    "ChildHandBack",
+    "ChildPhase",
+    "HandBackRequest",
+    "InputPart",
+    "InputStaged",
+    "RetainedFile",
+    "RetainedInput",
+    "child_environment_id",
+    "hand_back_path",
+    "hand_back_reserved",
+    "hand_back_target",
+    "is_child_environment",
+]

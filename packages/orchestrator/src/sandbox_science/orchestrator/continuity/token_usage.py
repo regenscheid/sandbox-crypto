@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Scoped token totals for a delegated grant, including fold and overview calls.
+"""Scoped token and cost totals for a work's soft caps, including fold and overview calls.
 
 Canonical observations precede their exact legacy copies. SQL aggregation keeps a
 long run's transcript and usage history out of the agent's working memory.
@@ -67,32 +67,33 @@ def _folds() -> str:
     )
 
 
-def _reserved(*, folds_only: bool) -> str:
+def _reserved(column: str = "r.input_tokens+r.output_tokens") -> str:
     return (
-        "SELECT coalesce(sum(r.input_tokens+r.output_tokens),0) FROM ("
+        f"SELECT coalesce(sum({column}),0) FROM ("
         + RESERVATIONS
         + ") r JOIN attempts a USING(project,session,work,run)"
-        + (
-            " JOIN research_model_calls c USING(project,session,run,identity) WHERE c.kind='fold'"
-            if folds_only
-            else ""
-        )
     )
 
 
-def fold_tokens(db: sqlite3.Connection, project: str, session: str, work: str, *, run: str) -> int:
-    """Current attempt's fold observations and explicit unresolved reservations."""
+def spent_cost(db: sqlite3.Connection, project: str, session: str, work: str) -> float:
+    """Known journaled cost plus explicit reservations across the work's attempts, in the
+    gateway's currency, for its soft cost cap (D102). Unpriced calls add nothing: they
+    stay visible as unpriced in the accounts, never as zero."""
+    calls = (
+        "SELECT u.usage FROM archive_model_usage u JOIN attempts a USING(project,session,run) "
+        "UNION ALL SELECT c.usage FROM research_model_calls c JOIN attempts a "
+        "USING(project,session,run) WHERE c.kind NOT IN ('main','delegated') "
+        "AND c.usage IS NOT NULL"
+    )
     query = (
-        _scope(run)
-        + "SELECT (SELECT "
-        + USAGE_SUM
-        + " FROM ("
-        + _folds()
+        _scope(None)
+        + "SELECT (SELECT coalesce(sum(json_extract(usage,'$.cost')),0) FROM ("
+        + calls
         + "))+("
-        + _reserved(folds_only=True)
+        + _reserved("r.cost")
         + ")"
     )
-    return int(db.execute(query, (project, session, work, run)).fetchone()[0])
+    return float(db.execute(query, (project, session, work)).fetchone()[0])
 
 
 def spent_tokens(
@@ -123,7 +124,7 @@ def spent_tokens(
         + " UNION ALL "
         + _folds()
         + "))+("
-        + _reserved(folds_only=False)
+        + _reserved()
         + ")"
     )
     values = (project, session, work) + ((run,) if run is not None else ())

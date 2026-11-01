@@ -8,6 +8,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+from typing import Final
 
 from sandbox_science.contracts import ErrorKind, ExecutionContext
 from sandbox_science.contracts.recovery import RecoveryFence
@@ -15,6 +16,18 @@ from sandbox_science.contracts.recovery import RecoveryFence
 from .errors import ExecutorRefusalError, WorkerError
 
 OPERATOR: ContextVar[bool] = ContextVar("worker_authenticated_operator", default=False)
+NOT_INSTALLED: Final = "session recovery epoch is not installed"
+SUPERSEDED: Final = "missing or superseded research authority"
+
+
+def authority_refused(error: WorkerError) -> bool:
+    """Whether ``error`` is the recovery fence's refusal of a caller's authority, as it
+    reaches a caller through the manager's calls: not a failure of the effect itself,
+    and not something to record as its outcome, since a caller with the current
+    authority may still make it."""
+    return error.kind is ErrorKind.POLICY_DENIED and (
+        SUPERSEDED in error.message or NOT_INSTALLED in error.message
+    )
 
 
 @contextmanager
@@ -60,6 +73,8 @@ _PASSIVE = frozenset(
         "usage",
         "read",
         "list",
+        "glob",
+        "grep",
         "job_status",
         "lockfile",
         "capture_cancel",
@@ -137,12 +152,10 @@ class RecoveryFences:
         authority = context.authority
         if epoch is None:
             if authority is not None:
-                raise WorkerError(
-                    ErrorKind.POLICY_DENIED, "session recovery epoch is not installed"
-                )
+                raise WorkerError(ErrorKind.POLICY_DENIED, NOT_INSTALLED)
             return
         if authority is None or authority.epoch != epoch:
-            raise WorkerError(ErrorKind.POLICY_DENIED, "missing or superseded research authority")
+            raise WorkerError(ErrorKind.POLICY_DENIED, SUPERSEDED)
 
     @contextmanager
     def bind_project(self, project: str) -> Generator[None]:

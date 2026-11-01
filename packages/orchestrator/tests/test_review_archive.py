@@ -21,7 +21,7 @@ from sandbox_science.orchestrator.consistency.archived import held_calls, places
 from sandbox_science.orchestrator.consistency.models import ReviewConfig
 from sandbox_science.orchestrator.consistency.rubric import RUBRIC
 from sandbox_science.orchestrator.consistency.store import ReviewStore
-from sandbox_science.orchestrator.history import Archive, Entry
+from sandbox_science.orchestrator.context.history import Archive, Entry
 from sandbox_science.orchestrator.model import Message
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord, run_name
 
@@ -249,7 +249,7 @@ def test_a_shift_among_calls_of_one_tool_gives_no_place(archive: Archive) -> Non
 
 
 def test_paged_tool_places_extend_after_an_earlier_review(archive: Archive) -> None:
-    from sandbox_science.orchestrator.history.collections import Collection
+    from sandbox_science.orchestrator.context.history.collections import Collection
 
     tools = Collection(archive.control, (PROJECT, SESSION, RUN), "tools")
     for number in (1, 2):

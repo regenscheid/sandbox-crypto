@@ -1,12 +1,13 @@
 # SPDX-License-Identifier: MIT
 """File requests and the shared files' sync, for the execution manager.
 
-``Files`` reads, writes and lists files in an environment through its executor, and
-checks each reply like an event. A request for a path under ``shared/`` first syncs
-the project's shared files (D79); what a sync finds is told with the results of the
-calls running there, or held for the session's next result. The dispatcher runs the
-sync's steps before and after each call through ``sync``, whose failure never fails
-the call.
+``Files`` reads, writes, edits, lists and searches files in an environment through its
+executor, and checks each reply like an event. A write or an edit whose context names a
+delegated run's write area is made only below it or in ``shared/`` (DA-19). A request
+for a path under ``shared/`` first syncs the project's shared files (D79); what a sync
+finds is told with the results of the calls running there, or held for the session's
+next result. The dispatcher runs the sync's steps before and after each call through
+``sync``, whose failure never fails the call.
 """
 
 from __future__ import annotations
@@ -17,15 +18,24 @@ import logging
 import posixpath
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any, cast
 
 from sandbox_science.contracts import (
     TERMINAL_STATES,
+    EditFileRequest,
+    EditFileResult,
     ErrorKind,
     ExecutionContext,
     FileContent,
     FileEntry,
     FileListing,
+    GlobEntry,
+    GlobListing,
+    GlobRequest,
+    GrepCount,
+    GrepRequest,
+    GrepResult,
     ListFilesRequest,
     ReadFileRequest,
     StageCheck,
@@ -34,6 +44,7 @@ from sandbox_science.contracts import (
     StagePutResult,
     WriteFileRequest,
     WriteFileResult,
+    outside_write_area,
 )
 
 from .channel import ExecutorChannel, Message
@@ -51,6 +62,18 @@ MAX_HELD_NOTICES = 20
 MAX_HELD_BYTES = 16 * 1024
 MAX_HELD_SESSIONS = 256
 MAX_LIST = 5000
+SEARCH_REPLY_TIMEOUT = 60.0
+"""Seconds the worker waits for a glob or grep, beyond the executor's own bound on it."""
+FILE_TOOLS = 1
+"""The ``file_tools`` an executor's ``hello`` names when it edits, globs and greps."""
+UNSUPPORTED_FILE_TOOLS = (
+    "this environment's executor predates edit_file, glob and grep; recreate the "
+    "environment to use them, or use write_file, list_files and the shell meanwhile"
+)
+UNSUPPORTED_RANGED_WRITE = (
+    "this environment's executor predates ranged writes, so no file over 100 MiB is "
+    "copied into it; recreate the environment"
+)
 UNSYNCED = (
     "shared/ could not be synced with the project's other environments just now; "
     "it is synced again at the next call"
@@ -92,6 +115,17 @@ def _range_reply(reply: Message, offset: int, length: int, *, hashed: bool) -> R
         content_b64=encoded,
         eof=reply.get("eof") is True,
     )
+
+
+@dataclass(frozen=True)
+class RangeWritten:
+    """What a ranged write's executor holds: the part's size (the file's, once committed),
+    whether the content was written, and once committed, the whole file's SHA-256."""
+
+    size: int
+    accepted: bool
+    committed: bool = False
+    sha256: str | None = None
 
 
 class Files:
@@ -152,6 +186,7 @@ class Files:
 
     async def write(self, request: WriteFileRequest) -> WriteFileResult:
         context = request.context
+        _in_write_area(context, request.path)
         async with self.connections.using(context.environment_id) as channel:
             fields: dict[str, Any] = {
                 "path": request.path,
@@ -179,11 +214,188 @@ class Files:
                 reply = await channel.request("write", session=context.session_id, **fields)
             return checked(WriteFileResult, sha256=reply.get("sha256"), size=reply.get("size"))
 
+    async def read_part(
+        self, context: ExecutionContext, path: str, offset: int, length: int
+    ) -> tuple[bytes, int]:
+        """A range of a file without hashing the whole file, and the file's size: for a
+        copy that checks the whole file's digest once, at its end."""
+        request = ReadFileRequest(context=context, path=path, offset=offset, length=length)
+        async with self.connections.using(context.environment_id) as channel:
+            found = await self._read_range(channel, request, offset, length, hashed=False)
+        return found.data, found.size
+
+    async def write_range(
+        self,
+        context: ExecutionContext,
+        path: str,
+        upload: str,
+        offset: int,
+        content: bytes,
+        *,
+        sha256: str | None = None,
+        size: int | None = None,
+        discard: bool = False,
+    ) -> RangeWritten:
+        """Write ``content`` at ``offset`` of a file of the session written in parts; with
+        ``sha256`` and ``size``, then give the whole file its name once both match
+        (``sandbox_files.Requests.write_range``). Not for ``shared/``, which syncs whole
+        files under preconditions."""
+        if in_shared(path):
+            raise WorkerError(ErrorKind.INVALID_REQUEST, "a ranged write goes to the session")
+        _in_write_area(context, path)  # as a write's (DA-19); the platform's carry none
+        async with self.connections.using(context.environment_id) as channel:
+            if channel.hello.get("ranged_write") != 1:
+                raise WorkerError(ErrorKind.UNSUPPORTED, UNSUPPORTED_RANGED_WRITE)
+            fields: dict[str, Any] = {
+                "path": path,
+                "upload": upload,
+                "offset": offset,
+                "content_b64": base64.b64encode(content).decode(),
+            }
+            if sha256 is not None:
+                fields.update(sha256=sha256, size=size)
+            if discard:
+                fields["discard"] = True
+            reply = await channel.request("write_range", session=context.session_id, **fields)
+        held = integer(reply.get("size"), 0, 2**62)
+        found = reply.get("sha256")
+        if (
+            held is None
+            or not isinstance(reply.get("accepted"), bool)
+            or (reply.get("committed") is True and found != sha256)
+        ):
+            raise WorkerError(
+                ErrorKind.INTERNAL, "the executor sent a malformed ranged write reply"
+            )
+        return RangeWritten(
+            size=held,
+            accepted=reply.get("accepted") is True,
+            committed=reply.get("committed") is True,
+            sha256=found if isinstance(found, str) else None,
+        )
+
+    async def edit(self, request: EditFileRequest) -> EditFileResult:
+        """Replace a string in a text file, under the rules and the sync a write has."""
+        context = request.context
+        _in_write_area(context, request.path)
+        async with self.connections.using(context.environment_id) as channel:
+            _file_tools(channel)
+            fields: dict[str, Any] = {
+                "path": request.path,
+                "old_string": request.old_string,
+                "new_string": request.new_string,
+                "replace_all": request.replace_all,
+                "expected_sha256": request.expected_sha256,
+            }
+            shared = self.shared
+            if shared is not None and in_shared(request.path):
+                notices: list[str] = []
+                try:
+                    reply = await shared.write(
+                        context.project_id,
+                        context.environment_id,
+                        context.session_id,
+                        channel,
+                        fields,
+                        self.timeouts.shared,
+                        notices,
+                        op="edit",
+                    )
+                finally:
+                    self.tell(context, notices)
+            else:
+                reply = await channel.request("edit", session=context.session_id, **fields)
+            return checked(
+                EditFileResult,
+                sha256=reply.get("sha256"),
+                size=reply.get("size"),
+                replacements=reply.get("replacements"),
+            )
+
+    async def glob(self, request: GlobRequest) -> GlobListing:
+        """The paths below a directory that match a pattern, newest first."""
+        context = request.context
+        async with self.connections.using(context.environment_id) as channel:
+            _file_tools(channel)
+            await self._sync_for(context, request.path, channel)
+            reply = await channel.request(
+                "glob",
+                reply_timeout=SEARCH_REPLY_TIMEOUT,
+                session=context.session_id,
+                path=request.path,
+                pattern=request.pattern,
+                limit=request.limit,
+            )
+            entries = [
+                checked(
+                    GlobEntry,
+                    path=item.get("path"),
+                    type=item.get("type"),
+                    size=item.get("size"),
+                    modified_at=epoch(item.get("modified")),
+                )
+                for item in _objects(reply.get("entries"))[: request.limit]
+            ]
+            return checked(
+                GlobListing,
+                path=request.path,
+                pattern=request.pattern,
+                entries=entries,
+                truncated=reply.get("truncated") is True,
+                stopped=reply.get("stopped"),
+                scanned=reply.get("scanned"),
+                skipped=reply.get("skipped", []),
+            )
+
+    async def grep(self, request: GrepRequest) -> GrepResult:
+        """Search text files for a regular expression, within the executor's bounds."""
+        context = request.context
+        async with self.connections.using(context.environment_id) as channel:
+            _file_tools(channel)
+            await self._sync_for(context, request.path, channel)
+            reply = await channel.request(
+                "grep",
+                reply_timeout=SEARCH_REPLY_TIMEOUT,
+                session=context.session_id,
+                path=request.path,
+                pattern=request.pattern,
+                glob=request.glob,
+                mode=request.mode,
+                case_insensitive=request.case_insensitive,
+                context_lines=request.context_lines,
+                max_results=request.max_results,
+            )
+            counts = [
+                checked(GrepCount, path=item.get("path"), count=item.get("count"))
+                for item in _objects(reply.get("counts"))
+            ]
+            return checked(
+                GrepResult,
+                path=request.path,
+                pattern=request.pattern,
+                mode=request.mode,
+                files=_listed(reply.get("files")),
+                counts=counts,
+                lines=_listed(reply.get("lines")),
+                truncated=reply.get("truncated") is True,
+                stopped=reply.get("stopped"),
+                scanned_files=reply.get("scanned_files"),
+                scanned_bytes=reply.get("scanned_bytes"),
+                skipped_binary=reply.get("skipped_binary", 0),
+                skipped_large=reply.get("skipped_large", 0),
+                skipped_unreadable=reply.get("skipped_unreadable", 0),
+                skipped=reply.get("skipped", []),
+            )
+
     async def stage_check(self, request: StageCheckRequest) -> StageCheck:
         """Whether a skill pack is staged as expected, sealed once it is (SK-16)."""
         async with self.connections.using(request.context.environment_id) as channel:
             reply = await channel.request(
                 "skills_check",
+                # A fresh executor may need to scan the installed tool inventory.
+                # This is bounded but can exceed the ordinary small-tool deadline
+                # on a cold disk, particularly in large research images.
+                reply_timeout=240.0,
                 source=request.source,
                 snapshot=request.snapshot,
                 files=[file.model_dump(mode="json") for file in request.files],
@@ -304,6 +516,27 @@ class Files:
 
 def _listed(value: object) -> list[object]:
     return cast(list[object], value) if isinstance(value, list) else []
+
+
+def _objects(value: object) -> list[dict[str, Any]]:
+    """A reply's list of objects; anything else in it is an empty object, which the
+    contract then refuses."""
+    return [cast(dict[str, Any], item) if isinstance(item, dict) else {} for item in _listed(value)]
+
+
+def _in_write_area(context: ExecutionContext, path: str) -> None:
+    """Refuse a delegated run's write outside its write area and ``shared/`` (DA-19),
+    before anything reaches the environment."""
+    refusal = outside_write_area(context, path)
+    if refusal is not None:
+        raise WorkerError(ErrorKind.POLICY_DENIED, refusal)
+
+
+def _file_tools(channel: ExecutorChannel) -> None:
+    """Refuse an edit or a search that an older executor cannot run, before sending it."""
+    found = channel.hello.get("file_tools")
+    if type(found) is not int or found != FILE_TOOLS:
+        raise WorkerError(ErrorKind.UNSUPPORTED, UNSUPPORTED_FILE_TOOLS)
 
 
 def latest(notices: list[str]) -> list[str]:

@@ -9,7 +9,7 @@ test ! -e "$LAB" || { echo "lab exists: $LAB" >&2; exit 1; }
 if ss -ltn | grep -qE ':(8090|8080|8100|50051|17670)\b'; then echo "a lab port is busy" >&2; exit 1; fi
 mkdir -p "$LAB" && chmod 700 "$LAB"
 cat > "$LAB/env.sh" <<'EOF'
-export OS_BIN="$HOME/.local/opt/openshell-0.1.3/bin"
+export OS_BIN="$HOME/.local/opt/openshell-0.1.5/bin"
 export LAB="$HOME/.local/state/openshell-lab"
 export XDG_CONFIG_HOME="$LAB/config"
 export XDG_STATE_HOME="$LAB/state"
@@ -59,13 +59,8 @@ kind: OpenShellTargets
 sandbox:
   middleware: sandbox-science-policy
   package_cache: {host: host.openshell.internal, port: 8090}
-  mcp_proxy: {host: host.openshell.internal, port: 8080}
   binaries: [/**]
   filesystem: {read_only: [/var/lib/texmf], read_write: [/opt/sandbox-science]}
-mcp_proxy:
-  binaries: [/opt/sandbox-science/bin/python*]
-  versions: ["2025-11-25"]
-  filesystem: {read_only: [/opt/sandbox-science]}
 EOF
 cat > "$LAB/gateway.toml" <<EOF
 [openshell]

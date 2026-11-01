@@ -51,7 +51,7 @@ def run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
             location = SimpleNamespace(
                 isolation_evidence=None, pool_id="p", backend="local", sandbox_id="e", hostname="h"
             )
-            return SimpleNamespace(location=location, languages=(), features=())
+            return SimpleNamespace(location=location, languages=(), features=(), kernel_reason=None)
 
     # The one place the CLI makes a gateway client, and what it closes.
     monkeypatch.setattr(cli, "gateway_model", Model)
@@ -70,7 +70,6 @@ def run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
             "watcher_calls_per_hour": 1, "watcher_first_check": 1, "watcher_interval": 1,
             "review_token_budget": 400000, "review_calls_per_hour": 240,
             "task": "T", "max_turns": 1, "max_input_chars": 400_000, "transcript": None,
-            "mcp_proxy": None, "mcp_token_file": None, "mcp_server": [],
         }  # fmt: skip
         return argparse.Namespace(**{**values, **changes})
 

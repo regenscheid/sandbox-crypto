@@ -1,0 +1,1314 @@
+# SPDX-License-Identifier: MIT
+"""Workspace checkpoint Jobs and cleanup on Kubernetes, offline: the rendered Job (read-only
+claim, no token, bounds, namespace), the bundle's rules and the site's keys, and the
+operator's commands against a scripted ``kubectl``, refusals included."""
+
+from __future__ import annotations
+
+import json
+import tomllib
+from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any, Literal
+
+import pytest
+from pydantic import ValidationError
+
+from sandbox_science.contracts.workspace_checkpoint import (
+    CheckpointInventory,
+    CheckpointPlan,
+    CheckpointSource,
+    CheckpointState,
+    InventoryCheckpoint,
+    InventoryEnvironment,
+    InventoryHold,
+)
+from sandbox_science.launcher import kubernetes_cli
+from sandbox_science.launcher.kubernetes_bundle import render
+from sandbox_science.launcher.kubernetes_checkpoint import (
+    PLAN_VARIABLE,
+    STORAGE_VARIABLE,
+    checkpoint_job,
+)
+from sandbox_science.launcher.kubernetes_config import BundleConfig, projected_files
+from sandbox_science.launcher.kubernetes_operations import (
+    OPENSHELL_SEPARATOR,
+    OperationError,
+    Operator,
+    claim_sandbox,
+    report,
+    survey,
+    worker_sandbox,
+)
+from sandbox_science.launcher.kubernetes_site import plan as site_plan
+from sandbox_science.launcher.kubernetes_site_config import load as load_site
+from sandbox_science.worker import checkpoint_jobs_cli, environments
+from sandbox_science.worker.checkpoint_s3 import Storage, parse
+
+from .test_kubernetes_bundle import values
+from .test_kubernetes_site import site_file, site_values
+
+SANDBOXES = "research-runtimes"
+GARAGE = {
+    "peer": {
+        "namespace_labels": {"kubernetes.io/metadata.name": "garage"},
+        "pod_labels": {"app.kubernetes.io/name": "garage"},
+    },
+    "ports": [3900],
+}
+CHECKPOINT: dict[str, Any] = {
+    "upload_secret": "research-checkpoint-upload",
+    "upload_bucket": "research-checkpoint-upload",
+    "kept_bucket": "research-checkpoints",
+    "endpoint": "http://garage.garage.svc.cluster.local:3900",
+    "object_store": GARAGE,
+    "run_as_user": 10001,
+    "run_as_group": 10001,
+}
+NOW = datetime(2026, 10, 28, 12, tzinfo=UTC)
+
+
+def with_checkpoint(data: dict[str, Any] | None = None, **changes: Any) -> dict[str, Any]:
+    result = values() if data is None else data
+    result["sandboxes"] = {"namespace": SANDBOXES}
+    result["checkpoint"] = {**CHECKPOINT, **changes}
+    return result
+
+
+def configured(**changes: Any) -> BundleConfig:
+    return BundleConfig.model_validate_json(json.dumps(with_checkpoint(**changes)))
+
+
+def source(sandbox: str = "ss-0123456789abcdef") -> CheckpointSource:
+    return CheckpointSource(
+        project_id="crypto",
+        environment_id="crypto-main",
+        sandbox=sandbox,
+        sandbox_id=f"{sandbox}-id",
+        profile="crypto-base",
+        image="ghcr.io/test/crypto-base@sha256:" + "1" * 64,
+        policy="sha256:" + "2" * 64,
+        launch_settings=None,
+        architecture="amd64",
+        require_workspace_prefix=False,
+        prefix_identity=None,
+        package_fingerprint=None,
+    )
+
+
+def a_plan(sandbox: str = "ss-0123456789abcdef") -> CheckpointPlan:
+    return CheckpointPlan(
+        checkpoint_id="ckpt-" + "c" * 24,
+        source=source(sandbox),
+        source_sha256="d" * 64,
+        capture="suspended_pvc",
+        hold_expires_at=NOW + timedelta(hours=6),
+    )
+
+
+def job(**changes: Any) -> dict[str, Any]:
+    rendered = checkpoint_job(configured(**changes), a_plan(), "workspace-ss-0123", "node-a")
+    return json.loads(json.dumps(rendered))
+
+
+# The Job
+
+
+def test_the_job_mounts_the_claim_read_only_without_a_token_in_the_sandbox_namespace():
+    rendered = job()
+    assert rendered["kind"] == "Job"
+    assert rendered["metadata"]["namespace"] == SANDBOXES
+    assert rendered["metadata"]["generateName"] == "research-checkpoint-"
+    assert "name" not in rendered["metadata"]  # kubectl apply refuses it; create makes a new one
+    spec = rendered["spec"]
+    assert spec["backoffLimit"] == 0
+    assert spec["activeDeadlineSeconds"] == 7200
+    pod = spec["template"]["spec"]
+    assert pod["automountServiceAccountToken"] is False
+    assert pod["enableServiceLinks"] is False
+    assert "serviceAccountName" not in pod
+    assert "fsGroup" not in pod["securityContext"]  # no ownership change on the workspace
+    assert pod["securityContext"]["runAsUser"] == 10001
+    volumes = {volume["name"]: volume for volume in pod["volumes"]}
+    assert volumes["workspace"]["persistentVolumeClaim"] == {
+        "claimName": "workspace-ss-0123",
+        "readOnly": True,
+    }
+    assert volumes["upload-key"]["secret"]["secretName"] == "research-checkpoint-upload"
+    assert [item["key"] for item in volumes["upload-key"]["secret"]["items"]] == [
+        "credentials",
+        "config",
+    ]
+    assert set(volumes) == {"workspace", "upload-key", "scratch"}
+    assert not any("hostPath" in volume for volume in pod["volumes"])
+    (container,) = pod["containers"]
+    assert all(
+        mount["readOnly"] for mount in container["volumeMounts"] if mount["name"] != "scratch"
+    )
+    security = container["securityContext"]
+    assert security["readOnlyRootFilesystem"] is True
+    assert security["allowPrivilegeEscalation"] is False
+    assert security["capabilities"] == {"drop": ["ALL"]}
+    assert container["command"][:3] == ["sandbox-science-worker", "checkpoint", "capture-upload"]
+    assert container["image"] == values()["images"]["worker"]
+    terms = pod["affinity"]["nodeAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"]
+    assert terms["nodeSelectorTerms"][0]["matchFields"][0]["values"] == ["node-a"]
+    assert pod["nodeSelector"] == {"kubernetes.io/arch": "amd64"}
+
+
+def test_the_job_has_resource_bounds_and_its_scratch_fits_them():
+    rendered = job(job={"memory_limit_mib": 4096, "scratch_mib": 1536, "ephemeral_limit_mib": 3072})
+    pod = rendered["spec"]["template"]["spec"]
+    resources = pod["containers"][0]["resources"]
+    assert resources["limits"] == {
+        "cpu": "2000m",
+        "memory": "4096Mi",
+        "ephemeral-storage": "3072Mi",
+    }
+    assert resources["requests"]["memory"] == "256Mi"
+    scratch = next(volume for volume in pod["volumes"] if volume["name"] == "scratch")
+    assert scratch["emptyDir"] == {"sizeLimit": "1536Mi"}
+    with pytest.raises(ValidationError):
+        configured(job={"scratch_mib": 4096})  # larger than its ephemeral limit
+
+
+def test_a_finished_job_goes_after_a_short_configurable_time():
+    """Its Pod names the claim, which a finished Job would keep Terminating for a week."""
+    assert job()["spec"]["ttlSecondsAfterFinished"] == 600
+    assert job(job_ttl_seconds=60)["spec"]["ttlSecondsAfterFinished"] == 60
+    with pytest.raises(ValidationError):
+        configured(job_ttl_seconds=-1)
+
+
+def test_the_job_carries_its_plan_and_only_the_upload_destination():
+    env = {
+        item["name"]: item["value"]
+        for item in job()["spec"]["template"]["spec"]["containers"][0]["env"]
+    }
+    assert CheckpointPlan.model_validate_json(env[PLAN_VARIABLE]) == a_plan()
+    destination = parse(env[STORAGE_VARIABLE])
+    assert destination == Storage(
+        bucket="research-checkpoint-upload",
+        prefix="sandbox-science",
+        region="garage",
+        endpoint="http://garage.garage.svc.cluster.local:3900",
+        addressing_style="path",
+    )
+    assert env["AWS_PROFILE"] == "checkpoint-upload"
+    assert env["AWS_EC2_METADATA_DISABLED"] == "true"
+    assert "research-checkpoints" not in json.dumps(env)  # never the kept bucket
+    # The worker's command reads exactly these variables.
+    assert (PLAN_VARIABLE, STORAGE_VARIABLE) == (
+        checkpoint_jobs_cli.PLAN_VARIABLE,
+        checkpoint_jobs_cli.STORAGE_VARIABLE,
+    )
+
+
+@pytest.mark.parametrize(
+    ("claim", "node", "plan"),
+    [
+        ("Bad_Claim", None, a_plan()),
+        ("workspace-a", "node a", a_plan()),
+        ("workspace-a", None, a_plan().model_copy(update={"capture": "clone_pvc"})),
+    ],
+)
+def test_the_job_refuses_unsafe_inputs(claim, node, plan):
+    with pytest.raises(ValueError):  # noqa: PT011 - each case has its own message
+        checkpoint_job(configured(), plan, claim, node)
+
+
+def test_checkpoint_job_command_writes_one_private_job(tmp_path, capsys):
+    config = tmp_path / "bundle.toml"
+    from sandbox_science.launcher import toml
+
+    config.write_text(toml.dumps(with_checkpoint()))
+    (tmp_path / "plan.json").write_text(a_plan().model_dump_json())
+    output = tmp_path / "job.json"
+    arguments = ["checkpoint-job", "--config", str(config), "--plan", str(tmp_path / "plan.json")]
+    assert kubernetes_cli.main([*arguments, "--claim", "workspace-a", "--output", str(output)]) == 0
+    assert json.loads(output.read_text())["kind"] == "Job"
+    assert output.stat().st_mode & 0o077 == 0
+    assert kubernetes_cli.main([*arguments, "--claim", "workspace-a", "--output", str(output)]) == 1
+
+
+# The bundle
+
+
+def test_the_bundle_renders_the_jobs_network_rule_and_the_pools_egress():
+    items = json.loads(json.dumps(render(configured())))["items"]
+    policy = next(
+        item
+        for item in items
+        if item["kind"] == "NetworkPolicy" and item["metadata"]["name"] == "research-checkpoint"
+    )
+    assert policy["metadata"]["namespace"] == SANDBOXES
+    assert policy["spec"]["ingress"] == []
+    assert policy["spec"]["podSelector"]["matchLabels"] == {
+        "app.kubernetes.io/part-of": "research",
+        "app.kubernetes.io/component": "checkpoint",
+    }
+    egress = policy["spec"]["egress"]
+    assert len(egress) == 2
+    assert egress[1]["to"] == [
+        {
+            "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "garage"}},
+            "podSelector": {"matchLabels": {"app.kubernetes.io/name": "garage"}},
+        }
+    ]
+    assert egress[1]["ports"] == [{"protocol": "TCP", "port": 3900}]
+    pool = next(
+        item
+        for item in items
+        if item["metadata"]["name"] == "research-pool" and item["kind"] == "NetworkPolicy"
+    )
+    assert egress[1] in pool["spec"]["egress"]
+    # No Job is part of the bundle: the operator creates each.
+    assert not any(item["kind"] == "Job" for item in items)
+
+
+def test_without_the_section_nothing_reaches_the_store():
+    plain = values()
+    plain["sandboxes"] = {"namespace": SANDBOXES}
+    items = json.loads(json.dumps(render(BundleConfig.model_validate_json(json.dumps(plain)))))
+    assert "garage" not in json.dumps(items)
+    assert "checkpoint" not in json.dumps(items)
+
+
+def test_the_worker_projects_its_read_only_key_and_the_buckets():
+    config = configured()
+    assert {
+        "checkpoint-upload.toml",
+        "checkpoint-kept.toml",
+        "checkpoint-s3-credentials",
+        "checkpoint-s3-config",
+    } <= set(projected_files(config, "worker"))
+    assert "checkpoint-s3-credentials" not in projected_files(config, "control")
+
+
+@pytest.mark.parametrize(
+    ("change", "match"),
+    [
+        ({"kept_bucket": CHECKPOINT["upload_bucket"]}, "separate"),
+        ({"hold_seconds": 3600, "deadline_seconds": 7200}, "outlast"),
+        ({"endpoint": "http://user:pass@garage:3900"}, "endpoint"),
+    ],
+)
+def test_unsafe_checkpoint_sections_are_refused(change, match):
+    with pytest.raises(ValidationError, match=match):
+        configured(**change)
+
+
+def test_the_section_needs_the_sandbox_namespace():
+    data = values()
+    data["checkpoint"] = CHECKPOINT
+    with pytest.raises(ValidationError, match="sandboxes"):
+        BundleConfig.model_validate_json(json.dumps(data))
+
+
+# The site's keys
+
+
+def checkpoint_site(tmp_path: Path) -> dict[str, Any]:
+    site = site_values(tmp_path)
+    bundle = Path(tmp_path / "inputs/bundle.toml")
+    from sandbox_science.launcher import toml
+
+    data = tomllib.loads(bundle.read_text())
+    bundle.write_text(toml.dumps(with_checkpoint(data)))
+    keys = {}
+    for name in ("upload", "verify"):
+        for part in ("credentials", "config"):
+            path = tmp_path / "inputs" / f"{name}-{part}"
+            path.write_text(f"[checkpoint-{name}]\n# test-secret-{name}-{part}\n")
+            path.chmod(0o600)
+            keys[f"{name}_{part}"] = str(path)
+    site["checkpoint"] = keys
+    return site
+
+
+def test_the_site_puts_each_key_where_it_belongs(tmp_path):
+    files = site_plan(*load_site(site_file(tmp_path, checkpoint_site(tmp_path))))
+    worker = "secrets/worker/"
+    assert files[f"{worker}checkpoint-s3-credentials"].endswith(b"test-secret-verify-credentials\n")
+    assert files["secrets/checkpoint-upload/credentials"].endswith(
+        b"test-secret-upload-credentials\n"
+    )
+    # The upload key is never the worker's, and the worker's never the Job's.
+    assert not any(
+        b"test-secret-upload" in value for key, value in files.items() if key.startswith(worker)
+    )
+    for name, bucket in (
+        ("upload", "research-checkpoint-upload"),
+        ("kept", "research-checkpoints"),
+    ):
+        storage = Storage.model_validate(
+            tomllib.loads(files[f"{worker}checkpoint-{name}.toml"].decode())
+        )
+        assert storage.bucket == bucket
+        assert storage.endpoint == "http://garage.garage.svc.cluster.local:3900"
+        keeper = Storage.model_validate(
+            tomllib.loads(files[f"operator/checkpoint-{name}.toml"].decode())
+        )
+        assert keeper.bucket == bucket
+        assert keeper.endpoint == "http://127.0.0.1:3900"
+    script = files["secrets.sh"].decode()
+    assert (
+        f"kubectl -n {SANDBOXES} create secret generic research-checkpoint-upload \\\n"
+        "  --from-file=credentials=secrets/checkpoint-upload/credentials \\\n"
+        "  --from-file=config=secrets/checkpoint-upload/config"
+    ) in script
+    assert "test-secret" not in script
+
+
+def test_the_site_and_the_bundle_agree_on_checkpoints(tmp_path):
+    from sandbox_science.launcher.kubernetes_config import BundleError
+
+    site = checkpoint_site(tmp_path)
+    del site["checkpoint"]
+    with pytest.raises(BundleError, match="checkpoint"):
+        site_plan(*load_site(site_file(tmp_path, site)))
+
+
+# The operator's commands
+
+
+class Kubectl:
+    """A scripted cluster: answers by the command's words, records every command."""
+
+    def __init__(self, answers: dict[str, bytes | Exception]) -> None:
+        self.answers = answers
+        self.commands: list[tuple[list[str], bytes | None]] = []
+
+    def __call__(self, arguments: Sequence[str], stdin: bytes | None) -> bytes:
+        self.commands.append((list(arguments), stdin))
+        line = " ".join(arguments)
+        for key, answer in self.answers.items():
+            if key in line:
+                if isinstance(answer, Exception):
+                    raise answer
+                return answer
+        return b""
+
+    def ran(self, words: str) -> list[list[str]]:
+        return [command for command, _ in self.commands if words in " ".join(command)]
+
+
+def listing(*items: dict[str, Any]) -> bytes:
+    return json.dumps({"items": list(items)}).encode()
+
+
+def pvc(name: str, sandbox: str | None, volume: str, **annotations: str) -> dict[str, Any]:
+    metadata: dict[str, Any] = {"name": name, "annotations": annotations, "uid": f"uid-{name}"}
+    if sandbox is not None:
+        metadata["ownerReferences"] = [{"kind": "Sandbox", "name": sandbox}]
+    return {"metadata": metadata, "spec": {"volumeName": volume}}
+
+
+def pv(name: str, claim: str, phase: str, **annotations: str) -> dict[str, Any]:
+    return {
+        "metadata": {
+            "name": name,
+            "annotations": annotations,
+            "creationTimestamp": "2026-10-01T00:00:00Z",
+        },
+        "spec": {
+            "claimRef": {"namespace": SANDBOXES, "name": claim, "uid": f"uid-{claim}"},
+            "capacity": {"storage": "20Gi"},
+            "persistentVolumeReclaimPolicy": "Retain",
+        },
+        "status": {"phase": phase},
+    }
+
+
+def pod(claim: str) -> dict[str, Any]:
+    return {
+        "spec": {"volumes": [{"name": "w", "persistentVolumeClaim": {"claimName": claim}}]},
+        "status": {"phase": "Running"},
+    }
+
+
+def operator(kubectl: Kubectl) -> Operator:
+    return Operator(
+        configured(), "test-operator", run=kubectl, sleep=lambda _s: None, out=lambda _l: None
+    )
+
+
+MANIFEST = "e" * 64
+
+
+def test_one_checkpoint_command_plans_creates_waits_and_has_the_worker_verify():
+    plan = a_plan()
+    kubectl = Kubectl(
+        {
+            "checkpoint plan": plan.model_dump_json().encode(),
+            "get pvc": listing(
+                {
+                    **pvc("workspace-default--ss-0123456789abcdef", "ss-0123456789abcdef", "pv-1"),
+                    "metadata": {
+                        "name": "workspace-default--ss-0123456789abcdef",
+                        "ownerReferences": [{"kind": "Sandbox", "name": "ss-0123456789abcdef"}],
+                        "annotations": {"volume.kubernetes.io/selected-node": "node-a"},
+                    },
+                }
+            ),
+            "get pods": listing(pod("someone-else")),
+            "create -f -": b"job.batch/research-checkpoint-x1\n",
+            "get job research-checkpoint-x1": json.dumps({"status": {"succeeded": 1}}).encode(),
+            "logs job/research-checkpoint-x1": f"checkpoint_manifest={MANIFEST} id=x\n".encode(),
+            "--stage upload": b"verified=...\n",
+            "checkpoint promote": b"promoted=...\n",
+            "--stage kept": b"kept=...\n",
+        }
+    )
+    keeper = (Path("operator/checkpoint-upload.toml"), Path("operator/checkpoint-kept.toml"))
+    assert operator(kubectl).run_checkpoint("crypto-main", "amd64", keeper) == MANIFEST
+    order = [
+        "checkpoint plan",
+        "create -f -",
+        "logs job/",
+        "--stage upload",
+        "checkpoint promote",
+        "--stage kept",
+    ]
+    positions = [
+        next(i for i, (c, _) in enumerate(kubectl.commands) if w in " ".join(c)) for w in order
+    ]
+    assert positions == sorted(positions)
+    created = json.loads(next(stdin for c, stdin in kubectl.commands if "create" in c and stdin))
+    assert (
+        created["spec"]["template"]["spec"]["volumes"][0]["persistentVolumeClaim"]["readOnly"]
+        is True
+    )
+    plan_command = kubectl.ran("checkpoint plan")[0]
+    assert plan_command[:8] == [
+        "kubectl",
+        "-n",
+        "research-test",
+        "exec",
+        "deploy/research-pool",
+        "-c",
+        "worker",
+        "--",
+    ]
+    assert "--by" in plan_command
+    assert plan_command[plan_command.index("--by") + 1] == "test-operator"
+    verify = kubectl.ran("--stage upload")[0]
+    assert "AWS_PROFILE=checkpoint-verify" in verify  # the worker's read-only key
+    promote = kubectl.ran("checkpoint promote")[0]
+    assert promote[0] == "sandbox-science-worker"  # locally, never in the cluster
+    assert not kubectl.ran("release-hold")
+
+
+@pytest.mark.parametrize("failure", ["mounted", "job-failed", "verify-refused"])
+def test_a_failed_checkpoint_lifts_its_hold(failure):
+    claim = "workspace-default--ss-0123456789abcdef"
+    kubectl = Kubectl(
+        {
+            "checkpoint plan": a_plan().model_dump_json().encode(),
+            "get pvc": listing(pvc(claim, "ss-0123456789abcdef", "pv-1")),
+            "get pods": listing(pod(claim if failure == "mounted" else "other")),
+            "create -f -": b"job.batch/research-checkpoint-x1\n",
+            "get job": json.dumps(
+                {"status": {"failed": 1} if failure == "job-failed" else {"succeeded": 1}}
+            ).encode(),
+            "logs job/": f"checkpoint_manifest={MANIFEST}\n".encode(),
+            "--stage upload": OperationError("the checkpoint archive differs"),
+        }
+    )
+    expected = {"mounted": "mounts", "job-failed": "failed", "verify-refused": "differs"}
+    with pytest.raises(OperationError, match=expected[failure]):
+        operator(kubectl).run_checkpoint("crypto-main", "amd64", None)
+    assert len(kubectl.ran("release-hold")) == 1
+    assert not kubectl.ran("--stage kept")
+    assert not kubectl.ran("checkpoint promote")
+    if failure == "mounted":
+        assert not kubectl.ran("create")
+        assert not kubectl.ran("delete job")
+    else:  # finding 4: the Job goes too
+        assert kubectl.ran(f"-n {SANDBOXES} delete job research-checkpoint-x1")
+
+
+def test_a_failed_cleanup_after_a_failed_checkpoint_reports_both_errors():
+    """Finding 5: the run's own error first, then what could not be cleaned up."""
+    claim = "workspace-default--ss-0123456789abcdef"
+    kubectl = Kubectl(
+        {
+            "checkpoint plan": a_plan().model_dump_json().encode(),
+            "get pvc": listing(pvc(claim, "ss-0123456789abcdef", "pv-1")),
+            "get pods": listing(),
+            "create -f -": b"job.batch/research-checkpoint-x1\n",
+            "get job": json.dumps({"status": {"failed": 1}}).encode(),
+            "logs job/": b"error: unreadable file 'research/secret'\n",
+            "release-hold": OperationError("exec refused"),
+        }
+    )
+    with pytest.raises(OperationError) as raised:
+        operator(kubectl).run_checkpoint("crypto-main", "amd64", None)
+    message = str(raised.value)
+    assert message.index("unreadable file") < message.index("the hold was not lifted")
+    assert "exec refused" in message
+
+
+def test_an_orphaned_claim_is_released_to_its_provisioner_then_deleted():
+    """Finding 3: both effects act only on the objects surveyed, by UID and phase."""
+    pvs = [pv("pv-orphan", "workspace-default--ss-gone", "Bound")]
+    pvcs = [pvc("workspace-default--ss-gone", "ss-gone", "pv-orphan")]
+    found = survey(pvs, pvcs, [], [], inventory(), SANDBOXES, NOW)
+    steps = operator(Kubectl({})).delete(
+        found, ["pv-orphan"], [], without_checkpoint=[], keeper_kept=None
+    )
+    words = [" ".join(step.command) for step in steps]
+    assert "record-volume --phase intent" in words[0]
+    patch = steps[1].command
+    assert patch[:5] == ["kubectl", "patch", "pv", "pv-orphan", "--type=json"]
+    assert json.loads(patch[-1]) == [
+        {"op": "test", "path": "/spec/claimRef/uid", "value": "uid-workspace-default--ss-gone"},
+        {"op": "test", "path": "/status/phase", "value": "Bound"},
+        {"op": "replace", "path": "/spec/persistentVolumeReclaimPolicy", "value": "Delete"},
+    ]
+    assert steps[2].command == [
+        "kubectl",
+        "delete",
+        "--raw",
+        f"/api/v1/namespaces/{SANDBOXES}/persistentvolumeclaims/workspace-default--ss-gone",
+        "-f",
+        "-",
+    ]
+    assert json.loads(steps[2].stdin or b"")["preconditions"] == {
+        "uid": "uid-workspace-default--ss-gone"
+    }
+    assert "record-volume --phase done" in words[3]
+
+
+def test_a_volume_whose_claim_uid_is_unknown_is_refused():
+    released = pv("pv-x", "workspace-default--ss-gone", "Released")
+    del released["spec"]["claimRef"]["uid"]
+    found = survey([released], [], [], [], inventory(), SANDBOXES, NOW)
+    with pytest.raises(OperationError, match="no UID"):
+        operator(Kubectl({})).delete(found, ["pv-x"], [], without_checkpoint=[], keeper_kept=None)
+
+
+def test_without_apply_the_checkpoint_steps_are_printed(tmp_path, capsys, monkeypatch):
+    from sandbox_science.launcher import toml
+
+    config = tmp_path / "bundle.toml"
+    config.write_text(toml.dumps(with_checkpoint()))
+
+    def never(_arguments: Sequence[str], _stdin: bytes | None) -> bytes:
+        raise AssertionError("nothing runs without --apply")
+
+    monkeypatch.setattr(kubernetes_cli, "run_command", never)
+    assert (
+        kubernetes_cli.main(["checkpoint", "--config", str(config), "--environment", "crypto-main"])
+        == 0
+    )
+    printed = capsys.readouterr().out
+    assert "checkpoint plan --environment crypto-main" in printed
+    assert "research-checkpoint-upload" in printed  # the Secret it references
+    assert "--stage kept" in printed
+
+
+def environment(
+    environment_id: str,
+    sandbox: str,
+    state: Literal["creating", "ready", "stopped", "deleted"],
+    kind: Literal["session", "job", "child"] = "session",
+    **fields: Any,
+) -> InventoryEnvironment:
+    return InventoryEnvironment(
+        environment_id=environment_id,
+        project_id="crypto",
+        kind=kind,
+        state=state,
+        sandbox=sandbox,
+        **fields,
+    )
+
+
+def kept(sandbox: str, n: int, state: CheckpointState = "kept") -> InventoryCheckpoint:
+    return InventoryCheckpoint(
+        checkpoint_id="ckpt-" + f"{n:024x}",
+        environment_id=f"env-{sandbox}",
+        project_id="crypto",
+        sandbox=sandbox,
+        sandbox_id=f"{sandbox}-id",
+        manifest_sha256=f"{n:064x}",
+        archive_size=1000,
+        content_bytes=900,
+        capture="suspended_pvc",
+        skipped=0,
+        state=state,
+        created_at=NOW - timedelta(days=10 - n),
+        verified_at=NOW,
+        kept_at=NOW,
+    )
+
+
+def cluster() -> tuple[list[dict[str, Any]], ...]:
+    pvs = [
+        pv("pv-gone", "workspace-default--ss-gone", "Released"),
+        pv("pv-nockpt", "workspace-default--ss-nockpt", "Released"),
+        pv("pv-live", "workspace-default--ss-live", "Bound"),
+        pv("pv-paused", "workspace-default--ss-paused", "Released"),
+        pv("pv-child", "workspace-default--ss-child", "Released"),
+        pv(
+            "pv-kept",
+            "workspace-default--ss-gone2",
+            "Released",
+            **{"sandbox-science.io/keep": "recovery set 7"},
+        ),
+        pv("pv-orphan", "workspace-default--ss-orphan", "Bound"),
+        pv("pv-held", "workspace-default--ss-held", "Released"),
+    ]
+    pvcs = [
+        pvc("workspace-default--ss-live", "ss-live", "pv-live"),
+        pvc("workspace-default--ss-orphan", "ss-orphan", "pv-orphan"),
+    ]
+    pods = [pod("workspace-default--ss-orphan")]
+    sandboxes = [{"metadata": {"name": "ss-live"}}]
+    return pvs, pvcs, pods, sandboxes
+
+
+def inventory() -> CheckpointInventory:
+    return CheckpointInventory(
+        generated_at=NOW,
+        keep=2,
+        environments=(
+            environment(
+                "e-gone",
+                "ss-gone",
+                "deleted",
+                session_id="main",
+                last_started_at=NOW - timedelta(days=9),
+            ),
+            environment("e-nockpt", "ss-nockpt", "deleted"),
+            environment("e-live", "ss-live", "ready"),
+            environment("e-paused", "ss-paused", "stopped"),
+            environment("e-child", "ss-child", "deleted", hand_back="retained"),
+            environment("e-held", "ss-held", "deleted"),
+        ),
+        checkpoints=(
+            kept("ss-gone", 1),
+            kept("ss-gone", 2),
+            kept("ss-gone", 3),
+            kept("ss-paused", 4),
+            kept("ss-live", 5, "deleting"),
+        ),
+        holds=(
+            InventoryHold(
+                checkpoint_id="ckpt-" + "f" * 24,
+                environment_id="e-held",
+                sandbox="ss-held",
+                expires_at=NOW + timedelta(hours=1),
+            ),
+        ),
+    )
+
+
+def surveyed():
+    pvs, pvcs, pods, sandboxes = cluster()
+    return survey(pvs, pvcs, pods, sandboxes, inventory(), SANDBOXES, NOW)
+
+
+def test_cleanup_lists_candidates_with_owner_size_age_and_checkpoint():
+    found = surveyed()
+    rows = {row.volume: row for row in found.volumes}
+    assert set(rows) == {
+        "pv-gone",
+        "pv-nockpt",
+        "pv-paused",
+        "pv-child",
+        "pv-kept",
+        "pv-orphan",
+        "pv-held",
+    }
+    assert "pv-live" not in rows  # bound to a sandbox that exists: not left behind
+    assert rows["pv-gone"].refusals == ()
+    assert rows["pv-gone"].kept_checkpoints == 3
+    assert rows["pv-gone"].uncovered is None
+    assert rows["pv-nockpt"].kept_checkpoints == 0
+    text = "\n".join(report(found))
+    assert "volume pv-gone 20Gi age 28d Released" in text
+    assert "project crypto session main environment e-gone (deleted)" in text
+    assert "3 verified checkpoint(s), newest 7d old; last started 9d ago; candidate" in text
+    assert "no verified checkpoint" in text
+
+
+def test_job_and_child_volumes_are_named_and_need_no_checkpoint():
+    """The workspace volumes job sandboxes and child environments leave behind (their
+    storage class retains them) are named by their owner's kind. One needs no checkpoint
+    to go only when its environment is deleted and its end left nothing there alone (a
+    complete collection or hand-back, nothing run, a child's retention ended); any other
+    end, or one the worker no longer knows, may hold the only copy of work."""
+    pvs = [
+        pv("pv-job", "workspace-default--ss-job", "Released"),
+        pv("pv-kid", "workspace-default--ss-kid", "Released"),
+        pv("pv-keptkid", "workspace-default--ss-keptkid", "Released"),
+        pv("pv-lostkid", "workspace-default--ss-lostkid", "Released"),
+        pv("pv-oldjob", "workspace-default--ss-oldjob", "Released"),
+    ]
+    found = survey(
+        pvs,
+        [],
+        [],
+        [],
+        CheckpointInventory(
+            generated_at=NOW,
+            keep=2,
+            environments=(
+                environment(
+                    "crypto-job-0a",
+                    "ss-job",
+                    "deleted",
+                    "job",
+                    session_id="main",
+                    phase="released",
+                    ended="complete",
+                ),
+                environment(
+                    "crypto-child-0b",
+                    "ss-kid",
+                    "deleted",
+                    "child",
+                    session_id="main",
+                    phase="released",
+                    ended="retention_ended",
+                ),
+                environment(
+                    "crypto-child-0c",
+                    "ss-keptkid",
+                    "stopped",
+                    "child",
+                    hand_back="retained",
+                    phase="retained",
+                ),
+                environment(
+                    "crypto-child-0d",
+                    "ss-lostkid",
+                    "deleted",
+                    "child",
+                    phase="released",
+                    ended="incomplete",
+                ),
+                environment("crypto-job-0e", "ss-oldjob", "deleted", "job"),  # row pruned
+            ),
+            checkpoints=(),
+            holds=(),
+        ),
+        SANDBOXES,
+        NOW,
+    )
+    rows = {row.volume: row for row in found.volumes}
+    assert (rows["pv-job"].refusals, rows["pv-job"].uncovered) == ((), None)
+    assert (rows["pv-kid"].refusals, rows["pv-kid"].uncovered) == ((), None)
+    assert rows["pv-keptkid"].refusals
+    for kept_for_work in ("pv-keptkid", "pv-lostkid", "pv-oldjob"):
+        assert rows[kept_for_work].uncovered == "no verified checkpoint"
+    with pytest.raises(OperationError, match="--without-checkpoint pv-lostkid"):
+        operator(Kubectl({})).delete(
+            found, ["pv-lostkid"], [], without_checkpoint=[], keeper_kept=None
+        )
+    text = "\n".join(report(found))
+    assert "project crypto session main job sandbox environment crypto-job-0a (deleted)" in text
+    assert "child environment crypto-child-0b (deleted); no checkpoint needed (disposable)" in text
+    steps = operator(Kubectl({})).delete(
+        found, ["pv-job", "pv-kid"], [], without_checkpoint=[], keeper_kept=None
+    )
+    assert steps
+    assert not any("--without-checkpoint" in step.command for step in steps)
+
+
+@pytest.mark.parametrize(
+    ("volume", "reason"),
+    [
+        ("pv-paused", "environment e-paused is stopped"),
+        ("pv-child", "hand-back is retained"),
+        ("pv-kept", "marked to keep (recovery set 7)"),
+        ("pv-orphan", "a Pod mounts it"),
+        ("pv-held", "a checkpoint holds it"),
+    ],
+)
+def test_cleanup_refuses_protected_volumes(volume, reason):
+    found = surveyed()
+    row = next(row for row in found.volumes if row.volume == volume)
+    assert any(reason in refusal for refusal in row.refusals)
+    with pytest.raises(OperationError, match="refused"):
+        operator(Kubectl({})).delete(
+            found, [volume], [], without_checkpoint=[volume], keeper_kept=None
+        )
+
+
+def test_a_volume_without_a_verified_checkpoint_needs_the_flag():
+    found = surveyed()
+    run = operator(Kubectl({}))
+    with pytest.raises(OperationError, match="--without-checkpoint"):
+        run.delete(found, ["pv-nockpt"], [], without_checkpoint=[], keeper_kept=None)
+    steps = run.delete(found, ["pv-nockpt"], [], without_checkpoint=["pv-nockpt"], keeper_kept=None)
+    assert "--without-checkpoint" in steps[0].command
+    with pytest.raises(OperationError, match="not a cleanup candidate"):
+        run.delete(found, ["pv-live"], [], without_checkpoint=["pv-live"], keeper_kept=None)
+
+
+def test_only_checkpoints_beyond_the_kept_count_are_candidates():
+    found = surveyed()
+    marks = {mark.checkpoint.manifest_sha256: mark for mark in found.checkpoints}
+    # ss-gone has three kept: the oldest is a candidate; ss-paused's only one is not.
+    assert set(marks) == {f"{1:064x}", f"{5:064x}"}  # and a deletion to finish
+    assert marks[f"{1:064x}"].volume_exists  # its Released PV still exists
+    run = operator(Kubectl({}))
+    with pytest.raises(OperationError, match="not a cleanup candidate"):
+        run.delete(found, [], [f"{4:064x}"], without_checkpoint=[], keeper_kept=None)
+    with pytest.raises(OperationError, match="not a cleanup candidate"):
+        run.delete(found, [], [f"{3:064x}"], without_checkpoint=[], keeper_kept=None)
+
+
+def test_deletions_journal_intent_first_and_name_the_operator(tmp_path):
+    found = surveyed()
+    listing_path = tmp_path / f"chunks-{1:064x}.txt"
+    kubectl = Kubectl({"checkpoint chunks": b"a" * 64 + b"\n"})
+    run = operator(kubectl)
+    steps = run.delete(
+        found,
+        ["pv-gone"],
+        [f"{1:064x}"],
+        without_checkpoint=[],
+        keeper_kept=Path("kept.toml"),
+        workdir=tmp_path,
+    )
+    words = [" ".join(step.command) for step in steps]
+    assert "record-volume --phase intent --volume pv-gone --sandbox ss-gone" in words[0]
+    assert "--by test-operator" in words[0]
+    assert words[1].startswith("kubectl patch pv pv-gone --type=json")
+    assert "record-volume --phase done" in words[2]
+    assert "forget --manifest " + f"{1:064x}" + " --by test-operator" in words[3]
+    assert "--volume-gone" not in words[3]  # its volume exists
+    assert "checkpoint chunks --manifest " + f"{1:064x}" in words[4]
+    assert steps[4].output == listing_path
+    assert words[5] == (
+        "sandbox-science-worker checkpoint delete-objects --storage kept.toml"
+        f" --manifest {1:064x} --chunks-file {listing_path}"
+    )
+    assert "forget --manifest " + f"{1:064x}" + " --done" in words[6]
+    run.apply(steps)
+    assert [" ".join(c) for c, _ in kubectl.commands] == words
+    assert listing_path.read_bytes() == b"a" * 64 + b"\n"  # the list the worker recorded
+
+
+def test_a_failed_volume_deletion_is_journaled_and_stops():
+    found = surveyed()
+    kubectl = Kubectl(
+        {"delete pvc": OperationError("forbidden"), "patch pv": OperationError("forbidden")}
+    )
+    run = operator(kubectl)
+    steps = run.delete(found, ["pv-gone"], [], without_checkpoint=[], keeper_kept=None)
+    with pytest.raises(OperationError, match="forbidden"):
+        run.apply(steps)
+    assert kubectl.ran("--phase failed")
+    assert not kubectl.ran("--phase done")
+
+
+def test_the_cleanup_command_asks_before_deleting(tmp_path, monkeypatch, capsys):
+    from sandbox_science.launcher import toml
+
+    config = tmp_path / "bundle.toml"
+    config.write_text(toml.dumps(with_checkpoint()))
+    pvs, pvcs, pods, sandboxes = cluster()
+    kubectl = Kubectl(
+        {
+            "get pv ": listing(*pvs),
+            "get pvc": listing(*pvcs),
+            "get pods": listing(*pods),
+            "get sandboxes": listing(*sandboxes),
+            "get jobs": listing(),
+            "checkpoint inventory": inventory().model_dump_json().encode(),
+        }
+    )
+    monkeypatch.setattr(kubernetes_cli, "run_command", kubectl)
+    base = ["cleanup", "--config", str(config), "--operator", "test-operator"]
+    assert kubernetes_cli.main(base) == 0
+    assert "volume pv-gone" in capsys.readouterr().out
+    monkeypatch.setattr("builtins.input", lambda _prompt: "no")
+    assert kubernetes_cli.main([*base, "--volume", "pv-gone", "--apply"]) == 1
+    assert not kubectl.ran("record-volume")
+    monkeypatch.setattr("builtins.input", lambda _prompt: "delete")
+    assert kubernetes_cli.main([*base, "--volume", "pv-gone", "--apply"]) == 0
+    assert kubectl.ran("patch pv pv-gone")
+    assert kubernetes_cli.main([*base, "--volume", "pv-paused", "--apply", "--yes"]) == 1
+    assert "environment e-paused is stopped" in capsys.readouterr().err
+
+
+def test_without_checkpoint_covers_only_the_volumes_it_names():
+    """Finding 7."""
+    found = surveyed()
+    run = operator(Kubectl({}))
+    with pytest.raises(OperationError, match="pv-nockpt: no verified checkpoint"):
+        run.delete(
+            found, ["pv-gone", "pv-nockpt"], [], without_checkpoint=["pv-gone"], keeper_kept=None
+        )
+    steps = run.delete(
+        found, ["pv-gone", "pv-nockpt"], [], without_checkpoint=["pv-nockpt"], keeper_kept=None
+    )
+    intents = [step.command for step in steps if "intent" in step.command]
+    assert ["--without-checkpoint" in command for command in intents] == [False, True]
+    with pytest.raises(OperationError, match="names no --volume"):
+        run.delete(found, ["pv-gone"], [], without_checkpoint=["pv-other"], keeper_kept=None)
+
+
+def test_a_checkpoint_older_than_the_last_start_does_not_cover_a_volume():
+    """Finding 6: work after the newest checkpoint would be lost."""
+    pvs, pvcs, pods, sandboxes = cluster()
+    found_inventory = inventory()
+    environments = tuple(
+        e.model_copy(update={"last_started_at": NOW - timedelta(days=1)})
+        if e.environment_id == "e-gone"
+        else e
+        for e in found_inventory.environments
+    )
+    found = survey(
+        pvs,
+        pvcs,
+        pods,
+        sandboxes,
+        found_inventory.model_copy(update={"environments": environments}),
+        SANDBOXES,
+        NOW,
+    )
+    row = next(row for row in found.volumes if row.volume == "pv-gone")
+    assert row.uncovered is not None
+    assert "predates its last start" in row.uncovered
+    assert "(after the newest checkpoint: not covered)" in "\n".join(report(found))
+    run = operator(Kubectl({}))
+    with pytest.raises(OperationError, match="--without-checkpoint pv-gone"):
+        run.delete(found, ["pv-gone"], [], without_checkpoint=[], keeper_kept=None)
+    assert run.delete(found, ["pv-gone"], [], without_checkpoint=["pv-gone"], keeper_kept=None)
+
+
+# OpenShell's names (qualification 2026-10-28, finding 1)
+
+SANDBOX = "ss-0123456789abcdef"
+
+
+def test_openshell_names_carry_the_workers_sandbox_name_after_the_workspace():
+    """The same rule the worker names sandboxes by: no separator in a sandbox's name."""
+    assert OPENSHELL_SEPARATOR == environments.OPENSHELL_SEPARATOR
+    for _ in range(20):
+        name = environments.new_sandbox_name()
+        assert OPENSHELL_SEPARATOR not in name
+        assert worker_sandbox(f"default--{name}") == name
+    assert worker_sandbox(f"default--{SANDBOX}") == SANDBOX
+    assert worker_sandbox(f"team-a--{SANDBOX}") == SANDBOX
+    assert worker_sandbox(SANDBOX) == SANDBOX
+    assert claim_sandbox(f"workspace-team-a--{SANDBOX}") == SANDBOX
+    assert claim_sandbox(f"workspace-{SANDBOX}") is None  # not OpenShell's shape
+
+
+def live_shape(workspace: str, *, sandbox_exists: bool = False):
+    """As on the cluster: OpenShell's ``Sandbox`` and the claim's owner are
+    ``<workspace>--ss-…``, its claim ``workspace-<workspace>--ss-…``; the worker records
+    ``ss-…``. The environment was deleted while a finished checkpoint Job kept its claim."""
+    owner = f"{workspace}--{SANDBOX}"
+    claim = f"workspace-{owner}"
+    claimed = pvc(claim, owner, "pv-live-shape")
+    claimed["metadata"]["deletionTimestamp"] = "2026-10-28T10:00:00Z"  # Terminating
+    found = CheckpointInventory(
+        generated_at=NOW,
+        keep=2,
+        environments=(environment("e-shape", SANDBOX, "ready" if sandbox_exists else "deleted"),),
+        checkpoints=tuple(
+            kept(SANDBOX, n).model_copy(update={"environment_id": "e-shape"}) for n in (1, 2, 3)
+        ),
+        holds=(),
+    )
+    return survey(
+        [pv("pv-live-shape", claim, "Bound")],
+        [claimed],
+        [],
+        [{"metadata": {"name": owner}}] if sandbox_exists else [],
+        found,
+        SANDBOXES,
+        NOW,
+    )
+
+
+@pytest.mark.parametrize("workspace", ["default", "team-a"])
+def test_a_claims_openshell_owner_matches_the_workers_sandbox(workspace):
+    found = live_shape(workspace)
+    (row,) = found.volumes
+    assert row.sandbox == SANDBOX
+    assert [e.environment_id for e in row.environments] == ["e-shape"]
+    assert row.kept_checkpoints == 3
+    assert row.uncovered is None
+    text = "\n".join(report(found))
+    assert "owner unknown" not in text
+    assert "no verified checkpoint" not in text
+    (candidate,) = [mark for mark in found.checkpoints if not mark.retire]
+    assert candidate.checkpoint.manifest_sha256 == f"{1:064x}"
+    assert candidate.volume_exists  # never "volume gone" while its claim exists
+    assert "volume gone" not in text
+    steps = operator(Kubectl({})).delete(
+        found, [], [f"{1:064x}"], without_checkpoint=[], keeper_kept=None
+    )
+    assert "--volume-gone" not in steps[0].command
+
+
+@pytest.mark.parametrize("workspace", ["default", "team-a"])
+def test_a_live_openshell_sandbox_protects_its_volume(workspace):
+    found = live_shape(workspace, sandbox_exists=True)
+    assert found.volumes == []  # its owner lives: not left behind
+
+
+def test_owners_match_exactly_after_the_workspace_is_removed():
+    """``workspace-default--ss-1`` once matched a sandbox ``s-1`` by its suffix."""
+    claim = "workspace-default--ss-1"
+    found = CheckpointInventory(
+        generated_at=NOW,
+        keep=2,
+        environments=(environment("e-s1", "s-1", "deleted"),),
+        checkpoints=(),
+        holds=(),
+    )
+    (row,) = survey([pv("pv-x", claim, "Released")], [], [], [], found, SANDBOXES, NOW).volumes
+    assert row.sandbox is None
+    assert row.environments == ()
+
+
+def test_the_checkpoint_command_finds_the_claim_by_its_openshell_owner():
+    claim = f"workspace-team-a--{SANDBOX}"
+    claimed = pvc(claim, f"team-a--{SANDBOX}", "pv-1")
+    kubectl = Kubectl({"get pvc": listing(claimed), "get pods": listing()})
+    assert operator(kubectl).claim_of(SANDBOX) == (claim, None)
+    other = pvc(f"workspace-team-a--x{SANDBOX}", f"team-a--x{SANDBOX}", "pv-2")
+    kubectl = Kubectl({"get pvc": listing(other), "get pods": listing()})
+    with pytest.raises(OperationError, match="found 0"):
+        operator(kubectl).claim_of(SANDBOX)
+
+
+# Retiring a deleted environment's last checkpoints (finding 2)
+
+
+def retiring(
+    *,
+    state: Literal["creating", "ready", "stopped", "deleted"] = "deleted",
+    hand_back: Literal["pending", "retained"] | None = None,
+    held: bool = False,
+    volume: bool = False,
+):
+    environments_ = (
+        environment("e-old", "ss-old", state, hand_back=hand_back),
+        environment("e-paused", "ss-paused", "stopped"),
+    )
+    checkpoints = tuple(
+        kept(sandbox, n).model_copy(update={"environment_id": env})
+        for sandbox, env, n in (
+            ("ss-old", "e-old", 1),
+            ("ss-old", "e-old", 2),
+            ("ss-paused", "e-paused", 3),
+        )
+    )
+    holds = (
+        (
+            InventoryHold(
+                checkpoint_id="ckpt-" + "f" * 24,
+                environment_id="e-old",
+                sandbox="ss-old",
+                expires_at=NOW + timedelta(hours=1),
+            ),
+        )
+        if held
+        else ()
+    )
+    found = CheckpointInventory(
+        generated_at=NOW,
+        keep=2,
+        environments=environments_,
+        checkpoints=checkpoints,
+        holds=holds,
+    )
+    pvs = [pv("pv-old", "workspace-default--ss-old", "Released")] if volume else []
+    return survey(pvs, [], [], [], found, SANDBOXES, NOW)
+
+
+def test_a_deleted_environments_last_checkpoints_are_retirable_by_name():
+    found = retiring()
+    marks = {mark.checkpoint.manifest_sha256: mark for mark in found.checkpoints}
+    assert set(marks) == {f"{1:064x}", f"{2:064x}"}  # never the paused environment's
+    assert all(mark.retire and not mark.refusals for mark in marks.values())
+    assert "volume gone; retirable (--retire-checkpoints e-old)" in "\n".join(report(found))
+    run = operator(Kubectl({}))
+    with pytest.raises(OperationError, match="--retire-checkpoints e-old"):
+        run.delete(found, [], [f"{1:064x}"], without_checkpoint=[], keeper_kept=None)
+    steps = run.delete(
+        found, [], [], without_checkpoint=[], keeper_kept=Path("kept.toml"), retire=["e-old"]
+    )
+    forgets = [" ".join(s.command) for s in steps if "forget" in s.command]
+    assert len(forgets) == 4  # intent and done, for each
+    intents = [words for words in forgets if "--done" not in words]
+    assert all("--volume-gone --retire e-old --by test-operator" in words for words in intents)
+    assert sum("delete-objects" in s.command for s in steps) == 2
+
+
+@pytest.mark.parametrize(
+    ("retire", "options", "reason"),
+    [
+        ("e-old", {"state": "stopped"}, "environment e-old is stopped"),
+        ("e-paused", {}, "environment e-paused is stopped"),
+        ("e-unknown", {}, "no record of this environment"),
+        ("e-old", {"volume": True}, "its volume still exists"),
+        ("e-old", {"hand_back": "retained"}, "hand-back is retained"),
+        ("e-old", {"held": True}, "a checkpoint holds it"),
+    ],
+)
+def test_retiring_checkpoints_is_refused_while_anything_needs_them(retire, options, reason):
+    found = retiring(**options)
+    with pytest.raises(OperationError, match=reason):
+        operator(Kubectl({})).delete(
+            found, [], [], without_checkpoint=[], keeper_kept=None, retire=[retire]
+        )
+
+
+def test_the_cleanup_command_retires_by_environment(tmp_path, monkeypatch, capsys):
+    from sandbox_science.launcher import toml
+
+    config = tmp_path / "bundle.toml"
+    config.write_text(toml.dumps(with_checkpoint()))
+    found = retiring()
+    inventory_ = CheckpointInventory(
+        generated_at=NOW,
+        keep=2,
+        environments=found.environments,
+        checkpoints=tuple(mark.checkpoint for mark in found.checkpoints),
+        holds=(),
+    )
+    kubectl = Kubectl(
+        {
+            "get pv ": listing(),
+            "get pvc": listing(),
+            "get pods": listing(),
+            "get sandboxes": listing(),
+            "get jobs": listing(),
+            "checkpoint inventory": inventory_.model_dump_json().encode(),
+        }
+    )
+    monkeypatch.setattr(kubernetes_cli, "run_command", kubectl)
+    base = ["cleanup", "--config", str(config), "--operator", "test-operator"]
+    assert kubernetes_cli.main(base) == 0
+    assert "retirable (--retire-checkpoints e-old)" in capsys.readouterr().out
+    assert kubernetes_cli.main([*base, "--retire-checkpoints", "e-old"]) == 0
+    assert "--retire e-old" in capsys.readouterr().out
+    assert kubernetes_cli.main([*base, "--retire-checkpoints", "e-old", "--apply", "--yes"]) == 1
+    assert "--keeper-kept" in capsys.readouterr().err
+
+
+# Finished checkpoint Jobs keep a claim Terminating (finding 3)
+
+
+def a_job(claim: str, *, finished: bool = True, checkpoint: bool = True) -> dict[str, Any]:
+    labels = (
+        {"app.kubernetes.io/component": "checkpoint", "sandbox-science.io/checkpoint-id": "x"}
+        if checkpoint
+        else {}
+    )
+    return {
+        "metadata": {"name": f"job-{claim}", "uid": f"uid-job-{claim}", "labels": labels},
+        "spec": {
+            "template": {
+                "spec": {"volumes": [{"name": "w", "persistentVolumeClaim": {"claimName": claim}}]}
+            }
+        },
+        "status": {"conditions": [{"type": "Complete", "status": "True"}] if finished else []},
+    }
+
+
+def orphan_with(*jobs: dict[str, Any]):
+    claim = "workspace-default--ss-gone"
+    return survey(
+        [pv("pv-orphan", claim, "Bound")],
+        [pvc(claim, "default--ss-gone", "pv-orphan")],
+        [],
+        [],
+        inventory(),
+        SANDBOXES,
+        NOW,
+        jobs=list(jobs),
+    )
+
+
+def test_a_finished_checkpoint_job_is_deleted_before_the_claim_it_names():
+    claim = "workspace-default--ss-gone"
+    found = orphan_with(a_job(claim), a_job("someone-else"))
+    (row,) = found.volumes
+    assert row.refusals == ()
+    assert "finished checkpoint Job(s) job-" + claim in "\n".join(report(found))
+    steps = operator(Kubectl({})).delete(
+        found, ["pv-orphan"], [], without_checkpoint=[], keeper_kept=None
+    )
+    words = [" ".join(step.command) for step in steps]
+    assert words[1] == (
+        f"kubectl delete --raw /apis/batch/v1/namespaces/{SANDBOXES}/jobs/job-{claim} -f -"
+    )
+    assert json.loads(steps[1].stdin or b"") == {
+        "kind": "DeleteOptions",
+        "apiVersion": "v1",
+        "preconditions": {"uid": f"uid-job-{claim}"},
+        "propagationPolicy": "Background",
+    }
+    assert "--phase failed" in " ".join(steps[1].on_failure or [])
+    claim_step = next(i for i, w in enumerate(words) if "persistentvolumeclaims" in w)
+    assert claim_step > 1
+
+
+@pytest.mark.parametrize(
+    ("options", "reason"),
+    [
+        ({"finished": False}, "checkpoint Job job-workspace-default--ss-gone still runs"),
+        ({"checkpoint": False}, "Job job-workspace-default--ss-gone mounts it"),
+    ],
+)
+def test_a_claim_a_running_or_foreign_job_mounts_is_refused(options, reason):
+    found = orphan_with(a_job("workspace-default--ss-gone", **options))
+    (row,) = found.volumes
+    assert any(reason in refusal for refusal in row.refusals)
+    with pytest.raises(OperationError, match=reason):
+        operator(Kubectl({})).delete(
+            found, ["pv-orphan"], [], without_checkpoint=["pv-orphan"], keeper_kept=None
+        )
+
+
+def checkpoint_run(**answers: bytes | Exception) -> tuple[Kubectl, list[str], str]:
+    claim = f"workspace-default--{SANDBOX}"
+    kubectl = Kubectl(
+        {
+            "checkpoint plan": a_plan().model_dump_json().encode(),
+            "get pvc": listing(pvc(claim, f"default--{SANDBOX}", "pv-1")),
+            "get pods": listing(),
+            "create -f -": b"job.batch/research-checkpoint-x1\n",
+            "get job": json.dumps({"status": {"succeeded": 1}}).encode(),
+            "logs job/": f'checkpoint_manifest={MANIFEST} skipped=1\nskipped fifo "p"\n'.encode(),
+            **answers,
+        }
+    )
+    printed: list[str] = []
+    run = Operator(
+        configured(), "test-operator", run=kubectl, sleep=lambda _s: None, out=printed.append
+    )
+    return kubectl, printed, run.run_checkpoint("crypto-main", "amd64", None)
+
+
+def test_the_checkpoint_command_deletes_its_job_once_verified_and_keeps_its_log():
+    kubectl, printed, manifest = checkpoint_run()
+    assert manifest == MANIFEST
+    words = [" ".join(command) for command, _ in kubectl.commands]
+    verified = next(i for i, w in enumerate(words) if "--stage upload" in w)
+    deleted = next(i for i, w in enumerate(words) if "delete job research-checkpoint-x1" in w)
+    assert verified < deleted
+    assert f"job research-checkpoint-x1: checkpoint_manifest={MANIFEST} skipped=1" in printed
+    assert 'job research-checkpoint-x1: skipped fifo "p"' in printed
+    assert "deleted job research-checkpoint-x1" in printed
+
+
+def test_a_job_that_cannot_be_deleted_is_reported_and_the_checkpoint_stands():
+    kubectl, printed, manifest = checkpoint_run(**{"delete job": OperationError("forbidden")})
+    assert manifest == MANIFEST
+    assert any("was not deleted (forbidden)" in line and "600s" in line for line in printed)
+    assert not kubectl.ran("release-hold")

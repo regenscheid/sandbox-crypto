@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 /*
  * pthread_setschedparam for sandboxes whose seccomp filter refuses scheduler
- * calls that name a thread, as OpenShell v0.1.3's does.
+ * calls that name a thread, as OpenShell v0.1.5's does.
  *
  * libzmq sets every thread it starts to its current scheduling parameters with
  * pthread_setschedparam(pthread_self(), ...). glibc turns that into
@@ -20,6 +20,15 @@
 #include <sched.h>
 #include <sys/syscall.h>
 #include <unistd.h>
+
+#ifndef SANDBOX_SCIENCE_SCHED_SOURCE_SHA256
+#error "build the scheduler shim with its source SHA-256"
+#endif
+
+const char *sandbox_science_sched_source_sha256(void)
+{
+    return SANDBOX_SCIENCE_SCHED_SOURCE_SHA256;
+}
 
 int pthread_setschedparam(pthread_t thread, int policy, const struct sched_param *param)
 {

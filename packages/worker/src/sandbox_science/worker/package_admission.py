@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import re
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, cast
 
 from sandbox_science.contracts import (
     ErrorKind,
@@ -72,6 +72,10 @@ class PackageAdmission:
         gate = self.store.package_gate(environment_id)
         if gate.mode == "needs_recovery":
             raise recovery_refusal(gate)
+        if self.store.workspace_prefix_restore_pending(environment_id) is not None:
+            raise WorkerError(
+                ErrorKind.UNAVAILABLE, "workspace prefix restoration awaits gate acknowledgement"
+            )
         return gate
 
     def check_origin(self, request: ExecutionRequest, origin: str | None) -> None:
@@ -115,6 +119,17 @@ class PackageAdmission:
                 gate = self.store.package_gate(environment_id)
                 if self._acked.get(channel) == gate:
                     return True
+                restore = (
+                    channel.hello.get("workspace_prefix_restore") if gate.mode == "ready" else None
+                )
+                if (
+                    gate.mode == "ready"
+                    and self.store.workspace_prefix_restore_pending(environment_id) is not None
+                    and restore is None
+                ):
+                    raise WorkerError(
+                        ErrorKind.UNAVAILABLE, "pending prefix restoration lacks evidence"
+                    )
                 reply = await channel.request(
                     "package_gate",
                     incarnation=identity,
@@ -122,6 +137,11 @@ class PackageAdmission:
                     mode=gate.mode,
                     operation=gate.operation,
                     revision=gate.revision,
+                    **(
+                        {"workspace_prefix_restore": channel.hello["workspace_prefix_restore"]}
+                        if gate.mode == "ready" and "workspace_prefix_restore" in channel.hello
+                        else {}
+                    ),
                 )
                 daemon_identity = self.lifecycle.daemon_identity
                 if channel.closed or (
@@ -137,7 +157,34 @@ class PackageAdmission:
                     raise WorkerError(
                         ErrorKind.UNAVAILABLE, "invalid package admission acknowledgement"
                     )
+                if restore is not None:
+                    epoch = reply.get("package_epoch")
+                    if (
+                        not isinstance(restore, dict)
+                        or type(epoch) is not int
+                        or not 0 <= epoch < 2**62
+                        or reply.get("environment")
+                        != cast(dict[str, object], restore).get("fingerprint")
+                    ):
+                        raise WorkerError(
+                            ErrorKind.UNAVAILABLE, "invalid restored prefix acknowledgement"
+                        )
+                    self.store.kernel_starts.epoch(
+                        environment_id,
+                        channel.incarnation,
+                        epoch,
+                        reply.get("environment"),
+                        remember=True,
+                    )
+                    self.store.acknowledge_workspace_prefix(
+                        environment_id,
+                        cast(dict[str, str], restore)["identity"],
+                        cast(dict[str, str], restore)["fingerprint"],
+                        channel.incarnation,
+                    )
                 self._acked[channel] = gate
+                if restore is not None and channel.hello.get("workspace_prefix_restore") is restore:
+                    channel.hello.pop("workspace_prefix_restore")
                 if gate == self.store.package_gate(environment_id):
                     return True
 
@@ -177,10 +224,11 @@ class PackageAdmission:
             return repr(identity) if identity is not None else None
         return self.backend.binding_key(environment_id)
 
-    def forget(self, environment_id: str) -> None:
-        """Only confirmed deletion, after provisioning drain, may remove this fence."""
+    def forget(self, environment_id: str, *, disposable: bool = False) -> None:
+        """Only confirmed deletion, after provisioning drain, may remove this fence; a
+        disposable environment's needs no binding proof."""
         self.store.forget_package_gate(
-            environment_id, binding=self._deletion_binding(environment_id)
+            environment_id, binding=self._deletion_binding(environment_id), disposable=disposable
         )
 
     def guard_deletion(self, environment_id: str) -> None:

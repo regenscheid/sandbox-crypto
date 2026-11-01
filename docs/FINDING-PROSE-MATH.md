@@ -1,7 +1,7 @@
 # MAIN explanation math
 
 D82 math checks (LD-53 to LD-55) cover the durable explanation field of session MAIN
-`fix` and `rebut` responses to review-origin findings. It extends
+`fix` and `dismiss` responses (and earlier `rebut` responses) to review-origin findings. It extends
 [document](MATH-CHECKS.md) and [comment](COMMENT-MATH.md) checks using the same
 isolated renderer, quotas, immutable attempts, closing rounds and saved-run ACK.
 Renderer configuration remains operator-owned and defaults to unavailable.
@@ -34,7 +34,7 @@ capability. An exact replay remains idempotent across a later MAIN run. Changed
 payload under the same operation ID conflicts. Body, queue target and receipt
 commit atomically; parsing stays outside the write lock.
 
-Correcting an explanation never creates a new fix/rebut, changes the scientific
+Correcting an explanation never creates a new fix or dismissal, changes the scientific
 finding revision/status, or confirms its claimed fix. Existing explicit USER
 finding decisions keep their own exact CAS. The workspace shows original versus
 current explanation, both actors, body revisions and historical bodies through

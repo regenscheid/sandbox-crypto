@@ -3,13 +3,11 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import secrets
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 from urllib.parse import urlsplit, urlunsplit
-from urllib.request import urlopen
 
 from sandbox_science.policy.openshell import (
     OrchestratorTarget,
@@ -17,13 +15,20 @@ from sandbox_science.policy.openshell import (
     ServiceEndpoint,
     compile_orchestrator,
 )
+from sandbox_science.policy.store import PolicyStore
 
-from . import mcp, parts
-from .config import LauncherConfig, LauncherError, OrchestratorConfig
-from .state import Layout, private_dir, write_private
+from . import direct_mcp, mcp, parts, runtime_owner, sandboxes
+from .config import (
+    LauncherConfig,
+    LauncherError,
+    ModelConfig,
+    OrchestratorConfig,
+    RunServiceConfig,
+    SkillsConfig,
+)
+from .runtime_binding import WorkerBinding
+from .state import Layout, ensure_token, private_dir, write_private
 from .supervise import Part, Supervisor, passed
-
-REMOTE = "/sandbox/runtime"
 
 
 def configured(config: LauncherConfig) -> OrchestratorConfig:
@@ -39,72 +44,29 @@ def _directory(layout: Layout) -> Path:
     return private_dir(layout.root / "orchestrator")
 
 
-def recorded(layout: Layout) -> tuple[str, str | None] | None:
-    path = layout.root / "orchestrator" / "sandbox.json"
-    try:
-        value = cast(dict[str, Any], json.loads(path.read_text(encoding="utf-8")))
-    except FileNotFoundError:
-        return None
-    return str(value["name"]), cast(str | None, value["id"])
+def _ownership(layout: Layout) -> runtime_owner.FileOwnership:
+    return runtime_owner.FileOwnership(layout.root / "orchestrator" / "sandbox.json")
 
 
-def _record(layout: Layout, name: str, identity: str | None) -> None:
-    write_private(
-        _directory(layout) / "sandbox.json", json.dumps({"name": name, "id": identity}) + "\n"
-    )
+def recorded(layout: Layout) -> runtime_owner.Owned | None:
+    return _ownership(layout).read()
+
+
+def _binding(config: LauncherConfig, layout: Layout) -> runtime_owner.Binding:
+    """The runtime sandbox's binding to the project's policy revision, through the worker."""
+    api = sandboxes.WorkerApi(parts.worker_url(config), layout.token("launcher-worker"))
+    return WorkerBinding(api, config.mcp_project())
 
 
 async def delete_recorded(config: LauncherConfig, layout: Layout) -> bool:
-    """Retain uncertain ownership; only confirmed original-identity deletion permits replacement."""
-    task = asyncio.create_task(_delete_recorded(config, layout))
-    cancelled = False
-    while True:
-        try:
-            result = await asyncio.shield(task)
-            break
-        except asyncio.CancelledError:
-            cancelled = True
-            if task.done():
-                result = task.result()
-                break
-    if cancelled:
-        raise asyncio.CancelledError
-    return result
-
-
-async def _delete_recorded(config: LauncherConfig, layout: Layout) -> bool:
-    prior = recorded(layout)
-    if prior is None:
-        return False
-    name, identity = prior
-    cli = mcp.OpenShell(config)
-    document = await cli.sandbox(name)
-    if identity is None:
-        observed = document.get("id") if document is not None else None
-        if not isinstance(observed, str) or not observed:
-            raise LauncherError(
-                "orchestrator creation outcome is unknown; "
-                "original name retained for reconciliation"
-            )
-        identity = observed
-        _record(layout, name, identity)
-    if document is not None:
-        if document.get("id") != identity:
-            raise LauncherError("orchestrator identity changed; replacement deletion refused")
-        await cli.run("sandbox", "delete", name)
-    deadline = asyncio.get_running_loop().time() + config.stop_timeout
-    while (document := await cli.sandbox(name)) is not None:
-        if document.get("id") != identity:
-            raise LauncherError(
-                "orchestrator identity changed during deletion; ownership record retained"
-            )
-        if asyncio.get_running_loop().time() >= deadline:
-            raise LauncherError(
-                "orchestrator deletion was not confirmed; ownership record retained"
-            )
-        await asyncio.sleep(0.5)
-    (_directory(layout) / "sandbox.json").unlink()
-    return True
+    """Retain uncertain ownership; only confirmed original-identity deletion permits
+    replacement. The deleted sandbox's binding goes with it."""
+    return await runtime_owner.delete_recorded(
+        _ownership(layout),
+        mcp.OpenShell(config),
+        timeout=config.stop_timeout,
+        binding=_binding(config, layout),
+    )
 
 
 def reachable(url: str) -> str:
@@ -115,7 +77,8 @@ def reachable(url: str) -> str:
     return url
 
 
-def _endpoint(url: str) -> ServiceEndpoint:
+def endpoint(url: str) -> ServiceEndpoint:
+    """A service URL as an OpenShell policy endpoint, as the sandbox reaches it."""
     parsed = urlsplit(reachable(url))
     if parsed.hostname is None or parsed.scheme not in ("http", "https"):
         raise LauncherError("runtime service needs an explicit HTTP(S) endpoint")
@@ -124,31 +87,56 @@ def _endpoint(url: str) -> ServiceEndpoint:
     )
 
 
-def prepare(config: LauncherConfig, layout: Layout) -> tuple[Path, Path]:
-    """Write scoped configuration and generated capability tokens, never read model keys."""
-    runtime, directory = configured(config), _directory(layout)
-    upload = private_dir(directory / "upload")
-    generation = "runtime-" + secrets.token_hex(12)
-    token = layout.token("runtime-control")
-    write_private(token, secrets.token_urlsafe(32) + "\n")
-    control_url = f"http://{runtime.control_listen}"
-    target = OrchestratorTarget(
-        worker_api=_endpoint(parts.worker_url(config)),
-        model_gateway=_endpoint(config.model.url),
-        state_service=_endpoint(control_url),
-        mcp_proxy=_endpoint(f"http://{config.mcp_proxy.listen}") if config.mcp_proxy else None,
-        binaries=(runtime.python + "*",),
+def runtime_target(
+    *,
+    worker: str,
+    model: str,
+    control: str,
+    python: str,
+    relay_tls: bool = False,
+) -> OrchestratorTarget:
+    """The services the agent runtime's sandbox may reach, and nothing else. With
+    ``relay_tls``, OpenShell relays the runtime's own TLS to control and the worker,
+    whose certificates come from a private CA the runtime pins (Kubernetes)."""
+    private = {"relay_tls": relay_tls}
+    return OrchestratorTarget(
+        worker_api=endpoint(worker).model_copy(update=private),
+        model_gateway=endpoint(model),
+        state_service=endpoint(control).model_copy(update=private),
+        binaries=(python + "*",),
         filesystem=SandboxFilesystem(
             read_only=("/opt/sandbox-science", "/usr/share/sandbox-science")
         ),
     )
-    write_private(directory / "policy.yaml", compile_orchestrator(target).to_yaml())
-    write_private(directory / "generation", generation + "\n")
-    model, service = config.model, config.run_service
+
+
+def control_models(model: ModelConfig, skills: SkillsConfig, revision: str) -> dict[str, Any]:
+    """The model part of ``control.json``, which the Kubernetes runtime manager reads back
+    (``ControlModels``) to derive the runtime's settings from what control runs with."""
+    return {
+        "main": model.name,
+        "apis": model.api,
+        "default_api": model.default_api,
+        "reasoning_effort": model.effective_efforts(),
+        "messages_reasoning_effort": model.messages_reasoning_effort,
+        "reviewer": model.reviewer,
+        "watcher": model.watcher,
+        "delegated": model.delegated,
+        "agent_models": list(
+            dict.fromkeys(alias for alias in (model.name, model.delegated, model.reviewer) if alias)
+        ),
+        "embedding": skills.embedding_model,
+        "metadata": skills.metadata_model,
+        "image_revision": revision,
+    }
+
+
+def run_settings(model: ModelConfig, service: RunServiceConfig, recover: bool) -> dict[str, Any]:
+    """The run service's settings in ``control.json``."""
     settings: dict[str, Any] = {
         "cost_limits": True,
         "image_aliases": list(model.images),
-        "recover_interrupted": configured(config).recover_infrastructure,
+        "recover_interrupted": recover,
     }
     if service.context_ceiling is not None:
         settings["ceiling"] = service.context_ceiling
@@ -165,6 +153,73 @@ def prepare(config: LauncherConfig, layout: Layout) -> tuple[Path, Path]:
     ):
         if (value := getattr(model, name)) is not None:
             settings[name] = value
+    return settings
+
+
+def checks(node: str, build: Path) -> dict[str, str]:
+    """The math and figure checkers' files in ``control.json``, from their build."""
+    return {
+        "node": node,
+        "math_launcher": str(build / parts.MATH_FILES[0]),
+        "math_bundle": str(build / parts.MATH_FILES[1]),
+        "figure_launcher": str(build / parts.FIGURE_FILES[0]),
+        "figure_bundle": str(build / parts.FIGURE_FILES[1]),
+    }
+
+
+def direct_egress(config: LauncherConfig) -> direct_mcp.DirectEgress | None:
+    """The runtime sandbox's compiled egress to the ``[mcp_direct]`` servers, if any.
+
+    Compiled on ``up`` and on every replacement (``prepare``), with the project's
+    classification revisions the policy store binds at that moment, so a revision accepted
+    while the runtime runs reaches its fence at the next replacement; the policy middleware
+    decides by the revision from the next call meanwhile."""
+    if config.mcp_direct is None:
+        return None
+    environments = config.openshell.environments
+    return direct_mcp.compile_direct(
+        policy=config.worker.policy,
+        ceiling=environments.ceiling,
+        targets=environments.targets,
+        project=config.mcp_project(),
+        servers=config.mcp_direct.servers,
+        python=configured(config).python,
+        classifications=PolicyStore(environments.policy_store).fence_classifications(
+            config.mcp_project(), sorted(config.mcp_direct.servers)
+        ),
+    )
+
+
+def prepare(
+    config: LauncherConfig, layout: Layout, egress: direct_mcp.DirectEgress | None = None
+) -> tuple[Path, Path]:
+    """Write scoped configuration and generated capability tokens, never read model keys;
+    ``egress`` is the direct path's, when the caller compiled it already."""
+    runtime, directory = configured(config), _directory(layout)
+    upload = private_dir(directory / "upload")
+    generation = "runtime-" + secrets.token_hex(12)
+    token = layout.token("runtime-control")
+    write_private(token, secrets.token_urlsafe(32) + "\n")
+    control_url = f"http://{runtime.control_listen}"
+    target = runtime_target(
+        worker=parts.worker_url(config),
+        model=config.model.url,
+        control=control_url,
+        python=runtime.python,
+    )
+    policy = compile_orchestrator(target)
+    egress = egress or direct_egress(config)
+    if egress is not None:
+        # The direct path's servers, decided by OpenShell's native rules and the policy
+        # middleware, beside the platform services (D98).
+        policy = direct_mcp.merged(policy, egress.fragment)
+        for warning in egress.warnings():
+            print(f"the agent runtime's MCP egress: {warning}", flush=True)
+        for note in egress.fence_notes():
+            print(f"the agent runtime's MCP egress: {note}", flush=True)
+    write_private(directory / "policy.yaml", policy.to_yaml())
+    write_private(directory / "generation", generation + "\n")
+    model, service = config.model, config.run_service
     host: dict[str, Any] = {
         "state_dir": str(layout.control),
         "listen": runtime.control_listen,
@@ -174,38 +229,33 @@ def prepare(config: LauncherConfig, layout: Layout) -> tuple[Path, Path]:
         "generation": generation,
         "generation_file": str(directory / "generation"),
         "projects": [project.id for project in config.projects],
-        "main": model.name,
-        "apis": model.api,
-        "reasoning_effort": model.effective_efforts(),
-        "reviewer": model.reviewer,
-        "watcher": model.watcher,
-        "delegated": model.delegated,
-        "agent_models": list(
-            dict.fromkeys(alias for alias in (model.name, model.delegated, model.reviewer) if alias)
-        ),
-        "settings": settings,
-        "embedding": config.skills.embedding_model,
-        "metadata": config.skills.metadata_model,
-        "image_revision": runtime.revision,
+        **control_models(model, config.skills, runtime.revision),
+        "settings": run_settings(model, service, runtime.recover_infrastructure),
     }
     if service.math_checks is not None:
-        host["checks"] = {
-            "node": parts.node(config) or service.node,
-            "math_launcher": str(service.math_checks / parts.MATH_FILES[0]),
-            "math_bundle": str(service.math_checks / parts.MATH_FILES[1]),
-            "figure_launcher": str(service.math_checks / parts.FIGURE_FILES[0]),
-            "figure_bundle": str(service.math_checks / parts.FIGURE_FILES[1]),
-        }
-    if config.mcp_proxy is not None:
-        spec = config.mcp_proxy
-        host["proxy"] = {
-            "url": f"http://{spec.listen}",
-            "token_file": str(layout.token(mcp.PROXY_CALLER)),
-            "project": config.mcp_project(),
-            "servers": spec.servers,
+        host["checks"] = checks(parts.node(config) or service.node, service.math_checks)
+    direct = None
+    if config.mcp_direct is not None and egress is not None:
+        spec = config.mcp_direct
+        direct = egress.runtime()
+        # The run service's connector calls go to the runtime's client (D98).
+        host["direct"] = {
+            "project": egress.project,
+            "servers": list(spec.servers),
             "about": spec.about,
             "index": spec.index,
         }
+        # The workspace's "Check availability" (POST /mcp-check), with a token of its own.
+        check = directory / "workspace-check.sha256"
+        write_private(check, ensure_token(layout.token(parts.CHECK_CALLER)) + "\n")
+        host["check_token_sha256_file"] = str(check)
+        if config.canaries.enabled:
+            # The direct path's canaries: control asks the runtime to list (list_mcp_tools).
+            host["canaries"] = {
+                "project": egress.project,
+                "servers": list(spec.servers),
+                "interval": config.canaries.interval,
+            }
     aliases = tuple(
         dict.fromkeys(
             alias
@@ -220,20 +270,20 @@ def prepare(config: LauncherConfig, layout: Layout) -> tuple[Path, Path]:
             if alias
         )
     )
-    agent = {
-        "control_url": reachable(control_url) + "/control",
-        "token_file": REMOTE + "/runtime.token",
-        "model_url": reachable(model.url),
-        "model_key_file": REMOTE + "/model.key",
-        "models": aliases,
-        "apis": model.api,
-        "reasoning_effort": model.effective_efforts(),
-        "embedding": config.skills.embedding_model,
-        "thinking_replay": model.thinking_replay.model_dump(mode="json")
+    agent = runtime_owner.agent_settings(
+        control_url=reachable(control_url),
+        model_url=reachable(model.url),
+        models=aliases,
+        apis=model.api,
+        default_api=model.default_api,
+        reasoning_effort=model.effective_efforts(),
+        embedding=config.skills.embedding_model,
+        thinking_replay=model.thinking_replay.model_dump(mode="json")
         if model.thinking_replay
         else None,
-        "generation": generation,
-    }
+        generation=generation,
+        mcp=direct,
+    )
     write_private(directory / "control.json", json.dumps(host) + "\n")
     write_private(upload / "runtime.json", json.dumps(agent) + "\n")
     return directory, upload
@@ -265,34 +315,17 @@ async def start(config: LauncherConfig, layout: Layout, supervisor: Supervisor) 
 
 
 async def replace(config: LauncherConfig, layout: Layout, supervisor: Supervisor) -> None:
-    """Explicit runtime replacement preserves control/UI and never creates Resume intent."""
+    """Explicit runtime replacement preserves control/UI and never creates Resume intent.
+    The direct path's egress is compiled first, so that files that do not compile leave
+    the running runtime alone."""
+    egress = direct_egress(config)
     await supervisor.stop_part("agent-runtime")
     await delete_recorded(config, layout)
-    runtime = configured(config)
-    deadline = asyncio.get_running_loop().time() + config.stop_timeout
-    while await asyncio.to_thread(_occupied, f"http://{runtime.control_listen}/health"):
-        if asyncio.get_running_loop().time() >= deadline:
-            raise LauncherError(
-                "old runtime control connection did not settle; replacement refused"
-            )
-        await asyncio.sleep(0.1)
-    directory, upload = prepare(config, layout)
+    await runtime_owner.wait_unoccupied(
+        f"http://{configured(config).control_listen}/health", timeout=config.stop_timeout
+    )
+    directory, upload = prepare(config, layout, egress)
     await _agent(config, layout, supervisor, directory, upload)
-
-
-def _occupied(url: str) -> bool:
-    with urlopen(url, timeout=2) as response:  # noqa: S310 - fixed loopback configuration
-        body = response.read(4097)
-    if len(body) > 4096:
-        raise LauncherError("control readiness exceeded its byte bound")
-    value = cast(dict[str, Any], json.loads(body))
-    if (
-        value.get("ready") is not True
-        or not isinstance(value.get("runtime_connected"), bool)
-        or not isinstance(value.get("runtime_draining", False), bool)
-    ):
-        raise LauncherError("control readiness is incompatible with runtime replacement")
-    return value["runtime_connected"] or value.get("runtime_draining", False)
 
 
 async def _agent(
@@ -300,64 +333,30 @@ async def _agent(
 ) -> None:
     runtime = configured(config)
     cli = mcp.OpenShell(config)
-    name = "ss-orch-" + secrets.token_hex(5)
-    if await cli.sandbox(name) is not None:
-        raise LauncherError("orchestrator random sandbox name is already in use")
-    _record(layout, name, None)
-    await cli.run(
-        "sandbox",
-        "create",
-        "--name",
-        name,
-        "--from",
-        runtime.image,
-        "--policy",
-        str(directory / "policy.yaml"),
-        "--no-auto-providers",
-        "--detach",
-        "--",
-        "sleep",
-        "infinity",
+    owned = await runtime_owner.create_owned(
+        _ownership(layout),
+        cli,
+        image=runtime.image,
+        policy=directory / "policy.yaml",
         timeout=config.start_timeout,
+        binding=_binding(config, layout),
+        providers=config.mcp_direct.providers if config.mcp_direct is not None else (),
+        project=config.mcp_project(),
     )
-    deadline = asyncio.get_running_loop().time() + config.start_timeout
-    while True:
-        found = await cli.sandbox(name)
-        identity = found.get("id") if found is not None else None
-        if isinstance(identity, str) and identity:
-            previous = recorded(layout)
-            if previous is not None and previous[1] not in (None, identity):
-                raise LauncherError("orchestrator identity changed during startup")
-            _record(layout, name, identity)
-        phase = found.get("phase") if found is not None else None
-        if phase == "Ready" and isinstance(identity, str) and identity:
-            break
-        if phase in mcp.DEAD_PHASES or asyncio.get_running_loop().time() >= deadline:
-            raise LauncherError("orchestrator sandbox did not become ready; ownership retained")
-        await asyncio.sleep(0.5)
-    shell = ["sandbox", "exec", "-n", name, "--no-tty", "--no-login-shell", "--"]
-    await cli.run(*shell, "mkdir", "-p", REMOTE)
-    for source, remote in (
-        (layout.token("runtime-control"), "runtime.token"),
-        (config.model.api_key_file, "model.key"),
-        (upload / "runtime.json", "runtime.json"),
-    ):
-        await cli.run(
-            "sandbox", "upload", "--no-git-ignore", name, str(source), REMOTE + "/" + remote
-        )
-    await cli.run(*shell, "chmod", "600", REMOTE + "/runtime.token", REMOTE + "/model.key")
+    await runtime_owner.install(
+        cli,
+        owned.name,
+        (
+            (layout.token("runtime-control"), "runtime.token"),
+            (config.model.api_key_file, "model.key"),
+            (upload / "runtime.json", "runtime.json"),
+        ),
+        private=("runtime.token", "model.key"),
+    )
     await supervisor.start(
         Part(
             "agent-runtime",
-            [
-                cli.cli,
-                *shell,
-                runtime.python,
-                "-m",
-                "sandbox_science.orchestrator.confinement.runtime",
-                "--settings",
-                REMOTE + "/runtime.json",
-            ],
+            runtime_owner.exec_argv(cli.cli, owned.name, runtime.python),
             directory,
             ready_line="confined agent runtime ready",
             required=False,

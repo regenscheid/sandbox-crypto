@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import pytest
@@ -12,7 +13,11 @@ from aiohttp.test_utils import TestServer
 
 from sandbox_science.launcher import orchestrator
 from sandbox_science.launcher.config import LauncherError, load_config
-from sandbox_science.launcher.infrastructure import InfrastructureRecovery, RecoveryState
+from sandbox_science.launcher.infrastructure import (
+    InfrastructureRecovery,
+    RecoveryState,
+    launcher_recovery,
+)
 from sandbox_science.launcher.state import Layout, write_private
 from sandbox_science.launcher.supervise import Supervisor
 from sandbox_science.testing import FakeClock
@@ -41,20 +46,20 @@ async def test_replacement_budget_survives_restart_and_stop_prevents_dispatch(
     monkeypatch.setattr(orchestrator, "replace", fail)
     clock = FakeClock()
     for number in range(1, 11):
-        recovery = InfrastructureRecovery(config, layout, supervisor, clock=clock)
+        recovery = launcher_recovery(config, layout, supervisor, clock=clock)
         await recovery.replace()
         state = RecoveryState.model_validate_json(recovery.path.read_bytes())
         assert state.attempts == number
         assert not state.pending
         assert state.retry_after > clock.now().timestamp()
-    await InfrastructureRecovery(config, layout, supervisor, clock=clock).replace()
+    await launcher_recovery(config, layout, supervisor, clock=clock).replace()
     assert calls == 10
-    recovery = InfrastructureRecovery(config, layout, supervisor, clock=clock)
+    recovery = launcher_recovery(config, layout, supervisor, clock=clock)
     state = RecoveryState.model_validate_json(recovery.path.read_bytes())
     assert state.blocked
     write_private(recovery.path, RecoveryState().model_dump_json())
     stop.set()
-    await InfrastructureRecovery(config, layout, supervisor, clock=clock).replace()
+    await launcher_recovery(config, layout, supervisor, clock=clock).replace()
     assert calls == 10
 
 
@@ -78,11 +83,54 @@ async def test_unknown_replacement_is_retained_without_replay(
         pytest.fail("unknown replacement was dispatched again")
 
     monkeypatch.setattr(orchestrator, "replace", forbidden)
-    recovery = InfrastructureRecovery(config, layout, supervisor)
+    recovery = launcher_recovery(config, layout, supervisor)
     await recovery.replace()
     assert recovery.state.blocked
     assert recovery.state.pending
     assert recovery.state.error == "prior replacement outcome is unknown"
+
+
+@pytest.mark.parametrize("irreversible", [False, True])
+async def test_an_interrupted_retryable_attempt_is_retried_unless_marked_irreversible(
+    tmp_path: Path, irreversible: bool
+) -> None:
+    path = tmp_path / "infrastructure-recovery.json"
+    stopping = asyncio.Event()
+
+    async def interrupted() -> None:
+        if irreversible:
+            recovery.irreversible()
+        assert RecoveryState.model_validate_json(path.read_bytes()).pending
+        stopping.set()
+        raise asyncio.CancelledError  # as SIGTERM cancels the owner mid-attempt
+
+    def journal(replace: Callable[[], Awaitable[None]]) -> InfrastructureRecovery:
+        return InfrastructureRecovery(
+            path,
+            enabled=True,
+            alive=lambda: None,
+            replace=replace,
+            stopping=stopping,
+            clock=FakeClock(),
+            retryable=True,
+        )
+
+    recovery = journal(interrupted)
+    with pytest.raises(asyncio.CancelledError):
+        await recovery.replace()
+    stopping.clear()
+    calls = 0
+
+    async def succeed() -> None:
+        nonlocal calls
+        calls += 1
+
+    restarted = journal(succeed)
+    assert restarted.state.blocked is irreversible
+    assert restarted.state.attempts == 1  # the interrupted attempt still counts
+    await restarted.replace()
+    assert calls == (0 if irreversible else 1)
+    assert restarted.state.attempts == (1 if irreversible else 2)
 
 
 @pytest.mark.parametrize("draining", [True, "unknown"])

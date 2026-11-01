@@ -1,31 +1,36 @@
 # Handoff
 
-Updated 2026-10-19. Use local `dev` in `/home/andy/.cache/pt/dev-local`; implementation is integrated through signed `5a238f10`. `/home/andy/Git_Projects/sandbox-crypto` is a separate checkout whose unrelated state must be preserved. Read [STATUS.md](STATUS.md), [BACKLOG.md](BACKLOG.md) and [CONVENTIONS.md](CONVENTIONS.md).
+Updated 2026-10-25. Read [STATUS](STATUS.md), [CONVENTIONS](CONVENTIONS.md), [decisions](../docs/DECISIONS.md) D95-D103 and D92.
 
-## Accepted scope and current evidence
+- **Branch:** `k8s-sync`, in its own worktree, pushed to `origin/k8s-sync`; no PR. Keep the primary checkout and the personal instance as they are.
+- **Checks:** the list in [CONVENTIONS](CONVENTIONS.md#language-and-tooling), including `scripts/check_repo_hygiene.py` (it also checks that links resolve). One suite at a time, at most `-n 4`.
 
-The owner authorized **$150 total for new campaign model tests**, superseding the earlier $75 proposal, and requested all six [completion items](docs/agent-reports/completion-campaign-2026-10-18.md). This is not permission to resume SNOVA or approve extra token grants. Root coordinates live labs, spend, final reports and acceptance; implementation agents use isolated worktrees and signed local commits.
+- **B9 is built** (2026-10-25, [backlog](BACKLOG.md)); its control store steps are 83 to 85 and every tool call now needs a `purpose_note`, so a scripted lab call without one is refused. **B10** (the workspace rendering) is built too (2026-10-25), apart from a per-message model choice (the Compute tab shows each kernel's current cell; memory, CPU and disk were dropped by the owner); B3's live-found defects are fixed offline (runtime manager, worker reconcile, image license check) and B7 (child environments) and A3's classification review view are proposals awaiting the owner; the test instance on the cluster still runs the images from before B9 and B10, so a republish and redeploy is what shows them live.
 
-All six implementation areas are integrated: owned infrastructure recovery, adaptive time/turn/storage allowances, actual dispatch capture and original-history indexing, fold/usage diagnostics, safe MCP metadata/current checks, and Overview/Memory/session refinements. Independent reviews covered storage, authority, recovery and read bounds. Reported fixes include huge schema integers, partial HTTP reads, draft durability warnings, capture omissions, incremental SQLite blob reads and approved resource receipts.
+- **A10's offline part is built** (2026-10-25): run `sandbox-science-harness tool-mix --state-dir <copy>` on a copy of the SNOVA archive to get the shell-versus-cell mix; agents do not read the personal instance.
 
-Actual authenticated synthetic browser checks passed MCP available → unavailable → restored with zero tool calls, Memory draft retention/navigation/save, captured-context chunk paging and original-history incomplete → complete indexing across same-work continuations. Web tests: **2,239 passed**. The frozen Python suite at `5a238f10` passed **14,524 tests with 50 skips**; Ruff, format and strict Pyright are clean. The exact isolated image digest and container checks are recorded in [STATUS.md](STATUS.md).
+- **2026-10-25, later:** A3's classification review view, B4 to B6's offline parts and the lost-kernel acceptance are on `k8s-sync`; the Monitor view (B5's dashboards) is built too. The cluster's test instance predates all of it: a republish and redeploy, then the live checks the backlog lists (MCP, canaries, alert rules, the job budget drain, the maintenance CronJob), is what remains of B3 to B6.
 
-Three owned infrastructure probes passed worker restart, agent-VM replacement and host-process-loss root Resume while the same genuine Sage operation continued. The final real-model tree then proved concurrent root/child recovery, durable bidirectional steering, full child-history retrieval, final handback integration and no duplicate child/reference computation. Numeric GF(16)/GF(32) grades passed; two real Luna/medium reviewer findings led to fixes and were confirmed fixed. Observed campaign spend was **$24.56566378** with no unpriced usage. The 52-file evidence archive verifies complete owned teardown. No physical reboot, arbitrary kernel snapshot or broad scientific qualification is implied.
+## Next, in order ([backlog](BACKLOG.md#architecture-2026-10-23-implementation-sequence))
 
-## Campaign closure
+1. **A2, the direct MCP path (D98):** run the babbage lab of [the prototype](../docs/specs/mcp-middleware-prototype.md); then workspace answers to the middleware's MCP requests, denied-tool listings and binary results. The owner then decides whether the MCP proxy retires.
+2. **A3:** the workspace's classification review view; proxy-side drift findings; a babbage lab of the compiled lockdown (D95, D96).
+3. **A4:** cards for the direct path's MCP requests; a babbage lab of the workspace answering network and package requests (D97).
+4. **A5:** code egress by binary stays open for the owner (OpenShell 0.1.5 cannot express it).
+5. **A8:** the web usage view; a real-model lab of check-ins (D102).
+6. **A10:** measure shell against kernel use in recorded sessions; steer agents to the kernel.
+7. **B3 to B6:** first deployment, durability extras, telemetry rules, job sandboxes (D92, D93, D103).
 
-1. Preserve `/var/tmp/ss-recovery-evidence-a4addfda` while the campaign evidence is useful; its `SHA256.json` covers all 52 allowlisted files.
-2. Do not reuse the five unsettled reviewer intents as permission to replay them. They remain visible while all observed usage is priced.
-3. Treat role-profile edits as next-tree settings. Main/orchestrator, delegated and reviewer aliases and effort are independently configurable in Project settings; ordinary Resume retains the active tree's pins.
-4. Remaining work is the open backlog, especially physical-host reboot qualification, broader lost-kernel provenance and residual transient-failure classes. It is not part of this completed disposable lab.
+## Gates
 
-## Runtime and UI boundaries
+- **Babbage lab:** the middleware MCP path (A2) needs it before the proxy's fate is decided.
+- **First cluster deployment (B3):** it counts as deployed after three live proofs: egress only through OpenShell; Kata in effect with tier 3 recorded; the manager cycle ([proofs](../docs/KUBERNETES.md#first-deployment-scope-and-proofs)). The operator does the cluster preparation ([checklist](../docs/KUBERNETES-PREP.md)).
 
-- Infrastructure recovery is opt-in and bounded. It replaces only an immutable recorded original VM; pending/unknown replacement state cannot silently start another attempt. Exhausted optional host components retain other services/VMs for inspection.
-- Parents retain responsibility for children. Root Resume drives the selected work tree, preserves explicit Stop and reconciles original effects. Approved paused root/child **turn/time/storage** allowances can qualify for automatic root Resume; this path does not grant tokens. Every next 10,000,000 tokens still needs explicit USER approval and exact revision checks. Opt-in root renewal requires newer persisted evidence and cannot relax hard capacity/security limits.
-- Dispatch captures show provider-neutral visible input, not hidden reasoning/native replay/provider transformations or per-part token counts. Oversized captures have explicit omission receipts. Text is paged by UTF-8 bytes. Derived-index pending checks still scan scoped row metadata; index misses are incomplete until remaining originals are indexed. Children/siblings are never merged into same-work continuation scope.
-- MCP schema/policy reads are authenticated, same-origin host → proxy metadata reads with no upstream call. Only the explicit availability control initializes/lists tools. Unknown/stale/unavailable states and last-check times remain separate; browser clients receive no credentials, raw configuration or private endpoints.
-- `.agents/labs/context_browser.py --selftest` validates synthetic seed records offline. Normal invocation starts its own temporary root plus loopback workspace, MCP proxy, TLS peer and control listeners. Printed `mcp_controls` changes only the synthetic peer's availability; `mcp_stats` must retain zero attempted/executed tool calls. Stop it cooperatively and verify all owned listeners/root disappear after browser acceptance.
+## Standing rules
+
+- Agents do not push `dev` or `main`. Images stay private on ghcr.
+- The personal babbage instance is untouched; labs stay off `ss-personal-*`.
+- Coding goes to cheaper models; security, migrations and concurrency get an independent review.
 
 ## Workflow and protections
 

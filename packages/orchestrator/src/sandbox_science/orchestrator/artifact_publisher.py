@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -22,11 +23,13 @@ from sandbox_science.contracts.artifact_inventory import (
 
 from .aio import OwnedExecutor, owned
 from .artifact_blobs import Blob, BlobWriter
+from .artifact_retention import RetentionDrain, RetentionOutbox, drain
 from .artifacts import ArtifactInventory, ArtifactOperation, ExecutionReplay, Room, scoped_path
 from .documents.errors import DocumentError
 from .worker_client import WorkerAPIError, WorkerClient
 
 _T = TypeVar("_T")
+_log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -57,6 +60,31 @@ class ArtifactPublisher:
         self.run_id, self.alias = run_id, alias
         self.endpoint = client.base_url
         self._owner = OwnedExecutor(8, "artifact-inventory")
+
+    async def drain_retention(self, *, limit: int = 8) -> RetentionDrain:
+        """Retry bounded pending cleanup delivery without selecting new research work."""
+        if not self._owner.admits:
+            return RetentionDrain(failed=1)
+        return await self._owner.submit(
+            drain(
+                RetentionOutbox(self.inventory.documents.control),
+                self.client,
+                self.context.project_id,
+                limit=limit,
+            )
+        )
+
+    async def _acknowledge(self, operation: str) -> None:
+        try:
+            await drain(
+                RetentionOutbox(self.inventory.documents.control),
+                self.client,
+                self.context.project_id,
+                limit=1,
+                operation=(self.context.session_id, operation),
+            )
+        except Exception as error:
+            _log.error("retained artifact ACK remains pending (%s)", type(error).__name__)
 
     async def _sql(self, call: Callable[[], _T]) -> _T:
         return await owned(self._owner.thread(call))
@@ -90,7 +118,10 @@ class ArtifactPublisher:
         self, operation: str, path: str, source: ArtifactPublicationSource
     ) -> ExecutionReplay | None:
         """Read a prior capture of the same worker execution without republishing it."""
-        return await self._sql(lambda: self.inventory.prior_execution(source, operation, path))
+        replay = await self._sql(lambda: self.inventory.prior_execution(source, operation, path))
+        if replay is not None and replay.content_retained and self._owner.admits:
+            await self._owner.submit(self._acknowledge(operation))
+        return replay
 
     async def begin_execution_record(
         self, source: ArtifactPublicationSource, operation: str, path: str, media_type: str | None
@@ -218,6 +249,16 @@ class ArtifactPublisher:
         operation: str,
         source: ArtifactPublicationSource,
         bound: int,
+    ) -> ArtifactPublicationOutcome:
+        outcome = await self._capture(request, operation, source, bound)
+        # The successful scientific receipt is final before best-effort delivery.
+        # No ACK exception can enter the capture's held-outcome handler below.
+        if outcome.receipt.state == "recorded":
+            await self._acknowledge(operation)
+        return outcome
+
+    async def _capture(
+        self, request: PublishRequest, operation: str, source: ArtifactPublicationSource, bound: int
     ) -> ArtifactPublicationOutcome:
         worker: ArtifactRef | None = None
         transfer: str | None = None

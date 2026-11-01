@@ -65,7 +65,7 @@ async def create() -> None:
                                             "type": "function",
                                             "function": {
                                                 "name": "read_file",
-                                                "arguments": '{"path":"observation.txt"}',
+                                                "arguments": '{"purpose_note":"Reading the synthetic observation","path":"observation.txt"}',
                                             },
                                         }
                                     ],

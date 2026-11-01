@@ -24,11 +24,13 @@ from sandbox_science.orchestrator.documents.annotations import Annotations, dump
 from sandbox_science.orchestrator.documents.tool import WorkRequests
 from sandbox_science.orchestrator.harness import save
 from sandbox_science.orchestrator.loop import run_task
-from sandbox_science.orchestrator.model import Message, ModelTurn, ScriptedModel, ToolSpec
+from sandbox_science.orchestrator.model import Message, ModelTurn, ToolSpec
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord
 from sandbox_science.orchestrator.tools import Toolbox
 from sandbox_science.orchestrator.worker_client import WorkerClient
 from sandbox_science.testing import fake_worker_app
+
+from .scripted import ScriptedModel
 
 AGENT = Author(kind="agent", session_id="a", run_id="run-a", role="main", model="scripted")
 TEXT = (
@@ -398,7 +400,7 @@ async def test_safe_points_only_main_and_failed_turn_replays(store: DocumentStor
             ended_at=datetime.now(UTC),
             stopped="answered",
             final_text="Respond",
-            messages=list(transcript.messages),
+            messages=list(transcript.context.messages),
             tools=[],
             delivered={"requests": sorted(transcript.delivered_ids("requests"))},
         ).model_dump(mode="json")
@@ -886,7 +888,7 @@ async def test_failed_second_model_keeps_delivered_request_and_releases_unseen(
         ended_at=now,
         stopped="error",
         failure="model",
-        messages=list(transcript.messages),
+        messages=list(transcript.context.messages),
         tools=[],
         delivered={"requests": sorted(transcript.delivered_ids("requests"))},
     )

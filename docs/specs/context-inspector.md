@@ -89,10 +89,10 @@ text, with a plain-text view, and treat all archived content as untrusted data.
 
 Verified against the working branch on 2026-10-17:
 
-- `history/archive.py` retains original entries, scoped search and message reads.
-  `history/record.py` keeps fold spans, source IDs, skeletons, narratives, states,
-  stubs and overview parts; `history/view.py` represents the working view.
-- `history/folds.py` emits transformation events. `history/usage.py` journals
+- `context/history/archive.py` retains original entries, scoped search and message reads.
+  `context/history/record.py` keeps fold spans, source IDs, skeletons, narratives, states,
+  stubs and overview parts; `context/history/view.py` represents the working view.
+- `context/history/folds.py` emits transformation events. `context/history/usage.py` journals
   response usage with observation time and run identity. `ModelUsage` now records
   provider-reported cache-read and cache-write input counters for new main and
   delegated answers, preserving null when a counter was omitted or a call predates

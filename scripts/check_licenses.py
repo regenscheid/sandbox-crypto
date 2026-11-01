@@ -14,6 +14,21 @@ With ``--installed``, after ``npm ci``, each installed package's own ``package.j
 must also name the license the lockfile does: the lockfile's license fields are not
 covered by the integrity hashes, the packages' are. It needs only the standard library.
 
+``--image trusted-app`` (or ``trusted-worker``) compares ``images/<profile>/licenses.txt``
+with the Python distributions the image installs, without building it. The build
+(``images/common/image_report.py``) joins that file into the image's license label and fails
+when it differs from the licenses of the image's Conda and pip packages. This check
+reproduces the pip part: it exports the locked requirements as ``images/build_trusted.sh``
+does (``uv export --locked --no-dev --no-emit-workspace``, the profile's packages from
+``images/revision.sh``, ``--extra s3``), reads each wheel's license as the build does
+(``license_of``, then the build's ``normalize``) and compares the set with the file. It
+reads a distribution from the synced environment when its version is the locked one and
+otherwise downloads the locked wheel (hash-checked) into a temporary directory. It fails
+for a license the wheels carry that the file lacks, and warns about a file entry no wheel
+carries. What it cannot compute it says so: the Conda bootstrap's licenses (the image's
+``conda-meta``), the Ubuntu packages (always ``LicenseRef-Ubuntu-archive``), and Node and
+the OpenShell CLI (in the image record, not in the label's set).
+
 One exception to "from the registry": a stub kept in the app's own ``stubs/`` directory,
 which an npm override puts in place of a package the app must not install (a native
 binary it never runs). The app's ``package.json`` must name the package in
@@ -27,9 +42,14 @@ scripts, executables or entry points.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
+from importlib import metadata
 from importlib.metadata import Distribution, distributions
 from pathlib import Path
 from typing import Any, cast
@@ -332,6 +352,253 @@ def python_problems() -> tuple[int, list[str]]:
     return len(found), problems
 
 
+IMAGE_PROFILES = ("trusted-app", "trusted-worker")
+UBUNTU = "LicenseRef-Ubuntu-archive"
+"""The label always carries this one, for the Ubuntu packages (image_report.UBUNTU)."""
+
+
+class ImageLicenseError(Exception):
+    """The locked dependencies of an image cannot be read."""
+
+
+def _repository_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _canonical(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _image_report(root: Path) -> Any:
+    """The build's own ``image_report.py``, so the file's format and the license
+    normalization are the build's, not a copy of them."""
+    path = root / "images" / "common" / "image_report.py"
+    spec = importlib.util.spec_from_file_location("image_report", path)
+    if spec is None or spec.loader is None:
+        raise ImageLicenseError(f"cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def image_workspace_packages(root: Path, profile: str) -> list[str]:
+    """The repository's packages the profile installs, from ``images/revision.sh``'s
+    ``recipe_packages``, which the build reads too."""
+    text = (root / "images" / "revision.sh").read_text(encoding="utf-8")
+    match = re.search(rf"^\s*{re.escape(profile)}\) packages=\(([^)]*)\)", text, re.MULTILINE)
+    if match is None:
+        raise ImageLicenseError(f"images/revision.sh names no packages for {profile}")
+    return match.group(1).split()
+
+
+def image_bootstrap_names(root: Path) -> frozenset[str]:
+    """Names of the Conda packages the bootstrap installs (``orchestrator/conda-lock.yml``).
+    A Python distribution of the same name may have its license from the Conda record."""
+    text = (root / "images" / "orchestrator" / "conda-lock.yml").read_text(encoding="utf-8")
+    return frozenset(
+        _canonical(name) for name in re.findall(r"^- name: (\S+)$", text, re.MULTILINE)
+    )
+
+
+def image_python_environment(root: Path) -> dict[str, str]:
+    """Environment markers of the image's interpreter (Python from the bootstrap's
+    ``environment.yml``, on Linux), for the markers ``uv export`` leaves in the requirements."""
+    text = (root / "images" / "orchestrator" / "environment.yml").read_text(encoding="utf-8")
+    match = re.search(r"^\s*- python (\d+\.\d+)\.\*", text, re.MULTILINE)
+    if match is None:
+        raise ImageLicenseError("images/orchestrator/environment.yml pins no Python")
+    return {
+        "python_version": match.group(1),
+        "python_full_version": f"{match.group(1)}.0",
+        "sys_platform": "linux",
+        "platform_system": "Linux",
+        "os_name": "posix",
+        "implementation_name": "cpython",
+        "platform_python_implementation": "CPython",
+    }
+
+
+def image_requirements(root: Path, profile: str) -> str:
+    """The hashed requirements ``images/build_trusted.sh`` exports from ``uv.lock``."""
+    uv = shutil.which("uv")
+    if uv is None:
+        raise ImageLicenseError("uv is not on PATH")
+    command = [uv, "--directory", str(root), "export", "--locked", "--no-dev"]
+    command += ["--no-emit-workspace", "--no-header", "--no-annotate"]
+    for package in image_workspace_packages(root, profile):
+        command += ["--package", f"sandbox-science-{package}"]
+    command += ["--extra", "s3"]
+    done = subprocess.run(  # noqa: S603 -- uv from PATH, arguments from the repository
+        command, capture_output=True, text=True, check=False
+    )
+    if done.returncode != 0:
+        raise ImageLicenseError(f"uv export failed:\n{done.stderr.strip()}")
+    return done.stdout
+
+
+def parse_requirements(text: str, environment: dict[str, str]) -> dict[str, tuple[str, str]]:
+    """Canonical name -> (version, the requirement's lines, hashes included) for each
+    requirement that applies in the image. A requirement is ``name==version``, an optional
+    ``; marker``, and its hash lines, which continue it with a trailing backslash."""
+    found: dict[str, tuple[str, str]] = {}
+    block: list[str] = []
+    for line in [*text.splitlines(), ""]:
+        if line.strip():
+            block.append(line)
+            if line.rstrip().endswith("\\"):
+                continue
+        if not block:
+            continue
+        lines, block = block, []
+        head = lines[0].rstrip().removesuffix("\\").strip()
+        requirement, _, marker = head.partition(";")
+        match = re.fullmatch(r"([A-Za-z0-9._-]+)==(\S+)", requirement.strip())
+        if match is None:
+            raise ImageLicenseError(f"unexpected line in the exported requirements: {head!r}")
+        if marker.strip() and not _marker_applies(marker.strip(), environment):
+            continue
+        found[_canonical(match.group(1))] = (match.group(2), "\n".join(lines) + "\n")
+    return found
+
+
+def _marker_applies(marker: str, environment: dict[str, str]) -> bool:
+    try:
+        from packaging.markers import Marker
+    except ImportError as error:
+        raise ImageLicenseError(
+            "the requirements carry environment markers, which need the `packaging` module"
+        ) from error
+    # Both architectures the image is published for count; neither changes a license.
+    return any(
+        Marker(marker).evaluate({**environment, "platform_machine": machine})
+        for machine in ("x86_64", "aarch64")
+    )
+
+
+def _locked_licenses(
+    requirements: dict[str, tuple[str, str]], workspace: list[str]
+) -> dict[str, str | None]:
+    """Distribution name -> license (``license_of``) of every distribution the image installs
+    with pip: the locked wheels and the repository's own packages. A wheel is read from the
+    synced environment when that has the locked version, else fetched by hash into a
+    temporary directory."""
+    licenses: dict[str, str | None] = {}
+    missing: dict[str, tuple[str, str]] = {}
+    for canonical, (version, block) in requirements.items():
+        try:
+            dist = metadata.distribution(canonical)
+        except metadata.PackageNotFoundError:
+            missing[canonical] = (version, block)
+            continue
+        if dist.version != version:
+            missing[canonical] = (version, block)
+            continue
+        licenses[dist.metadata["Name"]] = license_of(dist)
+    if missing:
+        uv = shutil.which("uv")
+        if uv is None:
+            raise ImageLicenseError("uv is not on PATH")
+        with tempfile.TemporaryDirectory(prefix="image-licenses-") as directory:
+            target = Path(directory) / "site"
+            file = Path(directory) / "requirements.txt"
+            file.write_text("".join(block for _, block in missing.values()), encoding="utf-8")
+            install = [uv, "pip", "install", "--python", sys.executable, "--no-deps", "--no-cache"]
+            install += ["--only-binary", ":all:", "--require-hashes", "--target", str(target)]
+            install += ["-r", str(file)]
+            done = subprocess.run(  # noqa: S603 -- uv from PATH, hash-pinned locked wheels
+                install,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if done.returncode != 0:
+                raise ImageLicenseError(
+                    f"cannot fetch the locked wheels {', '.join(sorted(missing))} (they are not "
+                    f"installed here at the locked version; try `uv sync --locked --all-extras`):\n"
+                    f"{done.stderr.strip()}"
+                )
+            for dist in distributions(path=[str(target)]):
+                licenses[dist.metadata["Name"]] = license_of(dist)
+    for package in workspace:
+        name = f"sandbox-science-{package}"
+        try:
+            licenses[name] = license_of(metadata.distribution(name))
+        except metadata.PackageNotFoundError as error:
+            raise ImageLicenseError(f"{name} is not installed; run `uv sync --locked`") from error
+    return licenses
+
+
+def compare_image_licenses(
+    carriers: dict[str, list[str]], bootstrap: frozenset[str], entries: list[str]
+) -> tuple[list[str], list[str]]:
+    """What is wrong with a licenses.txt (its ``entries``) given ``carriers``, the license
+    each pip-installed distribution would give the label (license -> distribution names):
+    problems, and warnings.
+
+    A license the distributions carry that the file lacks is a problem, since the build
+    would fail. When only distributions that the Conda bootstrap also installs carry it, it
+    is a warning: the image may take their license from the Conda record instead. An entry
+    that no distribution carries is a warning, since the Conda packages or the Ubuntu
+    packages may give it, which this check cannot see."""
+    problems: list[str] = []
+    warnings: list[str] = []
+    present = set(entries)
+    for license_, names in sorted(carriers.items()):
+        if license_ in present:
+            continue
+        who = ", ".join(sorted(names))
+        if all(_canonical(name) in bootstrap for name in names):
+            warnings.append(
+                f"{license_!r} is carried only by {who}, which the Conda bootstrap also installs; "
+                "the image may take their license from the Conda record, so it cannot be told "
+                "here whether the file needs this entry"
+            )
+        else:
+            problems.append(f"{license_!r} (carried by {who}) is missing from the file")
+    stale = sorted(present - set(carriers) - {UBUNTU})
+    if stale:
+        warnings.append(
+            f"{len(stale)} entries in the file are carried by no Python distribution: "
+            + "; ".join(repr(entry) for entry in stale)
+            + ". They are right if a Conda package, the base distribution or a binary gives "
+            "them, which this check cannot see"
+        )
+    return problems, warnings
+
+
+def image_problems(root: Path, profile: str) -> tuple[str, list[str], list[str]]:
+    """Check ``images/<profile>/licenses.txt`` against the image's locked Python
+    distributions: a summary line, problems and warnings."""
+    report = _image_report(root)
+    workspace = image_workspace_packages(root, profile)
+    environment = image_python_environment(root)
+    requirements = parse_requirements(image_requirements(root, profile), environment)
+    licenses = _locked_licenses(requirements, workspace)
+    problems: list[str] = []
+    carriers: dict[str, list[str]] = {}
+    for name, found in sorted(licenses.items(), key=lambda item: item[0].lower()):
+        if found is None:
+            problems.append(f"{name}: license not declared in metadata (the build fails on it)")
+        elif not is_allowed(found):
+            problems.append(f"{name}: {found} is not allowed in tier 1 (the build fails on it)")
+        else:
+            carriers.setdefault(report.normalize(found), []).append(name)
+    entries = report.read_licenses(root / "images" / profile / "licenses.txt")
+    more_problems, warnings = compare_image_licenses(carriers, image_bootstrap_names(root), entries)
+    summary = (
+        f"{profile}: {len(requirements)} locked wheels and {len(workspace)} repository packages "
+        f"carry {len(carriers)} distinct licenses; images/{profile}/licenses.txt has {len(entries)}"
+    )
+    return summary, problems + more_problems, warnings
+
+
+IMAGE_NOT_CHECKED = (
+    "not checked here: the Conda bootstrap's packages (their licenses are in the image's "
+    "conda-meta), the Ubuntu packages (the label always adds LicenseRef-Ubuntu-archive) and "
+    "Node and the OpenShell CLI (in the image record, not in the label's set)"
+)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Check licenses against the tier 1 allowlist.")
     parser.add_argument(
@@ -342,7 +609,29 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="with --npm: also check the installed packages' own package.json files",
     )
+    parser.add_argument(
+        "--image",
+        choices=IMAGE_PROFILES,
+        help="compare images/<profile>/licenses.txt with the image's locked Python packages",
+    )
     args = parser.parse_args(argv)
+    if args.image is not None:
+        if args.npm is not None or args.installed:
+            parser.error("--image cannot be combined with --npm or --installed")
+        try:
+            summary, problems, warnings = image_problems(_repository_root(), args.image)
+        except ImageLicenseError as error:
+            print(f"{args.image}: {error}", file=sys.stderr)
+            return 1
+        print(summary)
+        print(IMAGE_NOT_CHECKED)
+        for warning in warnings:
+            print(f"warning: {warning}")
+        for problem in problems:
+            print(problem, file=sys.stderr)
+        if not problems:
+            print(f"{args.image}: the file lists every license the locked wheels carry")
+        return 1 if problems else 0
     if args.npm is None:
         if args.installed:
             parser.error("--installed needs --npm")

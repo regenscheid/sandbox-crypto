@@ -20,14 +20,15 @@ from pydantic import Field, StringConstraints, TypeAdapter, ValidationError
 
 from sandbox_science.contracts import Contract, Identifier
 from sandbox_science.contracts.model import Counter
+from sandbox_science.orchestrator.context.history import Archive
+from sandbox_science.orchestrator.context.history.operations import CHUNK_BYTES
+from sandbox_science.orchestrator.context.history.operations import PAGE as RECORD_PAGE
 from sandbox_science.orchestrator.documents import DocumentError, DocumentStore
-from sandbox_science.orchestrator.history import Archive
-from sandbox_science.orchestrator.history.operations import CHUNK_BYTES
-from sandbox_science.orchestrator.history.operations import PAGE as RECORD_PAGE
 from sandbox_science.orchestrator.projects import RunName
 
-from . import documents, evidence, history
+from . import errors, evidence, history
 from .context import CONTEXT, identifier, session_record
+from .requests import document_answer
 
 PATH: Final = "/api/v0/projects/{project}/messages/{message}"
 _MESSAGE: Final = re.compile(r"msg-[0-9a-f]{16}")
@@ -89,7 +90,7 @@ def add_routes(app: web.Application) -> None:
 async def message(request: web.Request) -> web.Response:
     identifier = request.match_info["message"]
     if not _MESSAGE.fullmatch(identifier):
-        return documents.api_error(
+        return errors.to_response(
             DocumentError("invalid_request", "a message is named by its msg- ID")
         )
     project = request.match_info["project"]
@@ -111,7 +112,7 @@ async def message(request: web.Request) -> web.Response:
             "text": entry.text,
         }
 
-    return await documents.answer(request, read)
+    return await document_answer(request, read)
 
 
 async def message_chunks(request: web.Request) -> web.Response:
@@ -140,7 +141,7 @@ async def message_chunks(request: web.Request) -> web.Response:
             data_base64=base64.b64encode(found.data).decode("ascii"),
         ).model_dump(mode="json")
 
-    return await documents.answer(request, read)
+    return await document_answer(request, read)
 
 
 async def tool_record(request: web.Request) -> web.Response:
@@ -148,11 +149,11 @@ async def tool_record(request: web.Request) -> web.Response:
     refusal with its byte size. Legacy messages without a journal record return 404."""
     identifier = request.match_info["message"]
     if not _MESSAGE.fullmatch(identifier):
-        return documents.api_error(
+        return errors.to_response(
             DocumentError("invalid_request", "a message is named by its msg- ID")
         )
     project = request.match_info["project"]
-    return await documents.answer(
+    return await document_answer(
         request, lambda store: Archive(store).tool_record(project, identifier)
     )
 
@@ -177,7 +178,7 @@ async def tool_record_chunks(request: web.Request) -> web.Response:
             data_base64=base64.b64encode(found.data).decode("ascii"),
         ).model_dump(mode="json")
 
-    return await documents.answer(request, read)
+    return await document_answer(request, read)
 
 
 async def tool_records(request: web.Request) -> web.Response:
@@ -210,7 +211,7 @@ async def tool_records(request: web.Request) -> web.Response:
             ),
         ).model_dump(mode="json")
 
-    return await documents.answer(request, read)
+    return await document_answer(request, read)
 
 
 def _query[Q: Contract](request: web.Request, model: type[Q]) -> Q:

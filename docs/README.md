@@ -15,6 +15,7 @@ Progress and history are not kept here: current state is in [STATUS](../.agents/
 | --- | --- |
 | [Quickstart](QUICKSTART.md) | A local Sandbox Science with one command, `sandbox-science up`: what it needs, its config, logging in, a first chat, and stopping it |
 | [The personal instance on babbage](PERSONAL-BABBAGE.md) | The owner's own instance on babbage, apart from the labs: its units, ports and state, starting and stopping it, and updating it to a new main |
+| [Backup and restore](BACKUP-RESTORE.md) | The stores a deployment keeps, what to back up together, the snapshot before each migration, restoring, and the Kubernetes counterpart |
 | [Decisions](DECISIONS.md) | The decision register, the source of truth for each decision's status |
 | [Threat model](THREAT-MODEL.md) | Assets, threat sources, trust zones and isolation tiers (D43) |
 | [Licensing](LICENSING.md) | License tiers for dependencies, and the license checks |
@@ -23,6 +24,7 @@ Progress and history are not kept here: current state is in [STATUS](../.agents/
 | [Worker](WORKER.md) | The worker service: API, executor, sandboxes, provisioning, PDFs, shared data, daemon and recovery |
 | [Background jobs](BACKGROUND-JOBS.md) | Job tools, waits, watcher check-ins, notices and limits |
 | [Artifacts](ARTIFACTS.md) | The artifact inventory, bounded capture and output observations |
+| [S3 artifact backing](ARTIFACT-S3.md) | Optional object-store retention, verified cold reads and explicit local archive/eviction commands |
 | [Kernel revisions](KERNEL-REVISIONS.md) | A kernel's start revision compared with its environment's package revision |
 | [Provisioning observations](PROVISIONING-OBSERVATIONS.md) | The worker's read-only provisioning observation routes |
 | [Explicit Conda upgrades](PROVISIONING-UPGRADES.md) | The `upgrade` provisioning action |
@@ -37,6 +39,7 @@ Progress and history are not kept here: current state is in [STATUS](../.agents/
 | [Policy file](POLICY.md) | The project policy file and how requests are decided |
 | [Policy middleware](POLICY-MIDDLEWARE.md) | The OpenShell middleware that decides each sandbox request |
 | [Package cache](PACKAGE-CACHE.md) | The pull-through package cache for research sandboxes |
+| [Worker-side unit](UNIT.md) | The worker, policy middleware and package cache as one deployed, supervised unit with one config file |
 | [Event store](EVENT-STORE.md) | The hash-chained store of monitor evidence, its record kinds and CLI |
 | **Orchestrator** | |
 | [Model profiles](MODEL-PROFILES.md) | Per-role reasoning effort, provider mappings, saved profiles and explicit Resume overrides |
@@ -58,7 +61,7 @@ Progress and history are not kept here: current state is in [STATUS](../.agents/
 | [Skills](SKILLS.md) | Importing skill packs from git or an archive, their reports, and the projects' pins; the built-in pack |
 | [Math checks](MATH-CHECKS.md) | Durable math checks of document revisions, and the isolated renderer |
 | [Comment math](COMMENT-MATH.md) | Math checks of comment and reply bodies |
-| [Finding prose math](FINDING-PROSE-MATH.md) | Math checks of MAIN fix and rebut explanations |
+| [Finding prose math](FINDING-PROSE-MATH.md) | Math checks of MAIN fix and dismissal explanations |
 | [Consistency review](CONSISTENCY-REVIEW.md) | The automatic consistency reviewer |
 | **Workspace GUI** | |
 | [Workspace](WORKSPACE.md) | The research GUI and its server: running it, security, API, views and rendering |
@@ -78,6 +81,11 @@ Progress and history are not kept here: current state is in [STATUS](../.agents/
 | [Roadmap](ROADMAP.md) | Milestones M0 to M5 and delivery phases |
 | [Implementation plan](IMPLEMENTATION-PLAN.md) | Work packages W0 to W6, shared contracts and component ownership |
 | [Architecture](ARCHITECTURE.md) | Component architecture and placement |
+| [Apple Silicon qualification](MAC-ARM64.md) | Native ARM64 images, Mac supervision and OpenShell gates, and the mixed Kubernetes follow-on |
+| [Kubernetes work](KUBERNETES.md) | Mixed-architecture placement, S3-backed artifact retention, PVC lifecycle and cluster qualification gates |
+| [Offline Kubernetes bundle](KUBERNETES-BUNDLE.md) | Private configuration, trusted service images, scoped credentials and deterministic deployment rendering |
+| [Cluster preparation checklist](KUBERNETES-PREP.md) | The operator's ordered steps before and through the first deployment: storage and backups, Kata, Agent Sandbox, OpenShell, Garage, Secrets, bootstrap and the three live proofs |
+| [Mac setup](MAC-SETUP.md) | Prerequisites, mounted-volume config, the Sage MicroVM test, and later full-launch settings |
 | [Execution plan](EXECUTION-PLAN.md) | Execution and deployment requirements and first decisions |
 | [Projects and sessions](PROJECTS-AND-SESSIONS.md) | Project, session and environment ownership |
 | [Product](PRODUCT.md) | Product requirements and acceptance criteria |
@@ -85,8 +93,10 @@ Progress and history are not kept here: current state is in [STATUS](../.agents/
 | [Research workspace](RESEARCH-WORKSPACE.md) | Requirements for documents, the ledger, Sage and PDFs |
 | [External skills](EXTERNAL-SKILLS.md) | Platform requirements from the crypto-analysis-skills pack |
 | [Monitoring](MONITORING.md) | Trusted monitoring and automatic provisioning |
-| [MCP connectors](MCP-CONNECTORS.md) | MCP authentication and the MCP proxy |
+| [MCP connectors](MCP-CONNECTORS.md) | MCP authentication, the agent's MCP client and the direct path (the MCP proxy retired 2026-10-26) |
 | [Orchestrator prompts](ORCHESTRATOR-PROMPTS.md) | The prompt inventory, and proposed prompts and planning design |
+| [Attempt finalization](ATTEMPT-FINALIZATION.md) | Shared checkpoint, persistence, settlement and cleanup protocol |
+| [Agent context ownership](specs/agent-context-refactor.md) | Shared context preparation, state, history, folding and retrieval |
 
 ## Historical
 

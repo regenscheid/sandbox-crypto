@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -206,6 +207,49 @@ def test_values_already_in_the_environment_reach_no_other_command(
     only_the_registration_had_them(openshell.called(), "create")
 
 
+def test_in_the_cluster_the_values_come_from_the_environment_and_reach_one_command(
+    openshell: Any, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # As the manager Pod's init container gets them from the provider's Secret (envFrom).
+    for key, value in BOTH.items():
+        monkeypatch.setenv(key, value)
+    openshell.has([], ["cloudflare-access"])
+    argv = ["--from-environment", "--openshell", str(openshell.cli())]
+    assert access_provider.main(argv) == 0
+    assert openshell.steps() == [
+        "openshell provider create cloudflare-access crypto-research-mcp "
+        "CF_ACCESS_CLIENT_ID CF_ACCESS_CLIENT_SECRET"
+    ]
+    only_the_registration_had_them(openshell.called(), "create")
+    said = capsys.readouterr()
+    assert said.out == "created the OpenShell provider crypto-research-mcp from the environment\n"
+    assert not leaked(said.out + said.err)
+
+
+def test_in_the_cluster_a_missing_value_or_profile_is_refused(
+    openshell: Any, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("CF_ACCESS_CLIENT_ID", ID)
+    monkeypatch.delenv("CF_ACCESS_CLIENT_SECRET", raising=False)
+    argv = ["--from-environment", "--openshell", str(openshell.cli())]
+    assert access_provider.main(argv) == 1
+    assert "no CF_ACCESS_CLIENT_SECRET" in capsys.readouterr().err
+    monkeypatch.setenv("CF_ACCESS_CLIENT_SECRET", SECRET)
+    openshell.has([], [])  # the gateway has no profile, and none is given
+    assert access_provider.main(argv) == 1
+    said = capsys.readouterr().err
+    assert "has no cloudflare-access provider profile" in said
+    assert not leaked(said)
+    assert not any(step.startswith("openshell provider create") for step in openshell.steps())
+    # A file and the environment at once, or a file without its profile, is refused.
+    for wrong in (
+        [str(PROFILE), *argv],
+        [str(PROFILE), "--openshell", str(openshell.cli())],
+    ):
+        with pytest.raises(SystemExit):
+            access_provider.main(wrong)
+
+
 def test_a_failed_registration_shows_nothing_and_dumps_no_core(
     openshell: Any, tmp_path: Path
 ) -> None:
@@ -243,6 +287,35 @@ def test_it_will_not_run_where_calls_could_be_recorded_or_code_loaded(
     assert openshell.called() == []
 
 
+def make_repository(folder: Path) -> None:
+    (folder / ".git").mkdir(parents=True)
+    (folder / ".git/HEAD").write_text("ref: refs/heads/main\n")
+
+
+def test_an_empty_git_directory_above_the_cli_is_not_a_checkout(tmp_path: Path) -> None:
+    # babbage's home holds an empty .git directory (lab, 2026-10-26).
+    (tmp_path / ".git").mkdir()
+    cli = openshell_stand_in(tmp_path / "bin" / "openshell")
+    assert access_provider.check_cli(str(cli)) == str(cli.resolve())
+
+
+def test_a_git_directory_with_head_or_a_worktree_file_is_a_checkout(tmp_path: Path) -> None:
+    real = tmp_path / "real"
+    make_repository(real)
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    (worktree / ".git").write_text("gitdir: /elsewhere/.git/worktrees/w\n")
+    for folder in (real, worktree):
+        cli = openshell_stand_in(folder / "bin" / "openshell")
+        with pytest.raises(access_provider.RegistrationError, match="is in the git checkout"):
+            access_provider.check_cli(str(cli))
+    stray = tmp_path / "stray"
+    stray.mkdir()
+    (stray / ".git").write_text("not a pointer\n")
+    cli = openshell_stand_in(stray / "bin" / "openshell")
+    assert access_provider.check_cli(str(cli)) == str(cli.resolve())
+
+
 def test_an_openshell_cli_others_control_is_refused(
     openshell: Any,
     tmp_path: Path,
@@ -254,7 +327,7 @@ def test_an_openshell_cli_others_control_is_refused(
     loose = openshell.cli("-loose")
     loose.chmod(0o775)
     checkout = tmp_path / "checkout"
-    (checkout / ".git").mkdir(parents=True)
+    make_repository(checkout)
     inside = openshell_stand_in(checkout / "bin" / "openshell")
     linked = tmp_path / "bin" / "linked"
     linked.symlink_to(inside)
@@ -274,6 +347,113 @@ def test_an_openshell_cli_others_control_is_refused(
         f"error: the OpenShell CLI {cli} is neither this user's nor root's",
     ]
     assert openshell.called() == []
+
+
+def _info(mode: int, uid: int) -> os.stat_result:
+    return os.stat_result((mode, 0, 0, 1, uid, uid, 0, 0, 0, 0))
+
+
+_FILE = stat.S_IFREG
+_FOLDER = stat.S_IFDIR
+_SELF = 1000  # the Pod's user
+_CLI = Path("/usr/local/bin/openshell")
+
+
+@pytest.mark.parametrize(
+    ("cli_uid", "cli_mode", "folder_uid", "folder_mode"),
+    [
+        (0, 0o755, 0, 0o755),  # the image's install: root:root 0755 in /usr/local/bin
+        (_SELF, 0o755, 0, 0o755),
+        (0, 0o755, _SELF, 0o755),
+        (_SELF, 0o700, _SELF, 0o700),
+    ],
+)
+def test_a_cli_root_or_the_user_owns_and_others_cannot_write_is_accepted(
+    cli_uid: int, cli_mode: int, folder_uid: int, folder_mode: int
+) -> None:
+    assert (
+        access_provider.cli_refusal(
+            _CLI, _info(_FILE | cli_mode, cli_uid), _info(_FOLDER | folder_mode, folder_uid), _SELF
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    ("cli_uid", "cli_mode", "folder_uid", "folder_mode", "reason"),
+    [
+        (1001, 0o755, 0, 0o755, "neither this user's nor root's"),  # the unpacked archive's owner
+        (0, 0o775, 0, 0o755, "may be changed by others"),
+        (0, 0o757, 0, 0o755, "may be changed by others"),
+        (_SELF, 0o666, 0, 0o755, "may be changed by others"),
+        (0, 0o755, 0, 0o775, "in a directory others may change"),
+        (0, 0o755, 0, 0o777, "in a directory others may change"),
+        (0, 0o755, 1001, 0o755, "in a directory that is neither"),
+    ],
+)
+def test_a_cli_others_own_or_can_write_is_refused(
+    cli_uid: int, cli_mode: int, folder_uid: int, folder_mode: int, reason: str
+) -> None:
+    refusal = access_provider.cli_refusal(
+        _CLI, _info(_FILE | cli_mode, cli_uid), _info(_FOLDER | folder_mode, folder_uid), _SELF
+    )
+    assert refusal is not None
+    assert reason in refusal
+
+
+def _folder(mode: int, uid: int, gid: int) -> os.stat_result:
+    return os.stat_result((_FOLDER | mode, 0, 0, 1, uid, gid, 0, 0, 0, 0))
+
+
+@pytest.mark.parametrize(
+    ("folder_mode", "folder_gid", "private_gid", "accepted"),
+    [
+        (0o775, _SELF, _SELF, True),  # ~/.local/bin under umask 002 with a user-private group
+        (0o775, _SELF, None, False),  # the user's group has other members
+        (0o775, 1001, _SELF, False),  # a shared group may write it
+        (0o777, _SELF, _SELF, False),  # anyone may write it
+    ],
+)
+def test_a_directory_only_the_users_private_group_may_write_is_the_users(
+    folder_mode: int, folder_gid: int, private_gid: int | None, accepted: bool
+) -> None:
+    refusal = access_provider.cli_refusal(
+        _CLI,
+        _info(_FILE | 0o755, _SELF),
+        _folder(folder_mode, _SELF, folder_gid),
+        _SELF,
+        private_gid,
+    )
+    assert (refusal is None) is accepted
+
+
+def test_a_cli_in_a_directory_others_can_write_is_refused(tmp_path: Path) -> None:
+    folder = tmp_path / "open"
+    cli = openshell_stand_in(folder / "openshell")
+    assert access_provider.check_cli(str(cli)) == str(cli.resolve())
+    folder.chmod(0o777)
+    with pytest.raises(access_provider.RegistrationError, match="directory others may change"):
+        access_provider.check_cli(str(cli))
+
+
+def test_an_installed_homebrew_cli_is_not_in_a_checkout(tmp_path: Path) -> None:
+    # On Apple Silicon, Homebrew's prefix /opt/homebrew is its own git checkout, and the
+    # packages it installs are in its Cellar (Mac test, 2026-10-21).
+    prefix = tmp_path / "homebrew"
+    make_repository(prefix)
+    (prefix / "Library/Homebrew").mkdir(parents=True)
+    (prefix / "Library/Homebrew/brew.sh").write_text("#!/bin/bash\n")
+    installed = openshell_stand_in(prefix / "Cellar/openshell/0.1.5/bin/openshell")
+    assert access_provider.check_cli(str(installed)) == str(installed.resolve())
+    # Elsewhere in Homebrew's checkout, and in any other checkout, it is refused.
+    tracked = openshell_stand_in(prefix / "Library/Homebrew/openshell")
+    with pytest.raises(access_provider.RegistrationError, match="is in the git checkout"):
+        access_provider.check_cli(str(tracked))
+    other = tmp_path / "other"
+    make_repository(other)
+    copied = openshell_stand_in(other / "Cellar/openshell/0.1.5/bin/openshell")
+    with pytest.raises(access_provider.RegistrationError, match="is in the git checkout"):
+        access_provider.check_cli(str(copied))
 
 
 @pytest.mark.parametrize("mode", [0o640, 0o604, 0o620, 0o644, 0o660])
@@ -377,8 +557,8 @@ def test_a_missing_value_is_named_and_nothing_runs(
 
 
 def test_a_refresh_needs_the_owners_file(make_config: Any) -> None:
-    proxy = {"image": "sandbox-science/mcp-proxy:abc1234", "providers": ["p"], "servers": ["s"]}
-    config = load_config(make_config({"mcp_proxy": proxy}))
+    direct = {"servers": {"s": {}}, "providers": ["p"]}
+    config = load_config(make_config({"mcp_direct": direct}))
     layout = Layout(config.state_dir)
     with pytest.raises(LauncherError, match="--refresh-provider needs"):
         asyncio.run(mcp.register_provider(config, layout, cast(Any, None), refresh=True))

@@ -3139,7 +3139,7 @@ def _context_auxiliary_window(schema: Schema) -> None:
 
 def _context_captures(schema: Schema) -> None:
     """Version 72: actual dispatch captures and independent inspector search."""
-    from sandbox_science.orchestrator.history.capture_schema import create
+    from sandbox_science.orchestrator.context.history.capture_schema import create
 
     create(schema)
 
@@ -3152,6 +3152,801 @@ def _project_model_settings(schema: Schema) -> None:
     selections TEXT NOT NULL,
     author TEXT NOT NULL
 ) STRICT""")
+
+
+def _project_connector_settings(schema: Schema) -> None:
+    """Version 74: the connectors the user turned off in a project (narrowing only)."""
+    schema.execute("""CREATE TABLE project_connector_settings (
+    project TEXT PRIMARY KEY REFERENCES projects(project_id),
+    revision INTEGER NOT NULL CHECK(revision>=1),
+    disabled TEXT NOT NULL CHECK (json_valid(disabled) AND json_type(disabled) = 'array'),
+    author TEXT NOT NULL
+) STRICT""")
+
+
+def _project_approval_settings(schema: Schema) -> None:
+    """Version 75: the connector tool calls the user approved for a whole project."""
+    schema.execute("""CREATE TABLE project_approval_settings (
+    project TEXT PRIMARY KEY REFERENCES projects(project_id),
+    revision INTEGER NOT NULL CHECK(revision>=1),
+    grants TEXT NOT NULL CHECK (json_valid(grants) AND json_type(grants) = 'array'),
+    author TEXT NOT NULL
+) STRICT""")
+
+
+def _external_user_uploads(schema: Schema) -> None:
+    """Version 76: verified external originals and resumable transfer admission."""
+    from sandbox_science.orchestrator.upload_schema import install
+
+    install(schema)
+
+
+def _artifact_retention(schema: Schema) -> None:
+    """Version 77: exact worker retention intents share the successful receipt commit."""
+    from sandbox_science.orchestrator.artifact_retention_schema import install
+
+    install(schema)
+
+
+def _artifact_reference_indexes(schema: Schema) -> None:
+    """Version 78: bounded reference seeks never scan/sort the entire retained history."""
+    schema.execute("CREATE INDEX artifact_blob_hash ON artifact_revision_blobs(sha256,size)")
+    schema.execute("CREATE INDEX upload_blob_hash ON user_upload_blobs(sha256,size)")
+
+
+def _child_requests(schema: Schema) -> None:
+    """Version 79: delegated runs' calls that wait for the user, with who asked (D99)."""
+    from sandbox_science.orchestrator.delegation.requests import install
+
+    install(schema)
+
+
+def _project_grants(schema: Schema) -> None:
+    """Version 80: grants of a class on a server, a host or a package source, for a
+    session or the project (D97), in place of remembered tool and server approvals.
+
+    Each remembered tool approval becomes a grant of the tool's class on its server, as
+    the checked-in classification of the server's name classifies the tool, where that
+    class may be granted for a project (``write`` under the shipped ceilings). A tool it
+    does not classify is ``unclassified``, which is never granted wider than once, so
+    that approval is dropped, as is one whose class allows no project grant. A
+    server-wide approval is dropped: it covered tools the server adds later, of any
+    class (the 2026-10-23 audit's H2). Revoked grants are kept, with when."""
+    schema.execute("""CREATE TABLE project_grants (
+    grant_id TEXT PRIMARY KEY,
+    project TEXT NOT NULL REFERENCES projects(project_id),
+    kind TEXT NOT NULL CHECK (kind IN ('mcp','network','packages')),
+    scope TEXT NOT NULL CHECK (scope IN ('session','project')),
+    session TEXT CHECK ((scope = 'session') = (session IS NOT NULL)),
+    server TEXT,
+    effect TEXT,
+    host TEXT,
+    methods TEXT,
+    ecosystem TEXT,
+    channel TEXT,
+    subject TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT,
+    last_used_at TEXT,
+    uses INTEGER NOT NULL DEFAULT 0 CHECK (uses >= 0),
+    author TEXT NOT NULL,
+    revoked_at TEXT,
+    CHECK (kind <> 'mcp' OR (server IS NOT NULL AND effect IS NOT NULL
+        AND effect <> 'unclassified')),
+    CHECK (kind <> 'network' OR (host IS NOT NULL AND methods = 'read')),
+    CHECK (kind <> 'packages' OR ecosystem IS NOT NULL)
+) STRICT""")
+    schema.execute(
+        "CREATE UNIQUE INDEX project_grants_live ON project_grants "
+        "(project, subject, scope, coalesce(session, '')) WHERE revoked_at IS NULL"
+    )
+    schema.execute("CREATE INDEX project_grants_project ON project_grants (project, revoked_at)")
+    from datetime import UTC, datetime
+    from secrets import token_hex
+
+    from sandbox_science.policy.classification import catalog, catalog_names
+    from sandbox_science.policy.effects import SHIPPED, MaxGrant
+
+    now = datetime.now(UTC).isoformat(timespec="seconds")
+    known = catalog_names()
+    rows = schema.execute("SELECT project, grants, author FROM project_approval_settings")
+    for project, grants, author in rows.fetchall():
+        kept: set[tuple[str, str]] = set()
+        for grant in json.loads(grants):
+            server, tool = grant.get("server"), grant.get("tool")
+            if not isinstance(server, str) or not isinstance(tool, str) or server not in known:
+                continue  # server-wide, or a server no classification names
+            entry = catalog(server).tools.get(tool)
+            if entry is None or SHIPPED[entry.effect].max_grant is not MaxGrant.PROJECT:
+                continue
+            kept.add((server, entry.effect.value))
+        for server, effect in sorted(kept):
+            schema.execute(
+                "INSERT INTO project_grants (grant_id,project,kind,scope,server,effect,"
+                "subject,created_at,author) VALUES (?,?,'mcp','project',?,?,?,?,?)",
+                (
+                    "grant-" + token_hex(10), project, server, effect,
+                    json.dumps(["mcp", effect, server]), now, author,
+                ),
+            )  # fmt: skip
+    schema.execute("DROP TABLE project_approval_settings")
+
+
+def _cost_notices(schema: Schema) -> None:
+    """Version 81: each project's optional cost notification thresholds, in the gateway's
+    currency, and when its recorded spending first crossed each (D102). A notice never
+    stops a run; LiteLLM's budget is the only cost enforcement by default."""
+    schema.execute(
+        """CREATE TABLE project_cost_notices (
+    project_id TEXT NOT NULL REFERENCES projects(project_id),
+    threshold REAL NOT NULL CHECK (threshold > 0 AND threshold <= 1000000000),
+    crossed_at TEXT,
+    spent REAL CHECK (spent IS NULL OR spent >= 0),
+    PRIMARY KEY (project_id, threshold)
+) STRICT"""
+    )
+
+
+def _agent_message_references(schema: Schema) -> None:
+    """Version 82: an agent message's references to its sender's records, which a
+    parent's ``message_child`` carries to its task (PD-44, CM-37b), kept with the message
+    and as unchangeable as its body. A message written before carries none."""
+    schema.execute(
+        "ALTER TABLE agent_messages ADD COLUMN refs TEXT NOT NULL DEFAULT '[]' "
+        "CHECK (json_valid(refs) AND json_type(refs) = 'array' "
+        "AND length(CAST(refs AS BLOB)) <= 32768)"
+    )
+    schema.execute("DROP TRIGGER agent_messages_kept")
+    schema.execute(
+        """CREATE TRIGGER agent_messages_kept BEFORE UPDATE ON agent_messages
+WHEN NEW.message_id IS NOT OLD.message_id OR NEW.project_id IS NOT OLD.project_id
+OR NEW.session_id IS NOT OLD.session_id OR NEW.operation_id IS NOT OLD.operation_id
+OR NEW.sender_run IS NOT OLD.sender_run
+OR NEW.sender_delegation IS NOT OLD.sender_delegation
+OR NEW.recipient_delegation IS NOT OLD.recipient_delegation
+OR NEW.body IS NOT OLD.body OR NEW.created_at IS NOT OLD.created_at
+OR NEW.refs IS NOT OLD.refs
+OR OLD.delivered_run IS NOT NULL
+BEGIN SELECT RAISE(ABORT, 'an agent message is kept'); END"""
+    )
+
+
+def _memory_provenance(schema: Schema) -> None:
+    """Version 83: the basis and anchors of the project memory's versions and proposals
+    (docs/specs/project-memory.md, PM-13). An agent's proposal names its basis and
+    anchors, and the version that accepting it makes keeps them. A version the user made
+    (no proposal) is the user's, so it gets the basis ``user``; a version made by an
+    accepted proposal, and a proposal made before, have none recorded, so they read
+    ``not recorded``: nothing is guessed. Versions stay unchangeable once written; the
+    step lifts the guard only to give the earlier ones their basis."""
+    basis = "('user', 'user_quoted', 'observed', 'interpreted', 'not recorded')"
+    anchors = (
+        "json_valid(anchors) AND json_type(anchors) = 'array' "
+        "AND length(CAST(anchors AS BLOB)) <= 65536"
+    )
+    schema.execute(
+        f"ALTER TABLE memory_versions ADD COLUMN basis TEXT NOT NULL DEFAULT 'not recorded' "
+        f"CHECK (basis IN {basis})"
+    )
+    schema.execute(
+        f"ALTER TABLE memory_versions ADD COLUMN anchors TEXT NOT NULL DEFAULT '[]' "
+        f"CHECK ({anchors})"
+    )
+    schema.execute("DROP TRIGGER memory_versions_no_update")
+    schema.execute("UPDATE memory_versions SET basis='user' WHERE proposal IS NULL")
+    schema.execute(
+        """CREATE TRIGGER memory_versions_no_update BEFORE UPDATE ON memory_versions
+BEGIN SELECT RAISE(ABORT, 'memory versions are immutable'); END"""
+    )
+    schema.execute(
+        "ALTER TABLE memory_proposals ADD COLUMN basis TEXT NOT NULL DEFAULT 'not recorded' "
+        "CHECK (basis IN ('user_quoted', 'observed', 'interpreted', 'not recorded'))"
+    )
+    schema.execute(
+        f"ALTER TABLE memory_proposals ADD COLUMN anchors TEXT NOT NULL DEFAULT '[]' "
+        f"CHECK ({anchors})"
+    )
+    schema.execute("DROP TRIGGER memory_proposals_kept")
+    schema.execute(
+        """CREATE TRIGGER memory_proposals_kept BEFORE UPDATE OF
+project,proposal_id,action,entry_id,base,text,reason,proposer,run_id,session,created,basis,anchors
+ON memory_proposals BEGIN SELECT RAISE(ABORT, 'a memory proposal is written once'); END"""
+    )
+
+
+_LEGACY_STATUS: Final = {
+    "open": "open",
+    "claimed fixed": "open",
+    "confirmed fixed": "fixed",
+    "withdrawn": "dismissed",
+    "challenged": "open",
+    "unaddressed": "open",
+    "inconclusive": "open",
+    "superseded": "stale",
+}
+"""Version 84's map from a finding's eight earlier statuses to the five (CR-47)."""
+
+_HISTORY_STATUS: Final = (
+    "CASE t.status WHEN 'claimed fixed' THEN 'open' WHEN 'confirmed fixed' THEN 'fixed' "
+    "WHEN 'withdrawn' THEN 'dismissed' WHEN 'superseded' THEN 'stale' "
+    "WHEN 'challenged' THEN 'open' WHEN 'unaddressed' THEN 'open' "
+    "WHEN 'inconclusive' THEN 'open' ELSE t.status END"
+)
+_HISTORY_ANSWER: Final = (
+    "CASE WHEN t.actor GLOB 'review:*' AND (t.status='confirmed fixed' OR "
+    "(json_valid(t.payload) AND json_extract(t.payload,'$.decision')='confirm')) "
+    "THEN 'resolved' WHEN t.actor GLOB 'review:*' AND json_valid(t.payload) AND "
+    "json_extract(t.payload,'$.decision')='reject' THEN 'unresolved' "
+    "WHEN t.actor GLOB 'review:*' AND json_valid(t.payload) AND "
+    "json_extract(t.payload,'$.decision')='inconclusive' THEN 'inconclusive' END"
+)
+"""A migrated confirmation's answer, as a re-check's: confirmed, rejected or undecided."""
+_ACTOR_KIND: Final = (
+    "CASE WHEN t.actor GLOB 'user:*' THEN 'user' WHEN t.actor GLOB 'review:*' "
+    "THEN 'controller' WHEN t.actor GLOB 'session:*' THEN 'agent' ELSE 'platform' END"
+)
+
+
+def _legacy_payload(raw: object) -> _Json:
+    try:
+        value: object = json.loads(raw) if isinstance(raw, str) else None
+    except ValueError:
+        return {}
+    return cast(_Json, value) if isinstance(value, dict) else {}
+
+
+def _reviewer_run(schema: Schema, actor: str) -> tuple[str | None, _Json | None]:
+    """The review an actor ``review:<id>`` names, and its reviewer run: alias, resolved
+    model and rubric version; None for another actor."""
+    if not actor.startswith("review:"):
+        return None, None
+    review = actor.removeprefix("review:")
+    row = schema.execute(
+        "SELECT alias,resolved_model,rubric FROM review_runs WHERE review_id=?", (review,)
+    ).fetchone()
+    run = None if row is None else {"alias": row[0], "resolved_model": row[1], "rubric": row[2]}
+    return review, run
+
+
+def _mapped(finding: str, status: str) -> str:
+    """A finding's status among the five: an earlier status mapped (CR-47), one of the five
+    kept; any other refuses the store."""
+    if status in _LEGACY_STATUS:
+        return _LEGACY_STATUS[status]
+    if status in ("fixed", "dismissed", "stale"):
+        return status
+    raise RefusedRowError(f"finding {finding}'s status {status!r}, which no step maps")
+
+
+def _legacy_places(schema: Schema, finding: str, payload: _Json) -> tuple[list[_Json], list[_Json]]:
+    """The places and archive messages a claimed fix named or cited, each strictly later
+    than what the finding reviewed: a later revision of an anchored document, artifact or
+    entry, or a message after its review's snapshot (CR-42)."""
+    row = schema.execute(
+        "SELECT anchors,review_id FROM review_findings WHERE finding_id=?", (finding,)
+    ).fetchone()
+    try:
+        parsed: object = json.loads(row[0]) if isinstance(row[0], str) else []
+    except ValueError:
+        parsed = []
+    anchors = cast(list[_Json], parsed) if isinstance(parsed, list) else []
+    reviewed: dict[tuple[str, str], int] = {}
+    positions: list[int] = []
+    for anchor in anchors:
+        location = cast(_Json, anchor.get("locator") or {})
+        ref = location.get("artifact")
+        key = (
+            ("document", str(location["document"]))
+            if "document" in location
+            else ("artifact", str(cast(_Json, ref).get("artifact_id")))
+            if isinstance(ref, dict)
+            else ("entry", str(location["entry"]))
+            if "entry" in location
+            else None
+        )
+        number = (
+            cast(_Json, ref).get("revision") if isinstance(ref, dict) else location.get("revision")
+        )
+        if key is not None and type(number) is int:
+            reviewed[key] = max(reviewed.get(key, 0), number)
+        archived = location.get("archive")
+        if isinstance(archived, dict) and type(cast(_Json, archived).get("position")) is int:
+            positions.append(cast(int, cast(_Json, archived)["position"]))
+    if row[1] is not None:
+        (held,) = schema.execute(
+            "SELECT max(json_extract(locator,'$.archive.position')) FROM review_evidence "
+            "WHERE review_id=?",
+            (row[1],),
+        ).fetchone()
+        if type(held) is int:
+            positions.append(held)
+    last = max(positions) if positions else None
+
+    def later(kind: str, name: object, number: object) -> bool:
+        key = (kind, str(name))
+        return key in reviewed and type(number) is int and number > reviewed[key]
+
+    places: list[_Json] = []
+    messages: list[_Json] = []
+    for pin in cast(list[_Json], payload.get("revisions", [])):
+        if later("document", pin.get("document"), pin.get("revision")):
+            places.append({"document": pin})
+    for pin in cast(list[_Json], payload.get("artifact_revisions", [])):
+        if later("artifact", pin.get("artifact_id"), pin.get("revision")):
+            places.append({"artifact": pin})
+    for pin in cast(list[_Json], payload.get("entry_revisions", [])):
+        if later("entry", pin.get("entry"), pin.get("revision")):
+            places.append({"entry": pin})
+    for anchor in cast(list[_Json], payload.get("anchors", [])):
+        location = cast(_Json, anchor.get("locator") or {})
+        ref = location.get("artifact")
+        archived = location.get("archive")
+        if "document" in location and later(
+            "document", location["document"], location.get("revision")
+        ):
+            places.append(
+                {
+                    "document": {
+                        k: location[k] for k in ("document", "revision", "sha256") if k in location
+                    }
+                }
+            )
+        elif isinstance(ref, dict) and later(
+            "artifact", cast(_Json, ref).get("artifact_id"), cast(_Json, ref).get("revision")
+        ):
+            places.append({"artifact": ref})
+        elif "entry" in location and later("entry", location["entry"], location.get("revision")):
+            places.append({"entry": {"entry": location["entry"], "handle": location.get("handle"),
+                                     "revision": location["revision"]}})  # fmt: skip
+        elif (
+            isinstance(archived, dict)
+            and isinstance(cast(_Json, archived).get("id"), str)
+            and type(cast(_Json, archived).get("position")) is int
+            and last is not None
+            and cast(int, cast(_Json, archived)["position"]) > last
+        ):
+            found = cast(_Json, archived)
+            messages.append({"id": found["id"], "position": found["position"],
+                             "run": location.get("run")})  # fmt: skip
+    return places, messages
+
+
+def _legacy_finding(schema: Schema, finding: str, status: str, revision: int) -> tuple[str, _Json]:
+    """A finding's new status and lifecycle columns, from its earlier status and its
+    transitions (CR-47)."""
+    rows = schema.execute(
+        "SELECT revision,status,actor,reason,payload,created FROM review_transitions "
+        "WHERE finding_id=? ORDER BY revision",
+        (finding,),
+    ).fetchall()
+    latest = rows[-1] if rows else None
+    columns: _Json = {}
+    if latest is None:
+        return _mapped(finding, status), columns
+    _, _, actor, reason, raw, created = latest
+    payload = _legacy_payload(raw)
+    review, run = _reviewer_run(schema, actor)
+    rebuttal = next(
+        (row for row in reversed(rows) if _legacy_payload(row[4]).get("action") == "rebut"),
+        None,
+    )
+
+    def dismissal(decision: str | None) -> _Json:
+        assert rebuttal is not None  # noqa: S101 - callers check
+        found: _Json = {
+            "by": "agent",
+            "actor": rebuttal[2],
+            "reason": rebuttal[3],
+            "at": rebuttal[5],
+            "response_revision": rebuttal[0],
+            "review": None,
+        }
+        if decision is not None:
+            found["review"] = {"review": review, "decision": decision, "reason": reason,
+                               "at": created}  # fmt: skip
+        return found
+
+    if status == "claimed fixed":
+        # The claimed fix's re-check is queued, holding what the fix named and the
+        # evidence it cited, each later than what the finding reviewed (CR-42, CR-47).
+        places, messages = _legacy_places(schema, finding, payload)
+        columns["recheck"] = {
+            "cause": "fix",
+            "revision": revision,
+            "response": revision,
+            "places": places,
+            "messages": messages,
+            "queued": created,
+            "attempts": 0,
+        }
+    elif status == "confirmed fixed" and review is not None:
+        columns["latest_recheck"] = {
+            "review": review,
+            "answer": "resolved",
+            "why": reason,
+            "anchors": payload.get("anchors", []),
+            "reviewer": run,
+            "at": created,
+        }
+    elif status == "withdrawn":
+        if review is not None and rebuttal is not None:
+            columns["dismissal"] = dismissal("accepted")
+        else:
+            columns["dismissal"] = {"by": "user", "actor": actor, "reason": reason,
+                                    "at": created, "review": None}  # fmt: skip
+    elif status == "challenged":
+        columns["at_bound"] = 1
+        if rebuttal is not None:
+            columns["dismissal"] = dismissal("rejected")
+    elif status == "unaddressed":
+        columns["at_bound"] = 1
+    elif status == "inconclusive" and payload.get("decision") == "inconclusive":
+        # A confirmation that could not decide is its last re-check. One raised on
+        # missing evidence (CR-6) is open, as such a finding is now, with no re-check.
+        columns["latest_recheck"] = {
+            "review": review,
+            "answer": "inconclusive",
+            "why": reason,
+            "anchors": payload.get("anchors", []),
+            "reviewer": run,
+            "at": created,
+        }
+    return _mapped(finding, status), columns
+
+
+def _finding_lifecycle(schema: Schema) -> None:
+    """Version 84: a finding's lifecycle in the review store (consistency review, CR-40 to
+    CR-47). A finding keeps its record in ``review_findings`` and gains its successor
+    (``superseded_by``), its latest re-check, the author's dismissal, its queued re-check
+    and whether it is open at the re-flag bound; ``review_finding_history`` holds each
+    change with its actor's kind, the re-check's answer and its review, revision, anchors
+    and reviewer run. Today's transitions become the history's first rows, with their
+    actors, times and reasons, and the eight statuses become five.
+
+    The step can run again over its own result and changes nothing: a column or table
+    that exists is kept, a transition already in the history is not copied again, and a
+    finding is mapped only while its current revision has no history row."""
+    have = {str(row[1]) for row in schema.execute("PRAGMA table_info(review_findings)")}
+    for name, definition in (
+        ("superseded_by", "TEXT REFERENCES review_findings(finding_id)"),
+        ("latest_recheck", "TEXT CHECK (latest_recheck IS NULL OR json_valid(latest_recheck))"),
+        ("dismissal", "TEXT CHECK (dismissal IS NULL OR json_valid(dismissal))"),
+        ("recheck", "TEXT CHECK (recheck IS NULL OR json_valid(recheck))"),
+        ("at_bound", "INTEGER NOT NULL DEFAULT 0 CHECK (at_bound IN (0, 1))"),
+    ):
+        if name not in have:
+            schema.execute(f"ALTER TABLE review_findings ADD COLUMN {name} {definition}")
+    schema.execute(
+        """CREATE TABLE IF NOT EXISTS review_finding_history (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    finding_id TEXT NOT NULL REFERENCES review_findings(finding_id),
+    revision INTEGER NOT NULL,
+    transition INTEGER UNIQUE REFERENCES review_transitions(seq),
+    status TEXT NOT NULL
+        CHECK (status IN ('open','fixed','dismissed','superseded','stale')),
+    former TEXT,
+    actor TEXT NOT NULL,
+    actor_kind TEXT NOT NULL CHECK (actor_kind IN ('user','controller','platform','agent')),
+    reason TEXT NOT NULL,
+    answer TEXT CHECK (answer IS NULL OR answer IN ('resolved','unresolved','inconclusive')),
+    review_id TEXT,
+    recheck TEXT CHECK (recheck IS NULL OR json_valid(recheck)),
+    created REAL NOT NULL
+) STRICT"""
+    )
+    schema.execute(
+        "CREATE INDEX IF NOT EXISTS review_finding_history_finding "
+        "ON review_finding_history(finding_id,seq)"
+    )
+    legacy = schema.execute(
+        "SELECT finding_id,status,revision FROM review_findings f WHERE NOT EXISTS("
+        "SELECT 1 FROM review_finding_history h WHERE h.finding_id=f.finding_id "
+        "AND h.revision=f.revision) ORDER BY rowid"
+    ).fetchall()
+    known = (*_LEGACY_STATUS, "fixed", "dismissed", "stale")
+    unknown = schema.execute(
+        "SELECT finding_id,revision,status FROM review_transitions WHERE status NOT IN "  # noqa: S608 - fixed SQL
+        f"({','.join('?' * len(known))}) ORDER BY seq LIMIT 1",
+        known,
+    ).fetchone()
+    if unknown is not None:
+        raise RefusedRowError(
+            f"revision {unknown[1]} of finding {unknown[0]} has the status {unknown[2]!r}, "
+            "which no step maps"
+        )
+    for finding, status, revision in legacy:
+        mapped, columns = _legacy_finding(schema, finding, status, revision)
+        schema.execute(
+            "UPDATE review_findings SET status=?,latest_recheck=?,dismissal=?,recheck=?,"
+            "at_bound=? WHERE finding_id=?",
+            (
+                mapped,
+                *(
+                    None if columns.get(key) is None else json.dumps(columns[key])
+                    for key in ("latest_recheck", "dismissal", "recheck")
+                ),
+                int(columns.get("at_bound", 0)),
+                finding,
+            ),
+        )
+    schema.execute(
+        "INSERT INTO review_finding_history(finding_id,revision,transition,status,"  # noqa: S608 - fixed SQL
+        "former,actor,actor_kind,reason,answer,review_id,recheck,created) SELECT "
+        f"t.finding_id,t.revision,t.seq,{_HISTORY_STATUS},"
+        f"CASE WHEN {_HISTORY_STATUS}=t.status THEN NULL ELSE t.status END,"
+        f"t.actor,{_ACTOR_KIND},t.reason,{_HISTORY_ANSWER},"
+        "CASE WHEN t.actor GLOB 'review:*' THEN substr(t.actor,8) END,NULL,t.created "
+        "FROM review_transitions t WHERE NOT EXISTS(SELECT 1 FROM review_finding_history h "
+        "WHERE h.transition=t.seq) ORDER BY t.seq"
+    )
+    for statement in (
+        """CREATE TRIGGER IF NOT EXISTS review_finding_history_update
+BEFORE UPDATE ON review_finding_history
+BEGIN SELECT RAISE(ABORT, 'review evidence/history is immutable'); END""",
+        """CREATE TRIGGER IF NOT EXISTS review_finding_history_delete
+BEFORE DELETE ON review_finding_history
+BEGIN SELECT RAISE(ABORT, 'review evidence/history is immutable'); END""",
+        """CREATE TRIGGER IF NOT EXISTS review_findings_status_insert
+BEFORE INSERT ON review_findings
+WHEN NEW.status NOT IN ('open','fixed','dismissed','superseded','stale')
+BEGIN SELECT RAISE(ABORT, 'a finding has one of the five statuses'); END""",
+        """CREATE TRIGGER IF NOT EXISTS review_findings_status_update
+BEFORE UPDATE OF status ON review_findings
+WHEN NEW.status NOT IN ('open','fixed','dismissed','superseded','stale')
+BEGIN SELECT RAISE(ABORT, 'a finding has one of the five statuses'); END""",
+    ):
+        schema.execute(statement)
+
+
+def _tool_purposes(schema: Schema) -> None:
+    """Version 85: a tool result's call's purpose (its ``purpose_note``), which the
+    result's header quotes (docs/specs/tools.md, Purpose 4; context management, CM-4a).
+    A result archived before has none, and its header renders as it was sent."""
+    schema.execute(
+        "ALTER TABLE archive_messages ADD COLUMN purpose TEXT CHECK (purpose IS NULL OR "
+        "(kind = 'tool_result' AND length(purpose) BETWEEN 8 AND 120 "
+        "AND instr(purpose, char(10)) = 0 AND instr(purpose, '\"') = 0 "
+        "AND instr(purpose, '[') = 0 AND instr(purpose, ']') = 0))"
+    )
+
+
+def _mcp_canaries(schema: Schema) -> None:
+    """Version 86: each scheduled MCP canary's result (D103, docs/MCP-CONNECTORS.md,
+    "Canaries"): one bounded ``tools/list`` per configured server, from the trusted side,
+    with no tool call. A listed result has its tool count and listing digest and no
+    error; any other has an error kind and neither. The canary runner prunes each
+    server's rows to 30 days and 10,000 rows."""
+    schema.execute(
+        """CREATE TABLE mcp_canaries (
+    canary_id INTEGER PRIMARY KEY,
+    server TEXT NOT NULL CHECK (length(server) BETWEEN 1 AND 64),
+    at TEXT NOT NULL CHECK (length(at) = 24 AND at = strftime('%Y-%m-%dT%H:%M:%fZ', at)),
+    status TEXT NOT NULL CHECK (status IN ('listed', 'unavailable', 'denied', 'timeout')),
+    tool_count INTEGER CHECK (tool_count IS NULL OR tool_count BETWEEN 0 AND 1000000),
+    digest TEXT CHECK (digest IS NULL OR (length(digest) = 64 AND digest NOT GLOB '*[^0-9a-f]*')),
+    elapsed_ms INTEGER NOT NULL CHECK (elapsed_ms BETWEEN 0 AND 86400000),
+    error_kind TEXT CHECK (error_kind IS NULL OR (length(error_kind) BETWEEN 1 AND 64
+        AND error_kind NOT GLOB '*[^a-z0-9_]*')),
+    CHECK ((status = 'listed') = (tool_count IS NOT NULL)),
+    CHECK ((status = 'listed') = (digest IS NOT NULL)),
+    CHECK ((status = 'listed') = (error_kind IS NULL))
+) STRICT"""
+    )
+    schema.execute("CREATE INDEX mcp_canaries_server ON mcp_canaries (server, canary_id)")
+    schema.execute("CREATE INDEX mcp_canaries_at ON mcp_canaries (at)")
+
+
+def _delegation_environments(schema: Schema) -> None:
+    """Version 87: a delegation names the child environment its run works in
+    (docs/specs/child-environments.md, CE-11), written as it starts, or once while it runs
+    for a continuation a Resume reserved; and its outcome gains how that environment
+    ended, with the hand-back's account, written once with the rest. The columns have no
+    CHECK, which ``ALTER TABLE`` would have every row pass: triggers check them."""
+    checks = (
+        "(NEW.environment_id IS NULL OR length(CAST(NEW.environment_id AS BLOB)) "
+        "BETWEEN 1 AND 128) AND (NEW.environment IS NULL OR (NEW.ended IS NOT NULL "
+        "AND json_valid(NEW.environment) AND json_type(NEW.environment) = 'object' "
+        "AND length(CAST(NEW.environment AS BLOB)) <= 65536))"
+    )
+    for statement in (
+        "ALTER TABLE delegations ADD COLUMN environment_id TEXT",
+        "ALTER TABLE delegations ADD COLUMN environment TEXT",
+        f"""CREATE TRIGGER delegations_environment_insert BEFORE INSERT ON delegations
+WHEN NOT ({checks}) BEGIN SELECT RAISE(ABORT, 'CHECK constraint failed: delegations'); END""",
+        f"""CREATE TRIGGER delegations_environment_update BEFORE UPDATE ON delegations
+WHEN NOT ({checks}) BEGIN SELECT RAISE(ABORT, 'CHECK constraint failed: delegations'); END""",
+        "DROP TRIGGER delegations_kept",
+        """CREATE TRIGGER delegations_kept BEFORE UPDATE ON delegations
+WHEN NEW.delegation_id IS NOT OLD.delegation_id OR NEW.project_id IS NOT OLD.project_id
+OR NEW.session_id IS NOT OLD.session_id OR NEW.parent IS NOT OLD.parent
+OR NEW.run IS NOT OLD.run OR NEW.kind IS NOT OLD.kind OR NEW.brief IS NOT OLD.brief
+OR NEW.started_at IS NOT OLD.started_at
+OR (OLD.environment_id IS NOT NULL AND NEW.environment_id IS NOT OLD.environment_id)
+OR (OLD.ended IS NOT NULL AND (
+NEW.ended IS NOT OLD.ended OR NEW.stopped IS NOT OLD.stopped
+OR NEW.report IS NOT OLD.report OR NEW.ended_at IS NOT OLD.ended_at
+OR NEW.refused IS NOT OLD.refused OR NEW.result IS NOT OLD.result
+OR NEW.errors IS NOT OLD.errors OR NEW.alias IS NOT OLD.alias
+OR NEW.models IS NOT OLD.models OR NEW.read_entry IS NOT OLD.read_entry
+OR NEW.read_proofs IS NOT OLD.read_proofs OR NEW.files IS NOT OLD.files
+OR NEW.environment_id IS NOT OLD.environment_id OR NEW.environment IS NOT OLD.environment))
+OR (OLD.acknowledged IS NOT NULL AND NEW.acknowledged IS NOT OLD.acknowledged)
+BEGIN SELECT RAISE(ABORT, 'a delegation''s outcome is written once'); END""",
+    ):
+        schema.execute(statement)
+
+
+_OUTCOME_CHANGED: Final = (
+    "NEW.ended IS NOT OLD.ended OR NEW.stopped IS NOT OLD.stopped "
+    "OR NEW.report IS NOT OLD.report OR NEW.ended_at IS NOT OLD.ended_at "
+    "OR NEW.refused IS NOT OLD.refused OR NEW.result IS NOT OLD.result "
+    "OR NEW.errors IS NOT OLD.errors OR NEW.alias IS NOT OLD.alias "
+    "OR NEW.models IS NOT OLD.models OR NEW.read_entry IS NOT OLD.read_entry "
+    "OR NEW.read_proofs IS NOT OLD.read_proofs OR NEW.files IS NOT OLD.files"
+)
+"""Whether an update changed a delegation's outcome, its environment's account apart."""
+_REOPEN: Final = (
+    "coalesce(OLD.review = 'awaiting' AND NEW.review IS NULL AND NEW.ended IS NULL "
+    "AND NEW.run IS NOT OLD.run AND NEW.results = OLD.results AND NEW.acknowledged IS NULL "
+    "AND NEW.environment IS NULL AND NEW.reviewed_at IS NULL, 0)"
+)
+"""A message reopening a returned task: a new run, its outcome cleared (PD-46). Each
+transition is ``coalesce``d to false, so that a NULL never lets an update through."""
+_CLOSE: Final = "coalesce(OLD.review = 'awaiting' AND NEW.review IN ('accepted', 'cancelled'), 0)"
+"""The parent's acceptance or cancel of a returned task, or the platform's for it."""
+_SAME_ENVIRONMENT: Final = (
+    "json_extract(NEW.environment, '$.environment_id') "
+    "IS json_extract(OLD.environment, '$.environment_id')"
+)
+_CLOSING: Final = (
+    f"coalesce({_CLOSE} AND (NEW.environment IS OLD.environment OR "
+    "(json_extract(OLD.environment, '$.end') = 'held' "
+    "AND json_extract(NEW.environment, '$.end') IN ('closing', 'released') "
+    f"AND {_SAME_ENVIRONMENT})), 0)"
+)
+"""A close that marks its held child environment ``closing`` for its hand-back, or
+``released`` with the session's; any other account stays as it is."""
+_CLOSED_ENVIRONMENT: Final = (
+    "coalesce(coalesce(OLD.review, '') <> 'awaiting' AND NEW.review IS OLD.review "
+    "AND json_extract(OLD.environment, '$.end') IN ('held', 'kept', 'closing') "
+    "AND json_extract(OLD.environment, '$.plan') IS NOT NULL "
+    "AND json_extract(NEW.environment, '$.end') NOT IN ('held', 'kept', 'closing') "
+    f"AND json_extract(NEW.environment, '$.plan') IS NULL AND {_SAME_ENVIRONMENT}, 0)"
+)
+"""The account of a child environment whose hand-back was left to its delegation's close
+or the sweep (a closed task's, or an ended one's that still held earlier results'
+files), written once as its hand-back and release ended."""
+
+
+def _parent_review(schema: Schema) -> None:
+    """Version 88: the parent reviews a task's result before the task closes
+    (plans-and-delegation spec, PD-46). A task that returns stays open, its ``review``
+    ``awaiting``, until its parent accepts it (``accepted``) or cancels it
+    (``cancelled``), or the platform accepts it for the parent, with when, by whom, why
+    and the parent's note. A message reopens it: the same delegation runs again in a new
+    run, its row's outcome cleared until that run ends. Each outcome is kept, numbered,
+    in ``delegation_results``, which ``results`` counts; the row's outcome is the latest.
+    A delegated run's typed settlement is kept per run, no longer one per delegation.
+    The new columns have no CHECK, which ``ALTER TABLE`` would have every row pass:
+    triggers check them as a row is written."""
+    checks = (
+        "(NEW.results >= 0 AND (NEW.review IS NULL OR (NEW.review IN "
+        "('awaiting', 'accepted', 'cancelled') AND NEW.kind = 'task' AND NEW.ended = 'returned')) "
+        "AND (coalesce(NEW.review, '') IN ('accepted', 'cancelled')) "
+        "= (NEW.reviewed_at IS NOT NULL) "
+        "AND (NEW.reviewed_at IS NULL) = (NEW.reviewed_by IS NULL) "
+        "AND (NEW.reviewed_at IS NULL) = (NEW.review_reason IS NULL) "
+        "AND (NEW.reviewed_at IS NULL OR length(NEW.reviewed_at) BETWEEN 1 AND 64) "
+        "AND (NEW.reviewed_by IS NULL OR length(CAST(NEW.reviewed_by AS BLOB)) BETWEEN 1 AND 256) "
+        "AND (NEW.review_reason IS NULL OR NEW.review_reason IN "
+        "('parent', 'parent_ended', 'session_closed', 'review_max')) "
+        "AND (NEW.review_note IS NULL OR (NEW.reviewed_at IS NOT NULL "
+        "AND length(CAST(NEW.review_note AS BLOB)) BETWEEN 1 AND 2048)))"
+    )
+    kept = f"""CREATE TRIGGER delegations_kept BEFORE UPDATE ON delegations
+WHEN NEW.delegation_id IS NOT OLD.delegation_id OR NEW.project_id IS NOT OLD.project_id
+OR NEW.session_id IS NOT OLD.session_id OR NEW.parent IS NOT OLD.parent
+OR NEW.kind IS NOT OLD.kind OR NEW.brief IS NOT OLD.brief
+OR NEW.started_at IS NOT OLD.started_at
+OR (OLD.environment_id IS NOT NULL AND NEW.environment_id IS NOT OLD.environment_id)
+OR (OLD.ended IS NOT NULL AND NEW.environment_id IS NOT OLD.environment_id)
+OR (NEW.run IS NOT OLD.run AND NOT {_REOPEN})
+OR (NEW.results IS NOT OLD.results AND NOT (OLD.ended IS NULL AND NEW.ended IS NOT NULL))
+OR (OLD.ended IS NULL AND NEW.ended IS NOT NULL AND NEW.results IS NOT OLD.results + 1)
+OR (OLD.ended IS NOT NULL AND NOT {_REOPEN} AND ({_OUTCOME_CHANGED}))
+OR (OLD.ended IS NOT NULL AND NOT {_REOPEN} AND NOT {_CLOSING}
+    AND NOT {_CLOSED_ENVIRONMENT} AND NEW.environment IS NOT OLD.environment)
+OR (OLD.acknowledged IS NOT NULL AND NOT {_REOPEN} AND NEW.acknowledged IS NOT OLD.acknowledged)
+OR (OLD.review IS NULL AND NEW.review IS NOT NULL
+    AND NOT (OLD.ended IS NULL AND NEW.review = 'awaiting'))
+OR (OLD.review = 'awaiting' AND NEW.review IS NOT 'awaiting' AND NOT {_REOPEN} AND NOT {_CLOSE})
+OR (OLD.review IN ('accepted', 'cancelled') AND NEW.review IS NOT OLD.review)
+OR (NOT {_CLOSE} AND (NEW.reviewed_at IS NOT OLD.reviewed_at
+    OR NEW.reviewed_by IS NOT OLD.reviewed_by OR NEW.review_reason IS NOT OLD.review_reason
+    OR NEW.review_note IS NOT OLD.review_note))
+BEGIN SELECT RAISE(ABORT, 'a delegation''s outcome is written once'); END"""
+    for statement in (
+        "ALTER TABLE delegations ADD COLUMN results INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE delegations ADD COLUMN review TEXT",
+        "ALTER TABLE delegations ADD COLUMN reviewed_at TEXT",
+        "ALTER TABLE delegations ADD COLUMN reviewed_by TEXT",
+        "ALTER TABLE delegations ADD COLUMN review_reason TEXT",
+        "ALTER TABLE delegations ADD COLUMN review_note TEXT",
+        f"""CREATE TRIGGER delegations_review_insert BEFORE INSERT ON delegations
+WHEN NOT ({checks}) BEGIN SELECT RAISE(ABORT, 'CHECK constraint failed: delegations'); END""",
+        f"""CREATE TRIGGER delegations_review_update BEFORE UPDATE ON delegations
+WHEN NOT ({checks}) BEGIN SELECT RAISE(ABORT, 'CHECK constraint failed: delegations'); END""",
+        "CREATE INDEX delegations_review ON delegations (project_id, session_id, review)",
+        """CREATE TABLE delegation_results (
+    delegation_id TEXT NOT NULL REFERENCES delegations (delegation_id),
+    number INTEGER NOT NULL CHECK (number >= 1),
+    project_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    run TEXT NOT NULL CHECK (length(CAST(run AS BLOB)) BETWEEN 1 AND 256),
+    ended TEXT NOT NULL
+        CHECK (ended IN ('returned', 'failed', 'cancelled', 'limit_reached', 'interrupted')),
+    stopped TEXT NOT NULL CHECK (length(stopped) BETWEEN 1 AND 64),
+    report TEXT CHECK (report IS NULL OR length(CAST(report AS BLOB)) <= 65536),
+    ended_at TEXT NOT NULL CHECK (length(ended_at) BETWEEN 1 AND 64),
+    refused TEXT CHECK (refused IS NULL OR length(CAST(refused AS BLOB)) BETWEEN 1 AND 2048),
+    result TEXT CHECK (result IS NULL OR (ended = 'returned' AND json_valid(result)
+        AND json_type(result) = 'object' AND length(CAST(result AS BLOB)) <= 32768)),
+    errors TEXT CHECK (errors IS NULL OR (json_valid(errors) AND json_type(errors) = 'array'
+        AND length(CAST(errors AS BLOB)) <= 16384)),
+    alias TEXT CHECK (alias IS NULL OR length(CAST(alias AS BLOB)) BETWEEN 1 AND 256),
+    models TEXT CHECK (models IS NULL OR (json_valid(models) AND json_type(models) = 'array'
+        AND length(CAST(models AS BLOB)) <= 4096)),
+    read_entry INTEGER CHECK (read_entry IS NULL OR read_entry IN (0, 1)),
+    read_proofs INTEGER CHECK (read_proofs IS NULL OR read_proofs IN (0, 1)),
+    files TEXT CHECK (files IS NULL OR (json_valid(files) AND json_type(files) = 'object'
+        AND length(CAST(files AS BLOB)) <= 131072)),
+    environment TEXT CHECK (environment IS NULL OR (json_valid(environment)
+        AND json_type(environment) = 'object' AND length(CAST(environment AS BLOB)) <= 65536)),
+    PRIMARY KEY (delegation_id, number),
+    UNIQUE (project_id, session_id, run),
+    FOREIGN KEY (project_id, session_id) REFERENCES sessions (project_id, session_id)
+) STRICT""",
+        """CREATE TRIGGER delegation_results_kept BEFORE UPDATE ON delegation_results
+BEGIN SELECT RAISE(ABORT, 'a delegation''s results are kept as written'); END""",
+        """CREATE TRIGGER delegation_results_no_delete BEFORE DELETE ON delegation_results
+BEGIN SELECT RAISE(ABORT, 'a delegation''s results are kept as written'); END""",
+        # A result is the delegation's outcome as its run ended, and its number the count.
+        """CREATE TRIGGER delegation_results_numbered BEFORE INSERT ON delegation_results
+WHEN NOT EXISTS (SELECT 1 FROM delegations d WHERE d.delegation_id = NEW.delegation_id
+    AND d.project_id = NEW.project_id AND d.session_id = NEW.session_id
+    AND d.results = NEW.number AND d.run = NEW.run AND d.ended = NEW.ended)
+BEGIN SELECT RAISE(ABORT, 'a delegation''s result is its latest outcome, numbered'); END""",
+        "DROP TRIGGER delegations_kept",
+        # Each outcome written so far is its delegation's first.
+        "UPDATE delegations SET results = 1 WHERE ended IS NOT NULL",
+        "INSERT INTO delegation_results SELECT delegation_id, 1, project_id, session_id, run, "
+        "ended, stopped, report, ended_at, refused, result, errors, alias, models, read_entry, "
+        "read_proofs, files, environment FROM delegations WHERE ended IS NOT NULL",
+        kept,
+        # Every outcome is kept as the next result as it is written, whoever writes it.
+        """CREATE TRIGGER delegations_archived AFTER UPDATE OF ended ON delegations
+WHEN OLD.ended IS NULL AND NEW.ended IS NOT NULL
+BEGIN INSERT INTO delegation_results VALUES (NEW.delegation_id, NEW.results, NEW.project_id,
+    NEW.session_id, NEW.run, NEW.ended, NEW.stopped, NEW.report, NEW.ended_at, NEW.refused,
+    NEW.result, NEW.errors, NEW.alias, NEW.models, NEW.read_entry, NEW.read_proofs, NEW.files,
+    NEW.environment); END""",
+    ):
+        schema.execute(statement)
+    (create,) = schema.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='research_child_settlements'"
+    ).fetchone()
+    old = "PRIMARY KEY(project,session,run), UNIQUE(project,session,delegation),"
+    if old not in create:
+        raise ControlError(INTERNAL, "research_child_settlements is not as version 65 made it")
+    rebuild(
+        schema,
+        "research_child_settlements",
+        create.replace(old, "PRIMARY KEY(project,session,run),", 1),
+    )
+    schema.execute(
+        "CREATE INDEX research_child_settlement_delegation ON research_child_settlements "
+        "(project,session,delegation)"
+    )
 
 
 MIGRATIONS: Final[tuple[Migration, ...]] = (
@@ -3227,6 +4022,21 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _context_auxiliary_window,
     _context_captures,
     _project_model_settings,
+    _project_connector_settings,
+    _project_approval_settings,
+    _external_user_uploads,
+    _artifact_retention,
+    _artifact_reference_indexes,
+    _child_requests,
+    _project_grants,
+    _cost_notices,
+    _agent_message_references,
+    _memory_provenance,
+    _finding_lifecycle,
+    _tool_purposes,
+    _mcp_canaries,
+    _delegation_environments,
+    _parent_review,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

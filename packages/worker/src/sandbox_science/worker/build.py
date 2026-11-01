@@ -21,11 +21,16 @@ from .app import create_app
 from .artifacts import Blobs
 from .backends import Backend, LocalBackend, OpenShellBackend
 from .catalog import CatalogError, load_catalog
+from .child_environments import ChildEnvironments
+from .classifications import ClassificationDesk, project_policy
 from .documents_catalog import DocumentsCatalog
 from .environments import Environments, OpenShellCli, confirmed_daemon_loss
+from .job_sandboxes import JobSandboxes, ManagerPort
 from .lifecycle import UNMANAGED, EnvironmentLifecycle
 from .manager import ExecutionManager
+from .monitor import MonitorDesk
 from .package_clients import cache_endpoint
+from .permission_requests import PermissionDesk
 from .permissions import Permissions
 from .provisioner import Provisioner
 from .settings import Settings, SettingsError
@@ -95,6 +100,9 @@ def build_backend(settings: Settings, environments: Environments | None) -> Back
             executor_args=executor_args(settings),
             prepare=environments.resume if environments is not None else None,
             manages=environments.manages if environments is not None else None,
+            requires_workspace_prefix=(
+                environments.requires_workspace_prefix if environments is not None else None
+            ),
         )
     if settings.local is None:
         raise SettingsError("no backend is configured")
@@ -128,6 +136,7 @@ def build_lifecycle(
         recycle_daemon=environments.recycle_executor,
         notices=environments.notices,
         job_resources=environments.job_resources,
+        requires_workspace_prefix=environments.requires_workspace_prefix,
     )
 
 
@@ -143,10 +152,13 @@ class WorkerParts:
     manager: ExecutionManager
     provisioner: Provisioner
     app: web.Application
+    children: ChildEnvironments | None = None
 
     async def close(self) -> None:
         """Stop the provisioner and the manager, then close every store, after the app."""
         try:
+            if self.children is not None:
+                await self.children.close()
             await self.provisioner.close()
             await self.manager.close()
             if self.provisioner.permissions is not None:
@@ -207,5 +219,60 @@ def _build(settings: Settings, token: str, clock: Clock, lock: StateLock) -> Wor
         if shared is not None:
             environments.deleted.append(shared.forget)
     provisioner = build_provisioner(settings, manager, environments)
-    app = create_app(manager, token, environments, settings.clients, provisioner, documents)
-    return WorkerParts(lock, store, documents, shared, environments, manager, provisioner, app)
+    if environments is not None and environments.settings.job_profiles:
+        sandboxes = JobSandboxes(environments, store, clock=clock)
+        sandboxes.port = ManagerPort(manager, provisioner)
+        manager.job_sandboxes = sandboxes
+        # A session environment's job sandboxes end with it (JS-25).
+        environments.required_deleting.append(manager.end_job_sandboxes)
+        environments.given_up.append(manager.environment_given_up)
+    children = None
+    # Kept while the pool has child profiles, and while any child environment's row is
+    # left after they were removed, so its sweep still releases retained ones and prunes
+    # released rows; admission then refuses (no child profiles).
+    if environments is not None and (
+        environments.settings.child_profiles or store.child_environments.exist()
+    ):
+        children = ChildEnvironments(environments, store, clock=clock)
+        children.port = ManagerPort(manager, provisioner)
+    desk = (
+        PermissionDesk(
+            provisioner.permissions, lambda: environments.records.listed(None), manager.clock
+        )
+        if provisioner.permissions is not None and environments is not None
+        else None
+    )
+    review = (
+        ClassificationDesk(
+            environments.store,
+            provisioner.permissions,
+            partial(project_policy, environments),
+            store.classification_receipts,
+            manager.clock,
+            listings=store.listing_reports,
+            ceiling=environments.ceiling,
+            floor=environments.floor,
+        )
+        if provisioner.permissions is not None and environments is not None
+        else None
+    )
+    figures = (
+        MonitorDesk(
+            provisioner.permissions,
+            environments.records.listed,
+            declared_tier=environments.isolation_tier,
+            measured_tier=manager.measured_tier,
+            classifications=review,
+            clock=manager.clock,
+        )
+        if environments is not None
+        else None
+    )
+    app = create_app(
+        manager, token, environments, settings.clients, provisioner, documents,
+        permission_desk=desk, classification_desk=review, monitor_desk=figures,
+        children=children,
+    )  # fmt: skip
+    return WorkerParts(
+        lock, store, documents, shared, environments, manager, provisioner, app, children
+    )

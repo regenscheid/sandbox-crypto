@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: MIT
-"""A fake MCP server over Streamable HTTP and TLS, for tests of the MCP proxy and its callers.
+"""A fake MCP server over Streamable HTTP and TLS, for tests of MCP clients.
 
-The fake server answers as ``mcp.example.test``, which ``StaticResolver`` maps to
-127.0.0.1, with a certificate from a throwaway CA that ``make_tls`` makes. It records
+The fake server answers as ``mcp.example.test``, with a certificate from a throwaway CA
+that ``make_tls`` makes, or over plain HTTP behind a test's stand-in gateway. It records
 every request it receives. It requires what OpenShell's fence and real servers
 require: after ``initialize``, a known ``Mcp-Session-Id`` (else 404) and an
 ``MCP-Protocol-Version`` header (else 400).
@@ -13,7 +13,6 @@ from __future__ import annotations
 import asyncio
 import datetime
 import json
-import socket
 import ssl
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -21,7 +20,6 @@ from pathlib import Path
 from typing import Any, cast
 
 from aiohttp import web
-from aiohttp.abc import AbstractResolver, ResolveResult
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -55,7 +53,7 @@ def make_tls(directory: Path) -> Tls:
     ``directory``, made at test time."""
     now = datetime.datetime.now(datetime.UTC)
     ca_key = ec.generate_private_key(ec.SECP256R1())
-    ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "MCP proxy test CA")])
+    ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "MCP test CA")])
     ca_cert = (
         x509.CertificateBuilder()
         .subject_name(ca_name)
@@ -191,6 +189,10 @@ class FakeServer:
         """Answers tools/list instead of the pages of ``tools``, when set."""
         self.last_cursor: str | None = None
         """A nextCursor to send on the last page of tools/list."""
+        self.session_tools = False
+        """When set, each session lists the tools as they were when it started, as a
+        portal does, so a change to ``tools`` reaches new sessions only."""
+        self.started_with: dict[str, list[str]] = {}
 
     def answer(
         self,
@@ -239,6 +241,7 @@ class FakeServer:
             version = self.version or str(message["params"]["protocolVersion"])
             session_id = self.session_id or f"upstream-session-{len(self.sessions) + 1}"
             self.sessions.add(session_id)
+            self.started_with[session_id] = list(self.tools)
             result: dict[str, object] = {
                 "protocolVersion": version,
                 "capabilities": {"tools": {"listChanged": True}, "tasks": {"list": {}}},
@@ -246,7 +249,7 @@ class FakeServer:
                 "instructions": "Use search first.",
                 **self.initialize_extra,
             }
-            # A cookie, which the proxy must not send back to any server.
+            # A cookie, which a client must not send back to any server.
             return web.json_response(
                 {"jsonrpc": "2.0", "id": message["id"], "result": result},
                 headers={"Mcp-Session-Id": session_id, "Set-Cookie": "upstream=test; Path=/"},
@@ -260,11 +263,16 @@ class FakeServer:
         request_id: object = message["id"]
         params = cast("dict[str, Any]", message.get("params") or {})
         if method == "tools/list":
+            tools = self.tools
+            if self.session_tools:
+                tools = self.started_with.get(headers["mcp-session-id"], tools)
             return web.json_response(
                 {
                     "jsonrpc": "2.0",
                     "id": request_id,
-                    "result": (self.listing or self._listing)(params),
+                    "result": (
+                        self.listing(params) if self.listing else self._listing(params, tools)
+                    ),
                 }
             )
         if method == "tools/call":
@@ -292,14 +300,17 @@ class FakeServer:
         error = {"code": -32601, "message": f"{method} not found"}
         return web.json_response({"jsonrpc": "2.0", "id": request_id, "error": error})
 
-    def _listing(self, params: Mapping[str, object]) -> dict[str, object]:
+    def _listing(
+        self, params: Mapping[str, object], tools: list[str] | None = None
+    ) -> dict[str, object]:
+        tools = self.tools if tools is None else tools
         start = int(str(params.get("cursor", "0")))
-        size = self.page_size or len(self.tools)
-        page = self.tools[start : start + size]
+        size = self.page_size or len(tools)
+        page = tools[start : start + size]
         listing: dict[str, object] = {
             "tools": [{"name": name, "inputSchema": {"type": "object"}} for name in page]
         }
-        if start + size < len(self.tools):
+        if start + size < len(tools):
             listing["nextCursor"] = str(start + size)
         elif self.last_cursor is not None:
             listing["nextCursor"] = self.last_cursor
@@ -330,29 +341,6 @@ def _stream(request_id: object, _: dict[str, object]) -> Reply:
         {"jsonrpc": "2.0", "method": "notifications/tools/list_changed"},
         text_result(request_id, "streamed"),
     )
-
-
-class StaticResolver(AbstractResolver):
-    """Resolves the fake server's name to 127.0.0.1, and nothing else."""
-
-    async def resolve(
-        self, host: str, port: int = 0, family: socket.AddressFamily = socket.AF_INET
-    ) -> list[ResolveResult]:
-        if host != SERVER_HOST:
-            raise OSError(f"test resolver: unknown host {host}")
-        return [
-            {
-                "hostname": host,
-                "host": "127.0.0.1",
-                "port": port,
-                "family": socket.AF_INET,
-                "proto": 0,
-                "flags": socket.AI_NUMERICHOST,
-            }
-        ]
-
-    async def close(self) -> None:
-        pass
 
 
 @dataclass(frozen=True)

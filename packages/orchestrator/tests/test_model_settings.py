@@ -20,10 +20,11 @@ DEFAULTS: dict[AgentModelRole, ModelProfile] = {
     "delegated": ModelProfile(alias="sol", api="responses", reasoning_effort="max"),
     "reviewer": ModelProfile(alias="luna", api="responses", reasoning_effort="medium"),
 }
-CATALOG: dict[str, Literal["chat", "responses", "messages"]] = {
+CATALOG: dict[str, Literal["chat", "responses", "messages"] | None] = {
     "sol": "responses",
     "luna": "responses",
     "claude": "messages",
+    "chosen": None,
 }
 
 
@@ -82,12 +83,62 @@ def test_only_catalog_aliases_and_supported_effort_are_saved(models: ProjectMode
             defaults=DEFAULTS,
             available=CATALOG,
         )
-    messages = {**base, "reviewer": {"alias": "claude", "reasoning_effort": "medium"}}
-    with pytest.raises(DocumentError, match="does not accept effort"):
-        models.change(
+    # Every adapter takes an effort (CM-41): a Messages alias, or one whose adapter the
+    # run service chooses, is saved with one, and offered as taking one.
+    for expected, alias in enumerate(("claude", "chosen")):
+        roles = {**base, "reviewer": {"alias": alias, "reasoning_effort": "high"}}
+        saved, _ = models.change(
             "p1",
-            {"expected": 0, "roles": messages, "operation_id": "x"},
+            {"expected": expected, "roles": roles, "operation_id": f"x-{alias}"},
             USER,
             defaults=DEFAULTS,
+            available=CATALOG,
+        )
+        assert saved.roles["reviewer"].reasoning_effort == "high"
+    shown = models.get("p1", DEFAULTS, CATALOG)
+    assert all(option.effort_supported for option in shown.available)
+    assert {option.alias: option.api for option in shown.available}["chosen"] is None
+
+
+def test_a_default_that_differs_on_messages_follows_the_alias_s_api(
+    models: ProjectModels,
+) -> None:
+    """The Kubernetes bundle's research roles default to max, and to high on Messages.
+    Shown for an alias named Messages, the default is high; for one whose API the run
+    service chooses, it is the deployment's default, which the run service resolves."""
+    defaults: dict[AgentModelRole, ModelProfile] = {
+        "main": ModelProfile(alias="chosen", reasoning_effort="max"),
+        "delegated": ModelProfile(alias="claude", api="messages", reasoning_effort="max"),
+        "reviewer": ModelProfile(alias="luna", api="responses", reasoning_effort="medium"),
+    }
+    on_messages: dict[AgentModelRole, str] = {"main": "high", "delegated": "high"}
+    shown = models.get("p1", defaults, CATALOG, on_messages)
+    assert shown.roles["main"].deployment_default
+    assert shown.roles["main"].reasoning_effort is None
+    assert shown.roles["delegated"].reasoning_effort == "high"
+    assert not shown.roles["delegated"].deployment_default
+    assert shown.roles["reviewer"].reasoning_effort == "medium"
+    assert shown.default_efforts["main"].model_dump() == {"effort": "max", "messages": "high"}
+    assert shown.default_efforts["reviewer"].messages is None
+    roles = {role: selection.model_dump() for role, selection in shown.defaults.items()}
+    saved, _ = models.change(
+        "p1",
+        {"expected": 0, "roles": roles, "operation_id": "defaults"},
+        USER,
+        defaults=defaults,
+        available=CATALOG,
+        messages_defaults=on_messages,
+    )
+    assert saved.roles["main"].deployment_default
+    both = {
+        **roles,
+        "main": {"alias": "chosen", "reasoning_effort": "max", "deployment_default": True},
+    }
+    with pytest.raises(DocumentError, match="invalid"):
+        models.change(
+            "p1",
+            {"expected": 1, "roles": both, "operation_id": "both"},
+            USER,
+            defaults=defaults,
             available=CATALOG,
         )

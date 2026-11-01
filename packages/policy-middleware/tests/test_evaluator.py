@@ -136,7 +136,6 @@ def test_an_unmatched_request_follows_the_default(
     [
         pytest.param({"host": "metadata.google.internal"}, "destination_forbidden", id="floor"),
         pytest.param({"host": "10.0.0.5", "scheme": "http", "port": 80}, "policy_denied", id="lan"),
-        pytest.param({"query": "a" * 5000}, "policy_denied", id="url-limit"),
     ],
 )
 def test_denials_carry_the_layer_reason_code(
@@ -237,11 +236,16 @@ def test_ipv6_literals_are_bracketed_for_classification(
 
 
 def test_non_default_ports_are_kept(middleware: PolicyMiddleware, make_facts: FactsFactory) -> None:
-    # read-only-web lists no ports, so it covers 443 only and port 8443 falls to the default.
-    verdict = middleware.evaluate_http(make_facts(port=8443))
-    assert verdict.reason_code == reasons.APPROVAL_REQUIRED
-    assert verdict.decision is not None
-    assert verdict.decision.layer == "default"
+    # read-only-web is for any port (D95); external-writes lists no ports, so it covers
+    # 443 only and a write to port 8443 falls to the default.
+    read = middleware.evaluate_http(make_facts(port=8443))
+    assert read.allowed
+    assert read.decision is not None
+    assert read.decision.rule == "read-only-web"
+    write = middleware.evaluate_http(make_facts(method="DELETE", port=8443))
+    assert write.reason_code == reasons.APPROVAL_REQUIRED
+    assert write.decision is not None
+    assert write.decision.layer == "default"
 
 
 PORTLESS_DENY = """\
@@ -1046,55 +1050,38 @@ def test_package_cache_config_is_accepted(
 MCP_HOST = "mcp-proxy.sandbox-science.internal"
 
 
-def with_services(config: dict[str, object]) -> dict[str, object]:
+def with_retired_proxy(config: dict[str, object]) -> dict[str, object]:
+    """A sandbox compiled before the MCP proxy retired (D98) names it beside the cache."""
     return {
         **with_cache(config),
         "mcp_proxy": {"host": MCP_HOST, "port": 8080.0},
     }
 
 
-def test_worker_code_reaches_the_mcp_proxy_when_the_policy_allows_it(
-    middleware: PolicyMiddleware,
-    make_facts: FactsFactory,
-    example: LoadedPolicy,
-    policy_config: Callable[[LoadedPolicy], dict[str, object]],
-) -> None:
-    facts = make_facts(
-        scheme="http",
-        host=MCP_HOST,
-        port=8080,
-        method="POST",
-        path="/mcp",
-        headers=(("content-type", "application/json"),),
-        body=b'{"jsonrpc": "2.0", "method": "tools/list", "id": 1}',
-        config=with_services(policy_config(example)),
-    )
-    verdict = middleware.evaluate_http(facts)
-    assert verdict.allowed
-    assert verdict.decision is not None
-    assert verdict.decision.rule == "mcp.proxy.worker_access"
-
-
-def test_worker_access_false_keeps_worker_code_from_the_mcp_proxy(
+@pytest.mark.parametrize("port", [8080, 443])
+def test_the_retired_mcp_proxy_host_is_refused_on_every_port(
     store: PolicyStore,
     sandbox_id: str,
     make_facts: FactsFactory,
     policy_config: Callable[[LoadedPolicy], dict[str, object]],
+    port: int,
 ) -> None:
-    loaded = bind_policy(store, sandbox_id, "mcp:\n  proxy: {worker_access: false}\n")
+    loaded = bind_policy(store, sandbox_id, "defaults: {action: allow}\n")
     middleware = PolicyMiddleware(
         store, ceiling=PoolCeiling.unrestricted(), floor=HardFloor(), events=_NullSink()
     )
+    config = with_retired_proxy(policy_config(loaded))
+    assert middleware.validate_config(config) is None  # an older sandbox still loads
     facts = make_facts(
-        scheme="http",
+        scheme="http" if port == 8080 else "https",
         host=MCP_HOST,
-        port=8080,
+        port=port,
         method="POST",
         path="/mcp",
         body=b"{}",
-        config=with_services(policy_config(loaded)),
+        config=config,
     )
-    assert middleware.evaluate_http(facts).reason_code == reasons.POLICY_DENIED
+    assert middleware.evaluate_http(facts).reason_code == reasons.DESTINATION_FORBIDDEN
 
 
 @pytest.mark.parametrize(

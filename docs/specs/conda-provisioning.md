@@ -10,7 +10,7 @@ Out of scope: base images and the `crypto-base` recipe (D46); the cache itself (
 
 Terms:
 
-- **Environment**: a project's default environment or a dedicated session environment, described by an `EnvironmentRecord`. Its managed Conda prefix is a declared writable volume (D48).
+- **Environment**: a project's default environment or a dedicated session environment, described by an `EnvironmentRecord`. Its managed Conda prefix is a declared writable volume (D48): in the research images, the workspace's layer over the image's read-only base environment, which installs go into ([images](../IMAGES.md#the-environment-outside-the-workspace-b11)).
 - **Environment revision**: a counter of the environment's dependency and configuration state. Revision 0 is the base profile's image digest and lockfile. Each completed change adds one.
 - **Capability**: a named function a worker can perform, such as `sage`, `gp` or `latex`, with a versioned probe.
 - **Probe**: a small functional check run in the environment that passes only on an expected result. An import or version check is a weaker probe and is labeled as one.
@@ -43,7 +43,7 @@ Terms:
 - CP-11. Operations on one environment are serialized in request order; waiting operations are visible as a queue. Operations on different environments are independent ([projects and sessions](../PROJECTS-AND-SESSIONS.md), W3).
   - Shell and kernel installs take the environment's lock in the order they came, as far as the kernel's file locks keep it. The worker API shows the provisioning tool's queue ([worker](../WORKER.md#provisioning-operations)); shell and kernel installs waiting for the lock are not in it.
 - CP-12. While an operation links packages, new executions in that environment wait; executions already running continue and are marked as overlapping the change (new). Every execution records the revision current at its start, and a kernel also records the revision at its own start. After a revision change, the agent and the GUI are told which running kernels predate it (new).
-  - An execution waits at most its own time limit, which covers the wait; still waiting then, it ends `timed_out` without running and names the operation it waited for. The revision at its start is the one after the wait. It overlaps a change when its start and end revisions differ, or when an operation still held the lock as it ended (settled 2026-10-11).
+  - The wait does not count against an execution's time limit, which starts when it runs (amended 2026-10-24, D95 friction review). It lasts at most as long as the attempts running beside it may run, one of which runs the operation, or the execution's own limit when none runs; still waiting then, it ends `timed_out` without running and names the operation it waited for. The revision at its start is the one after the wait. It overlaps a change when its start and end revisions differ, or when an operation still held the lock as it ended (settled 2026-10-11).
   - Kernels' start and current revisions are compared and disclosed in tool results ([kernel revisions](../KERNEL-REVISIONS.md)). An observation-only route inspects a healthy connection without waking it or extending its activity, and the GUI shows it for visible sessions ([workspace kernels](../WORKSPACE-KERNELS.md)). Durable notification of the agent across sessions is not built. The observer grants no restart or package-recovery authority.
 - CP-13. A failed operation leaves the environment at its previous revision. A failure before linking leaves the prefix untouched (outcome `failed`). A failure during linking or in a post-link script restores the previous revision, from a volume snapshot or by rebuilding from its lockfile (outcome `rolled_back`, D48). If restoring fails, the environment becomes `needs_recovery` and refuses executions until it is rebuilt. It MUST NOT be left silently in a mixed state (new).
 - CP-14. Installs have wall-time and disk limits from the policy's resources and can be cancelled like any execution ([tools](tools.md)); a cancelled install follows CP-13.
@@ -149,3 +149,11 @@ Terms:
 ## Sources
 
 [Monitoring](../MONITORING.md) (Conda workflow), [package cache](../PACKAGE-CACHE.md), [policy](../POLICY.md) (packages), [projects and sessions](../PROJECTS-AND-SESSIONS.md), [architecture](../ARCHITECTURE.md) (storage and dependencies), [licensing](../LICENSING.md), [implementation plan](../IMPLEMENTATION-PLAN.md) (W2, W3), decisions D09, D16, D21, D22, D46, D48, D71. CScience behavior from the [Claude Science report](../../.agents/docs/agent-reports/claude-science.md) (environment management and provisioning).
+
+
+## Implementation ownership
+
+The [provisioning lifecycle contract](provisioning-lifecycle.md) defines the operation
+coordinator, stage execution, permission interaction and revision reconciliation.
+Queue release precedes terminal observation drain; close and environment removal
+retain operation and store ownership until the actual writer has finished.

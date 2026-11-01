@@ -3,7 +3,8 @@
 Owner-approved 2026-10-17; implemented locally. Artifacts belong
 to the durable control application, independently of agent containers. New retained
 content uses a local content-addressed filesystem store adjacent to the control
-database; the same directory can live on a PVC. S3 is a future backend, not implemented.
+database; the same directory can live on a PVC. Optional S3-compatible backing and
+explicit verified local eviction are implemented on `k8s` (see below).
 Existing SQLite content remains readable without copying or rewriting old revisions.
 
 Limits are 1 GiB per artifact, 2 GiB retained per recording call, 16 GiB per project
@@ -42,3 +43,133 @@ reproduction adds no retained revision. Physical storage can additionally includ
 legacy mirror bytes and bounded charged orphan/staging transfers. An installed
 blob whose metadata commit fails retains its reservation for explicit recovery.
 Worker capture allows 240 seconds and HTTP publication/content transfer 300 seconds.
+
+## Kubernetes object-store increment (2026-10-20)
+
+Implemented on `k8s`. An optional private
+`<database-name>.artifacts/storage.toml` selects S3 backing for the existing
+hash-named store. It holds endpoint, bucket, prefix, region and addressing style;
+credentials use the SDK's standard credential chain, never artifact metadata or
+agent-visible config. No config keeps the existing local-only behavior. All
+constructors, including provenance prefix reads, use this same configuration.
+
+New content is installed locally first, then uploaded and independently read back
+to verify exact SHA-256 and length before publication succeeds. Mark installation
+before remote I/O: a failed/unknown PUT retains its local file and transfer
+reservation, so uncertainty cannot silently release capacity. Content keys derive
+from the exact hash. Repeating that transfer reconciles identical immutable bytes;
+ETags and user-supplied object metadata are not integrity evidence.
+
+Archived full reads stream into a private temporary file, verify size/hash, rewind
+and yield a seekable stream; exit/failure removes that temporary file. Prefix reads
+remain bounded, with finite socket inactivity timeouts and elapsed checks between
+chunks. Blocking SDK calls are not strictly preempted at a wall-clock deadline;
+the configured object-store endpoint is trusted. Remote outage or corruption
+reports unavailable content, never empty or substituted bytes. S3-compatible
+endpoints may need path addressing and no optional checksum-extension headers.
+
+An operator CLI installs backing configuration and archives only database-referenced
+external blobs. Dry-run is the default for local eviction; an explicit eviction
+option requires successful remote verification first. It never deletes remote
+objects, old inline SQLite content, staging, orphan content, worker replicas or
+live environment PVCs. The metadata database and backing configuration remain
+durable. Prefix/bucket changes after eviction require an explicit migration;
+reconfiguration cannot silently point existing references at an empty bucket.
+
+This first increment has no automatic age-based deletion. Later retention work
+must bound local cache/PVC usage while preserving active/paused research,
+incomplete transfers and original-operation recovery. See
+[Kubernetes delivery work](../KUBERNETES.md).
+
+Install the optional SDK and configure/archive/evict content with the
+[S3 operator commands](../ARTIFACT-S3.md). Cold-read scratch uses Python's
+temporary directory (`TMPDIR`); cluster manifests must put it on bounded ephemeral
+storage or an explicitly selected volume. Successful reads remove that scratch
+on close; a killed process can leave filesystem-level cleanup to its owning pod.
+
+## Uploaded originals (2026-10-20)
+
+New immutable user uploads use the same verified control-owned blob store and
+optional S3 backing. Existing inline uploads remain unchanged and readable; an
+append-only schema migration adds external upload metadata/references and durable
+transfer reservations without rewriting the legacy BLOB table. Session/project
+ownership, upload IDs, names, media types, hashes, sequence numbers and quotas
+remain shared across both representations. A retry of an ID with different
+metadata or bytes is a conflict, including an interrupted attempt whose bytes
+have already been installed but whose metadata commit is incomplete.
+
+Upload transfer admission allows four overall and two per project, each reserving
+at most 100 MiB before reading its body. These reservations count against the
+existing 2 GiB/project and 8 GiB/overall original-upload retention quotas, with
+1,024 and 4,096 retained-upload count limits. Replays of committed IDs do not
+charge retained bytes/count twice, but still require transfer admission. Unknown
+or installed-but-uncommitted transfers retain their charge; retries must reconcile
+the original identity and exact bytes rather than clear a hold or replay mutable
+research operations. A live transfer owner cannot be replaced by another request.
+
+Binary HTTP bodies are read in bounded chunks into admitted private scratch, then
+copied into the hash-named blob store after the digest is known. Scratch can peak
+at twice admitted bytes during that copy (800 MiB overall); close the initial
+scratch before remote upload/readback. Only a verified blob followed by a committed
+immutable reference completes an upload. Cancellation retains admission until the
+actual I/O drains. Quota checks/metadata changes are short transactions, never held
+across object-store or body I/O. An exact-ID retry reconciles a retained outcome.
+
+Full downloads use a verified seekable stream and fixed-size network writes,
+outside SQL transactions. Legacy inline originals are copied/verified into private
+scratch before yielding. Small JSON uploads and bounded document/worker-delivery
+consumers may retain the existing convenience byte API. Archive/evict enumeration
+includes external upload references, never rewrites or deletes legacy rows, and
+never deletes the originals from object storage.
+
+## Worker capture replica retention (2026-10-20)
+
+This increment separates durable control retention from executor capture cleanup.
+Only newly committed, fully retained publication receipts generate acknowledgements;
+metadata-only, held, failed or unknown publications never do. Legacy records are
+not implicitly backfilled. The control receipt and one pending acknowledgement
+intent commit in the same transaction, after exact blob verification. The pending
+record names the original worker endpoint digest and an immutable receipt; it is
+not authority to publish a mutable workspace path again.
+
+Worker protocol 11 adds `POST /v1/artifacts/{artifact_id}/retention`, with a bounded
+`ArtifactRetentionAcknowledgement`: `acknowledgement_id`, the exact `snapshot`
+(`ArtifactSnapshot`) and control `revision` (`ArtifactRevisionRef`). Project, hash,
+size and media type must agree. The response echoes that exact model. A strict
+client permission `artifact_retention` defaults false; the pool token has it.
+Scope checks precede accepting an acknowledgement. Ordinary execution clients
+cannot assert durable storage merely because they can read an artifact. The worker
+compares the complete supplied snapshot with its original immutable metadata and
+keeps an acknowledgement ID immutable: identical replay succeeds, different reuse
+conflicts. Installer-log artifacts are excluded from replica release.
+
+An acknowledgement ID is deterministic from the complete canonical snapshot and
+revision, independent of a retry's current run. Control dispatch binds the current
+configured worker endpoint to the original digest, validates the echoed response,
+then marks delivery. Lost responses retry the same identity. A failed delivery
+never downgrades a successful publication, repeats its mutable capture or releases
+control content. Completed-operation replay retries delivery without downloading
+again. A bounded run-start/manual drain uses the same component and original
+receipt; errors remain visible and pending without automatic tight retry loops.
+
+Physical release is an explicit offline operator command under the worker's
+existing exclusive `StateLock`, dry-run by default, bounded by a page/limit cursor.
+It examines only hash-named blobs referenced by retained worker artifact metadata.
+Every reference sharing a hash must have an exact durable acknowledgement; one
+unacknowledged, invalid or installer reference preserves the file, including
+cross-project duplicates. No metadata, source workspace, capture helper, staging,
+or orphan file is deleted. This is not remote-object deletion or PVC release.
+
+Before unlinking, the worker records a durable release intent for the exact hash
+and size, then fsyncs the containing directory and records settlement. A crash at
+any step can reconcile the same identity on the next offline run. Artifact
+metadata and the release audit remain readable; missing content is explicit and
+is never reconstructed by recapturing a mutable path. A new later capture may
+install identical bytes again; release must recheck all then-current references
+before deleting them. Existing installer-log references pin their shared bytes.
+
+Online cleanup, automatic age policies, control-store GC, whole-workspace/PVC
+archive and release, and image publication are outside this increment. Direct
+library users are responsible for the same one-worker state lease; production
+worker and cleanup CLIs enforce it. Live downloads and blob installation need
+descriptor/writer fences before online deletion can be supported.

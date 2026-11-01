@@ -62,16 +62,21 @@ guard. They are never model tools and never contact a model, worker or executor.
   A successful reconstruction journals the replacement lineage for later losses.
   Recovery status exposes a pending reconstruction identity and detail across
   the session. New main work is refused while a session-kernel reconstruction is
-  unresolved. After an operator acknowledges lost state, Resume refuses a live
-  partial kernel; once that kernel has been closed, it atomically records the
-  abandoned intent and an empty snapshot. The next cell starts a clean kernel.
+  unresolved. Resume acknowledges lost state itself when no operator has (D100),
+  recording the same `resolution:kernel_recompute` provenance marked automatic,
+  restarts a live partial kernel clean, and atomically records the abandoned intent
+  and an empty snapshot. The next cell starts a clean kernel. The operator decision
+  remains available, for a reconstruction left outside a Resume.
   The conditional restart field raises the lockstep worker protocol to 10.
 - Decisions live in `research_observations`, scoped by project/session/work/kind and
   original identity, with detail bounded to 16 KiB. Decision, pending-intent settlement
   and visible archive record commit atomically. Oversized original tool arguments
   fail closed rather than being truncated or executed.
 
-`POST .../sessions/{session}/recovery/token-grants` is a narrow USER recovery
+*Removed 2026-10-24 (D102):* the USER token override described next, and its
+`token-grants` routes, are gone; a child's tokens are a soft cap that checks in with its
+parent. Earlier `token_grant` observations stay in the store as history.
+`POST .../sessions/{session}/recovery/token-grants` was a narrow USER recovery
 override for paused direct children of the root whose stop reason is `run_budget`.
 It takes the exact work, current attempt, epoch, expected grant revision, a new
 cumulative token ceiling, and a reason. The child must have an original durable

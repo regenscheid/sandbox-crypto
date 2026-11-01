@@ -352,5 +352,7 @@ def test_a_request_takes_the_time_after_reading_the_store(
     config = {"policy": {"name": loaded.policy.metadata.name, "digest": loaded.digest}}
     facts = make_facts(method="POST", path="/v1/items", config=config)
     assert middleware.evaluate_http(facts).reason_code == reasons.APPROVAL_REQUIRED
-    assert steps[0] == "read", steps
-    assert steps.count("now") >= 2  # the resolutions outside and inside the lock
+    # The detection rules count the call at a time of their own, before any read.
+    judged = steps[steps.index("read") :]
+    assert judged[0] == "read", steps
+    assert judged.count("now") >= 2  # the resolutions outside and inside the lock

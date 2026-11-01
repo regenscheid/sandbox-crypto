@@ -125,6 +125,9 @@ def test_an_answer_reads_its_scope_expiry_and_withdrawal() -> None:
         {"expires": "soon"},
         {"expires": "2026-10-14T13:00:00"},
         {"target": {"kind": "packages"}},
+        {"grants": ["not a grant!"]},
+        {"grants": "grant-1"},
+        {"grants": [f"grant-{n}" for n in range(17)]},  # more than an answer names
     ],
 )
 def test_a_malformed_answer_does_not_parse(change: dict[str, object]) -> None:

@@ -18,14 +18,16 @@ from typing import Any
 
 import pytest
 
+from sandbox_science.contracts.openshell_version import OPENSHELL_VERSION_OUTPUT
 from sandbox_science.launcher import toml
 
 ConfigMaker = Callable[..., Path]
 PARTS = (
     "sandbox-science-worker",
+    "sandbox-science-policy-middleware",
+    "sandbox-science-package-cache",
     "sandbox-science-harness",
     "sandbox-science-workspace",
-    "sandbox-science-mcp-proxy",
     "sandbox-science-control",
 )
 
@@ -53,7 +55,7 @@ def make_config(tmp_path: Path) -> ConfigMaker:
     for name in ("policy.yaml", "targets.yaml", "pool-ceiling.yaml", "web/dist/index.html"):
         (site / name).write_text("# test\n")
     openshell = site / "bin" / "openshell"
-    openshell.write_text("#!/bin/sh\nexit 0\n")
+    openshell.write_text(f"#!/bin/sh\necho {OPENSHELL_VERSION_OUTPUT}\n")
     openshell.chmod(0o755)
 
     def make(changes: dict[str, Any] | None = None, name: str = "sandbox-science.toml") -> Path:
@@ -140,6 +142,7 @@ def openshell_stand_in(command: Path, **defaults: Path | str) -> Path:
         f"os.environ.setdefault({name!r}, {str(value)!r})\n" for name, value in defaults.items()
     )
     command.parent.mkdir(parents=True, exist_ok=True)
+    command.parent.chmod(0o755)  # a umask of 002 would leave it writable by the group
     command.write_text(
         f"#!{sys.executable}\n"
         "import os, runpy, sys\n"
@@ -160,18 +163,57 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return path
 
 
-def bound_port() -> int:
-    """A loopback port the system has free now, once its probe closes."""
+# Ports the system hands out for ``bind(0)`` and for outgoing connections are one pool
+# (Linux: 32768-60999), so a port found by binding and closing is free only until another
+# test's process, or one of its connections, is given it: the launcher then refused the
+# part's address (``something else listens on``). Tests take ports below that pool
+# instead, where only a deliberate bind can hold one. Each xdist worker has a slice of its
+# own and walks it in order, so two workers never pick the same port and a port is not
+# handed out again until its slice has wrapped.
+PORT_FLOOR = 20000
+PORT_SLICE = 256
+PORT_SLICES = 48
+_cursor: int | None = None
+
+
+def _worker_slice() -> int:
+    name = os.environ.get("PYTEST_XDIST_WORKER", "gw0")
+    number = int(name[2:]) if name.startswith("gw") and name[2:].isdigit() else 0
+    return number % PORT_SLICES
+
+
+def bindable(port: int) -> bool:
+    """Whether a loopback bind to ``port`` works now, as the launcher's own check does."""
     with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        return int(probe.getsockname()[1])
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind(("127.0.0.1", port))
+        except OSError:
+            return False
+    return True
+
+
+def bound_port(span: int = 1) -> int:
+    """The first of ``span`` consecutive loopback ports that are free now, from this
+    worker's slice, and not offered again by this process until its slice has wrapped."""
+    global _cursor
+    if _cursor is None:
+        # A second pytest run on the machine starts elsewhere in the slice.
+        _cursor = os.getpid() % PORT_SLICE
+    base = PORT_FLOOR + _worker_slice() * PORT_SLICE
+    for _ in range(PORT_SLICE):
+        first = _cursor
+        _cursor = (_cursor + span) % PORT_SLICE
+        if first + span <= PORT_SLICE and all(bindable(base + first + n) for n in range(span)):
+            return base + first
+    raise AssertionError(f"no {span} free loopback ports in {base}-{base + PORT_SLICE - 1}")
 
 
 def free_port(taken: Collection[int], probe: Callable[[], int] = bound_port) -> int:
     """A free loopback port that is none of ``taken``. A port picked by binding and
     closing is free only until the system hands it out again, which it may do at once: a
-    CI run gave the MCP proxy's forward the workspace's port, and the launcher refused
-    the config (``both listen on``)."""
+    CI run gave the (since retired) MCP proxy's forward the workspace's port, and the
+    launcher refused the config (``both listen on``)."""
     for _ in range(100):
         port = probe()
         if port not in taken:
@@ -181,15 +223,15 @@ def free_port(taken: Collection[int], probe: Callable[[], int] = bound_port) -> 
 
 def free_ports() -> tuple[int, int]:
     """A port for the worker and one for the workspace, whose next port is free too."""
-    while True:
-        sockets = [socket.socket() for _ in range(2)]
-        for item in sockets:
-            item.bind(("127.0.0.1", 0))
-        worker, workspace = (item.getsockname()[1] for item in sockets)
-        for item in sockets:
-            item.close()
-        if workspace + 1 != worker and workspace < 65535:
-            return worker, workspace
+    worker = bound_port()
+    return worker, bound_port(span=2)
+
+
+LAUNCHER_WAIT = 120.0
+"""The longest any wait on a launcher or its parts may take, in seconds. A bound for a
+broken launcher, not a delay: every wait returns as soon as its condition holds. The launcher
+starts eight interpreters, so a host running a whole test suite in parallel (or other jobs
+besides) can take several times the 8 s an idle one needs."""
 
 
 class Launcher:
@@ -218,7 +260,7 @@ class Launcher:
             self.lines.put(line.rstrip("\n"))
         self.lines.put(None)  # the end of its output
 
-    def expect(self, text: str, timeout: float = 30) -> None:
+    def expect(self, text: str, timeout: float = LAUNCHER_WAIT) -> None:
         """Wait until the launcher says ``text``: at most ``timeout`` seconds, and no
         longer than its output lasts, so that a launcher that stopped early fails at once
         with what it said."""
@@ -238,7 +280,7 @@ class Launcher:
             else:
                 self.seen.append(line)
 
-    def finish(self, timeout: float = 30) -> int:
+    def finish(self, timeout: float = LAUNCHER_WAIT) -> int:
         status = self.process.wait(timeout)
         # All it said: the reader ends at the end of its output, however loaded the host.
         self.reader.join(timeout)
@@ -257,7 +299,7 @@ class Launcher:
         return subprocess.run(
             [sys.executable, "-m", "sandbox_science.launcher", name,
              "--config", str(self.config), *extra],
-            capture_output=True, text=True, env=self.env, timeout=60, check=False,
+            capture_output=True, text=True, env=self.env, timeout=LAUNCHER_WAIT, check=False,
         )  # fmt: skip
 
 
@@ -279,15 +321,18 @@ def site(
     ) -> Launcher:
         fakes = ["FAKE_JOURNAL", "FAKE_PARTS", "FAKE_OPENSHELL"]
         extra = changes.pop("pass_env", {})
+        command = changes.pop("command", "up")
+        unit = changes.pop("unit", None)
         config = make_config(
             {
                 "bin_dir": str(fake_parts),
                 "openshell": {"cli": str(fake_openshell)},
-                "start_timeout": 20,
-                "stop_timeout": changes.pop("stop_timeout", 5),
+                "start_timeout": LAUNCHER_WAIT,
+                "stop_timeout": changes.pop("stop_timeout", 20),
                 "worker": {
                     "listen": f"127.0.0.1:{worker}",
                     "pass_env": [*fakes, *extra.get("worker", [])],
+                    **({} if unit is None else {"unit": str(unit)}),
                 },
                 "run_service": {"pass_env": [*fakes, *extra.get("run_service", [])]},
                 "orchestrator": {
@@ -308,7 +353,7 @@ def site(
             "FAKE_OPENSHELL": str(tmp_path / "openshell.json"),
             **(env or {}),
         }
-        return Launcher(config, environment, "up", *options)
+        return Launcher(config, environment, command, *options)
 
     started: list[Launcher] = []
 

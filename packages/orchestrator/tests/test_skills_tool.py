@@ -23,7 +23,7 @@ from sandbox_science.orchestrator import loop
 from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.documents import USER
 from sandbox_science.orchestrator.hooks import Notice, Point, RunView, TurnHook
-from sandbox_science.orchestrator.model import ModelTurn, ToolCall
+from sandbox_science.orchestrator.model import ModelTurn
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.skills import SkillStore, snapshot
 from sandbox_science.orchestrator.skills import tool as skills_tool
@@ -31,6 +31,8 @@ from sandbox_science.orchestrator.skills.sources import Fetched, PackFile
 from sandbox_science.orchestrator.skills.tool import MAX_READ, SkillTool
 from sandbox_science.orchestrator.tools import Toolbox
 from sandbox_science.orchestrator.worker_client import WorkerClient
+
+from .scripted import ToolCall
 
 
 def _skill(name: str, body: str) -> PackFile:
@@ -113,12 +115,14 @@ async def test_a_notice_never_cuts_a_loaded_body(projects: ProjectStore) -> None
     transcript = await loop.run_task(
         cast(Any, _Script()), toolbox, "Load alpha.", run_id="r", hooks=[_Jobs()]
     )
-    (result,) = [m["content"] for m in transcript.messages if m.get("role") == "tool"]
+    (result,) = [m["content"] for m in transcript.context.messages if m.get("role") == "tool"]
     assert "MIDDLE-MARKER" in result
     assert "TAIL" in result
     assert "job_notices" not in result
     assert any(
-        "job-1" in str(m.get("content")) for m in transcript.messages if m.get("role") != "tool"
+        "job-1" in str(m.get("content"))
+        for m in transcript.context.messages
+        if m.get("role") != "tool"
     )
 
 

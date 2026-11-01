@@ -75,8 +75,8 @@ async def test_truncated_partial_or_terminal_tool_response_is_discarded_before_r
     assert result.stopped == "answered"
     assert result.final_text == "Done"
     assert result.turns == 1
-    assert result.usage[0].cost == 0.03
-    assert result.usage[0].retried == ["incomplete response", "incomplete response"]
+    assert result.context.usage[0].cost == 0.03
+    assert result.context.usage[0].retried == ["incomplete response", "incomplete response"]
 
 
 async def test_truncation_exhausts_ten_attempts_with_unknown_charge():
@@ -111,3 +111,65 @@ async def test_incomplete_error_body_does_not_retry_hidden_budget_or_auth_refusa
             await model.close()
     assert fake.calls == 1
     assert clock.slept == []
+
+
+class FlakyGateway:
+    """Fails its first calls as a gateway does now and then: by dropping the connection
+    before any answer, or by ending a stream cleanly with no final event."""
+
+    def __init__(self, how: str, *, failures: int = 2):
+        self.how, self.failures, self.calls = how, failures, 0
+
+    async def handle(self, request: web.Request) -> web.StreamResponse:
+        self.calls += 1
+        if self.calls > self.failures:
+            return web.Response(
+                text="data: "
+                + json.dumps(
+                    {"type": "response.completed", "response": json.loads(response(said("Done")))}
+                )
+                + "\n\n",
+                headers={"Content-Type": "text/event-stream"},
+            )
+        if self.how == "drop":
+            assert request.transport is not None
+            request.transport.abort()  # aiohttp's ServerDisconnectedError, as on the Mac
+            return web.Response()
+        delta = {"type": "response.output_text.delta", "delta": "Do"}
+        return web.Response(
+            text="data: " + json.dumps(delta) + "\n\n",
+            headers={"Content-Type": "text/event-stream"},
+        )
+
+
+@pytest.mark.parametrize(
+    ("how", "outcome"), [("drop", "lost connection"), ("cut", "incomplete response")]
+)
+async def test_a_dropped_connection_or_unfinished_stream_is_tried_again(how, outcome):
+    fake = FlakyGateway(how)
+    app = web.Application()
+    app.router.add_post("/v1/responses", fake.handle)
+    clock = Waits()
+    async with TestServer(app) as server:
+        model = ResponsesModel(str(server.make_url("/v1")), "fixture", KEY, clock=clock)
+        try:
+            result = await run_task(model, toolbox(None), task="Research", run_id="root")
+        finally:
+            await model.close()
+    assert fake.calls == 3
+    assert clock.slept == [2, 4]
+    assert result.stopped == "answered"
+    assert result.final_text == "Done"
+    assert result.context.usage[0].retried == [outcome, outcome]
+
+
+async def test_an_unreachable_gateway_is_tried_ten_times_then_fails():
+    clock = Waits()
+    model = ResponsesModel("http://127.0.0.1:9/v1", "fixture", KEY, clock=clock)
+    try:
+        with pytest.raises(ModelError, match="cannot reach the model gateway") as failed:
+            await model.complete([{"role": "user", "content": "Research"}], [])
+    finally:
+        await model.close()
+    assert clock.slept == [2, 4, 8, 16, 32, 60, 60, 60, 60]
+    assert KEY not in str(failed.value)

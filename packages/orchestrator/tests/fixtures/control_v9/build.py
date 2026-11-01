@@ -194,7 +194,7 @@ async def build() -> None:
     # reorder finding's rebuttal, and raising it again with its anchors in another order.
     confirmation = dispatch(reviews, "confirmation")
     read_confirmation(reviews, confirmation)
-    Findings(reviews).confirm(
+    Findings(reviews).confirm(  # pyright: ignore[reportAttributeAccessIssue] - the API of commit 3f28a41, which this script runs in
         "p",
         "s",
         confirmation,
@@ -217,7 +217,7 @@ async def build() -> None:
         for item in reviews.manifest("p", "s", second, limit=20)["evidence"]
         if item["kind"] == "finding" and item["locator"]["finding"] == reorder
     )
-    Findings(reviews).confirm(
+    Findings(reviews).confirm(  # pyright: ignore[reportAttributeAccessIssue] - the API of commit 3f28a41, which this script runs in
         "p",
         "s",
         second,

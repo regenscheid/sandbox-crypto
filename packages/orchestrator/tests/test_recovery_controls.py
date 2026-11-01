@@ -9,13 +9,13 @@ import pytest
 from pydantic import ValidationError
 
 from sandbox_science.contracts import SYSTEM_CLOCK
+from sandbox_science.orchestrator.context.history import Archive
+from sandbox_science.orchestrator.context.history.operations import ToolJournal
 from sandbox_science.orchestrator.continuity.models import ModelIntents
 from sandbox_science.orchestrator.continuity.records import WorkRecords
 from sandbox_science.orchestrator.continuity.resolutions import RecoveryControls, Resolution
 from sandbox_science.orchestrator.continuity.status import RecoveryStatus
 from sandbox_science.orchestrator.control import ControlError
-from sandbox_science.orchestrator.history import Archive
-from sandbox_science.orchestrator.history.operations import ToolJournal
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.runstate import RunState
 

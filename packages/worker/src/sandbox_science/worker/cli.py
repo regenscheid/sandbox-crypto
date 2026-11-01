@@ -6,6 +6,11 @@ sandbox-science-worker serve --settings worker.toml [--log-level info]
 sandbox-science-worker token --out worker.token     # prints the new token's SHA-256
 sandbox-science-worker token --sha256 client.token  # the SHA-256 of an existing token
 sandbox-science-worker policy add --settings worker.toml [--project p1] policy.yaml
+sandbox-science-worker environments list --settings worker.toml [--state creating]
+sandbox-science-worker environments reconcile --settings worker.toml [--no-wait] ENVIRONMENT_ID
+sandbox-science-worker child-environments list --settings worker.toml [--phase retained]
+sandbox-science-worker child-environments release --settings worker.toml [--superseded] ENV_ID
+sandbox-science-worker checkpoint plan|verify|inventory|... (checkpoint_jobs_cli)
 ```
 
 ``policy add`` is the operator's way to put a project policy revision into the pool's
@@ -21,26 +26,36 @@ import logging
 import os
 import secrets
 import signal
+import sqlite3
 import sys
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast, get_args
 
 from aiohttp import web
 from pydantic import TypeAdapter, ValidationError
 
-from sandbox_science.contracts import SYSTEM_CLOCK, Identifier
+from sandbox_science.contracts import SYSTEM_CLOCK, ErrorKind, Identifier
+from sandbox_science.contracts.child_environments import ChildPhase
+from sandbox_science.contracts.logs import configure_logging
 from sandbox_science.policy.openshell import CompileError, compile_sandbox
 from sandbox_science.policy.store import StoreError
 
+from . import checkpoint_cli, checkpoint_jobs_cli
 from .admission import DraftWatcher
-from .build import build_worker
+from .app import restore_guard
+from .artifact_retention import MAX_RELEASE_PAGE
+from .artifacts import Blobs
+from .build import build_environments, build_worker
+from .child_environments import ChildEnvironments
 from .environments import EnvironmentRecords, Environments, printable
 from .errors import WorkerError
 from .settings import MIN_TOKEN, Settings, SettingsError, load_settings, token_digest
 from .state_lock import StateLock
 from .store import Store
 from .suspend import Suspender
+from .unknown_creations import CreationReconciler, Reconciliation, when
 
 _log = logging.getLogger("sandbox_science.worker")
 
@@ -64,13 +79,33 @@ async def serve(settings: Settings) -> None:
                 _log.info("deleted %d blobs no shared file uses", removed)
         await manager.start()
         await parts.provisioner.start()
+        if parts.children is not None:
+            # Child environments a previous worker was making fail; the rest stay (CE-12).
+            await parts.children.start()
+        if environments is not None:
+            # Before serving: creations an operator rolled back with the worker stopped
+            # still owe the deletion hooks this worker registered (B3).
+            environments.serving_since = clock.now()
+            for environment_id in await environments.run_pending_hooks():
+                _log.info("ran the deletion hooks of environment %s", environment_id)
         await runner.setup()
-        site = web.TCPSite(runner, settings.listen_host, settings.listen_port)
+        site = web.TCPSite(
+            runner,
+            settings.listen_host,
+            settings.listen_port,
+            ssl_context=settings.tls.context() if settings.tls else None,
+        )
         await site.start()
         _log.info("worker API on %s (%s backend)", settings.listen, manager.backend.name)
         if environments is not None and environments.settings.admission:
             interval = environments.settings.admission_interval
             background.append(asyncio.create_task(DraftWatcher(environments, interval).run()))
+        if environments is not None:
+            # Creations with an unknown outcome clear themselves on confirmed absence (B3).
+            reconciler = CreationReconciler(
+                environments, environments.settings.creation_recheck, clock=clock
+            )
+            background.append(asyncio.create_task(reconciler.run()))
         if environments is not None and environments.settings.suspend_after is not None:
             suspender = Suspender(
                 environments, manager, environments.settings.suspend_after, clock=clock
@@ -155,6 +190,202 @@ def show_admissions(settings: Settings, environment_id: str) -> int:
     return 0
 
 
+def list_environments(settings: Settings, state: str | None) -> int:
+    """Print the environments that are not deleted, of one state or of every state; a
+    creation without an identity says how often it was seen absent (B3)."""
+    if settings.openshell is None or settings.openshell.environments is None:
+        print("error: the settings have no [openshell.environments] table", file=sys.stderr)
+        return 1
+    path = settings.state_dir / "environments.sqlite3"
+    if not path.is_file():
+        print(f"error: no environment records at {path}; check state_dir", file=sys.stderr)
+        return 1
+    records = EnvironmentRecords(path)
+    try:
+        shown = [info for info in records.listed(None) if state in (None, info.state)]
+        if not shown:
+            print(f"no {state} environments" if state else "no environments")
+        for info in shown:
+            line = (
+                f"{info.environment_id} {info.state} project {info.project_id} {info.kind}"
+                f" sandbox {info.sandbox} ({info.sandbox_id or 'no identity'})"
+                f" created {when(info.created_at)}"
+            )
+            if info.state == "creating" and info.sandbox_id is None:
+                seen = records.observations(info)
+                line += f"; seen absent {len(seen)} times" + (
+                    f", last at {when(seen[-1].observed_at)}" if seen else ""
+                )
+            print(line)
+    finally:
+        records.close()
+    return 0
+
+
+def reconcile_environment(settings: Settings, environment_id: str, *, wait: bool) -> int:
+    """Reconcile a creation with an unknown outcome on confirmed absence (B3), with the
+    worker stopped: it takes the state directory's lock, as ``captures`` does."""
+    openshell = settings.openshell
+    if openshell is None or openshell.environments is None:
+        print("error: the settings have no [openshell.environments] table", file=sys.stderr)
+        return 1
+    try:
+        lock = StateLock(settings.state_dir)
+    except SettingsError as exc:
+        print(
+            f"error: {exc}. The running worker reconciles creating environments itself every"
+            f" {openshell.environments.creation_recheck:g} s, and deleting one through its API"
+            " follows the same rule; stop it to reconcile one here",
+            file=sys.stderr,
+        )
+        return 1
+    with lock:
+        if not (settings.state_dir / "environments.sqlite3").is_file():
+            print(f"error: no environment records in {settings.state_dir}", file=sys.stderr)
+            return 1
+        try:
+            environments = build_environments(settings)
+        except (SettingsError, WorkerError) as error:
+            print(f"error: {error}", file=sys.stderr)
+            return 1
+        if environments is None:  # checked above; the builder says so again
+            return 1
+        # The running worker's deletion hooks are not registered here; it runs them.
+        environments.hooks_deferred = True
+        try:
+            result = asyncio.run(_reconcile(environments, environment_id, wait=wait))
+        except WorkerError as error:
+            print(f"error: {environment_id}: {error.message}", file=sys.stderr)
+            return 1
+        finally:
+            environments.close()
+    print(f"{result.action}: {result.message}")
+    return 0 if result.action in ("rolled_back", "adopted") else 1
+
+
+def _offline_environments(settings: Settings, what: str) -> tuple[StateLock, Environments] | int:
+    """The state directory's lock and the environments, for a command run with the worker
+    stopped; an exit status, with the reason printed, when it cannot run."""
+    openshell = settings.openshell
+    if openshell is None or openshell.environments is None:
+        print("error: the settings have no [openshell.environments] table", file=sys.stderr)
+        return 1
+    try:
+        lock = StateLock(settings.state_dir)
+    except SettingsError as exc:
+        print(f"error: {exc}. Stop the worker to {what} here", file=sys.stderr)
+        return 1
+    try:
+        if not (settings.state_dir / "environments.sqlite3").is_file():
+            print(f"error: no environment records in {settings.state_dir}", file=sys.stderr)
+            lock.release()
+            return 1
+        environments = build_environments(settings)
+    except (SettingsError, WorkerError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        lock.release()
+        return 1
+    if environments is None:  # checked above; the builder says so again
+        lock.release()
+        return 1
+    # The running worker's deletion hooks are not registered here; it runs them.
+    environments.hooks_deferred = True
+    return lock, environments
+
+
+def list_child_environments(settings: Settings, phase: str | None) -> int:
+    """Print the worker's child environments, of one phase or of every phase, with what
+    their rows say (CE-11), the worker stopped."""
+    opened = _offline_environments(settings, "list child environments")
+    if isinstance(opened, int):
+        return opened
+    lock, environments = opened
+    store = Store(settings.state_dir / "worker.sqlite3")
+    try:
+        rows = store.child_environments.listed(
+            phases=None if phase is None else frozenset({cast(ChildPhase, phase)})
+        )
+        if not rows:
+            print(f"no {phase} child environments" if phase else "no child environments")
+        for row in rows:
+            line = (
+                f"{row.environment_id} {row.phase} project {row.project_id} session"
+                f" {row.session_id} delegation {row.delegation_id} profile {row.profile}"
+                f" created {when(row.created_at)}"
+            )
+            if row.retained_until is not None:
+                line += f"; retained until {when(row.retained_until)}"
+            if row.message:
+                line += f": {printable(row.message, 300)}"
+            print(line)
+    finally:
+        store.close()
+        environments.close()
+        lock.release()
+    return 0
+
+
+def release_child_environment(
+    settings: Settings, environment_id: str, *, superseded: bool = False
+) -> int:
+    """Release a child environment now, the worker stopped: a retained one, or with
+    ``superseded`` a ready one whose run was superseded. The deletion's guards run as the
+    running worker's would (a restore writing into it, a package gate not ready); the
+    deletion hooks the running worker owes are recorded before the sandbox is deleted,
+    and the release on its row; the sandbox goes by its recorded identity."""
+    opened = _offline_environments(settings, "release a child environment")
+    if isinstance(opened, int):
+        return opened
+    lock, environments = opened
+    store = Store(settings.state_dir / "worker.sqlite3")
+    try:
+
+        async def gate_ready(target: str) -> None:
+            gate = store.package_gate(target)
+            if gate.mode != "ready":
+                raise WorkerError(
+                    ErrorKind.CONFLICT,
+                    f"environment {target}'s package state is {gate.mode}; start the worker,"
+                    " which recovers it, before releasing it",
+                )
+
+        environments.required_deleting.append(restore_guard(environments))
+        environments.required_deleting.append(gate_ready)
+        children = ChildEnvironments(environments, store)
+
+        def defer(target: str, sandbox: str) -> None:
+            environments.records.defer_hooks(
+                target, sandbox, "child_released", environments.clock.now()
+            )
+
+        try:
+            released = asyncio.run(
+                children.release_now(environment_id, superseded=superseded, defer=defer)
+            )
+        except WorkerError as error:
+            print(f"error: {environment_id}: {error.message}", file=sys.stderr)
+            return 1
+    finally:
+        store.close()
+        environments.close()
+        lock.release()
+    print(f"released: child environment {environment_id} ({released.delegation_id})")
+    return 0
+
+
+async def _reconcile(
+    environments: Environments, environment_id: str, *, wait: bool
+) -> Reconciliation:
+    result = await environments.reconcile_creation(environment_id)
+    if wait and result.action == "inconclusive" and result.retry_at is not None:
+        print(f"waiting: {result.message}", flush=True)
+        delay = (result.retry_at - environments.clock.now()).total_seconds()
+        # A little past the due time, so the second read is never early.
+        await environments.clock.sleep(max(delay, 0.0) + 0.05)
+        result = await environments.reconcile_creation(environment_id)
+    return result
+
+
 def show_captures(settings: Settings, clear: Sequence[str]) -> int:
     """Print the capture leases that hold publication admission, after forgetting those in
     ``clear``. Only with the worker stopped: it takes the state directory's lock."""
@@ -196,6 +427,29 @@ def show_captures(settings: Settings, clear: Sequence[str]) -> int:
 _IDENTIFIER = TypeAdapter[str](Identifier)
 
 
+def release_artifacts(settings: Settings, *, apply: bool, limit: int, after: str | None) -> int:
+    """Inspect or release one offline page under the worker's exclusive state lease."""
+    try:
+        with StateLock(settings.state_dir):
+            path = settings.state_dir / "worker.sqlite3"
+            if not path.is_file():
+                raise SettingsError(f"no worker store at {path}; check state_dir")
+            store = Store(path)
+            try:
+                page = store.artifact_retention.release_page(
+                    Blobs(settings.state_dir / "artifacts"), apply=apply, limit=limit, after=after
+                )
+                for entry in page.entries:
+                    print(f"{entry.sha256} {entry.size} {entry.status} {entry.reason}".rstrip())
+                print(f"next_after={page.next_after or 'none'}")
+            finally:
+                store.close()
+    except (SettingsError, WorkerError, OSError, ValueError, sqlite3.Error) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def _project(value: str) -> str:
     try:
         return _IDENTIFIER.validate_python(value)
@@ -206,6 +460,15 @@ def _project(value: str) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="sandbox-science-worker")
     commands = parser.add_subparsers(dest="command", required=True)
+    checkpoint_cli.parser(
+        commands.add_parser("workspace-checkpoint", help="offline complete workspace checkpoint")
+    )
+    checkpoint_jobs_cli.parser(
+        commands.add_parser(
+            "checkpoint",
+            help="checkpoint Jobs: plan, verify, promote, inventory and cleanup records",
+        )
+    )
     serve_parser = commands.add_parser("serve", help="run the worker API")
     serve_parser.add_argument("--settings", type=Path, required=True)
     serve_parser.add_argument(
@@ -249,7 +512,61 @@ def main(argv: list[str] | None = None) -> int:
         default=[],
         help="forget this lease, once its sandbox cleaned up or is gone (repeatable)",
     )
+    environments_parser = commands.add_parser(
+        "environments", help="list environments, and reconcile creations with an unknown outcome"
+    )
+    environments_commands = environments_parser.add_subparsers(
+        dest="environments_command", required=True
+    )
+    list_parser = environments_commands.add_parser(
+        "list", help="list the environments that are not deleted"
+    )
+    list_parser.add_argument("--settings", type=Path, required=True)
+    list_parser.add_argument("--state", choices=["creating", "ready", "stopped"])
+    reconcile_parser = environments_commands.add_parser(
+        "reconcile",
+        help="mark a creation whose sandbox is confirmed absent deleted; the worker is stopped",
+    )
+    reconcile_parser.add_argument("--settings", type=Path, required=True)
+    reconcile_parser.add_argument(
+        "--no-wait",
+        dest="wait",
+        action="store_false",
+        help="refuse instead of waiting for the second read that confirms absence",
+    )
+    reconcile_parser.add_argument("environment_id")
+    children_parser = commands.add_parser(
+        "child-environments",
+        help="list child environments, and release a retained one; the worker is stopped",
+    )
+    children_commands = children_parser.add_subparsers(dest="children_command", required=True)
+    children_list = children_commands.add_parser("list", help="list the child environments")
+    children_list.add_argument("--settings", type=Path, required=True)
+    children_list.add_argument("--phase", choices=sorted(get_args(ChildPhase)))
+    children_release = children_commands.add_parser(
+        "release", help="release a retained child environment now, deleting its sandbox"
+    )
+    children_release.add_argument("--settings", type=Path, required=True)
+    children_release.add_argument(
+        "--superseded",
+        action="store_true",
+        help="release a ready one whose run was superseded and that no Resume continues in",
+    )
+    children_release.add_argument("environment_id")
+    retention_parser = commands.add_parser(
+        "artifact-retention", help="offline capture replica release; dry-run by default"
+    )
+    retention_parser.add_argument("--settings", type=Path, required=True)
+    retention_parser.add_argument("--apply", action="store_true", help="unlink eligible CAS blobs")
+    retention_parser.add_argument(
+        "--limit", type=int, choices=range(1, MAX_RELEASE_PAGE + 1), default=10
+    )
+    retention_parser.add_argument("--after", help="continue after this SHA-256 cursor")
     args = parser.parse_args(argv)
+    if args.command == "workspace-checkpoint":
+        return checkpoint_cli.run(args)
+    if args.command == "checkpoint":
+        return checkpoint_jobs_cli.run(args)
     if args.command == "token":
         if args.out is not None:
             token = secrets.token_urlsafe(32)
@@ -271,7 +588,14 @@ def main(argv: list[str] | None = None) -> int:
         # The line a [[clients]] entry takes; the digest names the token without revealing it.
         print(f'token_sha256 = "{token_digest(token)}"')
         return 0
-    if args.command in ("policy", "admissions", "captures"):
+    if args.command in (
+        "policy",
+        "admissions",
+        "captures",
+        "artifact-retention",
+        "environments",
+        "child-environments",
+    ):
         try:
             settings = load_settings(args.settings)
         except SettingsError as exc:
@@ -281,10 +605,20 @@ def main(argv: list[str] | None = None) -> int:
             return add_policies(settings, args.policies, args.projects)
         if args.command == "captures":
             return show_captures(settings, args.clear)
+        if args.command == "child-environments" and args.children_command == "list":
+            return list_child_environments(settings, args.phase)
+        if args.command == "child-environments":
+            return release_child_environment(
+                settings, args.environment_id, superseded=args.superseded
+            )
+        if args.command == "environments" and args.environments_command == "list":
+            return list_environments(settings, args.state)
+        if args.command == "environments":
+            return reconcile_environment(settings, args.environment_id, wait=args.wait)
+        if args.command == "artifact-retention":
+            return release_artifacts(settings, apply=args.apply, limit=args.limit, after=args.after)
         return show_admissions(settings, args.environment)
-    logging.basicConfig(
-        level=args.log_level.upper(), format="%(asctime)s %(levelname)s %(name)s: %(message)s"
-    )
+    configure_logging("worker", level=args.log_level)
     try:
         settings = load_settings(args.settings)
         settings.token()

@@ -4,16 +4,76 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import signal
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
 
+from sandbox_science.launcher.processes import members
 from sandbox_science.launcher.state import Layout
 from sandbox_science.launcher.supervise import Part, Supervisor
 from sandbox_science.testing import eventually
 
 pytestmark = pytest.mark.slow
+
+
+@pytest.mark.parametrize("stop_by_signal", [False, True])
+def test_parent_watcher_ends_the_session_after_parent_loss_or_stop(
+    tmp_path: Path, stop_by_signal: bool
+) -> None:
+    """The part must leave the session after pipe EOF or an explicit stop."""
+    read_fd, write_fd = os.pipe()
+    marker = tmp_path / "child.pid"
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-I",
+            "-m",
+            "sandbox_science.launcher.parent_watch",
+            str(read_fd),
+            str(os.getpid()),
+            sys.executable,
+            "-c",
+            "import os,time,pathlib,signal; "
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN) if "
+            f"{stop_by_signal!r} else None; "
+            f"pathlib.Path({str(marker)!r}).write_text(str(os.getpid())); "
+            "time.sleep(60)",
+        ],
+        cwd=tmp_path,
+        pass_fds=(read_fd,),
+        start_new_session=True,
+    )
+    os.close(read_fd)
+    try:
+        deadline = time.monotonic() + 10
+        while not marker.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert marker.exists()
+        child_pid = int(marker.read_text())
+        assert child_pid in members(process.pid)
+        if stop_by_signal:
+            process.send_signal(signal.SIGTERM)
+        else:
+            os.close(write_fd)
+            write_fd = -1
+        # A Darwin session teardown may signal the wrapper as well. The
+        # contract is that its child cannot remain in the session.
+        assert process.wait(timeout=10) in (70, -signal.SIGTERM, -signal.SIGKILL)
+        deadline = time.monotonic() + 5
+        while child_pid in members(process.pid) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert child_pid not in members(process.pid)
+    finally:
+        if write_fd >= 0:
+            os.close(write_fd)
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=10)
 
 
 async def test_a_part_that_keeps_stopping_is_given_up_after_its_bound(tmp_path: Path) -> None:

@@ -1,13 +1,24 @@
 # Worker service
 
+The API can serve HTTPS with a `[tls]` table containing `certificate` and
+`private_key` paths. Relative paths resolve against the settings file. The key must
+be a private regular file, not a projected symlink; cluster init copies it into a
+mode-600 memory-backed file. Scoped bearer authorization and worker protocol checks
+still apply. Existing local HTTP behavior is unchanged. Control settings accept
+`worker_ca_file`; the workspace accepts `--worker-ca-file`. A custom worker CA
+requires HTTPS, adds to system trust and never disables certificate/hostname
+verification or changes a borrowed HTTP session.
+
 The worker service runs research code for the orchestrator. It is trusted infrastructure, one per worker pool, outside every research sandbox. It starts an executor inside each sandbox and talks to it. The orchestrator reaches it only through the worker API, so the harness has no local execution path ([architecture](ARCHITECTURE.md)). [Execution tools](specs/tools.md) defines the behavior. The code is in `packages/worker` (`sandbox_science.worker`), the shared types in `packages/contracts`, and the orchestrator's client in `packages/orchestrator`.
 
 Contents:
 - [Components](#components) and the [worker API](#worker-api), with [clients limited to projects](#clients-limited-to-projects) and [compatibility](#compatibility)
 - [Behavior worth knowing](#behavior-worth-knowing), [background jobs](#background-jobs) and [leftover processes](#leftover-processes)
+- [Monitor figures](#monitor-figures) for the workspace's Monitor view
 - Isolation and OpenShell: [isolation tiers](#isolation-tiers), [running under OpenShell](#running-under-openshell), [environments](#environments), [admission on demand](#admission-on-demand), [idle suspension](#idle-suspension)
 - Data and packages: [shared data across environments](#shared-data-across-environments), [package commands](#package-commands), [provisioning operations](#provisioning-operations), [PDFs](#pdfs), [bounded artifact capture](#bounded-artifact-capture), [worker-local output observations](#worker-local-output-observations)
 - The sandbox side: [executor protocol](#executor-protocol), [sandbox daemon and recovery](#sandbox-daemon-and-recovery)
+- [Offline complete workspace checkpoints](#offline-complete-workspace-checkpoints)
 - [Settings](#settings), [conformance suite](#conformance-suite), [not built](#not-built), and the parked [document catalog prerequisite](#document-catalog-prerequisite)
 
 ## Components
@@ -23,12 +34,21 @@ flowchart LR
 ```
 
 - **Worker service** (`app.py`, `manager.py`, with `dispatcher.py`, `connections.py`, `usability.py`, `publication.py`, `kernels.py`, `package_admission.py`, `recovery.py`, `journal.py`, `files.py`, `package_changes.py`, `live.py` and `replies.py` beside the manager): the HTTP API, idempotent submission, event numbering and persistence, cancellation, watchdogs, file operations and publication. `manager.py` is the facade the HTTP app, the provisioner and the environments call; the modules beside it do the work. `dispatcher.py` admits each execution once, sends it to its environment's executor, watches its deadline, applies what the executor sends back and cancels it. `connections.py` opens each environment's executor, checks its `hello` and isolation, counts requests in flight, reports activity for idle suspension and closes the executor on release. `publication.py` publishes files as artifacts under durable capture leases ([bounded artifact capture](#bounded-artifact-capture)). `kernels.py` maps executor kernel generations onto ones that never go back, records kernel births and answers kernel status, explicit or passive. `package_admission.py` checks each environment's package gate before admitting work and brings its executor's acknowledgement in step. `recovery.py` reattaches daemon executions after a lost bridge or a restart, polls each bridge, and fences an environment whose daemon was replaced until its sandbox is recycled ([sandbox daemon and recovery](#sandbox-daemon-and-recovery)). `journal.py` stores each execution and its events, ends each exactly once with a result that survives storage, and answers reads, event streams and waits. `files.py` handles file requests and the shared files' sync around them and around each call ([shared data across environments](#shared-data-across-environments)). `package_changes.py` counts each environment's revisions from what its executor reports and keeps their lockfiles. `live.py` holds the record of an execution in flight. `replies.py` checks and bounds values read from executor replies. `usability.py` keeps, for each environment, what stands in the way of using it: a daemon recovery, a fence until its sandbox is recycled, a release of its executor, sessions closing.
-- **Provisioning** (`provisioner.py`, with `resolution.py`, `permissions.py`, `catalog.py` and the catalog `capabilities.toml`): operations that install a capability or packages into an environment on an agent's request, one at a time in each environment ([provisioning operations](#provisioning-operations)).
-- **Executor** (`executor.py`, with `daemon.py`, `sandbox_files.py`, `sandbox_processes.py`, `sandbox_setup.py` (the isolation probe's facts and `configure`'s files), `capture.py`, `pdfhelper.py` and `provisioning.py` beside it): files that depend only on the standard library and, for kernels, `jupyter_client` and `ipykernel` (the PDF helper also needs pdf_oxide), so the worker can copy them into any sandbox that has Python. `SANDBOX_FILES` in `backends.py` lists them, and `test_sandbox_payload.py` checks that each imports nothing else and loads its siblings by path. The OpenShell backend uploads them to `executor_dir`, with the scheduler shim `libsandbox-science-sched.so`, built from `shim/sched_self.c`, when `sched_shim` is on ([running under OpenShell](#running-under-openshell)). `daemon.py` keeps the executor alive across worker restarts ([sandbox daemon and recovery](#sandbox-daemon-and-recovery)), `capture.py` reads files for publication ([bounded artifact capture](#bounded-artifact-capture)) and `pdfhelper.py` runs [PDF operations](#pdfs). The executor runs shell commands in sessions of their own and kernels through the Jupyter protocol (D41), ends what a command leaves running, which `sandbox_processes.py` finds and signals ([leftover processes](#leftover-processes)), and handles the file operations, which `sandbox_files.py` confines to the session workspace and the shared area. Each kernel's channels are Linux abstract Unix sockets with random names: over TCP, Jupyter picks free ports that the kernel binds only later, and kernels started together could take each other's ports. It offers each language whose kernelspec its interpreter's Jupyter installation finds: `python3` for Python and `sagemath`, SageMath's own kernel, for Sage. Platform code never imports Sage; Sage's kernel preparses Sage syntax itself. `provisioning.py` makes package commands take turns and records what they change ([package commands](#package-commands)).
+- **Provisioning** (`provisioner.py`, with `provision_stages.py`, `provision_permissions.py`, `provision_reconciliation.py`, `provision_types.py`, `resolution.py`, `permissions.py`, `catalog.py` and the catalog `capabilities.toml`): operations that install a capability or packages into an environment on an agent's request, one at a time in each environment ([provisioning operations](#provisioning-operations)).
+- **Executor** (`executor.py`, `executor_lifecycle.py` and `executor_admission.py`, with `daemon.py`, `sandbox_files.py`, `sandbox_search.py`, `sandbox_processes.py`, `sandbox_setup.py` (the isolation probe's facts and `configure`'s files), `capture.py`, `pdfhelper.py` and `provisioning.py` beside it): files that depend only on the standard library and, for kernels, `jupyter_client` and `ipykernel` (the PDF helper also needs pdf_oxide), so the worker can copy them into any sandbox that has Python. `SANDBOX_FILES` in `backends.py` lists them, and `test_sandbox_payload.py` checks that each imports nothing else and loads its siblings by path. The OpenShell backend uploads them to `executor_dir` and selects a native scheduler shim `libsandbox-science-sched.so`, built from `shim/sched_self.c`, when `sched_shim` is on ([running under OpenShell](#running-under-openshell)). `daemon.py` keeps the executor alive across worker restarts ([sandbox daemon and recovery](#sandbox-daemon-and-recovery)), `capture.py` reads files for publication ([bounded artifact capture](#bounded-artifact-capture)) and `pdfhelper.py` runs [PDF operations](#pdfs). The executor runs shell commands in sessions of their own and kernels through the Jupyter protocol (D41), ends what a command leaves running, which `sandbox_processes.py` finds and signals ([leftover processes](#leftover-processes)), and handles the file operations, which `sandbox_files.py` confines to the session workspace and the shared area. A glob or grep runs in a helper process of its own (`sandbox_search.py`), which gets the searched directory as a descriptor the executor opened through no symlink, stops itself after 20 seconds with what it found, and is ended at 30 whatever it is doing. An executor that edits and searches says `file_tools: 1` in `hello`; to an older one the worker answers those requests `unsupported`. Each kernel's channels are Linux abstract Unix sockets with random names: over TCP, Jupyter picks free ports that the kernel binds only later, and kernels started together could take each other's ports. It offers each language whose kernelspec its interpreter's Jupyter installation finds: `python3` for Python and `sagemath`, SageMath's own kernel, for Sage. When Python is not among them, `hello` also carries `kernel_reason`, one printable line of at most 300 characters that the worker keeps (bounded again), logs as a warning and reports in the capabilities; the harness names it in the run's progress and its own warning. Platform code never imports Sage; Sage's kernel preparses Sage syntax itself. `provisioning.py` makes package commands take turns and records what they change ([package commands](#package-commands)).
+
+  `Executor` coordinates protocol requests and results. `Lifecycle` owns accepted
+  work, kernels, retirement, control tasks and shutdown; `Admission` owns package
+  gate generations, launch permits and ordered revision observations. File request
+  adapters remain beside the bounded filesystem implementations. Admission timestamps,
+  polling and process grace periods share the injected clock. See the
+  [lifecycle contract](specs/executor-lifecycle.md) for lock order and cancellation
+  ownership; these boundaries do not change the executor protocol.
+
 - **Backends** (`backends.py`) start executors:
-  - **`openshell`** copies the executor and its helpers into a configured sandbox with `openshell sandbox upload`, and runs its daemon bridge through isolated OpenShell-generated SSH configuration, without a PTY or login shell. Its [bounded stop-and-wait request transport](specs/worker-stream-transport.md) avoids OpenShell 0.1.3's cumulative stdin cap; OpenShell requires `daemon=true`. Its required `isolation_tier` setting declares the tier the gateway's driver gives: 3 for the VM driver on babbage (D43).
+  - **`openshell`** copies the executor and its helpers into a configured sandbox with `openshell sandbox upload`, and runs its daemon bridge through isolated OpenShell-generated SSH configuration, without a PTY or login shell. Its [bounded stop-and-wait request transport](specs/worker-stream-transport.md) avoids OpenShell 0.1.5's cumulative stdin cap; OpenShell requires `daemon=true`. Its required `isolation_tier` setting declares the tier the gateway's driver gives: 3 for the VM driver on babbage (D43).
   - **`local`** runs the executor as a plain subprocess of the worker. It has **no isolation**: it declares tier 0, and its probe shows why. It exists for development and tests, and the harness refuses it unless told otherwise (`--allow-unisolated`).
-- **Other worker modules**: `cli.py` (the `sandbox-science-worker` commands), `settings.py` (the settings file), `state_lock.py` (one worker per state directory), `build.py` (`build_worker`, which builds the worker from its settings for `serve`), `lifecycle.py` (what the manager needs from the sandboxes the worker manages, given when it is built), `store.py` (the SQLite state) with `schema.py` and `baseline.sql` (its version and migrations), `identity.py` (the request digests that bind operation IDs), `channel.py` (one executor connection), `timeouts.py` (the manager's grace periods, deadlines and polling intervals, as constructor parameters), `environments.py`, `admission.py` and `suspend.py` (sandboxes the worker manages), `isolation.py` (the tier probe), `shared_sync.py` (shared data), `revisions.py` and `package_gate.py` (package revisions and the recovery fence), `artifacts.py` (artifact blobs), `package_clients.py` (package-cache configuration), the read-only views `provision_observations.py`, `lockfile_diffs.py`, `kernel_revisions.py` and `output_observations.py`, the provisioning records `installer_records.py` and `provision_events.py`, and the parked `documents_catalog.py`.
+- **Other worker modules**: `cli.py` (the `sandbox-science-worker` commands), `settings.py` (the settings file), `state_lock.py` (one worker per state directory), `build.py` (`build_worker`, which builds the worker from its settings for `serve`), `lifecycle.py` (what the manager needs from the sandboxes the worker manages, given when it is built), `store.py` (the SQLite state) with `schema.py` and `baseline.sql` (its version and migrations), `identity.py` (the request digests that bind operation IDs), `channel.py` (one executor connection), `timeouts.py` (the manager's grace periods, deadlines and polling intervals, as constructor parameters), `environments.py`, `admission.py` and `suspend.py` (sandboxes the worker manages), `isolation.py` (the tier probe), `shared_sync.py` (shared data), `revisions.py` and `package_gate.py` (package revisions and the recovery fence), `artifacts.py` (artifact blobs), `artifact_retention.py` (durable capture acknowledgements and offline replica release), `package_clients.py` (package-cache configuration), the read-only views `provision_observations.py`, `lockfile_diffs.py`, `kernel_revisions.py` and `output_observations.py`, the provisioning records `installer_records.py` and `provision_events.py`, and the parked `documents_catalog.py`.
 
 Environment lifecycle commands run through `OpenShellCli`. On timeout or caller
 cancellation, cleanup tolerates a CLI process that has already exited and retains
@@ -42,7 +62,7 @@ Every route needs `Authorization: Bearer <token>`: the pool's own token, which a
 
 | Route | Request → response |
 | --- | --- |
-| `GET /v1/capabilities?environment_id=…` | → `Capabilities`: kernel languages, features (`jobs`, and `pdf` where the environment has pdf_oxide) and the location (pool, backend, sandbox, host, and the [isolation tier](#isolation-tiers) in effect, declared and probed). The ID must be an identifier |
+| `GET /v1/capabilities?environment_id=…` | → `Capabilities`: kernel languages, `kernel_reason` (when no Python kernel is offered, the executor's bounded reason: `jupyter_client` or `ipykernel` not importable, `jupyter_client` unable to list kernelspecs, or no `python3` kernelspec), features (`jobs`, and `pdf` where the environment has pdf_oxide) and the location (pool, backend, sandbox, host, and the [isolation tier](#isolation-tiers) in effect, declared and probed). The ID must be an identifier |
 | `POST /v1/recovery/fence` | `RecoveryFence` → `RecoveryFence`: trusted recovery-control clients advance durable work/attempt authority; stale epochs cannot admit effects. The model runtime has no recovery-control grant |
 | `POST /v1/operations/lookup` | `OperationLookupRequest` → `OperationLookup`: authenticated exact-context passive lookup of an admitted execution/provisioning operation; never submits or wakes work |
 | `POST /v1/executions` | `ShellRequest`, `JobRequest`, `CellRequest` or `PdfRequest` ([PDFs](#pdfs)) → `Execution`. Status is 201 when created, 200 when the project already has the operation ID with the same request, and 409 when it has it with a different one. Operation IDs are kept per project |
@@ -51,17 +71,28 @@ Every route needs `Authorization: Bearer <token>`: the pool's own token, which a
 | `POST /v1/executions/{id}/cancel` | `EffectControl` (exact execution context) → `Execution`. A running shell call gets SIGTERM, then SIGKILL; a running cell is interrupted; a queued cell is dropped |
 | `GET /v1/jobs?project_id=P&session_id=S&environment_id=E&after=ID&limit=N` | → `JobListing`: jobs in that session, oldest first, at most `N` (default 100, maximum 500); `next_after` is the last returned execution ID, and `truncated` says there is another page |
 | `GET /v1/jobs/{id}` | → `JobStatus`: execution, bounded current stdout/stderr head and tail, observed process CPU seconds and resident-memory bytes; finished jobs use their stored result. The optional `project_id` query has the same meaning as on execution routes |
+| `POST /v1/job-sandboxes/{id}/release` | `JobSandboxRelease` (`context`, `operation_id`) → `JobSandboxReleased`: the user's "release now" for a retained job sandbox (JS-24), `{id}` being the job. Deletes the sandbox by its recorded identity, as the retention sweep would; the first success is the receipt, so the same `operation_id` again answers the same result. An operator client only (`policy_denied` otherwise); a job of another session, project or environment than `context` names, or one with no sandbox, is `not_found`; a sandbox that is not retained (still running, or already released) is `conflict`; a deletion the gateway did not confirm is `unavailable` and the sandbox stays retained for the sweep |
+| `POST /v1/child-environments` | `ChildEnvironmentRequest` (the session's `context`, `delegation_id`, `profile`, `project_profile`, `inputs`, `retained`, `min_isolation_tier`) → `ChildEnvironment`, 201 when admitted, 200 for the delegation's existing one: a delegated run's own environment ([child environments](#child-environments)). Refused at once with a definite (4xx) error, creating nothing: a pool without child profiles (`unsupported`), a profile not granted or below the minimum tier, `child_environments_max` 0, or a count reached (`policy_denied`; `limit_reached: …` naming the limit, as a job sandbox's), a session environment without a ready policy (`conflict`), inputs over the profile's `stage_max_bytes` (`invalid_request`, `inputs_too_large: …` naming the file). It is made in the background |
+| `GET /v1/child-environments?project_id=P&session_id=S&environment_id=E` | → `ChildEnvironmentList`: the session's child environments made from `E`, ended ones included, oldest first |
+| `GET /v1/child-environments/{id}?project_id=P&session_id=S&environment_id=E` | → `ChildEnvironment`: phase (`creating`, `preparing`, `ready`, `collecting`, `released`, `retained`), failure and message, tier, inputs, replayed packages, the inputs from control's retained content it plans (`retained`), `ready_by`, `expires_at`, `retained_until` and the hand-back's manifest. Another session's is `not_found` |
+| `POST /v1/child-environments/{id}/inputs` | `InputPart` (the session's `context`, `index` in the planned `retained`, `offset`, `content_b64` of at most 8 MiB) → `InputStaged` (`size`: where the input's received bytes end, `accepted`, and once whole and checked, `staged`): part of an input from control's retained content, written to `inputs/<path>` of a ready child environment by a ranged write (protocol 17). A part not sent where the received bytes end is not written; the last part's write checks the SHA-256 and size admission planned, and one that differs is `conflict`, its parts discarded. A staged input answers `staged` again |
+| `POST /v1/child-environments/{id}/hand-back` | `HandBackRequest` (the session's `context`, `delegation_id`, `files`, `retained`, and `write_area` when the files go to another delegation's area, a Resume continuation's research work's) → `ChildHandBack`: copies the files into the session's `work/<delegation_id>/`, or `write_area` (a file already in that write area keeps its path) and stores the manifest once. The first request is recorded: the same one again answers the stored manifest, another is `conflict` |
+| `POST /v1/child-environments/{id}/end` | `ChildEnvironmentEnd` (`context`, `reason`: `delegation_ended`, `session_closed` or `abandoned`) → `ChildEnvironment`: released after a complete hand-back, a session close, or when abandoned (nothing will use it), otherwise stopped and retained; one that ended already answers its record |
 | `POST /v1/kernels/status` | `KernelStatusRequest` → `KernelListing`: only that session's running kernels, its own and its delegated runs' ([kernels per run](#behavior-worth-knowing)), and retained start/current revisions. Uses the normal managed connection lifecycle; starts no kernel or research command |
 | `POST /v1/kernels/observe` | `KernelStatusRequest` → `KernelObservation`: existing healthy connection only, with a worker receipt timestamp. No open/wake/reconnect, activity touch or busy count; unavailable is distinct from a connected empty session. Immediate global 8/per-environment 1 admission (a refused caller gets `unavailable`, "kernel observation capacity is busy", `KERNEL_OBSERVATION_BUSY`; the workspace panel treats it as no failure) and a whole-RPC two-second deadline ([kernel observations](KERNEL-REVISIONS.md#existing-connection-observations)) |
 | `POST /v1/kernels/restart` | `KernelRestartRequest` → `KernelInfo`, with the new generation: the session's kernel of the language, or with `run` that run's own. A cell running on the kernel ends, `cancelled` |
-| `POST /v1/sessions/close` | `SessionCloseRequest` → `SessionClosed`: stops the session's kernels in that environment and lists them. Running cells end `cancelled` ("the session was closed"), queued ones never start, and the next cell starts a new generation that reports `state_lost`. Jobs are cancelled and reaped; files and foreground shell calls are untouched, and an environment without an executor starts none. With `run`, only that run's own kernels stop, and the session's kernels and jobs stay: the harness sends it when a delegated run ends |
+| `POST /v1/sessions/close` | `SessionCloseRequest` → `SessionClosed`: stops the session's kernels in that environment and lists them, and, without `run`, releases the session's child environments made from it that are not released or retained, without retention. Running cells end `cancelled` ("the session was closed"), queued ones never start, and the next cell starts a new generation that reports `state_lost`. Jobs are cancelled and reaped; files and foreground shell calls are untouched, and an environment without an executor starts none. With `run`, only that run's own kernels stop, and the session's kernels and jobs stay: the harness sends it when a delegated run ends |
 | `POST /v1/files/read` | `ReadFileRequest` → `FileContent` |
-| `POST /v1/files/write` | `WriteFileRequest` → `WriteFileResult` |
+| `POST /v1/files/write` | `WriteFileRequest` → `WriteFileResult`. A context that names a delegated run's `write_area` (`work/<delegation_id>`) writes only below it and in `shared/`; any other path is `policy_denied` (`outside_write_area: …`, naming both) before the environment is reached ([DA-19](specs/delegated-agents.md#files)) |
 | `POST /v1/files/list` | `ListFilesRequest` → `FileListing` |
+| `POST /v1/files/edit` | `EditFileRequest` → `EditFileResult`: replaces an exact string in a UTF-8 text file of at most 8 MiB, under a write's preconditions, write area and shared-files sync ([tools spec](specs/tools.md), Files 7) |
+| `POST /v1/files/glob` | `GlobRequest` → `GlobListing`: paths matching a pattern, newest first, at most 200 (Files 8) |
+| `POST /v1/files/grep` | `GrepRequest` → `GrepResult`: a regular-expression search of text files, bounded in results, bytes and time (Files 9) |
 | `POST /v1/skills/check` | `StageCheckRequest` → `StageCheck`: whether a skill pack is staged as expected; with `seal`, made read-only once it is ([skills](SKILLS.md#helper-staging)) |
 | `POST /v1/skills/put` | `StagePutRequest` → `StagePutResult`: a batch of a pack's files where its snapshot is staged; with `reset`, after removing what is there |
 | `POST /v1/artifacts` | `PublishRequest` → `ArtifactRef` (201). A `media_type` must be `type/subtype`, with optional `; name=value` parameters |
 | `GET /v1/artifacts/{id}` | → `ArtifactRef` |
+| `POST /v1/artifacts/{id}/retention` | `ArtifactRetentionAcknowledgement` → exact echo (protocol 11); explicit `artifact_retention` control permission, project scoped, body at most 16 KiB |
 | `GET /v1/artifacts/{id}/content` | → the bytes, with `X-Content-SHA256`, as a download (`Content-Disposition: attachment`, `nosniff` and a sandboxing content security policy), so no media type turns them into a page |
 | `GET /v1/ready` | Authenticated passive protocol readiness; creates no environment or executor |
 | `POST /v1/environments` | `EnvironmentRequest` → `EnvironmentInfo`: 201 when created, 200 when the same environment exists, 409 when it exists with another project, profile or policy ([environments](#environments)) |
@@ -71,6 +102,9 @@ Every route needs `Authorization: Bearer <token>`: the pool's own token, which a
 | `POST /v1/environments/{id}/policy` | `PolicyRevisionRequest` → `EnvironmentInfo` under the new revision |
 | `DELETE /v1/environments/{id}` | → `EnvironmentInfo` in state `deleted` |
 | `POST /v1/environments/{id}/suspend` | → `SuspendResult`: stops the environment's sandbox now, as [idle suspension](#idle-suspension) would. `suspended` is OpenShell's word that the sandbox is stopped, by this request or already: a sandbox recorded stopped whose stop failed or was cut short is stopped again. One in use keeps running, as for idle suspension: running jobs, a publication, a request in flight, or kernels using more than 2% of a core over two samples a second apart. So does one being created |
+| `POST /v1/runtime-sandboxes` | `RuntimeSandboxRequest` → `RuntimeSandboxBinding`: binds the agent runtime's sandbox (the launcher's, not the worker's, labelled `sandbox-science.io/project` with its project, which a project-scoped client's bind checks through the gateway) to its project's policy revision in the policy store, as `revise` binds an environment's, so that the policy middleware decides its MCP requests. The revision is the one the store binds to the project (`projects/<project>.json`), else the one granted to it last; `not_found` when it has none. An operator client for the project only, or a `binding_only` one; `conflict` for a sandbox ID that is a research environment's |
+| `DELETE /v1/runtime-sandboxes/{id}` | → `RuntimeSandboxUnbound`: removes that sandbox's binding. An operator or `binding_only` client only; `conflict` for a research environment's sandbox. A client limited to some projects unbinds only a runtime sandbox bound for one of them (the binding records its project): one bound for another project is `policy_denied`, naming only the client's projects, and one with no runtime binding `not_found`; the pool's own token unbinds any, and none is no error for it |
+| `GET /v1/runtime-classifications?project=P&server=S…` | → `RuntimeClassifications` (protocol 16): for each named server (1 to 64, distinct), the project's classification revision in force and its file exactly as stored, nothing when none is bound, or why the binding or revision cannot be read. What the Kubernetes runtime manager compiles the agent runtime's fence with at each creation of its sandbox. An operator or `binding_only` client, for its own project only; read-only, and it shows no draft, acceptance record or drift (the operator's `/v1/classifications` routes do) |
 | `POST /v1/environments/{id}/admissions` | `AdmissionRequest` (up to 32 hosts and ports) → `AdmissionResult`: each host admitted or refused with the reason, and the environment ([ahead of use](#admission-on-demand)) |
 | `GET /v1/environments/{id}/revisions?after=N&limit=M` | → `RevisionHistory`: a page of the environment's revisions after revision `N` (default -1), oldest first, each with how its change came and its lockfile ([package commands](#package-commands)): at most `M` (1 to 100, the default) and 4 MiB of JSON. `next_after` is the `after` of the next page, while there is one. It works for any environment that ran something; a client limited to projects sees only its projects' environments, and none of the revisions recorded under an ID before the worker created its environment |
 | `GET /v1/environments/{id}/revisions/{n}/lockfile` | → the revision's `Lockfile` as JSON, at most 8 MiB, with `X-Content-SHA256`; `not_found` while it has none |
@@ -85,6 +119,20 @@ Every route needs `Authorization: Bearer <token>`: the pool's own token, which a
 | `POST /v1/provisioning` | `ProvisionRequest` → `ProvisionOperation`: 201 when created, 200 for an operation ID the project used with the same request, 409 with another. A capability the catalog lacks is `invalid_request`; an environment the worker does not govern, `unsupported` |
 | `GET /v1/provisioning/{id}?after=N&wait=S` | → `ProvisionOperation`. With `after`, it answers once the record's `seq` passes `N`, the operation finishes, or `S` seconds (at most 60) pass |
 | `POST /v1/provisioning/{id}/cancel` | → `ProvisionOperation`: a waiting operation ends at once; a running step is cancelled like any execution |
+| `GET /v1/permission-requests?project=P` | → `WorkerPermissionListing`: the project's unanswered permission requests in the policy middleware's event store, oldest first, at most 256: research code's escalated HTTP and git requests, package-cache downloads and provisioning file sets, each with its environment, and the agent's escalated MCP calls straight to a server (D98, `kind: mcp`, with its server, method, tool, effect class and significant arguments, no environment), and the detection rules' holds of a sandbox's or session's outward calls (D103, `kind: hold`, with what the rule saw, answered with the scope `session`: an approval clears it), each with its session, caller kind, ceiling and the summary its card shows (D97). An operator client only (the workspace); others get `policy_denied` |
+| `POST /v1/permission-requests/{seq}/answer` | `WorkerPermissionAnswer` (`approve`, `scope`, `hours`, `grants`) → `WorkerPermissionAnswered`, 201: the user's answer, recorded from the source `workspace`, naming the grants it comes from (protocol 18). An operator client only; a request of another project's sandbox is `not_found`; a network request takes `request` or `host`, a file set `files`, an MCP call `call`, and a package-cache download `request` only (`conflict` otherwise) |
+| `POST /v1/permission-grants/withdraw` | `GrantWithdrawal` (`project_id`, `grant`) → `GrantWithdrawn` (`requests`): withdraw the project's answered HTTP and MCP requests whose live approval names the grant, which the user revoked: a denial marked `withdrawn` for each, from the source `worker`, which ends its approvals and denies nothing ([policy middleware](POLICY-MIDDLEWARE.md#permission-requests)). Repeating it withdraws nothing more. An operator client only, for its own projects (protocol 18) |
+| `GET /v1/classifications?project=P` | → a JSON array of `ClassificationInForce` (`contracts/classifications.py`): for each server the project's policy declares with a classification, the classification in force (the project's accepted revision in the policy store, else the checked-in catalog's) with its source, digest, and each tool's class, reason, rules, significant arguments, pin and pin state against the newest unaccepted `mcp-tools-drift` record from that pin (else the newest), and that record (`drift`, with whether the server's non-read calls are held for the project, and in `drift.drifts` every listing the project has not accepted from the pin, newest first, at most 64, each with its time, its source, `middleware` or `runtime`, and its added, removed and changed tools). The project's policy is the revision the policy store binds the project to (`projects/<project>.json`), else the one granted to it last. An operator client only, for its own projects (`policy_denied` otherwise) ([MCP connectors](MCP-CONNECTORS.md#project-revisions)) |
+| `GET /v1/classifications/{server}/drafts?project=P` | → a JSON array of `ClassificationDraft`, newest first, at most 64: the drafts `classify-draft --project` stored for the project's server, each tool beside its class in force, with its pin state and whether and why accepting it widens (`widening`, `widening_reasons`: a call that would pass without asking, a wider grant ceiling, or a class a session or project grant would cover). An operator client only; a server the policy lacks is `not_found` |
+| `POST /v1/classifications/{server}/drafts/{draft}/accept` | `ClassificationAcceptance` (`project`, `operation_id`, `yaml`, `reason`) → `ClassificationAccepted` (`revision`, `accepted_at`, `widenings`), 201: the user's acceptance of a draft, edited or not. The YAML is read as the loader reads a classification file and must classify `server`, name only tools the server is known to have and pin them only to digests a listing gave (`invalid_request` otherwise); a server whose policy entry names no classification is `conflict`. It becomes the project's revision in force, with its acceptance record, and an `mcp-classification-accepted` record from the source `workspace`; if that record cannot be written, the revision it replaced is put back (`unavailable`). The first answer is kept in the store's `classification_receipts` by project and `operation_id` (`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`): a retry with the same ID gets it unchanged and accepts nothing again, and the same ID with another request, on either acceptance route, is `conflict`. A refused acceptance keeps no receipt. An acceptance made but not yet kept when the worker stops is made again by a retry (the same revision, recorded twice). An operator client only |
+| `GET /v1/classifications/{server}/revisions/{revision}/export?project=P` | → the project's accepted revision `revision` (hex) of the server's classification, its YAML exactly as stored, as `application/yaml`, with `X-Classification-Server`, `X-Classification-Revision` and `X-Classification-Accepted-At`, to check in (CL-3); its SHA-256 is `revision`, which the client checks. A revision the project has not accepted is `not_found`. An operator client only |
+| `POST /v1/classifications/{server}/drift/accept` | `DriftAcceptance` (`project`, `operation_id`, `reason`, `listings`) → `DriftAccepted` (`accepted_at`), 201: the user's re-acceptance of a drifted tool list, an `mcp-tools-accepted` record naming the project and every listing it accepts. `listings` are the digests of the drifted listings the review showed (`drift.drifts`); unless they are exactly those the project has not accepted from the pin in force, it is `conflict` ("the drift changed; review again"), so nothing the user did not see is accepted. The record comes from the source `workspace`, which ends the middleware's hold for that project (`conflict` when the server has no drift), kept by `operation_id` as a draft's acceptance is. An operator client only |
+| `POST /v1/permission-requests/{seq}/confirm` | `PermissionConfirmation` (`reason`, `project_id`, `server`, `method`, `tool`, `arguments`) → `PermissionConfirmed` (`confirmed`): whether MCP request `seq` is that call's, by project, server, method, tool and the parameters' digest, and stands as the refusal `reason` said (`Approvals.confirms`, D98). Any client, for its own projects (`policy_denied` otherwise); the harness asks before it trusts a refusal that names a request, since an MCP server can write one. The answer is yes or no, never the request's record: a missing request, another kind, or another call's is `false` |
+| `POST /v1/mcp-listings` | `ListingReport` (`project_id`, `server`, `session`, `run`, `tools`: each `name`, `digest`, `hint`, at most 2,048; `listing`) → `ListingReported` (`drifted`, `record`): a complete listing the agent runtime's direct MCP client read, which the policy middleware let pass unread (an event stream, D98). The worker compares it with the pin of the project's classification in force with the library's code (`policy.mcp_listings`) and appends the `mcp-tools-drift` record the middleware would, with the source `runtime`, unless a drift of that listing was recorded already (`record` none), and records every report it takes (`mcp-tools-listing-reported`), which answers the middleware's unread listing; the middleware's drift ledger holds the server's non-read calls as for its own reads, and a report never ends a hold. A report of a listing the project accepted while another drift of the server holds it is `conflict`, with no record, as is a caller's eleventh report of a project's server within a minute, counted apart for reports naming a session or run (runs') and for those naming neither (the canaries' and the user's availability checks). Any client, for its own projects (`policy_denied` otherwise); a server the project's policy lacks is `not_found`; a listing whose digest is not its tools', or that names a tool twice, is `invalid_request`. The control service forwards the runtime's reports, naming the project, session and run itself. The worker keeps the latest report it took of each project's server, with the time it took it and whether it drifted, in its store (`mcp_listing_reports`, store version 12), for the read below, so the MCP services view survives a restart: one report per project and server, the newest replacing the last, and at most 4,096 projects' servers, the least recently reported forgotten |
+| `POST /v1/mcp-tool-classes` | `ToolClassQuery` (`project_id`, `server`, `tools`: each `name` and `digest`, at most 1,024) → `ToolClasses` (`policy`, the policy revision answered under; `classification`, the digest of the classification in force, else null; `tools`: each `name`, `effect`, `escalates`, `asks`, `state`): the class the project's classification in force gives each listed tool, for the host's connectors (DA-7, [effect classes of listed tools](MCP-CONNECTORS.md#effect-classes-of-listed-tools)). The answer is under the policy revision every agent runtime sandbox bound for the project is bound to (`PolicyStore.runtime_bindings`), which the policy middleware decides their calls under; while none is bound or they are bound to different revisions, `policy` is null and every tool `unbound`. Only a tool the classification in force names with a pin equal to `digest` has an `effect` (`state` `classified`): the class a call of it by name without arguments resolves to, `read` only when no argument rule can make a call more. `escalates` says every call of it asks the user: the policy escalates a call by name and every class an argument rule can resolve a call to is escalated or denied; `asks` then names those escalated classes with their grant ceilings, against which the host checks the user's grants. The others have no class and `escalates` false, with `state` `unclassified` (not named, or named only by the policy's `classify`), `unpinned`, `changed` (another digest) or `denied` (the policy denies it by name); a server whose policy entry names no classification has none for any tool. Read-only; any client, for its own projects (`policy_denied` otherwise); a server the project's policy lacks is `not_found`, a tool named twice `invalid_request` |
+| `GET /v1/mcp-listings?project=P` | → a JSON array of `ReportedListing` (`contracts/classifications.py`), one per server of the project with a report kept: `server`, `reported_at`, `session`, `run`, `listing`, `drifted` and its `tools`, each `name`, `hint`, `effect` (by the classification in force when it names the tool, else the hint; `read` only when no argument can make a call of it more), `classified` and `action` (`allow`, `escalate` or `deny`: a call of it by name without arguments, as the policy middleware decides one, under the project's policy, the pool's ceiling and floor and the classification in force). For the workspace's MCP services view (D98); an operator client's, for its own projects (`policy_denied` otherwise); a server the policy no longer declares is left out |
+| `GET /v1/monitor?project=P&window=24h\|7d` | → `WorkerMonitor` (`contracts/monitor.py`): the project's [monitor figures](#monitor-figures) for the last 24 hours or 7 days, counted from the policy middleware's event store, and its environments with their isolation tiers. An operator client only, for its own projects (`policy_denied` otherwise); another window, or another query parameter, is `invalid_request`. Served when the worker manages environments; without an event store, `records` is null with `unavailable` saying why |
+| `GET /v1/mcp-traffic?project=P[&session=S][&run=R][&tool=T][&after=N]` | → `WorkerMcpTraffic` (`contracts/mcp_traffic.py`): a page of the project's MCP traffic on the direct path, oldest first after record `N`: its calls, each with its decision, its recorded arguments and its answer (head, excerpt, findings, what inspection did with it) when the answer is in the same page, and the answers to earlier pages' calls (`late_answers`, matched by `request_id`), at most 20 of the two together, as the policy middleware recorded them, redacted ([MCP traffic inspection](POLICY-MIDDLEWARE.md#mcp-traffic-inspection)). A page covers the records it reads, at most 100,000, and ends at the last of them (`next_after`, the next page's `after`), so every call and every answer comes in exactly one page. An operator client only, for its own projects (`policy_denied` otherwise), like the permission requests, since the records hold other clients' calls and servers' words; another parameter, or a malformed one, is `invalid_request`. Without an event store, `calls` is empty with `unavailable` |
 
 The harness can copy a published artifact into the control store's separate [immutable
 inventory](ARTIFACTS.md), keeping the worker reference beside its pinned control
@@ -101,10 +149,10 @@ For such a client:
 - A request that names another project, in its context or body, is `policy_denied`.
 - An execution, artifact, provisioning operation or environment of another project is `not_found`, whatever the route: its state, events, results, files and policy are out of reach, and so is cancelling it.
 - The client may use only the environments the worker created for its projects, and not once they are deleted. An environment of another project, or a sandbox made by hand, is `not_found`. Clients therefore need `[openshell.environments]`: only the environments the worker creates are known to belong to a project.
-- Its projects may have at most `max_environments` environments at once (8 unless the entry says otherwise), deleted ones aside, since each is a sandbox, a VM with the VM driver. Beyond that, creating one is `policy_denied` until one is deleted. Concurrent requests cannot pass the limit together.
+- Its projects may have at most `max_environments` environments at once (8 unless the entry says otherwise), deleted ones aside, since each is a sandbox, a VM with the VM driver. Beyond that, creating one is `policy_denied` until one is deleted. Concurrent requests cannot pass the limit together. On Kubernetes the site file's `[worker] max_environments` sets it for control's and the workspace's clients ([bundle](KUBERNETES-BUNDLE.md#generate-the-secrets)).
 - It may create or revise environments only under the policy revisions an operator granted to the project: `sandbox-science-worker policy add --settings worker.toml --project p1 policy.yaml`. A revision not granted gets the same `not_found` as one never stored, so a client learns nothing of other projects' revisions, and cannot borrow another project's credential providers by naming its revision.
 
-An environment ID stays with the project that first created it, even once the environment is deleted: creating it for another project is a `conflict`, from any token, with the same answer as for a sandbox made by hand, which names no project. Before an executor runs in an environment's sandbox, the worker checks that the sandbox is still the one it created (its OpenShell ID), and gives the environment up otherwise. Whatever a request was checked against therefore belongs to the same project when it runs, however long it waits for the environment (a revision, a resume, a deletion). For the same reason, the worker never creates an environment under an ID the settings map to a sandbox made by hand, and an ID the worker created never falls back to that map. Only the pool's own token may use sandboxes made by hand; with it, a request that names a worker's environment with another project is a `conflict`. Operation IDs are kept per project, so no project meets, or takes, another's.
+An environment ID stays with the project that first created it, even once the environment is deleted: creating it for another project is a `conflict`, from any token, with the same answer as for a sandbox made by hand, which names no project. Before an executor runs in an environment's sandbox, the worker checks that the sandbox is still the one it created (its OpenShell ID), and gives the environment up otherwise. OpenShell's commands name a sandbox, not its ID, so just before each command that changes one (stop, start, delete, a policy change) the worker reads the sandbox under that name and refuses (`unavailable`, naming both IDs) when it is another: a name another sandbox took after the original went is never stopped, deleted or given a new policy by the worker. Idle suspension, a suspension on request, a job sandbox's or child environment's retention and admission on demand all keep to this; a retention refused so is logged, and the record is retained for its deletion, which refuses the same way. Whatever a request was checked against therefore belongs to the same project when it runs, however long it waits for the environment (a revision, a resume, a deletion). For the same reason, the worker never creates an environment under an ID the settings map to a sandbox made by hand, and an ID the worker created never falls back to that map. Only the pool's own token may use sandboxes made by hand; with it, a request that names a worker's environment with another project is a `conflict`. Operation IDs are kept per project, so no project meets, or takes, another's.
 
 Environment IDs are still shared by the whole pool, so a client can take an ID before the project that would use it, and then keep it. It learns nothing of that project and reaches nothing of it: the ID never moves. The harness ends its environment IDs with a random tag (`p1-default-3f9c0a1b2d4e`), so no other orchestrator can predict one. Keeping environment IDs per project is in the backlog, as are limits per client on executions and requests.
 
@@ -143,6 +191,7 @@ The worker binds an operation ID to the digest of its request's non-default fiel
   - The file tools refuse absolute paths, `..` and paths through symlinks. They open one directory at a time, relative to the last, without following a symlink, the workspace and the shared area themselves included.
   - Reads refuse anything but a regular file without waiting for it (a FIFO, say), and hash in a thread, so a large file does not hold up other sessions.
   - Writes to the shared area need `expected_sha256` or `create_only`.
+  - A write or edit whose context names a `write_area` (a delegated run's, DA-19) is made only below that directory of the session workspace or in the shared area. The worker checks the path as the request gives it, exactly (case counts), after the contract has refused absolute paths and empty, `.` and `..` segments; a symlink the run's code put in its write area is refused by the executor, which follows none. Only the harness sets the field, on the agent's `write_file` and `edit_file` requests; the platform's own writes (saved output, hand-backs, staged inputs, job deliveries) carry none. Reads take no write area.
   - Skill packs are staged at `<project root>/.skills/<source>/<snapshot>`, one folder a snapshot, outside the session workspaces and the shared area, so no attempt's written files list them. A check reads every file without following a symlink and names each one that differs, is missing or is more than expected; a symlink or file in the folder's place is not staged. A put with `reset` removes the folder first, through no symlink. A sealed pack's files are 0444, or 0555 if executable, and its folders 0555; the modes are advisory, since sandbox code runs as the same user. The check opens files without blocking, hashes only a regular file of the size expected, and stops at 32 folders deep or 8,192 entries. A put first removes a symlink or file at `.skills` or `.skills/<source>`.
 - **Bindings.** A shell, job or cell request may carry `bindings`, at most 64 variables, each a name of capitals, digits and `_` and a value without whitespace, control characters or `;`; the execution's environment gets them beside the environment's own. A binding of a variable the environment sets itself is left out, the environment's value standing, and the result's notices name it (`skill bindings not set, as the environment has its own of each: ...`); the execution runs with the rest. A cell's bindings are the whole set its kernel's next start takes; a running kernel with others keeps them, and the result's notices say to restart it. Only an executor of protocol 2 or more takes bindings: the worker refuses them for an older one ("predates skill bindings; recycle the environment"). A staging check may name `commands`, and the reply names those on the environment's `PATH`.
 
@@ -200,6 +249,20 @@ What is guaranteed, and what is not:
 - **With a subreaper:** also processes that replaced their environment and left the session, as long as they are below the executor. The executor reports in its `hello` whether `prctl` let it become a subreaper, and the worker logs a warning if not.
 - **Not guaranteed:** a process that research code deliberately disguises, by copying another owner's mark or, without a subreaper, by clearing its environment and leaving the session. Research code controls its sandbox; these checks catch accidents and ordinary daemons, not a determined attacker, whom only the sandbox contains.
 
+## Monitor figures
+
+`GET /v1/monitor` gives the workspace's Monitor view ([workspace](WORKSPACE.md#views), D103) one project's figures, counted by code (`monitor.py`). The worker reads the policy middleware's event store newest first (`StoreReader.newest`): records of the kinds `mcp-call`, `escalation`, `approval`, `denial`, `approved`, `alert`, `mcp-answer-alert` and `mcp-inspection-dropped` among the newest 100,000 records (`MAX_SCANNED`), and no further back than the window's start. `scanned` says how many it examined, and `truncated` that the cap stopped it inside the window. A record of another project, or one that does not read as its kind, is skipped; research code's requests name a sandbox, not a project, and count for the project whose environment owns the sandbox, as the [permission listing](POLICY-MIDDLEWARE.md#permission-requests) attributes them.
+
+- **Calls**, one row per effect class and destination, the busiest first, at most 500. An MCP server's rows count its `mcp-call` records, the middleware's (and the retired MCP proxy's, where an older store has them) alike (class `none` for a message that is not a classified tool call): **allowed** when the call went through (allowed, alerted or approved), **held** when a hold refused it (`session_held`), **denied** for any other refusal (the policy, a denial, an unanswered request, a check), and its escalations as **escalated**, each request once whatever the run service's retries; a detection's escalation (`detect.*`: a drifted tool list, an action-like URL) counts as held. Research code's HTTP and git requests have rows by host (`network`, or `packages` for a download from the package cache) with only what the middleware records of them: escalations, detections' holds, and requests that went through on an approval or with an alert; it records nothing of the ones it allows plainly or denies.
+- **Approvals**, for each kind (`mcp`, `network`, `packages`, `hold`), the requests recorded in the window by how they stand now: waiting, approved or denied by their first answer, or expired (unanswered past their timeout, or withdrawn by the worker as their operation ended), with the median wait from a request to its first answer.
+- **Holds**: every hold of the project nobody has answered, however old, by rule (`detect.<rule>`), with the sessions held and the oldest's time, from the ledger's own fold.
+- **Drift**: the servers whose tool list drifted and is not accepted again for the project, as the classification review reads them (`held`).
+- **Inspection**: by server, the busiest first, the MCP answers in which [traffic inspection](POLICY-MIDDLEWARE.md#mcp-traffic-inspection) found a pattern (`mcp-answer-alert`): passed with an alert (`alerts`), blocked or cut (`blocks`), or passed unread for want of capacity (`uninspected`); whether inspection is on (`inspection_enabled`), from the newest `mcp-inspection-state` record, whatever its age; and the project's answers whose records the middleware dropped (`inspection_dropped`, from `mcp-inspection-dropped`).
+- **Environments**: the project's environments that are not deleted, with their kind, profile and state, the tier the backend declares, and the tier in effect as the [probe](#isolation-tiers) measured it when the environment's executor last opened (`manager.measured_tier`, read without connecting; null when none has opened since the worker started).
+- **Child environments' seeding** (`child_environments`, [CE-13](specs/child-environments.md); null when the pool offers no child profiles): the project's [child environments](#child-environments) admitted within the window, each a new sandbox whose workspace is seeded from the session environment's image: how many, how many became ready, failed before they were ready or are still being made; how long their sandboxes took to be placed, seeded and started (the `created` step a child environment records once its sandbox is ready) and from admission to ready, each as a count, median, longest and total in seconds; and how many are alive now and kept stopped. They are read from the child environments' rows, the newest 1,000, on a read-only connection off the event loop; released rows go after `child_retention`, so a window reaching past that, or past the newest 1,000, says from when its counts are complete (`counted_since`).
+
+The agent's MCP calls are the middleware's records since the MCP proxy, which kept its own store in its sandbox, retired (2026-10-26). Network-policy drops are not counted: OpenShell's logs carry none yet. Tests: `packages/worker/tests/test_monitor.py`.
+
 ## Isolation tiers
 
 Each backend declares an isolation tier ([threat model](THREAT-MODEL.md#isolation-tiers), D43): `local` declares 0, and `openshell` declares its `isolation_tier` setting, which has no default. Whenever the worker starts an executor, it checks the declared tier against evidence (`isolation.py`):
@@ -208,6 +271,7 @@ Each backend declares an isolation tier ([threat model](THREAT-MODEL.md#isolatio
 
 Evidence only lowers the declared tier, never raises it:
 - **Kernel.** The worker host's boot ID means the same running kernel: tier 1 at most, and 1 only if the executor runs under a seccomp filter with no-new-privs and no effective capabilities (the threat model's hardened container), else 0. A boot ID that either side cannot read counts the same way, so tiers 2 and 3 need a kernel of their own.
+- **Node kernels.** On Kubernetes the worker and its sandboxes usually run on different nodes, so a plain container's boot ID differs from the worker's. The optional `node_kernel_releases` setting lists the operator's patterns for the nodes' own kernel releases (case-sensitive fnmatch, such as `*-talos`; a Kata guest kernel is Kata's own build and matches none). A sandbox whose kernel release matches one runs on a node's kernel, and the kernel rule above applies: tier 1 at most, 0 without the hardened container. A release that is missing or not a plausible one (more than 64 characters, or characters other than letters, digits and `._+~-`) counts the same way while patterns are set. Without patterns the release is not evidence. The `kernel` field still reports the boot-ID comparison; the findings name the matched release and pattern.
 - **Files.** A sentinel file the sandbox can see, or one it cannot check for, means tier 0.
 - **Failure.** If the probe fails, the tier is 0, never the declared one.
 
@@ -216,15 +280,16 @@ Results and capabilities report the tier in effect (`isolation_tier`), the decla
 What the probe cannot do:
 - **Prove tier 3.** Nothing seen from inside one sandbox shows that it has a VM to itself rather than sharing one with other sandboxes. A declared tier 3 stands when nothing contradicts it.
 - **Withstand a hostile sandbox.** A compromised sandbox can give the answers a well-isolated one would. Since answers only lower the tier, the probe catches a misconfigured backend, such as a container driver declared as a VM, not a hostile sandbox.
-- **See beyond the worker's host.** It compares the sandbox with the worker's host only.
+- **See beyond the worker's host.** It compares the sandbox with the worker's host only, plus, where the operator lists them, the node kernel releases. A node whose kernel matches no pattern, or a VM whose guest kernel imitates a node's release, goes unnoticed.
 
 ## Running under OpenShell
 
-Labs 4 and 5 ran the worker against a real gateway ([lab 4](../.agents/docs/agent-reports/babbage-openshell-lab-4-2026-10-11.md), [lab 5](../.agents/docs/agent-reports/babbage-openshell-lab-5-2026-10-11.md)). OpenShell v0.1.3's seccomp filter refuses two kinds of call that ordinary software makes. The worker works around both:
+Labs 4 and 5 ran the worker against a real gateway ([lab 4](../.agents/docs/agent-reports/babbage-openshell-lab-4-2026-10-11.md), [lab 5](../.agents/docs/agent-reports/babbage-openshell-lab-5-2026-10-11.md)). OpenShell's seccomp filter (v0.1.3 there, unchanged in v0.1.5) refuses two kinds of call that ordinary software makes. The worker works around both:
 - **Scheduler calls on a thread.** libzmq aborts when `pthread_setschedparam` fails, so no Jupyter kernel or client could start.
-  - The worker builds a small shim (`shim/sched_self.c`) with the host's C compiler (`cc`), uploads it beside the executor and preloads it with `LD_PRELOAD`. Every process the executor starts inherits it.
-  - For the calling thread, the shim makes the equivalent `sched_setscheduler(0, …)`, which the filter allows. It needs only glibc 2.2.5 symbols.
-  - The `sched_shim` setting turns it off.
+  - The research images ship a native shim built from `shim/sched_self.c`, under `/usr/local/lib/sandbox-science/shim/<source-sha256>/`. The worker checks its Linux ELF architecture, embedded source SHA-256 and loadability with the sandbox's Python before preloading it with `LD_PRELOAD`. Every process the executor starts inherits it. A macOS or amd64 worker can therefore use an arm64 Linux sandbox without compiling its code on the worker.
+  - Older or custom images without the matching library use the worker's `cc` only when the worker runs Linux on the sandbox's architecture. The fallback validates the ELF header before upload, then installs and validates a source/architecture-specific path under `executor_dir/shim/`. Installation never overwrites an existing library, including one used by a running daemon. A missing native image library on a different worker platform/architecture fails with instructions to rebuild the research image; a broken library fails validation instead of being silently skipped.
+  - For the calling thread, the shim makes the equivalent `sched_setscheduler(0, …)`, which the filter allows. It uses glibc's pthread and syscall interfaces.
+  - The `sched_shim` setting turns it off explicitly. Native image builds and local compatibility tests do not establish OpenShell ARM64 or Kubernetes runtime acceptance; those live qualifications remain open.
 - **Signals to process groups.** `kill(-pgid)` is refused. The executor never signals a group: it signals each process of a call, found through `/proc` ([leftover processes](#leftover-processes)).
 
 The executor also calls `prctl` twice at startup:
@@ -232,7 +297,7 @@ The executor also calls `prctl` twice at startup:
 - **Not dumpable.** It tries to make itself not dumpable, which closes its `/proc` files (`fd`, `environ`, `mem`) and ptrace to research code running as the same user, so research code cannot write into the protocol or read other sessions' requests.
   - OpenShell's filter allows the call, but its supervisor then refuses every socket call from the process, even a loopback or Unix socket. That stops kernels from starting, since the executor is their client (lab 8).
   - So the executor checks that it can still bind a Unix socket, and otherwise becomes dumpable again.
-  - Under OpenShell v0.1.3 it therefore stays dumpable, and research code in the same environment can reach its file descriptors. The worker treats everything the executor sends as untrusted, and sessions that share an environment are not isolated from each other anyway ([projects and sessions](PROJECTS-AND-SESSIONS.md)).
+  - Under OpenShell v0.1.3 it therefore stays dumpable, and under v0.1.5 too: its network broker reads a calling process's memory and descriptors to decide `bind`, `connect`, `listen` and sends, Unix sockets included, and refuses them with `EACCES` for a process that is not dumpable (its support matrix, "Task-memory access"; from the source, not yet seen in a lab). Research code in the same environment can reach its file descriptors. The worker treats everything the executor sends as untrusted, and sessions that share an environment are not isolated from each other anyway ([projects and sessions](PROJECTS-AND-SESSIONS.md)).
   - Its `hello` reports both results (`subreaper`, `not_dumpable`), and the worker logs when either is missing.
 
 Other things to know:
@@ -264,14 +329,72 @@ With an `[openshell.environments]` table, the worker creates the sandboxes behin
 
   If creation fails, the worker retains the original `creating` record until cleanup is confirmed. Readiness polling saves the first observed sandbox ID before accepting or rejecting its phase. A retry deletes only that original identity, verifies absence, and then allocates a replacement name. Delete failure, pending deletion or an identity change leaves the record and cleanup obligation intact across restart.
 
-  If the creation response was lost and no sandbox identity has appeared yet, absence is inconclusive: upstream work could still create it later. The environment stays `creating`, counts against the environment limit, and replacement and explicit deletion report an unknown creation outcome. Retry can reconcile it when it appears. If it never appears, an operator must reconcile the upstream request; elapsed time alone does not authorize forgetting it.
+  If the creation response was lost and no sandbox identity has appeared yet, one read of absence is inconclusive: upstream work could still create it later. The environment stays `creating` and counts against the environment limit until absence is **confirmed**, which takes all of these, checked against the gateway:
+
+  - `creation_grace` (default 420 s: OpenShell 0.1.5's fixed 300 s bootstrap grace, after which its driver rolls a sandbox back, plus 120 s; never less than 300 s) has passed since the `sandbox create` command ended, whatever its result. The worker records that end; while the command runs, the environment's lock keeps every read away. A record without one, left by a worker that stopped while the command ran, is refused by the offline command, and the running worker counts it as ended when it started serving (a stopped worker's commands end with it under systemd or Kubernetes) or at `create_timeout`, whichever is later;
+  - the gateway has no sandbox by the environment's original name, and `openshell sandbox list`, read page by page (100 a page, at most 32 pages), shows none by that name and, with `label_environments` on, none under another name that carries the label the worker then gives every sandbox it creates, `sandbox-science.io/environment=<environment ID>` (when the ID is a valid Kubernetes label value), unless another of the worker's records names that sandbox. A listing must also show every sandbox of the worker's other environments that have an identity: one that misses any came from another gateway or workspace, or from a gateway still rebuilding its index, and confirms nothing. So do a longer listing and one the worker cannot read. The CLI's own `OPENSHELL_*` settings come only from `[openshell] env`: the worker drops those it inherits;
+  - that absence was seen on two reads at least `creation_recheck` apart (default 30 s), both past the grace, by the wall clock and, within one process, by the monotonic clock as well, so a step of the system clock cannot shorten the gap. Each such read is recorded on the environment (when, and what was listed) in the worker's environment records.
+
+  A creation the gateway **refused** needs none of the waiting: when `sandbox create` ends with an InvalidArgument, FailedPrecondition, PermissionDenied or Unauthenticated status (`status: 'Client specified an invalid argument'` and the like, as OpenShell 0.1.5's CLI reports them), the gateway checked the sandbox's spec, driver configuration and admission and recorded nothing, so the worker records the refusal with the command's end, and one read of the name and of the complete listing, by the rule above, that finds no trace confirms absence at once. A failed job sandbox creation is thus released as soon as the job fails, instead of staying `retained` through the grace.
+
+  On confirmed absence the environment is marked `deleted` with the reason `creation_rolled_back` and its deletion confirmed, so its record is forgotten by the ordinary path and its ID may be created again. Anything less is refused with the unknown-outcome message, naming what is missing ("seen absent once, at …; a second read after … confirms it", or "the record is younger than the creation grace"). If any read shows the sandbox, the environment takes its identity and continues as any creation with an identity does: deleting the environment, or creating it again, deletes that sandbox by identity. Reconciliation itself never deletes a sandbox.
+
+  Three paths apply the rule. The running worker checks every `creating` environment without an identity past the grace once per `creation_recheck`, so most unknown outcomes clear themselves within a minute of the grace; it skips an environment whose creation or deletion is under way. Deleting the environment, or creating it again, through the API succeeds by the same rule instead of being refused. With the worker stopped, an operator lists and reconciles them:
+
+  ```bash
+  sandbox-science-worker environments list --settings worker.toml --state creating
+  sandbox-science-worker environments reconcile --settings worker.toml [--no-wait] env-1
+  ```
+
+  `reconcile` makes the reads itself, waiting for the second one when one absence is recorded (`--no-wait` refuses instead), and prints what it did (`rolled_back`, `adopted`) or why it refused (`inconclusive`, `skipped`), exiting 1 on a refusal. Like `captures`, it takes the state directory's lock, so it refuses while a worker runs and points at the worker's own pass (on Kubernetes it runs as a Job: [offline worker commands](KUBERNETES-BUNDLE.md#offline-worker-commands)). The running worker's deletion hooks (forgetting the environment's revisions, package gate, provisioning records and capture leases) are not registered in the command, so it records them as pending on the environment, and the worker runs them when it next starts, before it serves; an ID created again meanwhile ran them on reuse. Each read holds only that environment's lock, the one creation and deletion hold, and never sleeps under it. One case is outside the rule: a `sandbox create` command that outlived the worker that ran it (a worker not run under a service manager that ends its processes), whose sandbox the gateway receives after the worker's restart and the grace.
 - **Revising:**
   1. The worker compiles the new revision, deciding again every host it decided on demand under the old one ([admission on demand](#admission-on-demand)). It refuses a revision whose providers differ, since OpenShell attaches providers only when it creates a sandbox.
   2. It reads the sandbox's live filesystem section (`openshell policy get --base`), because OpenShell refuses a revision that removes any path from it.
   3. It applies the new document with `openshell policy set --wait`, then rebinds. Between those two steps the middleware denies the sandbox's requests as `policy_stale`, so the change fails closed.
-- **Deleting:** the worker stops the environment's executor (running attempts end as `lost`), deletes the sandbox and removes its binding.
+- **Deleting:** the worker stops the environment's executor (running attempts end as `lost`), deletes the sandbox and removes its binding. A session environment's [job sandboxes](BACKGROUND-JOBS.md#job-sandboxes) end first: their jobs are cancelled (never reported lost) and their sandboxes released, retained ones too; the same happens, in the background, when the worker gives an environment up because its sandbox went.
 
 Sandboxes made outside the worker still work through the static `sandboxes` map.
+
+### Job environments
+
+A job that names a job profile runs in a job environment of its own ([job sandboxes](BACKGROUND-JOBS.md#job-sandboxes), D93): an environment of kind `job` (`EnvironmentInfo.kind`, with `job_id`), ID `<project>-job-<12 hex>`, which no client can create, name, list or count against `max_environments`. Every route that takes an environment, and the reads of its executions and provisioning operations, answers `not_found` for it; operation IDs `jsb-<24 hex>.<step>` are the worker's own.
+
+- **Creating.** The worker records the environment, then creates its sandbox as it does any other, from the session environment's recorded image, policy revision and providers, compiled with the session's admitted hosts, and binds it in the middleware's store under that revision. The job profile's Kubernetes settings are its driver configuration, not narrowed by the policy's CPU and memory caps, with only the keys OpenShell 0.1.5 accepts; the sandbox itself is labelled `sandbox-science.io/job-sandbox=true` (`sandbox create --label`), which OpenShell does not copy onto its Pods. A sandbox not ready within the profile's `schedule_timeout` (OpenShell's phase stays pending while no node has room) is deleted by identity, as any failed creation. The timeout bounds the whole wait, the create command's included: OpenShell 0.1.5's `sandbox create` waits for provisioning even with `--detach`, until its own idle deadline (`OPENSHELL_PROVISION_TIMEOUT`, 300 s by default, renewed by each progress event), so the worker gives the command the schedule timeout as that deadline and ends it at the schedule timeout if it waits on (the profile's timeout replaces the pool's `create_timeout` for these creations, longer or shorter); either end is the job's `capacity_unavailable` (a child environment's `environment_unavailable`).
+- **Using.** The worker opens an executor there like in any environment it created; a job environment's start does not compare its pinned size with the policy, since its profile is the grant.
+- **Retaining and releasing.** Retention stops the sandbox (disk kept, executor gone); release deletes it by its recorded identity; a sandbox no record names is never deleted. A job environment is disposable: the package guard, which refuses to stop or delete an environment whose package gate is held without proof of its original binding, does not apply to it, and its gate is forgotten without that proof once its deletion is confirmed. Session and child environments keep the guard.
+- **Across a worker restart.** The job's own execution in the job environment is a daemon job, which [recovery](#sandbox-daemon-and-recovery) reattaches or reports lost like any other. The job itself, in the session's context, is never dispatched, so a stopping worker leaves it unfinished, the restarted one does not report it lost, and `JobSandboxes.start` resumes it once recovery has run: it finds the command's execution by its operation ID without submitting one, fails the job (`worker_restarted`) and releases the sandbox when there is none, and otherwise waits, collects and ends the job ([background jobs](BACKGROUND-JOBS.md#job-sandboxes)). Each job's progress is recorded once per step in the store's `job_progress` (version 9): what preparation found, when collection began, each file collection copied back or left out, a session close's early release, and the deletion of the session environment, which stops collection; a resumed collection skips the files recorded, and a stored manifest is the job's outcome. A job whose session environment's record says deleted when the worker starts is cancelled and released as a deletion seen while it ran would be.
+
+Job profiles live in `[openshell.environments.job_profiles.NAME]` ([settings](#settings), [example](../examples/kubernetes/job-profiles.toml)); each is a Kubernetes profile, whose `runtime_class_name` must be `kata` or `kata-*`, plus a description, `wall_time_max`, `schedule_timeout`, `max_concurrent`, `stage_max_bytes` and `collect_max_bytes`. A project's policy grants profiles with `resources.job_profiles` and a concurrency with `resources.job_sandboxes` ([policy](POLICY.md#background-job-resources)). The capabilities of an environment whose project has both list the granted profiles (`job_profiles`) and the `job_sandboxes` feature.
+
+**Node drains do not wait for job sandboxes.** OpenShell 0.1.5 puts no label the worker chooses on a sandbox's Pods, so no PodDisruptionBudget can select a job's Pod, and a planned drain evicts it like an unplanned loss: the job ends `lost`. Before draining a node, `openshell sandbox list --selector sandbox-science.io/job-sandbox=true` lists the job sandboxes ([job sandboxes and node drains](KUBERNETES-BUNDLE.md#job-sandboxes-and-node-drains)). The selector over the sandbox's own label works (first cluster, 2026-11-01, d760b3f4: it listed a running job's sandbox and none after its release). Not verified on a cluster: what `talosctl upgrade` does to a running job.
+
+### Child environments
+
+A delegated run whose project gives it an environment of its own works in a child environment ([child environments](specs/child-environments.md), CE-1): an environment of kind `child` (`EnvironmentInfo.kind`, with `delegation_id` and `session_id`), ID `<project>-child-<12 hex>`, which no client can create (`invalid_request`), list among the environments or count against `max_environments`. Unlike a job environment it is a working environment: the executor, kernels, file tools and recorder work in it as in a session environment, for contexts of its own session only (another session's context gets `not_found`). The environment routes (`GET`, `DELETE`, `/policy`, `/suspend`, …) answer `not_found` for it: the child environment routes are its own. Operation IDs `chd-<12 hex>.<step>` are the worker's own.
+
+- **Admission** (`ChildEnvironments.admit`) checks the pool's child profiles, the grant (the policy's `resources.child_profiles`, or without one the request's `project_profile` or the pool's default only), the profile's tier (the lower of its `isolation_tier` and the pool's) against the request's minimum, the architecture, the policy's caps, and the inputs' sizes (the session's files, then each input from control's retained content whose path the session's files do not give, by the size the request names, against `stage_max_bytes`), then counts and inserts the row under one lock, with no await between: the project's `child_environments_max` (policy, default 2, 0 turns them off), the profile's `max_concurrent` and the pool's `max_child_environments` count the child environments creating, preparing, ready or collecting; retained ones do not.
+- **Preparation**, in the background under the child environment's own lock: the environment's record, then its sandbox, made as a job environment's is (`Environments.create_child`), with the child profile's driver configuration narrowed by the policy's CPU and memory caps; the probe, which fails it below the request's or the session environment's tier, or at a tier of 2 or 3 without the probe's evidence (`isolation_insufficient`); the session's packages replayed (`package_replay_failed`, `environment_mismatch`); the session's inputs copied to `inputs/` within `stage_max_bytes` less what the planned inputs from control's retained content take (`inputs_too_large`, `staging_failed`), a file over 100 MiB by a ranged write (below). All within the profile's `schedule_timeout` from admission (`environment_unavailable`). A failure releases it. Ready, it waits for its run.
+- **Inputs from control's retained content** (CE-7): the worker cannot read control's store, so control sends them once the child environment is ready and before its run starts, part by part (`ChildEnvironments.stage_input`, under the child environment's own lock), each a ranged write to `inputs/<path>` with the upload's ID derived from the environment and the input's index, and refused once the child's run has begun (an execution in the environment); each staged input is recorded once (`retained-<n>` in `child_progress`) and joins the record's `inputs` with its digest. An input the session's files give is copied from them instead, and a missing path one of them gives is not missing.
+- **Hand-back** (`ChildEnvironments.hand_back`): each file the request names is copied from the child environment to the session's `work/<delegation_id>/<path>`, within 1,000 files, the profile's `collect_max_bytes` and a 30-minute deadline from when copying began; past them it is left out with the reason and the hand-back is incomplete. A file within 100 MiB is read whole and written by one file write; a larger one by a ranged write (below). A file past the bytes left of `collect_max_bytes` is refused by its size: its reason gives its size and the limit ("1.5 GiB (1610612736 bytes) is over the 1 GiB (1073741824 bytes) left of the child profile's hand-back bytes (collect_max_bytes); …"), and the retained environment's message names the files left out for their size, the five largest first, with their sizes; such a file stays in the retained child environment for an operator. A file that changed while it was copied is left out ("it was not copied: …"). The request, when copying began and each file's outcome are recorded once in `child_progress`; the manifest is stored once in `child_hand_backs` (store version 11) and copied, untrusted, to `work/<delegation_id>/.handback/manifest.json` (one atomic file write, before the manifest is recorded; a request repeated after it writes the copy again). No handed-back file is copied under `.handback/`. A hand-back a restart cut short goes on from the steps recorded and copies none twice. `inputs/` and `work/<id>/` are not read-only: the file calls set no mode, and a sandbox's code runs as its files' owner.
+- **Ranged writes** (`ranged_copy.py`): a copy of a file over 100 MiB between two of the worker's environments, for the hand-back and for inputs. It reads the file in parts of 8 MiB without hashing it again each time (the first read gave its SHA-256 and size), and sends each to the target's executor (`write_range`, said in its `hello` as `ranged_write`), which appends it to a part file under `.parts/` at the sandbox's root, outside every workspace, so no listing, search or record of written files sees it. A part sent at another offset than where the part ends is not written, and the reply says where it ends. The last part names the whole file's SHA-256 and size: the executor hashes the part and gives it the file's name only when both match, otherwise it removes the part and the copy fails (`conflict`). An upload's ID is derived from what is copied (the child environment, the file's place in the hand-back and its destination, or the input's path), so a copy a worker restart cut short goes on from the bytes its part holds; one resumed over another version of the file starts once more from the beginning. A part's read or write is tried once more after a transient failure (`unavailable`), and a target that took a part must then hold exactly the bytes sent. A hand-back copy that gives up after that, or that the hand-back's 30-minute deadline ends, has its parts discarded at once, and the file is left out with the reason. The digest of a file over 100 MiB is checked in sandboxes: the source's executor reports it as it reads the file, and the target's executor hashes the parts against it; both run beside their sandboxes' research code, so it is the source executor's claim checked by the target's (a file within 100 MiB the worker reads and hashes itself). The file then takes its name by a rename in a directory opened without following symlinks, after a check that the name holds no directory or symlink: code in the target sandbox could put another file at the name in between, and may change the file afterwards, as any file there. A part is made fresh (never one already in its place) and must be a file with one link; one with more is refused. A commit whose reply was lost finds the file named with that content. A part nothing has written for a day is removed when another ranged write starts there. Ranged writes go to the session workspace only, never to `shared/`, and a delegated run's are held to its write area as its writes are (DA-19); the platform's own carry none. An executor that predates them is sent none: the copy fails `unsupported`, naming the environment's recreation.
+- **End**: released (deleted by its recorded identity) after a complete hand-back, a session close, or when it never became ready; otherwise stopped and retained until `child_retention` (default 3 days), at most `child_retention_per_project` (2) a project, the oldest released early. A deletion the gateway did not confirm leaves it retained and due at once.
+- **Research authority.** Every call names the session's context with the research authority of the run it acts for, and admission, staging, the hand-back and the end check it against the session's [recovery fence](specs/worker-recovery-authority.md) before anything else, as the effects in its environments do: once a run has fenced the session, a call without the current epoch's authority, or with an earlier run's, is refused (`policy_denied`, "missing or superseded research authority"); an operator client is exempt, as everywhere. The orchestrator sends the authority of the run whose delegation it is (the parent's at admission, the delegated run's at its end, a Resume's for a continuation's environment), and `session close` the session's current one. Preparation keeps the admitting run's authority (recorded with the planned inputs) for its replay and copies, so a newer epoch installed meanwhile fails it. A hand-back is the same whichever run of the session asks for it: the recorded request is compared without its authority, and one cut short is finished with the authority of the call that ends it, or, at the sweep, with the one it was asked with while that is still current. A fence refusal during a hand-back is no outcome of a file: the hand-back stops there, refused, records nothing for that file and stores no manifest, and stays `collecting` for a caller with the current authority to finish; the sweep does not finish one asked for by a run since superseded, and retains the environment, saying so.
+- **Life-cycle events**, one a phase change: `child_environment_created`, `_ready`, `_collecting`, `_released` and `_retained`, each a log record with the environment, delegation, session and project.
+- **Sweep**, hourly and at start, while the pool has child profiles or keeps any child environment's row (a pool whose profiles were removed still releases what is left, and refuses admission): released rows past `child_retention` are pruned with their steps and manifest (their delegations' outcomes keep the account); every count, sweep and close reads the rows of its phases through an index, however many released rows there are; retained ones past their deadline are released, recording that their retention ended (step `expired`, as for one released early beyond `child_retention_per_project`), which the checkpoint inventory reports as the environment's end (`ended: retention_ended`) so cleanup may delete its volume without a checkpoint; ready or collecting ones past their profile's `wall_time_max` and an hour's grace, which the orchestrator did not end, are ended as if their delegation had (`wall_time`): a hand-back cut short is finished, and one never made leaves the environment retained.
+- **An operator's release**, with the worker stopped (it takes the state directory's lock, as `environments reconcile` does):
+
+  ```bash
+  sandbox-science-worker child-environments list --settings worker.toml [--phase retained]
+  sandbox-science-worker child-environments release --settings worker.toml [--superseded] p1-child-0123456789ab
+  ```
+
+  `list` prints each row: phase, project, session, delegation, profile, when it was made, its retention deadline and its message. `release` releases a retained one now, or, with `--superseded`, a ready one whose run was superseded and that no Resume continues in, which would otherwise live until its wall time: the session's recovery epoch must be newer than every authority it was used with (its admission's, and its executions', since a Resume continuing in it runs there with the newer one). It first runs the deletion's guards as the running worker does (a restore writing into it, a package gate not `ready`), so a refusal changes nothing; then it records the deletion hooks the running worker owes (it runs them as it next starts, before it serves) and the release on the row (`release` step, `operator`), and deletes the sandbox by its recorded identity (a sandbox under its name with another identity is refused). One already released answers so; any other is refused; a deletion the gateway did not confirm leaves it retained, due at once, and exits 1. Its volume is then not disposable: cleanup needs `--without-checkpoint` for it.
+
+  On Kubernetes `sandbox-science-kubernetes worker-job … child-environments release [--superseded] ID` (also `child-environments list` and `environments reconcile`) renders a one-shot Job that runs the command with the pool's volume, the worker's Secret and the gateway reachable, to create by hand with the pool scaled to zero ([offline worker commands](KUBERNETES-BUNDLE.md#offline-worker-commands)). The Pod carries the pool's component label, which the pool's NetworkPolicy admits to the gateway, where the release Job's `worker-release` label gets the default-deny policy alone and no network. On the first cluster (2026-11-01, 7500b912) the operator got the same effect by editing a `release-job --preview` Job by hand (its command, and the label on the Job and its Pod), ran it with the pool at zero, deleted it and scaled the pool back: the release took 9 s, the next worker start ran the deletion hooks it owed.
+- **Locks**, outermost first: admission's; the child environment's own (preparation, hand-back, end, sweep, session close); inside it, the per-environment lock `Environments` takes for the child environment's create, stop and delete. The hand-back's reads and writes go through the execution manager, which takes the child's or the session's environment lock itself, one at a time. Ending one being prepared cancels its preparation before taking its lock; retaining one never waits for another child environment's lock (one in use is left to the sweep).
+- **Across a worker restart.** Rows are written before their environment records, and environment records before their sandboxes. A child environment still creating or preparing fails (`worker_restarted`) and is released, deleted by identity (a creation with an unknown outcome stays retained, due at once, until [reconciliation](#environments) confirms it); a ready one is an environment like any other, its executor reattached by its record; one collecting finishes its hand-back when the orchestrator asks again or ends it, or at the sweep.
+
+Child profiles live in `[openshell.environments.child_profiles.NAME]` ([settings](#settings)): a Kubernetes profile with `description`, `isolation_tier` (1 to 3; 2 and 3 need a `runtime_class_name`), `wall_time_max` (at most 7 days), `schedule_timeout` (1,800 s unless set, at most 24 hours), `max_concurrent`, `stage_max_bytes` (2 GiB) and `collect_max_bytes` (4 GiB). `default_child_profile` names the one a request that names none gets; without it, the only one. The capabilities of a session environment whose project may have child environments carry the `child_environments` feature.
 
 ## Admission on demand
 
@@ -280,11 +403,11 @@ A sandbox resolves only the host names its compiled policy names. A policy with 
 1. Research code connects to a host the policy does not name. The lookup returns a placeholder address and OpenShell refuses the connection, which fails with `Permission denied`.
 2. OpenShell drafts a proposal for that program, host and port. Drafts reach the gateway about every 10 s.
 3. Every `admission_interval`, the worker lists each ready environment's pending drafts (`openshell rule get --status pending`) and decides each host and port with the policy library (`admission_refusal`):
-   - the policy must reach hosts it does not name;
+   - the policy must reach hosts it does not name, or the port must be another port of a host that a `ports: any` rule reaches;
    - the host must be public and not a platform service host;
-   - the port must be one the compiled policy admits;
+   - the port must be one every compiled endpoint admits (80, 443 and the ports rules name), or, under a `ports: any` rule (D95), any port but OpenShell's control-plane ports;
    - some HTTP or git request to the host there must be allowed or escalated, after the hard floor (with the settings' `admin_hosts`), the pool ceiling and the reserved hosts.
-4. It names the admitted hosts in one new compilation of the environment's revision, and applies the result with `openshell policy set --wait`. The policy middleware still decides every request.
+4. It names the admitted hosts in one new compilation of the environment's revision, and applies the result with `openshell policy set --wait`. The policy middleware still decides every request. An entry is a host, or `host:port` (`[address]:port` for IPv6) for another port, which only that host's endpoint gets.
    - Each admitted host gets an endpoint limited to the public address ranges, less the addresses the library always denies ([policy](POLICY.md), "Names, not addresses"). So a name that resolves to a private, metadata or administration address stays refused.
    - Hosts already in use keep their place, so a new batch or a revision never displaces them.
 5. It rejects every draft it read, giving its decision as the reason, and records the decisions. It never approves a draft: a draft's rule is raw TCP for one program, which the fail-closed middleware could not inspect.
@@ -294,26 +417,26 @@ A sandbox resolves only the host names its compiled policy names. A policy with 
 The environment's `admitted_hosts` lists the hosts admitted so far, and `sandbox-science-worker admissions --settings worker.toml --environment ID` prints every decision with its reason. A revision decides every recorded host again. Hosts the new policy no longer reaches are dropped, and hosts it now reaches are admitted.
 
 Things to know:
-- **Timing.** In [lab 10](../.agents/docs/agent-reports/babbage-openshell-lab-10-2026-10-11.md), a host was reachable 9 to 20 s after the first refused connection. OpenShell's 10 s draft flush and the sandbox's 10 s policy poll account for most of it. Research code, or the agent, retries.
+- **Timing.** In [lab 10](../.agents/docs/agent-reports/babbage-openshell-lab-10-2026-10-11.md), a host was reachable 9 to 20 s after the first refused connection. OpenShell's 10 s draft flush and the sandbox's 10 s policy poll account for most of it. Research code, or the agent, retries. The example policy names common research and source hosts (arXiv, ePrint, Zenodo, Hugging Face, GitHub, GNU and others), so they need no admission (D95, D97).
 - **Notices.** Each result carries what admission decided for its environment since the session's previous result (`notices`): which hosts were admitted, and which were refused and why. The harness passes them to the model as `platform_notices`. A host admitted again for another program is no news.
 - **Reloads interrupt transfers.** When a sandbox loads a new compilation, OpenShell closes every connection opened under the old one, so an admission cuts downloads in progress.
 - **Limits.**
-  - An environment admits at most `max_admitted_hosts` hosts (64 by default). Each adds an endpoint of about 4 KiB of YAML, and OpenShell limits a sandbox's policy to 256 KiB.
-  - Beyond that limit, or once the compiled policy would pass 320 KiB of YAML, new hosts are refused.
+  - The compiled policy's size is the bound that matters. Each admitted host adds an endpoint of about 4 KiB of YAML, and OpenShell limits a sandbox's policy to 256 KiB, so once it would pass 320 KiB of YAML new hosts are refused: at about 80 hosts beside a policy that names none, about 45 beside the example's named hosts. Another port of a host adds no endpoint.
+  - `max_admitted_hosts` (128 by default, at most 1,024) caps the entries as well. The default is above what fits, so that size decides: D95 leaves the names a sandbox looks up out of scope, so the count no longer bounds a threat.
   - One check of an environment handles at most 32 drafts and 64 endpoints; real drafts beyond that wait for the next check.
   - The worker keeps at most 512 decisions per environment: every admitted one, then the newest refusals. It forgets them when the environment is deleted.
 - **Failures.**
   - If an environment's check fails, the worker leaves its drafts pending and skips it for a minute. A failure in one environment never stops the others.
   - If the same batch fails three times because OpenShell refuses the revision, its hosts are refused with the error as the reason. A later revision of the policy decides them again.
 - **Untrusted text.**
-  - At v0.1.3, `openshell rule get` has no JSON output, so the worker reads its text.
+  - At v0.1.5, `openshell rule get` has no JSON output, so the worker reads its text.
   - The sandbox chooses the host names and program paths in it. A crafted path can add hosts to decide, which the sandbox could have tried anyway, or hide its own draft.
   - Such text is made printable before it reaches records, logs or the reasons OpenShell stores.
 - **Leave OpenShell's approval mode manual.** With `proposal_approval_mode` set to `auto`, OpenShell would approve drafts itself and add its own raw-TCP rules. The fail-closed middleware would deny their traffic, but the policy would no longer be the worker's alone.
 
 ## Idle suspension
 
-Environments persist, but need not keep running ([projects and sessions](PROJECTS-AND-SESSIONS.md), "Provisioning and persistence"). With `suspend_after` set, the worker stops the sandbox of an environment nobody is using, and starts it again on the next use (W3):
+Environments persist, but need not keep running ([projects and sessions](PROJECTS-AND-SESSIONS.md), "Provisioning and persistence"). Idle suspension is off by default (D100): suspension discards kernel state, which a long investigation may still need. With `suspend_after` set, the worker stops the sandbox of an environment nobody is using, and starts it again on the next use (W3):
 
 - **Active research claims:** a stored root run retains its environment while it and its children run, including model-only work and waiting. `POST /v1/environment-claims` takes an execution context, holder, duration (120 seconds by default, at most 300), and the sandbox ID for renewal/release. Zero seconds releases only that holder's session and sandbox claim. The worker validates project ownership and policy, limits an environment to 32 live claims, and keeps expiry across restart. Renewals cannot silently protect a replacement sandbox. An unmanaged backend reports `unmanaged`; claims never start a VM or prevent explicit deletion.
 - **Idle** also requires no unexpired research claim, plus these three conditions for `suspend_after` seconds:
@@ -373,7 +496,7 @@ Package managers run from a shell call or a kernel take turns in their environme
   - It passes on the signals it gets (hangup, interrupt, quit, terminate, the user signals, alarm and window size). Off a terminal, the command has a process group of its own, so a signal sent to the wrapper's group, as a kernel interrupt is (`killpg`), reaches the command once, from the wrapper. On a terminal, the command stays in the foreground group, to read from the terminal, and the wrapper does not pass on what the kernel sent to the whole group, as a terminal does, which reached the command already.
   - When the executor stops a shell call (a cancellation, its time limit), it sends SIGTERM to each of the call's processes but a command whose wrapper is among them, so the command gets one SIGTERM, from its wrapper, and its clean-up (conda's rollback) is not cut short by a second. The 2 s before SIGKILL count for all of the call's processes, not only its shell, which may end at once and leave the others; a package command still in its turn gets 10 s.
   - The command dies with its wrapper (`PR_SET_PDEATHSIG`): a wrapper killed with SIGKILL, as `subprocess.run` kills its child on a timeout or an interrupt, leaves no command running outside its turn. What the command started, such as pip's build backend or conda's post-link script, carries the turn's mark (`SANDBOX_SCIENCE_PACKAGE_LOCK`): the next turn, or the executor's next look, ends what a killed wrapper's turn left running, and a turn that ends normally gives what its command left 2 s, then ends it. The lock's descriptor stays with the wrapper, since a process the command left running in the background would otherwise hold the lock for as long as it ran.
-- **Executions wait while packages link** (CP-12). Before an attempt starts, the executor waits while a turn is held: the shell call or cell stays `queued`, and can be cancelled. The wait counts against the attempt's time limit; an attempt still waiting at its limit ends `timed_out` without running, and its error names the command it waited for. Attempts already running are not held up.
+- **Executions wait while packages link** (CP-12). Before an attempt starts, the executor waits while a turn is held: the shell call or cell stays `queued`, and can be cancelled. The wait does not count against the attempt's time limit, which starts when it runs. The wait ends at the latest limit among the attempts running beside it, one of which runs the package command, or at the attempt's own limit when none runs; an attempt still waiting then ends `timed_out` without running, and its error names the command it waited for. The worker's watchdog and the harness count the limit from the attempt's start too; the harness follows a call that has not started for at most its limit plus `result_grace` (300 s). Attempts already running are not held up.
 - **Revisions.** A turn ends with a record in the state directory's journal: the command, the mark of the call or kernel that ran it (`SANDBOX_SCIENCE_OWNER`), when it got its turn and ended, its exit status, and the packages' fingerprint before and after, with a lockfile when they changed. When an attempt starts and when it ends, the executor reads the journal and the packages under a shared lock, and sends the worker a `revision` event for each change, in order, before any event that reports its fingerprint.
   - The records of one attempt's commands, one after another, make one managed revision, set against that attempt, with its last 8 commands and the number of those before (a loop of 70 `pip install` makes one revision).
   - A change that no record accounts for is unmanaged (CP-4), set against the attempt after which it was seen; at an attempt's start, against none. Research code running `/opt/sandbox-science/bin/pip` by its full path makes one, and so does a change a command finds before it runs.
@@ -402,6 +525,18 @@ What it does not do:
 - **Not built.** Rebuilding an environment from a lockfile (W3). Keeping every lockfile that a recorded result's lineage names, whatever the caps, once results record their lineage (the user's decision of 2026-10-11). The provisioning tool is the next section's.
 
 ## Provisioning operations
+
+`Provisioner` is the operation coordinator: submission, queue order, durable state,
+waiters, cancellation, startup classification and final task drain stay together.
+`ProvisionStages` executes the requested work; `ProvisionPermissions` handles
+exact-file approval and withdrawal; `ProvisionReconciliation` classifies installer
+results and recovery. They return explicit completion and install results and request
+record updates through the coordinator. Permission decisions retain their identity
+in the operation record. A terminal operation releases its
+queue turn before its final observation finishes, but keeps task and store ownership
+until the append drains. If saving the terminal record fails, the operation remains
+owned beyond normal retention so a later environment-removal request can retry the
+write ([ownership contract](specs/provisioning-lifecycle.md)).
 
 An agent asks for a capability or for packages, and the worker decides, installs in the environment's turn, records and probes, telling the agent what happened ([Conda provisioning](specs/conda-provisioning.md), CP-1 to CP-25). The code is `provisioner.py`, with `resolution.py` (commands, parsing and decisions), `permissions.py` (permission requests) and `catalog.py`; the harness's tools are `provision` and `provision_status` (`packages/orchestrator`, `provision.py`). Checked on OpenShell, with real micromamba and pip, the policy middleware and the package cache, in [lab 18](../.agents/docs/agent-reports/babbage-openshell-lab-18-2026-10-12.md).
 
@@ -491,6 +626,45 @@ for exact bounds and client-disconnect semantics. Checked on OpenShell in
 [Lab22](../.agents/docs/agent-reports/babbage-openshell-lab-22-2026-10-12.md); lost
 transport, blocked host work and corrupt state are covered by local tests only.
 
+## Offline capture replica retention
+
+An authenticated control service with `artifact_retention = true` in its `[[clients]]`
+entry may acknowledge that it durably retained an exact worker snapshot and matching
+control revision. The pool token has this permission; ordinary clients default to
+false. Every original metadata field must match. The worker retains the complete ACK
+and timestamp: identical retry succeeds, changed reuse of its ID conflicts. This ACK
+is separate from capture-helper cleanup and does not itself delete bytes.
+
+With the worker stopped, the operator may inspect or apply a bounded page:
+
+```bash
+sandbox-science-worker artifact-retention --settings worker.toml --limit 10
+sandbox-science-worker artifact-retention --settings worker.toml --apply --limit 10
+sandbox-science-worker artifact-retention --settings worker.toml --apply --after HASH
+```
+
+The default is dry-run; `--apply` releases eligible CAS replicas. The command holds
+the same exclusive `StateLock` as `serve`, and refuses an active worker. `--limit`
+is 1–100 distinct hashes (default 10); `next_after` names the next page's `--after`
+cursor, or `none` at the end. Start again without `--after` for another full sweep.
+Opening the store applies pending worker schema migrations, as `serve` does.
+
+Every reference sharing a hash, including other projects, needs an exact ACK.
+Installer-log references always pin their shared bytes. Invalid references pin their
+hash; an unreadable, oversized or unclassifiable hash reference conservatively pins
+all candidates. More than 1,000 references for one hash also retains it. The command
+examines only hash-named blobs referenced by worker metadata. It preserves metadata,
+workspaces, capture helpers, staging, orphan files and PVCs.
+
+Release commits a FULL-synchronous intent before unlink, fsyncs the blob directory,
+then records settlement. A crash leaves the same intent available to reconcile on
+the next offline run. New identical captures may install the bytes again: every
+release rechecks all current references and starts a new intent after a previously
+settled release. Artifact metadata remains available; a missing content download
+returns 404 and never recaptures a mutable source path. Direct library callers must
+provide the same exclusive state lease. Online deletion still needs reader and
+writer fences and is outside this command.
+
 ## Worker-local output observations
 
 `contracts/output_observations.py` and `worker/output_observations.py` retain only
@@ -533,7 +707,7 @@ The worker sends one JSON object per line; each carries an `id` and an `op`. The
 - **Setup:** `hello`, `probe` (the [isolation probe](#isolation-tiers)), `configure` and `package_gate` (the [recovery fence](#provisioning-operations)'s admission state, acknowledged once earlier launches are admitted).
 - **Executions:** `shell`, `job` ([background jobs](#background-jobs)), `cell`, `pdf` ([PDFs](#pdfs)), `cancel` and `job_status`.
 - **Kernels and sessions:** `restart`, `kernels` (a session's kernels), `close_session` and `usage` (CPU time below the executor, for [idle suspension](#idle-suspension)).
-- **Files:** `read`, `write`, `list`, and `capture_read` and `capture_cancel` for [publication](#bounded-artifact-capture).
+- **Files:** `read`, `write`, `write_range` (a file of the session in parts, for [child environments](#child-environments)), `list`, and `capture_read` and `capture_cancel` for [publication](#bounded-artifact-capture).
 - **Packages:** `lockfile` (the packages' fingerprint and lockfile at that moment, after waiting up to 30 s for a package command).
 - **Shared files' sync:** `shared`, `remove` and `move`.
 
@@ -545,8 +719,51 @@ The [sandbox daemon](#sandbox-daemon-and-recovery) adds `replay`, `latest`, `act
 - **The shared files' sync** ([above](#shared-data-across-environments)). `shared` lists the regular files below `shared/`, each with its modification time, size, inode and executable bit; hashes the files asked for, within a size limit per file and a budget per scan, giving a digest only for a file still as scanned; and writes the worker's mark when given one and reports it. `remove` deletes a file in `shared/` only if its SHA-256 is the one expected, then the directories it leaves empty. `move` gives a file a free name in `shared/`, keeping its inode. A `write` may set a file's executable bit, and reports the stamp the written file has; a write that names the expected SHA-256 swaps the new file in at once (`renameat2` with `RENAME_EXCHANGE`) and swaps it back if the old one changed after its check. With `if_unused`, a `write` or `remove` leaves alone a file another process is writing and replies `busy`. Errors on the file itself come back as `invalid_request` or `policy_denied`; a full disk or an exhausted executor (no file descriptors or memory) as `unavailable`.
 - **Events.** `shell` and `cell` reply when they are accepted, then send events: `{"type": "event", "execution": …, "event": "state" | "stream" | "output" | "revision" | "end", …}`. The `end` event carries the terminal state and the result fields of `Result`.
 - **Packages.** The `running` state event carries the packages' fingerprint as the attempt starts (`environment`), and the `end` event's result their fingerprint as it ends and whether a package command was still running (`environment_changing`). A `revision` event, sent before either of those shows its change, carries a fingerprint, `managed`, the execution that caused the change (`cause`), the package commands (`commands`, the last 8, and `omitted_commands`) and the lockfile ([package commands](#package-commands)).
-- **Hygiene.** The executor keeps the protocol on its own file descriptor and sends anything else that writes to stdout to stderr. Where the sandbox allows it, the executor is not dumpable, so research code cannot open that descriptor through `/proc` (not under OpenShell v0.1.3; see "Running under OpenShell").
+- **Hygiene.** The executor keeps the protocol on its own file descriptor and sends anything else that writes to stdout to stderr. Where the sandbox allows it, the executor is not dumpable, so research code cannot open that descriptor through `/proc` (not under OpenShell v0.1.3 or v0.1.5; see "Running under OpenShell").
 - **Shutdown.** A stdio executor stops its commands and kernels on stdin EOF. A daemon bridge instead detaches on EOF; environment deletion or idle suspension requests explicit `daemon_shutdown`, which reaps commands and kernels before acknowledging. Cancellation has its own 30-second deadline; a daemon that cannot confirm it is shut down and affected outcomes become `lost`. A new daemon reaps marked processes belonging to its endpoint's old incarnation, checking process start times against PID reuse. Research code that deliberately disguises its process ownership remains within the sandbox and outside the process hygiene guarantee above.
+
+### Persistent research prefix continuity
+
+Trusted Kubernetes profiles default `require_workspace_prefix` to true. The strict
+boolean is pinned with sandbox ownership on initial allocation; later deployment
+settings do not change an existing allocation. Explicit false is an escape for old
+or custom images outside this guarantee; non-Kubernetes and migrated allocations
+retain their prior behavior.
+
+Required executors report prefix protocol 1, canonical path
+`/sandbox/.sandbox-science-prefix`, a nonsecret `prefix-` identity stored inside
+that real prefix, its current metadata fingerprint and a pending-journal boolean.
+Marker creation is opt-in and follows fixed-layout validation; ordinary/local
+executors never write a marker into the developer's Python prefix. Images never
+ship a marker. In images of the B11 layout the prefix is a layer over the image's
+read-only base environment; the layout check then requires the layer's marker to name
+that base and the interpreter to run over it, and in a whole prefix seeded from an
+earlier image it checks the frozen links ([images](IMAGES.md#the-environment-outside-the-workspace-b11)). The provisioning mirror under `.executor/provisioning/prefix` is a
+collection of symlinks/wrappers, not retained package bytes.
+
+Before the ready package gate is acknowledged, a replacement daemon must match
+the retained identity and latest known revision, with no unconsumed package
+journal, active turn or interrupted holder. Completed reported changes remove
+their journal entries; surviving daemons preserve pending records and reconcile
+through their ordinary event replay. No equality-based journal trimming occurs.
+Missing, malformed or changed prefix evidence keeps a durable `workspace-prefix`
+recovery hold and the last good revision; there is no automatic reinstall or
+unmanaged revision masking package loss. A job environment's hold does not keep its
+sandbox: it is disposable, and its job fails and releases it
+([job environments](#job-environments)). A positive shell preflight distinguishes
+a missing layout from an uncertain transport failure when the prefix Python cannot
+start. Metadata fingerprints detect continuity, not every installed byte's integrity.
+
+After the operator restores the original prefix, an explicit capabilities/files
+reconnect can recheck even a surviving held daemon. Only exact original identity,
+the held/current known revision and a clean journal clear the prefix-specific
+hold, transactionally advancing the package gate. The executor revalidates those
+facts before aligning its settled baseline and acknowledging ready. The exact
+restored revision remains durably pending until the worker validates that ACK and
+its post-alignment epoch, so worker loss cannot lose retry authority. Unrelated
+provisioning recovery, unfinished operations and unknown-effects outcomes remain
+held. An environment without any accepted original identity/revision cannot use
+this restoration path. No revision, journal or operation is deleted to clear it.
 
 ### Sandbox daemon and recovery
 
@@ -611,7 +828,7 @@ If their incarnation changed before that binding was recorded, automatic replace
 refuses until an operator confirms cleanup of the original sandbox and removes its
 obsolete worker recovery records; the current environment binding is insufficient proof.
 
-The worker's store, `worker.sqlite3` in the state directory, has a version (SQLite's `user_version`, with its own `application_id`). Version 1 is the baseline, `baseline.sql`. Each later change is a step in `schema.py`'s `MIGRATIONS`, which the worker runs once, in one transaction that reads the version again, when it opens an older store. Version 2 adds checks to the capture leases, package gates, recovery marks and provisioning steps, so their values are checked when they are written and read as they are (decision 3). The tables are STRICT, so a value stored with the wrong type, such as a BLOB in a TEXT column, is refused like a value out of range. Version 3 refuses a NUL in their identifiers too, and adds `capture_clears`, the record of the leases an operator cleared. Version 4 adds `run_kernels`, the generations of delegated runs' own kernels (protocol 4). A store holding a row a check refuses stays at its version, with a message that names the table and the row's key: repair or delete that row with the worker stopped. Before it opens a store to write, the worker checks it through a read-only connection and refuses, leaving every file as it was: an unversioned store from before version 1 (decision 6), a store in a newer version, one holding the executions of a removed feature, and a file that is not a worker store. `serve` prints the refusal as one line. To discard a refused state directory, release or recycle its sandboxes first, since it holds their daemons' endpoints.
+The worker's store, `worker.sqlite3` in the state directory, has a version (SQLite's `user_version`, with its own `application_id`). Version 1 is the baseline, `baseline.sql`. Each later change is a step in `schema.py`'s `MIGRATIONS`, which the worker runs once, in one transaction that reads the version again, when it opens an older store. Version 2 adds checks to the capture leases, package gates, recovery marks and provisioning steps, so their values are checked when they are written and read as they are (decision 3). The tables are STRICT, so a value stored with the wrong type, such as a BLOB in a TEXT column, is refused like a value out of range. Version 3 refuses a NUL in their identifiers too, and adds `capture_clears`, the record of the leases an operator cleared. Version 4 adds `run_kernels`, the generations of delegated runs' own kernels (protocol 4). Version 10 adds `classification_receipts`, the first answer to each classification acceptance by project and operation ID. Version 12 adds `mcp_listing_reports`, the latest listing the agent runtime's client reported of each project's server (`POST /v1/mcp-listings`). A store holding a row a check refuses stays at its version, with a message that names the table and the row's key: repair or delete that row with the worker stopped. Before it opens a store to write, the worker checks it through a read-only connection and refuses, leaving every file as it was: an unversioned store from before version 1 (decision 6), a store in a newer version, one holding the executions of a removed feature, and a file that is not a worker store. `serve` prints the refusal as one line. To discard a refused state directory, release or recycle its sandboxes first, since it holds their daemons' endpoints.
 
 An older state directory may still hold the tables and executions of delegated runs, a removed feature ([archive](../.agents/docs/archive/README.md)). The worker leaves those tables alone, and the store refuses to open a state directory with any execution whose `kernel_scope` is not `legacy`; the operator discards that state directory.
 
@@ -642,6 +859,8 @@ daemon loss were checked on OpenShell in
 
 ## Settings
 
+The worker is deployed with the [policy middleware](POLICY-MIDDLEWARE.md) and the [package cache](PACKAGE-CACHE.md) as one [unit](UNIT.md): these settings go in the unit config's `[worker]` section, or in a file it names, and `sandbox-science-unit serve` runs the worker. `sandbox-science-worker serve --settings worker.toml` keeps working, as what the unit runs; starting it as a unit of its own is deprecated for one release.
+
 ```toml
 listen = "127.0.0.1:8100"
 token_file = "worker.token"          # the pool's own token: sandbox-science-worker token --out worker.token
@@ -653,13 +872,14 @@ shared_sync = true                   # keep each project's shared/ in step acros
 
 [openshell]
 daemon = true                        # default: reconnect to a sandbox-lifetime executor
-cli = "~/.local/opt/openshell-0.1.3/bin/openshell"
-python = "/opt/sandbox-science/bin/python"   # with ipykernel and jupyter_client; the base images' interpreter
+cli = "~/.local/opt/openshell-0.1.5/bin/openshell"
+python = "/opt/sandbox-science/bin/python"   # default: the base images' interpreter, with ipykernel and jupyter_client; set it only for another image
 project_root = "/sandbox/project"
 executor_dir = "/sandbox/.sandbox-science"   # where the executor and its helpers are uploaded (the default)
 isolation_tier = 3                   # required: the tier the driver gives (D43); the probe can lower it
-sched_shim = true                    # build and preload the scheduler shim
-cc = "cc"                            # the C compiler on this host that builds the shim (the default)
+node_kernel_releases = ["*-talos"]   # optional: the nodes' own kernel releases (fnmatch); a sandbox on one is tier 1 at most
+sched_shim = true                    # validate and preload the sandbox's native scheduler shim
+cc = "cc"                            # same-architecture Linux fallback compiler for older images
 package_cache = "http://host.openshell.internal:8090"   # the package cache, as sandboxes reach it
 env = {XDG_CONFIG_HOME = "~/.local/state/openshell-lab/config"}
 sandboxes = {"env-1" = "research-1"}   # sandboxes made by hand
@@ -670,12 +890,44 @@ targets = "targets.yaml"             # OpenShell targets for the compiler
 ceiling = "pool-ceiling.yaml"        # the same pool ceiling the middleware applies
 profiles = {minimal = "sandbox-science/minimal:<sha>", crypto-base = "sandbox-science/crypto-base:<sha>"}   # base profile -> image (IMAGES.md)
 create_timeout = 600                 # seconds for a sandbox to become ready
+creation_grace = 420                 # seconds before a creation with an unknown outcome may be found absent (at least 300)
+creation_recheck = 30                # seconds between the two reads that confirm it absent, and between the worker's passes
+label_environments = false           # label each sandbox sandbox-science.io/environment=<ID>; turn it on after the first create on a gateway has been seen to accept the key; the cluster's test instance is the place
 event_store = "/var/lib/sandbox-science/middleware/events.db"   # optional: where provisioning writes its permission requests, withdrawals and provision.* records; this is the default
 admission = true                     # admit hosts on demand (D69)
 admin_hosts = ["10.0.0.2", "gateway.lab.internal"]   # the policy middleware's admin_hosts
 admission_interval = 3               # seconds between checks of each environment's drafts
-max_admitted_hosts = 64              # hosts admitted on demand per environment
-suspend_after = 3600                 # optional: stop sandboxes idle for an hour (W3)
+max_admitted_hosts = 128             # hosts (and other ports) admitted on demand per environment
+# suspend_after = 3600               # optional, off by default (D100): stop sandboxes idle for an hour (W3)
+max_job_sandboxes = 2                # job sandboxes (D93) creating, preparing, running or collecting at once in the pool
+job_retention = 259200               # seconds a failed job's stopped sandbox is kept (3 days)
+job_retention_per_project = 2        # retained job sandboxes per project; one more releases the oldest
+max_child_environments = 2           # child environments creating, preparing, ready or collecting at once in the pool
+child_retention = 259200             # seconds a child environment whose hand-back was incomplete is kept stopped (3 days)
+child_retention_per_project = 2      # retained child environments per project; one more releases the oldest
+# default_child_profile = "standard" # the child profile a request that names none gets; without it, the only one
+
+[openshell.environments.child_profiles.standard]   # optional: sizes a delegated run's own environment may have
+description = "4 cores, 16 GiB memory"
+isolation_tier = 3                   # 2 or 3 need a runtime class
+node_selector = {"kubernetes.io/arch" = "amd64"}
+runtime_class_name = "kata"
+requests = {cpu_millicores = 2000, memory_mib = 8192, ephemeral_storage_mib = 16384}
+limits = {cpu_millicores = 4000, memory_mib = 16384, ephemeral_storage_mib = 16384}
+# schedule_timeout = 1800            # seconds to be ready, placement and preparation, at most 24 hours
+# wall_time_max = 604800             # seconds kept for its run, at most 7 days (the default)
+
+[openshell.environments.job_profiles.large]   # optional: sizes a job may ask for its own sandbox in (D93)
+description = "12 cores, 32 GiB memory, up to 7 days"   # what the agent is told
+node_selector = {"kubernetes.io/arch" = "amd64"}
+runtime_class_name = "kata"          # required: kata or kata-* (D92)
+requests = {cpu_millicores = 12000, memory_mib = 32768, ephemeral_storage_mib = 32768}
+limits = {cpu_millicores = 12000, memory_mib = 32768, ephemeral_storage_mib = 32768}
+# wall_time_max = 604800             # seconds, at most 7 days (the default)
+# schedule_timeout = 1800            # seconds waiting for a node with room, at most 24 hours
+# max_concurrent = 1                 # of this size across the pool
+# stage_max_bytes = 2147483648       # inputs copied in (2 GiB)
+# collect_max_bytes = 4294967296     # files copied back (4 GiB)
 
 [[clients]]                          # optional: tokens limited to some projects (needs [openshell.environments])
 name = "orchestrator-p1"
@@ -683,7 +935,10 @@ token_sha256 = "<64 hex digits>"     # printed by sandbox-science-worker token -
 projects = ["p1"]
 max_environments = 8                 # live environments across its projects
 document_catalog = false             # the default; true lets it use the document catalog routes
+# binding_only = true                # only the runtime-sandbox routes and GET /v1/runtime-classifications
 ```
+
+A `binding_only` client reaches the two runtime-sandbox routes and `GET /v1/runtime-classifications` for its projects and nothing else: every other route, the permission requests' answers, classification acceptance, job-sandbox release and the recovery fence among them, refuses it (`policy_denied`, 403), and it may have no other permission (`operator`, `recovery_control`, `artifact_retention`, `document_catalog`). It is the Kubernetes runtime manager's on the direct MCP path, which binds the agent runtime's sandbox and compiles its fence with the project's classification revisions in force ([KUBERNETES-BUNDLE](KUBERNETES-BUNDLE.md#the-direct-mcp-path-opt-in)). It unbinds only a runtime sandbox bound for its own project: the policy store's binding records the project (`{"policy": …, "project": …}`), and another project's is refused (`policy_denied`), an unknown one `not_found`. Binding is scoped the same way: a client limited to some projects cannot bind a sandbox already bound for another project (or with no project recorded), `policy_denied` naming only its own, and may bind its own runtime sandbox again to a newer revision. A sandbox with no binding yet is bound for a client limited to some projects only when the gateway shows it as that project's agent runtime sandbox: the worker finds the sandbox by its ID in the gateway's listing, reads it with `sandbox get -o json`, and requires the label `sandbox-science.io/project` to name the project, as the launcher's runtime owner and the Kubernetes runtime manager create it (`sandbox create --label`, which OpenShell 0.1.5 accepts and shows on `sandbox get`). An unlabelled sandbox, one labelled for another project and one the gateway does not list are refused (`policy_denied`, naming only the client's project); a research environment's sandbox stays a `conflict`. The pool's own token binds any sandbox it names.
 
 A settings file has exactly one backend table. For development, `[local]` replaces `[openshell]`: `python` (default: the worker's own interpreter) and `daemon` (default `false`; `true` uses the reconnectable executor, still with no isolation). The optional `[document_catalog]` table bounds the parked [document catalog](#document-catalog-prerequisite).
 
@@ -696,6 +951,210 @@ The harness's command line runs a task through the worker. A JSON script of mode
 ```bash
 sandbox-science-harness run --worker http://127.0.0.1:8100 --token-file worker.token --project p1 --session s1 --environment env-1 --script turns.json "the task"
 ```
+
+## Offline complete workspace checkpoints
+
+The trusted operator CLI captures a complete, explicitly mounted `/sandbox` tree
+without a new worker API or agent permission:
+
+```bash
+sandbox-science-worker workspace-checkpoint create --settings worker.toml \
+  --environment env-1 --architecture arm64 --workspace /mnt/offline-sandbox \
+  --checkpoint /archives/env-1-checkpoint --exclusive-offline-mount
+sandbox-science-worker workspace-checkpoint verify --settings worker.toml \
+  --environment env-1 --architecture arm64 --checkpoint /archives/env-1-checkpoint
+sandbox-science-worker workspace-checkpoint restore --settings worker.toml \
+  --environment env-1 --architecture arm64 --checkpoint /archives/env-1-checkpoint \
+  --workspace /mnt/restored-sandbox --exclusive-offline-mount
+```
+
+Stop the worker first. Independently stop the original OpenShell sandbox and mount
+its full workspace exclusively; the command verifies its original ID and `Stopped`
+phase before and after create/restore, and holds the worker's state lock throughout.
+`--exclusive-offline-mount` declares that there are no other writers, including
+administrative processes. It is not a Kubernetes writer fence. The command never
+stops a sandbox itself, and stopping only the worker does not stop its research
+daemons or jobs. Paths and settings are trusted operator configuration, never agent
+tool arguments. The token file is not read by these commands.
+
+The receipt states how its copy was made in `capture`, which says how consistent it
+is: `offline_mount` (this command: the operator declared the mount exclusive),
+`suspended_pvc` (a checkpoint Job read a stopped, held sandbox's volume), and, reserved
+for later work, `clone_pvc` (a crash-consistent copy of a running sandbox's volume) and
+`sandbox_stream` (what a running sandbox presented). Receipts of format v2 carry it and
+the skipped special files; v1 receipts, which carry `exclusive_offline_mount_declared`
+instead, stay readable and keep their original bytes.
+
+The new checkpoint directory contains `archive.bin`, an incomplete `intent.json`
+and, only after full verification and the final stopped check, immutable
+`receipt.json`. Failures preserve partial bytes and a failure record; a crash leaves
+the original intent incomplete. Existing checkpoint directories are never replaced.
+The receipt binds the exact project, environment, sandbox ID, image, launch settings,
+declared native architecture, required prefix identity and known package fingerprint.
+The architecture must match any original Kubernetes placement pin. Verification
+requires the exact archive and receipt; it never reconstructs missing source files.
+
+The framed format streams 512 KiB content blocks and uses disk-backed path/inode
+indexes. Explicit limits are one million members, 256 MiB of member metadata,
+16 TiB of file contents, 16 KiB per member header and 256 path components. Whole
+content and provenance are checksummed. Regular files, directories, modes, symlink
+text and existing hardlink topology survive; links are never followed out of the
+tree. Sockets, FIFOs and devices are left out and listed in the receipt (at most
+1,000; more fail the capture), since they hold no data a restore could recreate, and so is
+a `lost+found` directory at the root that another user owns (the filesystem's, kind
+`other`), which a restore also leaves in place; a regular file the reader cannot open fails
+the capture, naming it. Restores never set set-user-ID or set-group-ID bits on a file; a directory keeps its set-group-ID bit, which only passes its group on to new entries. Ownership becomes the invoking operator's;
+timestamps, extended attributes and ACLs are outside this format. The initialized
+workspace sentinel and required native prefix marker must match the retained state.
+Source metadata is checked during reads and again after the whole capture.
+
+Restore requires a destination that does not yet exist and an adjacent new
+`<destination>.checkpoint-restore` journal directory. It verifies the entire archive,
+extracts into a private staged tree, verifies its hash again, and publishes with
+Linux's atomic no-overwrite directory rename. The journal commits its receipt last.
+Interrupted or failed staging remains explicitly incomplete. Existing workspaces,
+including mount roots, cannot be merged or overwritten: restore to a new directory
+on the offline volume. Restrictive original directory modes are applied after their
+children. An archive cannot write through a symlink parent or select an absolute
+extraction path.
+
+This proves **local checkpoint completion** only. The CLI reports that remote
+retention and a complete recovery set are not established. Preserve control/worker/
+policy/event stores, bindings, retained artifact bytes and backing settings
+separately. Checkpoint restoration does not rebind environments, clear package or
+operation holds, replay interrupted work, restore interpreter memory, or delete any
+source, PVC or remote object. Coordinate Resume through the orchestrator after
+restoring the original binding. Actual Kubernetes-volume and native ARM64 recovery
+qualification remain separate from local filesystem tests. See the
+[operations contract](specs/kubernetes-operations.md#offline-workspace-checkpoints).
+
+### Durable checkpoint transport
+
+Install the optional `sandbox-science-worker[s3]` extra for these operator commands.
+Keep a private, owner-only regular `checkpoint-storage.toml` outside the repository:
+
+```toml
+bucket = "example-research-checkpoints"
+prefix = "sandbox-science"
+region = "us-east-1"
+# endpoint = "https://s3.example.invalid"  # omit for AWS S3
+addressing_style = "path"                 # auto or virtual also accepted
+```
+
+This file contains destination settings only; unknown fields, including credential
+fields, are rejected without echoing their values. Authentication uses the SDK's
+standard credential chain. Agents never receive bucket credentials. Credentials,
+bucket policy, encryption, versioning and retention rules remain operator settings.
+
+```bash
+sandbox-science-worker workspace-checkpoint upload --settings worker.toml \
+  --environment env-1 --architecture arm64 --checkpoint /archives/env-1-checkpoint \
+  --storage checkpoint-storage.toml
+sandbox-science-worker workspace-checkpoint fetch --settings worker.toml \
+  --environment env-1 --architecture arm64 --checkpoint /archives/fetched-checkpoint \
+  --storage checkpoint-storage.toml --manifest EXACT_PRINTED_MANIFEST_SHA256
+```
+
+These commands hold the worker state lease and check the retained original binding;
+they only read/write checkpoint files and immutable objects, so no sandbox stop/start
+is performed. Upload verifies the complete local archive first, then streams
+16 MiB chunks through temporary disk files with 512 KiB buffers. It conditionally
+creates hash-named objects and independently reads every object back to check its
+full hash and length. Existing objects and lost PUT replies take the same exact
+readback path; an unverified result never creates a completed manifest. The final
+bounded NDJSON manifest, including the original receipt values, is published last
+and independently verified. An identical upload retry produces the same manifest
+identity and never replaces remote bytes with different ones. On a store that ignores
+`If-None-Match: *`, such as Garage, a retry rewrites identical bytes and a conflicting
+write is detected by the read-back instead of refused, so keep the checkpoint bucket's
+write key to the operator's checkpoint Job ([stores without conditional
+writes](ARTIFACT-S3.md#stores-without-conditional-writes)).
+
+The transport supports archives up to 1 TiB, 65,536 chunks and an 8 MiB manifest,
+independently of local checkpoint and scientific artifact limits. It keeps no full
+archive or chunk array in memory. Each transfer reuses one SDK connection pool;
+SDK retries are disabled. `--timeout` sets an operation deadline (3,600 seconds by
+default, 1–86,400 allowed), checked around bounded I/O and chunk reads. Connection
+and socket-read timeouts are at most 5 and 15 seconds respectively, narrowed for
+shorter operation budgets; admitted I/O drains before reporting a timeout.
+
+Fetch requires the exact printed manifest hash, verifies the complete manifest
+before requesting chunks, then verifies every chunk and the reconstructed archive.
+It publishes a new local checkpoint directory by atomic no-overwrite rename only
+after complete validation. The adjacent `<destination>.checkpoint-fetch` journal
+retains incomplete staging and failure evidence. Existing destinations or journals
+are never replaced; retry an incomplete fetch with the same manifest identity at
+a new destination, preserving the earlier attempt. Fetch does not extract research
+files or change environment bindings. A subsequent offline `restore` still needs
+the original sandbox and the normal stopped/exclusive checks.
+
+No transport command deletes remote objects, source data, worker records or PVCs.
+Remote checkpoint retention still does not establish a complete recovery set or
+permission to release a volume. Deterministic SDK-stub tests qualify these paths;
+Garage/AWS endpoint compatibility and cluster-volume restore require separate live
+acceptance. The SDK operation semantics are documented in
+[PutObject](https://docs.aws.amazon.com/boto3/latest/reference/services/s3/client/put_object.html),
+[GetObject](https://docs.aws.amazon.com/boto3/latest/reference/services/s3/client/get_object.html)
+and [botocore Config](https://docs.aws.amazon.com/botocore/latest/reference/config.html).
+
+### Checkpoint jobs
+
+On Kubernetes the workspace volume and the worker's state are in different namespaces, so
+a checkpoint Job reads the volume and the worker verifies the result in the store
+([workspace checkpoints](KUBERNETES-BUNDLE.md#workspace-checkpoints)). The operator runs
+the worker's part in its container, beside the serving worker, with
+`sandbox-science-worker checkpoint`:
+
+| Command | Where | What |
+| --- | --- | --- |
+| `plan --environment E --architecture A --by WHO` | worker container | Holds the environment, suspends it through the worker's own API if it runs (`POST /v1/environments/{id}/suspend` with the pool token; the TLS peer must present exactly the worker's certificate), confirms OpenShell says `Stopped`, prints the plan JSON |
+| `capture-upload --workspace DIR` | the Job | Streams the tree into the upload bucket from `SS_CHECKPOINT_PLAN` and `SS_CHECKPOINT_STORAGE`; prints and writes to `/dev/termination-log` `checkpoint_manifest=<sha256>` |
+| `verify --checkpoint-id ID --manifest H --storage F --stage upload\|kept --by WHO` | worker container | Reads every byte back against the plan's binding and records `verified` (upload) or `kept`; prints the workspace's prune candidates |
+| `promote --from F --to F --manifest H` | operator's machine | Copies a checkpoint into the kept bucket inside the store, chunks first, manifest last; never overwrites a kept object that reads back exactly, and copies only the version it hashed (`CopySourceIfMatch`), then hashes the copy |
+| `delete-objects --storage F --manifest H [--chunks-file F]` | operator's machine | Removes the chunks no other manifest in the bucket names, then the manifest last; with the worker's recorded list it finishes even once the manifest is gone |
+| `chunks --manifest H` | worker container | Prints the chunk list the worker recorded when it verified the checkpoint |
+| `inventory [--keep N]` | worker container | JSON: every environment the worker has a record of (deleted ones too), hand-backs, checkpoints, holds |
+| `forget --manifest H --by WHO [--volume-gone [--retire ENV]] [--done]` | worker container | Journals a checkpoint's deletion; refuses the last kept checkpoint of a workspace unless its volume is gone. With `--retire`, one of the latest checkpoints of that environment, refused unless the worker records it deleted with no hand-back or hold; the journal's detail names it |
+| `record-volume --phase intent\|done\|failed --volume PV [--sandbox S] --by WHO` | worker container | Journals a volume's deletion; the intent is refused for a live or paused environment, a hand-back, a hold, or without a kept checkpoint unless `--without-checkpoint` |
+| `release-hold --checkpoint-id ID --reason R --by WHO` | worker container | Lifts a hold early, recording who and why |
+| `restore-plan --manifest H --target ENV --storage F --by WHO` (or `--resume ID`) | worker container | Reads the kept checkpoint back in full and computes its tree digest, creates the target environment (new, or recorded deleted) through its own API, records the restore, which holds the sandbox stopped with no expiry, suspends it and checks nothing has run in it (an execution that ended failed or cancelled without reaching an executor, such as one the held target refused, does not count); prints the restore plan. `--resume` prints an unfinished restore's plan again |
+| `restore-attempt --restore-id ID --by WHO` | worker container | A new Job attempt's nonce; only the latest attempt, with no failure after it, is verified |
+| `restore-write --workspace DIR` | the restore Job | Empties the target volume (OpenShell's seed, or this restore's earlier attempt) and writes the checkpoint from the kept bucket (`SS_RESTORE_PLAN`, `SS_RESTORE_ATTEMPT`, `SS_CHECKPOINT_STORAGE`), checking every chunk, never setting set-user-ID or set-group-ID bits on a file, and never changing the volume root's owner, group or mode; a volume already holding the plan's tree is only reported. Refuses a root it can write neither as its owner nor through its group (a root-owned root must have the Job's group, group write and the set-group-ID bit, as the sandbox Pod's fsGroup makes it). Prints `restore_tree=<sha256> restore_attempt=<nonce>` |
+| `restore-verify --restore-id ID --attempt N --tree H --by WHO` | worker container | Accepts only the current attempt, once its Job is journaled (`restore-record --phase job` naming the attempt); compares the Job's digest with its own and that the target is still the fresh, stopped sandbox; records `restored` (the sandbox may start) or `failed` (it stays held, the attempt void) |
+| `restore-record --restore-id ID --phase job\|failed --detail JSON --by WHO` | worker container | Journals a restore Job, or a failure outside the worker's checks (the target stays held) |
+| `restore-discard --restore-id ID --reason R --by WHO` | worker container | Ends an unfinished restore, deleting its target environment through its own API only if the environment is still bound to the sandbox the restore created |
+| `upload-expiry --phase intent\|done\|failed --older-than-hours N --by WHO` | worker container | Journals an upload-bucket expiry; the intent is refused while a checkpoint hold or another expiry is open and prints what unpromoted checkpoints still need there; until its end (6 hours at most) checkpoint plans and upload verifications are refused; an end needs its open intent |
+| `expire-objects --storage F --older-than-hours N --protected-file F` | operator's machine | Removes the upload bucket's objects older than N hours that the list does not name, manifests first; the list's first line is the intent's time, and it stops 10 minutes before the intent's lease ends |
+| `sdk-check` | operator's machine | Whether this program's interpreter has the S3 SDK the keeper steps need |
+
+The records are `checkpoints.sqlite3` in the worker's state directory (WAL, synchronous
+commits): **holds** (one active per environment; the serving worker refuses to start a
+held sandbox until the hold is released or expires, 6 hours by default), **checkpoints**
+(`verified`, `kept`, `deleting`, `deleted`; only `kept` counts, and a kept checkpoint
+needs a verified upload of the same manifest first), each checkpoint's chunk list, the
+last **start** of each environment's sandbox (recorded in the transaction that checks for a
+hold; any records error refuses the start) and the **deletion journal**, whose
+rows triggers make append-only. Holds record who placed and who released them (`placed_by`,
+`released_by`; an expired hold has none), checkpoints who verified and who kept them.
+**Restores** (`planned`, `failed`, `discarding`, `restored`, `cancelled`) keep their plan,
+the tree digest the worker computed, the current Job attempt's nonce and who placed and
+finished them; an unfinished restore makes the serving worker refuse to start its target
+sandbox, with no expiry, and refuses a checkpoint plan of it and the deletion or retirement
+of the checkpoint it reads; a `planned` or `failed` one refuses the target's deletion
+through the API (the discard moves it to `discarding` first). The **operations journal**, append-only like the deletion journal,
+records each restore step and upload expiry with who ran it. The tree digest is one line
+per path in byte order (kind, mode, size, content SHA-256 or link text, hardlink group; set-user-ID and set-group-ID bits and the root's own mode, which belongs to the volume, left out),
+computed from an archive by the decoder and from a volume by a walk that never follows a
+link, so a restored tree compares with its checkpoint whatever order the disk lists it in
+(`checkpoint_tree.py`). Verification checks the manifest's hash, each chunk's hash
+and length before decoding it, the whole archive through the decoder (paths, links,
+bounds, the binding), the receipt's counts, the planned capture mode, and that the capture
+finished within the hold (and before an early release) (five minutes' clock skew allowed); the binding must still be the
+environment's. A Job's word is only the manifest's name. The upload key cannot touch the
+kept bucket, and the worker's key only reads; the operator's keeper key, which writes the
+kept bucket, stays off the cluster. The latest two kept checkpoints per workspace stay
+(`keep`) until the operator retires a deleted environment's, and nothing is removed
+automatically.
 
 ## Conformance suite
 

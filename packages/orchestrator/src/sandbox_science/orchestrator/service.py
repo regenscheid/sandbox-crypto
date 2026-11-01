@@ -35,10 +35,15 @@ from sandbox_science.contracts import SYSTEM_CLOCK, Clock
 
 from .aio import owned, threaded
 from .chat import SOURCE, session_lease
+from .context.folding import FoldLifecycle
+from .context.history import Archive, Folder
+from .context.history.markers import Decided, current_decisions
+from .context.history.receipts import Receipts
 from .continuity.auto_continuation import AutoContinuation
-from .continuity.auto_recovery import AutoRecovery
+from .continuity.auto_recovery import AutoRecovery, mark_transient
 from .continuity.records import WorkRecords
 from .continuity.recovery import Recovery
+from .continuity.transient import Transient
 from .control import ControlError
 from .control.errors import BUSY
 from .delegation.records import DelegationRecords
@@ -47,9 +52,6 @@ from .documents.tool import REQUESTS_TASK, WorkRequests
 from .figurecheck import FigureChecker
 from .figurechecks import FigureChecks
 from .harness import Harness, RunRequest, admit, save
-from .history import Archive, Folder
-from .history.markers import Decided, current_decisions
-from .history.receipts import Receipts
 from .hooks import TurnHook
 from .ledger import Ledger
 from .model import GATEWAY_BUDGET
@@ -147,6 +149,9 @@ class RunService:
         self.local_branches: set[asyncio.Task[bool]] = set()
         self.checking: asyncio.Task[int] | None = None
         """The figure checks running, which the next look does not start again."""
+        self.lost: Transient | None = None
+        """Set before ``close`` when the service ends because its runtime or worker was
+        lost rather than shut down: the interrupted trees are then retried (D100)."""
         self.marks: dict[tuple[str, str], tuple[tuple[int, int], tuple[Decided, ...]]] = {}
         """When each session's messages were held for its research state: the ledger's
         mark, and the session's current decisions, whose change queues them again."""
@@ -179,6 +184,19 @@ class RunService:
         for (project, session), value in active:
             if value.run is not None:
                 await self._ended(project, session, value.run)
+                if self.lost is not None:
+                    try:
+                        await threaded(
+                            mark_transient,
+                            self.stores.projects.control,
+                            project,
+                            session,
+                            value.run,
+                            self.lost,
+                            clock=self.clock,
+                        )
+                    except Exception:  # cleanup of the other runs must go on
+                        _log.exception("the %s of run %s was not recorded", self.lost, value.run)
         self.active.clear()
         self.local_branches.clear()
 
@@ -234,23 +252,27 @@ class RunService:
             self._auto_checked = now
             await self.auto_recovery_tick()
             await self.auto_continuation_tick()
+            await self.cost_notice_tick()
 
     async def auto_recovery_tick(self) -> None:
-        """Offer bounded model-failure recovery; dispatch retains its normal gates."""
+        """Offer bounded transient-failure recovery (D100); dispatch keeps its normal gates."""
         page = await threaded(self.auto_recovery.candidates, after=self._auto_after)
         self._auto_after = page[-1] if len(page) == 100 else ("", "", "")
         for project, session, root in page:
             if (project, session) in self.active:
                 continue
-            if await threaded(self.runs.over_cost_limit, project, self.clock.now()):
-                continue
             request = await threaded(self.auto_recovery.queue, project, session, root)
             if request is not None:
                 _log.info(
-                    "session %s queued automatic Resume %s for saved model failure",
+                    "session %s queued automatic Resume %s for a transient failure",
                     session,
                     request,
                 )
+
+    async def cost_notice_tick(self) -> None:
+        """Record each project's newly crossed cost notice (D102); a notice stops nothing."""
+        for project in await threaded(self.runs.noticed_projects):
+            await threaded(self.runs.note_cost_crossings, project)
 
     async def auto_continuation_tick(self) -> None:
         """Queue one next root for an answered checkpoint with an active plan."""
@@ -258,8 +280,6 @@ class RunService:
         self._continue_after = page[-1] if len(page) == 100 else ("", "", "")
         for project, session, root in page:
             if (project, session) in self.active:
-                continue
-            if await threaded(self.runs.over_cost_limit, project, self.clock.now()):
                 continue
             try:
                 message = await threaded(self.auto_continuation.queue, project, session, root)
@@ -579,14 +599,6 @@ class RunService:
                 return False
             ids = active.message_ids = [message.message_id for message in queued]
             active.request_ids = requests
-            if await threaded(runs.over_cost_limit, project, self.clock.now()):
-                _log.warning("project %s has spent its model budget", project)
-                if queued:
-                    await threaded(runs.refuse, project, session, ids, "budget")
-                else:
-                    # A request cannot be refused: it waits for the window to move on.
-                    self.waiting_until[project, session] = self.clock.monotonic() + MAX_WAIT
-                return False
             # The run is offered every request that waits, held or not.
             self.held.pop((project, session), None)
             request = dataclasses.replace(
@@ -614,7 +626,9 @@ class RunService:
                 _log.warning("the model gateway's budget is spent; session %s waits", session)
                 self.waiting_until[project, session] = self.clock.monotonic() + MAX_WAIT
             if finished.transcript.stopped == "context_limit" and any(
-                isinstance(hook, Folder) and hook.stopped == RESEARCH_STATE
+                isinstance(hook, FoldLifecycle)
+                and isinstance(hook.engine, Folder)
+                and hook.engine.stopped == RESEARCH_STATE
                 for hook in finished.hooks
             ):
                 # The next run would stop the same way: what waits, waits for a change of

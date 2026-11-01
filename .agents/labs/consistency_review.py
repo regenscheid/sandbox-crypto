@@ -89,10 +89,23 @@ async def create() -> None:
     execution = next(item for item in items if item["kind"] == "execution")
     block = documents.mapped(PROJECT, doc, 1).block_ids[1]
     turns = [
-        {"tool_calls": [{"name": "review_manifest", "arguments": {}}]},
         {
             "tool_calls": [
-                {"name": "review_read", "arguments": {"evidence": item["evidence"]}}
+                {
+                    "name": "review_manifest",
+                    "arguments": {"purpose_note": "Listing the pinned evidence"},
+                }
+            ]
+        },
+        {
+            "tool_calls": [
+                {
+                    "name": "review_read",
+                    "arguments": {
+                        "purpose_note": "Reading one pinned item",
+                        "evidence": item["evidence"],
+                    },
+                }
                 for item in items
             ]
         },
@@ -101,6 +114,7 @@ async def create() -> None:
                 {
                     "name": "review_finding",
                     "arguments": {
+                        "purpose_note": "Recording the contradiction found",
                         "severity": "fail",
                         "category": "contradicting_value",
                         "statement": (
@@ -202,17 +216,33 @@ async def confirm(root: Path) -> None:
         ).fetchone()
     require(window == (2, 3, 1), "Expected the seeded pending author-work retry")
     finding = Findings(reviews).get(PROJECT, "a", metadata(root)["finding"])
-    require(finding["status"] == "claimed fixed", "Claim the seeded fix before confirming")
+    recheck = finding["recheck"]
+    require(
+        finding["status"] == "open" and recheck is not None and recheck["cause"] == "fix",
+        "Claim the seeded fix before the re-check",
+    )
     doc = metadata(root)["document"]
     require(documents.revision(PROJECT, doc, 1).text == SOURCE, "Seeded source changed")
     require(
         documents.revision(PROJECT, doc, 2).text == CORRECTED, "The claimed correction is not 15"
     )
-    pins = finding["history"][-1]["payload"]["revisions"]
+    claim = next(
+        entry["payload"]
+        for entry in reversed(finding["history"])
+        if entry["payload"].get("action") == "fix"
+    )
     require(
-        any(pin["document"] == doc and pin["revision"] == 2 for pin in pins),
+        any(pin["document"] == doc and pin["revision"] == 2 for pin in claim["revisions"]),
         "Claimed fix did not pin the seeded corrected revision",
     )
+    require(
+        any(
+            place.get("document", {}).get("document") == doc and place["document"]["revision"] == 2
+            for place in recheck["places"]
+        ),
+        "The queued re-check does not hold the seeded corrected revision",
+    )
+    fixed_block = documents.mapped(PROJECT, doc, 2).block_ids[1]
     review = reviews.dispatch(
         PROJECT,
         "a",
@@ -231,10 +261,23 @@ async def confirm(root: Path) -> None:
         and item["locator"].get("revision") == 2
     )
     turns = [
-        {"tool_calls": [{"name": "review_manifest", "arguments": {}}]},
         {
             "tool_calls": [
-                {"name": "review_read", "arguments": {"evidence": item["evidence"]}}
+                {
+                    "name": "review_manifest",
+                    "arguments": {"purpose_note": "Listing the pinned evidence"},
+                }
+            ]
+        },
+        {
+            "tool_calls": [
+                {
+                    "name": "review_read",
+                    "arguments": {
+                        "purpose_note": "Reading one pinned item",
+                        "evidence": item["evidence"],
+                    },
+                }
                 for item in items
             ]
         },
@@ -243,6 +286,7 @@ async def confirm(root: Path) -> None:
                 {
                     "name": "review_checked",
                     "arguments": {
+                        "purpose_note": "Recording what was checked",
                         "statement": "The corrected revision's count 15 matches the original pinned execution.",
                         "evidence": [item["evidence"] for item in items],
                     },
@@ -250,14 +294,15 @@ async def confirm(root: Path) -> None:
                 {
                     "name": "review_decide",
                     "arguments": {
+                        "purpose_note": "Deciding the finding's re-check",
                         "finding": finding["finding_id"],
                         "expected": finding["revision"],
-                        "decision": "confirm",
+                        "decision": "resolved",
                         "explanation": (
-                            "The pinned revision now states 15, matching "
+                            "The new revision now states 15, matching "
                             "the original pinned execution."
                         ),
-                        "anchors": [{"evidence": fixed["evidence"]}],
+                        "anchors": [{"evidence": fixed["evidence"], "block": fixed_block}],
                         "operation_id": "fixture-confirm",
                     },
                 },
@@ -277,15 +322,15 @@ async def confirm(root: Path) -> None:
         reviews, PROJECT, "a", review, "fixture-confirmation", ScriptedModel.from_json(turns)
     ).run()
     result = Findings(reviews).get(PROJECT, "a", finding["finding_id"])
-    require(result["status"] == "confirmed fixed", "The scripted confirmation did not finish")
+    require(result["status"] == "fixed", "The scripted re-check did not resolve the finding")
     run = reviews.run(PROJECT, "a", review)
-    require(run["state"] == "passed", "Complete checked confirmation did not pass")
+    require(run["state"] == "passed", "Complete checked re-check did not pass")
     with sqlite3.connect(documents.path) as db:
         remaining = db.execute(
             "SELECT watermark,retry_end,failures FROM review_windows WHERE project=? AND session=?",
             (PROJECT, "a"),
         ).fetchone()
-    require(remaining == window, "Confirmation consumed unrelated author work")
+    require(remaining == window, "The re-check consumed unrelated author work")
     print(
         json.dumps(
             {

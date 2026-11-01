@@ -14,7 +14,14 @@ import pytest
 
 from sandbox_science.event_store import EventStore, StoreReader, verify_store
 from sandbox_science.policy import HardFloor, LoadedPolicy, PoolCeiling, reasons
-from sandbox_science.policy.approvals import APPROVAL, DENIAL, Approvals, RequestKey
+from sandbox_science.policy.approvals import (
+    APPROVAL,
+    DENIAL,
+    Approvals,
+    RequestKey,
+    prepare_answer,
+    withdrawal_payload,
+)
 from sandbox_science.policy_middleware import evaluator
 from sandbox_science.policy_middleware.cli import _read_records, main
 from sandbox_science.policy_middleware.evaluator import HttpRequestFacts, PolicyMiddleware
@@ -202,8 +209,28 @@ def test_an_approval_expires(
     assert main(["approve", "--settings", str(settings), "--request", str(seq), "--for", "1"]) == 0
     assert middleware.evaluate_http(facts()).allowed
     clock.offset = timedelta(hours=2)
-    # The approval is over; the request itself has timed out, and writes time out to deny.
-    assert middleware.evaluate_http(facts()).reason_code == reasons.ESCALATION_TIMED_OUT
+    # The approval is over: the request is asked again, as a new permission request,
+    # rather than taking the old one's timeout (which would deny a write for good).
+    again = middleware.evaluate_http(facts())
+    assert again.reason_code == reasons.APPROVAL_REQUIRED
+    assert request_number(again.reason) > seq
+
+
+def test_a_body_digest_keeps_an_answer_to_one_body_from_another(
+    middleware: PolicyMiddleware, facts: FactsFactory, settings: Path
+) -> None:
+    seq = request_number(middleware.evaluate_http(facts(body=b"one")).reason)
+    assert main(["approve", "--settings", str(settings), "--request", str(seq)]) == 0
+    assert middleware.evaluate_http(facts(body=b"one")).allowed
+    other = middleware.evaluate_http(facts(body=b"two"))
+    assert other.reason_code == reasons.APPROVAL_REQUIRED  # M1: another body asks again
+    host = request_number(other.reason)
+    assert (
+        main(["approve", "--settings", str(settings), "--request", str(host), "--scope", "host"])
+        == 0
+    )
+    # A host answer covers the request's shape, whatever its path and body.
+    assert middleware.evaluate_http(facts(body=b"three", path="/elsewhere")).allowed
 
 
 def test_an_unanswered_write_times_out_to_deny(
@@ -248,6 +275,35 @@ def test_requests_belong_to_their_sandbox(
     other = middleware.evaluate_http(facts(sandbox_id="sbx-0002"))
     assert other.reason_code == reasons.APPROVAL_REQUIRED
     assert request_number(other.reason) != seq
+
+
+def test_a_revoked_grants_host_answer_ends_and_the_sandbox_asks_again(
+    middleware: PolicyMiddleware, facts: FactsFactory, events: EventStore
+) -> None:
+    """The workspace's host answer from a grant (D97), then the worker's withdrawal of it
+    once the user revokes the grant: the answered sandbox's reads ask again at once."""
+    read = partial(facts, method="GET", host="reads.example.org")
+    seq = request_number(middleware.evaluate_http(read()).reason)
+    approvals = Approvals()
+    approvals.load(_read_records(events.path, 0))
+    grant = "grant-" + "a" * 20
+    kind, payload = prepare_answer(
+        approvals, seq, approve=True, scope="host", hours=1, now=datetime.now(UTC),
+        grants=(grant,),
+    )  # fmt: skip
+    events.append(kind, "workspace", payload)
+    assert middleware.evaluate_http(read(path="/v1/other", request_id="req-2")).allowed
+    approvals.load(_read_records(events.path, approvals.last_seq))
+    assert approvals.granted_by(grant, datetime.now(UTC)) == [seq]
+    request = approvals.request(seq)
+    assert request is not None
+    events.append(DENIAL, "worker", withdrawal_payload(seq, request.key, "grant revoked"))
+    again = middleware.evaluate_http(read(path="/v1/other", request_id="req-3"))
+    assert again.reason_code == reasons.APPROVAL_REQUIRED  # asked, not denied
+    assert request_number(again.reason) > seq
+    first = middleware.evaluate_http(read(request_id="req-4"))
+    assert first.reason_code == reasons.APPROVAL_REQUIRED
+    assert request_number(first.reason) > seq
 
 
 def test_answering_an_unknown_request_fails(settings: Path, events: EventStore) -> None:

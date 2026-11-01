@@ -672,7 +672,18 @@ class Lab:
 
         turns = [ModelTurn("Synthetic MAIN retained historical observations; no research result.")]
         if mode == "late-failure":
-            turns = [ModelTurn(None, (ToolCall("control-read", "document_list", "{}"),))]
+            turns = [
+                ModelTurn(
+                    None,
+                    (
+                        ToolCall(
+                            "control-read",
+                            "document_list",
+                            '{"purpose_note": "Listing the project documents"}',
+                        ),
+                    ),
+                )
+            ]
         model = Model(turns)
         transcript = None
         try:
@@ -767,9 +778,9 @@ class Lab:
                 stopped=transcript.stopped,
                 failure=transcript.failure,
                 final_text=transcript.final_text,
-                messages=transcript.messages,
+                messages=transcript.context.messages,
                 tools=transcript.tool_records,
-                prompt_provenance=transcript.prompt_provenance,
+                prompt_provenance=transcript.context.prompt_provenance,
                 kernel_notice_delivery=transcript.kernel_notice_delivery,
             )
             assert all(

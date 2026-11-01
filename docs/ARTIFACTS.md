@@ -16,12 +16,54 @@ control revision references. `ArtifactInventory` in the orchestrator owns logica
 IDs, immutable revisions and bounded event pages in `control.sqlite3`. New content
 lives in adjacent `control.sqlite3.artifacts/` hash-addressed files; old small SQLite
 BLOBs remain readable. The database and blob directory are one backup unit. A PVC
-can hold that directory; S3 is a future backend.
+can hold that directory. Optional [S3 backing](ARTIFACT-S3.md) on `k8s` verifies
+remote content before allowing explicit local eviction and supports cold reads.
 `ArtifactPublisher` connects a trusted run/context and worker endpoint to that
 inventory. These are internal interfaces, with no scheduler or permission grant of
 their own. The workspace reads the inventory through two routes, the project's
 artifact list and a link that opens a published PDF in the
 [PDF viewer](WORKSPACE.md#the-pdf-viewers-origin).
+
+## Acknowledging durable worker copies
+
+New fully retained publications commit an endpoint-bound worker acknowledgement
+intent in the same transaction as their immutable control receipt. Delivery is
+best effort: an unavailable worker leaves cleanup pending without downgrading a
+successful artifact or repeating a mutable capture. Each run starts with at most
+eight pending deliveries sharing a five-second HTTP budget, stopping at the first
+failure. Replaying a completed explicit or automatic execution capture retries
+its original acknowledgement without downloading or publishing again. Existing
+historical receipts are not automatically treated as acknowledged.
+
+The operator can drain a bounded page independently of any agent run:
+
+```bash
+sandbox-science-artifacts acknowledge --database /srv/research/control.sqlite3 \
+  --worker https://worker.example.invalid --token-file /secure/worker.token \
+  --project example-project --limit 8 --after 0
+```
+
+The token needs the project's explicit `artifact_retention` permission (the pool
+token also has it). The endpoint must match the original publication's saved
+digest. Output reports delivered/failed counts and an `after` cursor scoped to
+that configured worker. A failed row remains pending; omit `--after` to retry from
+the beginning, or use its cursor to process later rows without clearing the failure.
+Delivery audit records remain in `artifact_retention_outbox`; credentials and raw
+network errors are not stored there. Ordinary execution credentials cannot assert
+that control storage retained content.
+
+The local launcher grants this permission only to its trusted `harness` client;
+workspace, launcher-maintenance and ordinary execution clients do not receive it.
+Other deployments must set the control client's permission explicitly.
+
+Acknowledgement alone does not unlink anything. The worker's
+[`artifact-retention` command](WORKER.md#offline-capture-replica-retention) previews or applies
+physical release only while that worker is stopped, under its exclusive state
+lease. Every reference sharing a hash must have an exact acknowledgement; installer
+references or invalid/unknown metadata preserve the bytes. Metadata and release
+audit survive cleanup and restart. This does not archive or delete research
+workspaces/PVCs, remote objects or control-owned content. Worker protocol 11 is a
+lockstep application update; new container images have not been published.
 
 ## Identity, bytes and provenance
 
@@ -322,7 +364,7 @@ evidence with that reason, and counts it as a change.
 ## Recording the files calls write
 
 With a state directory, each run has a `FileRecorder` (`orchestrator/recording.py`;
-RA-27 to RA-35). After a shell call, a kernel cell, a PDF helper or `write_file`, and
+RA-27 to RA-35). After a shell call, a kernel cell, a PDF helper, `write_file` or `edit_file`, and
 before the result goes back to the model, it records the files the worker reported:
 
 - It reads the project's [file settings](PROJECTS-AND-SESSIONS.md#files-executions-write)
@@ -451,8 +493,9 @@ with synthetic state and no live model, worker or OpenShell VM.
 
 ## Not built
 
-- An artifact's history of revisions and tombstones in the GUI, and a run's page that
-  lists its results, its recorded files and the gaps (RA-37).
+- A run's page that lists its results, its recorded files and the gaps (RA-37). An
+  artifact's history of revisions and tombstones is in the workspace's Artifacts page
+  (`ArtifactInventory.history`).
 - Complete telemetry and snapshotting, link semantics, authenticated feed binding and
   control ingestion of the worker's observations.
 - Imports and MCP binary results, retention drop workflows, observed inputs and kernel

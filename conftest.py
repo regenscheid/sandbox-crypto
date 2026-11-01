@@ -12,11 +12,13 @@ temporary directory: an executor, a sandbox daemon, a kernel or a command they s
 one fails at its last test's teardown, and the processes are killed.
 """
 
+import logging
 import os
 from collections.abc import Iterator
 
 import pytest
 
+from sandbox_science.contracts.logs import reset_logging
 from sandbox_science.testing.processes import end_left_behind
 
 LEFTOVER_GRACE = 10.0
@@ -33,6 +35,17 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             item.add_marker(skip)
         if not live and item.get_closest_marker("live") is not None:
             item.add_marker(unlive)
+
+
+@pytest.fixture(autouse=True)
+def logging_as_found() -> Iterator[None]:
+    """A test that runs an entry point's ``main`` sets up logging for the whole process
+    (``configure_logging``); the next test finds the root logger as it was."""
+    root = logging.getLogger()
+    level = root.level
+    yield
+    reset_logging()
+    root.setLevel(level)
 
 
 @pytest.fixture(scope="module", autouse=True)

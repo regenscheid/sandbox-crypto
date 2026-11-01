@@ -51,7 +51,7 @@ An entry becomes established, refuted or obstructed only in a change that puts i
 2. if that evidence includes a proof, an independent check of the entry as it reads: the user's own check, or a delegation's check that returned confirmed and complete (see the delegating-work skill);
 3. computational evidence pinned to artifact revisions;
 4. a completed consistency review that covered the entry as it reads; `request_review` asks for one at the next safe point;
-5. no unresolved fail finding on the entry: `review_findings` lists them, and `review_respond` claims a fix or rebuts one;
+5. no unresolved fail finding on the entry: `review_findings` lists them, and `review_respond` fixes one, which queues its re-check, or dismisses one with a reason, which holds the gate until a review accepts it;
 6. no open flag.
 
 ```json

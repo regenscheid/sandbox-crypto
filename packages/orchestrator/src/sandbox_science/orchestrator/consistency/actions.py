@@ -29,7 +29,8 @@ from sandbox_science.orchestrator.documents.store import DocumentStore
 from sandbox_science.orchestrator.model import Message
 from sandbox_science.orchestrator.session_plans import PlanAuthority, PlanScope, SessionPlans
 
-from .store import MAX_ITEM_BYTES, Json, dump
+from .snapshot import MAX_ITEM_BYTES
+from .values import Json, dump
 
 MAX_ACTIONS: Final = 500
 """The most actions one window's item lists."""

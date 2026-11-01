@@ -22,9 +22,9 @@ from sandbox_science.orchestrator.documents import DocumentStore, DocumentTool
 from sandbox_science.orchestrator.documents.errors import DocumentError
 from sandbox_science.orchestrator.harness import save
 from sandbox_science.orchestrator.hooks import Effect
-from sandbox_science.orchestrator.jobs import JobTools
+from sandbox_science.orchestrator.jobs import JOB_SPECS, JobTools
 from sandbox_science.orchestrator.loop import run_task
-from sandbox_science.orchestrator.model import ModelError, ModelTurn, ScriptedModel, ToolCall
+from sandbox_science.orchestrator.model import ModelError, ModelTurn
 from sandbox_science.orchestrator.plan_tools import (
     GUIDANCE_VERSION,
     MAX_REQUEST_BYTES,
@@ -41,6 +41,8 @@ from sandbox_science.orchestrator.session_plans import (
 )
 from sandbox_science.orchestrator.tools import Toolbox, ToolEntry, ToolOutcome
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
+
+from .scripted import ScriptedModel, ToolCall
 
 
 def body(goal="Check the claim", *, count=1):
@@ -131,6 +133,11 @@ async def read_and_deliver(f):
 READS = {
     "read_file",
     "list_files",
+    "glob",
+    "grep",
+    "pdf_info",
+    "pdf_pages",
+    "pdf_search",
     "document_list",
     "document_read",
     "show_outline",
@@ -356,7 +363,7 @@ async def test_old_read_race_and_failed_model_do_not_clear_current_read_requirem
     result = await run_task(model, tools(f), "Resume", run_id="main-run")
     assert result.failure == "model"
     assert f.adapter.requires_read
-    assert "test-secret-failure-body" not in json.dumps(result.messages)
+    assert "test-secret-failure-body" not in json.dumps(result.context.messages)
 
 
 @pytest.mark.asyncio
@@ -623,7 +630,7 @@ async def test_committed_progress_survives_later_failure_without_fabricating_com
                         "started_at": now,
                         "ended_at": now,
                         "stopped": result.stopped,
-                        "messages": result.messages,
+                        "messages": result.context.messages,
                         "tools": result.tool_records,
                         "final_text": result.final_text,
                     },
@@ -715,6 +722,7 @@ async def test_cli_cancelled_constructor_closes_owner_published_before_thread_re
             return SimpleNamespace(
                 languages=(),
                 features=(),
+                kernel_reason=None,
                 location=SimpleNamespace(
                     isolation_evidence=None,
                     pool_id="p",
@@ -749,9 +757,6 @@ async def test_cli_cancelled_constructor_closes_owner_published_before_thread_re
         task="Continue",
         max_turns=1,
         max_input_chars=400_000,
-        mcp_proxy=None,
-        mcp_token_file=None,
-        mcp_server=[],
         transcript=None,
     )
     monkeypatch.setattr(harness, "PlanTools", factory)
@@ -886,6 +891,7 @@ async def test_complete_large_plan_bypasses_generic_notice_clipping_without_mark
 
     class Jobs:
         reads = 0
+        specs = JOB_SPECS
 
         def __init__(self):
             self.seen = set()

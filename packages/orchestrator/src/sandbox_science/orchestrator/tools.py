@@ -16,21 +16,25 @@ import codecs
 import hashlib
 import json
 import logging
+import posixpath
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import replace
 from functools import partial
 from typing import TYPE_CHECKING, Any, Final, cast
 
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from sandbox_science.contracts import (
     MAX_ADMISSION_HOSTS,
     CellRequest,
+    EditFileRequest,
     ErrorKind,
     Execution,
     ExecutionContext,
     ExecutionState,
+    GlobRequest,
+    GrepRequest,
     HostPort,
     ListFilesRequest,
     PdfRequest,
@@ -39,10 +43,18 @@ from sandbox_science.contracts import (
     ShellRequest,
     WriteFileRequest,
 )
-from sandbox_science.contracts.worker import Language
+from sandbox_science.contracts.context import WriteArea
+from sandbox_science.contracts.worker import (
+    DEFAULT_GREP_RESULTS,
+    MAX_GLOB_RESULTS,
+    MAX_GREP_CONTEXT,
+    MAX_GREP_RESULTS,
+    Language,
+    SearchStop,
+)
 
-from .agent_messages import CHILD_SPEC, PARENT_SPEC, STATUS_SPEC, WAIT_SPEC, AgentMailbox
-from .aio import threaded
+from . import capabilities as caps
+from .agent_messages import AgentMailbox
 from .artifact_publisher import ArtifactPublisher
 from .connectors import (
     MAX_LOAD,
@@ -50,39 +62,33 @@ from .connectors import (
     MAX_QUERY,
     Connectors,
 )
-from .consistency.controller import REVIEW_EFFECTS, ReviewController, Reviews
-from .delegation import specs as delegation_specs
-from .delegation.tracks import EFFECTS as TRACK_EFFECTS
-from .delegation.tracks import SPECS as TRACK_SPECS
-from .documents import annotation_tools
+from .consistency.controller import ReviewController
+from .context.history import HistoryTool
+from .continuity.kernels import MAX_SAVED_FILES, LostGeneration, LostKernels
 from .documents.errors import DocumentError
-from .documents.tool import DOCUMENT_EFFECTS, DocumentTool, WorkRequests, with_notices
-from .documents.tool import SPECS as DOCUMENT_SPECS
+from .documents.tool import DocumentTool, with_notices
 from .effects import UnknownEffectError
-from .history import SPECS as HISTORY_SPECS
-from .history import HistoryTool
-from .hooks import Effect, Notice, TurnHook
-from .jobs import BACKGROUND, JOB_EFFECTS, JOB_SPECS, STOP_AT_FAILURE, JobNotices, JobTools
+from .hooks import Effect, TurnHook
+from .jobs import BACKGROUND, STOP_AT_FAILURE, JobTools
 from .kernel_check import KernelCheck
-from .ledger.tool import LEDGER_EFFECTS, LedgerTool
-from .ledger.tool import PROPOSALS as LEDGER_PROPOSALS
-from .ledger.tool import SPECS as LEDGER_SPECS
-from .mathchecks.controller import MathChecks, MathController
-from .memory_tools import MEMORY_EFFECTS, MemoryTool
-from .memory_tools import SPECS as MEMORY_SPECS
+from .ledger.tool import LedgerTool
+from .mathchecks.controller import MathController
+from .memory_tools import MemoryTool
 from .model import ToolCall, ToolSpec
-from .plan_tools import SPECS as PLAN_SPECS
 from .plan_tools import Plans, PlanTools
 from .provision import PROVISION_SPECS, PROVISIONING, ProvisionTools
-from .question_tool import EFFECTS as QUESTION_EFFECTS
-from .question_tool import SPECS as QUESTION_SPECS
+from .purpose import COLLISION, PurposeError, collides, offered, split, without
 from .question_tool import QuestionTool
-from .recording import FileRecorder, RecordedFiles, Written, with_recorded
-from .resource_hooks import SPEC as RESOURCE_SPEC
+from .recording import FileRecorder, Written, with_recorded
 from .resource_hooks import Resources
-from .skills.tool import SPEC as SKILL_SPEC
 from .skills.tool import SkillTool
-from .view_image import SPEC as VIEW_IMAGE
+from .tool_entry import Handler as Handler
+from .tool_entry import Request as Request
+from .tool_entry import ToolEntry as ToolEntry
+from .tool_entry import ToolOutcome as ToolOutcome
+from .tool_entry import group as _group
+from .tool_entry import plain as _plain
+from .tool_mix import Interpreter, ToolMix, shell_computation
 from .view_image import ImageViewer
 from .worker_client import WorkerAPIError, WorkerClient, dump
 
@@ -143,11 +149,14 @@ ADMIT_HOSTS: Final = ToolSpec(
 
 SAGE: Final = ToolSpec(
     "sage",
-    "Run SageMath code in the session's persistent Sage kernel inside the project sandbox. "
-    "Sage syntax applies: ^ is exponentiation, 1/3 is an exact rational, and integer literals "
-    "are Sage Integers (convert them with int() before json.dumps). Variables persist between "
-    "calls until that kernel restarts. Results come back as plain text; run %display latex "
-    "first, or call latex(x), to get LaTeX." + LONG_OUTPUT + SHARED_IN_CODE,
+    "Run SageMath code in the session's persistent Sage kernel inside the project sandbox: "
+    "variables, imports and loaded data persist between calls until that kernel restarts. "
+    "The default for algebra, number theory and other computation in Sage, and for iterative "
+    "exploration. Sage syntax applies: ^ is exponentiation, 1/3 is an exact rational, and "
+    "integer literals are Sage Integers (convert them with int() before json.dumps). Results "
+    "come back as plain text; run %display latex first, or call latex(x), to get LaTeX."
+    + LONG_OUTPUT
+    + SHARED_IN_CODE,
     {
         "type": "object",
         "properties": {"code": {"type": "string"}, "timeout_seconds": _TIMEOUT},
@@ -234,6 +243,8 @@ PDF_SPECS: Final = (
         },
     ),
 )
+PDF_READS: Final = frozenset({"pdf_info", "pdf_pages", "pdf_search"})
+"""The PDF tools that only read (D99); ``pdf_render`` writes a PNG in the session."""
 
 FIND_ARTIFACTS: Final = ToolSpec(
     "find_artifacts",
@@ -268,30 +279,13 @@ FIND_ARTIFACTS: Final = ToolSpec(
 
 SPECS: Final = (
     ToolSpec(
-        "shell",
-        "Run a bash script in the session's workspace inside the project sandbox. Each call "
-        "starts afresh in the workspace (no state carries over except files); stdin is empty. "
-        "Returns the exit code and the output. If a command might fail, keep its diagnostics "
-        "visible or inspect its redirected log in the same call."
-        + LONG_OUTPUT
-        + STOP_AT_FAILURE
-        + SHARED_IN_CODE,
-        {
-            "type": "object",
-            "properties": {
-                "script": {"type": "string"},
-                "cwd": {"type": "string", "description": "Directory relative to the workspace"},
-                "timeout_seconds": _TIMEOUT,
-            },
-            "required": ["script"],
-            "additionalProperties": False,
-        },
-    ),
-    ToolSpec(
         "python",
-        "Run Python code in the session's persistent kernel inside the project sandbox. "
-        "Variables persist between calls until the kernel restarts. Returns printed output, "
-        "the value of the last expression and any exception." + LONG_OUTPUT + SHARED_IN_CODE,
+        "Run Python code in the session's persistent kernel inside the project sandbox: "
+        "variables, imports and loaded data persist between calls until the kernel restarts. "
+        "The default for computation, analysis and iterative exploration. Returns printed "
+        "output, the value of the last expression and any exception."
+        + LONG_OUTPUT
+        + SHARED_IN_CODE,
         {
             "type": "object",
             "properties": {
@@ -305,6 +299,30 @@ SPECS: Final = (
                 },
             },
             "required": ["code"],
+            "additionalProperties": False,
+        },
+    ),
+    ToolSpec(
+        "shell",
+        "Run a bash script in the session's workspace inside the project sandbox, for "
+        "commands: builds, installs, file operations, and running existing scripts and "
+        "command-line tools. Not for computation that belongs in a kernel cell (python or "
+        "sage, where offered). Each call starts afresh in the workspace (no state carries "
+        "over except files); stdin is empty. Returns the exit code and the output. If a "
+        "command might fail, keep its diagnostics visible or inspect its redirected log in "
+        "the same call. To search or find files, use grep and glob, whose output is "
+        "bounded, rather than grep or find here; to change part of a file, edit_file."
+        + LONG_OUTPUT
+        + STOP_AT_FAILURE
+        + SHARED_IN_CODE,
+        {
+            "type": "object",
+            "properties": {
+                "script": {"type": "string"},
+                "cwd": {"type": "string", "description": "Directory relative to the workspace"},
+                "timeout_seconds": _TIMEOUT,
+            },
+            "required": ["script"],
             "additionalProperties": False,
         },
     ),
@@ -326,7 +344,8 @@ SPECS: Final = (
         "write_file",
         "Write a text file in the workspace. For shared/ paths, set create_only=true "
         "to create a new file, or expected_sha256 to the current hash from read_file "
-        "when replacing it. Other paths can omit a precondition.",
+        "when replacing it. Other paths can omit a precondition. To change part of an "
+        "existing file, use edit_file instead of writing it whole.",
         {
             "type": "object",
             "properties": {
@@ -340,11 +359,78 @@ SPECS: Final = (
         },
     ),
     ToolSpec(
+        "edit_file",
+        "Change part of a text file in the workspace (or shared/…) by replacing an exact "
+        "string, instead of rewriting the file with write_file. old_string must occur "
+        "exactly once, so include enough of the surrounding text, unless replace_all "
+        "replaces every occurrence; whitespace and line breaks count. For shared/ paths, "
+        "set expected_sha256 to the current hash from read_file. Returns the file's new "
+        "sha256 and the number of replacements.",
+        {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "old_string": {"type": "string", "minLength": 1},
+                "new_string": {"type": "string"},
+                "replace_all": {"type": "boolean"},
+                "expected_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            },
+            "required": ["path", "old_string", "new_string"],
+            "additionalProperties": False,
+        },
+    ),
+    ToolSpec(
         "list_files",
         "List a directory in the workspace (or shared/…).",
         {
             "type": "object",
             "properties": {"path": {"type": "string"}},
+            "additionalProperties": False,
+        },
+    ),
+    ToolSpec(
+        "glob",
+        "Find files and directories by path pattern below a directory of the workspace "
+        "(or shared/…): * and ? match within a name, [ab] one of a set, and ** any number "
+        f"of directories, as in **/*.py. Newest first, at most {MAX_GLOB_RESULTS}; "
+        "symlinks are listed, not followed.",
+        {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "minLength": 1},
+                "path": {"type": "string", "description": "Directory to search; default ."},
+                "limit": {"type": "integer", "minimum": 1, "maximum": MAX_GLOB_RESULTS},
+            },
+            "required": ["pattern"],
+            "additionalProperties": False,
+        },
+    ),
+    ToolSpec(
+        "grep",
+        "Search the text files below a directory of the workspace (or shared/…), or one "
+        "file, for a Python regular expression, with bounded output: use it rather than "
+        "grep in the shell. mode files (the default) lists the matching files, count the "
+        "matching lines in each, and content the lines as path:line: text, with "
+        "context_lines around each. glob narrows the files, by name (*.py) or by path "
+        "(src/**/*.py). Binary files and symlinks are skipped.",
+        {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "minLength": 1},
+                "path": {"type": "string", "description": "Directory or file; default ."},
+                "glob": {"type": "string"},
+                "mode": {"type": "string", "enum": ["files", "count", "content"]},
+                "case_insensitive": {"type": "boolean"},
+                "context_lines": {"type": "integer", "minimum": 0, "maximum": MAX_GREP_CONTEXT},
+                "max_results": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": MAX_GREP_RESULTS,
+                    "description": f"Files, or lines in content mode; default "
+                    f"{DEFAULT_GREP_RESULTS}",
+                },
+            },
+            "required": ["pattern"],
             "additionalProperties": False,
         },
     ),
@@ -361,97 +447,31 @@ SPECS: Final = (
 )
 
 
-@dataclass
-class ToolOutcome:
-    """What the model sees, and what the transcript keeps."""
-
-    text: str
-    record: dict[str, Any] = field(default_factory=dict[str, Any])
-    whole: bool = False
-    """The result must reach the model as it is, with no notices riding on it."""
-    written: Written | None = None
-    """The files the call changed, which the run's recorder records (RA-27)."""
-    saved: dict[str, str] = field(default_factory=dict[str, str])
-    """The texts saved whole behind a sample, by path (Shell 5), which the session's
-    archive keeps beside the result (docs/specs/context-management.md, CM-6)."""
-    image: tuple[Notice, str] | None = None
-    """An image ``view_image`` gives the model, and its token: the loop adds its framed
-    message after the turn's results (docs/specs/figures.md, FG-37)."""
-
-
-@dataclass(frozen=True)
-class Request:
-    """One tool call as its handler gets it; ``args`` is empty for a raw entry."""
-
-    call: ToolCall
-    args: dict[str, Any]
-    operation: str
-    model: str | None
-
-
-Handler = Callable[[Request], Awaitable[ToolOutcome]]
-
-
-@dataclass(frozen=True)
-class ToolEntry:
-    """An offered tool: its spec, its handler, and the effect class a gate reads."""
-
-    spec: ToolSpec
-    effect: Effect
-    handler: Handler
-    raw: bool = False
-    """The handler parses the call's arguments itself."""
-    bound: bool = False
-    """The result is bounded like a file's or an execution's text."""
-    whole: bool = False
-    """The result reaches the model as it is, with no notices riding on it."""
-
-
-def _group(
-    specs: Sequence[ToolSpec],
-    run: Callable[[str, Request], Awaitable[tuple[str, dict[str, Any]]]],
-    effects: Mapping[str, Effect],
-    **flags: bool,
-) -> list[ToolEntry]:
-    """A group's entries, whose ``run`` answers a call with text and a record. A tool
-    ``effects`` does not name is an effect, so a new tool is gated until classified."""
-
-    async def handler(name: str, request: Request) -> ToolOutcome:
-        return ToolOutcome(*await run(name, request))
-
-    return [
-        ToolEntry(spec, effects.get(spec.name, "effect"), partial(handler, spec.name), **flags)
-        for spec in specs
-    ]
-
-
-async def _view(viewer: ImageViewer, request: Request) -> ToolOutcome:
-    viewed = await viewer.call(request.args, request.operation)
-    image = None
-    if viewed.notice is not None and viewed.token is not None:
-        image = (viewed.notice, viewed.token)
-    return ToolOutcome(viewed.text, viewed.record, image=image)
-
-
-def _plain(handler: Callable[[dict[str, Any], str], Awaitable[ToolOutcome]]) -> Handler:
-    return lambda request: handler(request.args, request.operation)
-
-
 def operation_id(prefix: str, call: ToolCall) -> str:
     """A worker operation ID for a tool call: stable, path-safe and at most 128 characters.
 
-    It ends with a digest of the whole call, its name and arguments included. A
+    It ends with a digest of the whole call, its name and arguments included, but
+    not its purpose (Purpose 3), so a call's identity does not depend on it. A
     different call never meets an earlier call's operation, however long the
     prefix; the same call at the same place in a run with the same ID does, and
     gets the earlier result instead of running again.
     """
-    whole = json.dumps([prefix, call.id, call.name, call.arguments])
+    whole = json.dumps([prefix, call.id, call.name, without(call.arguments)])
     digest = hashlib.sha256(whole.encode()).hexdigest()[:16]
     readable = _UNSAFE.sub("-", f"{prefix}-{call.id}").lstrip("-._")[:111].rstrip("-._")
     return f"{readable}-{digest}" if readable else f"op-{digest}"
 
 
+KERNEL_TOOLS: Final[tuple[Language, ...]] = ("python", "sage")
+"""The tools that run a cell in a persistent kernel, each named for its language. A run is
+offered those of its environment's languages, ahead of ``shell``."""
 RESTART_KERNEL: Final = "restart_kernel"
+RESTART_KERNEL_DESCRIPTION: Final = (
+    "Restart one of the session's kernels. It loses all its state: variables, imports and "
+    "loaded data. Use it after a package change the kernel predates (a "
+    "kernel_revision_notice), when its state is corrupt, or to free memory; never to "
+    "clear variables you could just rebind."
+)
 MCP_TOOLS: Final = "mcp_tools"
 
 
@@ -494,40 +514,15 @@ def mcp_tools_spec(index: str) -> ToolSpec:
 
 
 def _harness_tool_names() -> frozenset[str]:
-    from .consistency.controller import AUTHOR_SPECS
-
-    specs = (
-        *SPECS,
-        FIND_ARTIFACTS,
-        SAGE,
-        *PDF_SPECS,
-        ADMIT_HOSTS,
-        *PROVISION_SPECS,
-        *JOB_SPECS,
-        *DOCUMENT_SPECS,
-        *annotation_tools.SPECS,
-        *AUTHOR_SPECS,
-        *PLAN_SPECS,
-        *LEDGER_SPECS,
-        LEDGER_PROPOSALS,
-        *MEMORY_SPECS,
-        *delegation_specs.SPECS,
-        RESOURCE_SPEC,
-        CHILD_SPEC,
-        PARENT_SPEC,
-        STATUS_SPEC,
-        WAIT_SPEC,
-        *TRACK_SPECS,
-        *QUESTION_SPECS,
-        SKILL_SPEC,
-        *HISTORY_SPECS,
-        VIEW_IMAGE,
+    specs = (*SPECS, FIND_ARTIFACTS, SAGE, *PDF_SPECS, ADMIT_HOSTS, *PROVISION_SPECS)
+    return (
+        caps.RESERVED_NAMES | frozenset(spec.name for spec in specs) | {RESTART_KERNEL, MCP_TOOLS}
     )
-    return frozenset(spec.name for spec in specs) | {RESTART_KERNEL, MCP_TOOLS}
 
 
 HARNESS_TOOL_NAMES: Final = _harness_tool_names()
 """Every name the harness gives a tool of its own, which no connector tool may take."""
+_WRITE_AREA: Final = TypeAdapter(WriteArea)
 
 
 class Toolbox:
@@ -541,7 +536,7 @@ class Toolbox:
         *,
         languages: Sequence[Language] = ("python",),
         features: Sequence[str] = (),
-        output_chars: int = 20000,
+        output_chars: int = caps.DEFAULT_OUTPUT_CHARS,
         documents: DocumentTool | None = None,
         jobs: JobTools | None = None,
         reviews: ReviewController | None = None,
@@ -566,73 +561,136 @@ class Toolbox:
         history: HistoryTool | None = None,
         images: ImageViewer | None = None,
         image_offer: Mapping[str, Any] | None = None,
+        capabilities: caps.CapabilitySet | None = None,
+        write_area: str | None = None,
     ) -> None:
         """For a ``delegated`` run, a call to a tool it is not offered, such as a review,
-        plan, delegate, question or connector tool, is refused with
-        ``not_permitted_for_role`` (PD-16, PD-41). A ``check`` run is offered only the reads
-        of the documents, the ledger and the memory, beside its compute and file tools: it
-        changes no entry, document or memory (PD-34, LG-13, as the coordinator tightened
-        them on 2026-10-15)."""
+        plan, delegate or question tool, is refused with ``not_permitted_for_role`` (PD-16,
+        PD-41). Its connector tools are its own run's, as a main run's are (DA-3). A
+        ``check`` run is offered only the reads of the documents, the ledger and the
+        memory, beside its compute and file tools: it changes no entry, document or memory
+        (PD-34, LG-13, as the coordinator tightened them on 2026-10-15). A delegated run's
+        ``write_area`` (``work/<delegation_id>``) goes with its ``write_file`` and
+        ``edit_file`` requests, and the worker writes them only there and in ``shared/``
+        (DA-19); the platform's own writes for the run, such as saved output, do not carry
+        it."""
+        if delegated and questions is not None:
+            raise ValueError("a delegated run cannot ask the user")
+        if capabilities is None:
+            # Compatibility for direct callers. Production binds scoped domains in
+            # the harness, rather than passing a second set of service options.
+            bundles: list[caps.Capability] = []
+
+            def add[T](service: T | None, bind: Callable[[T], caps.Capability]) -> None:
+                if service is not None:
+                    bundles.append(bind(service))
+
+            add(documents, caps.documents)
+            add(reviews, caps.reviews)
+            add(plans, caps.plans)
+            add(ledger, caps.ledger)
+            add(memory, caps.memory)
+            add(tracks, caps.tracks)
+            add(delegations, caps.delegations)
+            add(resources, caps.resources)
+            add(mailbox, caps.mailbox)
+            add(skills, caps.skills)
+            add(history, caps.history)
+            add(images, caps.images)
+            add(questions, caps.questions)
+            add(math_checks, caps.math)
+            add(recorder, caps.files)
+            add(artifacts, caps.artifacts)
+            bundles.append(caps.jobs(jobs if BACKGROUND in features else None))
+            capabilities = caps.CapabilitySet(tuple(bundles))
+            # Legacy direct callers could explicitly provide review/plan controllers
+            # even for a delegated run; only its record filtering is adapted here.
+            if check:
+                capabilities = caps.record_reads(capabilities)
         self.client = client
         self.context = context
+        self.write_area = None if write_area is None else _WRITE_AREA.validate_python(write_area)
         self.output_chars = output_chars
         self.languages = tuple(languages)
-        self.reviews = reviews
-        self.math_checks = math_checks
-        self.documents = documents
-        self.jobs = jobs if BACKGROUND in features else None
-        self.artifacts = artifacts
-        self.plans = plans
+        self.reviews = capabilities.service(caps.REVIEWS)
+        self.math_checks = capabilities.service(caps.MATH)
+        self.documents = capabilities.service(caps.DOCUMENTS)
+        self.jobs = capabilities.service(caps.JOBS)
+        self.artifacts = capabilities.service(caps.ARTIFACTS)
+        self.plans = capabilities.service(caps.PLANS)
+        self.recorder = capabilities.service(caps.FILES)
+        self.delegations = capabilities.service(caps.DELEGATIONS)
+        self.mailbox = capabilities.service(caps.MAILBOX)
+        self.resources = capabilities.service(caps.RESOURCES)
+        self.questions = capabilities.service(caps.QUESTIONS)
+        self.skills = capabilities.service(caps.SKILLS)
+        self.delegated = delegated
         self.check_kernels = check_kernels
         self.sweep_left_kernels = sweep_left_kernels
-        """The kernel check also closes the run kernels the session's earlier runs left
-        (PD-40), at its first observation of a connected executor."""
-        self.recorder = recorder
-        """Records the files calls write as artifact revisions (RA-27); ``None`` without
-        an artifact inventory."""
         self.kernel_run = kernel_run
-        """A delegated run's own kernels: cells name it (PD-37); ``None`` uses the
-        session's, which main runs share."""
-        self.delegations = delegations
-        self.mailbox = mailbox
-        self.resources = resources
-        self.questions = questions
-        self.delegated = delegated
-        if delegated and connectors is not None:
-            # PD-16: a delegated run is offered no connector tool, and no index of them.
-            raise ValueError("a delegated run gets no connector tools")
-        if delegated and questions is not None:
-            # PD-41: a delegated run that needs the user ends blocked instead.
+        self.tool_mix: ToolMix | None = ToolMix()
+        """The run's tool mix, counted as its calls return (Kernels 13)."""
+        self.lost_kernels: LostKernels | None = None
+        """The records of the run's kernels' cells, which a cell that reports lost state
+        lists (Kernels 7); bound by the harness when the run keeps them."""
+        if delegated and self.questions is not None:
             raise ValueError("a delegated run cannot ask the user")
+
+        def kernels() -> TurnHook:
+            keep = self.delegations.live if self.delegations is not None else None
+            return KernelCheck(
+                self.client,
+                self.context,
+                run=self.kernel_run,
+                sweep=self.sweep_left_kernels,
+                keep=keep,
+            )
+
+        capabilities = replace(
+            capabilities,
+            bundles=(
+                *(b for b in capabilities.bundles if b.name != caps.KERNELS.name),
+                caps.KERNELS.bind(kernels),
+            ),
+        )
+        self.capabilities = capabilities.with_hook_slots()
         self.provisioning = ProvisionTools(client, context, output_chars=output_chars)
         worker: dict[str, tuple[Effect, Handler]] = {
             "shell": ("effect", _plain(self._shell)),
             "python": ("effect", _plain(self._python)),
             "read_file": ("read", _plain(self._read)),
             "write_file": ("effect", _plain(self._write)),
+            "edit_file": ("effect", _plain(self._edit)),
             "list_files": ("read", _plain(self._list)),
+            "glob": ("read", _plain(self._glob)),
+            "grep": ("read", _plain(self._grep)),
             "publish": ("effect", self._publish),
             "find_artifacts": ("read", _plain(self._find_artifacts)),
             "sage": ("effect", _plain(self._sage)),
             RESTART_KERNEL: ("effect", _plain(self._restart)),
             **{
-                spec.name: ("effect", _plain(partial(self._pdf, spec.name.removeprefix("pdf_"))))
+                spec.name: (
+                    "read" if spec.name in PDF_READS else "effect",
+                    _plain(partial(self._pdf, spec.name.removeprefix("pdf_"))),
+                )
                 for spec in PDF_SPECS
             },
             "admit_hosts": ("effect", _plain(self._admit)),
             "provision": ("effect", _plain(self.provisioning.provision)),
             "provision_status": ("read", _plain(self.provisioning.status)),
         }
-        specs = [spec for spec in SPECS if spec.name != "python" or "python" in self.languages]
+        # The kernel tools come first, before shell: the order a model reads its tools in
+        # steers which one it reaches for, and computation belongs in a kernel.
+        kernel_specs = {spec.name: spec for spec in (*SPECS, SAGE) if spec.name in KERNEL_TOOLS}
+        specs = [kernel_specs[name] for name in KERNEL_TOOLS if name in self.languages]
+        specs.extend(spec for spec in SPECS if spec.name not in KERNEL_TOOLS)
         if self.artifacts is not None:
             specs.append(FIND_ARTIFACTS)
-        if "sage" in self.languages:
-            specs.append(SAGE)
         if self.languages:
             specs.append(
                 ToolSpec(
                     RESTART_KERNEL,
-                    "Restart one of the session's kernels, discarding all its state.",
+                    RESTART_KERNEL_DESCRIPTION,
                     {
                         "type": "object",
                         "properties": {
@@ -649,137 +707,23 @@ class Toolbox:
         if PROVISIONING in features:
             specs.extend(PROVISION_SPECS)
         entries = [ToolEntry(spec, *worker[spec.name]) for spec in specs]
-        if (job_tools := self.jobs) is not None:
-            entries += _group(
-                JOB_SPECS,
-                lambda name, call: job_tools.handlers[name](call.args, call.operation),
-                JOB_EFFECTS,
-                bound=True,
-            )
-        if documents is not None:
-            entries += self._records(
-                check,
-                documents.specs,
-                lambda name, call: documents.call(
-                    name,
-                    call.args,
-                    operation=call.operation,
-                    call_id=call.call.id,
-                    model=call.model,
-                ),
-                DOCUMENT_EFFECTS,
-            )
-        if reviews is not None:
-            entries += _group(
-                reviews.specs,
-                lambda name, call: reviews.author_call(
-                    name, call.args, call.operation, model=call.model
-                ),
-                REVIEW_EFFECTS,
-                bound=True,
-            )
-        if plans is not None:
-            entries += _group(
-                plans.specs,
-                lambda name, call: plans.call(
-                    name, call.call.arguments, call_id=call.call.id, model=call.model
-                ),
-                {spec.name: "plan" for spec in plans.specs},
-                raw=True,
-                whole=True,
-            )
-        if ledger is not None:
-            entries += self._records(
-                check,
-                ledger.specs,
-                lambda name, call: ledger.call(
-                    name,
-                    call.args,
-                    operation=call.operation,
-                    call_id=call.call.id,
-                    model=call.model,
-                ),
-                LEDGER_EFFECTS,
-            )
-        if memory is not None:
-            entries += self._records(
-                check,
-                memory.specs,
-                lambda name, call: memory.call(
-                    name,
-                    call.args,
-                    operation=call.operation,
-                    call_id=call.call.id,
-                    model=call.model,
-                ),
-                MEMORY_EFFECTS,
-            )
-        if tracks is not None:
-            entries += _group(
-                tracks.specs,
-                lambda name, call: threaded(
-                    tracks.call, name, call.args, operation=call.operation, model=call.model
-                ),
-                TRACK_EFFECTS,
-            )
-        if delegations is not None:
-            entries += _group(
-                delegations.specs,
-                lambda name, call: delegations.call(name, call.args, operation=call.operation),
-                delegation_specs.EFFECTS,
-            )
-        if resources is not None:
-            entries += _group(
-                resources.specs,
-                lambda name, call: resources.call(name, call.args, call.operation),
-                {spec.name: "read" for spec in resources.specs},
-            )
-        if mailbox is not None:
-            entries += _group(
-                mailbox.specs,
-                lambda name, call: mailbox.call(name, call.args, call.operation),
-                {spec.name: "read" for spec in mailbox.specs},
-            )
-        self.skills = skills
-        """The run's skills: their system-message section and the ``skills`` tool."""
+        entries.extend(self.capabilities.entries)
         if self.jobs is not None:
             self.jobs.bindings = lambda: self._bindings({})
-            self.jobs.binding_inventory = self._binding_inventory  # a job carries them too
-        if skills is not None:
-            entries += _group(
-                skills.specs,
-                lambda _, call: skills.call(call.args, call_id=call.call.id, model=call.model),
-                {SKILL_SPEC.name: "read"},
-                whole=True,  # a body is never cut, as a notice riding on it would (_attach)
-            )
-        if history is not None:
-            # A retrieval reaches the model whole: its pages say where the next begins.
-            entries += _group(
-                history.specs,
-                lambda name, call: history.call(name, call.args),
-                {spec.name: "read" for spec in history.specs},
-                whole=True,
-            )
+            self.jobs.binding_inventory = self._binding_inventory
         self.image_offer = None if image_offer is None else dict(image_offer)
-        """Whether the run was offered ``view_image``, and why, for its record (FG-33)."""
-        if images is not None:
-            entries.append(ToolEntry(VIEW_IMAGE, "read", partial(_view, images)))
-        if questions is not None:
-            entries += _group(
-                questions.specs,
-                lambda _, call: questions.call(
-                    call.args, operation=call.operation, call_id=call.call.id
-                ),
-                QUESTION_EFFECTS,
-            )
         self.connectors = connectors
         """The run's connector tools: indexed in ``mcp_tools``, and offered once loaded."""
         self.deferred: dict[str, ToolEntry] = {}
+        self.unloadable: dict[str, str] = {}
+        """Connector tools that are not loaded, with why: a schema that defines the
+        purpose field itself (Purpose 1)."""
+        self._offered: dict[str, tuple[ToolSpec, ToolSpec]] = {}
         if connectors is not None:
             self._defer(connectors, {entry.spec.name for entry in entries})
             # A server whose listing failed is unavailable, not missing: mcp_tools says
             # so, and lists it once more (lab 41, B4).
-            if self.deferred or connectors.failed:
+            if self.deferred or connectors.failed or self.unloadable:
                 entries.append(self._mcp_tools_entry(connectors))
         self.entries = {entry.spec.name: entry for entry in entries}
         if len(self.entries) != len(entries):
@@ -788,18 +732,6 @@ class Toolbox:
             raise ValueError(f"two offered tools have one name: {', '.join(taken)}")
         self.revision = 0
         """Counts the loads of connector tools, which change what a model call carries."""
-
-    @staticmethod
-    def _records(
-        check: bool,
-        specs: Sequence[ToolSpec],
-        run: Callable[[str, Request], Awaitable[tuple[str, dict[str, Any]]]],
-        effects: Mapping[str, Effect],
-    ) -> list[ToolEntry]:
-        """The documents', the ledger's or the memory's tools; for a check, their reads."""
-        return [
-            entry for entry in _group(specs, run, effects) if not check or entry.effect == "read"
-        ]
 
     def _defer(self, connectors: Connectors, names: set[str]) -> None:
         """Index the connector tools not yet indexed. A connector tool is never offered
@@ -815,6 +747,10 @@ class Toolbox:
             if entry.spec.name in taken:
                 _log.warning("connector tool %s is not offered: its name is taken", entry.spec.name)
                 del connectors.tools[entry.spec.name]
+            elif collides(entry.spec):
+                _log.warning("connector tool %s is not offered: %s", entry.spec.name, COLLISION)
+                self.unloadable[entry.spec.name] = COLLISION
+                del connectors.tools[entry.spec.name]
             else:
                 self.deferred[entry.spec.name] = entry
 
@@ -824,8 +760,15 @@ class Toolbox:
     @property
     def specs(self) -> tuple[ToolSpec, ...]:
         """The tools every model call carries: the run's own, and the connector tools
-        loaded so far."""
-        return tuple(entry.spec for entry in self.entries.values())
+        loaded so far, each with the required ``purpose_note`` (Purpose 1)."""
+        found: list[ToolSpec] = []
+        for name, entry in self.entries.items():
+            kept = self._offered.get(name)
+            if kept is None or kept[0] is not entry.spec:
+                kept = (entry.spec, offered(entry.spec))
+                self._offered[name] = kept
+            found.append(kept[1])
+        return tuple(found)
 
     def _load(self, names: Sequence[str]) -> tuple[list[str], list[str], list[str], list[str]]:
         """Load connector tools into the run: those loaded now, before, unknown (a
@@ -876,18 +819,33 @@ class Toolbox:
                 "these servers could not be listed: their tools are unavailable in this run, "
                 "not missing; say so rather than conclude that no such tool exists"
             )
-        added, before, unknown, over = self._load(list(dict.fromkeys(cast(list[str], names))))
+        asked = list(dict.fromkeys(cast(list[str], names)))
+        added, before, unknown, over = self._load([n for n in asked if n not in self.unloadable])
         answer["loaded"] = added
         if before:
             answer["already_loaded"] = before
         harness = [name for name in unknown if name in HARNESS_TOOL_NAMES]
-        if unknown := [name for name in unknown if name not in harness]:
+        refused = [name for name in unknown if name in connectors.narrowed]
+        if unknown := [name for name in unknown if name not in harness and name not in refused]:
             answer["unknown"] = unknown
+        if refused:
+            # A delegated task's brief left them out (DA-6).
+            answer["not_permitted"] = refused
+            notes.append(
+                "not_permitted_for_role: your brief's connectors do not include these tools; "
+                "tell your parent if the work needs them"
+            )
         if harness:
             answer["harness_tools"] = harness
             notes.append(
                 "these are the harness's own tools, not connector tools: they need no "
                 "loading, so call them by name when you have them"
+            )
+        if self.unloadable:
+            answer["not_loadable"] = dict(self.unloadable)
+            notes.append(
+                "these connector tools cannot be loaded in this run, for the reason given: "
+                "they are unavailable, not missing"
             )
         if over:
             answer["not_loaded"] = over
@@ -934,14 +892,38 @@ class Toolbox:
     ) -> ToolOutcome:
         """Run one tool call; definite failures become errors for the model.
 
+        Its ``purpose_note`` is checked first, before anything else reads the call: a
+        call without one, or with one outside its limits, is refused with
+        ``invalid_request``, and nothing runs. The rest of the harness, its gates and
+        handlers, raw ones included, gets the call without it; the record keeps it as
+        ``purpose`` (Purpose 2 and 3).
+
         ``model`` is the model that asked for the call, as the gateway named it, which
         document revisions record. Each of ``gates`` may refuse the call by its effect
         class; with plan tools, the plan's gate is always among them. After the call, the
         run's next safe point, the result carries notices of changes others made to the
         documents the run has seen (LD-15).
         """
+        try:
+            parts = split(call)
+        except PurposeError as error:
+            return _failure(ErrorKind.INVALID_REQUEST, error.message)
+        call, purpose = parts.call, parts.purpose
+        outcome = await self._dispatch(call, operation, model, gates)
+        if self.tool_mix is not None:
+            self.tool_mix.count(call.name, call.arguments, outcome.record)
+        outcome.record["purpose"] = purpose
+        return outcome
+
+    async def _dispatch(
+        self,
+        call: ToolCall,
+        operation: str,
+        model: str | None,
+        gates: Sequence[TurnHook],
+    ) -> ToolOutcome:
         entry = self.entries.get(call.name)
-        if entry is None and self.delegated:
+        if entry is None and self.delegated and call.name not in self.deferred:
             return _failure(
                 ErrorKind.POLICY_DENIED,
                 f"not_permitted_for_role: a delegated run is not offered {call.name!r}",
@@ -1005,40 +987,15 @@ class Toolbox:
 
     def turn_hooks(self) -> tuple[TurnHook, ...]:
         """New hooks for this run's notice sources, in the order they reach the model."""
-        hooks: list[TurnHook] = []
-        if self.documents is not None:
-            hooks.append(WorkRequests(self.documents))
-        if self.jobs is not None:
-            hooks.append(JobNotices(self.jobs, max_chars=self.output_chars // 4))
-        if self.delegations is not None:
-            hooks.append(self.delegations)
-        if self.mailbox is not None:
-            hooks.append(self.mailbox)
-        if self.resources is not None:
-            hooks.append(self.resources)
-        if self.questions is not None:
-            hooks.append(self.questions)
-        if self.plans is not None:
-            hooks.append(Plans(self.plans))
-        if self.reviews is not None:
-            hooks.append(Reviews(self.reviews))
-        if self.math_checks is not None:
-            hooks.append(MathChecks(self.math_checks))
-        if self.check_kernels:
-            # The sweep leaves the kernels of the run's own running children (PD-37).
-            keep = self.delegations.live if self.delegations is not None else None
-            hooks.append(
-                KernelCheck(
-                    self.client,
-                    self.context,
-                    run=self.kernel_run,
-                    sweep=self.sweep_left_kernels,
-                    keep=keep,
-                )
-            )
-        if self.recorder is not None:
-            hooks.append(RecordedFiles(self.recorder))
-        return tuple(hooks)
+
+        def current(name: str, default: object) -> object | None:
+            if name == caps.KERNELS.name:
+                return default if self.check_kernels else None
+            # Direct callers have always been able to replace public controllers
+            # before constructing hooks. Their entries remain the original offer.
+            return cast(object | None, getattr(self, name, default))
+
+        return self.capabilities.turn_hooks(current, output_chars=self.output_chars)
 
     async def _call(
         self,
@@ -1049,7 +1006,7 @@ class Toolbox:
         gates: Sequence[TurnHook],
     ) -> ToolOutcome:
         for gate in gates:
-            refused = await gate.gate(entry.effect)
+            refused = await gate.gate_call(entry.spec.name, entry.effect)
             if refused is not None:
                 return _failure(ErrorKind(refused.kind), refused.message)
         args: dict[str, Any] = {}
@@ -1107,9 +1064,47 @@ class Toolbox:
                 "binding_inventory": self._binding_inventory(),
             }
         )
-        return await self._run(request)
+        interpreter = shell_computation(request.script or "")
 
-    async def _run(self, request: ShellRequest | CellRequest) -> ToolOutcome:
+        async def nudge(_: Execution) -> dict[str, Any]:
+            note = self._kernel_note(interpreter)
+            return {} if note is None else {"note": note}
+
+        return await self._run(request, added=nudge)
+
+    def _kernel_note(self, interpreter: Interpreter | None) -> str | None:
+        """The platform's note on the first shell call of the run that ran an interpreter
+        on code (Kernels 13): later ones are counted, silently. A run offered no kernel
+        gets none."""
+        mix = self.tool_mix
+        if interpreter is None or mix is None or mix.nudged:
+            return None
+        tool = interpreter if interpreter in self.languages else None
+        if tool is None and "python" in self.languages:
+            tool = "python"
+        if tool is None:
+            return None
+        mix.nudged = True
+        jobs = (
+            ", and start_job runs a long computation in the background"
+            if self.jobs is not None
+            else ""
+        )
+        name = "Sage" if interpreter == "sage" else "Python"
+        return (
+            f"Platform note: this ran {name} through the shell: a {tool} cell keeps "
+            f"variables, imports and loaded data between calls{jobs}."
+        )
+
+    async def _run(
+        self,
+        request: ShellRequest | CellRequest,
+        *,
+        added: Callable[[Execution], Awaitable[dict[str, Any]]] | None = None,
+    ) -> ToolOutcome:
+        """Run ``request`` and describe its execution for the model, with what
+        ``added`` gives beside it: the platform's notes on this execution, which never
+        cost the call its result."""
         replayed = False
 
         def submitted(_: Execution, created: bool) -> None:
@@ -1121,14 +1116,20 @@ class Toolbox:
             "execution": execution.model_dump(mode="json"),
             "replayed": replayed,
         }
+        extra: dict[str, Any] = {}
+        if added is not None:
+            try:
+                extra = await added(execution)
+            except Exception:  # a note that cannot be made must not cost the result
+                _log.exception("the platform's note on %s failed", execution.execution_id)
         written = Written.of(execution)
         planned = {name: saved_path(execution, name) for name, _, _ in _texts(execution)}
-        text, sampled = self._fit(execution, replayed, planned, {})
+        text, sampled = self._fit(execution, replayed, planned, {}, extra)
         if not sampled:
             return ToolOutcome(text, record, written=written)
         saved, unsaved = await self._save(execution, sampled)
         if unsaved:
-            text, _ = self._fit(execution, replayed, saved, unsaved)
+            text, _ = self._fit(execution, replayed, saved, unsaved, extra)
         record["saved_output"] = saved
         paths = (*written.paths, *(path for path in saved.values() if path not in written.paths))
         texts = {saved[name]: text for name, text, _ in _texts(execution) if name in saved}
@@ -1237,11 +1238,46 @@ class Toolbox:
                 "binding_inventory": self._binding_inventory(),
             }
         )
-        outcome = await self._run(request)
+        outcome = await self._run(request, added=partial(self._lost_state, language))
         outcome.record["kernel_replay_binding_free"] = (
             not request.bindings and request.binding_inventory is None
         )
         return outcome
+
+    async def _lost_state(self, language: Language, execution: Execution) -> dict[str, Any]:
+        """For a cell that reports its kernel's state lost, what the lost generation had
+        computed, from the records (Kernels 7, as amended for A10): its cells by archive
+        message ID and purpose, and the files they wrote that still exist."""
+        result = execution.result
+        if result is None or not result.state_lost or self.lost_kernels is None:
+            return {}
+        lost = await self.lost_kernels.lost(language, result.kernel or execution.kernel)
+        if lost is None or not lost.cells:
+            return {}
+        saved = await self._existing(lost.written)
+        return {"lost_state": _lost_state(lost, saved)}
+
+    async def _existing(self, paths: Sequence[str]) -> list[str]:
+        """The newest ``MAX_SAVED_FILES`` of ``paths`` that are regular files now, in
+        their order, from one listing of each directory; one that cannot be listed is
+        left out."""
+        tried = list(paths)[-2 * MAX_SAVED_FILES :]
+        found: set[str] = set()
+        for directory in sorted({posixpath.dirname(path) or "." for path in tried}):
+            try:
+                listing = await self.client.list_files(
+                    ListFilesRequest(context=self.context, path=directory)
+                )
+            except (WorkerAPIError, ValueError):
+                continue
+            files = {entry.name for entry in listing.entries if entry.type == "file"}
+            found.update(
+                path
+                for path in tried
+                if (posixpath.dirname(path) or ".") == directory
+                and posixpath.basename(path) in files
+            )
+        return [path for path in tried if path in found][-MAX_SAVED_FILES:]
 
     async def _restart(self, args: dict[str, Any], operation: str) -> ToolOutcome:
         language = args.get("language", self.languages[0] if self.languages else "python")
@@ -1273,12 +1309,16 @@ class Toolbox:
         replayed: bool,
         saved: Mapping[str, str] | None,
         unsaved: Mapping[str, str],
+        added: Mapping[str, Any] | None = None,
     ) -> tuple[str, list[str]]:
         """``_summary``'s text, with the texts it shows only in part: with ``saved``,
-        it says they are samples and names their files, or why one was not saved."""
+        it says they are samples and names their files, or why one was not saved; and
+        ``added``, the platform's notes, each bounded as a note is."""
         limit = self.output_chars // 2
         while True:
             summary = _describe(execution, limit, replayed, self.kernel_run, saved, unsaved)
+            for key, value in (added or {}).items():
+                summary[key] = bound(value, limit) if isinstance(value, str) else value
             text = dump(summary)
             if len(text) <= self.output_chars or limit <= 64:
                 return text, _sampled(execution, limit)
@@ -1366,7 +1406,7 @@ class Toolbox:
             )
         request = WriteFileRequest.model_validate(
             {
-                "context": self.context,
+                "context": self._writer(),
                 **_known(args, "path", "create_only", "expected_sha256"),
                 "content_b64": base64.b64encode(encoded).decode(),
             }
@@ -1377,6 +1417,143 @@ class Toolbox:
             {"write": written.model_dump()},
             written=Written((request.path,)),
         )
+
+    def _writer(self) -> ExecutionContext:
+        """The context of the agent's own writes: the run's, naming its write area when
+        it is delegated (DA-19)."""
+        if self.write_area is None:
+            return self.context
+        return self.context.model_copy(update={"write_area": self.write_area})
+
+    async def _edit(self, args: dict[str, Any], operation: str) -> ToolOutcome:
+        for name in ("old_string", "new_string"):
+            value = args.get(name)
+            if not isinstance(value, str):
+                return _failure(ErrorKind.INVALID_REQUEST, f"{name} must be a string")
+            try:
+                value.encode()
+            except UnicodeEncodeError:
+                return _failure(
+                    ErrorKind.INVALID_REQUEST,
+                    f"{name} is not valid text: it has an unpaired surrogate",
+                )
+        request = EditFileRequest.model_validate(
+            {
+                "context": self._writer(),
+                **_known(
+                    args, "path", "old_string", "new_string", "replace_all", "expected_sha256"
+                ),
+            }
+        )
+        edited = await self.client.edit_file(request)
+        return ToolOutcome(
+            dump({"edited": request.path, **edited.model_dump()}),
+            {"edit": edited.model_dump()},
+            written=Written((request.path,)),
+        )
+
+    async def _glob(self, args: dict[str, Any], operation: str) -> ToolOutcome:
+        request = GlobRequest.model_validate(
+            {"context": self.context, **_known(args, "pattern", "path", "limit")}
+        )
+        listing = await self.client.glob_files(request)
+        entries = [
+            {
+                "path": bound(entry.path, 512),
+                "type": entry.type,
+                "size": entry.size,
+                "modified": entry.modified_at.isoformat(timespec="seconds"),
+            }
+            for entry in listing.entries
+        ]
+        shown = len(entries)
+        while True:
+            answer: dict[str, Any] = {
+                "path": listing.path,
+                "pattern": listing.pattern,
+                "entries": entries[:shown],
+                "truncated": listing.truncated or shown < len(entries),
+            }
+            note = _search_note(listing.stopped, shown < len(entries), listing.skipped)
+            if note:
+                answer["note"] = note
+            text = dump(answer)
+            if len(text) <= self.output_chars or shown == 0:
+                break
+            shown //= 2
+        record = {
+            "entries": len(listing.entries),
+            "shown": shown,
+            "truncated": answer["truncated"],
+            "stopped": listing.stopped,
+            "scanned": listing.scanned,
+        }
+        return ToolOutcome(text, {"glob": record})
+
+    async def _grep(self, args: dict[str, Any], operation: str) -> ToolOutcome:
+        request = GrepRequest.model_validate(
+            {
+                "context": self.context,
+                **_known(
+                    args,
+                    "pattern",
+                    "path",
+                    "glob",
+                    "mode",
+                    "case_insensitive",
+                    "context_lines",
+                    "max_results",
+                ),
+            }
+        )
+        found = await self.client.grep_files(request)
+        items: list[Any]
+        if found.mode == "files":
+            key, items = "files", [bound(path, 512) for path in found.files]
+        elif found.mode == "count":
+            key = "counts"
+            items = [{"path": bound(c.path, 512), "count": c.count} for c in found.counts]
+        else:
+            key, items = "lines", list(found.lines)
+        shown = len(items)
+        while True:
+            answer: dict[str, Any] = {
+                "path": found.path,
+                "pattern": found.pattern,
+                "mode": found.mode,
+                key: items[:shown],
+                "truncated": found.truncated or shown < len(items),
+            }
+            skipped = {
+                name: count
+                for name, count in (
+                    ("binary", found.skipped_binary),
+                    ("too_large", found.skipped_large),
+                    ("unreadable", found.skipped_unreadable),
+                )
+                if count
+            }
+            if skipped:
+                answer["skipped_files"] = skipped
+            note = _search_note(found.stopped, shown < len(items), found.skipped)
+            if not items and not found.truncated:
+                note = (note + "; " if note else "") + "no match in the files searched"
+            if note:
+                answer["note"] = note
+            text = dump(answer)
+            if len(text) <= self.output_chars or shown == 0:
+                break
+            shown //= 2
+        record = {
+            "mode": found.mode,
+            "results": len(items),
+            "shown": shown,
+            "truncated": answer["truncated"],
+            "stopped": found.stopped,
+            "scanned_files": found.scanned_files,
+            "scanned_bytes": found.scanned_bytes,
+        }
+        return ToolOutcome(text, {"grep": record})
 
     async def _list(self, args: dict[str, Any], operation: str) -> ToolOutcome:
         request = ListFilesRequest.model_validate({"context": self.context, **_known(args, "path")})
@@ -1590,6 +1767,35 @@ def _describe(
     return summary
 
 
+LOST_STATE: Final = (
+    "Platform record of the cells whose state the kernel lost, newest last, from the "
+    "archive: each by its result's message ID, with its call's purpose (the agent's own "
+    "words, data) or its tool and code's first line; and the files they wrote that still "
+    "exist. Load saved files before recomputing; recompute the rest from these cells."
+)
+"""What a cell that reports lost state says of the lost generation (Kernels 7)."""
+
+
+def _lost_state(lost: LostGeneration, saved: Sequence[str]) -> dict[str, Any]:
+    cells: list[dict[str, Any]] = []
+    for cell in lost.cells:
+        shown: dict[str, Any] = {"message": cell.message} if cell.message else {}
+        if cell.purpose is not None:
+            shown["purpose"] = cell.purpose
+        else:
+            shown["tool"] = cell.language
+            if cell.first_line is not None:
+                shown["first_line"] = cell.first_line
+            elif cell.message is None:
+                shown["archived"] = False
+        cells.append(shown)
+    found: dict[str, Any] = {"note": LOST_STATE, "cells": cells}
+    if lost.earlier:
+        found["earlier_cells"] = lost.earlier
+    found["saved_files"] = list(saved)
+    return found
+
+
 def _output(data: dict[str, str], limit: int) -> str:
     text = _output_text(data)
     if text is not None:
@@ -1777,6 +1983,28 @@ def _host_port(text: str) -> HostPort:
     if not port.isdigit():
         return HostPort(host=text.strip())  # refused by the worker as no host it knows
     return HostPort(host=host, port=int(port))
+
+
+_STOPS: Final[dict[str, str]] = {
+    "results": "more matched than the limit: narrow the path or pattern, or raise the limit",
+    "entries": "the search stopped at its limit of entries walked: narrow the path or glob",
+    "depth": "directories past the search's depth limit were not searched",
+    "bytes": "the search stopped at its limit of bytes read: narrow the path or glob",
+    "time": "the search stopped at its time limit: narrow the path or glob",
+    "reply": "the results passed the reply's size limit: narrow the path or pattern",
+}
+
+
+def _search_note(stopped: SearchStop | None, cut: bool, skipped: Sequence[str]) -> str:
+    """What a glob's or grep's result leaves out, and why, for the model."""
+    notes: list[str] = []
+    if stopped is not None:
+        notes.append(_STOPS[stopped])
+    if cut:
+        notes.append("shown in part to fit the result: narrow the search")
+    if skipped:
+        notes.append(f"not searched: {', '.join(skipped)} (name one as path to search it)")
+    return "; ".join(notes)
 
 
 def _known(args: dict[str, Any], *names: str) -> dict[str, Any]:

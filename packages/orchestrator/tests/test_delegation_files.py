@@ -23,7 +23,7 @@ from sandbox_science.orchestrator.delegation.records import (
 from sandbox_science.orchestrator.projects import ProjectStore
 
 from .control_versions import older_store
-from .loop_harness import PROJECT, SESSION, Harness, Reply, call
+from .loop_harness import AREA, PROJECT, SESSION, Harness, Reply, call
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
@@ -54,7 +54,9 @@ async def test_a_checks_recorded_files_reach_its_parent_apart_from_its_result(
         "root",
         [Reply(calls=[CHECK]), wait(), Reply("Done.")],
         delegated=[
-            Reply(calls=[call("write_file", path="check.py", content="print(2 ** 16 % 17)\n")]),
+            Reply(
+                calls=[call("write_file", path=f"{AREA}/check.py", content="print(2 ** 16 % 17)\n")]
+            ),
             Reply(REPORT),
         ],
     )
@@ -68,7 +70,11 @@ async def test_a_checks_recorded_files_reach_its_parent_apart_from_its_result(
     assert isinstance(listed, list)
     (recorded,) = listed
     assert isinstance(recorded, dict)
-    assert (recorded["path"], recorded["revision"], recorded["deleted"]) == ("check.py", 1, False)
+    assert (recorded["path"], recorded["revision"], recorded["deleted"]) == (
+        f"work/{delegation_id}/check.py",
+        1,
+        False,
+    )
     waited = json.loads(results(root)[1])["delegations"][0]
     assert list(waited)[-2:] == ["result", "files"]
     assert waited["files"] == found.files

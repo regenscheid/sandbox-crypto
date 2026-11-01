@@ -75,10 +75,10 @@ async def test_a_statements_bad_formula_is_a_finding_its_fix_confirms(stores) ->
     assert "ledger_change for a ledger statement" in notice["detail"]
     listed = MathJobs(reviews).listing("p")
     assert [check["kind"] for check in listed["checks"]] == ["statement"]
-    # The agent fixes the formula; the next check confirms the finding fixed.
+    # The agent fixes the formula; the next check makes the finding fixed.
     revise(reviews, 1, "fix", statement="For every $a$, $a^{16}=1$.")
     await drain(reviews, ScriptedChecker("accepted"))
-    assert maths(reviews)[0]["status"] == "confirmed fixed"
+    assert maths(reviews)[0]["status"] == "fixed"
 
 
 @pytest.mark.asyncio
@@ -88,7 +88,7 @@ async def test_removing_the_formula_confirms_its_finding_fixed(stores) -> None:
     await drain(reviews, ScriptedChecker())
     revise(reviews, 1, "removed", statement="No formula now.")
     await drain(reviews, ScriptedChecker())
-    assert [f["status"] for f in maths(reviews)] == ["confirmed fixed"]
+    assert [f["status"] for f in maths(reviews)] == ["fixed"]
 
 
 @pytest.mark.asyncio

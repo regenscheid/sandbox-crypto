@@ -140,7 +140,10 @@ async def test_a_figure_capability_opens_its_own_file_only(origins, files, publi
     assert (await viewer.get(f"/pdf/{path.removeprefix('/file/')}")).status == 403
     as_file = preview.capabilities.mint("p1", pdf.artifact_id, 1, pdf.sha256, "file")
     assert (await viewer.get(f"/file/{as_file}")).status == 415  # a PDF is no image
-    assert (await viewer.get(path[:-2] + "AA")).status == 403  # forged
+    # Forged: one character inside the signature changed to another. (Ending it in "AA" was
+    # the genuine signature about once in a thousand.)
+    swapped = "A" if path[-10] != "A" else "B"
+    assert (await viewer.get(path[:-10] + swapped + path[-9:])).status == 403
     clock.now += 601
     assert (await viewer.get(path)).status == 403  # expired
 

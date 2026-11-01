@@ -3,10 +3,11 @@
 on 2026-10-15: spending is mostly enforced upstream, by the gateway's own budget, and a
 project's own limit is an optional daily cost, as the gateway reports it).
 
-With no limit, as by default, nothing stops a run for spending but the gateway. With a
-limit, a run stops at its next safe point, before a model call, once the project's calls
-over the last 24 hours reached it (``budget``) or once its own calls reached its part of
-it (``run_budget``). What arrives after that waits, as it does at a run's start.
+With no limit, as by default, nothing stops a run for spending but the gateway (D102).
+With a limit, the model-call journal refuses the next paid call once the project's calls
+over the last 24 hours reached it, or once the run's own calls reached its part of it,
+and the run stops ``gateway_budget``, as at the gateway's own refusal, with the local
+reason in ``summaries.budget``. What arrives after that waits, as after that refusal.
 
 The scripted gateway reports a call's cost in LiteLLM's header when its reply has one.
 """
@@ -23,7 +24,7 @@ from .loop_harness import PROJECT, SESSION, Harness, Reply, call
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
-from .test_run_service import ended, names, post, runs, serving, states
+from .test_run_service import ended, names, post, refusal, runs, serving, states
 
 
 async def test_without_a_limit_nothing_stops_a_run_for_its_cost(harness: Harness) -> None:
@@ -43,12 +44,13 @@ async def test_a_run_that_reaches_the_limit_stops_before_its_next_call(
     replies = (Reply(calls=[call("plan_read")], cost="0.02"), Reply("Never sent."))
     async with serving(harness, *replies):
         (record,) = await ended(harness)
-    assert (record.stopped, record.failure, record.final_text) == ("budget", None, None)
+    assert (record.stopped, record.failure, record.final_text) == ("gateway_budget", None, None)
+    assert refusal(record).startswith("model_budget: the project's local")
     assert len(harness.gateway.main) == 1
     assert [tool["tool"] for tool in record.tools] == ["plan_read"]  # its call still ran
     assert states(harness) == {"m-1": "delivered"}
     stopped = runs(harness).events(PROJECT, SESSION, names(harness)[0])[-1]
-    assert stopped.data["stopped"] == "budget"
+    assert stopped.data["stopped"] == "gateway_budget"
 
 
 async def test_a_call_without_a_known_cost_remains_visible_but_does_not_stop_the_run(
@@ -103,7 +105,7 @@ async def test_what_arrives_after_the_limit_is_reached_waits(harness: Harness) -
     async with serving(harness, *replies):
         (record,) = await ended(harness)
         await eventually(lambda: states(harness).get("m-2") == "held", timeout=10)
-    assert (record.stopped, record.final_text) == ("budget", "The answer.")
+    assert (record.stopped, record.final_text) == ("gateway_budget", "The answer.")
     assert len(harness.gateway.main) == 1
     assert record.delivered["messages"] == ["m-1"]
     assert states(harness) == {"m-1": "delivered", "m-2": "held"}
@@ -121,7 +123,8 @@ async def test_a_run_stops_once_it_has_used_its_part_of_the_limit(harness: Harne
     replies = (Reply(calls=[call("plan_read")], cost="0.6"), Reply("Never sent."))
     async with serving(harness, *replies, run_share=0.5):
         (record,) = await ended(harness)
-    assert (record.stopped, record.final_text) == ("run_budget", None)
+    assert (record.stopped, record.final_text) == ("gateway_budget", None)
+    assert "used its share (50%)" in refusal(record)
     assert len(harness.gateway.main) == 1
     assert not runs(harness).over_cost_limit(PROJECT, record.ended_at)  # the day's is not
 
@@ -138,7 +141,7 @@ async def test_a_run_within_its_limit_goes_on(harness: Harness) -> None:
 
 async def test_a_limit_counts_what_the_watcher_and_reviewer_spent(harness: Harness) -> None:
     """Lab 40, B5: their calls count in the project's cost, so a limit they reached
-    refuses the next message, as MAIN's calls would."""
+    refuses the next paid call, as MAIN's calls would; no gateway call is made."""
     runs(harness).set_cost_limit(PROJECT, 0.01)
     jobs = JobState(harness.state)
     try:
@@ -150,5 +153,6 @@ async def test_a_limit_counts_what_the_watcher_and_reviewer_spent(harness: Harne
         jobs.close()
     post(harness, "m-1", "Are you there?")
     async with serving(harness, Reply("Never sent.")):
-        await eventually(lambda: states(harness).get("m-1") == "refused", timeout=10)
+        (record,) = await ended(harness)
+    assert record.stopped == "gateway_budget"
     assert harness.gateway.main == []

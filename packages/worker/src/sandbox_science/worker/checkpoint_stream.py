@@ -1,0 +1,457 @@
+# SPDX-License-Identifier: MIT
+"""Bounded framed workspace bytes, with disk-backed path and inode indexes."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import sqlite3
+import stat
+import struct
+import tempfile
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Protocol, cast
+
+from sandbox_science.contracts.jsonio import strict_loads
+from sandbox_science.contracts.workspace_checkpoint import (
+    MAX_CHECKPOINT_CONTENT,
+    MAX_CHECKPOINT_HEADER,
+    MAX_CHECKPOINT_MEMBERS,
+    MAX_CHECKPOINT_METADATA,
+    MAX_CHECKPOINT_RECEIPT,
+    MAX_CHECKPOINT_SKIPPED,
+    CheckpointMember,
+    CheckpointSource,
+    SkippedEntry,
+    SkippedKind,
+)
+
+from .checkpoint_tree import TreeIndex, foreign_lost_found
+
+MAGIC = b"SS-WORKSPACE-CHECKPOINT-1\n"
+CHUNK = 512 * 1024
+
+
+class Writer(Protocol):
+    """Where the encoder writes: a file, or a sink that uploads as it goes."""
+
+    def write(self, data: bytes, /) -> int: ...
+
+
+class Reader(Protocol):
+    """What the decoder reads: a file, or chunks fetched one at a time."""
+
+    def read(self, amount: int, /) -> bytes: ...
+
+
+@dataclass(frozen=True)
+class StreamSummary:
+    sha256: str
+    size: int
+    members: int
+    content_bytes: int
+    metadata_bytes: int
+
+
+class Stream:
+    """Hash every byte while enforcing bounded individual reads and writes."""
+
+    def __init__(
+        self,
+        handle: Writer | Reader,
+        check: Callable[[], None] | None = None,
+        skipped: list[SkippedEntry] | None = None,
+    ) -> None:
+        self.handle, self.digest, self.size = handle, hashlib.sha256(), 0
+        self.members = self.content = self.metadata = 0
+        self.check = check
+        self.skipped = skipped
+
+    def write(self, data: bytes) -> None:
+        if cast(Writer, self.handle).write(data) != len(data):
+            raise OSError("short checkpoint write")
+        self.digest.update(data)
+        self.size += len(data)
+
+    def read(self, amount: int) -> bytes:
+        if self.check is not None:
+            self.check()
+        data = cast(Reader, self.handle).read(amount)
+        self.digest.update(data)
+        self.size += len(data)
+        if len(data) != amount:
+            raise ValueError("checkpoint archive is truncated")
+        return data
+
+    def frame(self, data: bytes) -> None:
+        self.write(struct.pack(">I", len(data)))
+        self.write(data)
+
+    def header(self, limit: int) -> bytes:
+        size = struct.unpack(">I", self.read(4))[0]
+        if size > limit:
+            raise ValueError("checkpoint header exceeds its bound")
+        return self.read(size)
+
+    def charge(self, data: bytes, member: CheckpointMember) -> None:
+        self.members += 1
+        self.metadata += len(data)
+        self.content += member.size
+        if (
+            self.members > MAX_CHECKPOINT_MEMBERS
+            or self.metadata > MAX_CHECKPOINT_METADATA
+            or self.content > MAX_CHECKPOINT_CONTENT
+        ):
+            raise ValueError("checkpoint exceeds its member, metadata or content bound")
+
+    def summary(self) -> StreamSummary:
+        return StreamSummary(
+            self.digest.hexdigest(), self.size, self.members, self.content, self.metadata
+        )
+
+
+@contextmanager
+def index() -> Generator[sqlite3.Connection]:
+    """Never retain a complete tree's names or hardlinks in process memory."""
+    with tempfile.TemporaryDirectory(prefix="ss-checkpoint-index-") as directory:
+        db = sqlite3.connect(Path(directory) / "members.sqlite3")
+        try:
+            db.execute("PRAGMA cache_size=-1024")
+            db.execute("CREATE TABLE members(path TEXT PRIMARY KEY,kind TEXT,mode INTEGER)")
+            db.execute(
+                "CREATE TABLE inodes(device INTEGER,inode INTEGER,path TEXT,"
+                "PRIMARY KEY(device,inode))"
+            )
+            db.execute("CREATE TABLE observed(path TEXT PRIMARY KEY,stamp TEXT,target TEXT)")
+            yield db
+        finally:
+            db.close()
+
+
+def _stamp(info: os.stat_result) -> tuple[int, ...]:
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_mode,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+        info.st_nlink,
+    )
+
+
+def _member(
+    path: str, info: os.stat_result, kind: str, target: str | None = None
+) -> CheckpointMember:
+    # Validation names every supported kind; no archive-selected executable callback.
+    return CheckpointMember.model_validate(
+        {
+            "path": path,
+            "kind": kind,
+            "mode": stat.S_IMODE(info.st_mode),
+            "size": info.st_size if kind == "file" else 0,
+            "target": target,
+        }
+    )
+
+
+def _special(mode: int) -> SkippedKind:
+    if stat.S_ISSOCK(mode):
+        return "socket"
+    if stat.S_ISFIFO(mode):
+        return "fifo"
+    if stat.S_ISCHR(mode):
+        return "character_device"
+    if stat.S_ISBLK(mode):
+        return "block_device"
+    return "other"
+
+
+def _skip(stream: Stream, path: str, mode: int) -> None:
+    """Leave a special file out and list it (C4): a socket or FIFO holds no data a restore
+    could recreate, and one left by a kernel or a tool must not block every checkpoint."""
+    if stream.skipped is None:
+        raise ValueError(f"checkpoint source has an unsupported special file: {path!r}")
+    if len(stream.skipped) >= MAX_CHECKPOINT_SKIPPED:
+        raise ValueError("checkpoint source has more special files than a receipt lists")
+    stream.skipped.append(SkippedEntry(path=path, kind=_special(mode)))
+
+
+def _emit(stream: Stream, member: CheckpointMember) -> None:
+    data = member.model_dump_json().encode()
+    if len(data) > MAX_CHECKPOINT_HEADER:
+        raise ValueError("checkpoint member header exceeds its bound")
+    stream.charge(data, member)
+    stream.frame(data)
+
+
+def _walk(stream: Stream, db: sqlite3.Connection, directory: int, path: str) -> None:
+    before = os.fstat(directory)
+    _emit(stream, _member(path, before, "directory"))
+    db.execute("INSERT INTO observed VALUES (?,?,NULL)", (path, json.dumps(_stamp(before))))
+    with os.scandir(directory) as entries:
+        for entry in entries:
+            relative = entry.name if path == "." else path + "/" + entry.name
+            info = os.stat(entry.name, dir_fd=directory, follow_symlinks=False)
+            if foreign_lost_found(relative, info):
+                # The filesystem's, which the capture's user cannot read: listed, not read.
+                if stream.skipped is None:
+                    raise ValueError(f"checkpoint source has an unreadable {relative!r}")
+                if len(stream.skipped) >= MAX_CHECKPOINT_SKIPPED:
+                    raise ValueError(
+                        "checkpoint source has more special files than a receipt lists"
+                    )
+                stream.skipped.append(SkippedEntry(path=relative, kind="other"))
+                continue
+            if not stat.S_ISDIR(info.st_mode):
+                db.execute(
+                    "INSERT INTO observed VALUES (?,?,?)",
+                    (
+                        relative,
+                        json.dumps(_stamp(info)),
+                        os.readlink(entry.name, dir_fd=directory)
+                        if stat.S_ISLNK(info.st_mode)
+                        else None,
+                    ),
+                )
+            if stat.S_ISDIR(info.st_mode):
+                descriptor = os.open(
+                    entry.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory
+                )
+                try:
+                    if _stamp(os.fstat(descriptor)) != _stamp(info):
+                        raise ValueError("checkpoint source directory changed")
+                    _walk(stream, db, descriptor, relative)
+                finally:
+                    os.close(descriptor)
+            elif stat.S_ISLNK(info.st_mode):
+                target = os.readlink(entry.name, dir_fd=directory)
+                _emit(stream, _member(relative, info, "symlink", target))
+                if _stamp(os.stat(entry.name, dir_fd=directory, follow_symlinks=False)) != _stamp(
+                    info
+                ):
+                    raise ValueError("checkpoint source symlink changed")
+            elif stat.S_ISREG(info.st_mode):
+                prior = db.execute(
+                    "SELECT path FROM inodes WHERE device=? AND inode=?", (info.st_dev, info.st_ino)
+                ).fetchone()
+                if prior is not None:
+                    _emit(stream, _member(relative, info, "hardlink", str(prior[0])))
+                    continue
+                try:
+                    descriptor = os.open(
+                        entry.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory
+                    )
+                except PermissionError:
+                    # The sandbox may make its own files unreadable; the copy is then
+                    # incomplete, so it fails, naming the file.
+                    raise ValueError(
+                        f"checkpoint source file is unreadable: {relative!r}"
+                    ) from None
+                with os.fdopen(descriptor, "rb") as handle:
+                    if _stamp(os.fstat(descriptor)) != _stamp(info):
+                        raise ValueError("checkpoint source file changed")
+                    _emit(stream, _member(relative, info, "file"))
+                    left = info.st_size
+                    while left:
+                        chunk = handle.read(min(CHUNK, left))
+                        if not chunk:
+                            raise ValueError("checkpoint source file shrank")
+                        stream.write(chunk)
+                        left -= len(chunk)
+                    if handle.read(1) or _stamp(os.fstat(descriptor)) != _stamp(info):
+                        raise ValueError("checkpoint source file changed")
+                if info.st_nlink > 1:
+                    db.execute(
+                        "INSERT INTO inodes VALUES (?,?,?)", (info.st_dev, info.st_ino, relative)
+                    )
+            else:
+                _skip(stream, relative, info.st_mode)
+    if _stamp(os.fstat(directory)) != _stamp(before):
+        raise ValueError("checkpoint source directory changed")
+
+
+def _unchanged(db: sqlite3.Connection, directory: int, path: str) -> int:
+    """Detect changes to previously read files too, without following replaced parents."""
+    before = os.fstat(directory)
+    if db.execute("SELECT stamp FROM observed WHERE path=?", (path,)).fetchone() != (
+        json.dumps(_stamp(before)),
+    ):
+        raise ValueError("checkpoint source directory changed after capture")
+    count = 1
+    with os.scandir(directory) as entries:
+        for entry in entries:
+            relative = entry.name if path == "." else path + "/" + entry.name
+            info = os.stat(entry.name, dir_fd=directory, follow_symlinks=False)
+            if foreign_lost_found(relative, info):
+                count += 1  # listed as skipped
+            elif stat.S_ISDIR(info.st_mode):
+                descriptor = os.open(
+                    entry.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory
+                )
+                try:
+                    count += _unchanged(db, descriptor, relative)
+                finally:
+                    os.close(descriptor)
+            else:
+                target = (
+                    os.readlink(entry.name, dir_fd=directory)
+                    if stat.S_ISLNK(info.st_mode)
+                    else None
+                )
+                if db.execute(
+                    "SELECT stamp,target FROM observed WHERE path=?", (relative,)
+                ).fetchone() != (json.dumps(_stamp(info)), target):
+                    raise ValueError("checkpoint source file changed after capture")
+                count += 1
+    if _stamp(os.fstat(directory)) != _stamp(before):
+        raise ValueError("checkpoint source directory changed during validation")
+    return count
+
+
+def encode(
+    root: Path,
+    source: CheckpointSource,
+    handle: Writer,
+    *,
+    skipped: list[SkippedEntry] | None = None,
+) -> StreamSummary:
+    """Capture complete bytes without following source links or buffering files. With
+    ``skipped``, special files are left out and appended there; without it they fail."""
+    stream = Stream(handle, skipped=skipped)
+    stream.write(MAGIC)
+    stream.frame(source.model_dump_json().encode())
+    descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        with index() as db:
+            _walk(stream, db, descriptor, ".")
+            if _unchanged(db, descriptor, ".") != stream.members + len(skipped or ()):
+                raise ValueError("checkpoint source member count changed")
+    finally:
+        os.close(descriptor)
+    stream.frame(b"")
+    return stream.summary()
+
+
+def _validate(db: sqlite3.Connection, member: CheckpointMember, number: int) -> None:
+    path, kind = member.path, member.kind
+    if (number == 1) != (path == ".") or (path == "." and kind != "directory"):
+        raise ValueError("checkpoint must begin with its root directory")
+    parent = path.rpartition("/")[0] or "."
+    if path != "." and db.execute(
+        "SELECT kind FROM members WHERE path=?", (parent,)
+    ).fetchone() != ("directory",):
+        raise ValueError("checkpoint parent is missing or is not a directory")
+    if (kind in ("symlink", "hardlink")) != (member.target is not None):
+        raise ValueError("checkpoint link target is missing or unexpected")
+    if kind != "file" and member.size:
+        raise ValueError("checkpoint non-file contains bytes")
+    if member.target is not None and "\0" in member.target:
+        raise ValueError("checkpoint link target contains NUL")
+    if kind == "symlink" and member.mode != 0o777:
+        raise ValueError("checkpoint symlink mode cannot be preserved")
+    if kind == "hardlink" and db.execute(
+        "SELECT kind,mode FROM members WHERE path=?", (member.target,)
+    ).fetchone() != ("file", member.mode):
+        raise ValueError("checkpoint hardlink does not name an earlier matching regular file")
+    try:
+        db.execute("INSERT INTO members VALUES (?,?,?)", (path, kind, member.mode))
+    except sqlite3.IntegrityError:
+        raise ValueError("checkpoint has a duplicate member path") from None
+
+
+def decode(
+    handle: Reader,
+    source: CheckpointSource,
+    target: Path | None = None,
+    *,
+    check: Callable[[], None] | None = None,
+    tree: TreeIndex | None = None,
+    keep_root: bool = False,
+) -> StreamSummary:
+    """Verify the entire stream; optionally extract into a caller-owned empty directory,
+    and describe the tree into ``tree`` for its digest (checkpoint_tree). With
+    ``keep_root``, the target directory's own mode is left as it is: a restore Job's target
+    is a volume's root, which belongs to the volume (its owner, its group and the
+    set-group-ID bit Kubernetes' ``fsGroup`` gives it), not to the checkpoint."""
+    stream = Stream(handle, check)
+    if stream.read(len(MAGIC)) != MAGIC:
+        raise ValueError("unsupported checkpoint archive format")
+    source_bytes = stream.header(MAX_CHECKPOINT_RECEIPT)
+    strict_loads(source_bytes)
+    if CheckpointSource.model_validate_json(source_bytes) != source:
+        raise ValueError("checkpoint source identity differs")
+    with index() as db:
+        while data := stream.header(MAX_CHECKPOINT_HEADER):
+            strict_loads(data)
+            member = CheckpointMember.model_validate_json(data)
+            stream.charge(data, member)
+            _validate(db, member, stream.members)
+            path = None if target is None else target / member.path
+            if tree is not None and member.kind == "directory":
+                tree.add(member.path, "directory", member.mode)
+            elif tree is not None and member.kind == "symlink":
+                tree.add(member.path, "symlink", member.mode, detail=member.target)
+            elif tree is not None and member.kind == "hardlink":
+                tree.link(member.path, member.target or "")
+            if path is not None and member.kind == "directory" and member.path != ".":
+                path.mkdir(mode=0o700)
+            elif path is not None and member.kind == "symlink":
+                path.symlink_to(member.target or "")
+            elif path is not None and target is not None and member.kind == "hardlink":
+                os.link(target / (member.target or ""), path, follow_symlinks=False)
+            if member.kind == "file":
+                writer = None if path is None else path.open("xb")
+                content = hashlib.sha256()
+                try:
+                    left = member.size
+                    while left:
+                        chunk = stream.read(min(CHUNK, left))
+                        content.update(chunk)
+                        if writer is not None:
+                            writer.write(chunk)
+                        left -= len(chunk)
+                    if writer is not None:
+                        writer.flush()
+                        # Never set-user-ID or set-group-ID: an archive does not grant them.
+                        os.fchmod(writer.fileno(), member.mode & ~0o6000)
+                        os.fsync(writer.fileno())
+                finally:
+                    if writer is not None:
+                        writer.close()
+                if tree is not None:
+                    tree.add(
+                        member.path,
+                        "file",
+                        member.mode,
+                        size=member.size,
+                        detail=content.hexdigest(),
+                        first=member.path,
+                    )
+        if not stream.members or handle.read(1):
+            raise ValueError("checkpoint has no members or has trailing bytes")
+        if target is not None:
+            # Children first: restrictive original modes must not prevent extraction.
+            for path, mode in db.execute(
+                "SELECT path,mode FROM members WHERE kind='directory' ORDER BY length(path) DESC"
+            ):
+                if keep_root and path == ".":
+                    continue
+                directory = target / str(path)
+                descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                try:
+                    # Exactly the archive's mode, the set-group-ID bit included: on a
+                    # directory it only passes the group on to new entries, as Kubernetes'
+                    # fsGroup sets it on every directory of a volume. Set-user-ID means
+                    # nothing on a Linux directory and is never written.
+                    wanted = int(mode) & ~0o4000
+                    if stat.S_IMODE(os.fstat(descriptor).st_mode) != wanted:
+                        os.fchmod(descriptor, wanted)
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+    return stream.summary()

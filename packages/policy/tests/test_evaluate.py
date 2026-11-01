@@ -39,6 +39,7 @@ from sandbox_science.policy import (
     load_policy,
     parse_policy,
 )
+from sandbox_science.policy.decision import most_restrictive
 
 HEADER = """\
 apiVersion: sandbox-science/v0alpha1
@@ -1989,7 +1990,9 @@ def test_unmatched_tools_take_defaults_action(action: Action) -> None:
         """
     )
     decision = call_tool(policy, "crawl_site")
-    assert decision.action == action
+    # An unclassified tool asks (D97), and is never looser than defaults.action.
+    assert decision.action == most_restrictive((action, Action.ESCALATE))
+    assert decision.effect == "unclassified"
     assert decision.layer == "default"
 
 
@@ -2121,62 +2124,35 @@ def test_worker_calls_are_denied_when_worker_access_is_false() -> None:
     assert decide_mcp(policy, "tools/list", origin="worker").action == Action.DENY
 
 
-def test_worker_access_inherits_the_server_tool_rules() -> None:
-    policy = load(
-        """
-        mcp:
-          proxy: {worker_access: true, worker_tools: inherit}
-          servers:
-            search:
-              url: https://mcp.example.org/mcp
-              revision: "2025-11-25"
-              auth: {mode: none}
-              tools: {allow: ["*search*"], escalate: ["*crawl*"], deny: ["*reset*"]}
-        """
-    )
-    assert call_tool(policy, "web_search", origin="worker").action == Action.ALLOW
-    assert call_tool(policy, "crawl_site", origin="worker").action == Action.ESCALATE
-    assert call_tool(policy, "index_reset", origin="worker").action == Action.DENY
-    assert decide_mcp(policy, "tools/list", origin="worker").action == Action.ALLOW
+RETIRED_ACCESS = """
+mcp:
+  proxy: {worker_access: true, worker_tools: ["*search*"]}
+  servers:
+    search:
+      url: https://mcp.example.org/mcp
+      revision: "2025-11-25"
+      auth: {mode: none}
+      tools: {allow: ["*search*"], escalate: [], deny: []}
+"""
 
 
-def test_worker_tools_list_narrows_worker_tool_calls() -> None:
-    policy = load(
-        """
-        mcp:
-          proxy: {worker_access: true, worker_tools: ["*search*", fetch]}
-          servers:
-            search:
-              url: https://mcp.example.org/mcp
-              revision: "2025-11-25"
-              auth: {mode: none}
-              tools: {allow: ["*"], escalate: [], deny: []}
-        """
-    )
-    assert call_tool(policy, "web_search", origin="worker").action == Action.ALLOW
-    assert call_tool(policy, "fetch_page", origin="worker").action == Action.DENY
-    assert call_tool(policy, "read_page", origin="worker").action == Action.DENY
-    assert call_tool(policy, "read_page", origin="orchestrator").action == Action.ALLOW
-    assert decide_mcp(policy, "tools/list", origin="worker").action == Action.ALLOW
+def test_a_policy_giving_research_code_mcp_access_is_refused() -> None:
+    # The MCP proxy that carried research code's MCP calls retired (D98, 2026-10-26).
+    with pytest.raises(PolicyLoadError, match="retired with the MCP proxy"):
+        load(RETIRED_ACCESS)
+    with pytest.raises(PolicyLoadError, match="retired with the MCP proxy"):
+        load("mcp:\n  proxy: {worker_tools: [fetch]}\n")
+    # The defaults may still be written.
+    assert load("mcp:\n  proxy: {worker_access: false, worker_tools: inherit}\n")
 
 
-def test_worker_tools_never_widen_the_server_tool_rules() -> None:
-    policy = load(
-        """
-        defaults: {action: escalate}
-        mcp:
-          proxy: {worker_access: true, worker_tools: ["*"]}
-          servers:
-            search:
-              url: https://mcp.example.org/mcp
-              revision: "2025-11-25"
-              auth: {mode: none}
-              tools: {allow: ["*search*"], escalate: ["*crawl*"], deny: ["*reset*"]}
-        """
-    )
-    assert call_tool(policy, "index_reset", origin="worker").action == Action.DENY
-    assert call_tool(policy, "crawl_site", origin="worker").action == Action.ESCALATE
-    assert call_tool(policy, "summarize", origin="worker").action == Action.ESCALATE
+def test_a_stored_revision_with_worker_access_loads_without_it() -> None:
+    # A revision the store kept from before is read as research code is now treated.
+    policy = parse_policy(HEADER + RETIRED_ACCESS, stored=True)
+    assert policy.policy.mcp.limits.max_argument_bytes == 64 * 1024
+    assert call_tool(policy, "web_search", origin="worker").action == Action.DENY
+    assert decide_mcp(policy, "tools/list", origin="worker").action == Action.DENY
+    assert call_tool(policy, "web_search", origin="orchestrator").action == Action.ALLOW
 
 
 # --- Packages ------------------------------------------------------------------------------------
@@ -2609,6 +2585,177 @@ def test_git_fetch_rules_may_proceed_as_alert_on_timeout() -> None:
         timedelta(minutes=5),
         Action.ALERT,
     )
+
+
+@pytest.mark.parametrize(
+    ("operation", "match", "method", "url"),
+    [
+        pytest.param("http", '{hosts: ["*"], methods: [GET, HEAD]}', "GET", "https://example.org/"),
+        pytest.param(
+            "http", "{hosts: [example.org], methods: [HEAD]}", "HEAD", "https://example.org/"
+        ),
+        pytest.param("git", '{hosts: ["*"], git_service: upload-pack}', "POST", FETCH),
+    ],
+)
+def test_reads_proceed_as_alert_on_timeout_by_default(
+    operation: str, match: str, method: str, url: str
+) -> None:
+    # D95: an escalate rule that holds only reads proceeds unanswered unless it says deny.
+    template = """
+        network:
+          rules:
+            - name: reads
+              operation: {operation}
+              match: {match}
+              action: escalate{extra}
+        """
+    lenient = load(template.format(operation=operation, match=match, extra=""))
+    strict = load(
+        template.format(
+            operation=operation,
+            match=match,
+            extra="\n              escalation: {on_timeout: deny}",
+        )
+    )
+    assert escalation_terms(decide_http(lenient, method, url)) == (
+        timedelta(minutes=30),
+        Action.ALERT,
+    )
+    assert escalation_terms(decide_http(strict, method, url)) == (
+        timedelta(minutes=30),
+        Action.DENY,
+    )
+    # A credentialed read still waits for an answer unless the rule allows it.
+    credentialed = decide_http(lenient, method, url, credentialed=True)
+    assert escalation_terms(credentialed) == (timedelta(minutes=30), Action.DENY)
+
+
+@pytest.mark.parametrize(
+    ("operation", "match", "method", "url"),
+    [
+        pytest.param("http", '{hosts: ["*"]}', "GET", "https://example.org/", id="any-method"),
+        pytest.param("http", '{hosts: ["*"], methods: [POST]}', "POST", "https://example.org/"),
+        pytest.param("git", '{hosts: ["*"], git_service: receive-pack}', "POST", PUSH, id="push"),
+    ],
+)
+def test_rules_that_can_hold_a_write_deny_on_timeout(
+    operation: str, match: str, method: str, url: str
+) -> None:
+    policy = load(
+        f"""
+        network:
+          rules:
+            - name: writes
+              operation: {operation}
+              match: {match}
+              action: escalate
+        """
+    )
+    assert escalation_terms(decide_http(policy, method, url)) == (
+        timedelta(minutes=30),
+        Action.DENY,
+    )
+
+
+def test_a_wildcard_read_of_a_non_public_host_never_proceeds_unanswered() -> None:
+    policy = load(
+        """
+        network:
+          rules:
+            - name: reads
+              operation: http
+              match: {hosts: ["*"], methods: [GET]}
+              action: escalate
+            - name: nas
+              operation: http
+              match: {hosts: [nas.local], methods: [GET]}
+              action: escalate
+        """
+    )
+    lan = decide_http(policy, "GET", "http://10.0.0.5/")
+    assert lan.action is Action.ESCALATE
+    assert escalation_terms(lan) == (timedelta(minutes=30), Action.DENY)
+    # A rule that names a non-public host exactly may let it proceed, as it may allow it.
+    named = decide_http(policy, "GET", "http://nas.local/")
+    assert escalation_terms(named) == (timedelta(minutes=30), Action.ALERT)
+
+
+def test_unmatched_reads_under_an_escalate_default_still_deny_on_timeout() -> None:
+    # The default is not a read rule: an allowlist policy relies on it (D95 lockdown).
+    policy = load(
+        """
+        network:
+          rules:
+            - {name: a, operation: http, match: {hosts: [a.org]}, action: allow}
+        """
+    )
+    decision = decide_http(policy, "GET", "https://example.org/")
+    assert (decision.action, decision.layer) == (Action.ESCALATE, "default")
+    assert escalation_terms(decision) == (timedelta(minutes=30), Action.DENY)
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://example.org/", Action.ALLOW),
+        ("https://example.org:8443/", Action.ALLOW),
+        ("http://example.org:8080/", Action.ALLOW),
+        ("http://example.org:1/", Action.ALLOW),
+    ],
+)
+def test_any_port_rules_match_every_port(url: str, expected: Action) -> None:
+    policy = load(
+        """
+        defaults: {action: deny}
+        network:
+          rules:
+            - name: reads
+              operation: http
+              match: {hosts: ["*"], methods: [GET], ports: any}
+              action: allow
+            - name: fetch
+              operation: git
+              match: {hosts: ["*"], git_service: upload-pack, ports: any}
+              action: allow
+        """
+    )
+    assert decide_http(policy, "GET", url).action is expected
+    git = url.rstrip("/") + "/r.git/git-upload-pack"
+    assert decide_http(policy, "POST", git).rule == "fetch"
+    # Ports are a condition only: a more specific rule still wins on every port.
+    assert decide_http(policy, "POST", url).action is Action.DENY
+
+
+def test_any_port_does_not_make_a_rule_more_specific() -> None:
+    policy = load(
+        """
+        network:
+          rules:
+            - name: open
+              operation: http
+              match: {hosts: ["*"], methods: [GET], ports: any}
+              action: allow
+            - {name: held, operation: http, match: {hosts: ["*"], methods: [GET]}, action: escalate}
+        """
+    )
+    # On 443 both match and tie, so the stricter wins; on 8443 only the any-port rule does.
+    assert decide_http(policy, "GET", "https://example.org/").rule == "held"
+    assert decide_http(policy, "GET", "https://example.org:8443/").rule == "open"
+
+
+@pytest.mark.parametrize("ports", ["all", "'*'", "[any]", "'any '"])
+def test_ports_take_numbers_or_any(ports: str) -> None:
+    with pytest.raises(PolicyLoadError):
+        load(
+            f"""
+            network:
+              rules:
+                - name: r
+                  operation: http
+                  match: {{hosts: ["*"], ports: {ports}}}
+                  action: allow
+            """
+        )
 
 
 @pytest.mark.parametrize(

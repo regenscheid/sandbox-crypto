@@ -27,21 +27,27 @@ from sandbox_science.contracts import (
     ExecutionState,
     JobDetails,
     JobListing,
+    JobResultManifest,
+    JobSandboxRelease,
+    JobSandboxReleased,
     JobStatus,
     KernelInfo,
     KernelObservation,
     KernelStatusRequest,
     StreamOutput,
 )
+from sandbox_science.contracts.child_environments import ChildEnvironment, ChildEnvironmentList
 from sandbox_science.contracts.worker import KERNEL_OBSERVATION_BUSY
 from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.worker_client import WorkerClient
 from sandbox_science.testing import fake_worker_app
-from sandbox_science.workspace.api import TIMEOUTS, Timeouts
 from sandbox_science.workspace.app import create_app
-from sandbox_science.workspace.mcp_metadata import MetadataClient
-from sandbox_science.workspace.mcp_services import ServiceConfig
+from sandbox_science.workspace.classifications import ClassificationSource
+from sandbox_science.workspace.context import TIMEOUTS, Timeouts
+from sandbox_science.workspace.forward_auth import Verifier
+from sandbox_science.workspace.mcp_metadata import AvailabilityClient
+from sandbox_science.workspace.mcp_services import ListingSource, ServiceConfig
 
 TOKEN = "test-secret-route-characterization-login-0123456789"
 WORKER_TOKEN = "test-secret-route-characterization-worker"
@@ -144,6 +150,11 @@ class FakeWorker:
         self.environment_delay = 0.0
         self.jobs: dict[str, Execution] = {}
         self.cancelled: list[str] = []
+        self.manifests: dict[str, JobResultManifest] = {}
+        self.released: list[tuple[str, str]] = []
+        """(job, operation ID) of each early release of a job sandbox that was accepted."""
+        self.children: dict[str, ChildEnvironment] = {}
+        """Child environments by ID; each is listed and found for its own session only."""
 
     def application(self) -> web.Application:
         app = fake_worker_app(middlewares=[self._record])
@@ -152,6 +163,9 @@ class FakeWorker:
         app.router.add_get("/v1/jobs", self._jobs)
         app.router.add_get("/v1/jobs/{job}", self._job)
         app.router.add_post("/v1/executions/{job}/cancel", self._cancel)
+        app.router.add_post("/v1/job-sandboxes/{job}/release", self._release)
+        app.router.add_get("/v1/child-environments", self._children)
+        app.router.add_get("/v1/child-environments/{environment}", self._child)
         app.router.add_get(
             "/v1/environments/{environment}/provisioning/observations{tail:.*}", self._provisioning
         )
@@ -171,6 +185,28 @@ class FakeWorker:
                 status=status,
             )
         return await handler(request)
+
+    def _of_session(self, request: web.Request) -> list[ChildEnvironment]:
+        query = request.query
+        return [
+            child
+            for child in self.children.values()
+            if (child.project_id, child.session_id, child.session_environment)
+            == (query["project_id"], query["session_id"], query["environment_id"])
+        ]
+
+    async def _children(self, request: web.Request) -> web.Response:
+        listing = ChildEnvironmentList(environments=tuple(self._of_session(request)))
+        return web.Response(text=listing.model_dump_json(), content_type="application/json")
+
+    async def _child(self, request: web.Request) -> web.Response:
+        wanted = request.match_info["environment"]
+        for child in self._of_session(request):
+            if child.environment_id == wanted:
+                return web.Response(text=child.model_dump_json(), content_type="application/json")
+        return web.json_response(
+            {"error": {"kind": "not_found", "message": "no such child environment"}}, status=404
+        )
 
     async def _environment(self, request: web.Request) -> web.Response:
         await asyncio.sleep(self.environment_delay)
@@ -242,8 +278,27 @@ class FakeWorker:
             stdout=StreamOutput(name="stdout", text="<b>step 3</b>\n", total_bytes=14),
             cpu_seconds=1.5,
             memory_bytes=4096,
+            manifest=self.manifests.get(found.execution_id),
         )
         return web.Response(text=status.model_dump_json(), content_type="application/json")
+
+    async def _release(self, request: web.Request) -> web.Response:
+        """The worker's early release: only the session's own retained sandbox."""
+        body = JobSandboxRelease.model_validate_json(await request.read())
+        found = self.jobs.get(request.match_info["job"])
+        if found is None or found.context != body.context or found.job is None:
+            return web.json_response(
+                {"error": {"kind": "not_found", "message": "no such job sandbox"}}, status=404
+            )
+        sandbox = found.job.sandbox
+        if sandbox is None or sandbox.phase != "retained":
+            return web.json_response(
+                {"error": {"kind": "conflict", "message": "only a retained one can be released"}},
+                status=409,
+            )
+        self.released.append((found.execution_id, body.operation_id))
+        released = JobSandboxReleased(execution_id=found.execution_id)
+        return web.Response(text=released.model_dump_json(), content_type="application/json")
 
     async def _cancel(self, request: web.Request) -> web.Response:
         found = self._found(request)
@@ -493,9 +548,13 @@ async def workspace(
     skills_metadata: str | None = None,
     mcp_project: str | None = None,
     mcp_inventory: tuple[ServiceConfig, ...] = (),
-    mcp_metadata: MetadataClient | None = None,
+    mcp_checks: AvailabilityClient | None = None,
+    mcp_listings: ListingSource | None = None,
+    mcp_classifications: ClassificationSource | None = None,
+    forward_auth: Verifier | None = None,
 ) -> TestClient[Any, Any]:
-    """The workspace app under test, optionally connected to a worker and logged in."""
+    """The workspace app under test, optionally connected to a worker and logged in with
+    the login link (the operator's own login)."""
     worker = WorkerClient(worker_url, WORKER_TOKEN) if worker_url is not None else None
     client = await aiohttp_client(
         create_app(
@@ -508,7 +567,10 @@ async def workspace(
             skills_metadata=skills_metadata,
             mcp_project=mcp_project,
             mcp_inventory=mcp_inventory,
-            mcp_metadata=mcp_metadata,
+            mcp_checks=mcp_checks,
+            mcp_listings=mcp_listings,
+            mcp_classifications=mcp_classifications,
+            forward_auth=forward_auth,
         )
     )
     if login:

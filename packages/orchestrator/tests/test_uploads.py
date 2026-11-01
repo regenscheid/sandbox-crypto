@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 """Original uploads survive schema upgrades and retain storage authority and bounds."""
 
+import hashlib
 import sqlite3
 from pathlib import Path
 
@@ -9,7 +10,7 @@ import pytest
 from sandbox_science.orchestrator.control import migrations
 from sandbox_science.orchestrator.documents import DocumentError, DocumentStore
 from sandbox_science.orchestrator.projects import ProjectStore
-from sandbox_science.orchestrator.uploads import UserUploads
+from sandbox_science.orchestrator.uploads import UserUpload, UserUploads
 
 
 def prepared(path: Path) -> DocumentStore:
@@ -20,6 +21,29 @@ def prepared(path: Path) -> DocumentStore:
     projects.open_session("p2", "s1", dedicated=False)
     projects.close()
     return DocumentStore(path / "control.sqlite3")
+
+
+def legacy_original(documents: DocumentStore, data: bytes = b"original") -> UserUpload:
+    """An actual old inline row, independent of the current create implementation."""
+    found = UserUpload(
+        upload_id="old",
+        project="p1",
+        session="s1",
+        filename="old.pdf",
+        media_type="application/pdf",
+        sha256=hashlib.sha256(data).hexdigest(),
+        size=len(data),
+        created_at="2026-10-20T00:00:00+00:00",
+        path="shared/uploads/s1/old/source.pdf",
+        number=1,
+    )
+    digest = hashlib.sha256(("old.pdf\0application/pdf\0" + found.sha256).encode()).hexdigest()
+    with documents.control.write() as tx:
+        tx.sql.execute(
+            "INSERT INTO user_uploads VALUES (1,'p1','s1','old',?,?,?,?)",
+            (digest, found.model_dump_json(), len(data), data),
+        )
+    return found
 
 
 def test_schema_66_upgrade_preserves_originals_ids_constraints_and_triggers(
@@ -33,8 +57,7 @@ def test_schema_66_upgrade_preserves_originals_ids_constraints_and_triggers(
         )
         old.setattr(migrations, "VERSION", 66)
         documents = prepared(tmp_path)
-        uploads = UserUploads(documents)
-        original = uploads.create("p1", "s1", "old", "old.pdf", "application/pdf", b"original")
+        original = legacy_original(documents)
         documents.close()
     documents = DocumentStore(tmp_path / "control.sqlite3")
     try:

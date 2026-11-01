@@ -21,11 +21,12 @@ from sandbox_science.orchestrator.continuity.recovery import Recovery
 from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords, Ending
 from sandbox_science.orchestrator.harness import Harness, Role, RunRequest, Settings
-from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel
+from sandbox_science.orchestrator.model import ModelTurn
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.worker_client import WorkerClient
 from sandbox_science.testing import eventually
 
+from .scripted import ScriptedModel
 from .test_run_harness import Sink, Worker, main, stores
 from .test_tool_journal import RUN
 from .test_work_ownership import CHILD, CONTINUATION, GRANDCHILD, record
@@ -431,7 +432,7 @@ async def test_nested_resume_keeps_a_leaf_runnable_with_four_branch_cap(tmp_path
 
 
 async def test_child_message_wakes_recovered_parent_closing_wait(tmp_path: Path) -> None:
-    from sandbox_science.orchestrator.model import ToolCall
+    from .scripted import ToolCall
 
     state, documents, works = prepare_tree(tmp_path)
     works.stop("p", "s", GRANDCHILD)
@@ -525,7 +526,8 @@ async def test_child_resource_request_wakes_recovered_parent_closing_wait(
     tmp_path: Path,
 ) -> None:
     from sandbox_science.orchestrator.continuity.resources import ResourceRequests
-    from sandbox_science.orchestrator.model import ToolCall
+
+    from .scripted import ToolCall
 
     state, documents, works = prepare_tree(tmp_path)
     works.stop("p", "s", GRANDCHILD)
@@ -743,7 +745,8 @@ async def test_failed_environment_preparation_prevents_claim_and_model_dispatch(
                 "SELECT status, reason FROM research_resumes WHERE request=?", (request,)
             ).fetchone()
         assert status == "blocked"
-        assert reason == "interrupted"
+        # The cause is kept for the user, after the interruption.
+        assert reason == "interrupted: original environment missing"
     finally:
         documents.close()
         state.projects.close()
@@ -831,9 +834,10 @@ async def test_legacy_missing_alias_blocks_before_new_model_dispatch(tmp_path: P
 
 
 async def test_resume_can_be_interrupted_again_before_parent_admission(tmp_path: Path):
-    from sandbox_science.orchestrator.history.operations import ToolJournal
-    from sandbox_science.orchestrator.model import ToolCall
+    from sandbox_science.orchestrator.context.history.operations import ToolJournal
     from sandbox_science.orchestrator.questions import Answer, Questions
+
+    from .scripted import ToolCall
 
     state, documents, works = prepare_tree(tmp_path)
     context = Blueprints(state.projects.control).get("p", "s", RUN).context
@@ -862,7 +866,10 @@ async def test_resume_can_be_interrupted_again_before_parent_admission(tmp_path:
     from sandbox_science.orchestrator.run_inputs import RunInputs, StartingInputs
 
     async def original_pins(run):
-        if run.prompt_provenance is not None and run.prompt_provenance.role == "main":
+        if (
+            run.context.prompt_provenance is not None
+            and run.context.prompt_provenance.role == "main"
+        ):
             inputs = RunInputs(state.projects.control)
             try:
                 inputs.get("p", "s", RUN)
@@ -873,7 +880,7 @@ async def test_resume_can_be_interrupted_again_before_parent_admission(tmp_path:
                         context=context,
                         request=Blueprints(state.projects.control).get("p", "s", RUN).request,
                         configuration={},
-                        pins=run.prompt_provenance,
+                        pins=run.context.prompt_provenance,
                     )
                 )
 
@@ -913,5 +920,196 @@ async def test_resume_can_be_interrupted_again_before_parent_admission(tmp_path:
     finally:
         running.cancel()
         await asyncio.gather(running, return_exceptions=True)
+        documents.close()
+        state.projects.close()
+
+
+FORMERLY_BLOCKING = (
+    "unknown_usage",
+    "lost_kernel",
+    "partial_kernel_restore",
+    "unfinished_children",
+    "persistence_error",
+)
+
+
+@pytest.mark.parametrize("condition", FORMERLY_BLOCKING)
+async def test_automatic_resume_recovers_the_tree_past_a_condition_it_can_handle(
+    tmp_path: Path, condition: str
+):
+    """D100: none of these blocks Resume; the whole tree resumes without a person."""
+    from sandbox_science.contracts import KernelInfo
+    from sandbox_science.orchestrator.continuity.auto_recovery import AutoRecovery, mark_transient
+    from sandbox_science.orchestrator.continuity.kernels import KernelJournal
+
+    state, documents, works = prepare_tree(tmp_path)
+    control = state.projects.control
+    root_owner = works.owner("p", "s", RUN)
+    assert root_owner is not None
+    identity = None
+    if condition == "unknown_usage":
+        owner = works.owner("p", "s", GRANDCHILD)
+        assert owner is not None
+        with control.write() as tx:
+            tx.sql.execute("UPDATE research_work SET state='running' WHERE work=?", (GRANDCHILD,))
+        identity = ModelIntents(control).begin(owner, kind="delegated", alias="scripted")
+        works.interrupt("p", "s", RUN)
+    elif condition in ("lost_kernel", "partial_kernel_restore"):
+        with control.write() as tx:
+            tx.sql.execute("UPDATE research_work SET state='running' WHERE work=?", (RUN,))
+        journal = KernelJournal(control, root_owner, None)
+        await journal.record(
+            KernelObservation(
+                environment_id="env",
+                session_id="s",
+                observed_at=datetime.now(UTC),
+                kernels=(KernelInfo(kernel_id="lost", language="python", generation=1),),
+            )
+        )
+        if condition == "partial_kernel_restore":
+            journal._begin_restore(
+                "e" * 64,
+                [{"code": "x = 1", "language": "python", "kernel_id": "lost",
+                  "generation": 1, "run": None}],
+            )  # fmt: skip
+        works.interrupt("p", "s", RUN)
+    elif condition == "unfinished_children":
+        with control.write() as tx:
+            tx.sql.execute(
+                "UPDATE research_work SET reason='unfinished_children' WHERE work=?", (RUN,)
+            )
+        works.block("p", "s", CHILD, "transient:gateway_timeout: ModelError: HTTP 524")
+    else:
+        with control.write() as tx:
+            tx.sql.execute(
+                "UPDATE research_work SET reason='persistence_error' WHERE work=?", (GRANDCHILD,)
+            )
+    if condition in ("unknown_usage", "lost_kernel", "partial_kernel_restore"):
+        # The interruption came from a lost bridge, which the service records.
+        mark_transient(control, "p", "s", RUN, "bridge_loss")
+    request = AutoRecovery(control).queue("p", "s", RUN)
+    assert request is not None
+    assert works.resume_source("p", "s", request) == "automatic"
+    worker = RecoveryWorker()
+    harness = Harness(
+        cast(WorkerClient, worker),
+        main("Recovered root"),
+        delegated=Role(
+            ScriptedModel([ModelTurn('{"status":"complete","summary":"Done"}')] * 8), "scripted"
+        ),
+        stores=state,
+        settings=Settings(min_isolation_tier=None),
+    )
+    try:
+        sink = Sink()
+        failed = await drive(Recovery(harness, "p", "s", request), sink, asyncio.Event())
+        found = {w.work: (w.state, w.reason) for w in works.page("p", "s", RUN)}
+        assert not failed, (found, sink.errors)
+        assert found[STOPPED] == ("stopped", "user_stop")  # explicit Stop stays stopped
+        assert all(state == "completed" for work, (state, _) in found.items() if work != STOPPED)
+        with control.read() as tx:
+            status = tx.sql.execute(
+                "SELECT status FROM research_resumes WHERE request=?", (request,)
+            ).fetchone()[0]
+            kinds = {
+                kind: json.loads(detail)
+                for kind, detail in tx.sql.execute(
+                    "SELECT kind,detail FROM research_observations WHERE work=?", (RUN,)
+                )
+            }
+        assert status == "finished"
+        if condition == "unknown_usage":
+            # Recorded as unknown and visible; never zero, never a block.
+            assert ModelIntents(control).pending("p", "s", GRANDCHILD) == (identity,)
+        if condition == "lost_kernel":
+            assert kinds["kernel_loss_accepted"] == {
+                "lost": [{"language": "python", "kernel_id": "lost", "generation": 1}],
+                "accepted_by": "automatic",
+            }
+        if condition == "partial_kernel_restore":
+            acknowledged = kinds["resolution:kernel_recompute"]
+            assert acknowledged["automatic"] is True
+            assert acknowledged["operator"] == "automatic"
+            assert kinds["kernel_restore"] == {"state": "abandoned", "operator_recompute": True}
+    finally:
+        documents.close()
+        state.projects.close()
+
+
+async def test_an_automatic_resume_under_changed_pins_waits_for_the_users_resume(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+):
+    """D100: after a platform update changed the prompts or tools, an automatic Resume
+    does not fail a branch whose pins changed. It stops before any model call
+    (``pins_changed``), its delegation ends interrupted, the Resume record names the
+    reason, automatic recovery leaves it alone, and the user's Resume continues it."""
+    from sandbox_science.orchestrator.continuity.auto_recovery import AutoRecovery, mark_transient
+    from sandbox_science.orchestrator.loop import run_task
+    from sandbox_science.orchestrator.run_inputs import PINS_CHANGED, RecordInputs, RunInputs
+
+    from .test_tool_journal import toolbox
+
+    state, documents, works = prepare_tree(tmp_path)
+    control = state.projects.control
+    blueprint = Blueprints(control).get("p", "s", CHILD)
+
+    async def never(_):
+        pytest.fail("unexpected tool dispatch")
+
+    # The child's first attempt ran with the platform's earlier prompt.
+    await run_task(
+        ScriptedModel([ModelTurn("Earlier")]),
+        toolbox(never),
+        "Continue research",
+        run_id="earlier",
+        system="The earlier platform's prompt",
+        role="delegated",
+        hooks=(RecordInputs(RunInputs(control), blueprint.context, CHILD, blueprint.request, {}),),
+    )
+    mark_transient(control, "p", "s", RUN, "bridge_loss")  # the runtime was replaced
+    request = AutoRecovery(control).queue("p", "s", RUN)
+    assert request is not None
+    assert works.resume_source("p", "s", request) == "automatic"
+    child_model = ScriptedModel([ModelTurn('{"status":"complete","summary":"Done"}')] * 8)
+    harness = Harness(
+        cast(WorkerClient, RecoveryWorker()),
+        main("Recovered root"),
+        delegated=Role(child_model, "scripted"),
+        stores=state,
+        settings=Settings(min_isolation_tier=None),
+    )
+    sink = Sink()
+    try:
+        assert await drive(Recovery(harness, "p", "s", request), sink, asyncio.Event())
+        child = works.get("p", "s", CHILD)
+        assert (child.state, child.reason) == ("paused", PINS_CHANGED)
+        attempt = child.current
+        assert attempt != CHILD
+        saved = state.projects.run("p", "s", attempt)
+        assert (saved.stopped, saved.failure) == (PINS_CHANGED, None)
+        assert not any(m["role"] == "assistant" for m in saved.messages)  # no model call
+        with pytest.raises(ControlError, match="no saved starting inputs"):
+            RunInputs(control).get("p", "s", attempt)
+        delegation = DelegationRecords(control).listed("p", "s")[0]
+        continued = next(d for d in delegation if d.run == attempt)
+        assert (continued.ended, continued.stopped) == ("interrupted", PINS_CHANGED)
+        assert not continued.errors
+        assert not [r for r in caplog.records if "failed during" in r.getMessage()]
+        with control.read() as tx:
+            status, reason = tx.sql.execute(
+                "SELECT status,reason FROM research_resumes WHERE request=?", (request,)
+            ).fetchone()
+        assert status != "finished"
+        assert PINS_CHANGED in reason
+        assert AutoRecovery(control).queue("p", "s", RUN) is None  # it waits for the user
+        # The user's Resume continues it with the new prompt, and says so.
+        users = works.request("p", "s")
+        assert users is not None
+        assert works.resume_source("p", "s", users) == "operator"
+        assert not await drive(Recovery(harness, "p", "s", users), sink, asyncio.Event())
+        assert works.get("p", "s", CHILD).state == "completed"
+        assert works.get("p", "s", RUN).state == "completed"
+        assert any("the user's Resume accepted the change" in note for note in sink.notes)
+    finally:
         documents.close()
         state.projects.close()

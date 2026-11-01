@@ -15,15 +15,25 @@ from sandbox_science.contracts import ExecutionContext
 from sandbox_science.orchestrator.consistency.controller import ReviewController, Reviews
 from sandbox_science.orchestrator.consistency.models import ReviewConfig
 from sandbox_science.orchestrator.consistency.store import ReviewStore
+from sandbox_science.orchestrator.context.folding import FoldLifecycle
+from sandbox_science.orchestrator.context.history import (
+    Archive,
+    Folder,
+    RunArchive,
+    geometry,
+    session_view,
+)
+from sandbox_science.orchestrator.context.history.memory import RunMemory
 from sandbox_science.orchestrator.documents import DocumentStore
 from sandbox_science.orchestrator.harness import Finished, save
-from sandbox_science.orchestrator.history import Archive, Folder, RunArchive, geometry, session_view
-from sandbox_science.orchestrator.history.memory import RunMemory
 from sandbox_science.orchestrator.loop import run_task
 from sandbox_science.orchestrator.model import ModelTurn, ToolCall, ToolSpec
 from sandbox_science.orchestrator.projects import ProjectStore, run_name
 from sandbox_science.orchestrator.tools import Toolbox, ToolEntry, ToolOutcome
 from sandbox_science.orchestrator.worker_client import WorkerClient
+
+PURPOSE = "Running one step of the fixture"
+"""The purpose each scripted call names (docs/specs/tools.md, Purpose 1)."""
 
 
 def rss() -> int:
@@ -54,7 +64,10 @@ async def measure(root: Path, count: int) -> dict[str, object]:
     class Reviewer:
         async def complete(self, messages, tools):
             if messages[-1]["role"] == "user":
-                return ModelTurn(None, tool_calls=(ToolCall("manifest", "review_manifest", "{}"),))
+                manifest = json.dumps({"purpose_note": PURPOSE})
+                return ModelTurn(
+                    None, tool_calls=(ToolCall("manifest", "review_manifest", manifest),)
+                )
             return ModelTurn(
                 json.dumps(
                     {"outcome": "inconclusive", "summary": "Fixture read.", "cap_reached": False}
@@ -95,7 +108,11 @@ async def measure(root: Path, count: int) -> dict[str, object]:
             return ModelTurn(
                 None,
                 tool_calls=(
-                    ToolCall(str(self.turn), "arithmetic", json.dumps({"step": self.turn})),
+                    ToolCall(
+                        str(self.turn),
+                        "arithmetic",
+                        json.dumps({"step": self.turn, "purpose_note": PURPOSE}),
+                    ),
                 ),
                 native=b"n" * 65536,
                 native_format="fixture",
@@ -119,7 +136,7 @@ async def measure(root: Path, count: int) -> dict[str, object]:
         "Compute each independent fixture step.",
         run_id="scale",
         max_turns=count + 1,
-        hooks=(folder, hook),
+        hooks=(FoldLifecycle(folder), hook),
         folds=folder,
         log=RunArchive(archive, context, run=name, parent=None),
     )
@@ -127,7 +144,7 @@ async def measure(root: Path, count: int) -> dict[str, object]:
     assert len(result.tool_records) == count
     assert len(folder.folds) >= 2
     assert len(controller.review_ids) >= 1
-    finished = Finished("scale", context, "Fixture", start, result, (folder, hook))
+    finished = Finished("scale", context, "Fixture", start, result, (FoldLifecycle(folder), hook))
     errors = []
     assert (
         await save(finished.fields(), 0, finished.hooks, projects=projects, error=errors.append)

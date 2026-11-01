@@ -105,6 +105,7 @@ async def test_a_loaded_helper_is_staged_bound_and_staged_again_when_changed(
     plain, tool = _tools(one, "skills")
     assert "staging" not in plain  # only words: nothing to stage, no binding
     (staged,) = tool["staging"]
+    assert "location" in staged, staged  # a failed staging names its worker error
     location = staged["location"]
     assert location.endswith(f"/.skills/qzpack/{staged['snapshot']}")
     assert (staged["state"], staged["attempt"], staged["files"]) == ("staged", 1, 4)

@@ -24,20 +24,26 @@ Hooks run in a fixed order, which is the order their notices reach the model. A 
 hook is asked about a closing answer first, and again after every hook accepted it.
 Leases are taken in hook order and released in reverse; each lease releases what it
 holds whatever happened to the others.
+
+A hook may also wrap each model call and each tool call (``wrap_model_call``,
+``wrap_tool_call``), the first hook outermost, inside the loop's own wraps
+(``wraps.py``). Wraps run where the loop runs: a confined attempt's hooks are proxies
+over a channel that carries none, so the host refuses a hook that overrides one
+(``wraps_calls``).
 """
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, Mapping, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 
 if TYPE_CHECKING:
+    from .context.folding import ContextView
     from .model import Message, ModelTurn, ToolCall
     from .projects import ModelUsage, RunRecord
-    from .prompts import PromptPins
     from .tools import ToolOutcome
 
 Point = Literal["start", "turn", "tool"]
@@ -51,6 +57,21 @@ Effect = Literal["read", "cancel", "effect", "plan", "proposal"]
 proposal): the plan fence lets them pass, but a run that no longer holds its session
 may not make one."""
 
+type ModelHandler = Callable[[], Awaitable[ModelTurn | None]]
+"""The next step of a model call: the reply, or ``None`` when none came. Its innermost
+step raises the model's errors, and answers ``None`` with no call made when the
+conversation is past the run's budget."""
+
+type ToolHandler = Callable[[ToolCall, str], Awaitable[ToolOutcome]]
+"""The next step of a tool call, given the call and its operation ID: its outcome."""
+
+DECISION_WAIT_SECONDS: Final = 1800.0
+"""How long a child's check-in waits at a safe point for its parent's decision before the
+automatic decision is made for it (D102)."""
+HALT_TIMEOUT_SECONDS: Final = DECISION_WAIT_SECONDS + 600.0
+"""How long a confined runtime waits for a hook's ``halt``, where a check-in waits: the
+decision's wait, measured from the start of ``halt``, plus a margin for the check-in's own
+reads and the automatic decision, so that decision always answers first."""
 RESPONSE_ROUNDS: Final = 2
 """Closing answers a run may take back to respond to findings, whatever their source."""
 
@@ -139,10 +160,10 @@ class MessageLog(Protocol):
 
 
 class RunView(Protocol):
-    """What a hook may read of the run in progress."""
+    """Execution state and the read-only conversation a hook may inspect."""
 
     @property
-    def messages(self) -> Sequence[Message]: ...
+    def context(self) -> ContextView: ...
 
     @property
     def turns(self) -> int:
@@ -153,22 +174,8 @@ class RunView(Protocol):
     def turns_left(self) -> int: ...
 
     @property
-    def prompt_provenance(self) -> PromptPins | None: ...
-
-    @property
     def tool_records(self) -> Sequence[dict[str, Any]]:
         """One record per tool call so far, as the run's record keeps them."""
-        ...
-
-    @property
-    def usage(self) -> Sequence[ModelUsage]:
-        """Each answered model call's usage, in order."""
-        ...
-
-    @property
-    def since(self) -> int:
-        """The calls made before the view was last rebuilt: ``usage[since:]`` are those
-        that measured it as it is."""
         ...
 
     @property
@@ -184,12 +191,6 @@ class RunView(Protocol):
     @property
     def can_respond(self) -> bool:
         """Whether a turn and a response round remain."""
-        ...
-
-    @property
-    def size(self) -> int:
-        """What the next model call would send, in characters, tool schemas included:
-        after a fold, the view it rebuilt and what was added since."""
         ...
 
     @property
@@ -243,6 +244,29 @@ class TurnHook:
         """Before a tool call of this effect class: a refusal, or ``None`` to let it run."""
         return None
 
+    async def gate_call(self, tool: str, effect: Effect) -> Refusal | None:
+        """Before a call of the tool named ``tool``, of this effect class: by default the
+        class's ``gate``. A hook that tells tools of one class apart overrides this, as the
+        delegated runs' fence does (D99)."""
+        return await self.gate(effect)
+
+    async def wrap_model_call(self, run: RunView, handler: ModelHandler) -> ModelTurn | None:
+        """Around each attempt at a model call, the attempts after a fold among them, and
+        the report round's: ``handler`` makes it. A wrap may act before and after it, try
+        it again, or answer in its place; the default calls it once."""
+        return await handler()
+
+    async def wrap_tool_call(
+        self, run: RunView, call: ToolCall, operation: str, handler: ToolHandler
+    ) -> ToolOutcome:
+        """Around each tool call the run makes, once its intent is saved: ``handler`` runs
+        it, through the gates. What a wrap returns is the outcome the runaway guard, the
+        tool point's notices and the transcript see. The report round's calls, which do
+        not run, pass no wrap. The default calls it once. ``call`` is as the model wrote
+        it, its ``purpose_note`` included: the toolbox checks the purpose and takes it
+        out before any gate or handler, and a wrap decides nothing on it (Purpose 3)."""
+        return await handler(call, operation)
+
     async def observe_tool(self, run: RunView, record: dict[str, Any]) -> None:
         """After each tool call, with the outcome the transcript keeps."""
 
@@ -265,6 +289,16 @@ class TurnHook:
 
     async def acknowledge(self, record: RunRecord) -> None:
         """After the record is saved: settle what it names as delivered."""
+
+
+def overrides(hook: TurnHook, name: str) -> bool:
+    """Whether ``hook``'s class replaces the ``TurnHook`` method ``name``."""
+    return getattr(type(hook), name) is not getattr(TurnHook, name)
+
+
+def wraps_calls(hook: TurnHook) -> bool:
+    """Whether ``hook`` overrides a wrap point, which only an unconfined loop can run."""
+    return overrides(hook, "wrap_model_call") or overrides(hook, "wrap_tool_call")
 
 
 @asynccontextmanager

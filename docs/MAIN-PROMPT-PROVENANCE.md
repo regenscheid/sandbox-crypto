@@ -15,15 +15,18 @@ The system message is its sections' texts joined by a blank line, in order
 ([`loop.py`](../packages/orchestrator/src/sandbox_science/orchestrator/loop.py)
 `_sections`):
 
-1. `main`, version `sandbox-main-11`: `SYSTEM_PROMPT`. A caller's other system text is
+1. `main`, version `sandbox-main-19`: `SYSTEM_PROMPT`. A caller's other system text is
    a `custom` section with no version; supplying the exact built-in text counts as
    `main`, which says what the text is, not who supplied it.
 2. `stock`, with the selected template's version, when a research template is
    selected. A custom base cannot be combined with a template.
 3. `memory`, with no version, when the run has the project's stores and the project
-   memory has entries: the framing `sandbox-memory-run-1` and the accepted entries
-   ([project memory](MEMORY.md)). Its text is not from the catalog, so the section pin
-   has no version; the `memory` pin below names the framing's.
+   memory has entries: the framing `sandbox-memory-run-2` and the accepted entries, each
+   under a prefix with its date, basis, ID, revision and scope, and followed by its
+   anchors ([project memory](MEMORY.md)). The prefix shows the date, not the age, so the
+   section, and its pin, are the same for the same memory version. Its text is not from
+   the catalog, so the section pin has no version; the `memory` pin below names the
+   framing's.
 4. `skills`, with no version, when the project pins skills: the framing
    `sandbox-skills-index-4`, the index of the run's skills and the skills loaded at its
    start ([skills](SKILLS.md)); the `skills` pin below names the framing's version.
@@ -46,7 +49,14 @@ builds `PromptPins` (format `sandbox-prompt-pins-1`) once, before the first mode
 - `sections`: each section's ID, version, UTF-8 byte count and SHA-256;
 - `tools`: the offered tool names, in order, and the byte count and SHA-256 of their
   schemas as compact UTF-8 JSON (`name`, `description`, `parameters`) with each
-  object's keys sorted and arrays and tools in their order;
+  object's keys sorted and arrays and tools in their order. The schemas are as the
+  model is offered them, each with the required `purpose_note` the harness adds
+  ([tools spec](specs/tools.md#purpose-of-each-call)), so a run since B9 pins a
+  different hash for the same tools than one before. A run offered the delegate tools
+  since PD-46 lists `accept_delegation` among them, and `message_child`'s and
+  `cancel_delegation`'s descriptions say what they do to a returned task, so its tool
+  pins differ from a run's before
+  ([plans and delegation](specs/plans-and-delegation.md#parent-review));
 - `notices`: the ID, version, byte count and SHA-256 of every notice framing in
   [`notices.py`](../packages/orchestrator/src/sandbox_science/orchestrator/notices.py);
 - `memory`, for a run with the project's stores: the memory framing's version, the

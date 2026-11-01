@@ -9,12 +9,13 @@ honours on the next retry until the answer expires. Unanswered past the rule's
 escalation timeout, a request follows ``on_timeout``.
 
 Keys come in three kinds, each with the scopes an answer can take:
-- ``http`` (the middleware): sandbox, policy revision, method, host, port and path.
-  ``request`` covers the request itself; ``host`` every path on that host and port
-  with that method.
+- ``http`` (the middleware): sandbox, policy revision, method, host, port, path and a
+  digest of the body (M1). ``request`` covers the request itself, its body included;
+  ``host`` every path and body on that host and port with that method.
 - ``mcp`` (the MCP proxy): project, caller, policy revision, server, method, tool and a
   digest of the arguments. ``call`` covers the call itself; ``tool`` the tool with any
-  arguments.
+  arguments. No scope covers other tools: grants of a class on a server are the
+  workspace's (D97), which answers each call they cover.
 - ``packages`` (the worker's provisioning operations, Conda provisioning CP-8): sandbox,
   policy revision, operation and a digest of an exact set of package files, which the
   request's record lists by their paths at the package cache. ``files`` covers exactly
@@ -24,17 +25,32 @@ Keys come in three kinds, each with the scopes an answer can take:
   the time after which it grants nothing (``valid_until``), whatever its answers say, so
   a withdrawal the worker failed to record still ends the grant.
 
+An answer the workspace relays names the grants it comes from (D97). When the user
+revokes one, the worker withdraws each ``http`` or ``mcp`` request a live approval naming
+it answers: a denial marked ``withdrawn``, after which the request's approvals apply no
+longer. It denies nothing, so the next try is recorded as a new request.
+
 The package's modules: ``keys`` (what a request asks for, and the scopes of answers),
 ``records`` (the typed payloads of the records), ``ledger`` (the fold of the records, and
-``resolve``), ``grants`` (file-set grants), ``render`` (what an operator sees) and
-``commands`` (what the components' command lines share). Records are read through a
-small protocol, so the package needs no event store.
+``resolve``), ``grants`` (file-set grants), ``ceilings`` (how widely a user may grant a
+request, D97), ``summary`` (what an approval card shows of it), ``render`` (what an
+operator sees) and ``commands`` (what the components' command lines share). Records are
+read through a small protocol, so the package needs no event store.
 """
 
 from __future__ import annotations
 
+from .ceilings import (
+    PACKAGES_MAX_GRANT,
+    READ_METHODS,
+    GrantScope,
+    allowed,
+    network_max_grant,
+    offered,
+    widest,
+)
 from .commands import MAX_APPROVAL_HOURS, prepare_answer
-from .keys import ALL_SCOPES, DEFAULT_SCOPES, RequestKey, check_scope, files_digest
+from .keys import ALL_SCOPES, DEFAULT_SCOPES, RequestKey, body_digest, check_scope, files_digest
 from .ledger import (
     APPROVAL,
     DENIAL,
@@ -58,6 +74,7 @@ from .records import (
     withdrawal_payload,
 )
 from .render import describe, pending_lines, request_lines
+from .summary import call_summary, http_summary
 
 __all__ = [
     "ALL_SCOPES",
@@ -67,12 +84,15 @@ __all__ = [
     "ESCALATION",
     "KINDS",
     "MAX_APPROVAL_HOURS",
+    "PACKAGES_MAX_GRANT",
+    "READ_METHODS",
     "VALID_UNTIL",
     "WITHDRAWN",
     "Answer",
     "Approvals",
     "Approved",
     "Denied",
+    "GrantScope",
     "PermissionRequest",
     "RecordLike",
     "RequestKey",
@@ -80,12 +100,19 @@ __all__ = [
     "TimedOut",
     "Unrecorded",
     "Waiting",
+    "allowed",
     "answer_payload",
+    "body_digest",
+    "call_summary",
     "check_scope",
     "describe",
     "files_digest",
+    "http_summary",
+    "network_max_grant",
+    "offered",
     "pending_lines",
     "prepare_answer",
     "request_lines",
+    "widest",
     "withdrawal_payload",
 ]

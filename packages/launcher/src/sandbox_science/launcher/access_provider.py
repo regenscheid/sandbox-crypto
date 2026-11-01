@@ -6,8 +6,12 @@ file (docs/MCP-CONNECTORS.md, "What the owner does"; the owner, 2026-10-15).
         --openshell /absolute/path/to/openshell [--provider crypto-research-mcp]
 
 It is the owner-approved alternative to typing the token in, so that a gateway made
-again, as each lab's is, gets the provider without the owner. ``sandbox-science up``
-runs it in a process of its own when ``[mcp_proxy] provider_env_file`` is set and the
+again, as each lab's is, gets the provider without the owner. With ``--from-environment``
+instead of ENV_FILE (and ``--profile`` optional), it reads the two values from its own
+environment, where the Kubernetes bundle's runtime manager Pod puts them from the Secret
+its ``[mcp_direct] provider_secret`` names, in an init container of its own
+(docs/KUBERNETES-PREP.md); the rest is the same. ``sandbox-science up``
+runs it in a process of its own when ``[mcp_direct] provider_env_file`` is set and the
 provider is missing, or with ``--refresh-provider``; the launcher never opens the file.
 It:
 
@@ -15,6 +19,7 @@ It:
    (``FAKE_*``), or one that loads code into a program (``LD_*``);
 2. refuses an OpenShell CLI that is not an absolute path to a regular file the user or
    root owns, which its group and others may not write, outside every git checkout
+   but in an installed Homebrew package (Homebrew's prefix is its own checkout)
    (this repository and its worktrees among them);
 3. refuses ENV_FILE unless it is a regular file, not a symbolic link, with one link,
    that the user owns and its group and others may neither read nor write, in a
@@ -26,12 +31,13 @@ It:
 
 The values are secrets. They reach one child only, ``openshell provider create`` or
 ``update``, through that child's environment (``--credential KEY`` without ``=VALUE``
-reads the variable ``KEY``; OpenShell 0.1.3 takes a credential no other way but on its
+reads the variable ``KEY``; OpenShell 0.1.5 takes a credential no other way but on its
 command line), and from it OpenShell's own encrypted store. While that child runs, the
 user's other processes can read its environment in ``/proc/<pid>/environ``. The values
-are never in an argument, in this process's own environment, in an error or in anything
-it prints. Nothing that child says is shown, since it could echo them; the other
-OpenShell commands never get the values, and their errors are shown. Neither this
+are never in an argument, in this process's own environment (but as Kubernetes gives
+them with ``--from-environment``), in an error or in anything it prints. Nothing that
+child says is shown, since it could echo them; the other OpenShell commands never get the
+values, and their errors are shown. Neither this
 process nor its children write a core file, and on Linux this process cannot be traced
 or read through ``/proc`` by the user's other processes.
 
@@ -46,8 +52,10 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import grp
 import json
 import os
+import pwd
 import re
 import resource
 import stat
@@ -92,12 +100,86 @@ def check_environment(environment: Mapping[str, str]) -> None:
             raise RegistrationError(f"refusing to run with {name} set")
 
 
+def _is_repository(folder: Path) -> bool:
+    """Whether ``folder/.git`` is a repository's own: a ``.git`` directory that holds
+    ``HEAD``, or a worktree's or submodule's ``.git`` file, which begins ``gitdir:``.
+
+    An empty ``.git`` directory (babbage's home has one) is not a checkout.
+    """
+    git = folder / ".git"
+    try:
+        if git.is_dir():
+            return (git / "HEAD").is_file()
+        if git.is_file():
+            with git.open("rb") as handle:
+                return handle.read(len(b"gitdir:")) == b"gitdir:"
+    except OSError:
+        return False
+    return False
+
+
 def _in_checkout(path: Path) -> Path | None:
-    """The git checkout that holds ``path``, if one does."""
+    """The git checkout that holds ``path``, if one does.
+
+    Homebrew's prefix on Apple Silicon, ``/opt/homebrew``, is Homebrew's own git
+    checkout, and its installed packages are in its ``Cellar``, which that checkout
+    ignores: a program there is installed, not checked out.
+    """
     for folder in path.parents:
-        if (folder / ".git").exists():
-            return folder
+        if _is_repository(folder):
+            homebrew = (folder / "Library/Homebrew/brew.sh").is_file()
+            return None if homebrew and path.is_relative_to(folder / "Cellar") else folder
     return None
+
+
+def cli_refusal(
+    real: Path,
+    info: os.stat_result,
+    folder: os.stat_result,
+    uid: int,
+    private_gid: int | None = None,
+) -> str | None:
+    """Why the CLI file, with its directory's status, is not safe to run; ``None`` if it is.
+
+    Safe is a regular file that root or the running user owns, that group and others may
+    not write, in a directory they may not write either: root-owned 0755 in
+    ``/usr/local/bin`` is the image's case. Others who can write the directory can
+    replace the file, whatever its own mode says. A directory writable by
+    ``private_gid``, the running user's own group with no other members, is the user's
+    alone: ``~/.local/bin`` under a umask of 002 on a user-private-group system.
+    """
+    if not stat.S_ISREG(info.st_mode):
+        return f"the OpenShell CLI {real} is not a regular file"
+    if info.st_uid not in (uid, 0):
+        return f"the OpenShell CLI {real} is neither this user's nor root's"
+    if info.st_mode & 0o022:
+        return f"the OpenShell CLI {real} may be changed by others"
+    if folder.st_uid not in (uid, 0):
+        return f"the OpenShell CLI {real} is in a directory that is neither this user's nor root's"
+    if folder.st_mode & 0o002 or (
+        folder.st_mode & 0o020 and (private_gid is None or folder.st_gid != private_gid)
+    ):
+        return f"the OpenShell CLI {real} is in a directory others may change"
+    return None
+
+
+def _private_group() -> int | None:
+    """The running user's primary group if no one else is in it, else ``None``."""
+    gid = os.getgid()
+    try:
+        group = grp.getgrgid(gid)
+    except KeyError:
+        return None
+    others = [name for name in group.gr_mem if name != _user_name()]
+    shared = any(entry.pw_gid == gid and entry.pw_uid != os.getuid() for entry in pwd.getpwall())
+    return None if others or shared else gid
+
+
+def _user_name() -> str | None:
+    try:
+        return pwd.getpwuid(os.getuid()).pw_name
+    except KeyError:
+        return None
 
 
 def check_cli(cli: str) -> str:
@@ -111,12 +193,12 @@ def check_cli(cli: str) -> str:
         info = real.stat()
     except OSError as exc:
         raise RegistrationError(f"cannot use the OpenShell CLI {cli}: {exc.strerror}") from None
-    if not stat.S_ISREG(info.st_mode):
-        raise RegistrationError(f"the OpenShell CLI {real} is not a regular file")
-    if info.st_uid not in (os.getuid(), 0):
-        raise RegistrationError(f"the OpenShell CLI {real} is neither this user's nor root's")
-    if info.st_mode & 0o022:
-        raise RegistrationError(f"the OpenShell CLI {real} may be changed by others")
+    try:
+        folder = real.parent.stat()
+    except OSError as exc:
+        raise RegistrationError(f"cannot use the OpenShell CLI {cli}: {exc.strerror}") from None
+    if (refusal := cli_refusal(real, info, folder, os.getuid(), _private_group())) is not None:
+        raise RegistrationError(refusal)
     return str(real)
 
 
@@ -291,12 +373,38 @@ class OpenShell:
             )
 
 
-def register(env_file: Path, profile: Path, *, provider: str, cli: str) -> str:
-    """Register ``provider`` from ``env_file``; what was done."""
+def from_environment(environment: Mapping[str, str]) -> dict[str, str]:
+    """The two values from the process's environment, where the bundle puts a Kubernetes
+    Secret's two keys (made with ``kubectl create secret generic … --from-env-file``, each
+    given by ``secretKeyRef``), checked as a file's are."""
+    found: dict[str, str] = {}
+    for name in KEYS:
+        value = environment.get(name, "").strip(BLANK)
+        if value and not value.isprintable():
+            raise RegistrationError(f"{name}: its value has a control character")
+        if value:
+            found[name] = value
+    missing = [name for name in KEYS if name not in found]
+    if missing:
+        raise RegistrationError("no " + " and no ".join(missing))
+    return found
+
+
+def register(env_file: Path | None, profile: Path | None, *, provider: str, cli: str) -> str:
+    """Register ``provider`` from ``env_file``, or with none from the process's environment
+    (``from_environment``); what was done. Without ``profile``, the gateway must have the
+    provider's profile already."""
     check_environment(os.environ)
     openshell = OpenShell(check_cli(cli))
-    values = parse(read(env_file))
+    values = parse(read(env_file)) if env_file is not None else from_environment(os.environ)
+    source = str(env_file) if env_file is not None else "the environment"
     if not _has_profile(openshell.json("provider", "profile", "list"), TYPE):
+        if profile is None:
+            raise RegistrationError(
+                f"the gateway has no {TYPE} provider profile: import it once with "
+                "openshell provider profile import -f "
+                "examples/openshell/profiles/cloudflare-access.yaml"
+            )
         openshell.checked("provider", "profile", "lint", "-f", str(profile))
         done = openshell.run("provider", "profile", "import", "-f", str(profile))
         # A profile the listing did not show may still be there.
@@ -306,11 +414,11 @@ def register(env_file: Path, profile: Path, *, provider: str, cli: str) -> str:
     credentials = [option for key in KEYS for option in ("--credential", key)]
     if provider in provider_names(openshell.json("provider", "list")):
         openshell.registered(["provider", "update", provider, *credentials, "--wait"], values)
-        return f"updated the OpenShell provider {provider} from {env_file}"
+        return f"updated the OpenShell provider {provider} from {source}"
     openshell.registered(
         ["provider", "create", "--name", provider, "--type", TYPE, *credentials], values
     )
-    return f"created the OpenShell provider {provider} from {env_file}"
+    return f"created the OpenShell provider {provider} from {source}"
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -318,11 +426,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         prog="python -I -m sandbox_science.launcher.access_provider",
         description="Register a Cloudflare Access service token as an OpenShell provider.",
     )
-    parser.add_argument("env_file", type=Path, help="the owner's file with the token")
-    parser.add_argument("--profile", type=Path, required=True, help="cloudflare-access.yaml")
+    parser.add_argument("env_file", type=Path, nargs="?", help="the owner's file with the token")
+    parser.add_argument(
+        "--from-environment",
+        action="store_true",
+        help="read CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET from the environment "
+        "instead of a file (a Kubernetes Secret's two keys)",
+    )
+    parser.add_argument("--profile", type=Path, help="cloudflare-access.yaml; needed with a file")
     parser.add_argument("--openshell", required=True, help="the OpenShell CLI's absolute path")
     parser.add_argument("--provider", default=PROVIDER)
     args = parser.parse_args(argv)
+    if (args.env_file is None) != args.from_environment:
+        parser.error("give the owner's file or --from-environment, not both or neither")
+    if args.env_file is not None and args.profile is None:
+        parser.error("--profile is needed with the owner's file")
     try:
         harden()
         said = register(args.env_file, args.profile, provider=args.provider, cli=args.openshell)

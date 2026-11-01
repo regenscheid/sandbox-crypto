@@ -27,24 +27,33 @@ from sandbox_science.policy import (
 )
 from sandbox_science.policy.hosts import floor_reason, is_public
 from sandbox_science.policy.openshell import (
+    BASELINE_READ_ONLY,
+    BASELINE_READ_WRITE,
+    BASELINE_UNLISTED,
+    HARD_LANDLOCK,
+    MAX_FILESYSTEM_PATHS,
+    RESEARCH_IMAGE_READ_ONLY,
     SANDBOX_DEVICES_READ_ONLY,
     SANDBOX_DEVICES_READ_WRITE,
+    AgentMcpTarget,
     AnyOf,
     Binary,
     Compiled,
     CompileError,
     Endpoint,
     FilesystemPolicy,
-    McpProxyTarget,
+    LandlockPolicy,
     OpenShellPolicy,
     OrchestratorTarget,
     SandboxFilesystem,
     SandboxTarget,
     ServiceEndpoint,
     Severity,
+    admission_entry,
     admission_ranges,
     admission_refusal,
-    compile_mcp_proxy,
+    admitted_ports,
+    compile_agent_mcp,
     compile_orchestrator,
     compile_sandbox,
     load_targets,
@@ -63,7 +72,7 @@ RANGES = admission_ranges(EXAMPLE, OPEN)
 """The public ranges less the floor's public metadata address, as compiled for EXAMPLE."""
 HEADER = "apiVersion: sandbox-science/v0alpha1\nkind: ProjectPolicy\nmetadata: {name: test}\n"
 
-# Fields of OpenShell's authored schema (v0.1.3) that the compiler may emit. OpenShell
+# Fields of OpenShell's authored schema (v0.1.5) that the compiler may emit. OpenShell
 # rejects unknown fields, so a typo here would break policy loads.
 ALLOWED_KEYS = {
     "version",
@@ -71,6 +80,8 @@ ALLOWED_KEYS = {
     "include_workdir",
     "read_only",
     "read_write",
+    "landlock",
+    "compatibility",
     "network_policies",
     "name",
     "endpoints",
@@ -79,6 +90,7 @@ ALLOWED_KEYS = {
     "host",
     "ports",
     "protocol",
+    "tls",
     "enforcement",
     "rules",
     "deny_rules",
@@ -143,10 +155,18 @@ def mcp_policy(tools: str, *, prefix: str = "", default: str = "escalate") -> Lo
     )
 
 
-def compile_mcp(policy: LoadedPolicy, *, admit_escalated: bool = False) -> Compiled:
-    return compile_mcp_proxy(
-        policy, TARGETS.mcp_proxy, ceiling=OPEN, admit_escalated=admit_escalated
-    )
+AGENT = AgentMcpTarget(
+    middleware="sandbox-science-policy",
+    project="crypto",
+    binaries=("/opt/sandbox-science/bin/python*",),
+    filesystem=SandboxFilesystem(read_only=("/opt/sandbox-science",)),
+)
+"""The agent runtime's sandbox on the direct MCP path, whose fence admits escalated tools
+(the middleware holds them): the MCP proxy's fence, which could deny them, retired (D98)."""
+
+
+def compile_mcp(policy: LoadedPolicy) -> Compiled:
+    return compile_agent_mcp(policy, AGENT, ceiling=OPEN)
 
 
 def openshell_glob(pattern: str, name: str) -> bool:
@@ -186,6 +206,15 @@ def library_allows(policy: LoadedPolicy, server: str, tool: str) -> bool:
     return decision.action in (Action.ALLOW, Action.ALERT)
 
 
+def library_admits(policy: LoadedPolicy, server: str, tool: str) -> bool:
+    """Allowed, or escalated by a rule or class rather than for being unclassified: what
+    the agent runtime's fence admits, the middleware holding the escalations (D98)."""
+    decision = evaluate(McpOperation(server, "tools/call", tool), policy, ceiling=OPEN)
+    if decision.action is Action.ESCALATE:
+        return decision.rule != "mcp.effects.unclassified"
+    return decision.action in (Action.ALLOW, Action.ALERT)
+
+
 def library_allows_or_escalates_by_name(policy: LoadedPolicy, server: str, tool: str) -> bool:
     """Allowed, or escalated by an escalate entry (not by the default action)."""
     decision = evaluate(McpOperation(server, "tools/call", tool), policy, ceiling=OPEN)
@@ -211,21 +240,19 @@ def test_example_sandbox_policy() -> None:
     assert list(entries) == [
         "sandbox-science-egress",
         "sandbox-science-package-cache",
-        "sandbox-science-mcp-proxy",
         "sandbox-science-credentials",
     ]
     named = entries["sandbox-science-egress"].endpoints
-    # The source-download and git-fetch rules name their hosts, so the sandbox can resolve
-    # them; the '*' rules reach other hosts once the worker admits them on demand.
-    assert [endpoint.host for endpoint in named] == [
-        "codeberg.org",
-        "codeload.github.com",
-        "github.com",
-        "gitlab.com",
-        "objects.githubusercontent.com",
-        "raw.githubusercontent.com",
-        "release-assets.githubusercontent.com",
-    ]
+    # The source-host and research-host rules name their hosts, so the sandbox can
+    # resolve them; the '*' rules reach other hosts once the worker admits them on demand.
+    hosts = [endpoint.host for endpoint in named]
+    assert hosts == sorted(
+        pattern.value
+        for rule in EXAMPLE.policy.network.rules
+        if rule.name in ("source-hosts", "research-hosts")
+        for pattern in rule.match.hosts
+    )
+    assert {"github.com", "gitlab.inria.fr", "eprint.iacr.org", "api.openalex.org"} <= set(hosts)
     for endpoint in named:
         assert (endpoint.protocol, endpoint.enforcement, endpoint.access) == (
             "rest",
@@ -249,10 +276,6 @@ def test_example_sandbox_policy() -> None:
     assert (cache.protocol, cache.enforcement, cache.access) == ("rest", "enforce", "read-only")
     assert cache.allow_encoded_slash is True
     assert cache.allowed_ips is None
-    (proxy,) = entries["sandbox-science-mcp-proxy"].endpoints
-    assert (proxy.host, proxy.ports) == ("mcp-proxy.sandbox-science.internal", (8080,))
-    assert (proxy.protocol, proxy.enforcement, proxy.access) == ("rest", "enforce", "full")
-    assert proxy.allowed_ips is None
     middlewares = compiled.policy.network_middlewares
     assert middlewares is not None
     middleware = middlewares["sandbox-science-policy"]
@@ -264,9 +287,22 @@ def test_example_sandbox_policy() -> None:
     assert middleware.config == {
         "policy": {"name": "permissive-default", "digest": EXAMPLE.digest},
         "package_cache": {"host": "package-cache.sandbox-science.internal", "port": 8090},
-        "mcp_proxy": {"host": "mcp-proxy.sandbox-science.internal", "port": 8080},
     }
     assert compiled.policy_digest == EXAMPLE.digest
+
+
+def test_source_hosts_are_not_restricted_by_program() -> None:
+    # D97's binary attribution is not compiled (docs/POLICY.md, "Code egress by binary"):
+    # OpenShell's binaries only admit, match ancestors (every research process descends
+    # from the executor's Python), and cannot tell pip from python. Every program may
+    # reach the source hosts, as the middleware decides each request by the library.
+    compiled = compile_research(EXAMPLE)
+    entries = compiled.policy.network_policies
+    egress = entries["sandbox-science-egress"]
+    assert egress.binaries == (Binary(path="/**"),)
+    source = {"github.com", "gitlab.com", "codeberg.org", "bitbucket.org", "ftp.gnu.org"}
+    assert source <= {endpoint.host for endpoint in egress.endpoints}
+    assert all(entry.binaries == (Binary(path="/**"),) for entry in entries.values())
 
 
 def test_public_ranges_hold_only_addresses_the_library_calls_public() -> None:
@@ -403,6 +439,116 @@ def test_hosts_admitted_on_demand_get_endpoints_like_named_hosts() -> None:
     assert any("2 hosts admitted on demand" in finding.message for finding in compiled.findings)
 
 
+READ_ANY_PORT = (
+    "network:\n  rules:\n"
+    "    - {name: web, operation: http, match: {hosts: ['*'], methods: [GET], ports: any}, "
+    "action: allow}\n"
+    "    - {name: api, operation: http, match: {hosts: [api.example.org], ports: any}, "
+    "action: allow}\n"
+)
+
+
+def test_other_ports_are_admitted_on_demand_under_any_port_rules() -> None:
+    # D95: GET on any port is a read. OpenShell endpoints list their ports, so the
+    # compiled policy admits the defaults and the worker adds other ports one by one.
+    policy = network_policy(READ_ANY_PORT, default="deny")
+    assert admitted_ports(policy) == (80, 443)
+    assert admission_entry(policy, "Papers.Example.net", 443) == "papers.example.net"
+    assert admission_entry(policy, "papers.example.net", 8080) == "papers.example.net:8080"
+    assert admission_entry(policy, "2606:4700::1", 8080) == "[2606:4700::1]:8080"
+    for host, port in [("papers.example.net", 8080), ("api.example.org", 8443)]:
+        assert admission_refusal(policy, TARGETS.sandbox, host, port, ceiling=OPEN) is None
+    for port in (6443, 10250):
+        refusal = admission_refusal(policy, TARGETS.sandbox, "x.example.net", port, ceiling=OPEN)
+        assert f"port {port} is not admitted" in (refusal or "")
+    compiled = compile_sandbox(
+        policy,
+        TARGETS.sandbox,
+        ceiling=OPEN,
+        admitted=[
+            "papers.example.net",
+            "papers.example.net:8080",
+            "api.example.org:8443",  # a named host, on another port
+            "data.example.net:9000",  # another port only
+            "[2606:4700::1]:8080",
+            "x.example.net:6443",  # a control-plane port
+            "printer.local:8080",  # not public
+            "pypi.org:8080",  # a registry
+            "bad:port:entry",
+        ],
+    )
+    assert compiled.admitted == (
+        "[2606:4700::1]:8080",
+        "api.example.org:8443",
+        "data.example.net:9000",
+        "papers.example.net",
+        "papers.example.net:8080",
+    )
+    named = {
+        e.host: e for e in compiled.policy.network_policies["sandbox-science-egress"].endpoints
+    }
+    assert named["api.example.org"].ports == (80, 443, 8443)
+    admitted = {
+        e.host: e for e in compiled.policy.network_policies["sandbox-science-admitted"].endpoints
+    }
+    assert admitted["papers.example.net"].ports == (80, 443, 8080)
+    assert admitted["data.example.net"].ports == (9000,)
+    assert admitted["2606:4700::1"].ports == (8080,)
+    assert all(
+        endpoint.allowed_ips == admission_ranges(policy, OPEN) for endpoint in admitted.values()
+    )
+    assert compiled.admits("papers.example.net", 8080)
+    assert compiled.admits("data.example.net", 9000)
+    assert not compiled.admits("data.example.net", 443)
+    assert not compiled.admits("papers.example.net", 8081)
+    refused = [f.subject for f in compiled.findings if "not admitted on demand" in f.message]
+    assert sorted(refused) == [
+        "hosts.bad:port:entry",
+        "hosts.printer.local:8080",
+        "hosts.pypi.org:8080",
+        "hosts.x.example.net:6443",
+    ]
+
+
+def test_other_ports_are_refused_without_an_any_port_rule() -> None:
+    policy = network_policy(READ_ANYWHERE, default="deny")
+    refusal = admission_refusal(policy, TARGETS.sandbox, "x.example.net", 8080, ceiling=OPEN)
+    assert "port 8080 is not admitted" in (refusal or "")
+    compiled = compile_sandbox(
+        policy, TARGETS.sandbox, ceiling=OPEN, admitted=["x.example.net:8080"]
+    )
+    assert compiled.admitted == ()
+    assert "sandbox-science-admitted" not in compiled.policy.network_policies
+
+
+def test_a_closed_any_port_policy_admits_other_ports_of_named_hosts_only() -> None:
+    policy = network_policy(
+        "network:\n  rules:\n"
+        "    - {name: api, operation: http, match: {hosts: [api.example.org], ports: any}, "
+        "action: allow}\n",
+        default="deny",
+    )
+    assert admission_refusal(policy, TARGETS.sandbox, "api.example.org", 8443, ceiling=OPEN) is None
+    unnamed = admission_refusal(policy, TARGETS.sandbox, "x.example.org", 8443, ceiling=OPEN)
+    assert "allows no request" in (unnamed or "")
+    assert "reaches only the hosts it names" in (
+        admission_refusal(policy, TARGETS.sandbox, "x.example.org", 443, ceiling=OPEN) or ""
+    )
+    compiled = compile_sandbox(
+        policy,
+        TARGETS.sandbox,
+        ceiling=OPEN,
+        admitted=["api.example.org:8443", "x.example.org:8443"],
+    )
+    assert compiled.admitted == ("api.example.org:8443",)
+    (endpoint,) = compiled.policy.network_policies["sandbox-science-egress"].endpoints
+    assert (endpoint.host, endpoint.ports, endpoint.allowed_ips) == (
+        "api.example.org",
+        (80, 443, 8443),
+        None,
+    )
+
+
 def test_hosts_the_policy_cannot_reach_are_not_admitted_on_demand() -> None:
     policy = network_policy(
         READ_ANYWHERE
@@ -457,16 +603,19 @@ def test_the_example_policy_admits_unnamed_public_hosts_on_demand() -> None:
     def refusal(host: str, port: int = 443) -> str | None:
         return admission_refusal(EXAMPLE, TARGETS.sandbox, host, port, ceiling=OPEN)
 
-    assert refusal("eprint.iacr.org") is None
-    assert refusal("eprint.iacr.org", 80) is None
-    assert refusal("EPRINT.IACR.ORG.") is None
-    assert "port 8443 is not admitted" in (refusal("eprint.iacr.org", 8443) or "")
+    assert refusal("example.org") is None
+    assert refusal("example.org", 80) is None
+    assert refusal("EXAMPLE.ORG.") is None
+    # D95: GET on any port is a read, so other ports are admitted one by one.
+    assert refusal("example.org", 8443) is None
+    assert "port 6443 is not admitted" in (refusal("example.org", 6443) or "")
     assert "package registry" in (refusal("pypi.org") or "")
     assert refusal("github.com") is None
     compiled = compile_research(EXAMPLE)
     assert compiled.names("github.com")
     assert compiled.names("GitHub.com.")
-    assert not compiled.names("eprint.iacr.org")
+    assert compiled.names("eprint.iacr.org")  # pre-admitted
+    assert not compiled.names("example.org")
     # Addresses are admitted on demand too, when public.
     assert refusal("93.184.215.14") is None
     assert "not public" in (refusal("203.0.113.7") or "")
@@ -632,23 +781,12 @@ def test_single_host_services_stay_behind_the_middleware() -> None:
     assert middleware.endpoints.include == ("**",)
     assert middleware.endpoints.exclude is None
     assert middleware.config["package_cache"] == {"host": "host.openshell.internal", "port": 8090}
-    assert middleware.config["mcp_proxy"] == {"host": "host.openshell.internal", "port": 8080}
+    # The retired MCP proxy's address, which an older targets file names, gets nothing.
+    assert "mcp_proxy" not in middleware.config
     entries = compiled.policy.network_policies
-    for key in ("sandbox-science-package-cache", "sandbox-science-mcp-proxy"):
-        (endpoint,) = entries[key].endpoints
-        assert endpoint.protocol == "rest"
-
-
-def test_services_sharing_a_port_are_a_compile_error() -> None:
-    target = single_host_target().model_copy(
-        update={
-            "mcp_proxy": ServiceEndpoint.model_validate(
-                {"host": "host.openshell.internal", "port": 8090}
-            )
-        }
-    )
-    with pytest.raises(CompileError, match="different ports"):
-        compile_sandbox(EXAMPLE, target, ceiling=OPEN)
+    (endpoint,) = entries["sandbox-science-package-cache"].endpoints
+    assert endpoint.protocol == "rest"
+    assert "sandbox-science-mcp-proxy" not in entries
 
 
 RESERVED_RULES = """
@@ -662,7 +800,6 @@ network:
           - registry.npmjs.com
           - mcp.example.org
           - package-cache.sandbox-science.internal
-          - mcp-proxy.sandbox-science.internal
           - ok.example.org
       action: allow
     - {name: crates, operation: http, match: {hosts: ["*.crates.io"]}, action: allow}
@@ -691,8 +828,7 @@ def test_reserved_hosts_named_in_rules_are_not_admitted(default: str) -> None:
     refused = {f.subject for f in compiled.findings if "not admitted" in f.message}
     assert {"hosts.pypi.org", "hosts.registry.npmjs.com", "hosts.mcp.example.org"} <= refused
     assert "hosts.*.crates.io" in refused
-    for service in ("package-cache", "mcp-proxy"):
-        assert f"hosts.{service}.sandbox-science.internal" in refused
+    assert "hosts.package-cache.sandbox-science.internal" in refused
 
 
 def test_the_gateway_host_alias_is_accepted_only_as_a_service_host() -> None:
@@ -713,15 +849,28 @@ def test_the_gateway_host_alias_is_accepted_only_as_a_service_host() -> None:
     assert any(f.subject == "hosts.host.openshell.internal" for f in compiled.findings)
 
 
-def test_without_worker_access_no_endpoint_admits_the_mcp_proxy() -> None:
-    text = (ROOT / "examples" / "policy.yaml").read_text()
-    policy = parse_policy(text.replace("worker_access: true", "worker_access: false"))
-    compiled = compile_research(policy)
+def test_research_code_reaches_no_mcp_server_or_proxy() -> None:
+    # The MCP proxy retired (D98, 2026-10-26): no research sandbox gets an endpoint to it,
+    # even where an older targets file still names it.
+    target = TARGETS.sandbox.model_copy(
+        update={
+            "mcp_proxy": ServiceEndpoint.model_validate(
+                {"host": "mcp-proxy.sandbox-science.internal", "port": 8080}
+            )
+        }
+    )
+    compiled = compile_sandbox(EXAMPLE, target, ceiling=OPEN)
     assert "sandbox-science-mcp-proxy" not in compiled.policy.network_policies
+    hosts = {
+        endpoint.host
+        for entry in compiled.policy.network_policies.values()
+        for endpoint in entry.endpoints
+    }
+    assert "mcp-proxy.sandbox-science.internal" not in hosts
     middlewares = compiled.policy.network_middlewares
     assert middlewares is not None
     assert middlewares["sandbox-science-policy"].endpoints.exclude is None
-    assert any(finding.subject == "mcp.proxy.worker_access" for finding in compiled.findings)
+    assert any(finding.subject == "mcp.worker_access" for finding in compiled.findings)
 
 
 EXAMPLE_OPAM = "  opam:                     # OCaml: EasyCrypt, Jasmin\n    action: allow\n"
@@ -747,7 +896,7 @@ def test_an_opam_action_the_network_rules_undo_is_reported(action: str) -> None:
     # deliver it, and the example's source-downloads rule allows GitHub.
     (message,) = opam_findings(compile_research(example_with_opam(action)))
     assert message.startswith(f"packages.opam is {action}, which does not hold")
-    assert "rule source-downloads allows that (GET https://github.com/" in message
+    assert "rule source-hosts allows that (GET https://github.com/" in message
 
 
 def test_an_allowed_opam_is_not_reported() -> None:
@@ -797,10 +946,10 @@ def test_the_pool_ceiling_counts_when_opam_downloads_are_checked() -> None:
     assert opam_findings(compiled) == []
 
 
-# MCP proxy sandbox.
+# The agent runtime's MCP egress (D98): the fence the MCP proxy's sandbox had before.
 
 
-def test_example_mcp_proxy_policy() -> None:
+def test_example_agent_mcp_policy() -> None:
     compiled = compile_mcp(EXAMPLE)
     entry = compiled.policy.network_policies["mcp-crypto-research-mcp"]
     (endpoint,) = entry.endpoints
@@ -822,17 +971,24 @@ def test_example_mcp_proxy_policy() -> None:
     assert len(tool_rules) == 1
     names = tool_rules[0].allow.tool
     assert isinstance(names, AnyOf)
-    assert len(names.any) == 67
+    # The tools the classification makes reads or escalates (the middleware holds those),
+    # and portal_list_servers by name.
+    assert len(names.any) == 75
+    assert "firecrawl-mcp_firecrawl_agent" not in names.any  # browse, off by default
     # The server lists bare names, and the fence admits them as listed (lab 39).
     assert "e-print-mcp_search_eprint" in names.any
+    assert "e-print-mcp_search_eprint_fulltext" in names.any  # pinned 2026-10-31
     assert not any(name.startswith("crypto_research_mcp-") for name in names.any)
     assert [binary.path for binary in entry.binaries] == ["/opt/sandbox-science/bin/python*"]
-    # Inside OpenShell the proxy sees only synthetic addresses, so the fence applies the
+    # Inside OpenShell a client sees only synthetic addresses, so the fence applies the
     # floor and the ceiling to where a name leads (lab 13).
     assert endpoint.allowed_ips == mcp_server_ranges(OPEN)
     assert compiled.policy.filesystem_policy == FilesystemPolicy(
-        include_workdir=True, read_only=("/opt/sandbox-science",)
+        include_workdir=True,
+        read_only=(*BASELINE_READ_ONLY, "/opt/sandbox-science"),
+        read_write=BASELINE_READ_WRITE,
     )
+    assert compiled.policy.landlock == HARD_LANDLOCK
 
 
 def test_mcp_server_names_reach_only_public_addresses_the_floor_and_ceiling_allow() -> None:
@@ -844,7 +1000,7 @@ def test_mcp_server_names_reach_only_public_addresses_the_floor_and_ceiling_allo
         + "    named: {url: 'https://mcp.example.org/x', revision: '1', auth: {mode: none}}\n"
         + "    literal: {url: 'https://192.0.2.10/x', revision: '1', auth: {mode: none}}\n"
     )
-    compiled = compile_mcp_proxy(policy, TARGETS.mcp_proxy, ceiling=ceiling, floor=floor)
+    compiled = compile_agent_mcp(policy, AGENT, ceiling=ceiling, floor=floor)
     ranges = compiled.policy.network_policies["mcp-named"].endpoints[0].allowed_ips
     assert ranges == mcp_server_ranges(ceiling, floor)
     networks = [ipaddress.ip_network(network) for network in ranges or ()]
@@ -871,9 +1027,19 @@ def test_the_example_fence_matches_the_library_for_every_known_tool() -> None:
         "crypto_research_mcp-firecrawl-mcp_firecrawl_search",
     ]
     for tool in tools + made_up:
-        assert openshell_admits(compiled.policy, "crypto-research-mcp", tool) == library_allows(
+        assert openshell_admits(compiled.policy, "crypto-research-mcp", tool) == library_admits(
             EXAMPLE, "crypto-research-mcp", tool
         ), tool
+
+
+def held_variant(policy: LoadedPolicy, tools: str, prefix: str, default: str) -> LoadedPolicy:
+    """The policy with its escalated tools denied instead: the fence without them."""
+    rules = yaml.safe_load(tools)
+    held = {
+        "allow": rules.get("allow", []),
+        "deny": [*rules.get("escalate", []), *rules.get("deny", [])],
+    }
+    return mcp_policy(json.dumps(held), prefix=prefix, default=default)
 
 
 @pytest.mark.parametrize(
@@ -892,16 +1058,14 @@ def test_the_example_fence_matches_the_library_for_every_known_tool() -> None:
 )
 @pytest.mark.parametrize("prefix", ["", "portal-", "srv.v1-"])
 @pytest.mark.parametrize("default", ["escalate", "allow", "deny"])
-@pytest.mark.parametrize("admit_escalated", [False, True])
 def test_compiled_tool_rules_are_never_looser_than_the_library(
-    tools: str, prefix: str, default: str, admit_escalated: bool
+    tools: str, prefix: str, default: str
 ) -> None:
     """Admitting escalated tools admits nothing but them beyond what is allowed, and
-    denies nothing the fence admits without it."""
+    denies nothing the fence admits without them."""
     policy = mcp_policy(tools, prefix=prefix, default=default)
-    compiled = compile_mcp(policy, admit_escalated=admit_escalated)
-    held = compile_mcp(policy)
-    admitted = library_allows_or_escalates_by_name if admit_escalated else library_allows
+    compiled = compile_mcp(policy)
+    held = compile_mcp(held_variant(policy, tools, prefix, default))
     rng = random.Random(f"{tools}{prefix}{default}")  # noqa: S311 - test data, not secrets
     alphabet = [
         "a_",
@@ -926,25 +1090,23 @@ def test_compiled_tool_rules_are_never_looser_than_the_library(
         if not tool:
             continue
         if openshell_admits(compiled.policy, "srv", tool):
-            assert admitted(policy, "srv", tool), tool
+            assert library_allows_or_escalates_by_name(policy, "srv", tool), tool
         if openshell_admits(held.policy, "srv", tool):
             assert openshell_admits(compiled.policy, "srv", tool), tool
 
 
-def test_escalated_tools_are_admitted_at_the_fence_only_on_request() -> None:
+def test_escalated_tools_are_admitted_at_the_fence() -> None:
     policy = mcp_policy("{allow: ['*_search'], escalate: [crawl, '*_feedback'], deny: ['admin_*']}")
-    held = compile_mcp(policy)
-    admitting = compile_mcp(policy, admit_escalated=True)
-    for tool, before, after in (
-        ("paper_search", True, True),
-        ("crawl", False, True),
-        ("paper_feedback", False, True),
-        ("admin_feedback", False, False),
-        ("admin_search", False, False),
-        ("other", False, False),  # escalated by the default action only: still held
+    admitting = compile_mcp(policy)
+    for tool, admitted in (
+        ("paper_search", True),
+        ("crawl", True),
+        ("paper_feedback", True),
+        ("admin_feedback", False),
+        ("admin_search", False),
+        ("other", False),  # escalated by the default action only: still held
     ):
-        assert openshell_admits(held.policy, "srv", tool) is before, tool
-        assert openshell_admits(admitting.policy, "srv", tool) is after, tool
+        assert openshell_admits(admitting.policy, "srv", tool) is admitted, tool
     assert any("escalate entries match are admitted" in f.message for f in admitting.findings)
 
 
@@ -952,18 +1114,16 @@ def test_admitting_escalated_tools_never_denies_a_tool_allowed_by_name() -> None
     policy = mcp_policy(
         "{allow: [portal_list, paper_search], escalate: [crawl, '*_feedback'], deny: ['portal_*']}"
     )
-    held = compile_mcp(policy)
-    admitting = compile_mcp(policy, admit_escalated=True)
-    for tool, before, after in (
-        ("portal_list", True, True),  # admitting '*_feedback' would deny it with 'portal_*'
-        ("paper_search", True, True),
-        ("crawl", False, True),
-        ("paper_feedback", False, False),  # so the escalated pattern stays held
-        ("portal_feedback", False, False),
-        ("portal_reset", False, False),
+    admitting = compile_mcp(policy)
+    for tool, admitted in (
+        ("portal_list", True),  # admitting '*_feedback' would deny it with 'portal_*'
+        ("paper_search", True),
+        ("crawl", True),
+        ("paper_feedback", False),  # so the escalated pattern stays held
+        ("portal_feedback", False),
+        ("portal_reset", False),
     ):
-        assert openshell_admits(held.policy, "srv", tool) is before, tool
-        assert openshell_admits(admitting.policy, "srv", tool) is after, tool
+        assert openshell_admits(admitting.policy, "srv", tool) is admitted, tool
     (warning,) = [f for f in admitting.findings if "are not admitted" in f.message]
     assert "*_feedback" in warning.message
     assert "portal_list" in warning.message
@@ -994,17 +1154,23 @@ def test_a_lone_star_allow_becomes_openshells_any_value_glob_alone() -> None:
 
 
 def test_a_star_block_drops_allow_patterns() -> None:
-    compiled = compile_mcp(mcp_policy("{allow: ['a_*', b_get], escalate: ['*']}"))
+    compiled = compile_mcp(mcp_policy("{allow: ['a_*', b_get], deny: ['*']}"))
     endpoint = compiled.policy.network_policies["mcp-srv"].endpoints[0]
     tools = [rule.allow.tool for rule in endpoint.rules or () if rule.allow.method == "tools/call"]
     assert tools == [AnyOf(any=("b_get",))]
     assert endpoint.deny_rules is None
 
 
-def test_a_permissive_default_is_reported_as_stricter_at_the_fence() -> None:
-    compiled = compile_mcp(mcp_policy("{allow: [a]}", default="allow"))
+def test_a_permissive_unclassified_action_is_reported_as_stricter_at_the_fence() -> None:
+    policy = parse_policy(
+        HEADER
+        + "mcp:\n  effects: {unclassified: {action: allow}}\n  servers:\n    srv:\n"
+        + "      url: https://mcp.example.org/mcp\n      revision: '1'\n      auth: {mode: none}\n"
+        + "      tools: {allow: [a]}\n"
+    )
+    compiled = compile_mcp(policy)
     assert any(
-        finding.severity is Severity.WARNING and "defaults.action is allow" in finding.message
+        finding.severity is Severity.WARNING and "unclassified tools are allow" in finding.message
         for finding in compiled.findings
     )
 
@@ -1019,7 +1185,7 @@ def test_servers_on_the_floor_or_outside_the_ceiling_are_not_compiled() -> None:
         + "    other: {url: 'https://other.example.org/x', revision: '1', auth: {mode: none}}\n"
     )
     ceiling = PoolCeiling.model_validate({"mcp_servers": ["kept", "meta"]})
-    compiled = compile_mcp_proxy(policy, TARGETS.mcp_proxy, ceiling=ceiling)
+    compiled = compile_agent_mcp(policy, AGENT, ceiling=ceiling)
     assert list(compiled.policy.network_policies) == ["mcp-kept"]
     skipped = {
         finding.subject
@@ -1048,8 +1214,8 @@ def test_header_credentials_bind_a_single_provider(headers: str, bound: str | No
 
 
 def test_older_mcp_revisions_are_reported() -> None:
-    target = McpProxyTarget(binaries=("/bin/proxy",), versions=("2025-03-26", "2025-11-25"))
-    compiled = compile_mcp_proxy(EXAMPLE, target, ceiling=OPEN)
+    target = AGENT.model_copy(update={"versions": ("2025-03-26", "2025-11-25")})
+    compiled = compile_agent_mcp(EXAMPLE, target, ceiling=OPEN)
     assert any(finding.subject == "versions" for finding in compiled.findings)
     endpoint = compiled.policy.network_policies["mcp-crypto-research-mcp"].endpoints[0]
     assert endpoint.mcp is not None
@@ -1200,7 +1366,7 @@ def test_credentials_are_not_bound_where_the_library_forbids() -> None:
     )
 
 
-# OpenShell v0.1.3 refuses a policy whose endpoints are ambiguous
+# OpenShell v0.1.5 refuses a policy whose endpoints are ambiguous
 # (openshell-policy/src/ambiguity.rs): endpoints that overlap on host and port
 # must agree on their connection settings, and where neither has the more
 # specific path, on how requests are handled, including the credential binding.
@@ -1453,7 +1619,6 @@ def test_rendered_examples_are_current() -> None:
     )
     expected = {
         "research-sandbox.yaml": compile_research(EXAMPLE).policy.to_yaml(),
-        "mcp-proxy.yaml": compile_mcp(EXAMPLE).policy.to_yaml(),
     }
     for name, text in expected.items():
         current = (ROOT / "examples" / "openshell" / name).read_text()
@@ -1468,7 +1633,9 @@ def test_rendered_examples_are_current() -> None:
 def test_example_targets_parse() -> None:
     assert TARGETS.sandbox.middleware == "sandbox-science-policy"
     assert TARGETS.sandbox.package_cache.port == 8090
-    assert TARGETS.mcp_proxy.versions == ("2025-11-25",)
+    # The retired MCP proxy's sections are optional (D98): an older file's are read.
+    assert TARGETS.mcp_proxy is None
+    assert TARGETS.sandbox.mcp_proxy is None
 
 
 @pytest.mark.parametrize(
@@ -1479,7 +1646,6 @@ def test_example_targets_parse() -> None:
         ("port: 8090", "port: 6443"),
         ("middleware: sandbox-science-policy", "middleware: Not A Name"),
         ("binaries: [/**]", "binaries: [bin/sh]"),
-        ('versions: ["2025-11-25"]', 'versions: ["2024-11-05"]'),
         ("binaries: [/opt/sandbox-science/bin/python*]", "binaries: []"),
     ],
 )
@@ -1511,8 +1677,70 @@ def test_a_research_sandbox_may_open_the_devices_research_code_needs() -> None:
     assert filesystem is not None
     assert filesystem.include_workdir
     assert {"/dev/ptmx", "/dev/pts", "/dev/shm"} <= set(filesystem.read_write)
-    assert filesystem.read_write == SANDBOX_DEVICES_READ_WRITE
-    assert filesystem.read_only == SANDBOX_DEVICES_READ_ONLY
+    assert filesystem.read_write == (*BASELINE_READ_WRITE, *SANDBOX_DEVICES_READ_WRITE)
+    assert filesystem.read_only == (
+        *BASELINE_READ_ONLY,
+        *SANDBOX_DEVICES_READ_ONLY,
+        *RESEARCH_IMAGE_READ_ONLY,
+    )
+
+
+@pytest.mark.parametrize("image_path", ["/opt/sandbox-science-frozen", "/opt/sandbox-science-base"])
+def test_a_research_sandbox_reads_the_images_packages_and_never_writes_them(
+    image_path: str,
+) -> None:
+    # The research images keep GAP, Giac, Maxima's data, ECL and the compilers at
+    # /opt/sandbox-science-frozen, and the base environment under the workspace's layer at
+    # /opt/sandbox-science-base; the workspace links to both (docs/IMAGES.md).
+    assert RESEARCH_IMAGE_READ_ONLY == ("/opt/sandbox-science-frozen", "/opt/sandbox-science-base")
+    filesystem = compile_research(EXAMPLE).policy.filesystem_policy
+    assert filesystem is not None
+    assert image_path in filesystem.read_only
+    assert not any(
+        path == image_path or image_path.startswith(path) for path in filesystem.read_write
+    )
+    # The image's own section cannot make them, a directory above them or one inside them
+    # writable.
+    for path in (image_path, "/opt", f"{image_path}/lib", f"{image_path}/share/gap"):
+        with pytest.raises(ValidationError, match="stays read-only"):
+            SandboxFilesystem(read_write=(path,))
+    # A path that only starts with the same characters is neither.
+    assert SandboxFilesystem(read_write=(f"{image_path}2",)).read_write == (f"{image_path}2",)
+    # The workspace prefix's link beside them is no parent of them and stays writable.
+    target = TARGETS.sandbox.model_copy(
+        update={"filesystem": SandboxFilesystem(read_write=("/opt/sandbox-science",))}
+    )
+    compiled = compile_sandbox(EXAMPLE, target, ceiling=OPEN).policy.filesystem_policy
+    assert compiled is not None
+    assert "/opt/sandbox-science" in compiled.read_write
+    assert image_path in compiled.read_only
+    # The services' sandboxes run images without them.
+    assert TARGETS.orchestrator is not None
+    orchestrator = compile_orchestrator(TARGETS.orchestrator).filesystem_policy
+    assert orchestrator is not None
+    assert image_path not in orchestrator.read_only
+
+
+@pytest.mark.parametrize("which", ["research", "orchestrator", "agent-mcp"])
+def test_every_compiled_sandbox_lists_the_baseline_and_requires_landlock(which: str) -> None:
+    # OpenShell's supervisor adds its baseline only where the path exists on its own host.
+    # For the Mac's VM driver that is macOS, which has no /lib or /proc, so a sandbox there
+    # could not read /proc until the compiler listed the baseline (Mac test, 2026-10-21).
+    # With best_effort, OpenShell would run a sandbox whose rules Landlock cannot apply.
+    orchestrator = TARGETS.orchestrator
+    assert orchestrator is not None
+    policy = {
+        "research": lambda: compile_research(EXAMPLE).policy,
+        "orchestrator": lambda: compile_orchestrator(orchestrator),
+        "agent-mcp": lambda: compile_mcp(EXAMPLE).policy,
+    }[which]()
+    filesystem = policy.filesystem_policy
+    assert filesystem is not None
+    assert set(BASELINE_READ_ONLY) <= set(filesystem.read_only)
+    assert set(BASELINE_READ_WRITE) <= set(filesystem.read_write)
+    assert {"/lib", "/proc"} <= set(filesystem.read_only)
+    assert policy.landlock == LandlockPolicy(compatibility="hard_requirement")
+    assert yaml.safe_load(policy.to_yaml())["landlock"] == {"compatibility": "hard_requirement"}
 
 
 def test_the_filesystem_section_comes_first_and_revisions_keep_the_live_one() -> None:
@@ -1520,15 +1748,21 @@ def test_the_filesystem_section_comes_first_and_revisions_keep_the_live_one() ->
     assert list(yaml.safe_load(policy.to_yaml())) == [
         "version",
         "filesystem_policy",
+        "landlock",
         "network_policies",
         "network_middlewares",
     ]
-    # OpenShell refuses a revision that drops paths it added at startup (lab, 2026-10-11).
+    # OpenShell refuses a revision that drops paths it added at startup (lab, 2026-10-11)
+    # or changes the Landlock section (validate_static_fields_unchanged).
     live = FilesystemPolicy(read_only=("/dev/random", "/usr"), read_write=("/dev/shm", "/tmp"))
-    revision = policy.with_filesystem(live)
+    revision = policy.with_static(live, HARD_LANDLOCK)
     assert revision.filesystem_policy == live
+    assert revision.landlock == HARD_LANDLOCK
     assert revision.network_policies == policy.network_policies
     assert policy.filesystem_policy != live  # the original is unchanged
+    # A sandbox created before compiled policies had a Landlock section keeps none.
+    legacy = policy.with_static(live, None)
+    assert "landlock" not in yaml.safe_load(legacy.to_yaml())
 
 
 def test_the_image_paths_are_added_and_writable_wins() -> None:
@@ -1542,8 +1776,13 @@ def test_the_image_paths_are_added_and_writable_wins() -> None:
     )
     filesystem = compile_sandbox(EXAMPLE, target, ceiling=OPEN).policy.filesystem_policy
     assert filesystem is not None
-    assert filesystem.read_only == ("/dev/random", "/opt/conda")
-    assert filesystem.read_write == (*SANDBOX_DEVICES_READ_WRITE, "/data")
+    assert filesystem.read_only == (
+        *BASELINE_READ_ONLY,
+        "/dev/random",
+        *RESEARCH_IMAGE_READ_ONLY,
+        "/opt/conda",
+    )
+    assert filesystem.read_write == (*BASELINE_READ_WRITE, *SANDBOX_DEVICES_READ_WRITE, "/data")
 
 
 @pytest.mark.parametrize(
@@ -1572,6 +1811,27 @@ def test_too_many_paths_are_a_compile_error() -> None:
         compile_sandbox(EXAMPLE, target, ceiling=OPEN)
 
 
+def test_the_path_limit_counts_the_listed_baseline_once() -> None:
+    fixed = (
+        len(BASELINE_READ_ONLY)
+        + len(BASELINE_READ_WRITE)
+        + len(SANDBOX_DEVICES_READ_ONLY)
+        + len(SANDBOX_DEVICES_READ_WRITE)
+        + len(RESEARCH_IMAGE_READ_ONLY)
+        + BASELINE_UNLISTED
+    )
+
+    def target(count: int) -> SandboxTarget:
+        paths = tuple(f"/opt/p{i}" for i in range(count))
+        return TARGETS.sandbox.model_copy(
+            update={"filesystem": SandboxFilesystem(read_only=(*paths, "/usr", "/proc"))}
+        )
+
+    compile_sandbox(EXAMPLE, target(MAX_FILESYSTEM_PATHS - fixed), ceiling=OPEN)
+    with pytest.raises(CompileError, match="256 filesystem paths"):
+        compile_sandbox(EXAMPLE, target(MAX_FILESYSTEM_PATHS - fixed + 1), ceiling=OPEN)
+
+
 def test_example_targets_name_no_image_paths() -> None:
     assert TARGETS.sandbox.filesystem == SandboxFilesystem()
 
@@ -1585,7 +1845,6 @@ def test_the_orchestrator_reaches_only_the_platform_services() -> None:
     assert list(policy.network_policies) == [
         "sandbox-science-worker-api",
         "sandbox-science-model-gateway",
-        "sandbox-science-mcp-proxy",
     ]
     endpoints = [
         (endpoint.host, endpoint.ports, endpoint.protocol, endpoint.enforcement, endpoint.access)
@@ -1595,29 +1854,58 @@ def test_the_orchestrator_reaches_only_the_platform_services() -> None:
     assert endpoints == [
         ("worker.sandbox-science.internal", (8100,), "rest", "enforce", "full"),
         ("litellm.sandbox-science.internal", (4000,), "rest", "enforce", "full"),
-        ("mcp-proxy.sandbox-science.internal", (8080,), "rest", "enforce", "full"),
     ]
     for entry in policy.network_policies.values():
         assert entry.binaries == (Binary(path="/opt/sandbox-science/bin/python*"),)
     assert policy.network_middlewares is None
     # The harness runs from the image's prefix, which Landlock must let it read (lab 9).
     assert policy.filesystem_policy == FilesystemPolicy(
-        include_workdir=True, read_only=("/opt/sandbox-science",)
+        include_workdir=True,
+        read_only=(*BASELINE_READ_ONLY, "/opt/sandbox-science"),
+        read_write=BASELINE_READ_WRITE,
     )
+    assert policy.landlock == HARD_LANDLOCK
     document = yaml.safe_load(policy.to_yaml())
     assert schema_keys(document) <= ALLOWED_KEYS
     assert None not in leaf_values(document)
 
 
-def test_the_model_gateway_and_mcp_proxy_are_optional_and_cannot_share_the_worker_api() -> None:
+def test_a_service_with_its_own_tls_is_relayed_without_inspection() -> None:
+    # On Kubernetes the runtime pins control's private CA; OpenShell's inspecting proxy
+    # would present its own certificate and could not verify control's.
+    control = ServiceEndpoint(host="control.research.svc.cluster.local", port=8443)
+    target = OrchestratorTarget(
+        worker_api=ServiceEndpoint(host="worker.research.svc.cluster.local", port=8100),
+        model_gateway=ServiceEndpoint(host="litellm.litellm.svc.cluster.local", port=4000),
+        state_service=control.model_copy(update={"relay_tls": True}),
+        binaries=("/opt/sandbox-science/bin/python*",),
+    )
+    policy = compile_orchestrator(target)
+    relayed = policy.network_policies["sandbox-science-state-service"].endpoints
+    assert relayed == (Endpoint(host=control.host, ports=(8443,), protocol="tcp", tls="skip"),)
+    inspected = policy.network_policies["sandbox-science-model-gateway"].endpoints[0]
+    assert (inspected.protocol, inspected.tls, inspected.enforcement) == ("rest", None, "enforce")
+    document = yaml.safe_load(policy.to_yaml())
+    assert document["network_policies"]["sandbox-science-state-service"]["endpoints"] == [
+        {"host": control.host, "ports": [8443], "protocol": "tcp", "tls": "skip"}
+    ]
+    assert schema_keys(document) <= ALLOWED_KEYS
+
+
+def test_the_model_gateway_is_optional_and_cannot_share_the_worker_api() -> None:
     target = OrchestratorTarget(
         worker_api=ServiceEndpoint(host="host.openshell.internal", port=8100),
         binaries=("/usr/local/bin/python3*",),
     )
     assert list(compile_orchestrator(target).network_policies) == ["sandbox-science-worker-api"]
-    for service in ("model_gateway", "mcp_proxy", "state_service"):
+    for service in ("model_gateway", "state_service"):
         with pytest.raises(CompileError, match=r"share host\.openshell\.internal:8100"):
             compile_orchestrator(target.model_copy(update={service: target.worker_api}))
+    # The retired MCP proxy's address (D98) is read and gets nothing.
+    retired = target.model_copy(
+        update={"mcp_proxy": ServiceEndpoint(host="host.openshell.internal", port=8080)}
+    )
+    assert list(compile_orchestrator(retired).network_policies) == ["sandbox-science-worker-api"]
 
 
 @pytest.mark.parametrize(
@@ -1714,20 +2002,6 @@ def test_the_stricter_report_follows_openshells_matching() -> None:
         "x.y is allowed by exact name" in finding.message for finding in compiled.findings
     )
     assert openshell_admits(compiled.policy, "srv", "x.y")
-
-
-def test_worker_tools_narrowing_is_reported_as_looser_at_the_fence() -> None:
-    text = (ROOT / "examples" / "policy.yaml").read_text()
-    policy = parse_policy(
-        text.replace("worker_tools: inherit", "worker_tools: [paper-search-mcp_arxiv_search]")
-    )
-    findings = [
-        finding
-        for finding in compile_mcp(policy).findings
-        if finding.subject == "mcp.proxy.worker_tools"
-    ]
-    assert findings
-    assert findings[0].severity is Severity.WARNING
 
 
 def test_literal_headers_need_no_credential_binding() -> None:

@@ -37,7 +37,18 @@ from sandbox_science.policy.package_requests import SANDBOX_HEADER
 
 pytestmark = pytest.mark.asyncio
 
-STATS_KEYS = {"entries", "bytes", "hits", "misses", "revalidated", "stale", "errors"}
+STATS_KEYS = {
+    "entries",
+    "bytes",
+    "pinned_bytes",
+    "protected_bytes",
+    "protect_limit",
+    "hits",
+    "misses",
+    "revalidated",
+    "stale",
+    "errors",
+}
 
 
 class Seen(Protocol):
@@ -226,6 +237,9 @@ async def test_a_miss_is_fetched_and_stored_then_hit(harness: Harness) -> None:
     assert await harness.stats() == {
         "entries": 1,
         "bytes": 10,
+        "pinned_bytes": 0,
+        "protected_bytes": 0,
+        "protect_limit": 50 * 1024**3,  # protect_share (0.5) of the default 100 GiB
         "hits": 1,
         "misses": 1,
         "revalidated": 0,

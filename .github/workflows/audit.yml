@@ -1,0 +1,92 @@
+# SPDX-License-Identifier: MIT
+name: audit
+
+# Weekly check of the locked dependencies against published advisories. It is not a pull
+# request check: a new advisory fails an unrelated change, so it runs on a schedule (and on
+# demand) and its failure is the signal to update or to record an exception.
+#   python: `uv.lock`'s resolved production set, through pip-audit (PyPI advisories, via the
+#           PyPI JSON API). pip-audit reports no severity, so any known vulnerability fails.
+#   web:    `web/workspace/package-lock.json`, through `npm audit`; high and critical fail.
+#           Development dependencies are included, since Vite and Svelte build what ships.
+# Both write their report to the job summary. To accept a finding that has no fix yet, add
+# `--ignore-vuln <ID>` (pip-audit) or fix it in the lockfile (npm) in a pull request that
+# says why, so the exception is reviewed.
+on:
+  schedule:
+    - cron: "41 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          python-version: "3.13"
+      # The exact resolved set, without the repository's own members. `--locked` fails when
+      # `uv.lock` is out of date, so the audit never reads a set nobody installs. pip-audit
+      # runs through `uv tool run` at a pinned version, in its own environment, so it is
+      # not a dependency of the workspace. `--no-deps --disable-pip` audits the list as
+      # given: nothing is installed or re-resolved.
+      - name: Audit the locked production set
+        run: |
+          set -u
+          uv export --locked --no-dev --no-emit-workspace --no-hashes --no-header \
+            --no-annotate --format requirements-txt > "${RUNNER_TEMP}/requirements.txt"
+          status=0
+          uv tool run --from pip-audit==2.10.1 pip-audit \
+            -r "${RUNNER_TEMP}/requirements.txt" --no-deps --disable-pip --strict \
+            --progress-spinner off --format markdown \
+            > "${RUNNER_TEMP}/pip-audit.md" 2> "${RUNNER_TEMP}/pip-audit.err" || status=$?
+          {
+            echo "## pip-audit: locked production set ($(wc -l < "${RUNNER_TEMP}/requirements.txt") pins)"
+            if [ "${status}" -eq 0 ]; then echo "No known vulnerabilities."; fi
+            cat "${RUNNER_TEMP}/pip-audit.md"
+            echo '```'
+            cat "${RUNNER_TEMP}/pip-audit.err"
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+          cat "${RUNNER_TEMP}/pip-audit.md" "${RUNNER_TEMP}/pip-audit.err"
+          exit "${status}"
+
+  web:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web/workspace
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: "24.20.0"
+      # Reads the committed lockfile and installs nothing (the app's `.npmrc` also sets
+      # `ignore-scripts`); the flag is repeated so that no later change to either can let
+      # a package script run here.
+      - name: Audit the locked packages
+        run: |
+          set -u
+          status=0
+          npm audit --audit-level=high --package-lock-only --ignore-scripts \
+            > "${RUNNER_TEMP}/npm-audit.txt" 2>&1 || status=$?
+          {
+            echo "## npm audit: web/workspace (high and critical fail)"
+            echo '```'
+            cat "${RUNNER_TEMP}/npm-audit.txt"
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+          cat "${RUNNER_TEMP}/npm-audit.txt"
+          exit "${status}"

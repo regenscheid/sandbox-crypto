@@ -190,6 +190,8 @@ def recomputed(path: Path) -> dict[str, tuple[int, int, int, int]]:
                     "SELECT coalesce(sum(CASE WHEN state='done' OR (state='intent' AND receipt "
                     f"IS NOT NULL) THEN {stored} WHEN state='transfer' THEN {stored}+16384 "
                     f"ELSE {reserved} END),0) FROM artifact_operations",
+                    "SELECT coalesce(sum(length(CAST(acknowledgement AS BLOB))+1024),0) "
+                    "FROM artifact_retention_outbox",
                 )
             )
             found[scope] = (revisions, data, operations, metadata)

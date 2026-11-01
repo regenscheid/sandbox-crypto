@@ -48,8 +48,11 @@ from sandbox_science.worker.manager import ExecutionManager
 from sandbox_science.worker.settings import LocalBackendSettings
 from sandbox_science.worker.shared_sync import SharedRecords, SharedSync
 from sandbox_science.worker.store import Store
-from sandbox_science.worker.timeouts import MANAGER_TIMEOUTS, ManagerTimeouts
+from sandbox_science.worker.timeouts import ManagerTimeouts
 from sandbox_science.worker.usability import EnvironmentUse
+
+TEST_TIMEOUTS = ManagerTimeouts(startup_recovery=2.0)
+"""The production values, but a short wait for a sandbox at startup: refusals stay fast."""
 
 TOKEN = "test-secret-worker-pool-token-0000000000"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
@@ -451,6 +454,8 @@ class HostileBackend:
     def isolation_tier(self) -> int:
         return 0
 
+    node_kernel_releases: tuple[str, ...] = ()
+
 
 class Harness(WorkerApi):
     """A worker under test: its manager, store and HTTP API, on one state directory.
@@ -475,7 +480,7 @@ class Harness(WorkerApi):
         max_artifact_size: int = 1 << 20,
         capture_timeout: float = 30.0,
         capture_ack_timeout: float = 1.0,
-        timeouts: ManagerTimeouts = MANAGER_TIMEOUTS,
+        timeouts: ManagerTimeouts = TEST_TIMEOUTS,
         clock: Clock = SYSTEM_CLOCK,
         heartbeat: float = EVENT_HEARTBEAT_SECONDS,
         token: str = TOKEN,

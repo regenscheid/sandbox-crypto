@@ -138,9 +138,22 @@ def test_git_fetch_with_git_content_type_is_still_allowed() -> None:
     assert decide("POST", url, content_type=UPLOAD_PACK, has_body=True) is Action.ALLOW
 
 
-def test_git_rules_have_url_limits() -> None:
+def test_git_rules_can_have_url_limits() -> None:
+    # The example no longer sets them (D95), but a policy still can.
+    limited = policy(
+        """
+        network:
+          rules:
+            - name: fetch
+              operation: git
+              match: {hosts: ["*"], git_service: upload-pack}
+              limits: {max_url_bytes: 4096}
+              action: allow
+        """
+    )
     url = "https://github.com/" + "a" * 20_000 + "/info/refs?service=git-upload-pack"
-    assert decide("GET", url) is Action.DENY
+    assert decide("GET", url, limited) is Action.DENY
+    assert decide("GET", url) is Action.ALLOW
 
 
 # Finding 3: "*search*" matched the portal prefix of every tool.
@@ -179,17 +192,6 @@ def test_tools_outside_a_declared_prefix_are_denied(name: str) -> None:
     assert tool(PREFIX + "firecrawl-mcp_firecrawl_search", PREFIXED) is Action.ALLOW
     # Without a prefix, as crypto-research-mcp lists its tools, the bare name is the tool.
     assert tool("firecrawl-mcp_firecrawl_search") is Action.ALLOW
-
-
-def test_worker_tools_narrow_after_the_prefix_is_removed() -> None:
-    for text, prefix in ((EXAMPLE_TEXT, ""), (PREFIXED_TEXT, PREFIX)):
-        narrowed = parse_policy(text.replace("worker_tools: inherit", 'worker_tools: ["*_search"]'))
-        search, crawl = (
-            prefix + "paper-search-mcp_arxiv_search",
-            prefix + "firecrawl-mcp_firecrawl_map",
-        )
-        assert tool(search, narrowed, origin="worker") is Action.ALLOW
-        assert tool(crawl, narrowed, origin="worker") is Action.DENY
 
 
 # Finding 4: what a reviewer reads must be what is enforced.
@@ -327,7 +329,7 @@ def test_tied_escalations_take_the_strictest_terms() -> None:
               operation: http
               match: {hosts: ["*"], methods: [GET]}
               action: escalate
-              escalation: {timeout: 5m}
+              escalation: {timeout: 5m, on_timeout: deny}
         """
     )
     request = HttpRequest("GET", "https://example.org/")
@@ -450,7 +452,8 @@ def test_lowercase_methods_are_denied(method: str) -> None:
     assert decide(method, "https://example.org/") is Action.DENY
 
 
-# Finding 12: MCP servers are reachable only through the MCP proxy.
+# Finding 12: MCP servers are reachable only by the agent's MCP client (the MCP proxy's,
+# until it retired).
 
 
 def test_declared_mcp_endpoints_cannot_be_reached_as_plain_http() -> None:
@@ -656,8 +659,12 @@ def test_backslash_escapes_in_double_quoted_strings_are_rejected(entry: str) -> 
 
 
 def test_single_quoted_and_plain_strings_still_work() -> None:
-    loaded = parse_policy(HEADER + "mcp: {proxy: {worker_tools: ['*_search', plain_name]}}\n")
-    assert loaded.policy.mcp.proxy.worker_tools == ("*_search", "plain_name")
+    loaded = parse_policy(
+        HEADER
+        + "mcp: {servers: {s: {url: 'https://mcp.example.org/x', revision: '1',\n"
+        + "  auth: {mode: none}, tools: {allow: ['*_search', plain_name]}}}}\n"
+    )
+    assert loaded.policy.mcp.servers["s"].tools.allow == ("*_search", "plain_name")
 
 
 def test_entries_cannot_hide_beyond_the_edge_of_the_screen() -> None:

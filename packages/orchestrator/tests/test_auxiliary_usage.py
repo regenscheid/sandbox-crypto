@@ -10,11 +10,11 @@ from typing import cast
 import pytest
 from pydantic import JsonValue
 
+from sandbox_science.orchestrator.context.history.collections import Collection
 from sandbox_science.orchestrator.continuity.materializations import Table, link
 from sandbox_science.orchestrator.continuity.models import ModelIntents
 from sandbox_science.orchestrator.continuity.plans import spent_tokens
 from sandbox_science.orchestrator.continuity.records import WorkRecords, authority
-from sandbox_science.orchestrator.history.collections import Collection
 from sandbox_science.orchestrator.projects import ModelUsage, ProjectStore
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.skills.store import SkillStore
@@ -202,7 +202,7 @@ async def test_runtime_auxiliary_identity_reaches_legacy_metadata_writer(
     class Gateway:
         requested_profile = ModelProfile(alias="fixture")
 
-        def model(self, alias, *, role=None):
+        def model(self, alias, *, role=None, api=None):
             return self
 
         def for_role(self, role, profile):

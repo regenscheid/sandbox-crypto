@@ -7,6 +7,7 @@ constants they compare against.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -66,7 +67,7 @@ def run_record(session: str, run_id: str, started: datetime, answer: str) -> Run
 
 
 @pytest.fixture
-def state_dir(tmp_path: Path) -> Path:
+def state_dir(tmp_path: Path) -> Iterator[Path]:
     """Project p1 with sessions a and b in its default environment (b closed), c in its
     own, and two runs of a; project p2 with none; a damaged record, broken."""
     root = tmp_path / "harness-state"
@@ -83,8 +84,12 @@ def state_dir(tmp_path: Path) -> Path:
             "INSERT INTO projects VALUES ('broken', 'minimal', 'not-a-policy', "
             "'broken-default', '2026-10-11T13:00:00Z', '2026-10-11T13:00:00Z')"
         )
-    store.close()
-    return root
+    # A live harness keeps a writer open, so its WAL sidecars remain available to
+    # the workspace's read-only connections. The CLI initializes its writer too.
+    try:
+        yield root
+    finally:
+        store.close()
 
 
 @pytest.fixture

@@ -17,11 +17,13 @@ from typing import Any
 
 import pytest
 
+from sandbox_science.orchestrator.consistency.findings import Findings
 from sandbox_science.orchestrator.consistency.models import ReviewConfig
 from sandbox_science.orchestrator.consistency.runner import READ_CHARACTERS, Read, ReviewerRunner
 from sandbox_science.orchestrator.consistency.store import ReviewStore
-from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel, ToolCall
+from sandbox_science.orchestrator.model import ModelTurn
 
+from .scripted import ScriptedModel, ToolCall
 from .test_consistency import claim, dispatch
 from .test_consistency import store as store
 
@@ -93,7 +95,8 @@ async def test_a_review_of_a_normal_window_finishes_within_the_default_limits(st
     assert run["calls"] == reviewer.calls < ReviewConfig().max_turns
     # The budget counts what the calls used, not the estimates.
     assert run["estimated_tokens"] == run["input_tokens"] + run["output_tokens"]
-    assert run["input_tokens"] + run["output_tokens"] < ReviewConfig().token_budget
+    assert ReviewConfig().token_budget is None  # D102: accounted, never a separate stop
+    assert run["input_tokens"] + run["output_tokens"] < 400000
     assert run["coverage_complete"] == 1
 
 
@@ -472,7 +475,10 @@ async def test_feed_end_is_chronologically_complete_even_with_partial_evidence(s
             )
         )
     )
-    assert result["status"] == "inconclusive"
+    # A finding on missing evidence is open, and its first history record says so.
+    assert result["status"] == "open"
+    raised = Findings(reviews).get("p", "s", result["finding_id"])["history"][0]
+    assert raised["payload"]["missing_evidence"] is True
 
 
 @pytest.mark.asyncio

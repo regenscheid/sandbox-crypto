@@ -1,0 +1,41 @@
+# SPDX-License-Identifier: MIT
+# Version updates for the GitHub Actions the workflows pin and for the web app's npm
+# packages. Every update arrives as a pull request that CI checks; nothing merges itself.
+#
+# Python is deliberately not listed. The dependencies are locked by uv (`uv.lock`), which
+# Dependabot's pip ecosystem does not read, and its uv ecosystem is not trusted to keep the
+# lock, the workspace members and the license check consistent. Python packages are updated
+# with `uv lock --upgrade-package` by hand, and `.github/workflows/audit.yml` reports
+# advisories against the lock every week.
+version: 2
+updates:
+  # The workflows pin each action to a commit with its version in a comment; Dependabot
+  # updates both.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      github-actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "ci"
+
+  # Exact versions only (`save-exact` in `.npmrc`), installed with `--ignore-scripts`.
+  # A new package or license must still pass `scripts/check_licenses.py --npm`.
+  - package-ecosystem: npm
+    directory: /web/workspace
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    versioning-strategy: increase
+    groups:
+      npm-minor-and-patch:
+        update-types: ["minor", "patch"]
+      npm-major:
+        update-types: ["major"]
+    commit-message:
+      prefix: "chore"

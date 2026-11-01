@@ -19,7 +19,7 @@ import logging
 import sqlite3
 from collections.abc import Awaitable, Callable
 from datetime import datetime
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import ValidationError
 
@@ -67,6 +67,9 @@ from .store import Store
 from .timeouts import ManagerTimeouts
 from .usability import Usability
 
+if TYPE_CHECKING:
+    from .job_sandboxes import JobSandboxes, Plan
+
 _log = logging.getLogger(__name__)
 
 OUTPUT_BUDGET = 4
@@ -76,6 +79,25 @@ stream, which can triple when invalid bytes become U+FFFD, plus the limit of out
 MAX_EVENTS = 100_000
 """Stream and output events stored for one execution; later ones are dropped."""
 MAX_WRITTEN = 1000
+
+
+def watch_deadline(
+    live: Live, timeout: float, *, now: float, grace: float, beside_running: bool
+) -> float | None:
+    """When the watchdog looks at ``live`` again, or None to cancel it now (CP-12).
+
+    A running execution has its limit (the request's, else ``timeout``) from its start,
+    plus the grace. A queued one waits on while another execution of its environment
+    runs: the executor holds it behind a package command no longer than that command's
+    own attempt may run.
+    """
+    limit = live.time_limit if live.time_limit is not None else timeout
+    if live.running_at is not None:
+        end = live.running_at + limit + grace
+        return end if end > now else None
+    if live.execution.state is ExecutionState.QUEUED and beside_running:
+        return now + grace
+    return None
 
 
 class Dispatcher:
@@ -99,8 +121,11 @@ class Dispatcher:
         timeouts: ManagerTimeouts,
         shared: SharedSync | None,
         lifecycle: EnvironmentLifecycle,
+        sandboxes: Callable[[], JobSandboxes | None] = lambda: None,
     ) -> None:
         self.store = store
+        self.sandboxes = sandboxes
+        """Job sandboxes (D93), where the worker manages environments and offers them."""
         self.connections = connections
         self.usability = usability
         self.journal = journal
@@ -149,6 +174,7 @@ class Dispatcher:
                 "the environment is fenced until its sandbox executor is safely recycled",
             )
         job: JobDetails | None = None
+        plan: Plan | None = None
         execution_id = new_id("exe")
         if isinstance(request, JobRequest):
             context = request.context
@@ -161,11 +187,19 @@ class Dispatcher:
                 if (job_resources := self.lifecycle.job_resources)
                 else Resources()
             )
+            sandboxes = self.sandboxes()
+            if request.profile is not None:
+                if sandboxes is None:
+                    raise WorkerError(
+                        ErrorKind.UNSUPPORTED, "this worker offers no job sandboxes (D93)"
+                    )
+                plan = sandboxes.admit(request, resources)
             maximum = min(
                 604800.0,
                 resources.job_wall_time_max.total_seconds()
                 if resources.job_wall_time_max
                 else 604800.0,
+                plan.settings.wall_time_max if plan is not None else 604800.0,
             )
             default = min(
                 maximum,
@@ -187,6 +221,8 @@ class Dispatcher:
                 and live.execution.state not in TERMINAL_STATES
                 and live.execution.context.project_id == context.project_id
                 and live.execution.context.session_id == context.session_id
+                # A job sandbox's own execution is its job's, which counts already.
+                and not (sandboxes is not None and sandboxes.owns(live.environment_id))
             ]
             if len(running) >= (resources.jobs_per_environment or 8) or len(session) >= (
                 resources.jobs_per_session or 4
@@ -203,6 +239,8 @@ class Dispatcher:
                 timeout_seconds=timeout,
                 stdout_path=f".jobs/{execution_id}/stdout.log",
                 stderr_path=f".jobs/{execution_id}/stderr.log",
+                profile=plan.profile if plan is not None else None,
+                sandbox=plan.sandbox if plan is not None else None,
             )
         execution = Execution(
             execution_id=execution_id,
@@ -217,10 +255,17 @@ class Dispatcher:
         )
         self.store.insert_execution(execution, digest)
         self.store.remember_request(execution_id, request.model_dump_json())
+        sandboxes = self.sandboxes()
+        if plan is not None and sandboxes is not None:
+            # Before any await: the counts admission read cannot change in between.
+            sandboxes.record(execution, plan)
         live = self.journal.track(execution, request.output_limit_bytes)
         self.journal.state(live, ExecutionState.QUEUED)
         self.store.update_execution(live.execution)
-        self.spawn(self._dispatch(live, request))
+        if plan is not None and sandboxes is not None and isinstance(request, JobRequest):
+            self.spawn(sandboxes.run(live, request, self.journal))
+        else:
+            self.spawn(self._dispatch(live, request))
         return live.execution, True
 
     async def _dispatch(self, live: Live, request: ExecutionRequest) -> None:
@@ -380,15 +425,37 @@ class Dispatcher:
         self.store.observation_dispatch(
             live.execution, channel.incarnation, identity, daemon=channel.daemon_token is not None
         )
-        live.watchdog = self.spawn(self.watch(live, time_limit(request)))
+        live.time_limit = time_limit(request)
+        live.watchdog = self.spawn(self.watch(live, live.time_limit))
         await channel.request(request.kind, **fields)
         if channel.daemon_token is not None:
             self.recovery.poll(request.context.environment_id, channel)
 
     async def watch(self, live: Live, timeout: float) -> None:
-        await self.clock.sleep(max(0, timeout + self.timeouts.watchdog_grace))
-        if live.execution.state in TERMINAL_STATES or live.final is not None:
-            return
+        """Cancel an execution that overran its limit, then lose one that never reports.
+
+        The executor counts the limit from when the execution starts, since waiting
+        behind a package command does not count (CP-12), so the watchdog waits on while
+        the execution is queued beside a running one, and counts from its start.
+        """
+        grace = self.timeouts.watchdog_grace
+        deadline: float | None = self.clock.monotonic() + max(0.0, timeout) + grace
+        while deadline is not None:
+            await self.clock.sleep(max(0.0, deadline - self.clock.monotonic()))
+            if live.execution.state in TERMINAL_STATES or live.final is not None:
+                return
+            deadline = watch_deadline(
+                live,
+                timeout,
+                now=self.clock.monotonic(),
+                grace=grace,
+                beside_running=any(
+                    other is not live
+                    and other.environment_id == live.environment_id
+                    and other.execution.state is ExecutionState.RUNNING
+                    for other in self.journal.live.values()
+                ),
+            )
         _log.warning("execution %s overran its limit; cancelling it", live.execution.execution_id)
         with contextlib.suppress(WorkerError):
             await self.cancel(live.execution.execution_id)
@@ -477,6 +544,7 @@ class Dispatcher:
         kind = message.get("event")
         if kind == "state" and message.get("state") == "running":
             if live.execution.state is ExecutionState.QUEUED:
+                live.running_at = self.clock.monotonic()
                 update: dict[str, Any] = {
                     "state": ExecutionState.RUNNING,
                     "started_at": self.clock.now(),
@@ -786,6 +854,13 @@ class Dispatcher:
         already_requested = live.cancel_requested
         self.store.cancel_intent(execution_id)
         live.cancel_requested = True
+        sandboxes = self.sandboxes()
+        job = execution.job
+        if job is not None and job.profile is not None and sandboxes is not None:
+            # A job sandbox's run ends the job, after collecting what it wrote.
+            if not already_requested:
+                await sandboxes.cancel(live, self.journal)
+            return live.execution
         if live.dispatched and not already_requested:
             if execution.kind == "job" or (live.channel is not None and live.channel.daemon_token):
                 live.cancel_watchdog = self.spawn(self.watch_cancel(live))
@@ -870,9 +945,20 @@ class Dispatcher:
         except Exception:
             _log.exception("could not report execution %s as lost", live.execution.execution_id)
 
+    def sandboxed(self, execution: Execution) -> bool:
+        """Whether the execution is a job sandbox's job, which its run takes to its end."""
+        sandboxes = self.sandboxes()
+        return (
+            sandboxes is not None
+            and execution.job is not None
+            and execution.job.profile is not None
+            and sandboxes.sandbox(execution.execution_id) is not None
+        )
+
     async def restore(self, *, daemon_enabled: bool) -> None:
         """Load the executions a previous worker left unfinished, and reattach those its
-        daemons still run; the others are lost. Nothing is ever resubmitted."""
+        daemons still run; the others are lost, except job sandboxes' jobs, which
+        ``JobSandboxes.start`` resumes. Nothing is ever resubmitted."""
         endpoints = tuple(set(self.store.endpoints()) | set(self.store.pending_recycles()))
         if endpoints and not daemon_enabled:
             raise WorkerError(
@@ -901,6 +987,10 @@ class Dispatcher:
                 live.dispatched = True
                 live.cancel_requested = saved[3] or execution.origin is not None
                 recovery.setdefault(execution.context.environment_id, []).append(live)
+            elif self.sandboxed(execution):
+                # A job sandbox's job is never dispatched itself: its run resumes it
+                # once its own execution in the sandbox is recovered (JS-19).
+                live.cancel_requested = saved is not None and saved[3]
             else:
                 self.lose(live, "the worker that restarted without a recoverable daemon dispatch")
         for environment_id in recovery:

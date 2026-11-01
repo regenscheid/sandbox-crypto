@@ -185,8 +185,53 @@ def test_a_run_gets_the_built_in_skills_of_its_role(shipped: Path, tmp_path: Pat
         checking = [e.name for e in store.effective(PROJECT, "delegated", delegates=False).entries]
     finally:
         projects.close()
-    assert names == {"main": ["delegating-work", "pdf-reading"], "delegated": ["delegating-work"]}
-    assert checking == []  # a check, or a task at the last level, has no delegate tools
+    assert names == {
+        "main": ["delegating-work", "pdf-reading"],
+        "delegated": ["delegating-work", "pdf-reading"],
+    }
+    # A check, or a task at the last level, has no delegate tools, but reads PDFs.
+    assert checking == ["pdf-reading"]
+
+
+def test_a_delegated_run_gets_the_reading_skills(shipped: Path, tmp_path: Path) -> None:
+    """Children read the literature through their own connectors (DA-3, DA-21): a task
+    and a check are offered literature-search and pdf-reading, as a main run is."""
+    (shipped / "literature-search").mkdir()
+    (shipped / "literature-search" / "SKILL.md").write_text(
+        "---\nname: literature-search\ndescription: Search.\n---\nL\n"
+    )
+    projects = ProjectStore(tmp_path / "state")
+    projects.create(PROJECT, "minimal", "sha256:" + "a" * 64)
+    try:
+        store = SkillStore(projects.control)
+        store.ensure(PROJECT, builtin.builtin_pack())
+        task = [e.name for e in store.effective(PROJECT, "delegated").entries]
+        check = [e.name for e in store.effective(PROJECT, "delegated", delegates=False).entries]
+    finally:
+        projects.close()
+    assert task == check == ["literature-search", "pdf-reading"]
+    assert builtin.ROLES["literature-search"] == builtin.ROLES["pdf-reading"] == (
+        "main", "delegated",
+    )  # fmt: skip
+
+
+def test_a_delegated_run_gets_the_computation_skill(shipped: Path, tmp_path: Path) -> None:
+    """Children compute freely (D99), so computation is offered to a task and to a check."""
+    (shipped / "computation").mkdir()
+    (shipped / "computation" / "SKILL.md").write_text(
+        "---\nname: computation\ndescription: Compute.\n---\nC\n"
+    )
+    projects = ProjectStore(tmp_path / "state")
+    projects.create(PROJECT, "minimal", "sha256:" + "a" * 64)
+    try:
+        store = SkillStore(projects.control)
+        store.ensure(PROJECT, builtin.builtin_pack())
+        task = [e.name for e in store.effective(PROJECT, "delegated").entries]
+        check = [e.name for e in store.effective(PROJECT, "delegated", delegates=False).entries]
+    finally:
+        projects.close()
+    assert "computation" in task
+    assert "computation" in check
 
 
 def test_a_harness_without_its_pack_says_so(

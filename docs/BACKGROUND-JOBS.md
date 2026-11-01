@@ -15,6 +15,119 @@ elapsed time, terminal outcome and failure reason. The existing `read_file`
 tool reads full logs in ranges. All operations bind the job to the current
 project, session and environment. Model arguments cannot replace that context.
 
+## Job sandboxes
+
+A job may run in a new sandbox of its own, sized by a trusted job profile (D93,
+[spec](specs/job-sandboxes.md)): `start_job` takes `profile`, one of the sizes the worker
+grants the project, such as "large: 12 cores, 32 GiB memory, up to 7 days", and `inputs`,
+up to 64 session files or directories to copy in. The harness lists the granted sizes in
+the tool's schema from the worker's capabilities and adds its own `--min-isolation-tier`;
+without granted profiles `start_job` is offered as before. Agents never give CPU,
+memory, placement or pod settings.
+
+The job keeps the session's context, so ownership, Resume, notices and the GUI treat it
+as any job. The worker records it, then:
+
+1. **creates** a [job environment](WORKER.md#job-environments) from the session
+   environment's recorded image, policy revision, providers and admitted hosts. A
+   sandbox not placed within the profile's `schedule_timeout` (30 minutes by default)
+   ends the job `failed` with `capacity_unavailable`, and is deleted by identity;
+2. **prepares** it: the isolation probe runs in the new sandbox, and a tier below the
+   request's minimum or the session environment's ends the job `isolation_insufficient`
+   and releases the sandbox; the session's recorded package changes (its lockfile against
+   the image's packages) are installed at their recorded versions, Conda packages by
+   channel, name, version and build, then pip pins, as provisioning operations through
+   the package cache under the session's policy, and the job sandbox's lockfile must then
+   hold them. A failure ends the job `package_replay_failed` or `environment_mismatch`
+   before its command. Then the inputs are copied to the same paths, following no symlink,
+   within the profile's `stage_max_bytes`. A sandbox whose executor cannot start because
+   its image lacks the workspace package prefix the profile requires ends the job
+   `failed` (`sandbox_unavailable`, naming the prefix) and is released at once: nothing
+   ran;
+3. **runs** the command there; the job is `queued` until now, and `running` from now;
+4. **collects**: the whole logs go to the job's usual `.jobs/<ID>/stdout.log` and
+   `stderr.log`, and each file the command wrote outside `.jobs/` and `shared/` to
+   `.jobs/<ID>/files/<path>`, within the profile's `collect_max_bytes` (4 GiB), 1,000
+   files and 100 MiB a file. `shared/` returns by the ordinary sync. The result's
+   `written_files` names what came back, and the harness records it as artifacts at the
+   completion notice;
+5. **stores the manifest** (`JobResultManifest`) once, with the outcome: profile, image,
+   sandbox, tier and evidence, replayed packages, inputs, collected files and those not
+   collected with why. The store refuses to change it; `job_status` returns it with the
+   digest (`job.sandbox.manifest_sha256`), and `.jobs/<ID>/manifest.json` is a copy the
+   job could have changed;
+6. **releases** the sandbox at once after a success whose collection was complete.
+   Otherwise (failure, timeout, cancellation, an incomplete collection) it stops the
+   sandbox, keeping its disk and freeing CPU and memory, for `job_retention` (3 days),
+   at most `job_retention_per_project` (2) per project: a third releases the oldest.
+   An hourly sweep releases overdue ones. Released files are gone. A job sandbox is
+   disposable, so a package gate held for recovery, which keeps a session environment
+   from being stopped or deleted, never keeps a job sandbox.
+
+A deleted or evicted sandbox, found by looking at it while the job runs, ends the job
+`lost` (`sandbox_lost`); the command is never submitted again. A full count is refused at
+once, before anything is created: an unknown or ungranted profile, the project's
+`job_sandboxes` (default 0, so the feature is off until granted), the profile's
+`max_concurrent` and the pool's `max_job_sandboxes` (2). Job sandboxes count while
+creating, preparing, running or collecting; retained ones only hold disk.
+
+**A worker restart.** The job's command runs as an ordinary daemon job of the job
+environment, so the worker's [recovery](WORKER.md#sandbox-daemon-and-recovery) treats it
+like any other: on start it looks the sandbox up by its recorded name and immutable ID,
+reconnects the bridge and replays the numbered events it missed, or reports that
+execution `lost` when the gateway says the sandbox is gone or a new daemon incarnation
+answers without it. The worker then takes the job up from its recorded phase, never
+submitting its command again:
+
+- **creating or preparing** (the command was not dispatched): the job ends `failed`
+  (`worker_restarted`) and its sandbox is released; nothing ran;
+- **running**: the job waits for its command again, then collects and ends as usual;
+- **collecting**: collection goes on after the last file it recorded, so no file is
+  copied back twice, within the deadline that began before the restart;
+- **ended** (the manifest is stored, the job not yet reported): the stored manifest is
+  the outcome; it is never rewritten.
+
+A command lost with its sandbox ends the job `lost` (`sandbox_lost`) and releases the
+record once deletion by identity confirms the sandbox is gone, so a gone sandbox holds
+none of the project's retention places. A command lost while its sandbox stays (a new
+daemon without it) ends the job `lost` too, collects what it can reach and retains the
+sandbox. Neither is run again. A graceful worker stop leaves a job sandbox's job
+unfinished for the next worker; it is not reported lost.
+
+**Closing the session** cancels a job sandbox's job, collects what it wrote, and releases
+the sandbox without retention. The close waits for the job for the cancel grace (30 s);
+a job still collecting goes on, and still releases its sandbox when it ends, after a
+restart too.
+
+**Deleting the session environment**, or the worker giving it up because its sandbox
+went, cancels its job sandboxes' jobs and releases their sandboxes without retention, as
+a close does, but copies nothing more into the environment that is going: collection
+stops before its next file, the manifest names what was left ("the session environment
+was deleted"), and `shared/` still returns by the ordinary sync. The job ends `cancelled`
+with a notice saying why, never `lost`, and its record and manifest stay. The
+environment's retained job sandboxes are released too, since nothing can reach their
+files through it any more. The deletion waits for the jobs for the cancel grace. A
+deletion the worker did not see (made while it was stopped, or by the offline
+reconciliation command) has the same effect when it next starts, and the hourly sweep
+releases a retained sandbox whose session environment is gone.
+
+**Releasing early.** A retained sandbox holds only disk, and the user may delete it before
+its deadline with "Release now" on the job's card in the [workspace](WORKSPACE.md#background-jobs)
+(JS-24). The worker's operator-only route deletes it by its identity as the sweep would and
+refuses one that is not retained; it never releases a running job's sandbox, which is
+cancelled first.
+
+**Tested over a real restart.** Besides the in-process tests of every phase,
+`test_job_sandboxes_process.py` runs the worker as a process over the fake OpenShell CLI,
+with each sandbox's daemon a local process that outlives the worker, kills the worker
+mid-job and starts it again: the job is taken up running and collected once, a sandbox
+lost meanwhile makes it `lost` without a rerun, and deleting the session environment
+releases it.
+
+Not yet: live head and tail output of a running job sandbox's job, checkpoints and
+`resume_from` (increment 3), files over 100 MiB (increment 4), and live Kata acceptance
+on the cluster ([checklist](KUBERNETES-PREP.md#14-job-sandboxes-on-kata-qualification)).
+
 ## Waiting and the watcher
 
 `wait_jobs` takes distinct `job_ids` and `mode: all` (the default) or `first`.

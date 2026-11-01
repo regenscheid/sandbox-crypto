@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: MIT
-"""MCP connectors for the agent: the harness as a caller of the MCP proxy (D67, D-08).
+"""MCP connectors for the agent: one run's connector tools, admitted by the host and made
+by the confined runtime's own client (D98, ``confinement.connector_calls``, D-08).
 
-The orchestrator reaches MCP servers only through the MCP proxy
-(docs/MCP-CONNECTORS.md), which authenticates it by its bearer token, applies the
-project's policy, holds escalated calls for the operator, and alone holds the
-servers' credential placeholders. ``ProxyClient`` is a small Streamable HTTP client
-for the proxy, which answers JSON only. A token names one project at the proxy, so
-connectors are offered only to runs of that project.
+The agent runtime's client reaches each declared server through OpenShell's proxy, whose
+native ``protocol: mcp`` rules and the policy middleware decide each request for the
+project; the client, the provider's placeholders and the compiled endpoints are in the
+runtime's sandbox (``mcp_direct``). The MCP proxy that stood there before retired on
+2026-10-26 (docs/MCP-CONNECTORS.md). ``Connectors`` takes any ``McpClient``.
 
 ``Connectors`` are one run's connector tools (the decisions of 2026-10-14):
 
@@ -27,51 +27,71 @@ connectors are offered only to runs of that project.
   the reason, the first ``mcp_tools`` call lists it once more, and the run's record and
   its ``started`` event keep it (lab 41, B4: one failed listing left a run without
   connectors, and nothing said so);
-- each with the effect class ``effect``, since the policy marks no connector tool
-  read-only, so the plan fence applies;
+- each with the effect class ``effect``, so the plan fence applies. Each listed tool
+  also has the D96 class the host gives it (``ToolClassSource``, DA-7), never one the
+  listing says: the host digests each listed tool as the pins do (``tool_digest``) and asks
+  the worker for the class the project's classification in force gives that name with
+  that pin, with whether a call of it asks a person first. A drifted, unpinned or
+  unclassified tool, and every tool when the worker does not answer, has none. The tool
+  keeps it, each call's record names it with its reach
+  (``delegation.effects.connector_reach``), and a delegated run's fence reads it, asking
+  again before each call it decides (``classed``), so a revision accepted during a run
+  applies from its next call (D99);
+- offered to main and delegated runs alike (DA-3, DA-7), through one client: every
+  request names the session in ``Sandbox-Science-Session`` and the run that made it in
+  ``Sandbox-Science-Run`` (DA-4), which the policy middleware records as attribution
+  only. A delegated check is offered only the tools classed ``read`` (DA-1, PD-33), and a
+  task only those its brief's narrowing and every one above it admit (DA-6,
+  ``delegation.narrowing``): a server none of them names is not listed;
 - what a server says about a tool is untrusted. Its description loses control and
   invisible characters, is bounded and is framed as the server's. Its input schema is
   rebuilt from structural keywords only, with no text but property names and bounded
   enum values; a schema that does not fit falls back to an empty object schema;
-- a refusal comes back as the tool's error with the proxy's reason. ``approval_required``
-  says the call waits for the operator (``sandbox-science-mcp-proxy pending`` and
-  ``approve``), and the agent calls again later, with the same arguments, which the
-  harness sends in one order;
+- a refusal comes back as the tool's error with its reason. ``approval_required``
+  says the call waits for the user's answer in the workspace, and the agent calls again
+  later, with the same arguments, which the client sends in one order;
 - a call sent whose answer cannot be read is ``no_usable_answer``: the server may have
   done the work, so the harness leaves its intent pending for reconciliation;
-- text results only: the proxy withholds binary content, and the toolbox bounds the
-  text as it bounds any tool result.
+- with a ``BinarySink`` (``mcp_binaries``), each image, audio block or blob of a result
+  is withheld (``policy.mcp_answers``) and kept as an artifact, and the model sees the
+  sink's note naming it instead; the toolbox bounds the text as it bounds any tool result.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
 import re
 from collections import Counter
-from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
-from typing import Any, Final, cast
-from urllib.parse import urlsplit
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass, replace
+from typing import Any, Final, Protocol, cast
 
-import aiohttp
+from sandbox_science.policy.mcp_answers import binary_contents, withhold_binary
+from sandbox_science.policy.mcp_wire import tool_digest
 
+from .delegation.effects import EFFECT_CLASSES, connector_reach
+from .delegation.narrowing import Narrowing
 from .documents.agent_text import hidden_characters
 from .effects import UnknownEffectError
+from .mcp_binaries import BinarySink
 from .model import ToolSpec
+from .purpose import offered
 from .worker_client import dump
 
 _log = logging.getLogger(__name__)
 
 PROTOCOL: Final = "2025-11-25"
-"""The MCP revision the harness speaks to the proxy."""
+"""The MCP revision the client speaks to servers."""
 SESSION_HEADER: Final = "Sandbox-Science-Session"
-"""Names the session whose agent made a call, which the proxy records (docs/MCP-CONNECTORS.md)."""
-REFUSED: Final = -31001
-"""The proxy's own JSON-RPC error code: it refused the call (its ``data.reason`` says why)."""
-UPSTREAM_FAILED: Final = -31002
+"""Names the session whose agent made a call, which the policy middleware records
+(docs/MCP-CONNECTORS.md)."""
+RUN_HEADER: Final = "Sandbox-Science-Run"
+"""Names the run whose agent made a call (DA-4): a main run's or a delegated run's name, as
+its record is kept. The middleware records it; it is never part of a key."""
 MAX_ANSWER_BYTES: Final = 8 * 1024 * 1024
 MAX_DESCRIPTION: Final = 2000
 MAX_SCHEMA_BYTES: Final = 16 * 1024
@@ -112,188 +132,20 @@ LIST_BACKOFF: Final = 1.0
 MAX_FAILURE: Final = 300
 """Characters of the reason a server's listing failed."""
 CALL_SECONDS: Final = 330.0
-"""How long one call may take: longer than the proxy's default ``upstream_timeout``
-(5 minutes), so the proxy's own answer arrives first."""
+"""How long one call may take, from start to end."""
 NAME: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 """A tool name a model can call, and that a run's records can hold."""
-_TOKEN: Final = re.compile(r"[\x21-\x7e]{16,512}")
-_PLAIN_HTTP: Final = frozenset(
-    {"127.0.0.1", "localhost", "::1", "[::1]", "host.openshell.internal"}
-)
-"""Hosts reached over plain http: loopback, and OpenShell's route from a sandbox to
-its own host (``host.openshell.internal``), whose traffic stays on that host."""
 
 
 class ConnectorError(Exception):
-    """The proxy refused a request, or could not be reached; ``kind`` is its reason."""
+    """A request was refused, or the server could not be reached; ``kind`` is its reason."""
 
     def __init__(self, kind: str, message: str, data: Mapping[str, object] | None = None) -> None:
         super().__init__(f"{kind}: {message}")
         self.kind, self.message, self.data = kind, message, dict(data or {})
 
 
-def check_proxy(url: str, token: str) -> None:
-    """Refuse a proxy address or token the client should not use (ValueError).
-
-    The address is ``https``, or ``http`` on loopback only, where the proxy's forward
-    listens on one host; the token is one line of visible ASCII."""
-    parts = urlsplit(url)
-    host = parts.hostname
-    if parts.scheme not in ("http", "https") or not host:
-        raise ValueError("the MCP proxy's address is an http or https URL")
-    if parts.scheme == "http" and host not in _PLAIN_HTTP:
-        raise ValueError(
-            "the MCP proxy is reached over https, or over http on loopback or "
-            "host.openshell.internal only"
-        )
-    if parts.username is not None or parts.query or parts.fragment:
-        raise ValueError("the MCP proxy's address has no credentials, query or fragment")
-    if not _TOKEN.fullmatch(token):
-        raise ValueError("the MCP proxy token is one line of 16 to 512 visible ASCII characters")
-
-
-class ProxyClient:
-    """One caller's connection to the MCP proxy at ``url``, with its ``token``.
-
-    It keeps one MCP session per server, started on first use and shared by concurrent
-    callers, and starts it again once if the proxy no longer knows it (a restart). It
-    never follows a redirect.
-    """
-
-    def __init__(self, url: str, token: str, *, timeout: float = CALL_SECONDS) -> None:
-        self.url = url.rstrip("/")
-        self._token = token
-        self._timeout = aiohttp.ClientTimeout(total=timeout)
-        self._http: aiohttp.ClientSession | None = None
-        self._sessions: dict[str, asyncio.Task[str]] = {}
-        self._ids = 0
-
-    async def close(self) -> None:
-        for task in self._sessions.values():
-            task.cancel()
-        if self._http is not None:
-            await self._http.close()
-            self._http = None
-
-    async def request(
-        self, server: str, method: str, params: Mapping[str, object], *, session: str
-    ) -> dict[str, Any]:
-        """``method``'s result from ``server``; ``session`` names the asking session."""
-        message = _body(
-            {"jsonrpc": "2.0", "id": self._next(), "method": method, "params": dict(params)}
-        )
-        for attempt in (1, 2):
-            task, mcp_session = await self._session(server, session)
-            status, body = await self._post(server, message, session, mcp_session)
-            if status == 404 and attempt == 1:
-                self._forget(server, task)  # the proxy forgot it: start again, once
-                continue
-            return _result(status, body)
-        raise AssertionError("unreachable")  # pragma: no cover
-
-    def _forget(self, server: str, task: asyncio.Task[str]) -> None:
-        """Forget the session ``task`` started, unless another caller already started a
-        new one, which is never cancelled: others may be waiting on it."""
-        if self._sessions.get(server) is task:
-            del self._sessions[server]
-
-    async def _session(self, server: str, session: str) -> tuple[asyncio.Task[str], str]:
-        """The server's MCP session, and the start that made it: callers wait on one
-        start, and no lock is held."""
-        task = self._sessions.get(server)
-        if task is None or (task.done() and (task.cancelled() or task.exception() is not None)):
-            task = self._sessions[server] = asyncio.ensure_future(self._start(server, session))
-        try:
-            return task, await asyncio.shield(task)
-        except ConnectorError:
-            self._forget(server, task)
-            raise
-
-    async def _start(self, server: str, session: str) -> str:
-        """Start an MCP session with ``server`` through the proxy; its ID."""
-        params = {
-            "protocolVersion": PROTOCOL,
-            "capabilities": {},
-            "clientInfo": {"name": "sandbox-science-harness", "version": "0.1"},
-        }
-        message = {"jsonrpc": "2.0", "id": self._next(), "method": "initialize", "params": params}
-        try:
-            async with self._client().post(
-                f"{self.url}/mcp/{server}",
-                data=_body(message),
-                headers=self._headers(session, None),
-                allow_redirects=False,
-            ) as response:
-                body = await _read(response)
-                found = response.headers.get("Mcp-Session-Id")
-                status = response.status
-            _result(status, body)
-            if not found:
-                raise ConnectorError("unavailable", f"the proxy started no session for {server}")
-            async with self._client().post(
-                f"{self.url}/mcp/{server}",
-                data=_body({"jsonrpc": "2.0", "method": "notifications/initialized"}),
-                headers=self._headers(session, found),
-                allow_redirects=False,
-            ) as response:
-                await _read(response)
-                if response.status != 202:
-                    raise ConnectorError(
-                        "unavailable", f"the proxy answered initialized with {response.status}"
-                    )
-        except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
-            raise ConnectorError(
-                "unavailable", f"the MCP proxy cannot be reached: {type(exc).__name__}"
-            ) from None
-        return found
-
-    async def _post(
-        self, server: str, message: bytes, session: str, mcp_session: str
-    ) -> tuple[int, object]:
-        try:
-            response = await self._client().post(
-                f"{self.url}/mcp/{server}",
-                data=message,
-                headers=self._headers(session, mcp_session),
-                allow_redirects=False,
-            )
-        except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
-            # Nothing was answered: the call may or may not have left.
-            raise ConnectorError(
-                "no_usable_answer", f"the MCP proxy gave no answer ({type(exc).__name__})"
-            ) from None
-        async with response:
-            try:
-                return response.status, await _read(response)
-            except (aiohttp.ClientError, TimeoutError) as exc:
-                raise ConnectorError(
-                    "no_usable_answer",
-                    f"the MCP proxy's answer could not be read ({type(exc).__name__})",
-                ) from None
-
-    def _client(self) -> aiohttp.ClientSession:
-        if self._http is None:
-            self._http = aiohttp.ClientSession(timeout=self._timeout)
-        return self._http
-
-    def _headers(self, session: str, mcp_session: str | None) -> dict[str, str]:
-        headers = {
-            "Authorization": f"Bearer {self._token}",
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            SESSION_HEADER: session,
-        }
-        if mcp_session is not None:
-            headers["Mcp-Session-Id"] = mcp_session
-            headers["MCP-Protocol-Version"] = PROTOCOL
-        return headers
-
-    def _next(self) -> int:
-        self._ids += 1
-        return self._ids
-
-
-def _body(message: Mapping[str, object]) -> bytes:
+def encode_message(message: Mapping[str, object]) -> bytes:
     """A message with its keys sorted, so the same arguments are the same request: a call
     approved for the operator matches it when it comes again. A message JSON cannot hold
     is never sent (``not_sent``)."""
@@ -303,47 +155,6 @@ def _body(message: Mapping[str, object]) -> bytes:
         raise ConnectorError(
             "not_sent", f"the arguments cannot be sent as JSON ({type(exc).__name__})"
         ) from None
-
-
-async def _read(response: aiohttp.ClientResponse) -> object:
-    """The whole answer, up to ``MAX_ANSWER_BYTES``, as JSON; ``None`` if it is not."""
-    data = bytearray()
-    while chunk := await response.content.read(64 * 1024):
-        data += chunk
-        if len(data) > MAX_ANSWER_BYTES:
-            raise ConnectorError(
-                "no_usable_answer", f"the proxy's answer exceeds {MAX_ANSWER_BYTES} bytes"
-            )
-    if not data:
-        return None
-    try:
-        return json.loads(data)
-    except (ValueError, RecursionError):
-        return None
-
-
-def _result(status: int, body: object) -> dict[str, Any]:
-    """A JSON-RPC answer's result, or the proxy's refusal as a ``ConnectorError``."""
-    message = cast(dict[str, Any], body) if isinstance(body, dict) else {}
-    error = message.get("error")
-    if isinstance(error, dict):
-        error = cast(dict[str, Any], error)
-        data = error.get("data")
-        data = cast(dict[str, object], data) if isinstance(data, dict) else {}
-        code = error.get("code")
-        reason = data.get("reason")
-        if code in (REFUSED, UPSTREAM_FAILED) and isinstance(reason, str):
-            raise ConnectorError(reason, clean(str(error.get("message", "")))[:500], data)
-        said = clean(str(error.get("message", "")))[:2000]
-        raise ConnectorError(
-            "server_error", f"the MCP server answered an error (untrusted): {said}"
-        )
-    result = message.get("result")
-    if status != 200 or not isinstance(result, dict):
-        raise ConnectorError(
-            "no_usable_answer", f"the MCP proxy answered {status} without a usable result"
-        )
-    return cast(dict[str, Any], result)
 
 
 def clean(text: str) -> str:
@@ -357,12 +168,25 @@ def clean(text: str) -> str:
 
 @dataclass(frozen=True)
 class ConnectorTool:
-    """A tool of a server behind the proxy, as offered to the model."""
+    """A tool of a configured server, as offered to the model."""
 
     server: str
     spec: ToolSpec
     purpose: str = ""
     """The first line of what the server says it does, bounded: the index shows it."""
+    effect_class: str | None = None
+    """The tool's D96 class as the host took it (``ToolClassSource``), or None: no class,
+    which the fence treats as outward."""
+    escalates: bool = False
+    """The policy escalates a call of it by name, as the host took it; False otherwise. A
+    delegated run's fence lets such a call through, to be held for the user, under a draft
+    plan (D99)."""
+    digest: str = ""
+    """The listed tool's digest as the pins compute it (``mcp_wire.tool_digest``); empty
+    for a tool that cannot be digested, which never has a class."""
+    confirmed: bool = False
+    """Whether the trusted side answered for its class (a class, or none); False while it
+    could not be asked, so it is asked again at the next call."""
 
     @property
     def group(self) -> str:
@@ -381,11 +205,13 @@ class ConnectorTool:
 
     @property
     def sha256(self) -> str:
-        """The SHA-256 of the spec the model is given, which the run's record keeps."""
+        """The SHA-256 of the spec the model is given, with the ``purpose_note`` every
+        tool is offered with (Purpose 1), which the run's record keeps."""
+        given = offered(self.spec)
         spec = {
-            "name": self.spec.name,
-            "description": self.spec.description,
-            "parameters": self.spec.parameters,
+            "name": given.name,
+            "description": given.description,
+            "parameters": given.parameters,
         }
         return hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest()
 
@@ -413,20 +239,97 @@ def purpose(description: object) -> str:
     return text if len(text) <= PURPOSE_CHARS else text[: PURPOSE_CHARS - 1].rstrip() + "…"
 
 
+@dataclass(frozen=True, slots=True)
+class TrustedClass:
+    """A listed tool's class as the trusted side gives it: the D96 class and whether a call
+    of it by name asks a person first."""
+
+    effect: str
+    escalates: bool = False
+
+
+class ToolClassSource(Protocol):
+    """Where the host takes listed tools' classes from: the project's classification in
+    force, on the trusted side (``confinement.listings.WorkerToolClasses``, DA-7)."""
+
+    async def classes(
+        self, asked: Mapping[str, Mapping[str, str]], *, session: str
+    ) -> Mapping[str, Mapping[str, TrustedClass]]:
+        """For each server ``asked`` names (with its tools, name to digest) that the trusted
+        side answered, the class of each tool that has one, for a call in ``session``; a
+        tool left out has none, and a server left out was not answered. Never raises for an
+        unanswered question: it answers nothing."""
+        ...
+
+
+class McpClient(Protocol):
+    """What ``Connectors`` asks of its client: one that reaches declared servers through
+    OpenShell (``mcp_direct``), or, on the host, the relay to the runtime's
+    (``confinement.connector_calls``). A refusal is a ``ConnectorError`` whose kind is its
+    reason, and a held call's names its permission request in ``data["request"]``. Its
+    listings' word on a tool's class is never taken (``ToolClassSource``)."""
+
+    async def request(
+        self,
+        server: str,
+        method: str,
+        params: Mapping[str, object],
+        *,
+        session: str,
+        run: str | None = None,
+    ) -> dict[str, Any]:
+        """``method``'s result from ``server``; ``session`` names the asking session and
+        ``run`` the run that asks (DA-4)."""
+        ...
+
+
 class Connectors:
-    """One run's connector tools, from ``servers`` behind the proxy (see the module)."""
+    """One run's connector tools, from the configured ``servers`` (see the module)."""
 
     def __init__(
         self,
-        client: ProxyClient,
+        client: McpClient,
         servers: Sequence[str],
         *,
         session: str,
+        run: str | None = None,
+        reads_only: bool = False,
         list_seconds: float = LIST_SECONDS,
         about: Mapping[str, str] | None = None,
         shown: Sequence[str] | None = None,
+        disabled: Callable[[], frozenset[str]] | None = None,
+        on_approval: Callable[[dict[str, object] | None], Awaitable[None]] | None = None,
+        binaries: BinarySink | None = None,
+        narrowing: Narrowing | None = None,
+        classes: ToolClassSource | None = None,
     ) -> None:
-        self.client, self.servers, self.session = client, tuple(dict.fromkeys(servers)), session
+        self.narrowing = narrowing
+        """A delegated task's narrowing (DA-6): only the tools every level admits are
+        offered, and a server no level names is not listed."""
+        self.client, self.session = client, session
+        self.servers = tuple(
+            server
+            for server in dict.fromkeys(servers)
+            if narrowing is None or narrowing.admits_server(server)
+        )
+        self.run = run
+        """The run whose calls these are, named on every request (DA-4)."""
+        self.classes = classes
+        """Where the listed tools' classes come from; without it, none has a class."""
+        self.reads_only = reads_only
+        """Offer only the tools classed ``read``, and call only those still classed so: a
+        delegated check's (DA-1)."""
+        self.disabled = disabled
+        self.on_approval = on_approval
+        self.binaries = binaries
+        """Keeps a result's binary items (as artifacts) and words the note that replaces
+        each; without it, they are not shown and not kept."""
+        """Hears that a call waits for the user's answer to its permission request, and
+        that the wait ended (``None``). With it, a call that needs approval waits in place,
+        retried as it was made, until the request is answered or times out; without it,
+        the call fails at once and the agent is told to call it again later."""
+        """The servers the project's user turned off, read again before each call, so a
+        server turned off during a run takes no more of its calls."""
         self.list_seconds = list_seconds
         self.tools: dict[str, ConnectorTool] = {}
         self.about = {
@@ -450,6 +353,8 @@ class Connectors:
         """The servers a later listing reached, after the run's start."""
         self.taken: set[str] = set()
         self.retried = False
+        self.narrowed: set[str] = set()
+        """Listed tools the narrowing leaves out: loading one is ``not_permitted``."""
 
     @property
     def specs(self) -> list[ToolSpec]:
@@ -464,7 +369,7 @@ class Connectors:
             listed = await self._listed(server, LIST_ATTEMPTS)
             if listed is not None:
                 listings[server] = self._kept(server, listed, self.taken)
-        self._register(listings)
+        self._register(listings, *await self._classes_of(listings))
 
     async def relist(self) -> list[str]:
         """List once more, once in the run, each server whose listing failed: the servers
@@ -477,7 +382,7 @@ class Connectors:
             listed = await self._listed(server, 1)
             if listed is not None:
                 listings[server] = self._kept(server, listed, self.taken | set(self.tools))
-        self._register(listings)
+        self._register(listings, *await self._classes_of(listings))
         self.relisted.extend(listings)
         return list(listings)
 
@@ -520,8 +425,70 @@ class Connectors:
             kept.append((name, tool))
         return kept
 
-    def _register(self, listings: dict[str, list[tuple[str, dict[str, Any]]]]) -> None:
-        """Offer the listed servers' tools, within the caps."""
+    async def _classes_of(
+        self, listings: Mapping[str, list[tuple[str, dict[str, Any]]]]
+    ) -> tuple[dict[str, dict[str, TrustedClass]], set[str]]:
+        """The class the host takes for each listed tool that has one, by server, asked of
+        every server at once, and the servers the trusted side answered for."""
+        asked = {
+            server: {name: digest for name, tool in kept if (digest := _digest(server, name, tool))}
+            for server, kept in listings.items()
+        }
+        return await self._classes(asked)
+
+    async def _classes(
+        self, asked: Mapping[str, Mapping[str, str]]
+    ) -> tuple[dict[str, dict[str, TrustedClass]], set[str]]:
+        if self.classes is None:
+            return {}, set()
+        answered = await self.classes.classes(
+            {server: tools for server, tools in asked.items() if tools}, session=self.session
+        )
+        # Only the servers and tools asked about, each a class of the closed set. A server
+        # with nothing to ask (none of its tools digests) is answered: none has a class.
+        found = {
+            server: {
+                name: taken
+                for name, taken in answered[server].items()
+                if name in asked[server] and taken.effect in EFFECT_CLASSES
+            }
+            for server in asked
+            if server in answered
+        }
+        return found, {*found, *(server for server, tools in asked.items() if not tools)}
+
+    async def classed(self, name: str) -> ConnectorTool | None:
+        """The connector tool ``name`` with its class as the host takes it now, asked again
+        of the trusted side, so a classification or policy revision, or a grant, since the
+        listing applies; None for a tool that is not a connector's. A delegated run's fence
+        asks before each call it decides (D99, DA-7), and a check's call asks itself."""
+        tool = self.tools.get(name)
+        if tool is None or self.classes is None:
+            return tool
+        if not tool.digest:
+            found, answered = {}, {tool.server}
+        else:
+            found, answered = await self._classes({tool.server: {name: tool.digest}})
+        taken = found.get(tool.server, {}).get(name)
+        now = replace(
+            tool,
+            effect_class=taken.effect if taken is not None else None,
+            escalates=taken.escalates if taken is not None else False,
+            confirmed=tool.server in answered,
+        )
+        if self.tools.get(name) is tool:
+            self.tools[name] = now
+        return now
+
+    def _register(
+        self,
+        listings: dict[str, list[tuple[str, dict[str, Any]]]],
+        classes: Mapping[str, Mapping[str, TrustedClass]],
+        answered: set[str],
+    ) -> None:
+        """Offer the listed servers' tools, within the caps, each with the class the host
+        took for it (``classes``, by server), if any; the trusted side did not answer for
+        the servers not ``answered``, whose tools are asked again at their calls."""
         # A name two configured servers list is neither's: one could stand in for the
         # other's tool, whichever was listed first.
         owners = Counter(name for kept in listings.values() for name, _ in kept)
@@ -539,7 +506,29 @@ class Connectors:
                     self.refused.add(name)
                     continue
                 spec = _spec(server, name, tool)
-                offered_tool = ConnectorTool(server, spec, purpose(tool.get("description")))
+                taken = classes.get(server, {}).get(name)
+                offered_tool = ConnectorTool(
+                    server,
+                    spec,
+                    purpose(tool.get("description")),
+                    taken.effect if taken is not None else None,
+                    taken.escalates if taken is not None else False,
+                    _digest(server, name, tool) or "",
+                    server in answered,
+                )
+                if (
+                    self.reads_only
+                    and offered_tool.effect_class != "read"
+                    and (offered_tool.confirmed or self.classes is None)
+                ):
+                    # A check changes nothing outside the session (DA-1, PD-33). A tool the
+                    # trusted side could not be asked about stays, to be asked at its call.
+                    continue
+                if self.narrowing is not None and not self.narrowing.admits(
+                    server, name, offered_tool.group
+                ):
+                    self.narrowed.add(name)  # its brief does not name it (DA-6)
+                    continue
                 if (
                     offered >= MAX_TOOLS_PER_SERVER
                     or len(self.tools) >= MAX_TOOLS
@@ -581,6 +570,11 @@ class Connectors:
         for name, tool in self.tools.items():
             by.setdefault(tool.group, []).append(name)
         lines: list[str] = []
+        if self.narrowing is not None:
+            lines.append(
+                f"Your brief narrows your connectors to: {self.narrowing.described}. Other "
+                "connector tools are not permitted to you (not_permitted_for_role)"
+            )
         groups: Counter[str] = Counter()
         unlisted_groups: Counter[str] = Counter()
         unlisted = used = 0
@@ -677,6 +671,9 @@ class Connectors:
             found["unavailable"] = dict(self.failed)
         if self.relisted:
             found["relisted"] = list(self.relisted)
+        if self.narrowing is not None:
+            found["narrowing"] = self.narrowing.recorded()
+            found["not_permitted"] = len(self.narrowed)
         return found
 
     async def _list(self, server: str) -> list[dict[str, Any]]:
@@ -685,7 +682,9 @@ class Connectors:
         seen: set[str] = set()
         for _ in range(MAX_PAGES):
             params: dict[str, object] = {} if cursor is None else {"cursor": cursor}
-            result = await self.client.request(server, "tools/list", params, session=self.session)
+            result = await self.client.request(
+                server, "tools/list", params, session=self.session, run=self.run
+            )
             page = result.get("tools")
             if not isinstance(page, list):
                 raise ConnectorError("unavailable", f"{server}'s tools/list has no tools")
@@ -706,35 +705,132 @@ class Connectors:
     async def call(self, name: str, arguments: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         """Call a connector tool: its text for the model, and the record to keep."""
         tool = self.tools[name]
+        if self.classes is not None and (self.reads_only or not tool.confirmed):
+            # A check calls only what is a read now; an unconfirmed class is asked again.
+            tool = await self.classed(name) or tool
         record: dict[str, Any] = {"connector": tool.server}
-        try:
-            result = await self.client.request(
-                tool.server,
-                "tools/call",
-                {"name": name, "arguments": arguments},
-                session=self.session,
+        if tool.effect_class is not None:
+            record["effect_class"] = tool.effect_class
+            record["reach"] = connector_reach(tool.effect_class)
+        if self.reads_only and tool.effect_class != "read":
+            # Offered as a read, classed otherwise since (DA-1, DA-7): a check changes
+            # nothing outside the session.
+            record["error"] = "not_permitted_for_role"
+            message = (
+                f"{name} is no longer classed as a read, and a check calls only reads: do "
+                "not call it; carry on without it, and say so if the check needs it."
+                if tool.confirmed
+                else f"{name}'s class could not be confirmed as a read just now, and a check "
+                "calls only reads: try it again later, or carry on without it and say so."
             )
-        except ConnectorError as error:
-            if error.kind == "no_usable_answer":
-                raise UnknownEffectError(error.kind, error.message) from error
-            record["error"] = error.kind
-            if error.kind == "approval_required" and "request" in error.data:
-                record["permission_request"] = error.data["request"]
-            return dump({"error": {"kind": error.kind, "message": _explain(error)}}), record
+            return dump({"error": {"kind": "not_permitted_for_role", "message": message}}), record
+        if self.disabled is not None and tool.server in await asyncio.to_thread(self.disabled):
+            record["error"] = "connector_disabled"
+            message = (
+                f"The project's user turned off the {tool.server} connector. Do not call its "
+                "tools; carry on without it, and say so if the work needs it."
+            )
+            return dump({"error": {"kind": "connector_disabled", "message": message}}), record
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        waiting: object = None
+        try:
+            while True:
+                try:
+                    result = await self.client.request(
+                        tool.server,
+                        "tools/call",
+                        {"name": name, "arguments": arguments},
+                        session=self.session,
+                        run=self.run,
+                    )
+                    break
+                except ConnectorError as error:
+                    request = error.data.get("request")
+                    elapsed = loop.time() - started
+                    if (
+                        error.kind == "approval_required"
+                        and self.on_approval is not None
+                        and isinstance(request, int)
+                        and elapsed < MAX_APPROVAL_WAIT
+                    ):
+                        # The same call again: its arguments' digest names the same request,
+                        # so it proceeds once the user approves it, and is refused if denied.
+                        if waiting is None:
+                            waiting = request
+                            record["permission_request"] = request
+                            await self.on_approval(
+                                {"permission_request": request, "server": tool.server,
+                                 "tool": name}
+                            )  # fmt: skip
+                        await asyncio.sleep(APPROVAL_POLL[0 if elapsed < 60 else 1])
+                        continue
+                    if error.kind == "no_usable_answer":
+                        raise UnknownEffectError(error.kind, error.message) from error
+                    record["error"] = error.kind
+                    if error.kind in _ANSWERED and "request" in error.data:
+                        record["permission_request"] = error.data["request"]
+                    if "unconfirmed_request" in error.data:
+                        # A server named it: kept to tell, never shown or waited on.
+                        record["unconfirmed_request"] = error.data["unconfirmed_request"]
+                    return (
+                        dump({"error": {"kind": error.kind, "message": _explain(error)}}),
+                        record,
+                    )
+        finally:
+            if waiting is not None and self.on_approval is not None:
+                with contextlib.suppress(Exception):
+                    await self.on_approval(None)
+        if self.binaries is not None:
+            result = await self._keep_binaries(tool.server, name, result, record)
         text = _text(result)
         if result.get("isError") is True:
             record["error"] = "tool_error"
             return dump({"error": {"kind": "tool_error", "message": text}}), record
         return text, record
 
+    async def _keep_binaries(
+        self, server: str, name: str, result: dict[str, Any], record: dict[str, Any]
+    ) -> dict[str, Any]:
+        """``result`` with each binary item replaced by the sink's note
+        (``mcp_answers.withhold_binary``); the record counts them."""
+        assert self.binaries is not None  # noqa: S101 - called only with a sink
+        found = binary_contents("tools/call", result)
+        if not found:
+            return result
+        notes = [await self.binaries.keep(server, name, item) for item in found]
+        kept, count = withhold_binary("tools/call", result, lambda item: notes[item.index])
+        record["binary_results"] = count
+        return kept
+
+
+APPROVAL_POLL: Final = (3.0, 10.0)
+"""Seconds between retries of a call that waits for approval: in its first minute, then
+after. Each retry is one more audited request at the policy middleware."""
+MAX_APPROVAL_WAIT: Final = 2 * 3600.0
+"""The longest a call waits for an answer; the policy's timeout usually ends it first."""
+_ANSWERED: Final = frozenset({"approval_required", "approval_denied", "escalation_timed_out"})
+
+
+def _digest(server: str, name: str, tool: Mapping[str, Any]) -> str | None:
+    """A listed tool's digest as the pins compute it, or None for one that cannot be
+    digested (text JSON cannot encode, such as a lone surrogate): it never has a class."""
+    try:
+        return tool_digest(tool)
+    except (UnicodeError, TypeError, ValueError, RecursionError):
+        _log.warning("MCP server %s's tool %s cannot be digested: it has no class", server, name)
+        return None
+
 
 def _explain(error: ConnectorError) -> str:
     if error.kind == "approval_required":
         request = error.data.get("request")
         return (
-            f"{error.message}. The MCP proxy holds this call until the operator approves "
+            f"{error.message}. This call is held until the user approves "
             f"permission request {request}; call it again later with the same arguments."
         )
+    if error.kind == "approval_denied":
+        return f"{error.message}. The user denied this call: do not call it again."
     if error.kind == "no_usable_answer":
         return (
             f"{error.message}. The call was sent, and the server may have done the work: "
@@ -759,7 +855,7 @@ def _spec(server: str, name: str, tool: Mapping[str, Any]) -> ToolSpec:
             parameters = rebuilt if _value_text(rebuilt) <= MAX_VALUE_TEXT else _bare(rebuilt)
     return ToolSpec(
         name,
-        f"A tool of the MCP server {server}, through the MCP proxy. "
+        f"A tool of the MCP server {server}, through the platform. "
         f"The server describes it (untrusted): {said}",
         parameters,
     )

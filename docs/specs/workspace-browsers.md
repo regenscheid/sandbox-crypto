@@ -93,12 +93,115 @@ Tool-list-change notifications invalidate the cached listing.
 the normal policy-checked initialize/metadata-list handshake through the host
 client, bounded to 15 seconds and 32 pages, and never invokes `tools/call`.
 The result records a checked timestamp and listed/denied/unavailable/timeout
-category. Proxy reachability and service availability are distinct. Observations
+category. Since the MCP proxy retired (D98, 2026-10-26), the check is one listing by the agent runtime's client, asked of the control service, and the tools are the runtime's latest reported listing, kept by the worker. Observations
 become stale after five minutes; missing checks or a process restart are unknown.
 A listing success does not prove that a particular tool call will succeed.
 Previous safe snapshots survive a failed refresh in this workspace process and
-are labeled previous; current policy is unknown while the proxy is unreachable.
-No browser gets proxy credentials or direct MCP access.
+are labeled previous.
+No browser gets credentials or direct MCP access.
+
+## Classification review
+
+*Decided 2026-10-25 by the owner (A3, D96's "accept-or-edit view"): the three questions
+below as recommended; not built.* D96 says each server's classification is checked in and admin-reviewed: a
+trusted-side model drafts a proposal that the admin accepts or edits in the workspace,
+and a drift test fails when the server's tool list changes. The library, the
+checked-in files, `classify-draft` and the middleware's drift records exist
+([connectors](../MCP-CONNECTORS.md#classification-files)); the view does not. Items are
+numbered CL-n.
+
+- CL-1. **Where.** The MCP services browser gains a Classification tab per service and a
+  project-level Classifications list. The tab shows the classification in force for the
+  project: its source (the checked-in file's name and `pinned` date, or an accepted
+  project revision, CL-3), and for each tool its class, reason, argument rules,
+  significant argument and pin state against the latest listing (`current`, `changed`,
+  `added`, `removed`, from the middleware's `mcp-tools-drift` records and the listing
+  snapshot); for a tool the classification does not mention, the class its hints give
+  and that it escalates. Read-only; viewing calls no tool and grants nothing, as the
+  Tools tab's rules say.
+  *As built 2026-10-25:* the MCP services screen has a Classifications list (each
+  configured service's source, pinned or accepted date, tool count and drift state) and a
+  fifth tab, Classification (`ClassificationTab.svelte`), with the in-force table, the
+  drafts with their editor and acceptance, and the drift section with Re-accept. The
+  routes are `GET …/classifications`, `GET …/mcp-services/{server}/classification`, `GET
+  …/classification/drafts`, `POST …/classification/drafts/{draft}/accept` and `POST
+  …/mcp-services/{server}/drift/accept` (`packages/workspace/…/classifications.py`),
+  passing the worker's operator routes through, with each write's operation ID for the
+  worker's receipts.
+- CL-2. **Drafts.** A draft `classify-draft` wrote for the project (the YAML marked DRAFT,
+  pinned by digest) is a record the view lists beside the classification in force, tool
+  by tool: the proposed class, reason and rules against the current ones, with widenings
+  (a class that would let a call pass without approval where it escalates today) marked.
+  The admin edits a draft in the view: class, reason, argument rules and the significant
+  argument per tool, within the library's schema; an edit is checked as the loader
+  checks a file. A draft is the model's text, framed as such.
+- CL-3. **Accepting.** Accepting a draft, edited or not, makes a project classification
+  revision in the control store's policy store, as `policy add` makes a policy revision:
+  the YAML the library would load, its pins, who accepted it, when, the reason and the
+  diff from the classification it replaces. The middleware compiles it into the
+  project's policy at the next revision, and it supersedes the checked-in file for that
+  project; the checked-in files stay the repository's defaults and the drift fixtures.
+  Only a user with the admin role may accept (D97's ceilings); an agent never reads a
+  draft as an instruction nor edits a classification. Accepting shows a confirmation
+  that lists every widening, and the acceptance is an event with its diff. An accepted
+  revision can be exported as the YAML to check in.
+  - *As built 2026-10-25 (backend):* the policy store is the file store the worker and the
+    policy middleware share (`classifications/<project>/<server>/<hex>.yaml`, its
+    acceptance record and a `current.json` binding), not the control store. The workspace
+    has one user per installation and no roles, so "admin-only" is that user holding the
+    worker's operator token; a multi-user workspace would need a role. The middleware reads
+    the binding at every call, so a revision applies at the next call, not only at the next
+    policy revision; the widening rule is in [connectors](../MCP-CONNECTORS.md#project-revisions).
+    An accepted revision exports as its stored YAML through `GET /v1/classifications/{server}/
+    revisions/{revision}/export?project=P` ([worker](../WORKER.md)).
+  - *As built 2026-10-28 (admin group, D104):* behind Authentik with an admin group
+    configured, "admin" is a member of that Authentik group, from the provider's signed
+    token, or the operator's login link: the workspace's accept route answers anyone else
+    403 before it asks the worker, and the page disables Accept with the reason. Without an
+    admin group every logged-in user is an admin, as before. The workspace logs who
+    accepted; the worker's acceptance record does not yet name the user (it is the
+    workspace's operator client), which is open work
+    ([workspace](../WORKSPACE.md#login-through-authentik)).
+  - *As built 2026-10-27 (fences):* the agent runtime's native fence admits tools by the
+    revision in force when the launcher compiles it, on `up` and at every runtime
+    replacement, so a revision accepted while a runtime runs reaches the fence at the next
+    replacement; the middleware decides by it from the next call, so a stale fence only
+    refuses a widening and never admits more than the middleware allows. An unreadable
+    binding leaves the fence on the checked-in file while the middleware refuses the
+    server's calls. The Kubernetes runtime manager does the same at each creation of the
+    runtime's sandbox, reading the revisions through the worker
+    ([connectors](../MCP-CONNECTORS.md#project-revisions)).
+- CL-4. **Drift.** When the middleware records `tool_list_drift` for a server, the tab
+  shows the added, removed and changed tools with their digests, dated, and the
+  middleware's hold (its non-read calls ask until re-accepted, D103). **Re-accept** from
+  the view does what `accept-tools` does today, through the worker, with the user's
+  reason recorded: a changed tool keeps its class only after re-acceptance, an added tool
+  is `unclassified` until a classification names it, a removed one is listed as gone.
+  Re-acceptance is admin-only, as acceptance is.
+  - *As built 2026-10-28 (admin group, D104):* as for CL-3: with an Authentik admin group,
+    the workspace's re-accept route refuses a user outside it (403) and the page disables
+    Re-accept with the reason; the workspace logs who re-accepted.
+- CL-5. **Proxy-side drift.** Moot: the MCP proxy retired after the A2 decision
+  (2026-10-26). The tab reads the middleware's records and the runtime's reported
+  listings' (source `runtime`).
+- CL-6. **Records and routes.** `GET …/mcp-services/{server}/classification` (in force,
+  per tool with pin state), `GET …/classification/drafts` and `POST …/classification/
+  drafts/{draft}/accept` (admin, with the edited YAML and a reason), `POST
+  …/mcp-services/{server}/drift/accept` (admin, a reason). The policy store gains the
+  classification revision kind; the drift read is the middleware's existing record
+  through the worker, as the request cards read it.
+  - *As built 2026-10-25 (backend):* the drift read and both acceptances are worker routes,
+    operator-only like the permission requests: `GET /v1/classifications?project=P`,
+    `GET /v1/classifications/{server}/drafts?project=P`, `POST /v1/classifications/{server}/
+    drafts/{draft}/accept` and `POST /v1/classifications/{server}/drift/accept`
+    (`contracts/classifications.py`; [worker](../WORKER.md)), which the workspace's routes
+    relay. Drift records carry each added and changed tool's digest; acceptances are
+    `mcp-classification-accepted` and `mcp-tools-accepted` records naming the project.
+
+Decided by the owner, 2026-10-25: (1) accepted classifications are project revisions in
+the policy store, exportable for check-in, not repository files only (acceptance needs no
+deploy and is attributed); (2) acceptance and re-acceptance are admin-only; (3) proxy-side
+drift waits for the A2 decision.
 
 ## Other screens
 

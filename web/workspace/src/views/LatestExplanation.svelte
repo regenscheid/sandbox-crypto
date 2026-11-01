@@ -1,6 +1,6 @@
 <!-- SPDX-License-Identifier: MIT -->
 <!-- The latest explanation an agent gave on a finding, a reviewer's or the main agent's,
-     exactly as agents read it, where the user confirms, dismisses or rebuts it (threat
+     exactly as agents read it, where the user decides on it (fixes, dismisses or sets a status) (threat
      model, A3): its reason and the explanation source it wrote. Only props, so a test
      renders it on the server. -->
 <script lang="ts">

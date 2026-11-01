@@ -4,16 +4,19 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any, cast
 
 from pydantic import JsonValue, TypeAdapter
 
+from sandbox_science.contracts.model import Counter
 from sandbox_science.orchestrator.aio import owned
-from sandbox_science.orchestrator.history.memory import RunMemory
+from sandbox_science.orchestrator.context.folding import FoldPoint, Folds
+from sandbox_science.orchestrator.context.history.memory import RunMemory
 from sandbox_science.orchestrator.hooks import (
+    HALT_TIMEOUT_SECONDS,
     Appended,
     Closing,
     Effect,
@@ -24,13 +27,14 @@ from sandbox_science.orchestrator.hooks import (
     RunView,
     TurnHook,
 )
-from sandbox_science.orchestrator.loop import Folds, Transcript, run_task
+from sandbox_science.orchestrator.loop import Transcript, run_task
 from sandbox_science.orchestrator.model import Message, ModelGateway, ToolCall, ToolSpec
 from sandbox_science.orchestrator.plan_tools import Plans, PlanTools
 from sandbox_science.orchestrator.skills.tool import SkillTool
 from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome
 
 from .paid import PaidModel
+from .transport import PATIENCE_SECONDS as PATIENCE
 from .transport import Capability, Channel, TransportError
 from .wire import (
     MAX_MODEL_RESPONSE_BYTES,
@@ -60,14 +64,14 @@ from .wire import (
 
 def state(run: Transcript) -> LoopState:
     return LoopState(
-        system=WireMessage.of(run.messages[0]),
+        system=WireMessage.of(run.context.messages[0]),
         turns=run.turns,
         max_turns=run.max_turns,
-        max_input_chars=run.max_input_chars,
-        tools_chars=run.tools_chars,
-        usage_count=len(run.usage),
-        last_usage=run.usage[-1] if run.usage else None,
-        message_count=len(run.messages),
+        max_input_chars=run.context.max_input_chars,
+        tools_chars=run.context.tools_chars,
+        usage_count=len(run.context.usage),
+        last_usage=run.context.usage[-1] if run.context.usage else None,
+        message_count=len(run.context.messages),
         tool_count=len(run.tool_records),
         delivered={},
         offered={},
@@ -81,10 +85,10 @@ def state(run: Transcript) -> LoopState:
         halted=run.halted,
         failure=run.failure,
         phase=run.phase,
-        base=run.base,
-        since=run.since,
+        base=run.context.base,
+        since=run.context.since,
         overflowed=run.overflowed,
-        prompt_provenance=run.prompt_provenance,
+        prompt_provenance=run.context.prompt_provenance,
     )
 
 
@@ -92,15 +96,28 @@ class RemoteHook(TurnHook):
     def __init__(self, channel: Channel, attempt: str, slot: int, given: HookGiven) -> None:
         self.channel, self.attempt, self.slot = channel, attempt, slot
         self.name, self.veto = given.name, given.veto
+        self.limits_turns = given.turn_limit
 
-    async def ask(self, kind: Capability, run: RunView | None = None, **fields: Any) -> JsonValue:
+    async def ask(
+        self,
+        kind: Capability,
+        run: RunView | None = None,
+        *,
+        timeout: float | None = None,
+        **fields: Any,
+    ) -> JsonValue:
+        """Ask the host's hook. Without ``timeout`` the call waits for as long as the host
+        is working on it (``PATIENCE_SECONDS``): a hook may wait on work of any length, as
+        a parent's ``finishing`` waits for its children."""
         request = HookRequest(
             attempt=self.attempt,
             slot=self.slot,
             state=state(cast(Transcript, run)) if run is not None else None,
             **fields,
         )
-        return await self.channel.request(kind, payload(request), timeout=1800)
+        if timeout is not None:
+            return await self.channel.request(kind, payload(request), timeout=timeout)
+        return await self.channel.request(kind, payload(request), timeout=None, patience=PATIENCE)
 
     @asynccontextmanager
     async def lease(self) -> AsyncGenerator[None]:
@@ -115,8 +132,19 @@ class RemoteHook(TurnHook):
             await self.ask(Capability.NOTICES, run, point=point)
         )
 
+    async def turn_limit(self, run: RunView) -> int | None:
+        if not self.limits_turns:
+            return None
+        return TypeAdapter(Counter | None).validate_python(
+            await self.ask(Capability.TURN_LIMIT, run)
+        )
+
     async def halt(self, run: RunView) -> str | None:
-        return TypeAdapter(str | None).validate_python(await self.ask(Capability.HALT, run))
+        # A check-in waits here for its parent's decision, and the automatic one after
+        # ``DECISION_WAIT_SECONDS``: this waits longer, so that decision answers first.
+        return TypeAdapter(str | None).validate_python(
+            await self.ask(Capability.HALT, run, timeout=HALT_TIMEOUT_SECONDS)
+        )
 
     async def last_call(self, run: RunView) -> str | None:
         return TypeAdapter(str | None).validate_python(await self.ask(Capability.LAST_CALL, run))
@@ -172,6 +200,7 @@ class RemoteToolbox(Toolbox):
         self.skills = cast(SkillTool, RemoteSkills(given.toolbox)) if given.toolbox.skills else None
         self.connectors = None
         self.image_offer = given.toolbox.image_offer
+        self.tool_mix = None  # the host's toolbox runs the calls and counts them
 
     @property
     def specs(self) -> tuple[ToolSpec, ...]:
@@ -192,7 +221,10 @@ class RemoteToolbox(Toolbox):
                 payload(
                     ToolRequest(attempt=self.attempt, call=call, operation=operation, model=model)
                 ),
-                timeout=1800,
+                # A tool may wait for hours: a long cell, a wait on children or jobs, a
+                # call held for the user's approval.
+                timeout=None,
+                patience=PATIENCE,
             ),
         )
         self._given, self.revision = result.toolbox, result.toolbox.revision
@@ -259,37 +291,52 @@ class RemoteLog(MessageLog):
 
 
 class RemoteFolds(Folds):
-    def __init__(self, channel: Channel, attempt: str) -> None:
-        self.channel, self.attempt = channel, attempt
+    def __init__(
+        self, channel: Channel, attempt: str, current_state: Callable[[], LoopState]
+    ) -> None:
+        self.channel, self.attempt, self.current_state = channel, attempt, current_state
 
-    async def apply(self, kind: Capability, run: Transcript) -> bool:
+    async def apply(self, kind: Capability, point: FoldPoint) -> bool:
         result = typed(
             FoldReply,
             await self.channel.request(
-                kind, payload(FoldRequest(attempt=self.attempt, state=state(run))), timeout=1800
+                kind,
+                payload(FoldRequest(attempt=self.attempt, state=self.current_state())),
+                timeout=None,
+                patience=PATIENCE,
             ),
         )
-        run.rebuilt = (
+        point.context.restore(
             [message.message() for message in result.rebuilt]
             if result.rebuilt is not None
-            else None
+            else None,
+            base=result.base,
+            since=result.since,
         )
-        run.base, run.since = result.base, result.since
         return result.proceed
 
-    async def before_call(self, transcript: Transcript) -> bool:
-        return await self.apply(Capability.FOLD_BEFORE, transcript)
+    async def before_call(self, point: FoldPoint) -> bool:
+        return await self.apply(Capability.FOLD_BEFORE, point)
 
-    async def overflow(self, transcript: Transcript) -> bool:
-        return await self.apply(Capability.FOLD_OVERFLOW, transcript)
+    async def overflow(self, point: FoldPoint) -> bool:
+        return await self.apply(Capability.FOLD_OVERFLOW, point)
 
 
 class RuntimeLoops:
     """VM-local registry owns every actual root/child model loop's task and cancellation."""
 
-    def __init__(self, channel: Channel, gateway: ModelGateway, scratch: Path) -> None:
+    def __init__(
+        self,
+        channel: Channel,
+        gateway: ModelGateway,
+        scratch: Path,
+        *,
+        released: Callable[[str], Awaitable[None]] | None = None,
+    ) -> None:
         self.channel, self.gateway, self.scratch = channel, gateway, scratch
         self.active: dict[str, tuple[asyncio.Task[Transcript], asyncio.Event]] = {}
+        self.released = released
+        """Told each ended attempt, so its per-attempt resources go (its MCP client)."""
 
     async def run(self, value: JsonValue) -> JsonValue:
         given = typed(RunGiven, value)
@@ -334,7 +381,9 @@ class RuntimeLoops:
                 memory=given.memory,
                 role=given.role,
                 log=log,
-                folds=RemoteFolds(self.channel, given.attempt) if given.folding else None,
+                folds=RemoteFolds(self.channel, given.attempt, lambda: state(log.run))
+                if given.folding
+                else None,
                 memory_store=memory,
                 on_started=log.started,
                 on_tool=log.observed_tool,
@@ -366,6 +415,8 @@ class RuntimeLoops:
                 memory.control.close()
                 for suffix in ("", "-wal", "-shm"):
                     scratch.with_name(scratch.name + suffix).unlink(missing_ok=True)
+                if self.released is not None:
+                    await owned(self.released(given.attempt))
 
     async def cancel(self, value: JsonValue) -> JsonValue:
         request = typed(CancelRequest, value)

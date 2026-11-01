@@ -13,7 +13,7 @@ from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.questions import Questions
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.testing import FakeClock
-from sandbox_science.workspace.api import TIMEOUTS
+from sandbox_science.workspace.context import TIMEOUTS
 
 from .route_support import (
     ClientFactory,

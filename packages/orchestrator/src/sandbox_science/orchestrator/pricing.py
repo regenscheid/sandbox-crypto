@@ -12,11 +12,14 @@ deployments), applied to the tokens the call's usage reports, and the call says 
 (``MODEL_INFO``). A gateway's cost of 0 for a call that used tokens is no report: it is
 what LiteLLM says for a model it has no price for.
 
-When the alias's deployments are not all priced, or the usage lacks a count the price
-needs, the cost stays unknown (``None``). A call is priced at each of the alias's
-deployments' prices, and the dearest is its cost. Cached input without a cache-read price
-is priced as input, which is no less; written cache without a cache-write price leaves the
-cost unknown, since writing costs more than input.
+A deployment listed with input and output prices both 0 is unpriced, not free: LiteLLM
+lists a model it has no price for that way, and a call priced at it would show $0.00 and
+never reach a cost limit. (An alias that really is free shows as unpriced too, which
+costs nothing but a warning.) When the alias's deployments are not all priced, or the
+usage lacks a count the price needs, the cost stays unknown (``None``). A call is priced
+at each of the alias's deployments' prices, and the dearest is its cost. Cached input
+without a cache-read price is priced as input, which is no less; written cache without a
+cache-write price leaves the cost unknown, since writing costs more than input.
 
 A model's price may rise with the size of a call (lab 43 follow-up: GPT-5.5's doubles
 past 272,000 input tokens). LiteLLM's model information gives such a tier as the field
@@ -26,6 +29,11 @@ priced wholly at the highest tier it passes. A rate that tier does not give is n
 taken lower than the list allows: an input or output rate is the highest the deployment
 gives for that kind, a cached-input rate the tier's input rate, and a cache-write rate is
 none, so a call that wrote the cache stays unpriced.
+
+LiteLLM lists only the 5-minute cache-write price. On ``chat`` it may cache a Claude
+prompt for an hour itself (``ephemeral_1h_input_tokens``, at about twice the input
+price; Messages lab, 2026-10-31), which a price from this list would understate. The
+gateway's own cost, taken first, covers it.
 """
 
 from __future__ import annotations
@@ -179,8 +187,8 @@ def _tiers(fields: dict[str, Any]) -> tuple[Tier, ...] | None:
 
 def prices_of(info: object, alias: str) -> tuple[Prices, ...] | None:
     """``alias``'s prices in a ``/model/info`` answer, one for each of its deployments, or
-    ``None`` when any of them lacks an input or output price, or gives a tier's price that
-    is not one."""
+    ``None`` when any of them lacks an input or output price, gives 0 for both (LiteLLM's
+    listing of a model it has no price for), or gives a tier's price that is not one."""
     found = cast(dict[str, Any], info).get("data") if isinstance(info, dict) else None
     entries = [
         cast(dict[str, Any], entry)
@@ -198,6 +206,8 @@ def prices_of(info: object, alias: str) -> tuple[Prices, ...] | None:
         tiers = _tiers(fields)
         if given is None or made is None or tiers is None:
             return None
+        if given == 0 and made == 0:
+            return None  # LiteLLM's listing of a model it has no price for
         priced.append(
             Prices(
                 given,
@@ -208,6 +218,21 @@ def prices_of(info: object, alias: str) -> tuple[Prices, ...] | None:
             )
         )
     return tuple(priced) or None
+
+
+def lists_zero_prices(info: object, alias: str) -> bool:
+    """Whether ``alias`` is listed with input and output prices both 0, which is no price."""
+    found = cast(dict[str, Any], info).get("data") if isinstance(info, dict) else None
+    for entry in cast(list[object], found) if isinstance(found, list) else []:
+        if not isinstance(entry, dict) or cast(dict[str, Any], entry).get("model_name") != alias:
+            continue
+        model_info = cast(dict[str, Any], entry).get("model_info")
+        fields = cast(dict[str, Any], model_info) if isinstance(model_info, dict) else {}
+        if _price(fields.get("input_cost_per_token")) == 0 and (
+            _price(fields.get("output_cost_per_token")) == 0
+        ):
+            return True
+    return False
 
 
 def count(value: object) -> int | None:
@@ -271,6 +296,7 @@ class PriceList:
         self._clock = clock
         self._info: object | None = None
         self._failed_at: float | None = None
+        self._warned: set[str] = set()
 
     async def prices(
         self, alias: str, session: Callable[[], aiohttp.ClientSession]
@@ -286,7 +312,15 @@ class PriceList:
             if self._info is None:
                 self._failed_at = self._clock.monotonic()
                 return None
-        return prices_of(self._info, alias)
+        found = prices_of(self._info, alias)
+        if found is None and alias not in self._warned and lists_zero_prices(self._info, alias):
+            self._warned.add(alias)
+            _log.warning(
+                "the gateway lists %s with input and output prices of 0: its calls are "
+                "treated as unpriced, never as free; set the model's prices at the gateway",
+                alias,
+            )
+        return found
 
     async def _read(self, session: aiohttp.ClientSession) -> object | None:
         from .model import ModelError, read_limited  # which imports this module

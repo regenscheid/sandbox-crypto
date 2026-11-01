@@ -12,10 +12,12 @@ from typing import Any, cast
 
 import pytest
 
+from sandbox_science.orchestrator.context.agent import AgentContext
+from sandbox_science.orchestrator.context.history.export import EvidenceExport
 from sandbox_science.orchestrator.delegation.hook import Child, ChildEnd
-from sandbox_science.orchestrator.history.export import EvidenceExport
 from sandbox_science.orchestrator.loop import Transcript
 from sandbox_science.orchestrator.projects import RunRecord
+from sandbox_science.orchestrator.runstate import RunState
 
 from .loop_harness import PROJECT, SESSION
 from .test_delegation_depth import ROOT, tree
@@ -29,7 +31,7 @@ async def test_long_child_loop_retrieval_receipts_and_finalization(tmp_path: Pat
 
     with tree(tmp_path) as found:
         hook = found.hook(finished, cap=2)
-        transcript = Transcript(messages=[])
+        transcript = Transcript(context=AgentContext(messages=[]))
         tracemalloc.start()
         peaks: list[int] = []
         first = ""
@@ -52,7 +54,12 @@ async def test_long_child_loop_retrieval_receipts_and_finalization(tmp_path: Pat
             assert len(json.dumps(summary)) < 12_000
             assert len(hook.started) == len(hook.received) == 240
             assert peaks[-1] - peaks[0] < 2 * 1024 * 1024
-            # Completed handles have gone, but durable read/cancel behavior remains.
+            # Completed handles have gone, but durable read/cancel behavior remains: a
+            # returned task that awaits review is closed as cancelled, once, while the
+            # root holds the session (PD-46).
+            RunState(found.records.control).acquire(PROJECT, SESSION, ROOT, "holder")
+            text, _ = await hook.call("cancel_delegation", {"delegation_id": first})
+            assert json.loads(text)["cancelled"] is True
             text, _ = await hook.call("cancel_delegation", {"delegation_id": first})
             assert json.loads(text)["cancelled"] is False
             now = datetime.now(UTC)
@@ -141,7 +148,7 @@ async def test_reused_cli_run_id_keeps_full_attempt_history_and_export_scope(
                 identity = str(json.loads(text)["delegation_id"])
                 identities.append(identity)
                 await hook.call("wait_delegations", {"delegation_ids": [identity]})
-                await hook.model_returned(Transcript(messages=[]))
+                await hook.model_returned(Transcript(context=AgentContext(messages=[])))
         for parent, hook, identity in zip((first, second), hooks, identities, strict=True):
             assert hook.started.scope == hook.received.scope == (PROJECT, SESSION, parent)
             assert list(hook.started) == list(hook.received) == [identity]

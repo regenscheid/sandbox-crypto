@@ -6,7 +6,20 @@
   import { findingDrafts } from '../lib/drafts';
   import { Earlier } from '../lib/earlier';
   import { afterResponse, findingHistory, findingResponse, startResponse } from '../lib/findings';
-  import { anchorView, decisions, raisedText, severityText, statusText } from '../lib/findingView';
+  import {
+    anchorView,
+    decisions,
+    dismissalView,
+    lineage,
+    raisedText,
+    queuedText,
+    recheckView,
+    revisionViews,
+    severityText,
+    statusClass,
+    statusLabel,
+    statusText,
+  } from '../lib/findingView';
   import { guardedWrite } from '../lib/mutation';
   import { emptyList } from '../lib/pagedList';
   import { idle, submit } from '../lib/submit';
@@ -22,6 +35,7 @@
   import Markdown from '../lib/Markdown.svelte';
   import { macroSet } from '../lib/macros';
   import { copiedValues } from '../lib/copiedNumbers';
+  import { reviewHref } from '../lib/router';
   let {
     projectId,
     sessionId,
@@ -51,6 +65,12 @@
   let persisted = $state(true);
   const allowed = $derived(decisions(finding.status));
   const anchors = $derived(finding.anchors.map((anchor) => anchorView(projectId, anchor)));
+  // The card of CR-46: what it reviewed then and now, the latest re-check, the dismissal
+  // and the lineage, each from the finding as last read.
+  const revisions = $derived(revisionViews(projectId, finding.reviewed_revisions));
+  const recheck = $derived(recheckView(projectId, finding));
+  const dismissal = $derived(finding.dismissal ? dismissalView(finding.dismissal) : null);
+  const links = $derived(lineage(projectId, sessionId, finding));
   /** A copied-number finding's two numbers, which the card lines up digit by digit. */
   const copied = $derived(copiedValues(finding));
   // A kept draft's decision is never rewritten from the status: one the status no longer
@@ -96,6 +116,12 @@
       draft.expected = finding.revision;
     }
   });
+  // The attributed history is part of the open card (CR-46): read when the card is open,
+  // and again after a new finding revision reset it. A failed read waits for the button.
+  let open = $state(untrack(() => !folded));
+  $effect(() => {
+    if (open && !history.started && !pages.loading && pages.error === null) void history.read();
+  });
   function mathEvidence(check: string, span?: string) {
     void checks.show(`${check}\u0000${span ?? ''}`);
   }
@@ -116,18 +142,24 @@
     if (draft.explanation && !persisted) event.preventDefault();
   }}
 />
-<article class="finding" class:resolved={folded}>
-  <details open={!folded}>
+<article class="finding" class:resolved={folded} aria-label={`Finding ${finding.finding_id}`}>
+  <details open={!folded} ontoggle={(event) => (open = event.currentTarget.open)}>
     <summary
       ><h3>
-        {finding.severity} · {finding.category.replaceAll('_', ' ')} · {finding.status}
+        <code class="finding-id">{finding.finding_id}</code> · {finding.severity} ·
+        {finding.category.replaceAll('_', ' ')} ·
+        <span class={`chip ${statusClass(finding.status)}`}>{statusLabel(finding)}</span>
       </h3></summary
     >
-    <p>{statusText(finding.status)}</p>
+    <p>{statusText(finding.status, finding.latest_recheck)}</p>
     <p class="muted">Severity {finding.severity}: {severityText(finding.severity)}.</p>
     {#if finding.origin !== 'math'}<p class="muted">{raisedText(finding, review)}</p>{/if}
+    <!-- The reviewer's calls are its review's audit records, in the review panel (B10.3). -->
+    {#if finding.review_id}<p class="muted">
+        <a href={reviewHref(projectId, sessionId, finding.review_id)}>The review's audit records</a>
+      </p>{/if}
     <p class="muted">
-      <code>{finding.finding_id}</code> · revision {finding.revision} · {finding.reflags} reflags
+      Finding record revision {finding.revision} · {finding.reflags} reflags
     </p>
     {#if finding.origin === 'math'}<p>
         Mechanical math check · <code>{String(finding.source?.check ?? '')}</code>. No reviewer
@@ -138,8 +170,13 @@
     {#each finding.macro_context?.problems ?? [] as problem}<p role="status">
         {problem} Display uses a diagnostic context.
       </p>{/each}
-    <Markdown source={finding.statement} {macros} />
-    <HiddenBanner text={finding.statement} links />
+    <section class="statement" aria-label="Statement">
+      <h4>
+        {finding.origin === 'math' ? "The math check's statement" : "The reviewer's statement"}
+      </h4>
+      <Markdown source={finding.statement} {macros} />
+      <HiddenBanner text={finding.statement} links />
+    </section>
     {#if copied}<CopiedNumbers stated={copied.stated} held={copied.held} />{/if}
     {#if finding.remedy}<p>Suggested remedy:</p>
       <Markdown source={finding.remedy} {macros} />
@@ -147,7 +184,9 @@
     <h4>Where</h4>
     <ul class="anchors">
       {#each anchors as anchor, index (index)}<li>
-          {#if anchor.href}<a href={anchor.href}>{anchor.text}</a>{:else}{anchor.text}{/if}
+          {#if anchor.href}<a href={anchor.href}>{visible(anchor.text)}</a>{:else}{visible(
+              anchor.text,
+            )}{/if}
           {#if anchor.check}<button
               onclick={() => mathEvidence(anchor.check!.check, anchor.check!.math)}
               >Read mechanical evidence</button
@@ -161,6 +200,60 @@
       <summary>Anchors as recorded</summary>
       <pre>{visible(JSON.stringify(finding.anchors, null, 2))}</pre>
     </details>
+    {#if revisions.length}<section aria-label="Reviewed and current revisions">
+        <h4>Revisions</h4>
+        <ul class="revisions">
+          {#each revisions as item, index (index)}<li>
+              {item.what}: reviewed at {#if item.reviewedHref}<a href={item.reviewedHref}
+                  >revision {item.reviewed}</a
+                >{:else}revision {item.reviewed}{/if};
+              {#if item.currentHref}now at <a href={item.currentHref}>revision {item.current}</a
+                >{:else}{item.state}{/if}
+            </li>{/each}
+        </ul>
+      </section>{/if}
+    {#if recheck}<section class="recheck" aria-label="Latest re-check">
+        <h4>Latest re-check</h4>
+        <p>
+          <strong>{recheck.answer}</strong>{#if recheck.why}: {recheck.why}{/if}
+        </p>
+        <p class="muted">{recheck.by}</p>
+        {#if recheck.anchors.length}<p>Its evidence:</p>
+          <ul class="anchors">
+            {#each recheck.anchors as anchor, index (index)}<li>
+                {#if anchor.href}<a href={anchor.href}>{anchor.text}</a>{:else}{anchor.text}{/if}
+              </li>{/each}
+          </ul>{/if}
+        {#if recheck.places.length}<p>What it re-checked:</p>
+          <ul class="anchors">
+            {#each recheck.places as place, index (index)}<li>
+                {#if place.href}<a href={place.href}>{place.text}</a>{:else}{place.text}{/if}
+              </li>{/each}
+          </ul>{/if}
+      </section>{/if}
+    {#each queuedText(finding) as line}<p class="muted">
+        {line}
+      </p>{/each}
+    {#if dismissal}<section class="dismissal" aria-label="Dismissal">
+        <h4>Dismissal</h4>
+        <p>Dismissed by {dismissal.who} · {dismissal.at}:</p>
+        <p class="reason" class:agent={dismissal.byAgent}>{dismissal.reason}</p>
+        {#if dismissal.review}<p>
+            {dismissal.review.text}{#if dismissal.review.reason}: {dismissal.review.reason}{/if}
+          </p>{/if}
+      </section>{/if}
+    {#if links.predecessor || links.successor}<section class="lineage" aria-label="Lineage">
+        {#if links.predecessor}<p>
+            It replaced finding <a href={links.predecessor.href}
+              ><code>{visible(links.predecessor.id)}</code></a
+            >.
+          </p>{/if}
+        {#if links.successor}<p>
+            It was replaced by finding <a href={links.successor.href}
+              ><code>{visible(links.successor.id)}</code></a
+            >.
+          </p>{/if}
+      </section>{/if}
     <!-- Each failure shows beside its own control, so a newer one is never hidden. -->
     {#if evidence.value}<pre aria-label="Mechanical math evidence">{evidence.value}</pre>{/if}
     {#if evidence.error}<ErrorMessage error={evidence.error} />{/if}
@@ -170,15 +263,20 @@
           >Read next evidence slice</button
         >{/if}{/if}
     {#if slices.error}<ErrorMessage error={slices.error} />{/if}
-    <button disabled={busy || !history.available()} onclick={() => history.read()}
-      >{history.started ? 'Load earlier finding history' : 'Read finding history'}</button
-    >
-    {#if pages.error}<ErrorMessage error={pages.error} />{/if}
-    {#each history.entries() as entry (entry.revision)}<FindingTransition
-        {projectId}
-        {sessionId}
-        {entry}
-      />{/each}
+    <section aria-label="History">
+      <h4>History</h4>
+      <p class="muted">Who set which status, when, and why: oldest first.</p>
+      {#each history.entries() as entry (entry.revision)}<FindingTransition
+          {projectId}
+          {sessionId}
+          {entry}
+        />{/each}
+      {#if pages.loading}<p class="muted">Reading the history…</p>{/if}
+      <button disabled={busy || !history.available()} onclick={() => history.read()}
+        >{history.started ? 'Load earlier finding history' : 'Read finding history'}</button
+      >
+      {#if pages.error}<ErrorMessage error={pages.error} />{/if}
+    </section>
     <details
       ontoggle={(event) => {
         // The latest explanation is read when the user opens the response, so it shows
@@ -190,8 +288,8 @@
       <p>
         {finding.origin === 'math'
           ? 'The math checker confirms accepted or removed formulas; unavailable evidence does not resolve a finding.'
-          : 'A claimed fix stays unconfirmed until a confirmation review.'} Confirm and dismiss below
-        are explicit user decisions.
+          : 'A claimed fix queues a re-check; only a re-check or the user makes a finding fixed.'} Setting
+        a status, or dismissing, is your explicit decision: give the reason in the explanation.
       </p>
       <!-- What the user decides on, exactly as agents read it (threat model, A3): the
            statement, the remedy and the latest explanation an agent gave. -->
@@ -228,19 +326,27 @@
             bind:value={draft.explanation}></textarea></label
         >
         <HiddenBanner text={draft.explanation} />
-        <label
-          >Changed document revisions<input
-            aria-label="Changed document revisions"
-            bind:value={draft.references}
-            placeholder="doc-…:2 doc-…:3"
-          /></label
-        >
+        {#if draft.action === 'set:superseded'}<label
+            >Successor finding (optional; the server checks it is a finding of this session)<input
+              aria-label="Successor finding"
+              bind:value={draft.successor}
+              placeholder="finding-…"
+            /></label
+          >{/if}
+        {#if draft.action === 'fix'}<label
+            >Changed document revisions<input
+              aria-label="Changed document revisions"
+              bind:value={draft.references}
+              placeholder="doc-…:2 doc-…:3"
+            /></label
+          >{/if}
         <button disabled={!draft.explanation.trim() || !allowedNow} onclick={respond}
           >Save user response</button
         ><button
           onclick={() => {
             draft.explanation = '';
             draft.references = '';
+            draft.successor = '';
             findingDrafts.clear(key);
           }}>Discard response draft</button
         >
@@ -271,8 +377,36 @@
   .resolved {
     opacity: 0.85;
   }
-  .anchors {
+  .chip {
+    border: 1px solid currentColor;
+    border-radius: 0.8rem;
+    padding: 0 0.5rem;
+    font-size: 0.85em;
+    font-weight: normal;
+  }
+  .status-open {
+    font-weight: bold;
+  }
+  .status-fixed,
+  .status-superseded {
+    opacity: 0.8;
+  }
+  .status-dismissed {
+    font-style: italic;
+  }
+  .status-stale {
+    border-style: dashed;
+  }
+  .anchors,
+  .revisions {
     padding-left: 1rem;
+  }
+  .finding-id {
+    font-weight: normal;
+  }
+  .reason {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
   }
   label {
     display: block;

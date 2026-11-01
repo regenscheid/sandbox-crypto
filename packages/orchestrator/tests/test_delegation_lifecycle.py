@@ -19,6 +19,8 @@ from typing import Any, Final
 import pytest
 
 from sandbox_science.contracts import ErrorKind, ExecutionContext
+from sandbox_science.orchestrator.context.agent import AgentContext
+from sandbox_science.orchestrator.context.history import body
 from sandbox_science.orchestrator.delegation import hook
 from sandbox_science.orchestrator.delegation.fence import ChildFence
 from sandbox_science.orchestrator.delegation.hook import Child, ChildEnd, Delegations
@@ -29,7 +31,6 @@ from sandbox_science.orchestrator.delegation.records import (
     Ending,
 )
 from sandbox_science.orchestrator.documents import USER, DocumentStore, store_path
-from sandbox_science.orchestrator.history import body
 from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.loop import Transcript
 from sandbox_science.orchestrator.notices import DELEGATIONS
@@ -39,7 +40,7 @@ from sandbox_science.orchestrator.service import RunService
 from sandbox_science.orchestrator.session_plans import PlanBody, SessionPlans
 from sandbox_science.testing import FakeClock, eventually
 
-from .loop_harness import PLAN, PROJECT, SESSION, USER_PLANS, Harness, Reply, call
+from .loop_harness import AREA, PLAN, PROJECT, SESSION, USER_PLANS, Harness, Reply, call
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
@@ -56,7 +57,7 @@ from .test_delegation import (
     wait,
 )
 from .test_delegation import delegating as delegating
-from .test_run_service import serving
+from .test_run_service import refusal, serving
 
 Message = dict[str, Any]
 
@@ -148,8 +149,9 @@ def depth(harness: Harness, value: int) -> None:
 
 
 async def test_a_check_keeps_the_plan_fence(delegating: Harness) -> None:
-    """A plan the user publishes while the child runs is a draft: the child's effects are
-    refused, and the outcome says why."""
+    """A plan the user publishes while the child runs is a draft: the child's outward
+    effects are refused, and the outcome says why, while its work in the session goes on
+    (D99)."""
 
     async def plan() -> None:
         delegating.user_plan()
@@ -158,12 +160,14 @@ async def test_a_check_keeps_the_plan_fence(delegating: Harness) -> None:
         "root",
         [Reply(calls=[CHECK]), wait(), Reply(calls=[call("plan_read")]), Reply("Fenced.")],
         delegated=[
-            Reply(calls=[call("write_file", path="check.txt", content="x")], before=plan),
+            Reply(calls=[call("write_file", path=f"{AREA}/check.txt", content="x")], before=plan),
+            Reply(calls=[call("publish", path=f"{AREA}/check.txt")]),
             Reply(json.dumps(FENCED)),
         ],
     )
     (child,) = children(delegating, root)
-    (refused,) = results(child)
+    written, refused = results(child)
+    assert "error" not in json.loads(written), written
     error = json.loads(refused)["error"]
     assert error["kind"] == "policy_denied"
     assert "draft" in error["message"]
@@ -563,15 +567,21 @@ async def test_a_project_that_stopped_delegating_still_gets_its_outcomes(
     assert later.delivered["delegations"] == [delegation_id]
 
 
-async def test_a_reached_cost_limit_refuses_a_delegation(delegating: Harness) -> None:
+async def test_a_reached_cost_limit_refuses_paid_calls_not_a_delegation(
+    delegating: Harness,
+) -> None:
+    """D102: the delegation is admitted; the model-call journal refuses the child's and
+    the root's next paid calls, as the gateway's budget would."""
     RunState(ProjectStore(delegating.state).control).set_cost_limit(PROJECT, 0.01)
     root = await delegating.run("root", [Reply(calls=[CHECK], cost="0.02")], status=3)
-    refused = json.loads(results(root)[0])["error"]
-    assert refused["kind"] == "unavailable"
-    assert "daily cost limit" in refused["message"]
-    assert "delegations" not in root.summaries
+    started = json.loads(results(root)[0])
+    assert "error" not in started
     assert root.stopped == "gateway_budget"
+    assert refusal(root).startswith("model_budget:")
     assert len(delegating.gateway.main) == 1
+    assert delegating.gateway.children == []
+    (child,) = children(delegating, root)
+    assert child.stopped == "gateway_budget"
 
 
 @pytest.mark.parametrize(
@@ -827,7 +837,9 @@ async def test_parent_cannot_finish_when_child_outcome_was_not_saved(
     try:
         async with made.lease():
             text, _ = await made.call("delegate", BRIEF)
-            closing = asyncio.create_task(made.closing(Transcript(messages=[]), "Done."))
+            closing = asyncio.create_task(
+                made.closing(Transcript(context=AgentContext(messages=[])), "Done.")
+            )
             for count, seconds in enumerate((0.5, 1.0), start=1):
                 await eventually(lambda count=count: len(writes) == count and clock.sleepers == 1)
                 clock.advance(seconds)
@@ -884,7 +896,7 @@ async def test_a_halt_with_children_running_keeps_its_reason(tmp_path: Path) -> 
     try:
         async with made.lease():
             await made.call("delegate", BRIEF)
-            transcript = Transcript(messages=[], halted="budget")
+            transcript = Transcript(context=AgentContext(messages=[]), halted="budget")
             transcript.room = False
             closing = await made.closing(transcript, "An answer.")
             assert (closing.action, closing.stopped) == ("retry", "budget")
@@ -924,7 +936,9 @@ async def test_parent_closing_waits_for_all_children_and_remains_interruptible(
         async with made.lease():
             for _ in free:
                 await made.call("delegate", BRIEF)
-            closing = asyncio.create_task(made.closing(Transcript(messages=[]), "An answer."))
+            closing = asyncio.create_task(
+                made.closing(Transcript(context=AgentContext(messages=[])), "An answer.")
+            )
             await entered.wait()
             await eventually(lambda: len(started) == 2)
             assert not closing.done()

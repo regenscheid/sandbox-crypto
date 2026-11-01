@@ -14,7 +14,7 @@ of its non-default fields (canonical.py). docs/COMPATIBILITY.md states the polic
 
 from .artifacts import ArtifactRef
 from .clock import SYSTEM_CLOCK, Clock, SystemClock, wait_or_sleep
-from .context import ExecutionContext
+from .context import ExecutionContext, outside_write_area, write_area
 from .documents import (
     CatalogChange,
     CatalogContentChunk,
@@ -40,13 +40,23 @@ from .environments import (
     HostPort,
     PolicyRevision,
     PolicyRevisionRequest,
+    RuntimeSandboxBinding,
+    RuntimeSandboxRequest,
+    RuntimeSandboxUnbound,
     SuspendResult,
 )
 from .events import Event, OutputEvent, ResultEvent, StateEvent, StreamEvent
 from .kernel_lineage import (
     KernelBirthPin,
 )
-from .model import Contract, Identifier, new_id
+from .model import (
+    MAX_PROJECT_ID,
+    PROJECT_ID_RULE,
+    Contract,
+    Identifier,
+    new_id,
+    project_id_label_problem,
+)
 from .provision_observations import (
     AdmissionSummary,
     ProvisionDetail,
@@ -81,6 +91,8 @@ from .worker import (
     TERMINAL_STATES,
     Capabilities,
     CellRequest,
+    EditFileRequest,
+    EditFileResult,
     ErrorInfo,
     ErrorKind,
     Execution,
@@ -89,10 +101,21 @@ from .worker import (
     FileContent,
     FileEntry,
     FileListing,
+    GlobEntry,
+    GlobListing,
+    GlobRequest,
+    GrepCount,
+    GrepRequest,
+    GrepResult,
     IsolationEvidence,
     JobDetails,
     JobListing,
+    JobProfileOffer,
     JobRequest,
+    JobResultManifest,
+    JobSandbox,
+    JobSandboxRelease,
+    JobSandboxReleased,
     JobStatus,
     KernelInfo,
     KernelListing,
@@ -101,6 +124,7 @@ from .worker import (
     KernelStatusRequest,
     ListFilesRequest,
     Location,
+    ManifestFile,
     PdfRequest,
     ProbeFacts,
     PublishRequest,
@@ -125,6 +149,8 @@ from .worker import (
 
 __all__ = [
     "MAX_ADMISSION_HOSTS",
+    "MAX_PROJECT_ID",
+    "PROJECT_ID_RULE",
     "SYSTEM_CLOCK",
     "TERMINAL_STATES",
     "AdmissionDecision",
@@ -145,6 +171,8 @@ __all__ = [
     "Clock",
     "CondaPackage",
     "Contract",
+    "EditFileRequest",
+    "EditFileResult",
     "EnvironmentInfo",
     "EnvironmentList",
     "EnvironmentRequest",
@@ -160,12 +188,23 @@ __all__ = [
     "FileContent",
     "FileEntry",
     "FileListing",
+    "GlobEntry",
+    "GlobListing",
+    "GlobRequest",
+    "GrepCount",
+    "GrepRequest",
+    "GrepResult",
     "HostPort",
     "Identifier",
     "IsolationEvidence",
     "JobDetails",
     "JobListing",
+    "JobProfileOffer",
     "JobRequest",
+    "JobResultManifest",
+    "JobSandbox",
+    "JobSandboxRelease",
+    "JobSandboxReleased",
     "JobStatus",
     "KernelBirthPin",
     "KernelInfo",
@@ -177,6 +216,7 @@ __all__ = [
     "Location",
     "Lockfile",
     "LockfileRef",
+    "ManifestFile",
     "OutputEvent",
     "PackageChange",
     "PackageCommand",
@@ -206,6 +246,9 @@ __all__ = [
     "RevisionSummary",
     "RevisionSummaryPage",
     "RichOutput",
+    "RuntimeSandboxBinding",
+    "RuntimeSandboxRequest",
+    "RuntimeSandboxUnbound",
     "SessionCloseRequest",
     "SessionClosed",
     "ShellRequest",
@@ -227,6 +270,9 @@ __all__ = [
     "generation_id",
     "manifest_sha256",
     "new_id",
+    "outside_write_area",
+    "project_id_label_problem",
     "validate_relative_path",
     "wait_or_sleep",
+    "write_area",
 ]

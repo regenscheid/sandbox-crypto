@@ -7,7 +7,7 @@ import asyncio
 import contextlib
 import json
 import math
-from typing import Final, Literal, cast
+from typing import Final, Literal, cast, get_args
 
 from pydantic import Field, ValidationError
 
@@ -24,14 +24,15 @@ from sandbox_science.orchestrator.model import (
     ToolCall,
     ToolSpec,
 )
+from sandbox_science.orchestrator.purpose import PurposeError, offered_all, split, without
 from sandbox_science.orchestrator.view_image import ImageViewer, Viewed, framed
 
 from .citations import record_citation
 from .findings import Findings
-from .models import REVIEWER_MAX_REPLAY_NATIVE_BYTES, ReviewConfig, ReviewerFinish
+from .models import REVIEWER_MAX_REPLAY_NATIVE_BYTES, Category, ReviewConfig, ReviewerFinish
 from .numbers import copied_numbers
-from .prompt_bundle import assemble_reviewer
-from .rubric import RUBRIC, RUBRIC_VERSION
+from .prompt_bundle import assemble_reviewer, recheck_pin
+from .rubric import RECHECK, RECHECK_VERSION, RUBRIC, RUBRIC_VERSION
 from .store import MANIFEST_PAGE, Json, ReviewStore, agent_text, clipped, dump
 
 READ_CHARACTERS: Final = 16000
@@ -142,23 +143,14 @@ SPECS = (
     ),
     schema(
         "review_finding",
-        "Record a bounded, pinned finding. Missing evidence is inconclusive. Each anchor "
-        "names an evidence ID, and may name a document block and math span, a log range, "
-        "or a field of a ledger entry (title, statement, status, fields, links, evidence).",
+        "Record a bounded, pinned finding. Missing evidence takes assessment "
+        "missing_evidence. Each anchor names an evidence ID, and may name a document block "
+        "and math span, a log range, or a field of a ledger entry (title, statement, "
+        "status, fields, links, evidence). supersedes names the open finding, of the same "
+        "work, that this one replaces; a re-flag names none.",
         {
             "severity": {"enum": ["fail", "warn", "note"]},
-            "category": {
-                "enum": [
-                    "missing_action",
-                    "contradicting_value",
-                    "evidence_strength",
-                    "reference",
-                    "artifact_disagreement",
-                    "method",
-                    "completion",
-                    "handle_citation",
-                ]
-            },
+            "category": {"enum": list(get_args(Category))},
             "statement": {"type": "string"},
             "anchors": {"type": "array", "items": {"type": "object"}},
             "remedy": {"type": "string"},
@@ -170,12 +162,13 @@ SPECS = (
     ),
     schema(
         "review_decide",
-        "Confirm/reject a pinned claimed fix, or evaluate a pending rebuttal.",
+        "Answer a finding's re-check, resolved or unresolved, with anchors in the new "
+        "revision or message; or accept or reject the author's pending dismissal.",
         {
             "finding": {"type": "string"},
             "expected": {"type": "integer"},
             "decision": {
-                "enum": ["confirm", "reject", "inconclusive", "accept_rebuttal", "reject_rebuttal"]
+                "enum": ["resolved", "unresolved", "accept_dismissal", "reject_dismissal"]
             },
             "explanation": {"type": "string"},
             "anchors": {"type": "array", "items": {"type": "object"}},
@@ -222,7 +215,9 @@ class ReviewerRunner:
         self.images = images
         """The review's own viewer, when its model accepts images; its drawings are the
         platform's executions, never the reviewer's (CR-2, CR-F8)."""
-        self.specs = (*SPECS, VIEW_IMAGE) if images is not None else SPECS
+        # Each with the required purpose_note, as every model is offered its tools
+        # (docs/specs/tools.md, Purpose 1).
+        self.specs = offered_all((*SPECS, VIEW_IMAGE) if images is not None else SPECS)
         self.viewed: list[Viewed] = []
         """Images viewed this turn, which follow its results."""
         self.findings = Findings(store)
@@ -233,11 +228,23 @@ class ReviewerRunner:
         self.config = ReviewConfig.model_validate(self.record["config"])
 
     async def tool(self, call: ToolCall) -> str:
+        """One of the reviewer's calls. Its purpose is checked before anything else
+        reads it and taken out of its arguments; the review's record keeps it beside
+        them (Purpose 2 to 4)."""
         await asyncio.to_thread(
             self.store.grant, self.project, self.session, self.review, self.owner
         )
-        if call.name not in {spec.name for spec in self.specs}:
-            result: Json = {"error": "tool_not_granted", "tool": clipped(call.name, 128)}
+        purpose: str | None = None
+        try:
+            parts = split(call)
+        except PurposeError as error:
+            refused: str | None = error.message
+        else:
+            refused, call, purpose = None, parts.call, parts.purpose
+        if refused is not None:
+            result: Json = {"error": "invalid_request", "message": clipped(refused, 1000)}
+        elif call.name not in {spec.name for spec in self.specs}:
+            result = {"error": "tool_not_granted", "tool": clipped(call.name, 128)}
         elif len(call.arguments) > 64000:
             result = {"error": "invalid_request", "message": "review arguments exceed their bound"}
         else:
@@ -324,7 +331,7 @@ class ReviewerRunner:
                         )
                 else:
                     result = await asyncio.to_thread(
-                        self.findings.confirm,
+                        self.findings.decide,
                         self.project,
                         self.session,
                         self.review,
@@ -346,7 +353,8 @@ class ReviewerRunner:
             {
                 "id": clipped(call.id, 128),
                 "tool": clipped(call.name, 128),
-                "arguments": clipped(call.arguments, 64000),
+                "arguments": clipped(without(call.arguments), 64000),
+                **({"purpose": purpose} if purpose is not None else {}),
                 "result": result,
             },
             owner=self.owner,
@@ -435,7 +443,9 @@ class ReviewerRunner:
         assert self.model is not None  # noqa: S101
         if self.record["rubric"] != RUBRIC_VERSION:
             raise ValueError("the reserved review rubric differs from the installed rubric")
-        bundle = assemble_reviewer(RUBRIC, RUBRIC_VERSION, self.specs, self.memory)
+        bundle = assemble_reviewer(
+            RUBRIC, RUBRIC_VERSION, self.specs, self.memory, recheck_pin(RECHECK_VERSION, RECHECK)
+        )
         # The platform's check of copied numbers comes first, and needs no model (CR-39).
         copied = await threaded(
             copied_numbers, self.store, self.project, self.session, self.review, self.owner
@@ -626,12 +636,11 @@ class ReviewerRunner:
                     "SELECT count(*) FROM review_records WHERE review_id=? AND kind='checked'",
                     (self.review,),
                 ).fetchone()[0]
+                # A re-check this review holds and has not answered.
                 undecided = db.execute(
-                    "SELECT 1 FROM review_evidence e JOIN review_findings f ON "
-                    "f.finding_id=json_extract(e.payload,'$.finding') "
-                    "AND f.revision=json_extract(e.payload,'$.revision') "
-                    "WHERE e.review_id=? AND e.kind='finding' "
-                    "AND f.status='claimed fixed' LIMIT 1",
+                    "SELECT 1 FROM review_confirmation_targets t JOIN review_findings f "
+                    "USING(finding_id) WHERE t.review_id=? AND f.revision=t.revision "
+                    "AND f.recheck IS NOT NULL LIMIT 1",
                     (self.review,),
                 ).fetchone()
             # A reviewer cannot label its recorded problems as a pass, or turn an

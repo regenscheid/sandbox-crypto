@@ -1,39 +1,23 @@
 # SPDX-License-Identifier: MIT
-"""The MCP proxy in an OpenShell sandbox of its own, run as docs/MCP-CONNECTORS.md says.
+"""The OpenShell CLI as the launcher runs it, and the MCP servers' OpenShell providers.
 
-With ``[mcp_proxy]`` in the config, ``up``:
+With ``[mcp_direct]`` (D98), ``up`` first checks that the OpenShell providers exist, before
+it starts anything: the owner creates them, with the MCP servers' credentials, and they are
+attached to the agent runtime's sandbox (orchestrator.py). With ``provider_env_file``, it
+registers ``crypto-research-mcp`` from the owner's file, when the provider is missing or
+``--refresh-provider`` asks, by running access_provider.py: only that process, and the one
+OpenShell command it gives them to, reads the values, which OpenShell then keeps in its
+encrypted store.
 
-1. checks that the OpenShell providers exist, before it starts anything: the owner
-   creates them, with the MCP servers' credentials. With ``provider_env_file``, it first
-   registers ``crypto-research-mcp`` from the owner's file, when the provider is missing
-   or ``--refresh-provider`` asks, by running access_provider.py: only that process,
-   and the one OpenShell command it gives them to, reads the values, which OpenShell
-   then keeps in its encrypted store;
-2. compiles the sandbox's policy (``sandbox-science-mcp-proxy compile-policy``);
-3. creates the sandbox from the proxy's image, with the providers, and waits until
-   it is ready;
-4. uploads the proxy's files, ``proxy.toml`` last, since the proxy starts once it is
-   there;
-5. binds the project to its policy in the proxy;
-6. forwards a loopback address to the proxy, starting the forward again whenever it
-   exits, as it does when the sandbox stops.
-
-The run service calls the proxy there, with a token of its own; the proxy's one caller
-holds the token's digest. On stopping, the launcher deletes the sandbox.
-
-Each launch names its sandbox anew: the configured name, a dash and six random hex
-digits, so two launchers, or one and a sandbox made by hand, never share a name. The
-launcher records the name before it creates the sandbox, and the sandbox's ID once it is
-ready; it deletes a sandbox only by the recorded name, and only if the ID is the
-recorded one or none was recorded yet, which the random name makes safe. A create that
-fails, leaving no sandbox of that name, forgets the record. A sandbox an earlier
-launcher made and never deleted is deleted before the new one is made, and ``down``
-deletes it too.
+The MCP proxy, which ran in a sandbox of its own until it retired (2026-10-26), is no part
+of a launch. A proxy sandbox an earlier launcher recorded (``mcp-proxy/sandbox.json`` in
+the state directory) and never deleted is deleted by ``up`` and ``down``, only by its
+recorded name, and only if its ID is the recorded one or none was recorded.
 
 OpenShell commands run in a session of their own, so a Ctrl-C to ``up`` does not cut
 one short, with the worker's environment: the one every part gets (supervise.py), the
 worker's ``pass_env`` and ``[openshell] env``, since the worker runs the same CLI against
-the same gateway. ``compile-policy`` and the forward get the same.
+the same gateway.
 """
 
 from __future__ import annotations
@@ -42,32 +26,45 @@ import asyncio
 import json
 import os
 import re
-import secrets
 import shutil
 import sys
-from pathlib import Path
+from collections.abc import Mapping
 from typing import Any, cast
 
-from . import access_provider, toml
-from .config import LauncherConfig, LauncherError, McpProxyConfig
-from .state import Layout, ensure_token, private_dir, write_private
-from .supervise import Part, Supervisor, environment, passed
+from . import access_provider
+from .config import LauncherConfig, LauncherError, McpDirectConfig
+from .state import Layout, private_dir
+from .supervise import Supervisor, environment, passed
 
-COMMAND = "sandbox-science-mcp-proxy"
-PROXY_CALLER = "mcp-orchestrator"
-"""The run service's token for the proxy, by its file's name in tokens/."""
-PROXY_PORT = 8080
-REMOTE = "/sandbox/mcp-proxy"
-RUN = "/opt/sandbox-science/bin/mcp-proxy-run"
-PROXY = "/opt/sandbox-science/bin/sandbox-science-mcp-proxy"
 DEAD_PHASES = {"Error", "Deleting", "Completed"}
-UPLOADS = ("pool-ceiling.yaml", "policy.yaml", "proxy.toml")
-"""In this order: the proxy starts once ``proxy.toml`` is there."""
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+_FRAME = re.compile(r"[\s\u2500-\u257f\u25b6\u00d7]+")
+"""Whitespace and the box drawing, arrows and crosses miette frames and wraps a report
+with."""
+_MISSING = re.compile(r'(?:message|self): "sandbox not found"')
+"""The gateway's NotFound for a sandbox name, as tonic shows a status: ``message:`` in
+the OpenShell 0.1.3 labs, ``self:`` from tonic 0.14 (OpenShell 0.1.5). Other NotFound
+answers, such as a missing service endpoint, gateway or file, do not match."""
 
 
 class OpenShellError(LauncherError):
     """An OpenShell command failed; its message is the end of what it said."""
+
+
+class SandboxMissingError(OpenShellError):
+    """The gateway answered that no sandbox has the name: proof of absence, unlike any
+    other failure, which says nothing about whether the sandbox exists."""
+
+
+NO_ERROR_TEXT = "no error text from openshell"
+
+
+def last_line(said: str, limit: int = 400) -> str:
+    """The last line of what a failed command wrote, without miette's frame, at most
+    ``limit`` characters; ``NO_ERROR_TEXT`` when it wrote nothing."""
+    lines = [" ".join(_FRAME.sub(" ", line).split()) for line in said.splitlines()]
+    found = next((line for line in reversed(lines) if line), "")
+    return found[-limit:] or NO_ERROR_TEXT
 
 
 class OpenShell:
@@ -77,22 +74,39 @@ class OpenShell:
         self.cli = config.openshell.cli
         self.env = {**environment(), **tooling(config)}
 
+    @classmethod
+    def at(cls, cli: str, env: Mapping[str, str]) -> OpenShell:
+        """The CLI without a launcher config, as the runtime manager runs it."""
+        shell = cls.__new__(cls)
+        shell.cli, shell.env = cli, {**environment(), **env}
+        return shell
+
     async def run(self, *args: str, timeout: float = 120.0) -> str:
         process = await asyncio.create_subprocess_exec(
             self.cli, *args, stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=self.env,
             start_new_session=True,
         )  # fmt: skip
+        command = " ".join(args[:2])
         try:
             output, errors = await asyncio.wait_for(process.communicate(), timeout)
-        except BaseException:
+        except BaseException as exc:
             if process.returncode is None:
                 process.kill()
                 await process.wait()
+            if isinstance(exc, TimeoutError):
+                raise OpenShellError(
+                    f"openshell {command} gave no answer within {timeout:g} s"
+                ) from None
             raise
         if process.returncode != 0:
-            said = _ANSI.sub("", errors.decode("utf-8", errors="replace")).strip()[-500:]
-            raise OpenShellError(f"openshell {' '.join(args[:2])} failed: {said}")
+            said = _ANSI.sub("", errors.decode("utf-8", errors="replace")).strip()
+            # Classify the whole report: the status leads it; its last line is what is kept.
+            missing = _MISSING.search(_FRAME.sub(" ", said)) is not None
+            error = SandboxMissingError if missing else OpenShellError
+            raise error(
+                f"openshell {command} failed (exit {process.returncode}): {last_line(said)}"
+            )
         return output.decode("utf-8", errors="replace")
 
     async def json(self, *args: str) -> object:
@@ -102,11 +116,12 @@ class OpenShell:
         """The sandbox's record, or None when there is none."""
         try:
             found = await self.json("sandbox", "get", name)
-        except OpenShellError as exc:
-            if "not found" in str(exc).lower():
-                return None
-            raise
-        return cast(dict[str, Any], found) if isinstance(found, dict) else None
+        except SandboxMissingError:
+            return None
+        if not isinstance(found, dict):
+            # Only the gateway's NotFound proves absence; an answer of another shape does not.
+            raise OpenShellError("openshell sandbox get returned no sandbox record")
+        return cast(dict[str, Any], found)
 
 
 def tooling(config: LauncherConfig) -> dict[str, str]:
@@ -114,59 +129,10 @@ def tooling(config: LauncherConfig) -> dict[str, str]:
     return {**passed(config.worker.pass_env), **config.openshell.env}
 
 
-def settings(config: LauncherConfig) -> McpProxyConfig:
-    if config.mcp_proxy is None:
-        raise LauncherError("the config has no [mcp_proxy]")
-    return config.mcp_proxy
-
-
-def sources(config: LauncherConfig) -> dict[str, Path]:
-    """The policy, targets and pool ceiling the proxy's sandbox is made from."""
-    mcp, environments = settings(config), config.openshell.environments
-    return {
-        "policy": mcp.policy or config.worker.policy,
-        "targets": mcp.targets or environments.targets,
-        "ceiling": mcp.ceiling or environments.ceiling,
-    }
-
-
-def prepare(config: LauncherConfig, layout: Layout) -> None:
-    """The run service's token for the proxy, and the files the proxy's sandbox gets."""
-    upload = private_dir(private_dir(layout.mcp) / "upload")
-    digest = ensure_token(layout.token(PROXY_CALLER))
-    found = sources(config)
-    write_private(upload / "policy.yaml", found["policy"].read_text(encoding="utf-8"))
-    write_private(upload / "pool-ceiling.yaml", found["ceiling"].read_text(encoding="utf-8"))
-    proxy = {
-        "listen": f"127.0.0.1:{PROXY_PORT}",
-        "state_dir": "state",
-        "ceiling": "pool-ceiling.yaml",
-        "credentials": settings(config).credentials,
-        "callers": [
-            {
-                "name": "orchestrator",
-                "token_sha256": digest,
-                "kind": "orchestrator",
-                "project": config.mcp_project(),
-            }
-        ],
-    }
-    write_private(upload / "proxy.toml", toml.dumps(proxy))
-
-
-def harness_options(config: LauncherConfig, layout: Layout) -> list[str]:
-    """How the run service reaches the proxy, for the project whose runs use it."""
-    if config.mcp_proxy is None:
-        return []
-    proxy = config.mcp_proxy
-    servers = [option for server in proxy.servers for option in ("--mcp-server", server)]
-    about = [o for name, text in proxy.about.items() for o in ("--mcp-about", f"{name}={text}")]
-    index = [option for name in proxy.index or () for option in ("--mcp-index", name)]
-    return [
-        "--mcp-proxy", f"http://{proxy.listen}",
-        "--mcp-token-file", str(layout.token(PROXY_CALLER)),
-        "--mcp-project", config.mcp_project(), *servers, *about, *index,
-    ]  # fmt: skip
+def provided(config: LauncherConfig) -> McpDirectConfig | None:
+    """The MCP configuration whose providers the gateway must have, attached to the agent
+    runtime's sandbox (D98)."""
+    return config.mcp_direct
 
 
 async def register_provider(
@@ -176,10 +142,10 @@ async def register_provider(
     with ``refresh``, in a process of its own: the launcher never opens the file. The
     process gets the parts' usual environment and ``[openshell] env`` alone, and the
     OpenShell CLI as an absolute path, found as running it would find it."""
-    mcp = settings(config)
-    if mcp.provider_env_file is None or mcp.provider_profile is None:
+    mcp = provided(config)
+    if mcp is None or mcp.provider_env_file is None or mcp.provider_profile is None:
         if refresh:
-            raise LauncherError("--refresh-provider needs [mcp_proxy] provider_env_file")
+            raise LauncherError("--refresh-provider needs [mcp_direct] provider_env_file")
         return
     provider = access_provider.PROVIDER
     if not refresh and provider in await _providers(config):
@@ -194,7 +160,7 @@ async def register_provider(
         [sys.executable, "-I", "-m", access_provider.__name__, str(mcp.provider_env_file),
          "--profile", str(mcp.provider_profile), "--provider", provider,
          "--openshell", cli],
-        layout.mcp,
+        private_dir(layout.mcp),
         config.start_timeout,
         env,
     )  # fmt: skip
@@ -214,8 +180,11 @@ async def _providers(config: LauncherConfig) -> set[str]:
 
 
 async def check_providers(config: LauncherConfig) -> None:
+    mcp = provided(config)
+    if mcp is None or not mcp.providers:
+        return
     names = await _providers(config)
-    for provider in settings(config).providers:
+    for provider in mcp.providers:
         if provider not in names:
             raise LauncherError(
                 f"the OpenShell provider {provider} does not exist: create it with the MCP "
@@ -223,95 +192,9 @@ async def check_providers(config: LauncherConfig) -> None:
             )
 
 
-async def start(
-    config: LauncherConfig, layout: Layout, supervisor: Supervisor, commands: Path
-) -> None:
-    """Make the proxy's sandbox and start the forward to it."""
-    mcp, openshell, timeout = settings(config), OpenShell(config), config.start_timeout
-    found = sources(config)
-    compiled = layout.mcp / "openshell-policy.yaml"
-    await supervisor.run(
-        "the MCP proxy's policy",
-        [str(commands / COMMAND), "compile-policy",
-         "--policy", str(found["policy"]), "--ceiling", str(found["ceiling"]),
-         "--targets", str(found["targets"]), "--out", str(compiled)],
-        layout.mcp,
-        timeout,
-        tooling(config),
-    )  # fmt: skip
-    made = recorded(layout)
-    if made is not None and await delete_recorded(config, layout):
-        print(f"deleted the sandbox {made[0]} an earlier launcher made", flush=True)
-    sandbox = f"{mcp.sandbox}-{secrets.token_hex(3)}"
-    if await openshell.sandbox(sandbox) is not None:
-        raise LauncherError(f"a sandbox named {sandbox} exists already: run up again")
-    _record(layout, sandbox, None)
-    print(f"making the MCP proxy's sandbox {sandbox}", flush=True)
-
-    def delete_on_stop() -> None:
-        supervisor.on_stop(
-            f"delete the sandbox {sandbox}", lambda: _deleted(config, layout, sandbox)
-        )
-
-    try:
-        await openshell.run(
-            "sandbox", "create", "--name", sandbox, "--from", mcp.image,
-            "--policy", str(compiled),
-            *[option for provider in mcp.providers for option in ("--provider", provider)],
-            "--no-auto-providers",
-            "--detach", "--", RUN, timeout=timeout,
-        )  # fmt: skip
-    except LauncherError:
-        if await openshell.sandbox(sandbox) is None:
-            (layout.mcp / "sandbox.json").unlink(missing_ok=True)  # nothing was made
-        else:
-            delete_on_stop()
-        raise
-    delete_on_stop()
-    _record(layout, sandbox, await _ready(openshell, sandbox, timeout))
-    shell = ["sandbox", "exec", "-n", sandbox, "--no-tty", "--no-login-shell", "--"]
-    await openshell.run(*shell, "mkdir", "-p", REMOTE)
-    for name in UPLOADS:
-        upload = str(layout.mcp / "upload" / name)
-        await openshell.run("sandbox", "upload", "--no-git-ignore", sandbox, upload, REMOTE + "/")
-    await openshell.run(
-        *shell, PROXY, "bind", "--state-dir", f"{REMOTE}/state",
-        "--project", config.mcp_project(), "--policy", f"{REMOTE}/policy.yaml",
-    )  # fmt: skip
-    forward = Part(
-        "mcp-forward",
-        [openshell.cli, "forward", "service", "--target-port", str(PROXY_PORT),
-         "--local", mcp.listen, sandbox],
-        layout.mcp,
-        address=mcp.listen,
-        env=tooling(config),
-        restart=True,
-    )  # fmt: skip
-    print(f"forwarding {mcp.listen} to the MCP proxy", flush=True)
-    await supervisor.start(forward, timeout)
-
-
-async def _ready(openshell: OpenShell, name: str, timeout: float) -> str:
-    """The sandbox's ID once it is ready."""
-    deadline = asyncio.get_running_loop().time() + timeout
-    while True:
-        found = await openshell.sandbox(name) or {}
-        phase, identity = found.get("phase"), found.get("id")
-        if phase == "Ready" and isinstance(identity, str) and identity:
-            return identity
-        if phase in DEAD_PHASES:
-            raise LauncherError(f"the sandbox {name} is {phase}, not ready")
-        if asyncio.get_running_loop().time() > deadline:
-            raise LauncherError(f"the sandbox {name} was not ready within {timeout:g} s")
-        await asyncio.sleep(1)
-
-
-def _record(layout: Layout, name: str, identity: str | None) -> None:
-    write_private(layout.mcp / "sandbox.json", json.dumps({"name": name, "id": identity}) + "\n")
-
-
 def recorded(layout: Layout) -> tuple[str, str | None] | None:
-    """The sandbox this launcher made and has not deleted yet: its name and ID."""
+    """The MCP proxy's sandbox an earlier launcher made and did not delete: its name and
+    ID."""
     try:
         raw = cast(dict[str, Any], json.loads((layout.mcp / "sandbox.json").read_text()))
         identity = raw["id"]
@@ -321,7 +204,8 @@ def recorded(layout: Layout) -> tuple[str, str | None] | None:
 
 
 async def delete_recorded(config: LauncherConfig, layout: Layout) -> bool:
-    """Delete the sandbox the record names, if it is still the one this launcher made."""
+    """Delete the MCP proxy's sandbox the record names, if it is still the one an earlier
+    launcher made."""
     found = recorded(layout)
     if found is None:
         return False
@@ -330,14 +214,22 @@ async def delete_recorded(config: LauncherConfig, layout: Layout) -> bool:
 
 async def _deleted(config: LauncherConfig, layout: Layout, name: str) -> bool:
     """Delete the sandbox ``name`` if the record names it: by its recorded ID, or, before
-    the ID was known, by its name alone, which no one else's sandbox has (``start``)."""
+    the ID was known, by its name alone, which no one else's sandbox had: each launch named
+    its proxy sandbox anew, with six random hex digits."""
     found = recorded(layout)
     if found is None or found[0] != name:
         return False
     openshell = OpenShell(config)
     existing = await openshell.sandbox(name)
     deleted = False
-    if existing is not None and found[1] in (None, existing.get("id")):
+    if existing is not None and found[1] not in (None, existing.get("id")):
+        # Ours is gone, since the gateway's names are unique; the name is another's now.
+        print(
+            f"left the sandbox {name} alone: it is {existing.get('id')}, not the retired MCP"
+            f" proxy's {found[1]}; forgetting the record",
+            flush=True,
+        )
+    elif existing is not None:
         await openshell.run("sandbox", "delete", name)
         for _ in range(120):
             if await openshell.sandbox(name) is None:

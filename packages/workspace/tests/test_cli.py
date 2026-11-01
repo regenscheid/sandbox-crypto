@@ -6,10 +6,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import re
 import signal
 import socket
 import sqlite3
+import stat
 import sys
 from pathlib import Path
 
@@ -19,7 +21,10 @@ from aiohttp import web
 
 from sandbox_science.orchestrator.control import migrations
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
-from sandbox_science.workspace import cli
+from sandbox_science.workspace import app, cli
+from sandbox_science.workspace.forward_auth import ForwardAuthSettings, Verifier
+from sandbox_science.workspace.project_settings import MODEL_CONFIGURATION, ModelConfiguration
+from sandbox_science.workspace.proxy import Exposure, PublicOrigin
 
 COMMAND = Path(sys.executable).parent / "sandbox-science-workspace"
 
@@ -133,13 +138,35 @@ def test_serve_warns_only_when_the_preview_origin_shares_the_site(
     assert warned is None or warned in caplog.text
 
 
-def test_messages_agent_reviewer_starts_without_an_effort_default(
+def test_an_mcp_service_leaves_the_preview_origin_localhost(
     state_dir: Path, static_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    served: list[bool] = []
+    # The services' loop once reused the viewer's host name variable, so with an MCP
+    # service configured the viewer's origin became http://<service>:8201 (Mac, 2026-10-21).
+    given: list[object] = []
 
-    async def serve(*_: object) -> None:
-        served.append(True)
+    async def serve(*args: object) -> None:
+        preview = args[4]
+        assert isinstance(preview, tuple)
+        given.append(preview[-1])
+
+    monkeypatch.setattr(cli, "serve", serve)
+    args = ["serve", "--state-dir", str(state_dir), "--static", str(static_dir)]
+    args += ["--mcp-project", "p1", "--mcp-service", "crypto-research-mcp=research papers"]
+    assert cli.main(args) == 0
+    assert given == ["localhost"]
+
+
+def test_every_agent_alias_takes_an_effort_whatever_its_api(
+    state_dir: Path, static_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every adapter takes an effort (docs/specs/context-management.md, CM-41): a Messages
+    alias accepts one, the reviewer defaults to medium on every API, and an alias with no
+    API named is the run service's choice, shown as none."""
+    served: list[ModelConfiguration] = []
+
+    async def serve(given: web.Application, *_: object, **__: object) -> None:
+        served.append(given[MODEL_CONFIGURATION])
 
     monkeypatch.setattr(cli, "serve", serve)
     args = [
@@ -149,16 +176,22 @@ def test_messages_agent_reviewer_starts_without_an_effort_default(
         "--static",
         str(static_dir),
         "--agent-model",
-        "main=sol",
+        "main=claude",
         "--agent-model",
         "delegated=sol",
         "--agent-model",
         "reviewer=claude",
         "--agent-api",
         "claude=messages",
+        "--agent-effort",
+        "main=high",
     ]
     assert cli.main(args) == 0
-    assert served == [True]
+    (configured,) = served
+    assert configured.available == {"claude": "messages", "sol": None}
+    assert configured.defaults["main"].reasoning_effort == "high"
+    assert configured.defaults["reviewer"].reasoning_effort == "medium"
+    assert configured.defaults["delegated"].reasoning_effort is None
 
 
 def test_another_address_needs_allow_remote(tmp_path: Path, static_dir: Path) -> None:
@@ -334,3 +367,370 @@ async def test_the_server_prints_a_login_url_that_opens_a_session(
     assert process.stderr is not None
     # Two sites: no warning that the frames may share the page's thread.
     assert "shares the workspace's host" not in (await process.stderr.read()).decode()
+
+
+def test_serve_sets_up_the_shared_logging(
+    state_dir: Path, static_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    set_up: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        cli, "configure_logging", lambda service, **kw: set_up.append((service, kw))
+    )
+
+    async def serve(*args: object) -> None:
+        return None
+
+    monkeypatch.setattr(cli, "serve", serve)
+    args = ["serve", "--state-dir", str(state_dir), "--static", str(static_dir)]
+    assert cli.main([*args, "--log-level", "WARNING"]) == 0
+    assert set_up == [("workspace", {"level": "WARNING"})]
+
+
+# Behind a TLS-terminating proxy (docs/WORKSPACE.md, "Behind a reverse proxy").
+
+PUBLIC = ["--public-origin", "https://workspace.research.test"]
+PREVIEW_PUBLIC = ["--preview-public-origin", "https://preview.research.test"]
+REMOTE = ["--allow-remote", "--listen", "0.0.0.0:8200"]  # never bound here
+
+
+@pytest.mark.parametrize(
+    ("flags", "reason"),
+    [
+        ([*PUBLIC, *PREVIEW_PUBLIC], "need --allow-remote"),
+        (["--trust-proxy-from", "10.42.0.0/16"], "need --allow-remote"),
+        ([*REMOTE, *PUBLIC], "given together"),
+        ([*REMOTE, *PREVIEW_PUBLIC], "given together"),
+        ([*REMOTE, "--public-origin", "http://workspace.research.test", *PREVIEW_PUBLIC],
+         "is not an https:// origin"),
+        ([*REMOTE, *PUBLIC, "--preview-public-origin", "https://preview.research.test/viewer"],
+         "is not an https:// origin"),
+        ([*REMOTE, *PUBLIC, "--preview-public-origin", "https://WORKSPACE.research.test:443"],
+         "must differ"),
+        ([*REMOTE, *PUBLIC, *PREVIEW_PUBLIC, "--preview-name", "preview.research.test"],
+         "drop --preview-name"),
+        ([*REMOTE, "--trust-proxy-from", "10.42.0.1/16"], "CIDR"),
+        ([*REMOTE, "--trust-proxy-from", "0.0.0.0/0"], "every address"),
+    ],
+)  # fmt: skip
+def test_proxy_settings_that_would_weaken_or_confuse_are_refused(
+    state_dir: Path,
+    static_dir: Path,
+    capsys: pytest.CaptureFixture[str],
+    flags: list[str],
+    reason: str,
+) -> None:
+    with pytest.raises(SystemExit) as refused:
+        cli.main(["serve", "--state-dir", str(state_dir), "--static", str(static_dir), *flags])
+    assert refused.value.code == 2
+    assert reason in capsys.readouterr().err
+
+
+def captured_app(monkeypatch: pytest.MonkeyPatch) -> tuple[dict[str, object], list[object]]:
+    """Patches ``create_app`` and ``serve``: the app's settings and what serve was given."""
+    settings: dict[str, object] = {}
+    served: list[object] = []
+    create = app.create_app
+
+    def create_app(*args: object, **kwargs: object) -> web.Application:
+        settings.update(kwargs)
+        return create(*args, **kwargs)  # pyright: ignore[reportArgumentType]
+
+    async def serve(*args: object) -> None:
+        served.extend(args)
+
+    monkeypatch.setattr(cli, "create_app", create_app)
+    monkeypatch.setattr(cli, "serve", serve)
+    return settings, served
+
+
+def test_without_proxy_settings_the_loopback_server_is_unchanged(
+    state_dir: Path, static_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings, served = captured_app(monkeypatch)
+    assert cli.main(["serve", "--state-dir", str(state_dir), "--static", str(static_dir)]) == 0
+    assert settings["exposure"] is None
+    assert settings["check_host"] is True
+    assert served[5] is None  # no public origins: the listeners' own are announced
+
+
+def test_proxy_settings_reach_the_app_and_the_announcement(
+    state_dir: Path, static_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings, served = captured_app(monkeypatch)
+    flags = [*REMOTE, *PUBLIC, *PREVIEW_PUBLIC]
+    flags += ["--trust-proxy-from", "10.42.0.0/16", "--trust-proxy-from", "fd00::/8"]
+    args = ["serve", "--state-dir", str(state_dir), "--static", str(static_dir), *flags]
+    assert cli.main(args) == 0
+    exposure = settings["exposure"]
+    assert isinstance(exposure, Exposure)
+    assert exposure.public == PublicOrigin("workspace.research.test")
+    assert [str(network) for network in exposure.trusted] == ["10.42.0.0/16", "fd00::/8"]
+    assert settings["check_host"] is False
+    assert served[5] == (
+        PublicOrigin("workspace.research.test"),
+        PublicOrigin("preview.research.test"),
+    )
+
+
+JWKS = "http://authentik-server.authentik.svc/application/o/atlas/jwks/"
+RS256 = ["--forward-auth-algorithm", "RS256", "--forward-auth-jwks-url", JWKS]
+FORWARD = [
+    "--forward-auth-issuer",
+    "https://auth.research.test/application/o/atlas/",
+    "--forward-auth-audience",
+    "test-client-id",
+    "--forward-auth-user-group",
+    "atlas-users",
+]
+
+
+def test_forward_auth_settings_reach_the_app(
+    state_dir: Path, static_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings, _ = captured_app(monkeypatch)
+    flags = [*REMOTE, *PUBLIC, *PREVIEW_PUBLIC, *RS256, *FORWARD]
+    flags += ["--forward-auth-admin-group", "admins"]
+    args = ["serve", "--state-dir", str(state_dir), "--static", str(static_dir), *flags]
+    assert cli.main(args) == 0
+    verifier = settings["forward_auth"]
+    assert isinstance(verifier, Verifier)
+    assert verifier.settings == ForwardAuthSettings(
+        algorithm="RS256",
+        jwks_url=JWKS,
+        issuer=FORWARD[1],
+        audience="test-client-id",
+        user_group="atlas-users",
+        admin_group="admins",
+        header="X-authentik-jwt",
+    )
+    settings.clear()
+    assert cli.main(["serve", "--state-dir", str(state_dir), "--static", str(static_dir)]) == 0
+    assert settings["forward_auth"] is None
+
+
+@pytest.mark.parametrize(
+    ("flags", "reason"),
+    [
+        ([*REMOTE, *RS256, *FORWARD], "needs --public-origin"),
+        ([*REMOTE, *PUBLIC, *PREVIEW_PUBLIC, *RS256, *FORWARD[:4]], "--forward-auth-user-group"),
+        (
+            [*REMOTE, *PUBLIC, *PREVIEW_PUBLIC, *FORWARD, "--forward-auth-jwks-url", JWKS],
+            "--forward-auth-algorithm",
+        ),
+        ([*REMOTE, *PUBLIC, *PREVIEW_PUBLIC, "--forward-auth-admin-group", "a"], "needs"),
+        (
+            [
+                *REMOTE,
+                *PUBLIC,
+                *PREVIEW_PUBLIC,
+                *FORWARD,
+                *RS256[:2],
+                "--forward-auth-jwks-url",
+                "ftp://x",
+            ],
+            "http or https",
+        ),
+        (
+            [*REMOTE, *PUBLIC, *PREVIEW_PUBLIC, *FORWARD, "--forward-auth-algorithm", "HS256"],
+            "takes --forward-auth-secret-file only",
+        ),
+        (
+            [*REMOTE, *PUBLIC, *PREVIEW_PUBLIC, *FORWARD, "--forward-auth-algorithm", "none"],
+            "invalid choice",
+        ),
+    ],
+    ids=[
+        "no-public-origin",
+        "incomplete",
+        "no-algorithm",
+        "admin-group-alone",
+        "bad-jwks-url",
+        "hs256-without-secret",
+        "alg-none",
+    ],
+)
+def test_incomplete_forward_auth_settings_are_refused(
+    state_dir: Path,
+    static_dir: Path,
+    capsys: pytest.CaptureFixture[str],
+    flags: list[str],
+    reason: str,
+) -> None:
+    with pytest.raises(SystemExit) as refused:
+        cli.main(["serve", "--state-dir", str(state_dir), "--static", str(static_dir), *flags])
+    assert refused.value.code == 2
+    assert reason in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+async def test_behind_a_proxy_the_public_origins_are_announced_and_used(
+    state_dir: Path, static_dir: Path
+) -> None:
+    (static_dir / "viewer").mkdir()
+    (static_dir / "viewer" / "index.html").write_text("<!doctype html><title>Viewer</title>")
+    process = await asyncio.create_subprocess_exec(
+        str(COMMAND),
+        *("serve", "--state-dir", str(state_dir), "--static", str(static_dir)),
+        *("--listen", "127.0.0.1:0", "--allow-remote", *PUBLIC, *PREVIEW_PUBLIC),
+        *("--trust-proxy-from", "127.0.0.0/8"),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        assert process.stdout is not None
+        printed = ""
+        while "token=" not in printed:
+            line = await asyncio.wait_for(process.stdout.readline(), 30)
+            assert line, f"the server stopped; it printed {printed!r}"
+            printed += line.decode()
+        viewer = re.search(
+            r"PDF viewer origin on https://preview\.research\.test/ "
+            r"\(served at http://127\.0\.0\.1:(\d+)/\)\n",
+            printed,
+        )
+        workspace = re.search(
+            r"Sandbox Science workspace on https://workspace\.research\.test/ "
+            r"\(served at (http://127\.0\.0\.1:(\d+))/\)\n",
+            printed,
+        )
+        login = re.search(
+            r"\n    https://workspace\.research\.test/login\?token=([A-Za-z0-9_-]{43})\n", printed
+        )
+        assert viewer is not None, printed
+        assert workspace is not None, printed
+        assert login is not None, printed
+        base, port, token = workspace[1], workspace[2], login[1]
+        proxied = {"Host": f"research-workspace:{port}", "X-Forwarded-Proto": "https"}
+        proxied["X-Forwarded-Host"] = "workspace.research.test"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"{base}/", headers=proxied) as page:
+                policy = page.headers["Content-Security-Policy"]
+                assert "frame-src https://preview.research.test" in policy
+                assert "img-src 'self' https://preview.research.test" in policy
+            async with session.get(f"{base}/", headers={"Host": f"127.0.0.1:{port}"}) as own:
+                assert own.status == 403  # only the public host is answered
+            async with session.get(
+                f"http://127.0.0.1:{viewer[1]}/viewer/", headers={"Host": "preview.research.test"}
+            ) as framed:
+                assert framed.status == 200
+                ancestors = "frame-ancestors https://workspace.research.test"
+                assert ancestors in framed.headers["Content-Security-Policy"]
+            async with session.get(
+                f"{base}/login?token={token}", headers=proxied, allow_redirects=False
+            ) as opened:
+                assert opened.status == 303
+                set_cookie = opened.headers["Set-Cookie"]
+            name, _, rest = set_cookie.partition("=")
+            assert name == f"__Host-sandbox_science_workspace-{port}"
+            assert rest.endswith("; HttpOnly; Path=/; SameSite=Strict; Secure")
+            cookie = {"Cookie": f"{name}={rest.partition(';')[0]}"}
+            async with session.get(
+                f"{base}/api/v0/projects", headers={**proxied, **cookie}
+            ) as listed:
+                assert listed.status == 200
+            async with session.post(
+                f"{base}/api/v0/logout",
+                headers={**proxied, **cookie, "Origin": "http://workspace.research.test"},
+            ) as refused:
+                assert refused.status == 403
+            async with session.post(
+                f"{base}/api/v0/logout",
+                headers={**proxied, **cookie, "Origin": "https://workspace.research.test"},
+            ) as ended:
+                assert ended.status == 204
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            process.send_signal(signal.SIGTERM)
+        status = await asyncio.wait_for(process.wait(), 30)
+    assert status == 0
+
+
+@pytest.mark.asyncio
+async def test_with_forward_auth_the_login_url_stays_out_of_the_log(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """D104: the login link is the operator's, an admin; with forward auth it is written
+    to a private file for ``login-url``, never to standard output (the Pod's log)."""
+    token = "test-secret-login-token-not-for-the-log-0123456789"
+    login_file = tmp_path / cli.LOGIN_URL_FILE
+    login_file.write_text("an old URL\n")
+    login_file.chmod(0o644)
+    server = asyncio.create_task(
+        cli.serve(web.Application(), "127.0.0.1", 0, token, None, None, login_file)
+    )
+    for _ in range(200):
+        if "token=" in login_file.read_text():
+            break
+        await asyncio.sleep(0.02)
+    assert stat.S_IMODE(login_file.stat().st_mode) == 0o600
+    url = login_file.read_text().strip()
+    assert re.fullmatch(rf"http://127\.0\.0\.1:\d+/login\?token={token}", url)
+    printed = capsys.readouterr()
+    assert token not in printed.out + printed.err
+    assert str(login_file) in printed.out
+    assert cli.main(["login-url", "--state-dir", str(tmp_path)]) == 0
+    assert capsys.readouterr().out.strip() == url
+    os.kill(os.getpid(), signal.SIGTERM)
+    await asyncio.wait_for(server, 10)
+    assert not login_file.exists()  # the token died with the server
+    assert cli.main(["login-url", "--state-dir", str(tmp_path)]) == 1
+    assert "not running with forward auth" in capsys.readouterr().err
+
+
+def test_forward_auth_passes_the_login_file_to_serve(
+    state_dir: Path, static_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, served = captured_app(monkeypatch)
+    flags = [*REMOTE, *PUBLIC, *PREVIEW_PUBLIC, *RS256, *FORWARD]
+    assert (
+        cli.main(["serve", "--state-dir", str(state_dir), "--static", str(static_dir), *flags]) == 0
+    )
+    assert served[6] == state_dir / cli.LOGIN_URL_FILE
+    served.clear()
+    assert cli.main(["serve", "--state-dir", str(state_dir), "--static", str(static_dir)]) == 0
+    assert served[6] is None  # without forward auth the URL is printed, as before
+
+
+SECRET = "test-secret-authentik-client-secret-0123456789abcdefghijklmnop"
+
+
+def test_hs256_reads_the_secret_file_at_start(
+    state_dir: Path, static_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings, _ = captured_app(monkeypatch)
+    secret = tmp_path / "authentik-client-secret"
+    secret.write_text(SECRET + "\n")
+    secret.chmod(0o600)
+    flags = [*REMOTE, *PUBLIC, *PREVIEW_PUBLIC, *FORWARD]
+    flags += ["--forward-auth-algorithm", "HS256", "--forward-auth-secret-file", str(secret)]
+    args = ["serve", "--state-dir", str(state_dir), "--static", str(static_dir), *flags]
+    assert cli.main(args) == 0
+    verifier = settings["forward_auth"]
+    assert isinstance(verifier, Verifier)
+    assert verifier.settings.algorithm == "HS256"
+    assert verifier.secret is not None
+    assert verifier.secret.value() == SECRET.encode()
+    assert verifier.keys is None  # nothing to fetch
+
+
+@pytest.mark.parametrize(("mode", "reason"), [(None, "cannot read"), (0o644, "open to others")])
+def test_hs256_without_a_private_secret_file_does_not_start(
+    state_dir: Path,
+    static_dir: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    mode: int | None,
+    reason: str,
+) -> None:
+    secret = tmp_path / "authentik-client-secret"
+    if mode is not None:
+        secret.write_text(SECRET)
+        secret.chmod(mode)
+    flags = [*REMOTE, *PUBLIC, *PREVIEW_PUBLIC, *FORWARD]
+    flags += ["--forward-auth-algorithm", "HS256", "--forward-auth-secret-file", str(secret)]
+    with pytest.raises(SystemExit) as refused:
+        cli.main(["serve", "--state-dir", str(state_dir), "--static", str(static_dir), *flags])
+    assert refused.value.code == 2
+    said = capsys.readouterr()
+    assert reason in said.err
+    assert SECRET not in said.out + said.err

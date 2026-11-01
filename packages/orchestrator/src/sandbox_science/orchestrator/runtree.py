@@ -14,7 +14,8 @@ its state:
 
 Beside the runs come the session's delegations, each with its brief (the platform's
 task, the inputs, the parent's note, the check, the model chosen and the limits
-granted) and, once it ended, its outcome as it is kept. Nothing here writes.
+granted) and, once it ended, its outcome as it is kept, with its review (PD-46); and a
+reopened task's earlier results. Nothing here writes.
 """
 
 from __future__ import annotations
@@ -23,13 +24,13 @@ import json
 from datetime import UTC, datetime
 from typing import Final, Literal, cast
 
-from pydantic import JsonValue
+from pydantic import Field, JsonValue
 
 from sandbox_science.contracts import Identifier
 from sandbox_science.contracts.model import Contract
 
 from .control import ControlStore
-from .delegation.records import Delegation, DelegationRecords
+from .delegation.records import Delegation, DelegationRecords, DelegationResult
 from .documents import DocumentStore
 from .projects import ProjectStore, RunRole, run_id_of, run_started
 from .runstate import RunState
@@ -60,6 +61,9 @@ class TreeRun(Contract):
     """The model alias its calls named, from its record (PD-29)."""
     limits: dict[str, JsonValue] | None = None
     """The limits it ran under, from its record (PD-29)."""
+    tool_mix: dict[str, JsonValue] | None = None
+    """How it computed: its cells, shell calls, jobs and kernel restarts, from its
+    record's summaries; older records have none (tools spec, Kernels 13)."""
 
 
 class RunTree(Contract):
@@ -69,6 +73,9 @@ class RunTree(Contract):
     runs: list[TreeRun]
     delegations: list[Delegation]
     delegations_total: int
+    earlier: list[DelegationResult] = Field(default_factory=list[DelegationResult])
+    """The listed delegations' earlier results, before each one's latest: a reopened
+    task's (PD-46), at most ``EARLIER`` of each, oldest first."""
 
 
 class RunTrees:
@@ -89,8 +96,14 @@ class RunTrees:
             else run
             for name, run in sorted(runs.items())
         ]
-        delegations, total = DelegationRecords(self.control).listed(project, session)
-        return RunTree(runs=shown, delegations=delegations, delegations_total=total)
+        records = DelegationRecords(self.control)
+        delegations, total = records.listed(project, session)
+        earlier = records.earlier(
+            project, session, [d.delegation_id for d in delegations if d.results > 1]
+        )
+        return RunTree(
+            runs=shown, delegations=delegations, delegations_total=total, earlier=earlier
+        )
 
     def state(self, project: str, session: str, run: str) -> TreeState:
         """One run's state, as the tree gives it, read from that run and its parents
@@ -132,6 +145,17 @@ class RunTrees:
         return lease.run if lease is not None else None
 
 
+def _object(text: str | None) -> dict[str, JsonValue] | None:
+    """A JSON object the record holds, or ``None`` for anything else."""
+    if text is None:
+        return None
+    try:
+        found: object = json.loads(text)
+    except ValueError:
+        return None
+    return cast(dict[str, JsonValue], found) if isinstance(found, dict) else None
+
+
 def _root(parents: dict[str, str | None], name: str) -> str:
     """The run at the top of ``name``'s parents, as far as they are known."""
     for _ in range(DEPTH):
@@ -154,7 +178,8 @@ def _runs(control: ControlStore, project: str, session: str) -> dict[str, TreeRu
         kept = db.execute(
             "SELECT name, run_id, started_at, role, parent, delegation, "
             "json_extract(record, '$.stopped'), json_extract(record, '$.alias'), "
-            "json_extract(record, '$.limits') FROM runs WHERE project_id = ? "
+            "json_extract(record, '$.limits'), json_extract(record, '$.summaries.tool_mix') "
+            "FROM runs WHERE project_id = ? "
             "AND session_id = ?",
             (project, session),
         ).fetchall()
@@ -170,7 +195,7 @@ def _runs(control: ControlStore, project: str, session: str) -> dict[str, TreeRu
             started.setdefault(run, value)
         else:
             stopped[run] = _text(value.get("stopped"))
-    for name, run_id, began, role, parent, delegation, ended, alias, limits in kept:
+    for name, run_id, began, role, parent, delegation, ended, alias, limits, mix in kept:
         found[name] = TreeRun(
             name=name,
             run_id=run_id,
@@ -183,6 +208,7 @@ def _runs(control: ControlStore, project: str, session: str) -> dict[str, TreeRu
             kept=True,
             alias=alias,
             limits=json.loads(limits) if limits is not None else None,
+            tool_mix=_object(mix),
         )
     names: set[str] = {*started, *stopped, *([str(held[0])] if held is not None else [])}
     for name in sorted(names - set(found)):

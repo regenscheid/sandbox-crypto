@@ -8,13 +8,16 @@ following symbolic links; the file a reply names is the file read or written.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import contextlib
 import errno
 import hashlib
 import json
 import os
+import re
 import secrets
+import shutil
 import stat
 import time
 from collections.abc import Sequence
@@ -34,6 +37,14 @@ MAX_OBSERVATION_SCAN_ENTRIES = 256
 MAX_OBSERVATION_SCAN_BYTES = 64 * 1024
 SHARED = "shared"
 DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+"""A file opened to read: through no symlink, and without waiting on a FIFO."""
+PARTS = ".parts"
+"""Where ranged writes keep their parts: below the root, beside ``sessions`` and outside
+every workspace, so no listing, search or scan of written files sees one."""
+_UPLOAD_RE = re.compile(r"[0-9a-f]{16,64}")
+STALE_PART_SECONDS = 24 * 3600.0
+"""A part nothing has written for this long is removed when another ranged write starts."""
 
 
 class ToolError(Exception):
@@ -523,6 +534,85 @@ def write_file(
     }
 
 
+def edit_file(
+    parent: int,
+    name: str,
+    old: str,
+    new: str,
+    replace_all: bool,
+    expected: object,
+    path: str,
+    limit: int,
+) -> Message:
+    """Replace ``old`` with ``new`` in the UTF-8 text file ``name`` in the directory
+    ``parent``, which is consumed.
+
+    The file is read once, through no symlink and without waiting on a FIFO, and replaced
+    as ``write_file`` replaces it, on condition that it still has the content read: a
+    change in between is a ``conflict``, never a lost write. The file keeps its
+    executable bit. The reply is ``write_file``'s, with the number of replacements.
+    """
+    handed = False
+    try:
+        try:
+            descriptor = os.open(name, FILE_FLAGS, dir_fd=parent)
+        except FileNotFoundError:
+            raise ToolError("not_found", f"no file {path!r}") from None
+        except OSError as exc:
+            raise path_refusal(parent, name, path, exc) from exc
+        try:
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode):
+                raise ToolError("invalid_request", f"{path!r} is not a regular file")
+        except BaseException:
+            os.close(descriptor)
+            raise
+        with os.fdopen(descriptor, "rb") as handle:
+            data = handle.read(limit + 1)
+        if len(data) > limit:
+            raise ToolError(
+                "invalid_request",
+                f"{path!r} is larger than the {limit} bytes edit_file changes; "
+                "use write_file or a script",
+            )
+        current = hashlib.sha256(data).hexdigest()
+        if expected is not None and current != expected:
+            raise ToolError("conflict", f"{path!r} changed: its SHA-256 is {current}")
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            text = None
+        if text is None or "\x00" in text:
+            raise ToolError("invalid_request", f"{path!r} is not UTF-8 text: edit_file refuses it")
+        count = text.count(old)
+        if count == 0:
+            raise ToolError("not_found", f"not_found: old_string does not occur in {path!r}")
+        if count > 1 and not replace_all:
+            raise ToolError(
+                "invalid_request",
+                f"ambiguous: old_string occurs {count} times in {path!r}; give more of the "
+                "surrounding text so it occurs once, or set replace_all",
+            )
+        try:
+            content = text.replace(old, new, -1 if replace_all else 1).encode("utf-8")
+        except UnicodeEncodeError:
+            raise ToolError(
+                "invalid_request", "new_string is not valid text: it has an unpaired surrogate"
+            ) from None
+        if len(content) > limit:
+            raise ToolError(
+                "invalid_request",
+                f"the edited {path!r} would be larger than the {limit} bytes edit_file writes",
+            )
+        executable = bool(info.st_mode & stat.S_IXUSR)
+        handed = True
+        reply = write_file(parent, name, content, current, False, path, executable)
+    finally:
+        if not handed:
+            os.close(parent)
+    return {**reply, "replacements": count if replace_all else 1}
+
+
 _RENAME_EXCHANGE: Final = 2
 
 
@@ -587,6 +677,96 @@ def move_file(source: int, name: str, destination: int, target: str, path: str) 
             raise ToolError("conflict", f"the new name for {path!r} is taken") from None
     moved = os.stat(target, dir_fd=destination, follow_symlinks=False)
     return [moved.st_mtime_ns, moved.st_size, moved.st_ino]
+
+
+def write_part(parts: int, upload: str, offset: int, content: bytes) -> tuple[int | None, bool]:
+    """Write ``content`` at ``offset`` of the part ``upload`` in the directory ``parts``,
+    where the part must end; offset 0 starts a part. Returns the part's size (``None``
+    when there is none) and whether ``content`` was written."""
+    flags = os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC
+    try:
+        if offset == 0:
+            try:
+                # A fresh part is made here, never one another process put in its place.
+                descriptor = os.open(upload, flags | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=parts)
+            except FileExistsError:
+                descriptor = os.open(upload, flags, dir_fd=parts)
+        else:
+            descriptor = os.open(upload, flags, dir_fd=parts)
+    except FileNotFoundError:
+        return None, False
+    with os.fdopen(descriptor, "r+b") as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ToolError(
+                "invalid_request", "the ranged write's part is not a regular file of its own"
+            )
+        if info.st_size != offset:
+            return info.st_size, False  # the writer resumes from where the part ends
+        handle.seek(offset)
+        handle.write(content)
+        handle.flush()
+    return offset + len(content), True
+
+
+def commit_part(
+    parts: int, upload: str, parent: int, name: str, sha256: str, size: int, path: str
+) -> Message:
+    """Give the whole part ``upload`` the name ``name`` in ``parent`` (consumed), once its
+    SHA-256 and size are the ones expected; a part that differs is removed. A commit
+    whose reply was lost finds the file named already, with that content."""
+    try:
+        try:
+            descriptor = os.open(upload, FILE_FLAGS, dir_fd=parts)
+        except FileNotFoundError:
+            try:
+                current, info = _hashed(parent, name, path)
+            except FileNotFoundError:
+                raise ToolError("not_found", f"no part of {path!r} to commit") from None
+            if (current, info.st_size) != (sha256, size):
+                raise ToolError("not_found", f"no part of {path!r} to commit") from None
+            return {"size": size, "accepted": True, "committed": True, "sha256": current}
+        digest = hashlib.sha256()
+        length = 0
+        with os.fdopen(descriptor, "rb") as handle:
+            info = os.fstat(handle.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise ToolError(
+                    "invalid_request", "the ranged write's part is not a regular file of its own"
+                )
+            while block := handle.read(1024 * 1024):
+                digest.update(block)
+                length += len(block)
+        if (digest.hexdigest(), length) != (sha256, size):
+            os.unlink(upload, dir_fd=parts)
+            raise ToolError(
+                "conflict",
+                f"{path!r} was not written: its parts hold {length} bytes with SHA-256"
+                f" {digest.hexdigest()}, not the {size} bytes with {sha256} expected; they"
+                " are discarded",
+            )
+        try:
+            info = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        except FileNotFoundError:
+            info = None
+        if info is not None and stat.S_ISLNK(info.st_mode):
+            raise ToolError("invalid_request", f"path {path!r} goes through a symlink")
+        if info is not None and stat.S_ISDIR(info.st_mode):
+            raise ToolError("invalid_request", f"{path!r} is a directory")
+        os.replace(upload, name, src_dir_fd=parts, dst_dir_fd=parent)
+    finally:
+        os.close(parent)
+    return {"size": size, "accepted": True, "committed": True, "sha256": sha256}
+
+
+def sweep_parts(parts: int, now: float) -> None:
+    """Remove the parts nothing has written for ``STALE_PART_SECONDS``: transfers that
+    were never resumed."""
+    for name in os.listdir(parts):
+        with contextlib.suppress(OSError):
+            info = os.stat(name, dir_fd=parts, follow_symlinks=False)
+            if stat.S_ISREG(info.st_mode) and now - info.st_mtime > STALE_PART_SECONDS:
+                os.unlink(name, dir_fd=parts)
 
 
 _WHOLE_EXECUTOR: Final = frozenset(
@@ -793,7 +973,6 @@ MAX_STAGED_ENTRIES = 8192
 """Entries, files and folders, a staged pack's check reads at most; past them, or past
 ``MAX_STAGED_DEPTH`` folders down, it is not as expected."""
 MAX_STAGED_DEPTH = 32
-FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
 
 
 def _staged(
@@ -959,3 +1138,427 @@ def stage_put(
     finally:
         os.close(top)
     return len(files)
+
+
+_SESSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+_SOURCE_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?")
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
+_COMMAND_RE = re.compile(r"[a-z0-9][a-z0-9_.-]{0,63}")
+
+
+class Requests:
+    """Translate file and staged-skill request data into bounded file operations.
+
+    These adapters return reply payloads. Protocol framing and authoritative binding
+    admission stay with the executor, without access to its lifecycle state here.
+    """
+
+    def __init__(self, root: Path, *, max_read: int, max_list: int) -> None:
+        self.root = root
+        self.max_read = max_read
+        self.max_list = max_list
+
+    def session_name(self, session: object) -> str:
+        if not isinstance(session, str) or not _SESSION_RE.fullmatch(session):
+            raise ToolError("invalid_request", f"invalid session {session!r}")
+        return session
+
+    def session_dir(self, session: object) -> Path:
+        return self.root / "sessions" / self.session_name(session)
+
+    def split(self, session: object, path: object) -> tuple[list[str], list[str]]:
+        """A workspace path's base (its directories below the root) and the rest of it."""
+        if not isinstance(path, str):
+            raise ToolError("invalid_request", "path must be a string")
+        check_relative(path)
+        if path == SHARED or path.startswith(SHARED + "/"):
+            return [SHARED], path.split("/")[1:]
+        return ["sessions", self.session_name(session)], [] if path == "." else path.split("/")
+
+    def open_base(self, base: Sequence[str]) -> int:
+        """Open the session workspace or the shared area, creating it, through no symlink."""
+        root = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        return walk(root, base, "/".join(base), create=True)
+
+    def directory(self, session: object, path: object) -> Path:
+        """A workspace directory's path, once it is known to exist with no symlink on the way."""
+        base, rest = self.split(session, path)
+        os.close(walk(self.open_base(base), rest, str(path), create=False))
+        return self.root.joinpath(*base, *rest)
+
+    async def read(self, request: Message) -> Message:
+        path = request.get("path")
+        offset = int(request.get("offset", 0))
+        length = min(int(request.get("length", self.max_read)), self.max_read)
+        if offset < 0 or length < 0:
+            raise ToolError("invalid_request", "offset and length must not be negative")
+        base, rest = self.split(request.get("session"), path)
+        if not rest:
+            raise ToolError("invalid_request", f"{path!r} is not a regular file")
+        parent = walk(self.open_base(base), rest[:-1], str(path), create=False)
+        try:
+            # Without O_NONBLOCK, opening a FIFO would wait for a writer.
+            flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+            descriptor = os.open(rest[-1], flags, dir_fd=parent)
+        except FileNotFoundError:
+            raise ToolError("not_found", f"no file {path!r}") from None
+        except OSError as exc:
+            raise path_refusal(parent, rest[-1], str(path), exc) from exc
+        finally:
+            os.close(parent)
+        # In a thread: hashing a large file takes a while, and must not stall other work.
+        hashed = request.get("hash", True) is not False
+        return await asyncio.to_thread(read_range, descriptor, offset, length, hashed, str(path))
+
+    def staged(self, request: Message) -> tuple[str, str]:
+        source, snapshot = request.get("source"), request.get("snapshot")
+        if not (isinstance(source, str) and _SOURCE_RE.fullmatch(source)):
+            raise ToolError("invalid_request", f"invalid source {source!r}")
+        if not (isinstance(snapshot, str) and _SHA256_RE.fullmatch(snapshot)):
+            raise ToolError("invalid_request", "snapshot must be a SHA-256")
+        return source, snapshot
+
+    async def skills_check(self, request: Message, path: str) -> tuple[Message, list[str]]:
+        """Whether a pack is staged as the harness expects it, and with ``seal``, made
+        read-only once it is (docs/specs/skills.md, SK-16)."""
+        source, snapshot = self.staged(request)
+        raw = request.get("files", [])
+        items = cast(list[object], raw) if isinstance(raw, list) else []
+        files = [cast(Message, item) for item in items if isinstance(item, dict)]
+        if not isinstance(raw, list) or len(files) != len(items):
+            raise ToolError("invalid_request", "files must be a list of objects")
+        for item in files:
+            check_relative(str(item.get("path")))
+        try:
+            found = await asyncio.to_thread(
+                stage_check,
+                self.root,
+                source,
+                snapshot,
+                files,
+                request.get("seal") is True,
+            )
+        except OSError as exc:
+            raise file_error(exc, f"{STAGED}/{source}") from exc
+        raw = request.get("commands", [])
+        names = (
+            [n for n in cast(list[object], raw) if isinstance(n, str)][:256]
+            if isinstance(raw, list)
+            else []
+        )
+        found["commands"] = [
+            n for n in names if _COMMAND_RE.fullmatch(n) and shutil.which(n, path=path)
+        ]
+        raw_bindings = request.get("binding_names", [])
+        candidates = cast(list[object], raw_bindings) if isinstance(raw_bindings, list) else []
+        names = [n for n in candidates if isinstance(n, str)]
+        if (
+            not isinstance(raw_bindings, list)
+            or len(candidates) > 8192
+            or len(names) != len(candidates)
+            or any(len(n) > 128 for n in names)
+        ):
+            raise ToolError("invalid_request", "invalid binding inventory candidates")
+        return found, names
+
+    async def skills_put(self, request: Message) -> Message:
+        """Write a batch of a pack's files where its snapshot is staged (SK-16)."""
+        source, snapshot = self.staged(request)
+        raw = request.get("files", [])
+        files: list[tuple[str, bytes, bool]] = []
+        for item in cast(list[object], raw) if isinstance(raw, list) else []:
+            fields = cast(Message, item) if isinstance(item, dict) else {}
+            path = check_relative(str(fields.get("path")))
+            try:
+                content = base64.b64decode(str(fields.get("content_b64", "")), validate=True)
+            except ValueError as exc:
+                raise ToolError("invalid_request", f"{path}: content_b64 is not base64") from exc
+            files.append((path, content, fields.get("executable") is True))
+        try:
+            written = await asyncio.to_thread(
+                stage_put,
+                self.root,
+                source,
+                snapshot,
+                request.get("reset") is True,
+                files,
+            )
+        except OSError as exc:
+            raise file_error(exc, f"{STAGED}/{source}") from exc
+        return {"written": written}
+
+    async def write(self, request: Message) -> Message:
+        path = request.get("path")
+        base, rest = self.split(request.get("session"), path)
+        if not rest:
+            raise ToolError("invalid_request", f"{path!r} is a directory")
+        try:
+            content = base64.b64decode(str(request.get("content_b64", "")), validate=True)
+        except ValueError as exc:
+            raise ToolError("invalid_request", "content_b64 is not base64") from exc
+        expected = request.get("expected_sha256")
+        create_only = bool(request.get("create_only", False))
+        if base == [SHARED] and expected is None and not create_only:
+            raise ToolError(
+                "invalid_request", "writes to the shared area need expected_sha256 or create_only"
+            )
+        executable = request.get("executable")
+        try:
+            parent = walk(self.open_base(base), rest[:-1], str(path), create=True)
+            reply = await asyncio.to_thread(
+                write_file,
+                parent,
+                rest[-1],
+                content,
+                expected,
+                create_only,
+                str(path),
+                executable if isinstance(executable, bool) else None,
+                request.get("if_unused") is True,
+            )
+        except OSError as exc:
+            raise file_error(exc, str(path)) from exc
+        return reply
+
+    async def write_range(self, request: Message) -> Message:
+        """Write a file of the session workspace in parts, kept under ``.parts`` until the
+        last one's commit checks the whole file's SHA-256 and size and gives it its name
+        (child environments' hand-back and inputs). A part that does not start where the
+        part ends is not written, and the reply says where it ends, so a writer resumes
+        there; ``discard`` removes the part."""
+        path = request.get("path")
+        base, rest = self.split(request.get("session"), path)
+        if base == [SHARED] or not rest:
+            raise ToolError("invalid_request", "a ranged write goes to a file of the session")
+        upload, offset = request.get("upload"), request.get("offset", 0)
+        if not (isinstance(upload, str) and _UPLOAD_RE.fullmatch(upload)):
+            raise ToolError("invalid_request", f"invalid upload {upload!r}")
+        if type(offset) is not int or offset < 0:
+            raise ToolError("invalid_request", "offset must be a non-negative integer")
+        try:
+            content = base64.b64decode(str(request.get("content_b64", "")), validate=True)
+        except ValueError as exc:
+            raise ToolError("invalid_request", "content_b64 is not base64") from exc
+        sha256, size = request.get("sha256"), request.get("size")
+        if sha256 is not None and not (
+            isinstance(sha256, str)
+            and _SHA256_RE.fullmatch(sha256)
+            and type(size) is int
+            and size >= 0
+        ):
+            raise ToolError("invalid_request", "a commit names the file's SHA-256 and size")
+        try:
+            root = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+            parts = walk(root, [PARTS], PARTS, create=True)
+        except OSError as exc:
+            raise file_error(exc, str(path)) from exc
+        try:
+            if request.get("discard") is True:
+                with contextlib.suppress(FileNotFoundError):
+                    os.unlink(upload, dir_fd=parts)
+                return {"size": 0, "accepted": True}
+            if offset == 0:
+                await asyncio.to_thread(sweep_parts, parts, time.time())
+            held, accepted = await asyncio.to_thread(write_part, parts, upload, offset, content)
+            reply: Message = {"size": held or 0, "accepted": accepted}
+            if sha256 is not None and (accepted or (held is None and not content)):
+                parent = walk(self.open_base(base), rest[:-1], str(path), create=True)
+                reply = await asyncio.to_thread(
+                    commit_part, parts, upload, parent, rest[-1], sha256, cast(int, size), str(path)
+                )
+            return reply
+        except OSError as exc:
+            raise file_error(exc, str(path)) from exc
+        finally:
+            os.close(parts)
+
+    async def edit(self, request: Message) -> Message:
+        """Replace a string in a text file, under ``write``'s rules (``edit_file``)."""
+        path = request.get("path")
+        base, rest = self.split(request.get("session"), path)
+        if not rest:
+            raise ToolError("invalid_request", f"{path!r} is a directory")
+        old, new = request.get("old_string"), request.get("new_string")
+        if not isinstance(old, str) or not isinstance(new, str) or not old:
+            raise ToolError("invalid_request", "old_string must be non-empty text, new_string text")
+        if old == new:
+            raise ToolError("invalid_request", "old_string and new_string are the same")
+        expected = request.get("expected_sha256")
+        if expected is not None and not (
+            isinstance(expected, str) and _SHA256_RE.fullmatch(expected)
+        ):
+            raise ToolError("invalid_request", "expected_sha256 must be a SHA-256")
+        if base == [SHARED] and expected is None:
+            raise ToolError(
+                "invalid_request",
+                "edits in the shared area need expected_sha256, the hash read_file showed",
+            )
+        try:
+            parent = walk(self.open_base(base), rest[:-1], str(path), create=False)
+            return await asyncio.to_thread(
+                edit_file,
+                parent,
+                rest[-1],
+                old,
+                new,
+                request.get("replace_all") is True,
+                expected,
+                str(path),
+                self.max_read,
+            )
+        except OSError as exc:
+            raise file_error(exc, str(path)) from exc
+
+    async def shared(self, request: Message) -> Message:
+        """The shared area's files with their stamps, and the SHA-256 of some (D79).
+
+        ``hash`` names the files whose contents the worker needs, hashed up to
+        ``hash_limit`` bytes each and ``hash_budget`` bytes in all; larger ones are
+        listed in ``too_large``, and the rest wait for the next scan. ``mark`` replaces
+        the worker's mark of this environment, which the reply carries.
+        """
+        raw: object = request.get("hash", [])
+        named = [path for path in cast(list[object], raw) if isinstance(path, str)]
+        wanted = named[:MAX_SNAPSHOT]
+        limit = max(0, int(request.get("hash_limit", 0)))
+        budget = max(0, int(request.get("hash_budget", 0)))
+        mark = request.get("mark")
+        return await asyncio.to_thread(
+            self.shared_state,
+            wanted,
+            limit,
+            budget,
+            mark if isinstance(mark, str) else None,
+        )
+
+    def shared_state(
+        self,
+        wanted: Sequence[str],
+        limit: int,
+        budget: int,
+        mark: str | None,
+    ) -> Message:
+        if mark is not None:
+            write_mark(self.root, mark[:256])
+        current = read_mark(self.root)
+        files, truncated, partial, odd = scan_shared(self.open_base([SHARED]))
+        digests: dict[str, str] = {}
+        too_large: list[str] = []
+        for path in wanted:
+            stamp = files.get(path)
+            if stamp is None:
+                continue
+            if stamp[1] > limit:
+                too_large.append(path)
+                continue
+            if stamp[1] > budget:
+                continue  # hashed at a later scan
+            try:
+                _, rest = self.split(None, path)
+                parent = walk(self.open_base([SHARED]), rest[:-1], path, create=False)
+            except (OSError, ToolError):
+                continue
+            try:
+                digest = stamped_sha256(parent, rest[-1], stamp)
+            except (OSError, ToolError):
+                continue  # gone or replaced meanwhile: compared again next time
+            finally:
+                os.close(parent)
+            if digest is not None:
+                digests[path] = digest
+                budget -= stamp[1]
+        reply: Message = {
+            "files": files,
+            "truncated": truncated,
+            "partial": partial,
+            "odd": odd,
+            "sha256": digests,
+            "too_large": too_large,
+            "mark": current,
+            "now": time.time_ns(),
+        }
+        return reply
+
+    async def remove(self, request: Message) -> Message:
+        """Remove a regular file in the shared area if it still has the expected SHA-256.
+
+        Directories the removal leaves empty are removed too, up to the shared area.
+        """
+        path = request.get("path")
+        base, rest = self.split(request.get("session"), path)
+        if base != [SHARED] or not rest:
+            raise ToolError("invalid_request", "only files in the shared area are removed")
+        expected = request.get("expected_sha256")
+        if not isinstance(expected, str):
+            raise ToolError("invalid_request", "removing a shared file needs expected_sha256")
+        directories = [self.open_base(base)]
+        try:
+            for name in rest[:-1]:
+                directories.append(walk(os.dup(directories[-1]), [name], str(path), create=False))
+            removed = await asyncio.to_thread(
+                remove_checked,
+                directories[-1],
+                rest[-1],
+                expected,
+                str(path),
+                if_unused=request.get("if_unused") is True,
+            )
+            if not removed:
+                return {"removed": False, "busy": True}
+            for depth in range(len(rest) - 1, 0, -1):
+                try:
+                    os.rmdir(rest[depth - 1], dir_fd=directories[depth - 1])
+                except OSError:
+                    break  # not empty, or not ours to remove
+        except OSError as exc:
+            raise file_error(exc, str(path)) from exc
+        finally:
+            for directory in directories:
+                os.close(directory)
+        return {"removed": True}
+
+    async def move(self, request: Message) -> Message:
+        """Give a file in the shared area another name there, which must be free (D79).
+
+        The file keeps its inode, so a process still writing to it writes under the new
+        name: the sync moves an environment's version of a file to its conflict copy.
+        """
+        path, target = request.get("path"), request.get("target")
+        base, rest = self.split(None, path)
+        target_base, target_rest = self.split(None, target)
+        if base != [SHARED] or target_base != [SHARED] or not rest or not target_rest:
+            raise ToolError("invalid_request", "only files in the shared area are moved")
+        source = walk(self.open_base(base), rest[:-1], str(path), create=False)
+        try:
+            destination = walk(
+                self.open_base(target_base), target_rest[:-1], str(target), create=True
+            )
+            try:
+                stamp = await asyncio.to_thread(
+                    move_file,
+                    source,
+                    rest[-1],
+                    destination,
+                    target_rest[-1],
+                    str(path),
+                )
+            except OSError as exc:
+                raise file_error(exc, str(path)) from exc
+            finally:
+                os.close(destination)
+        finally:
+            os.close(source)
+        return {"stamp": stamp}
+
+    async def list(self, request: Message) -> Message:
+        path = request.get("path", ".")
+        base, rest = self.split(request.get("session"), path)
+        try:
+            directory = walk(self.open_base(base), rest, str(path), create=False)
+        except ToolError as error:
+            if error.kind == "not_found":
+                raise ToolError("not_found", f"no directory {path!r}") from None
+            raise
+        limit = min(int(request.get("limit", self.max_list)), self.max_list)
+        entries, truncated = await asyncio.to_thread(list_directory, directory, limit)
+        return {"entries": entries, "truncated": truncated}

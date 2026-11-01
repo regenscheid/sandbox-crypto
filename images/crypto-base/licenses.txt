@@ -20,7 +20,6 @@ GPL-2.0-only
 GPL-2.0-only OR FTL
 GPL-2.0-or-later
 GPL-2.0-or-later OR LGPL-3.0-or-later
-GPL-2.0-or-later WITH Classpath-exception-2.0
 GPL-3.0-only
 GPL-3.0-only WITH GCC-exception-3.1
 GPL-3.0-or-later
@@ -40,7 +39,6 @@ LGPL-3.0-or-later
 LicenseRef-BSD
 LicenseRef-BSD-like
 LicenseRef-Bdwgc-Mit-Like
-LicenseRef-LGPL
 LicenseRef-LGPL-3
 LicenseRef-Public-Domain
 LicenseRef-Qhull

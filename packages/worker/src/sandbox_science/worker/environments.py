@@ -37,13 +37,14 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 import re
 import secrets
 import sqlite3
 import threading
-from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, NoReturn, cast
 
@@ -57,6 +58,7 @@ from sandbox_science.contracts import (
     EnvironmentState,
     ErrorKind,
 )
+from sandbox_science.contracts.child_environments import is_child_environment
 from sandbox_science.contracts.environment_claims import EnvironmentClaim, EnvironmentClaimResult
 from sandbox_science.policy import (
     HardFloor,
@@ -71,18 +73,42 @@ from sandbox_science.policy.openshell import (
     Compiled,
     CompileError,
     FilesystemPolicy,
+    LandlockPolicy,
+    admission_entry,
     admission_refusal,
     compile_sandbox,
     load_targets,
 )
 from sandbox_science.policy.store import PolicyStore, StoreError
 
+from .checkpoint_records import HeldError, begin_start, end_start
 from .claims import EnvironmentClaims
 from .errors import WorkerError
+from .kubernetes import check_pinned_policy
 from .provisioner import Governing
 from .recovery_fence import check_dispatch
-from .settings import EnvironmentSettings, OpenShellBackendSettings
+from .settings import JOB_SANDBOX_LABEL, EnvironmentSettings, OpenShellBackendSettings
 from .timeouts import seconds
+from .unknown_creations import (
+    CREATION_ROLLED_BACK,
+    ENVIRONMENT_LABEL,
+    LIST_PAGE_SIZE,
+    MAX_LIST_PAGES,
+    MAX_OBSERVATIONS,
+    PROJECT_LABEL,
+    UNKNOWN_OUTCOME,
+    Observation,
+    Outcome,
+    Reconciliation,
+    confirms,
+    examine,
+    label_value,
+    labels,
+    observation,
+    page,
+    refusal,
+    when,
+)
 
 if TYPE_CHECKING:
     from .store import Store
@@ -106,9 +132,38 @@ async def _owned[T](work: Awaitable[T]) -> T:
 
 
 SANDBOX_PREFIX: Final = "ss-"
+OPENSHELL_SEPARATOR: Final = "--"
+"""What OpenShell puts between the segments of a routable name: a sandbox's Kubernetes
+objects are ``<OpenShell workspace>--<sandbox name>``. A sandbox name never contains it."""
+CREATION_UNKNOWN: Final = "environment_creation_unknown"
+"""The log event of a creation still unknown past the grace (B3, D103)."""
 MAX_SANDBOX_NAME: Final = 19
 """OpenShell's limit on a sandbox's name (``MAX_ROUTABLE_NAME_LEN``)."""
 _ANSI: Final = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+_FRAME: Final = re.compile(r"[\s\u2500-\u257f\u00d7]+")
+"""Whitespace and the box drawing miette frames and wraps a report with."""
+_MISSING: Final = re.compile(r'(?:message|self): "sandbox not found"')
+"""The gateway's NotFound for a sandbox name, as tonic shows a status: ``message:`` in
+the OpenShell 0.1.3 labs, ``self:`` from tonic 0.14 (OpenShell 0.1.5). Other NotFound
+answers, such as a missing service endpoint, gateway or file, do not match."""
+_STATUS: Final = re.compile(r"status: ('[^']*'|[A-Za-z]+)")
+"""A gRPC status as the OpenShell CLI reports it: tonic 0.14 (OpenShell 0.1.5) writes the
+code's description in quotes, older tonic its name."""
+REFUSALS: Final = frozenset(
+    {
+        "'Client specified an invalid argument'",
+        "'The system is not in a state required for the operation's execution'",
+        "'The caller does not have permission to execute the specified operation'",
+        "'The request does not have valid authentication credentials'",
+        "InvalidArgument",
+        "FailedPrecondition",
+        "PermissionDenied",
+        "Unauthenticated",
+    }
+)
+"""The statuses with which the gateway refuses a request it validated: InvalidArgument,
+FailedPrecondition, PermissionDenied and Unauthenticated. OpenShell 0.1.5 checks a
+sandbox's spec, driver configuration and admission before it records the sandbox."""
 _SANDBOX_COMMAND: Final = ("sleep", "infinity")
 _POLICY_TIMEOUT: Final = 120
 _DEAD_PHASES: Final = frozenset({"Error", "Deleting", "Completed"})
@@ -120,6 +175,35 @@ MAX_NOTICES: Final = 10
 """Admission notices one result carries at most; the newest are kept."""
 MAX_RECORDED: Final = 512
 """Decisions kept per environment: every admitted one, then the newest refusals."""
+
+JOB_ENVIRONMENT: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,109}-job-[0-9a-f]{12}$")
+"""A job sandbox's environment ID (D93, JS-1): ``<project>-job-<12 hex>``. No client may
+create an environment by such an ID."""
+
+
+def job_environment_id(project_id: str) -> str:
+    """A new job environment ID for the project, within the 128 characters of an ID."""
+    return f"{project_id[:110]}-job-{secrets.token_hex(6)}"
+
+
+class NotReadyError(WorkerError):
+    """A sandbox that was still not ready when its time to become ready ran out."""
+
+
+class ScheduleTimeoutError(WorkerError):
+    """A job sandbox found no node with room within its profile's schedule timeout (JS-23)."""
+
+
+_PROVISION_TIMEOUT: Final = "sandbox provisioning timed out"
+"""How OpenShell 0.1.5's ``sandbox create`` reports its own provisioning deadline."""
+
+
+def _not_placed(timeout: float) -> ScheduleTimeoutError:
+    return ScheduleTimeoutError(
+        ErrorKind.UNAVAILABLE,
+        f"the sandbox was not placed within {timeout:g} s; no node had room",
+    )
+
 
 Release = Callable[[str], Awaitable[None]]
 ReleaseIdle = Callable[[str, float], Awaitable[bool]]
@@ -148,12 +232,25 @@ def printable(text: str, limit: int = 255) -> str:
 def new_sandbox_name() -> str:
     """A fresh OpenShell sandbox name: the prefix and 64 random bits, in 19 characters.
 
-    OpenShell v0.1.3 takes at most 19 characters, a DNS label without the ``--`` it uses
-    between the segments of routable names. A name derived from the environment ID left
+    OpenShell v0.1.5 takes at most 19 characters, a DNS label without the ``--``
+    (``OPENSHELL_SEPARATOR``) it uses between the segments of routable names, so the
+    sandbox is what follows the last ``--`` of its Kubernetes objects' names (the
+    operator's cleanup reads them so). A name derived from the environment ID left
     room for only 32 bits of a hash, so a client could choose an ID whose name was
     another project's sandbox (review of D78). The record keeps the name.
     """
     return f"{SANDBOX_PREFIX}{secrets.token_hex((MAX_SANDBOX_NAME - len(SANDBOX_PREFIX)) // 2)}"
+
+
+class SandboxMissingError(WorkerError):
+    """The gateway answered that no sandbox has the name: proof of absence, unlike any
+    other failure, which says nothing about whether the sandbox exists."""
+
+
+class GatewayRefusalError(WorkerError):
+    """The gateway answered the command with a refusal status (``REFUSALS``): the request
+    ended there, unlike a timeout or an unavailable gateway, which leave its outcome
+    unknown."""
 
 
 class OpenShellCli:
@@ -163,8 +260,11 @@ class OpenShellCli:
         self.cli = settings.cli
         self.env = env
 
-    async def run(self, *args: str, timeout: float = 120.0) -> str:
-        """Run a command and return its output; raise ``unavailable`` if it fails."""
+    async def run(
+        self, *args: str, timeout: float = 120.0, env: Mapping[str, str] | None = None
+    ) -> str:
+        """Run a command and return its output; raise ``unavailable`` if it fails. ``env``
+        adds to the CLI's environment for this command only."""
         check_dispatch()
         try:
             process = await asyncio.create_subprocess_exec(
@@ -173,7 +273,7 @@ class OpenShellCli:
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=self.env,
+                env=self.env if env is None else {**self.env, **env},
             )
         except OSError as exc:
             raise WorkerError(ErrorKind.UNAVAILABLE, f"cannot run {self.cli}: {exc}") from exc
@@ -196,7 +296,15 @@ class OpenShellCli:
             raise
         if process.returncode != 0:
             text = _ANSI.sub("", (errors or output).decode("utf-8", "replace")).strip()
-            raise WorkerError(
+            # Classify the whole report: the status leads it, and the end is what is kept.
+            flat = _FRAME.sub(" ", text)
+            missing = _MISSING.search(flat) is not None
+            status = _STATUS.search(flat)
+            refused = status is not None and status[1] in REFUSALS
+            error = (
+                SandboxMissingError if missing else GatewayRefusalError if refused else WorkerError
+            )
+            raise error(
                 ErrorKind.UNAVAILABLE, f"openshell {' '.join(args[:2])} failed: {text[-500:]}"
             )
         return output.decode("utf-8", "replace")
@@ -214,13 +322,31 @@ class OpenShellCli:
         """The sandbox's description, or None when the gateway has no sandbox by that name."""
         try:
             document = await self.json("sandbox", "get", name)
-        except WorkerError as error:
-            if "not found" in error.message:
-                return None
-            raise
+        except SandboxMissingError:
+            return None
         if not isinstance(document, dict):
             raise WorkerError(ErrorKind.UNAVAILABLE, "openshell sandbox get returned no object")
         return cast(dict[str, object], document)
+
+    async def sandboxes(self) -> tuple[list[dict[str, object]], bool]:
+        """Every sandbox the gateway lists, page after page up to ``MAX_LIST_PAGES``, and
+        whether the listing ended there. An answer the worker cannot read raises."""
+        entries: list[dict[str, object]] = []
+        token = ""
+        for _ in range(MAX_LIST_PAGES):
+            args = ["sandbox", "list", "--page-size", str(LIST_PAGE_SIZE)]
+            if token:
+                args += ["--page-token", token]
+            read = page(await self.json(*args))
+            if read is None:
+                raise WorkerError(
+                    ErrorKind.UNAVAILABLE, "openshell sandbox list returned no sandbox listing"
+                )
+            entries += read[0]
+            token = read[1]
+            if not token:
+                return entries, True
+        return entries, False
 
 
 class EnvironmentRecords:
@@ -254,7 +380,239 @@ class EnvironmentRecords:
             "CREATE TABLE IF NOT EXISTS confirmed_deletions ("
             " environment_id TEXT PRIMARY KEY, sandbox TEXT NOT NULL, sandbox_id TEXT)"
         )
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS sandbox_launch_settings ("
+            " sandbox TEXT PRIMARY KEY, driver_config TEXT NOT NULL)"
+        )
+        # Old allocations retain their original behavior; current config never upgrades
+        # a recovered sandbox's storage promise.
+        columns = {row[1] for row in self._db.execute("PRAGMA table_info(sandbox_launch_settings)")}
+        if "require_workspace_prefix" not in columns:
+            self._db.execute(
+                "ALTER TABLE sandbox_launch_settings ADD COLUMN require_workspace_prefix"
+                " INTEGER NOT NULL DEFAULT 0 CHECK (require_workspace_prefix IN (0,1))"
+            )
+        # Reads that found no trace of a creation with an unknown outcome, and the
+        # environments marked deleted on that evidence (B3). Created when missing, so
+        # opening an older file adds them and opening it again changes nothing.
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS creation_observations ("
+            " environment_id TEXT NOT NULL, sandbox TEXT NOT NULL, observed_at TEXT NOT NULL,"
+            " listed INTEGER NOT NULL, names TEXT NOT NULL)"
+        )
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS creation_reconciliations ("
+            " environment_id TEXT NOT NULL, sandbox TEXT NOT NULL, reason TEXT NOT NULL,"
+            " reconciled_at TEXT NOT NULL, observations TEXT NOT NULL,"
+            " hooks_pending INTEGER NOT NULL DEFAULT 0 CHECK (hooks_pending IN (0,1)),"
+            " PRIMARY KEY (environment_id, sandbox))"
+        )
+        # When each sandbox's create command ended, whatever its result: the grace of a
+        # creation with an unknown outcome counts from then (B3).
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS creation_commands ("
+            " environment_id TEXT NOT NULL, sandbox TEXT NOT NULL, ended_at TEXT NOT NULL,"
+            " PRIMARY KEY (environment_id, sandbox))"
+        )
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS creation_refusals ("
+            " environment_id TEXT NOT NULL, sandbox TEXT NOT NULL, reason TEXT NOT NULL,"
+            " PRIMARY KEY (environment_id, sandbox))"
+        )
+        # Environments an offline operator command deleted, whose deletion hooks the next
+        # running worker owes (as a rollback's ``hooks_pending``).
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS deferred_hooks ("
+            " environment_id TEXT NOT NULL, sandbox TEXT NOT NULL, reason TEXT NOT NULL,"
+            " deferred_at TEXT NOT NULL, PRIMARY KEY (environment_id, sandbox))"
+        )
         self._lock = threading.Lock()
+
+    def observe(self, info: EnvironmentInfo, seen: Observation) -> tuple[Observation, ...]:
+        """Record a read that found no trace of the environment's original sandbox; return
+        the recorded ones for that name, oldest first, the newest ``MAX_OBSERVATIONS``."""
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                self._db.execute(
+                    "INSERT INTO creation_observations VALUES (?,?,?,?,?)",
+                    (
+                        info.environment_id,
+                        info.sandbox,
+                        seen.observed_at.isoformat(),
+                        seen.listed,
+                        json.dumps(list(seen.names)),
+                    ),
+                )
+                self._db.execute(
+                    "DELETE FROM creation_observations WHERE environment_id=? AND sandbox=?"
+                    " AND rowid NOT IN (SELECT rowid FROM creation_observations"
+                    " WHERE environment_id=? AND sandbox=? ORDER BY rowid DESC LIMIT ?)",
+                    (info.environment_id, info.sandbox) * 2 + (MAX_OBSERVATIONS,),
+                )
+                self._db.execute("COMMIT")
+            except BaseException:
+                self._db.execute("ROLLBACK")
+                raise
+        return self.observations(info)
+
+    def observations(self, info: EnvironmentInfo) -> tuple[Observation, ...]:
+        """The recorded absences of the environment's original sandbox, oldest first."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT observed_at, listed, names FROM creation_observations"
+                " WHERE environment_id=? AND sandbox=? ORDER BY rowid",
+                (info.environment_id, info.sandbox),
+            ).fetchall()
+        return tuple(
+            Observation(datetime.fromisoformat(str(at)), int(listed), tuple(json.loads(names)))
+            for at, listed, names in rows
+        )
+
+    def create_ended(
+        self, info: EnvironmentInfo, at: datetime, *, refused: str | None = None
+    ) -> None:
+        """Record that the create command of the environment's sandbox has ended, and
+        whether the gateway refused it (``GatewayRefusalError``)."""
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO creation_commands VALUES (?,?,?) ON CONFLICT"
+                " (environment_id, sandbox) DO UPDATE SET ended_at=excluded.ended_at",
+                (info.environment_id, info.sandbox, at.isoformat()),
+            )
+            if refused is not None:
+                self._db.execute(
+                    "INSERT OR REPLACE INTO creation_refusals VALUES (?,?,?)",
+                    (info.environment_id, info.sandbox, refused[:500]),
+                )
+
+    def creation_refused(self, info: EnvironmentInfo) -> str | None:
+        """Why the gateway refused the create command of the environment's sandbox, if
+        it did."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT reason FROM creation_refusals WHERE environment_id=? AND sandbox=?",
+                (info.environment_id, info.sandbox),
+            ).fetchone()
+        return None if row is None else str(row[0])
+
+    def creation_ended(self, info: EnvironmentInfo) -> datetime | None:
+        """When the create command of the environment's sandbox ended; None when no end
+        is recorded, as when the worker stopped while it ran."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT ended_at FROM creation_commands WHERE environment_id=? AND sandbox=?",
+                (info.environment_id, info.sandbox),
+            ).fetchone()
+        return None if row is None else datetime.fromisoformat(str(row[0]))
+
+    def identified(self) -> list[EnvironmentInfo]:
+        """The environments, of every kind, that are not deleted and have a sandbox
+        identity: those a complete sandbox listing must show."""
+        with self._lock:
+            rows = self._db.execute("SELECT document FROM environments").fetchall()
+        infos = [EnvironmentInfo.model_validate_json(row[0]) for row in rows]
+        return [
+            info
+            for info in infos
+            if info.state is not EnvironmentState.DELETED and info.sandbox_id is not None
+        ]
+
+    def hooks_pending(self) -> list[tuple[str, str]]:
+        """Creations rolled back, and environments deleted, with the worker stopped, whose
+        deletion hooks the next running worker owes: (environment ID, sandbox name)."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT environment_id, sandbox, reconciled_at FROM creation_reconciliations"
+                " WHERE hooks_pending = 1 UNION SELECT environment_id, sandbox, deferred_at"
+                " FROM deferred_hooks ORDER BY 3"
+            ).fetchall()
+        return list(dict.fromkeys((str(row[0]), str(row[1])) for row in rows))
+
+    def defer_hooks(self, environment_id: str, sandbox: str, reason: str, at: datetime) -> None:
+        """Record that an offline command deleted the environment's sandbox without its
+        deletion hooks, which the running worker registers: it runs them as it starts."""
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO deferred_hooks VALUES (?,?,?,?)"
+                " ON CONFLICT (environment_id, sandbox) DO NOTHING",
+                (environment_id, sandbox, reason, at.isoformat()),
+            )
+
+    def hooks_done(self, environment_id: str, sandbox: str) -> None:
+        with self._lock:
+            self._db.execute(
+                "UPDATE creation_reconciliations SET hooks_pending = 0"
+                " WHERE environment_id=? AND sandbox=?",
+                (environment_id, sandbox),
+            )
+            self._db.execute(
+                "DELETE FROM deferred_hooks WHERE environment_id=? AND sandbox=?",
+                (environment_id, sandbox),
+            )
+
+    def roll_back(
+        self, info: EnvironmentInfo, reason: str, at: datetime, *, hooks_pending: bool = False
+    ) -> None:
+        """Record why a creation is deleted without a sandbox, with its evidence, and
+        confirm its deletion, in one transaction. ``hooks_pending`` says that the
+        deletion hooks did not run here, and the running worker owes them."""
+        evidence = json.dumps(
+            [
+                {"observed_at": o.observed_at.isoformat(), "listed": o.listed, "names": o.names}
+                for o in self.observations(info)
+            ]
+        )
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                self._db.execute(
+                    "INSERT INTO creation_reconciliations VALUES (?,?,?,?,?,?)"
+                    " ON CONFLICT (environment_id, sandbox) DO UPDATE SET reason=excluded.reason,"
+                    " reconciled_at=excluded.reconciled_at, observations=excluded.observations,"
+                    " hooks_pending=excluded.hooks_pending",
+                    (
+                        info.environment_id,
+                        info.sandbox,
+                        reason,
+                        at.isoformat(),
+                        evidence,
+                        int(hooks_pending),
+                    ),
+                )
+                self._db.execute(
+                    "INSERT INTO confirmed_deletions VALUES (?,?,?) ON CONFLICT(environment_id)"
+                    " DO UPDATE SET sandbox=excluded.sandbox,sandbox_id=excluded.sandbox_id",
+                    (info.environment_id, info.sandbox, info.sandbox_id),
+                )
+                self._db.execute("COMMIT")
+            except BaseException:
+                self._db.execute("ROLLBACK")
+                raise
+
+    def reconciliation(self, environment_id: str) -> tuple[str, str, datetime, int] | None:
+        """The latest creation of the environment deleted without a sandbox: its sandbox
+        name, the reason, when, and how many recorded reads found it absent."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT sandbox, reason, reconciled_at, observations FROM creation_reconciliations"
+                " WHERE environment_id=? ORDER BY reconciled_at DESC LIMIT 1",
+                (environment_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        sandbox, reason, at, evidence = row
+        count = len(cast(list[object], json.loads(evidence)))
+        return str(sandbox), str(reason), datetime.fromisoformat(str(at)), count
+
+    def creating(self) -> list[EnvironmentInfo]:
+        """The environments still being created, of every kind."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT document FROM environments ORDER BY environment_id"
+            ).fetchall()
+        infos = [EnvironmentInfo.model_validate_json(row[0]) for row in rows]
+        return [info for info in infos if info.state is EnvironmentState.CREATING]
 
     def confirm_deletion(self, info: EnvironmentInfo) -> None:
         """Remember gateway-confirmed deletion before fallible local cleanup."""
@@ -284,17 +642,60 @@ class EnvironmentRecords:
             ).fetchone()
         return None if row is None else EnvironmentInfo.model_validate_json(row[0])
 
-    def save(self, info: EnvironmentInfo) -> None:
+    def save(
+        self,
+        info: EnvironmentInfo,
+        *,
+        driver_config: str | None = None,
+        require_workspace_prefix: bool = False,
+    ) -> None:
+        """Save ownership and, at initial allocation, immutable trusted launch settings."""
         with self._lock:
-            self._db.execute(
-                "INSERT INTO environments (environment_id, sandbox, document) VALUES (?, ?, ?)"
-                " ON CONFLICT (environment_id) DO UPDATE SET"
-                " sandbox = excluded.sandbox, document = excluded.document",
-                (info.environment_id, info.sandbox, info.model_dump_json()),
-            )
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                if driver_config is not None:
+                    self._db.execute(
+                        "INSERT OR IGNORE INTO sandbox_launch_settings VALUES (?,?,?)",
+                        (info.sandbox, driver_config, int(require_workspace_prefix)),
+                    )
+                    row = self._db.execute(
+                        "SELECT driver_config,require_workspace_prefix FROM sandbox_launch_settings"
+                        " WHERE sandbox=?",
+                        (info.sandbox,),
+                    ).fetchone()
+                    if row != (driver_config, int(require_workspace_prefix)):
+                        raise WorkerError(ErrorKind.CONFLICT, "sandbox launch settings changed")
+                self._db.execute(
+                    "INSERT INTO environments (environment_id, sandbox, document) VALUES (?, ?, ?)"
+                    " ON CONFLICT (environment_id) DO UPDATE SET"
+                    " sandbox = excluded.sandbox, document = excluded.document",
+                    (info.environment_id, info.sandbox, info.model_dump_json()),
+                )
+                self._db.execute("COMMIT")
+            except BaseException:
+                self._db.execute("ROLLBACK")
+                raise
+
+    def driver_config(self, sandbox: str) -> str | None:
+        """Original allocation settings; legacy allocations inherit gateway defaults."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT driver_config FROM sandbox_launch_settings WHERE sandbox=?", (sandbox,)
+            ).fetchone()
+        return None if row is None else str(row[0])
+
+    def requires_workspace_prefix(self, sandbox: str) -> bool:
+        """The original storage requirement, false for allocations predating the pin."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT require_workspace_prefix FROM sandbox_launch_settings WHERE sandbox=?",
+                (sandbox,),
+            ).fetchone()
+        return row == (1,)
 
     def live(self, projects: Iterable[str]) -> list[str]:
-        """The IDs of the projects' environments that are not deleted."""
+        """The IDs of the projects' session environments that are not deleted. Job
+        sandboxes count against the pool's job limits instead (JS-9)."""
         wanted = set(projects)
         with self._lock:
             rows = self._db.execute("SELECT document FROM environments").fetchall()
@@ -302,7 +703,9 @@ class EnvironmentRecords:
         return [
             info.environment_id
             for info in infos
-            if info.project_id in wanted and info.state is not EnvironmentState.DELETED
+            if info.project_id in wanted
+            and info.state is not EnvironmentState.DELETED
+            and info.kind == "session"
         ]
 
     def listed(self, projects: Iterable[str] | None) -> list[EnvironmentInfo]:
@@ -380,6 +783,16 @@ class EnvironmentRecords:
                 (project_id, revision),
             )
 
+    def latest_grant(self, project_id: str) -> str | None:
+        """The policy revision granted to the project last, if any."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT revision FROM policy_grants WHERE project_id = ? ORDER BY rowid DESC"
+                " LIMIT 1",
+                (project_id,),
+            ).fetchone()
+        return cast(str, row[0]) if row is not None else None
+
     def granted(self, project_id: str, revision: str) -> bool:
         with self._lock:
             row = self._db.execute(
@@ -389,9 +802,12 @@ class EnvironmentRecords:
         return row is not None
 
     def forget(self, environment_id: str) -> None:
-        """Drop an environment's decisions, when its sandbox is deleted."""
+        """Drop an environment's decisions and creation reads, when its sandbox is deleted."""
         with self._lock:
             self._db.execute("DELETE FROM admissions WHERE environment_id = ?", (environment_id,))
+            self._db.execute(
+                "DELETE FROM creation_observations WHERE environment_id = ?", (environment_id,)
+            )
 
     def decided_since(self, environment_id: str, since: datetime) -> list[Admission]:
         """An environment's decisions made after ``since``, oldest first."""
@@ -446,6 +862,8 @@ class Environments:
         self.start_backoff = seconds("start_backoff", start_backoff)
         """After a failed start, uses fail at once for this long instead of starting again."""
         self.handmade_sandboxes = frozenset(backend.sandboxes)
+        self.isolation_tier = backend.isolation_tier
+        """The tier the gateway's driver declares; a job sandbox's probe can only lower it."""
         self.cli = OpenShellCli(backend, cli_env)
         self.store = PolicyStore(settings.policy_store)
         self.floor = HardFloor(frozenset(settings.admin_hosts))
@@ -455,6 +873,7 @@ class Environments:
         except PolicyLoadError as exc:
             raise WorkerError(ErrorKind.UNAVAILABLE, f"environment settings: {exc}") from exc
         self.root = state_dir / "environments"
+        self.state_dir = state_dir
         self.records = EnvironmentRecords(state_dir / "environments.sqlite3", clock)
         self.claims = EnvironmentClaims(state_dir / "environment-claims.sqlite3", clock=clock)
         self.release: Release | None = None
@@ -473,10 +892,24 @@ class Environments:
         """Required original-binding proof before any explicit deletion mutation."""
         self.reusing: list[Release] = []
         """Required original-binding checks before allocating a replacement sandbox."""
+        self.given_up: list[Callable[[str], None]] = []
+        """Told at once of each environment the worker gives up because its sandbox went
+        or was replaced; they must not block: the execution manager ends its job
+        sandboxes in the background (JS-25)."""
         self._locks: dict[str, asyncio.Lock] = {}
         self._users: dict[str, int] = {}
         """Callers holding or waiting for each environment's lock."""
         self._start_failures: dict[str, tuple[float, str]] = {}
+        self.serving_since: datetime | None = None
+        """When the running worker started serving; set by ``serve``. A creation whose
+        command's end is not recorded (the worker stopped during it) counts as ended
+        then, since the stopped worker's commands ended with it. None elsewhere, where
+        such a creation is refused."""
+        self.hooks_deferred = False
+        """Set by the offline command, whose deletion hooks are the running worker's:
+        a creation rolled back here records them as pending (``run_pending_hooks``)."""
+        self._absent_here: dict[tuple[str, str], tuple[datetime, float]] = {}
+        """This process's first read finding each creation absent: wall and monotonic time."""
 
     def close(self) -> None:
         self.records.close()
@@ -545,6 +978,12 @@ class Environments:
         info = self.get(environment_id)
         return (info.sandbox, info.sandbox_id) if info.sandbox_id else None
 
+    def requires_workspace_prefix(self, environment_id: str) -> bool:
+        """Required storage is pinned at allocation, never inferred from today's profile."""
+        return self.manages(environment_id) and self.records.requires_workspace_prefix(
+            self.get(environment_id).sandbox
+        )
+
     def job_resources(self, environment_id: str) -> Resources:
         """The job limits of the environment's policy, within the pool's ceiling."""
         if self.busy(environment_id):
@@ -596,6 +1035,18 @@ class Environments:
         )
         if self.handmade(request.environment_id):
             raise taken
+        if JOB_ENVIRONMENT.fullmatch(request.environment_id):
+            raise WorkerError(
+                ErrorKind.INVALID_REQUEST,
+                f"environment IDs ending in -job- and 12 hex digits are the worker's own, for"
+                f" job sandboxes; choose another than {request.environment_id!r}",
+            )
+        if is_child_environment(request.environment_id):
+            raise WorkerError(
+                ErrorKind.INVALID_REQUEST,
+                f"environment IDs ending in -child- and 12 hex digits are the worker's own,"
+                f" for child environments; choose another than {request.environment_id!r}",
+            )
         async with self._lock(request.environment_id):
             existing = self.records.get(request.environment_id)
             if existing is not None and existing.project_id != request.project_id:
@@ -629,6 +1080,15 @@ class Environments:
                 )
             policy = self._policy(request.policy)
             compiled = self._compile(policy)
+            placement = self.settings.kubernetes.get(request.profile)
+            try:
+                launch = (
+                    placement.driver_json(effective_resources(policy.policy, self.ceiling)[0])
+                    if placement is not None
+                    else "{}"
+                )
+            except ValueError as exc:
+                raise WorkerError(ErrorKind.POLICY_DENIED, str(exc)) from exc
             providers = await self._check_providers(policy)
             if existing is not None and existing.state is EnvironmentState.CREATING:
                 # Validate the replacement request before changing the old allocation.
@@ -654,7 +1114,11 @@ class Environments:
             )
             # Recorded first, so that a sandbox left by a crash is known to be ours. Only
             # this record's own leftover is ever deleted: a name is never another's.
-            self.records.save(info)
+            self.records.save(
+                info,
+                driver_config=launch,
+                require_workspace_prefix=placement.require_workspace_prefix if placement else False,
+            )
             try:
                 sandbox_id = await self._create_sandbox(info, compiled)
                 self.store.bind(sandbox_id, request.policy)
@@ -675,6 +1139,271 @@ class Environments:
             _log.info("created sandbox %s for environment %s", name, request.environment_id)
             return ready, True
 
+    def architecture(self, environment_id: str) -> str | None:
+        """The ``kubernetes.io/arch`` an environment's sandbox was pinned to, if any."""
+        launch = self.records.driver_config(self.get(environment_id).sandbox)
+        if launch in (None, "{}"):
+            return None
+        try:
+            document: object = json.loads(launch)
+        except json.JSONDecodeError:
+            return None
+        for key in ("kubernetes", "pod", "node_selector", "kubernetes.io/arch"):
+            if not isinstance(document, dict):
+                return None
+            document = cast(dict[str, object], document).get(key)
+        return document if isinstance(document, str) else None
+
+    async def create_job(
+        self,
+        session_environment: str,
+        environment_id: str,
+        job_id: str,
+        launch: str,
+        *,
+        require_workspace_prefix: bool,
+        schedule_timeout: float,
+    ) -> EnvironmentInfo:
+        """Create a job sandbox (D93, JS-1, JS-3, JS-14): a new environment of kind ``job``
+        for one job, from the session environment's recorded image, policy revision and
+        providers, seeded with its admitted hosts. ``launch`` is the job profile's driver
+        configuration. Recorded before creation, so a crash leaves a sandbox known to be
+        the job's; a sandbox not placed within ``schedule_timeout`` raises
+        ``ScheduleTimeoutError`` and is deleted by identity, as any failed creation is."""
+        if JOB_ENVIRONMENT.fullmatch(environment_id) is None:
+            raise WorkerError(ErrorKind.INTERNAL, f"{environment_id!r} is no job environment ID")
+        return await self._create_derived(
+            session_environment,
+            environment_id,
+            {"kind": "job", "job_id": job_id},
+            launch,
+            require_workspace_prefix=require_workspace_prefix,
+            schedule_timeout=schedule_timeout,
+        )
+
+    async def create_child(
+        self,
+        session_environment: str,
+        environment_id: str,
+        delegation_id: str,
+        session_id: str,
+        launch: str,
+        *,
+        require_workspace_prefix: bool,
+        schedule_timeout: float,
+    ) -> EnvironmentInfo:
+        """Create a child environment (CE-1, CE-3, CE-10): a new environment of kind
+        ``child`` for one delegated run, made as a job sandbox is, from the session
+        environment's image, policy revision, providers and admitted hosts. ``launch`` is
+        the child profile's driver configuration, narrowed by the policy's caps."""
+        if not is_child_environment(environment_id):
+            raise WorkerError(ErrorKind.INTERNAL, f"{environment_id!r} is no child environment ID")
+        return await self._create_derived(
+            session_environment,
+            environment_id,
+            {"kind": "child", "delegation_id": delegation_id, "session_id": session_id},
+            launch,
+            require_workspace_prefix=require_workspace_prefix,
+            schedule_timeout=schedule_timeout,
+        )
+
+    async def _create_derived(
+        self,
+        session_environment: str,
+        environment_id: str,
+        identity: dict[str, str],
+        launch: str,
+        *,
+        require_workspace_prefix: bool,
+        schedule_timeout: float,
+    ) -> EnvironmentInfo:
+        """An environment of another kind made from a session environment, under the new
+        environment's lock: its record first, then its sandbox."""
+        what = "a job sandbox" if identity["kind"] == "job" else "a child environment"
+        async with self._lock(environment_id):
+            if self.records.get(environment_id) is not None:
+                raise WorkerError(ErrorKind.CONFLICT, f"environment {environment_id} exists")
+            session = self.get(session_environment)
+            if session.kind != "session" or session.state not in (
+                EnvironmentState.READY,
+                EnvironmentState.STOPPED,
+            ):
+                raise WorkerError(
+                    ErrorKind.UNAVAILABLE,
+                    f"environment {session_environment!r} is {session.state}; {what}"
+                    " starts from a ready session environment",
+                )
+            policy = self._policy(session.policy)
+            compiled = self._compile(policy, session.admitted_hosts)
+            providers = await self._check_providers(policy)
+            if providers != session.providers:
+                raise WorkerError(
+                    ErrorKind.CONFLICT,
+                    "the policy now attaches other providers than the session environment has",
+                )
+            name = new_sandbox_name()
+            while self.records.sandbox_taken(name):
+                name = new_sandbox_name()
+            now = self.clock.now()
+            info = EnvironmentInfo.model_validate(
+                {
+                    "environment_id": environment_id,
+                    "project_id": session.project_id,
+                    "profile": session.profile,
+                    "image": session.image,
+                    "sandbox": name,
+                    "policy": session.policy,
+                    "providers": providers,
+                    "state": EnvironmentState.CREATING,
+                    "findings": _findings(compiled),
+                    "admitted_hosts": compiled.admitted,
+                    "created_at": now,
+                    "updated_at": now,
+                    **identity,
+                }
+            )
+            self.records.save(
+                info, driver_config=launch, require_workspace_prefix=require_workspace_prefix
+            )
+            try:
+                sandbox_id = await self._create_sandbox(info, compiled, timeout=schedule_timeout)
+                self.store.bind(sandbox_id, session.policy)
+            except BaseException:
+                try:
+                    await _owned(self._cleanup_creation(self.get(environment_id)))
+                except Exception as error:
+                    _log.warning("creation cleanup remains pending for sandbox %s: %s", name, error)
+                raise
+            ready = self.get(environment_id).model_copy(
+                update={
+                    "sandbox_id": sandbox_id,
+                    "state": EnvironmentState.READY,
+                    "updated_at": self.clock.now(),
+                }
+            )
+            self.records.save(ready)
+            _log.info("created %s %s as environment %s", what, name, environment_id)
+            return ready
+
+    async def stop_job(self, environment_id: str) -> bool:
+        """Stop a job sandbox or a child environment to retain it (JS-25, CE-4): its
+        executor goes, its disk stays, and its CPU and memory are freed. Returns whether
+        OpenShell says it is stopped."""
+        async with self._lock(environment_id):
+            info = self.get(environment_id)
+            if info.kind == "session" or info.state is not EnvironmentState.READY:
+                return info.state is EnvironmentState.STOPPED
+            if self.release is not None:
+                await self.release(environment_id)
+            if not await self._own_sandbox(info, "stop"):
+                return False  # gone: nothing to stop, and its deletion confirms it
+            self.records.save(
+                info.model_copy(
+                    update={"state": EnvironmentState.STOPPED, "updated_at": self.clock.now()}
+                )
+            )
+            try:
+                await self.cli.run("sandbox", "stop", info.sandbox)
+            except WorkerError as error:
+                _log.warning("could not stop sandbox %s: %s", info.sandbox, error.message)
+                return False
+            return await self._stopped(info, wait=True)
+
+    async def present(self, environment_id: str) -> bool | None:
+        """Whether a job sandbox's own sandbox still runs: False when the gateway says it is
+        gone, another under its name, or in a phase it cannot come back from (pod loss,
+        JS-20); None when the gateway cannot say."""
+        info = self.get(environment_id)
+        try:
+            document = await self.cli.sandbox(info.sandbox)
+        except WorkerError:
+            return None
+        if document is None or document.get("id") != info.sandbox_id:
+            return False
+        return document.get("phase") not in _DEAD_PHASES
+
+    async def runtime_sandbox_of(self, project_id: str, sandbox_id: str) -> None:
+        """Refuse unless the gateway shows ``sandbox_id`` as ``project_id``'s agent runtime
+        sandbox: the sandbox the listing names by that ID, read with ``sandbox get``, labelled
+        ``PROJECT_LABEL`` with the project, as the launcher and the runtime manager create
+        it. A project-scoped client binds only such a sandbox; the refusal names only its
+        own project."""
+        self._not_an_environment(sandbox_id)  # a research environment's: a conflict
+        refused = WorkerError(
+            ErrorKind.POLICY_DENIED,
+            f"sandbox {sandbox_id!r} is not a runtime sandbox labelled for {project_id}",
+        )
+        entries, _ = await self.cli.sandboxes()
+        names = [entry.get("name") for entry in entries if entry.get("id") == sandbox_id]
+        if len(names) != 1 or not isinstance(names[0], str):
+            raise refused
+        document = await self.cli.sandbox(names[0])
+        if document is None or document.get("id") != sandbox_id:
+            raise refused
+        if labels(document).get(PROJECT_LABEL) != project_id:
+            raise refused
+
+    def bind_runtime(
+        self, project_id: str, sandbox_id: str, projects: frozenset[str] | None = None
+    ) -> str:
+        """Bind the agent runtime's sandbox to the project's policy revision: the one the
+        policy store binds to the project (the MCP proxy's binding), else the one granted to
+        it last. The policy middleware decides only sandboxes bound to a stored revision.
+
+        A research environment's sandbox is bound by its own creation and revision, so
+        this refuses one of those.
+        """
+        self._not_an_environment(sandbox_id)
+        try:
+            entry = self.store.binding_entry(sandbox_id)
+            if projects is not None and entry is not None and entry[1] != project_id:
+                # Another project's runtime sandbox (or a binding of no recorded project) is
+                # never taken over by a client limited to some projects; its own may move to
+                # a new revision.
+                raise WorkerError(
+                    ErrorKind.POLICY_DENIED,
+                    f"sandbox {sandbox_id!r} is bound, and not for {project_id}",
+                )
+            revision = PolicyStore(self.settings.policy_store, "projects").binding(project_id)
+            revision = revision or self.records.latest_grant(project_id)
+            if revision is None:
+                raise WorkerError(
+                    ErrorKind.NOT_FOUND,
+                    f"project {project_id!r} has no policy revision; an operator grants one"
+                    " with `sandbox-science-worker policy add --project`",
+                )
+            self.store.bind(sandbox_id, revision, project=project_id)
+        except StoreError as error:
+            raise WorkerError(ErrorKind.UNAVAILABLE, f"policy store: {error}") from None
+        return revision
+
+    def unbind_runtime(self, sandbox_id: str, projects: frozenset[str] | None = None) -> bool:
+        """Remove the runtime sandbox's binding, if it has one; never an environment's.
+
+        A client limited to ``projects`` may unbind only a runtime sandbox bound for one of
+        them: a sandbox with no runtime binding is ``not_found`` to it, and one bound for
+        another project ``policy_denied``, naming none but its own. The pool's own token
+        (``projects`` None) may unbind any, and none is no error for it."""
+        self._not_an_environment(sandbox_id)
+        try:
+            entry = self.store.binding_entry(sandbox_id)
+            if projects is not None:
+                if entry is None or entry[1] is None:
+                    raise WorkerError(ErrorKind.NOT_FOUND, f"no runtime sandbox {sandbox_id!r}")
+                if entry[1] not in projects:
+                    raise WorkerError(
+                        ErrorKind.POLICY_DENIED,
+                        f"runtime sandbox {sandbox_id!r} is not bound for "
+                        f"{', '.join(sorted(projects))}",
+                    )
+            return self.store.unbind(sandbox_id)
+        except StoreError as error:
+            raise WorkerError(ErrorKind.UNAVAILABLE, f"policy store: {error}") from None
+
+    def _not_an_environment(self, sandbox_id: str) -> None:
+        if any(info.sandbox_id == sandbox_id for info in self.records.listed(None)):
+            raise WorkerError(ErrorKind.CONFLICT, "that sandbox belongs to a research environment")
+
     async def revise(self, environment_id: str, revision: str) -> EnvironmentInfo:
         """Move a ready environment to another policy revision."""
         async with self._lock(environment_id):
@@ -686,6 +1415,7 @@ class Environments:
             if info.policy == revision:
                 return info
             policy = self._policy(revision)
+            self._check_launch_policy(info, policy)
             # Hosts decided under the old revision are decided again under the new one.
             recorded = [(old.host, old.port) for old in self.records.admissions(environment_id)]
             decisions = await asyncio.to_thread(self._decide, policy, recorded)
@@ -778,20 +1508,231 @@ class Environments:
             return await _owned(self._delete(environment_id))
 
     async def _cleanup_creation(self, info: EnvironmentInfo) -> EnvironmentInfo:
-        """Reconcile one creation, retaining its record until deletion is confirmed."""
+        """Reconcile one creation, retaining its record until deletion is confirmed.
+
+        A creation without an identity is deleted without a sandbox only on confirmed
+        absence (``unknown_creations``); otherwise its deletion is refused."""
         if info.sandbox_id is None:
-            document = await self.cli.sandbox(info.sandbox)
-            sandbox_id = document.get("id") if document is not None else None
-            if not isinstance(sandbox_id, str) or not sandbox_id:
-                raise WorkerError(
-                    ErrorKind.UNAVAILABLE,
-                    "sandbox creation outcome is unknown; its original name is retained "
-                    "until the gateway exposes an identity or an operator reconciles it",
-                )
+            outcome = await self._creation_outcome(info)
+            if outcome.sandbox_id is None:
+                if not outcome.confirmed:
+                    raise refusal(outcome)
+                return await self._roll_back(info)
             # The worker allocated this random name before dispatch. Once an object
             # appears, keep its identity before a delete or another fallible await.
-            info = self._creation_identity(info, sandbox_id)
+            info = self._creation_identity(info, outcome.sandbox_id)
         return await self._delete(info.environment_id)
+
+    async def _creation_outcome(self, info: EnvironmentInfo) -> Outcome:
+        """One reconciliation read of a creation without an identity (B3).
+
+        The sandbox's own name first: any sandbox there gives its identity. Past the
+        grace, the listing too, and a read with no trace is recorded; two such reads
+        ``creation_recheck`` apart confirm absence. Gateway failures raise, and count
+        as nothing."""
+        document = await self.cli.sandbox(info.sandbox)
+        if document is not None:
+            identity = document.get("id")
+            if isinstance(identity, str) and identity:
+                return Outcome(sandbox_id=identity)
+            return Outcome(
+                message=f"{UNKNOWN_OUTCOME}: the gateway shows {info.sandbox} without an identity"
+            )
+        now = self.clock.now()
+        refused = self.records.creation_refused(info)
+        if refused is not None:
+            return await self._refused_outcome(info, refused)
+        grace = self.settings.creation_grace
+        ended = self.records.creation_ended(info)
+        if ended is None:
+            if self.serving_since is None:
+                return Outcome(
+                    message=f"{UNKNOWN_OUTCOME}: the end of its create command is not"
+                    " recorded, as when a worker stopped while it ran; start the worker,"
+                    " which reconciles it"
+                )
+            ended = max(
+                self.serving_since,
+                info.created_at + timedelta(seconds=self.settings.create_timeout),
+            )
+        absent_from = max(info.created_at, ended) + timedelta(seconds=grace)
+        if now < absent_from:
+            return Outcome(
+                message=f"{UNKNOWN_OUTCOME}: its create command ended less than the creation"
+                f" grace ({grace:g} s) ago; absence can be observed from {when(absent_from)}"
+            )
+        entries, complete = await self.cli.sandboxes()
+        listing = examine(
+            entries,
+            complete,
+            info,
+            self.records.identified(),
+            labelled=self.settings.label_environments,
+        )
+        if listing.sandbox_id is not None:
+            return Outcome(sandbox_id=listing.sandbox_id)
+        if listing.blocker is not None:
+            return Outcome(message=f"{UNKNOWN_OUTCOME}: {listing.blocker}")
+        monotonic = self.clock.monotonic()
+        local = self._absent_here.setdefault((info.environment_id, info.sandbox), (now, monotonic))
+        seen = self.records.observe(info, observation(now, listing.names))
+        recheck = self.settings.creation_recheck
+        if confirms(seen, now, recheck, local, monotonic):
+            return Outcome(
+                confirmed=True,
+                message=f"{info.sandbox} was absent on {len(seen)} reads from"
+                f" {when(seen[0].observed_at)} to {when(now)}",
+            )
+        first = when(seen[0].observed_at)
+        times = f"once, at {first}" if len(seen) == 1 else f"{len(seen)} times since {first}"
+        retry_at = seen[0].observed_at + timedelta(seconds=recheck)
+        if local[0] == seen[0].observed_at:
+            # Due by the monotonic clock too, whatever the wall clock did meanwhile.
+            retry_at = max(retry_at, now + timedelta(seconds=local[1] + recheck - monotonic))
+        return Outcome(
+            message=f"{UNKNOWN_OUTCOME}: seen absent {times};"
+            f" a second read after {when(retry_at)} confirms it",
+            retry_at=retry_at,
+        )
+
+    async def _refused_outcome(self, info: EnvironmentInfo, refused: str) -> Outcome:
+        """A creation the gateway refused: the request ended there, so no grace is needed.
+        One read of its name (by the caller) and of the complete listing that finds no
+        trace confirms absence at once; a listing that cannot show it confirms nothing."""
+        entries, complete = await self.cli.sandboxes()
+        listing = examine(
+            entries,
+            complete,
+            info,
+            self.records.identified(),
+            labelled=self.settings.label_environments,
+        )
+        if listing.sandbox_id is not None:
+            return Outcome(sandbox_id=listing.sandbox_id)
+        if listing.blocker is not None:
+            return Outcome(message=f"{UNKNOWN_OUTCOME}: {listing.blocker}")
+        return Outcome(
+            confirmed=True,
+            message=f"the gateway refused creating {info.sandbox} and shows no trace of it"
+            f" ({refused[:200]})",
+        )
+
+    async def _roll_back(self, info: EnvironmentInfo) -> EnvironmentInfo:
+        """Mark a creation confirmed absent as deleted (``creation_rolled_back``), its
+        deletion confirmed, so the ordinary path forgets its record and frees its ID."""
+        self.records.roll_back(
+            info, CREATION_ROLLED_BACK, self.clock.now(), hooks_pending=self.hooks_deferred
+        )
+        self._absent_here.pop((info.environment_id, info.sandbox), None)
+        _log.warning(
+            "environment %s: sandbox %s never appeared; marked deleted (%s)",
+            info.environment_id,
+            info.sandbox,
+            CREATION_ROLLED_BACK,
+        )
+        return await self._delete(info.environment_id)
+
+    async def reconcile_creation(self, environment_id: str) -> Reconciliation:
+        """Make one reconciliation read of a creation with an unknown outcome (B3), under
+        the environment's lock, and act on it: a sandbox that appeared gives the
+        environment its identity, and confirmed absence marks it deleted. Nothing here
+        deletes a sandbox. When only a later read is missing, ``retry_at`` says when."""
+        async with self._lock(environment_id):
+            info = self.get(environment_id)
+            if info.state is not EnvironmentState.CREATING:
+                return Reconciliation(
+                    environment_id, "skipped", f"{environment_id} is {info.state}, not creating"
+                )
+            if info.sandbox_id is not None:
+                return Reconciliation(
+                    environment_id,
+                    "skipped",
+                    f"{environment_id}'s sandbox {info.sandbox} has identity"
+                    f" {info.sandbox_id}; deleting the environment deletes it by identity",
+                )
+            outcome = await self._creation_outcome(info)
+            if outcome.sandbox_id is not None:
+                self._creation_identity(info, outcome.sandbox_id)
+                return Reconciliation(
+                    environment_id,
+                    "adopted",
+                    f"sandbox {info.sandbox} exists with identity {outcome.sandbox_id};"
+                    " the environment keeps it, and deleting the environment deletes it",
+                )
+            if outcome.confirmed:
+                await _owned(self._roll_back(info))
+                return Reconciliation(
+                    environment_id,
+                    "rolled_back",
+                    f"{outcome.message}; {environment_id} is deleted"
+                    f" ({CREATION_ROLLED_BACK}) and its ID may be created again",
+                )
+            return Reconciliation(
+                environment_id, "inconclusive", outcome.message, retry_at=outcome.retry_at
+            )
+
+    async def run_pending_hooks(self) -> list[str]:
+        """Run the deletion hooks the offline command left pending, once the running
+        worker has registered them, before it serves; return the environments' IDs.
+
+        Only for a record still deleted under the same sandbox name: an ID created
+        again since then already ran them when it was reused."""
+        done: list[str] = []
+        for environment_id, sandbox in self.records.hooks_pending():
+            async with self._lock(environment_id):
+                info = self.records.get(environment_id)
+                if (
+                    info is not None
+                    and info.state is EnvironmentState.DELETED
+                    and info.sandbox == sandbox
+                ):
+                    await self._forget(environment_id)
+                    done.append(environment_id)
+                self.records.hooks_done(environment_id, sandbox)
+        return done
+
+    async def reconcile_creations(self) -> list[Reconciliation]:
+        """The running worker's pass: one read for each creation without an identity
+        past the grace, skipping environments whose lock is held or awaited."""
+        done: list[Reconciliation] = []
+        grace = timedelta(seconds=self.settings.creation_grace)
+        for info in self.records.creating():
+            young = self.clock.now() < info.created_at + grace
+            if info.sandbox_id is not None or (young and not self.records.creation_refused(info)):
+                continue  # no read is due yet; _creation_outcome counts from the command's end
+            if self.busy(info.environment_id):
+                continue  # a creation or deletion under way decides it
+            # Each read of a creation past the grace is a record of its own (D103): one
+            # still unknown is ``environment_creation_unknown``, which the rendered Loki
+            # alerts read (docs/KUBERNETES-BUNDLE.md, "Alert rules").
+            fields = {"environment": info.environment_id, "project": info.project_id}
+            try:
+                result = await self.reconcile_creation(info.environment_id)
+            except WorkerError as error:
+                _log.warning(
+                    "could not reconcile environment %s: %s",
+                    info.environment_id,
+                    error.message,
+                    extra={"event": CREATION_UNKNOWN, "action": "error", **fields},
+                )
+                continue
+            if result.action in ("rolled_back", "adopted"):
+                _log.info(
+                    "environment %s: %s",
+                    info.environment_id,
+                    result.message,
+                    extra={"event": "environment_creation_reconciled", "action": result.action,
+                           **fields},
+                )  # fmt: skip
+            elif result.action == "inconclusive":
+                _log.warning(
+                    "environment %s is still creating past the grace: %s",
+                    info.environment_id,
+                    result.message,
+                    extra={"event": CREATION_UNKNOWN, "action": result.action, **fields},
+                )
+            done.append(result)
+        return done
 
     def _creation_identity(self, info: EnvironmentInfo, sandbox_id: str) -> EnvironmentInfo:
         if info.sandbox_id is not None and info.sandbox_id != sandbox_id:
@@ -896,6 +1837,8 @@ class Environments:
                 environment_id, idle_since
             ):
                 return False
+            if not await self._own_sandbox(info, "stop"):
+                return False  # gone: its next use finds out and gives the environment up
             # Recorded first: if the stop fails, or the worker stops during it, the next
             # use reads the sandbox's actual phase, and starts it or carries on.
             self.records.save(
@@ -933,12 +1876,34 @@ class Environments:
                 return False  # in use, being created, or gone
             if await self._stopped(info, wait=False):
                 return True
+            if not await self._own_sandbox(info, "stop"):
+                return False
             try:
                 await self.cli.run("sandbox", "stop", info.sandbox)
             except WorkerError as error:
                 _log.warning("could not stop sandbox %s again: %s", info.sandbox, error.message)
                 return False
             return await self._stopped(info, wait=True)
+
+    async def _own_sandbox(self, info: EnvironmentInfo, action: str) -> bool:
+        """Before a command that names the environment's sandbox (OpenShell's lifecycle
+        commands take a name, not an ID): whether the gateway shows the sandbox the
+        record names, by its recorded identity. False when no sandbox has the name.
+        Another sandbox under the name, or a record without an identity, refuses: the
+        worker never acts on a sandbox it cannot show is its own. Read just before the
+        command, after any other await."""
+        document = await self.cli.sandbox(info.sandbox)
+        if document is None:
+            return False
+        found = document.get("id")
+        if info.sandbox_id is None or found != info.sandbox_id:
+            raise WorkerError(
+                ErrorKind.UNAVAILABLE,
+                f"sandbox {info.sandbox} is {found or 'without an identity'}, not environment"
+                f" {info.environment_id}'s {info.sandbox_id or '(identity unknown)'}; refusing"
+                f" to {action} another sandbox under its name",
+            )
+        return True
 
     async def _stopped(self, info: EnvironmentInfo, *, wait: bool) -> bool:
         """Whether OpenShell has the environment's own sandbox stopped; with ``wait``,
@@ -1028,12 +1993,25 @@ class Environments:
 
     # Steps.
 
+    def _check_launch_policy(self, info: EnvironmentInfo, policy: LoadedPolicy) -> None:
+        if info.kind == "job":
+            return  # its size is its job profile's, which the policy grants (JS-9)
+        try:
+            check_pinned_policy(
+                self.records.driver_config(info.sandbox),
+                effective_resources(policy.policy, self.ceiling)[0],
+            )
+        except ValueError as exc:
+            raise WorkerError(ErrorKind.POLICY_DENIED, str(exc)) from exc
+
     async def _start(self, info: EnvironmentInfo, *, pinned: bool = False) -> EnvironmentInfo:
         """Start a stopped environment's sandbox; return any other environment unchanged.
 
         The sandbox's actual phase decides: a stop that failed left it ready. A start
         that fails is not tried again for a while, so that queued requests fail fast.
         """
+        if info.state in (EnvironmentState.READY, EnvironmentState.STOPPED):
+            self._check_launch_policy(info, self._policy(info.policy))
         if info.state is EnvironmentState.READY:
             # Its sandbox must still be the one the worker created, not another under its name.
             document = await self.cli.sandbox(info.sandbox)
@@ -1064,6 +2042,38 @@ class Environments:
                 "try again later",
             )
         started = self.clock.now()
+        await self._begin_start(info.environment_id, info.sandbox)
+        try:
+            return await self._run_start(info, started, pinned=pinned)
+        finally:
+            with contextlib.suppress(sqlite3.Error, OSError):
+                await asyncio.to_thread(
+                    end_start, self.state_dir, info.environment_id, self.clock.now()
+                )
+
+    async def _begin_start(self, environment_id: str, sandbox: str) -> None:
+        """Refuse to start a sandbox a checkpoint holds stopped, or one a restore is writing
+        into, and record the start in the same transaction, so a plan placed meanwhile sees
+        it (checkpoint_records). A records error refuses the start too: the check never
+        fails open."""
+        try:
+            await asyncio.to_thread(
+                begin_start, self.state_dir, environment_id, self.clock.now(), sandbox
+            )
+        except HeldError as held:
+            raise WorkerError(
+                ErrorKind.UNAVAILABLE,
+                f"environment {environment_id} is {held}; try again after that",
+            ) from None
+        except (sqlite3.Error, OSError, ValueError) as error:
+            raise WorkerError(
+                ErrorKind.UNAVAILABLE,
+                f"cannot check checkpoint holds ({type(error).__name__}); not starting",
+            ) from None
+
+    async def _run_start(
+        self, info: EnvironmentInfo, started: datetime, *, pinned: bool
+    ) -> EnvironmentInfo:
         timeout = min(self.settings.create_timeout, self.resume_timeout)
         try:
             document = await self.cli.sandbox(info.sandbox)
@@ -1113,6 +2123,11 @@ class Environments:
                 update={"state": EnvironmentState.DELETED, "updated_at": self.clock.now()}
             )
         )
+        for told in self.given_up:
+            try:
+                told(info.environment_id)
+            except Exception:
+                _log.exception("giving up environment %s: a hook failed", info.environment_id)
         # This can be the provisioning task itself, through backend.prepare. It
         # must return to classification rather than wait for its own deletion drain.
         # Keep original revision/lockfile evidence until explicit deletion or reuse.
@@ -1150,43 +2165,48 @@ class Environments:
     def _settle(
         self, policy: LoadedPolicy, current: Sequence[str], decisions: Sequence[Admission]
     ) -> tuple[Compiled, list[Admission]]:
-        """Compile with the hosts in use and the newly admissible ones, within the limits.
+        """Compile with the entries in use and the newly admissible ones, within the limits.
 
-        Hosts in use come first, so a revision or a new batch never displaces them.
-        Hosts the compiled policy names already need no endpoint of their own. New
-        hosts beyond ``max_admitted_hosts``, or that would make the compiled policy
-        too large, are refused.
+        An entry is a host, or a host with a port that only a ``ports: any`` rule reaches
+        (``admission_entry``). Entries in use come first, so a revision or a new batch never
+        displaces them. Hosts the compiled policy admits already need no entry of their
+        own. New entries beyond ``max_admitted_hosts``, or that would make the compiled
+        policy too large, are refused.
         """
         limit = self.settings.max_admitted_hosts
-        new = [d.host for d in decisions if d.admitted and d.host not in current]
+
+        def entry(decision: Admission) -> str:
+            return admission_entry(policy, decision.host, decision.port)
+
+        new = [entry(d) for d in decisions if d.admitted and entry(d) not in current]
         candidates = list(dict.fromkeys([*current, *new]))
         compiled = self._compile(policy, candidates)
         emitted = set(compiled.admitted)
-        keep = [host for host in candidates if host in emitted]
+        keep = [item for item in candidates if item in emitted]
         refusals: dict[str, str] = {}
         if len(keep) > limit:
-            for host in keep[limit:]:
-                refusals[host] = f"the environment has {limit} hosts admitted on demand, its limit"
+            for item in keep[limit:]:
+                refusals[item] = f"the environment has {limit} hosts admitted on demand, its limit"
             keep = keep[:limit]
         if refusals or len(compiled.policy.to_yaml()) > MAX_POLICY_YAML:
             compiled = self._compile(policy, keep)
             if len(compiled.policy.to_yaml()) > MAX_POLICY_YAML:
-                fresh = [host for host in keep if host not in current]
-                for host in fresh:
-                    refusals[host] = "the sandbox's policy would exceed OpenShell's size limit"
-                keep = [host for host in keep if host in current]
+                fresh = [item for item in keep if item not in current]
+                for item in fresh:
+                    refusals[item] = "the sandbox's policy would exceed OpenShell's size limit"
+                keep = [item for item in keep if item in current]
                 compiled = self._compile(policy, keep)
         settled: list[Admission] = []
         for decision in decisions:
-            host = decision.host
+            key = entry(decision) if decision.admitted else ""
             if not decision.admitted:
                 pass
-            elif host in refusals:
-                decision = replace(decision, admitted=False, reason=refusals[host])
-            elif host in compiled.admitted:
-                if host in current:
+            elif key in refusals:
+                decision = replace(decision, admitted=False, reason=refusals[key])
+            elif key in compiled.admitted:
+                if key in current:
                     decision = replace(decision, reason="admitted already")
-            elif compiled.names(host):
+            elif compiled.admits(decision.host, decision.port):
                 decision = replace(decision, reason="admitted already")
             else:
                 reason = "the compiler did not admit it; see the environment's findings"
@@ -1195,10 +2215,13 @@ class Environments:
         return compiled, settled
 
     async def _set_policy(self, info: EnvironmentInfo, revision: str, compiled: Compiled) -> None:
-        """Replace the sandbox's network sections, keeping the filesystem section it reports."""
-        live = await self._live_filesystem(info.sandbox)
+        """Replace the sandbox's network sections, keeping the static sections it reports."""
+        filesystem, landlock = await self._live_static(info.sandbox)
         check_dispatch()
-        document = compiled.policy.with_filesystem(live)
+        if not await self._own_sandbox(info, "change the policy of"):
+            raise WorkerError(ErrorKind.UNAVAILABLE, f"sandbox {info.sandbox} is gone")
+        check_dispatch()  # again: the identity read was an await
+        document = compiled.policy.with_static(filesystem, landlock)
         path = self._write(info.environment_id, revision, document.to_yaml())
         await self.cli.run(
             "policy", "set", info.sandbox, "--policy", str(path),
@@ -1253,23 +2276,79 @@ class Environments:
                 )
         return tuple(sorted(ref.name for ref in wanted))
 
-    async def _create_sandbox(self, info: EnvironmentInfo, compiled: Compiled) -> str:
+    async def _create_sandbox(
+        self, info: EnvironmentInfo, compiled: Compiled, *, timeout: float | None = None
+    ) -> str:
+        """Create the sandbox and wait until it is ready; its ID. With ``timeout`` (a job
+        or child profile's ``schedule_timeout``), the whole wait, the create command's
+        included, ends there with ``ScheduleTimeoutError``."""
         name, image = info.sandbox, info.image
-        path = self._write(name, compiled.policy_digest, compiled.policy.to_yaml())
-        args = ["sandbox", "create", "--name", name, "--from", image, "--policy", str(path)]
-        for provider in info.providers:
-            args += ["--provider", provider]
-        args += ["--no-auto-providers", "--detach", "--", *_SANDBOX_COMMAND]
-        await self.cli.run(*args, timeout=self.settings.create_timeout)
-        return await self._wait_ready(name, creating=info.environment_id)
+        refused: str | None = None
+        deadline = self.clock.monotonic() + (timeout or 0.0)
+        try:
+            path = self._write(name, compiled.policy_digest, compiled.policy.to_yaml())
+            args = ["sandbox", "create", "--name", name, "--from", image, "--policy", str(path)]
+            launch = self.records.driver_config(name)
+            if launch not in (None, "{}"):
+                args += ["--driver-config-json", launch]
+            for provider in info.providers:
+                args += ["--provider", provider]
+            label = label_value(info.environment_id)
+            if self.settings.label_environments and label is not None:
+                args += ["--label", f"{ENVIRONMENT_LABEL}={label}"]
+            if info.kind == "job":
+                args += ["--label", "=".join(JOB_SANDBOX_LABEL)]
+            args += ["--no-auto-providers", "--detach", "--", *_SANDBOX_COMMAND]
+            try:
+                if timeout is None:
+                    await self.cli.run(*args, timeout=self.settings.create_timeout)
+                else:
+                    await self._create_within(args, timeout, deadline)
+            except GatewayRefusalError as refusal:
+                refused = refusal.message
+                raise
+        finally:
+            # Ended, whatever the result: a timeout or cancellation kills and reaps the
+            # command first. The grace of an unknown outcome counts from here (B3); a
+            # refusal needs none.
+            self.records.create_ended(info, self.clock.now(), refused=refused)
+        if timeout is None:
+            return await self._wait_ready(name, creating=info.environment_id)
+        try:
+            return await self._wait_ready(
+                name, max(0.0, deadline - self.clock.monotonic()), creating=info.environment_id
+            )
+        except NotReadyError as exc:
+            raise _not_placed(timeout) from exc
+
+    async def _create_within(self, args: Sequence[str], timeout: float, deadline: float) -> None:
+        """Run ``sandbox create`` within a schedule timeout. OpenShell 0.1.5's command
+        waits for the sandbox to be provisioned, even with ``--detach``, until its own
+        idle deadline (``OPENSHELL_PROVISION_TIMEOUT``, 300 s by default, renewed by
+        each progress event): the command is given the schedule timeout as that deadline
+        and is ended at it, and either end is ``ScheduleTimeoutError``. The profile's
+        timeout replaces the pool's ``create_timeout`` here, longer or shorter. A sandbox
+        it recorded is then deleted by identity, as after any failed creation."""
+        try:
+            await self.cli.run(
+                *args,
+                timeout=max(0.0, deadline - self.clock.monotonic()),
+                env={"OPENSHELL_PROVISION_TIMEOUT": str(max(1, math.ceil(timeout)))},
+            )
+        except GatewayRefusalError:
+            raise
+        except WorkerError as error:
+            if _PROVISION_TIMEOUT in error.message or self.clock.monotonic() >= deadline:
+                raise _not_placed(timeout) from error
+            raise
 
     async def _wait_ready(
         self, name: str, timeout: float | None = None, *, creating: str | None = None
     ) -> str:
-        """Wait until the sandbox is ready; return its ID. Phases that cannot lead there fail."""
-        loop = asyncio.get_running_loop()
+        """Wait until the sandbox is ready; return its ID. Phases that cannot lead there fail.
+        The deadline is by the environments' clock; the polls are real time apart."""
         limit = self.settings.create_timeout if timeout is None else timeout
-        deadline = loop.time() + limit
+        deadline = self.clock.monotonic() + limit
         while True:
             document = await self.cli.sandbox(name)
             if document is None:
@@ -1291,27 +2370,31 @@ class Environments:
                     )
             if document.get("phase") == "Ready" and isinstance(sandbox_id, str) and sandbox_id:
                 return sandbox_id
-            if loop.time() > deadline:
-                raise WorkerError(
+            if self.clock.monotonic() > deadline:
+                raise NotReadyError(
                     ErrorKind.UNAVAILABLE, f"sandbox {name} was not ready after {limit:.0f} s"
                 )
             await asyncio.sleep(self.poll_seconds)
 
-    async def _live_filesystem(self, name: str) -> FilesystemPolicy:
+    async def _live_static(self, name: str) -> tuple[FilesystemPolicy, LandlockPolicy | None]:
+        """The filesystem and Landlock sections OpenShell fixed when it created the sandbox."""
         document = await self.cli.json("policy", "get", name, "--base")
         policy = (
             cast(dict[str, object], document).get("policy") if isinstance(document, dict) else None
         )
-        section = (
-            cast(dict[str, object], policy).get("filesystem_policy")
-            if isinstance(policy, dict)
-            else None
-        )
+        sections = cast(dict[str, object], policy) if isinstance(policy, dict) else {}
         try:
-            return FilesystemPolicy.model_validate(section)
+            filesystem = FilesystemPolicy.model_validate(sections.get("filesystem_policy"))
         except ValidationError as exc:
             raise WorkerError(
                 ErrorKind.UNAVAILABLE, f"sandbox {name} reported no usable filesystem section"
+            ) from exc
+        landlock = sections.get("landlock")
+        try:
+            return filesystem, None if landlock is None else LandlockPolicy.model_validate(landlock)
+        except ValidationError as exc:
+            raise WorkerError(
+                ErrorKind.UNAVAILABLE, f"sandbox {name} reported an unusable Landlock section"
             ) from exc
 
     def _write(self, owner: str, revision: str, text: str) -> Path:

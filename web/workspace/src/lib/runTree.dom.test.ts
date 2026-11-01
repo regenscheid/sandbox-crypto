@@ -43,6 +43,7 @@ const run = (name: string, fields: Partial<TreeRun> = {}): TreeRun => ({
   kept: true,
   alias: 'main-model',
   limits: null,
+  tool_mix: null,
   ...fields,
 });
 
@@ -72,6 +73,14 @@ const delegation = (id: string, child: string, fields: Partial<Delegation> = {})
   read_entry: null,
   read_proofs: null,
   files: null,
+  environment_id: null,
+  environment: null,
+  results: 0,
+  review: null,
+  reviewed_at: null,
+  reviewed_by: null,
+  review_reason: null,
+  review_note: null,
   ...fields,
 });
 
@@ -108,6 +117,7 @@ const tree: RunTree = {
   ],
   delegations: [delegation('del-1', 'child'), delegation('del-0', 'gone')],
   delegations_total: 3,
+  earlier: [],
 };
 
 describe('the run tree', () => {
@@ -153,6 +163,7 @@ describe('the run tree', () => {
         }),
       ],
       delegations_total: 1,
+      earlier: [],
     };
     const urls = treeServer([tree, ended, 503]);
     const root = show(RunTreeView, { projectId: 'p1', sessionId: 's1' });
@@ -200,7 +211,8 @@ describe("a run's events", () => {
       .find((b) => b.textContent === 'Read newer events')!
       .click();
     await settle();
-    expect(urls).toEqual([
+    // The run tree is read beside the events, for the breadcrumb's names.
+    expect(urls.filter((url) => url.includes('/events'))).toEqual([
       '/api/v0/projects/p1/sessions/s1/runs/child/events?after=0&limit=200',
       '/api/v0/projects/p1/sessions/s1/runs/child/events?after=2&limit=200',
     ]);
@@ -239,6 +251,7 @@ describe("a delegation's files", () => {
         }),
       ],
       delegations_total: 1,
+      earlier: [],
     };
     treeServer([withFiles]);
     const root = show(RunTreeView, { projectId: 'p1', sessionId: 's1' });

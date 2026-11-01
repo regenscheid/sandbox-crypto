@@ -126,9 +126,9 @@ async def create(args: argparse.Namespace) -> None:
         findings = Findings(store).listing(PROJECT, "a")["findings"]
         by_doc = {value["anchors"][0]["locator"]["document"]: value for value in findings}
         expected = {
-            "accepted": "confirmed fixed",
-            "removed": "confirmed fixed",
-            "unaddressed": "unaddressed",
+            "accepted": "fixed",
+            "removed": "fixed",
+            "unaddressed": "open",
         }
         for name, status in expected.items():
             if by_doc[cases[name]]["status"] != status:

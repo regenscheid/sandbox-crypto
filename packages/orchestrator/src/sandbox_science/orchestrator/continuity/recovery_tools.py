@@ -6,6 +6,7 @@ from typing import Final
 
 from pydantic import ValidationError
 
+from sandbox_science.orchestrator.purpose import without
 from sandbox_science.orchestrator.tools import PDF_SPECS
 
 from .resources import ResourceDecision, ResourceDecisionRequest
@@ -27,9 +28,10 @@ def resource_decision_receipt(
     operation: str,
     arguments: str,
 ) -> ResourceDecision | None:
-    """Read an exact committed agent decision; never execute or infer its effect."""
+    """Read an exact committed agent decision; never execute or infer its effect. The
+    intent keeps the call as the model wrote it; its purpose is no part of the decision."""
     try:
-        request = ResourceDecisionRequest.model_validate_json(arguments)
+        request = ResourceDecisionRequest.model_validate_json(without(arguments))
     except ValidationError:
         return None
     rows = db.execute(

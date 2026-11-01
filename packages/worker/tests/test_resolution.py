@@ -468,3 +468,51 @@ def test_upgrade_requires_targets_and_reuses_pin_validation() -> None:
     file = resolution.parse_conda_dry_run(dry_run(link()), CACHE)[0].file
     with pytest.raises(ValueError, match="cannot pin"):
         resolution.conda_upgrade(("pari",), (file.model_copy(update={"build": None}),))
+
+
+MICROMAMBA_FROZEN = json.dumps(
+    {
+        "log_history": [
+            {
+                "level": "error",
+                "message": "Could not solve for environment specs\n    The following packages "
+                "are incompatible\n    ├─ giac <1.9.0.21 * is requested and can be installed;\n"
+                "    └─ pin on giac ==1.9.0.21 h58739cf_4 is not installable because it "
+                "requires\n       └─ giac ==1.9.0.21 h58739cf_4, which conflicts with any "
+                "installable versions previously reported.",
+                "source": "libmamba",
+            }
+        ],
+        "solver_problems": [
+            "package pin-6bkxkgogvn-1 has constraint giac ==1.9.0.21 h58739cf_4 conflicting "
+            "with giac-1.6.0.47-he9ede01_6"
+        ],
+        "success": False,
+    },
+    indent=4,
+)
+"""micromamba 2.9's JSON dry run of ``giac<1.9.0.21`` in crypto-base, whose
+``conda-meta/pinned`` holds giac at the image's build (2026-10-24)."""
+
+
+def test_a_solve_against_a_frozen_pin_says_the_image_freezes_it() -> None:
+    message = resolution.frozen_refusal(MICROMAMBA_FROZEN)
+    assert message is not None
+    assert "giac 1.9.0.21 (h58739cf_4)" in message
+    assert "the image freezes" in message
+    assert "/opt/sandbox-science-frozen" in message
+    assert "new image" in resolution.FROZEN_NEXT_STEP
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "",
+        "error    libmamba Could not solve for environment specs\n"
+        "    └─ nothing provides requested nosuchpackage",
+        # micromamba's own pin of the environment's Python minor version is no frozen package.
+        "    └─ pin on python 3.14.* is not installable because it requires",
+    ],
+)
+def test_other_solve_failures_are_not_called_frozen(output: str) -> None:
+    assert resolution.frozen_refusal(output) is None

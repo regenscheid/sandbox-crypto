@@ -172,12 +172,13 @@ def test_an_agents_response_holds_no_hidden_text_but_the_users_may(reviews: Revi
     review = _review(reviews)
     found = _finding(reviews, review)
     response = {
-        "finding": found["finding_id"], "expected": 1, "action": "rebut",
+        "finding": found["finding_id"], "expected": 1, "action": "dismiss",
         "explanation": "It is 16" + chr(0x2066) + ".", "revisions": [], "operation_id": "r1",
     }  # fmt: skip
     with pytest.raises(DocumentError) as refused:
         Findings(reviews).respond("p", "s", response, AGENT)
-    assert "the explanation holds U+2066" in refused.value.message
+    # A dismissal's explanation is its reason.
+    assert "the reason holds U+2066" in refused.value.message
     Findings(reviews).respond("p", "s", response, USER)
 
 

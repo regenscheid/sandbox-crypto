@@ -75,6 +75,7 @@ class MathNotices(FindingNotices):
               o.span=s.span
               WHERE n.project=? AND n.session=?
               AND n.session=f.session AND n.revision=f.revision AND f.status='open' AND
+              f.at_bound=0 AND
               s.excluded IS NULL
               AND s.checked_revision=c.revision AND o.status='rejected'
               AND j.macro_held=0 AND j.macro_revision=coalesce((SELECT h.revision FROM
@@ -98,12 +99,14 @@ class MathNotices(FindingNotices):
                 findings.transition(
                     db,
                     current,
-                    "unaddressed",
+                    "open",
                     "platform:math",
                     "The durably saved closing response left this mechanically rejected "
                     "formula unresolved.",
                     {"action": "ignored_math_notice", "notice_revision": revision, "run": run},
                     reflag=False,
+                    notify=False,
+                    columns={"at_bound": True},
                 )
             self.leases.acknowledge(db, project, session, run, notices)
 
@@ -141,6 +144,7 @@ class MathNotices(FindingNotices):
               WHERE n.project=? AND n.session=? AND n.claimed_run=?
               AND n.delivered_run IS NULL
               AND n.session=f.session AND n.revision=f.revision AND f.status='open' AND
+              f.at_bound=0 AND
               s.excluded IS NULL
               AND s.checked_revision=c.revision AND o.status='rejected'
               AND j.macro_held=0 AND j.macro_revision=coalesce((SELECT h.revision FROM
@@ -162,7 +166,7 @@ class MathNotices(FindingNotices):
             rows = db.execute(
                 "SELECT f.status,s.excluded IS NOT NULL,count(*) FROM review_findings f "
                 "JOIN math_finding_state s USING(finding_id) WHERE f.project=? AND f.session=? "
-                "AND f.status NOT IN ('confirmed fixed','withdrawn') "
+                "AND f.status NOT IN ('fixed','dismissed') "
                 "GROUP BY f.status,s.excluded IS NOT NULL",
                 (project, session),
             ).fetchall()

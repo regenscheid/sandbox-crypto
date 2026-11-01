@@ -16,6 +16,7 @@ from sandbox_science.orchestrator.harness import RunRequest
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.runstate import RunState
 
+from .authentik_support import ADMINS, USERS, Authentik, as_user
 from .route_support import ClientFactory, context_of, error_of, origin, workspace
 
 ROOT = "/api/v0/projects/p1/sessions/a/recovery"
@@ -191,30 +192,31 @@ async def test_resolution_validates_explicit_cost_and_stale_epoch(
     assert pending["models"][0]["identity"] == identity
 
 
-async def test_token_grant_route_requires_login_origin_and_exact_child(
+async def test_the_user_token_grant_route_is_gone(
     aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
 ) -> None:
+    """D102: a child's tokens are a soft cap that checks in with its parent."""
     seed_child(state_dir)
-    body = {
-        "work": CHILD,
-        "current": CHILD,
-        "epoch": 1,
-        "expected_revision": 0,
-        "total_tokens": 500_000,
-        "reason": "The evidence check is still productive.",
-    }
-    anonymous = await workspace(aiohttp_client, state_dir, static_dir, login=False)
-    await error_of(
-        await anonymous.post(ROOT + "/token-grants", json=body, headers=origin(anonymous)),
-        401,
-        "policy_denied",
-    )
     client = await workspace(aiohttp_client, state_dir, static_dir)
-    assert (await client.post(ROOT + "/token-grants", json=body)).status == 403
-    granted = await client.post(ROOT + "/token-grants", json=body, headers=origin(client))
-    assert granted.status == 200, await granted.text()
-    decision = await granted.json()
-    assert decision["request"]["total_tokens"] == 500_000
-    assert decision["operator"] == "user"
-    repeated = await client.post(ROOT + "/token-grants", json=body, headers=origin(client))
-    assert await repeated.json() == decision
+    body = {"work": CHILD, "current": CHILD, "epoch": 1, "expected_revision": 0}
+    response = await client.post(ROOT + "/token-grants", json=body, headers=origin(client))
+    assert response.status in (404, 405)  # no route writes a grant
+
+
+async def test_with_an_admin_group_resolving_is_the_admins(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
+) -> None:
+    """D104: a recovery resolution is an operator's: with an admin group, a member is
+    refused and an admin's resolution names them, not the operator."""
+    identity = seed(state_dir)
+    authentik = Authentik()
+    client = await workspace(
+        aiohttp_client, state_dir, static_dir, login=False, forward_auth=authentik.verifier(ADMINS)
+    )
+    member = {**as_user(authentik.token("bob")), **origin(client)}
+    admin = {**as_user(authentik.token("carol", (USERS, ADMINS))), **origin(client)}
+    refused = await client.post(ROOT + "/resolve", json=resolution(identity), headers=member)
+    await error_of(refused, 403, "policy_denied")
+    response = await client.post(ROOT + "/resolve", json=resolution(identity), headers=admin)
+    assert response.status == 200, await response.text()
+    assert (await response.json())["operator"] == "authentik:carol"

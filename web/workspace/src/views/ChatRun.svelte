@@ -1,76 +1,252 @@
 <!-- SPDX-License-Identifier: MIT -->
-<!-- One run's transcript in the chat panel, from its events (RS-14). -->
-<script lang="ts">
-  import { chatEntries, type WatchedRun } from '../lib/chat';
+<!-- One run's part of the conversation, from its events (RS-14): the messages and replies,
+     with the steps between them folded (conversation.ts), and the run's questions where it
+     asked them. While the run is `live`, its latest steps show what runs now. -->
+<script lang="ts" generics="Q extends { tool_call: string; question_id: string }">
+  import { untrack, type Snippet } from 'svelte';
+  import {
+    awaitingApproval,
+    chatEntries,
+    isContinuation,
+    placeQuestions,
+    thinking,
+    type WatchedRun,
+  } from '../lib/chat';
+  import { clock, foldTranscript, liveWork } from '../lib/conversation';
+  import { agentDirectory } from '../lib/agentMessages';
+  import type { RunTree, TreeRun } from '../lib/api-types';
+  import AgentMessageRow from './AgentMessageRow.svelte';
+  import ChildOutcome from './ChildOutcome.svelte';
   import Markdown from '../lib/Markdown.svelte';
   import { messageHref } from '../lib/router';
-  import { visible, visibleOutput } from '../lib/text';
+  import { splitAttachments } from '../lib/uploads';
+  import BackgroundRow from './BackgroundRow.svelte';
+  import type { ArtifactEntry } from '../lib/api-types';
+  import { stripCounts, type RunArtifacts } from '../lib/artifactStrip';
+  import type { SessionFindings } from '../lib/findingRows';
+  import ArtifactStrip from './ArtifactStrip.svelte';
+  import FindingRow from './FindingRow.svelte';
+  import FileChips from './FileChips.svelte';
   import HiddenBanner from './HiddenBanner.svelte';
-  let { run, projectId = null }: { run: WatchedRun; projectId?: string | null } = $props();
+  import Icon from './Icon.svelte';
+  import WorkGroup from './WorkGroup.svelte';
+  let {
+    run,
+    projectId = null,
+    questions = [],
+    question,
+    live = false,
+    now = Date.now(),
+    subagents = null,
+    showAgents = null,
+    continuations = new Set(),
+    sessionId = null,
+    findings = null,
+    artifacts = null,
+    showArtifact = null,
+    tree = null,
+    role = 'main',
+    showAgent = null,
+  }: {
+    run: WatchedRun;
+    projectId?: string | null;
+    /** The run's questions, each shown after the step that asked it, or after the rest. */
+    questions?: readonly Q[];
+    question?: Snippet<[Q]>;
+    /** The run is working now: its last steps show as they run. */
+    live?: boolean;
+    now?: number;
+    subagents?: string | null;
+    showAgents?: (() => void) | null;
+    /** The IDs of the session's automatic continuation messages, shown folded. */
+    continuations?: ReadonlySet<string>;
+    /** The findings the conversation's rows show, read and read again (B10, item 4). */
+    findings?: SessionFindings | null;
+    /** The runs' artifact lists, for the strips under the work groups (B10, item 6). */
+    artifacts?: RunArtifacts | null;
+    /** Open an artifact in the session's Artifacts panel. */
+    showArtifact?: ((entry: ArtifactEntry) => void) | null;
+    /** The run's session, for its agents' messages (B10, item 2). */
+    sessionId?: string | null;
+    /** The session's run tree: its agents' names and its children's outcomes. */
+    tree?: RunTree | null;
+    /** The run's role until the tree lists it: the chat panel shows main runs. */
+    role?: TreeRun['role'] | null;
+    /** Opens a delegation's card in the session's Agents panel. */
+    showAgent?: ((delegation: string) => void) | null;
+  } = $props();
+  const agents = $derived(agentDirectory(tree, run.run, role));
   const entries = $derived(chatEntries(run.events));
+  const placed = $derived(placeQuestions(entries, questions));
+  const items = $derived(
+    foldTranscript(entries, run.events, new Set(questions.map((asked) => asked.tool_call))),
+  );
+  /** Each item's questions: those its entries asked, at the last item that holds them. */
+  const asked = $derived.by(() => {
+    const at = new Map<number, number>();
+    items.forEach((item, index) => {
+      for (const seq of item.kind === 'work' ? item.steps.map((step) => step.seq) : [item.seq])
+        at.set(seq, index);
+    });
+    const shown = new Map<number, Q[]>();
+    for (const [seq, list] of placed.after) {
+      const index = at.get(seq);
+      if (index === undefined) continue;
+      shown.set(index, [...(shown.get(index) ?? []), ...list]);
+    }
+    return shown;
+  });
+  /** The work group the run is on now, if any: the last, with only background rows after. */
+  const liveIndex = $derived(live ? liveWork(items) : -1);
+  // The findings the rows show are read, and read again while the session is live.
+  $effect(() => {
+    const shown = items.flatMap((item) =>
+      item.kind === 'findings' ? item.findings.map((one) => one.finding) : [],
+    );
+    if (shown.length) untrack(() => findings?.want(shown));
+  });
+  // The run's artifact list, for its strips: read once, and again while it runs.
+  $effect(() => {
+    if (!artifacts) return;
+    const calls = items.flatMap((item) =>
+      item.kind === 'work' ? item.steps.flatMap((step) => step.calls) : [],
+    );
+    const { paths, unmatched } = stripCounts(calls, artifacts.state[run.run]?.entries ?? null);
+    const name = run.run,
+      running = live;
+    untrack(() => void artifacts.need(name, paths, unmatched, running));
+  });
 </script>
 
 <ol class="transcript">
-  {#each entries as entry (entry.seq)}
-    <li
-      class:user-message={entry.kind === 'user'}
-      class:assistant-message={entry.kind === 'assistant'}
-    >
-      {#if entry.kind === 'user'}
-        <h3>You</h3>
-        <Markdown source={entry.text} pins={entry.pins} {projectId} />
-        <HiddenBanner text={entry.text} links />
-      {:else if entry.kind === 'assistant'}
-        <h3>Research agent</h3>
-        {#if entry.text}<Markdown source={entry.text} pins={entry.pins} {projectId} /><HiddenBanner
-            text={entry.text}
-            links
-          />{/if}
-        {#if entry.usage}<p class="muted">{entry.usage}</p>{/if}
-        {#each entry.calls as call, index (index)}
-          <details>
-            <summary>Calls <code>{call.name}</code></summary>
-            <pre>{visible(call.arguments)}</pre>
-          </details>
-        {/each}
-      {:else if entry.kind === 'tool'}
+  {#each items as item, index (item.seq + item.kind)}
+    {#if item.kind === 'user' && isContinuation(item.text, item.message, continuations)}
+      <!-- The platform's own prompt to go on with an open plan: folded, as steps are. -->
+      <li class="continuation">
         <details>
           <summary
-            ><code>{entry.name}</code>{#if entry.outcome}: {entry.outcome}{/if}</summary
+            ><Icon name="chevron" size={14} class="chevron" /><span>Continuation</span></summary
           >
-          <pre>{visibleOutput(entry.result)}</pre>
+          <div class="continuation-text">
+            <Markdown source={item.text} pins={item.pins} {projectId} />
+          </div>
         </details>
-      {:else if entry.kind === 'note'}
-        <p class:problem={entry.problem} class="muted">
-          {entry.text}{#if entry.message && projectId}
-            <a href={messageHref(projectId, entry.message)}>Its record</a>{/if}
+      </li>
+    {:else if item.kind === 'user'}
+      {@const split = splitAttachments(item.text)}
+      <li class="bubble user-message">
+        <h3 class="sr-only">You</h3>
+        {#if split.text.trim()}<Markdown source={split.text} pins={item.pins} {projectId} />{/if}
+        <FileChips files={split.files} />
+        <HiddenBanner text={item.text} links />
+      </li>
+    {:else if item.kind === 'reply'}
+      <li class="assistant-message">
+        <h3 class="meta">
+          {agents.self}{#if clock(item.at)}&nbsp;· {clock(item.at)}{/if}
+        </h3>
+        <Markdown source={item.text} pins={item.pins} {projectId} />
+        <HiddenBanner text={item.text} links />
+      </li>
+    {:else if item.kind === 'work'}
+      <li>
+        <WorkGroup
+          from={item.from}
+          to={item.to}
+          steps={item.steps}
+          live={index === liveIndex}
+          thinking={thinking(run)}
+          approval={awaitingApproval(run)}
+          {now}
+          {subagents}
+          {showAgents}
+          traffic={projectId && sessionId ? { projectId, sessionId, run: run.run } : null}
+        />
+        {#if artifacts && projectId && sessionId}<ArtifactStrip
+            {projectId}
+            {sessionId}
+            run={run.run}
+            calls={item.steps.flatMap((step) => step.calls)}
+            listing={artifacts.state[run.run]}
+            show={showArtifact}
+          />{/if}
+      </li>
+    {:else if item.kind === 'background'}
+      <li><BackgroundRow {item} {live} {now} /></li>
+    {:else if item.kind === 'findings'}
+      <li>
+        {#if projectId && sessionId}<ul class="finding-rows" aria-label="Reviewer findings">
+            {#each item.findings as notice (notice.finding)}<li>
+                <FindingRow
+                  {projectId}
+                  {sessionId}
+                  {notice}
+                  finding={findings?.state.found[notice.finding] ?? null}
+                  failed={findings?.state.failed[notice.finding] ?? null}
+                />
+              </li>{/each}
+          </ul>{:else}<p class="transcript-note">
+            The reviewer offered {item.findings.length}
+            {item.findings.length === 1 ? 'finding' : 'findings'}.
+          </p>{/if}
+      </li>
+    {:else if item.kind === 'agent-messages'}
+      <li><AgentMessageRow rows={item.rows} at={item.at} {agents} {projectId} {sessionId} /></li>
+    {:else if item.kind === 'child-outcomes'}
+      {#each item.delegations as delegation (delegation)}
+        <li>
+          {#if projectId && sessionId}<ChildOutcome
+              {projectId}
+              {sessionId}
+              delegationId={delegation}
+              {tree}
+              {showAgent}
+            />{/if}
+        </li>
+      {/each}
+    {:else}
+      <li>
+        <p class="transcript-note" class:problem={item.problem}>
+          {item.text}{#if item.message && projectId}
+            <a href={messageHref(projectId, item.message)}>Its record</a>{/if}
         </p>
-      {:else}
-        <p class="muted">{entry.text}</p>
-      {/if}
-    </li>
+      </li>
+    {/if}
+    {#if question}
+      {#each asked.get(index) ?? [] as one (one.question_id)}
+        <li>{@render question(one)}</li>
+      {/each}
+    {/if}
   {/each}
+  {#if live && liveIndex === -1}
+    <li>
+      <WorkGroup
+        from=""
+        to=""
+        steps={[]}
+        live
+        thinking={thinking(run)}
+        approval={awaitingApproval(run)}
+        {now}
+        {subagents}
+        {showAgents}
+      />
+    </li>
+  {/if}
+  {#if question}
+    {#each placed.unplaced as one (one.question_id)}
+      <li>{@render question(one)}</li>
+    {/each}
+  {/if}
 </ol>
 
 <style>
-  .transcript {
+  .finding-rows {
     list-style: none;
-    padding: 0;
-  }
-  .transcript li {
-    margin: 0.6rem 0;
-  }
-  .transcript h3 {
-    font-size: 1rem;
     margin: 0;
-  }
-  pre {
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-    max-height: 20rem;
-    overflow: auto;
-  }
-  .problem {
-    color: var(--problem, #b3261e);
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
   }
 </style>

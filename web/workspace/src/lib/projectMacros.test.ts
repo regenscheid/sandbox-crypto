@@ -52,7 +52,7 @@ it('shows ambiguous anchored prose as diagnostic without hiding the warning', ()
     category: 'contradicting_value',
     statement: '$\\F$',
     remedy: null,
-    status: 'inconclusive',
+    status: 'open',
     revision: 1,
     reflags: 0,
     anchors: [],

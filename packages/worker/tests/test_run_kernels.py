@@ -114,7 +114,7 @@ async def test_a_session_close_ends_its_runs_and_frees_their_places(tmp_path: Pa
     reply = await recorder.ask({"id": 1, "op": "close_session", "session": "s1"})
     assert reply["ok"] is True
     assert len(reply["kernels"]) == 1 + executor.MAX_RUN_KERNELS
-    assert list(recorder.executor.kernels.values()) == [session]  # its generation kept
+    assert list(recorder.executor.lifecycle.kernels.values()) == [session]  # its generation kept
     recorder.executor.kernel("s1", "python", "a-new-run")
     with pytest.raises(executor.ToolError, match="has ended"):
         recorder.executor.kernel("s1", "python", "r0")
@@ -158,12 +158,12 @@ async def test_a_cell_racing_its_runs_close_never_starts_the_kernel_again(
     await recorder.executor.handle({**cell, "execution": "exe-late", "timeout": 5, "limit": 100})
     release.set()
     await asyncio.wait_for(close, 5)
-    running = recorder.executor.running.get("exe-late")
+    running = recorder.executor.lifecycle.running.get("exe-late")
     if running is not None and running.task is not None:
         await asyncio.wait_for(running.task, 5)
     assert started == []
     assert kernel.retired
-    assert kernel not in recorder.executor.kernels.values()
+    assert kernel not in recorder.executor.lifecycle.kernels.values()
     results = [m for m in recorder.messages if m.get("execution") == "exe-late"]
     assert any("has ended" in str(m) for m in results), results
 

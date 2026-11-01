@@ -2,27 +2,28 @@
 """Write a lab's launcher config, outside the repository, from the example.
 
     uv run python -I .agents/labs/launcher_config.py OUT --state-dir DIR [--project ID] \\
-        [--profile PROFILE] [--session ID ...] [--mcp-proxy IMAGE [--provider-env-file FILE]] \\
+        [--profile PROFILE] [--session ID ...] [--mcp [--provider-env-file FILE]] \\
         [--skills-pack NAME=GIT[@REF] ...] [--skills-embedding-model ALIAS] \\
         [--skills-metadata-model ALIAS]
 
 The tracked example names no real secret file: whoever writes a config also chooses the
-OpenShell CLI that gets the registered values. A lab with the MCP proxy names the owner's
+OpenShell CLI that gets the registered values. A lab with MCP names the owner's
 file here, as the coordinator gives it, so only the lab's own config holds its path. This
 writes the path alone and never opens the file.
 
 OUT gets every setting of examples/sandbox-science.toml, with absolute paths, the state
 directory DIR and, if given, the project ID, its profile (such as crypto-base), its
 sessions (each ``--session`` one, in the project's environment, in place of the example's)
-and the MCP proxy for crypto-research-mcp, with the tool index the example's commented
-[mcp_proxy] table gives it (``index`` and ``about``), so that a lab adds nothing by hand
+and, with ``--mcp``, crypto-research-mcp on the direct path (``[mcp_direct]``, D98; the MCP
+proxy retired on 2026-10-26), with the tool index the example's commented [mcp_direct]
+table gives it (``index`` and ``about``), so that a lab adds nothing by hand
 (lab 40, B7; lab 41). Each ``--skills-pack`` is a ``[skills.packs.NAME]`` from a git URL
 or a repository's path, with a ref after the last ``@`` that no ``/`` or ``:`` follows,
 and the project pins every pack given; ``--skills-embedding-model`` and
 ``--skills-metadata-model`` set ``[skills]``'s two models (lab 42, B8).
-It is written with mode 600, and refused inside a git checkout. With the MCP proxy, the
+It is written with mode 600, and refused inside a git checkout. With ``--mcp``, the
 policy is examples/policy.yaml with crypto-research-mcp's address in place of its
-placeholder, written as policy.yaml beside OUT: the proxy reaches the server it names.
+placeholder, written as policy.yaml beside OUT: the runtime reaches the server it names.
 """
 
 from __future__ import annotations
@@ -40,7 +41,12 @@ from sandbox_science.launcher.config import load_config
 REPOSITORY = Path(__file__).resolve().parents[2]
 EXAMPLE = REPOSITORY / "examples/sandbox-science.toml"
 PROFILE = REPOSITORY / "examples/openshell/profiles/cloudflare-access.yaml"
-CREDENTIALS = ("CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET")
+CREDENTIALS = {
+    "CF-Access-Client-Id": "CF_ACCESS_CLIENT_ID",
+    "CF-Access-Client-Secret": "CF_ACCESS_CLIENT_SECRET",
+}
+"""crypto-research-mcp's credential headers, each the variable with the provider's
+placeholder in the agent runtime's sandbox."""
 PLACEHOLDER = re.compile(r"url: https://mcp\.example\.invalid/crypto-research\b[^\n]*")
 """The example policy's placeholder line for crypto-research-mcp, with its comment."""
 SERVER = "https://research-mcp-api.npages.org/mcp"
@@ -66,14 +72,14 @@ def mcp_policy(example: Path) -> str:
 
 def tool_index(example: Path) -> dict[str, object]:
     """``index`` and ``about``, the tool index's settings, as the example's commented
-    ``[mcp_proxy]`` table, at its end, gives them."""
+    ``[mcp_direct]`` table, at its end, gives them."""
     lines = example.read_text(encoding="utf-8").splitlines()
-    if "# [mcp_proxy]" not in lines:
-        raise SystemExit(f"{example} has no commented [mcp_proxy] table")
-    start = lines.index("# [mcp_proxy]")
+    if "# [mcp_direct]" not in lines:
+        raise SystemExit(f"{example} has no commented [mcp_direct] table")
+    start = lines.index("# [mcp_direct]")
     table = tomllib.loads(
         "\n".join(line.removeprefix("# ").removeprefix("#") for line in lines[start:])
-    )["mcp_proxy"]
+    )["mcp_direct"]
     return {key: table[key] for key in ("index", "about")}
 
 
@@ -101,7 +107,9 @@ def main() -> int:
         metavar="ID",
         help="a session in the project's environment (repeat); in place of the example's",
     )
-    parser.add_argument("--mcp-proxy", metavar="IMAGE")
+    parser.add_argument(
+        "--mcp", action="store_true", help="crypto-research-mcp on the direct path (D98)"
+    )
     parser.add_argument("--provider-env-file", type=Path)
     parser.add_argument(
         "--skills-pack",
@@ -116,8 +124,8 @@ def main() -> int:
     out = args.out.expanduser().absolute()
     if any((folder / ".git").exists() for folder in out.parents):
         parser.error(f"{out} is inside a git checkout: write the lab's config outside it")
-    if args.provider_env_file is not None and args.mcp_proxy is None:
-        parser.error("--provider-env-file needs --mcp-proxy")
+    if args.provider_env_file is not None and not args.mcp:
+        parser.error("--provider-env-file needs --mcp")
     data = load_config(EXAMPLE).model_dump(mode="json", exclude_none=True)
     data["state_dir"] = str(args.state_dir.expanduser().absolute())
     (project,) = data["projects"]
@@ -127,18 +135,16 @@ def main() -> int:
         project["profile"] = args.profile
     if args.session is not None:
         project["sessions"] = [{"id": session, "dedicated": False} for session in args.session]
-    if args.mcp_proxy is not None:
-        proxy = {
-            "image": args.mcp_proxy,
+    if args.mcp:
+        direct: dict[str, object] = {
             "providers": ["crypto-research-mcp"],
-            "servers": ["crypto-research-mcp"],
-            "credentials": {f"crypto-research-mcp.{key}": key for key in CREDENTIALS},
+            "servers": {"crypto-research-mcp": {"credentials": dict(CREDENTIALS)}},
             **tool_index(EXAMPLE),
         }
         if args.provider_env_file is not None:
-            proxy["provider_env_file"] = str(args.provider_env_file.expanduser().absolute())
-            proxy["provider_profile"] = str(PROFILE)
-        data["mcp_proxy"] = proxy
+            direct["provider_env_file"] = str(args.provider_env_file.expanduser().absolute())
+            direct["provider_profile"] = str(PROFILE)
+        data["mcp_direct"] = direct
     packs = dict(args.skills_pack or ())
     models = {
         "embedding_model": args.skills_embedding_model,
@@ -152,7 +158,7 @@ def main() -> int:
         }
         project["skills"] = list(dict.fromkeys([*project.get("skills", []), *packs]))
     out.parent.mkdir(parents=True, exist_ok=True)
-    if args.mcp_proxy is not None:
+    if args.mcp:
         policy = out.parent / "policy.yaml"
         write_private(policy, mcp_policy(Path(data["worker"]["policy"])))
         data["worker"]["policy"] = str(policy)

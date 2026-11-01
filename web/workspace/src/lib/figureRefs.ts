@@ -91,6 +91,8 @@ export function placeReferences(root: HTMLElement, pins: readonly Pin[]): Placed
   for (let node = walker.nextNode(); node; node = walker.nextNode())
     if (!node.parentElement?.closest(SKIPPED)) nodes.push(node as Text);
   const placed: Placed[] = [];
+  // Only figures count toward the limit: a file that is not drawn is a link, and costs nothing.
+  let figures = 0;
   for (const node of nodes) {
     const value = node.data;
     const parts: (string | Placed)[] = [];
@@ -102,7 +104,9 @@ export function placeReferences(root: HTMLElement, pins: readonly Pin[]): Placed
       parts.push(value.slice(last, match.index));
       const target = root.ownerDocument.createElement('span');
       target.className = 'figure-ref';
-      const found = { target, alt: match[1]!, pin, drawn: placed.length < FIGURES_PER_TEXT };
+      const figure = ['image', 'frame'].includes(pinView(pin).shown);
+      const found = { target, alt: match[1]!, pin, drawn: !figure || figures < FIGURES_PER_TEXT };
+      if (figure) figures += 1;
       placed.push(found);
       parts.push(found);
       last = match.index! + match[0].length;

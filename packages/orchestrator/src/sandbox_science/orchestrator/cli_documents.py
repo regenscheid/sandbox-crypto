@@ -20,13 +20,14 @@ from pathlib import Path
 from typing import Any
 
 from sandbox_science.contracts import ErrorKind, ExecutionContext, new_id
+from sandbox_science.contracts.context import ExecutionAuthority
 
+from .context.history.reads import Register, shown
 from .documents import USER, Author, DocumentError, DocumentStore, store_path
 from .documents.agent_text import visible
 from .documents.errors import CONFLICT
 from .documents.tool import view_blocks
 from .figurechecks import subscribe as check_figures
-from .history.reads import Register, shown
 from .ledger import Ledger
 from .mathchecks import subscribe as check_math
 from .projects import ProjectError, ProjectStore, ensure_environment
@@ -58,9 +59,30 @@ async def _project_action(args: argparse.Namespace, store: ProjectStore) -> int:
                 runs.set_cost_limit(args.project, None)
             elif args.daily_cost_limit is not None:
                 runs.set_cost_limit(args.project, args.daily_cost_limit)
+            if args.no_notify:
+                runs.set_cost_notices(args.project, ())
+            elif args.notify_at is not None:
+                try:
+                    values = [float(v) for v in args.notify_at.split(",") if v.strip()]
+                except ValueError:
+                    print("--notify-at takes amounts separated by commas", file=sys.stderr)
+                    return 2
+                runs.set_cost_notices(args.project, values)
             limit = runs.cost_limit(args.project)
-            said = "no daily cost limit" if limit is None else f"a daily cost limit of {limit:g}"
-            print(f"project {args.project}: {said}, in the gateway's currency")
+            said = (
+                "no local cost limit (LiteLLM's budget enforces spending)"
+                if limit is None
+                else f"a local daily cost limit of {limit:g}"
+            )
+            notices = ", ".join(
+                f"{threshold:g}" + (" (crossed)" if crossed else "")
+                for threshold, crossed, _ in runs.cost_notices(args.project)
+            )
+            print(
+                f"project {args.project}: {said}, in the gateway's currency; "
+                f"notices at: {notices or 'none'}; recorded cost: "
+                f"{runs.model_cost(args.project) or 0:.2f}"
+            )
         case "delegation":
             from .delegation.records import DelegationRecords
 
@@ -77,6 +99,9 @@ async def _project_action(args: argparse.Namespace, store: ProjectStore) -> int:
                     "task_turns",
                     "turn_ceiling",
                     "max_token_grant",
+                    "root_tokens",
+                    "soft_cost",
+                    "max_idle_extensions",
                     "research_seconds",
                     "time_ceiling_seconds",
                     "storage_bytes",
@@ -87,12 +112,23 @@ async def _project_action(args: argparse.Namespace, store: ProjectStore) -> int:
             }
             if args.no_research_time_limit:
                 changes["research_seconds"] = None
+            if args.no_soft_cost:
+                changes["soft_cost"] = None
             if args.no_storage_limit:
                 changes["storage_bytes"] = None
             if args.models is not None:  # empty: no choice
                 changes["models"] = tuple(m.strip() for m in args.models.split(",") if m.strip())
             if args.fallback is not None:  # empty: none
                 changes["fallback"] = args.fallback.strip() or None
+            if args.child_environments is not None:
+                changes["child_environments"] = args.child_environments
+            if args.child_profile is not None:  # empty: the pool's default
+                changes["child_profile"] = args.child_profile.strip() or None
+            for name in ("child_idle_max", "child_orphan_grace", "child_orphan_idle"):
+                if (value := getattr(args, name)) is not None:
+                    changes[name] = value or None if name == "child_idle_max" else value
+            if args.review_max is not None:
+                changes["review_max"] = args.review_max
             found = (
                 delegations.configure(args.project, **changes)
                 if changes
@@ -111,10 +147,16 @@ async def _project_action(args: argparse.Namespace, store: ProjectStore) -> int:
                 f"{found.task_turns} turns; a brief may choose the models: "
                 f"{models}; fallback: {found.fallback or 'none'}; "
                 f"turn ceiling: {found.turn_ceiling}; token ceiling: {found.max_token_grant}; "
+                f"root soft tokens: {found.root_tokens}; soft cost per work: "
+                f"{found.soft_cost if found.soft_cost is not None else 'off'}; extensions "
+                f"without progress: {found.max_idle_extensions}; "
                 f"active seconds: {found.research_seconds or 'off'} "
                 f"(ceiling {found.time_ceiling_seconds}); retained artifact bytes: "
                 f"{found.storage_bytes or 'off'} (ceiling {found.storage_ceiling_bytes}); "
-                f"root resource renewal: {found.root_resource_renewal}"
+                f"root resource renewal: {found.root_resource_renewal}; child environments: "
+                f"{found.child_environments} (profile "
+                f"{found.child_profile or 'the pool default'}); a returned task awaits review "
+                f"{found.review_max} s"
             )
         case "macros":
             from .documents import USER, DocumentStore, store_path
@@ -231,14 +273,60 @@ async def _session_action(args: argparse.Namespace, store: ProjectStore) -> int:
     if session is None:
         print(f"error: project {args.project} has no session {args.session}", file=sys.stderr)
         return 1
+    from .continuity.records import WorkRecords
+
+    # The close acts with the session's current authority, as its runs do: the worker's
+    # recovery fence refuses a close without it once a run has started there.
+    works = WorkRecords(store.control)
+    owner = works.session_owner(args.project, args.session)
+    if owner is not None:
+        root = works.get(args.project, args.session, owner.work)
+        if root.state in ("running", "waiting"):
+            # Its authority is the live tree's: a close now would stop that run's kernels
+            # and child environments under it.
+            print(
+                f"error: session {args.session}'s research work {root.work} is {root.state}"
+                f" (run {root.current}); stop it, or let it finish, before closing the session",
+                file=sys.stderr,
+            )
+            return 1
     context = ExecutionContext(
-        project_id=args.project, session_id=args.session, environment_id=session.environment_id
+        project_id=args.project,
+        session_id=args.session,
+        environment_id=session.environment_id,
+        authority=None
+        if owner is None
+        else ExecutionAuthority(work=owner.work, run=owner.run, epoch=owner.epoch),
     )
-    async with WorkerClient(args.worker, read_secret(args.token_file)) as client:
+    async with WorkerClient(
+        args.worker, read_secret(args.token_file), ca_file=args.worker_ca_file
+    ) as client:
+        # Returned tasks that await review are accepted first, their environments handed
+        # back and released as an acceptance releases them (PD-46, CE-4); what is left
+        # goes with the session's.
+        from .delegation.environments import ChildPlacement
+        from .delegation.records import DelegationRecords
+        from .delegation.review import Closer
+
+        records = DelegationRecords(store.control)
+        accepted = await Closer(records, ChildPlacement(client, context, areas=records)).close_all(
+            args.project, args.session, reason="session_closed"
+        )
         closed = await client.close_session(context)
     store.close_session(args.project, args.session)
+    if accepted:
+        print(f"accepted {len(accepted)} returned task(s) that awaited review")
+    # At the close, a finding whose reviewed work has a newer revision and of which no
+    # re-check ran becomes stale (consistency review, CR-44).
+    from .consistency.findings import Findings
+    from .consistency.store import ReviewStore
+
+    with contextlib.closing(DocumentStore(store_path(args.state_dir))) as documents:
+        stale = Findings(ReviewStore(documents)).stale(args.project, args.session)
     kernels = ", ".join(f"{k.language} {k.kernel_id}" for k in closed.kernels) or "none"
     print(f"closed session {args.session}; kernels stopped: {kernels}")
+    if stale:
+        print(f"{stale} review {'finding is' if stale == 1 else 'findings are'} now stale")
     return 0
 
 
@@ -482,6 +570,14 @@ def add_parsers(commands: Any) -> None:
         "--no-cost-limit", action="store_true", help="budget: remove the daily cost limit"
     )
     projects.add_argument(
+        "--notify-at",
+        metavar="AMOUNTS",
+        help="budget: comma-separated recorded-cost thresholds that notify, never stop",
+    )
+    projects.add_argument(
+        "--no-notify", action="store_true", help="budget: remove the cost notices"
+    )
+    projects.add_argument(
         "--depth",
         type=int,
         choices=(0, 1, 2),
@@ -492,32 +588,51 @@ def add_parsers(commands: Any) -> None:
         "--cap", type=int, help="delegation: delegated runs a session runs at once (10)"
     )
     projects.add_argument(
-        "--check-tokens", type=int, help="delegation: a check's tokens, at most (20000000)"
+        "--check-tokens", type=int, help="delegation: a check's soft token cap (20000000)"
     )
     projects.add_argument(
-        "--check-turns", type=int, help="delegation: a check's turns, at most (300)"
+        "--check-turns", type=int, help="delegation: a check's soft turn cap (300)"
     )
     projects.add_argument(
         "--task-tokens",
         type=int,
-        help="delegation: a task's tokens, at most (20000000; 50000 to 1000000000)",
+        help="delegation: a task's soft token cap (20000000; 50000 to 1000000000)",
     )
     projects.add_argument(
-        "--task-turns", type=int, help="delegation: a task's turns, at most (300; 1 to 10000)"
+        "--task-turns", type=int, help="delegation: a task's soft turn cap (300; 1 to 10000)"
     )
     projects.add_argument(
-        "--turn-ceiling", type=int, help="delegation: cumulative renewable turn ceiling (10000)"
+        "--turn-ceiling",
+        type=int,
+        help="delegation: cumulative turn ceiling, every work's hard turn limit (10000)",
     )
     projects.add_argument(
         "--max-token-grant",
         type=int,
-        help="delegation: USER cumulative token approval ceiling (1000000000)",
+        help="delegation: cumulative ceiling of a soft token cap's extensions (1000000000)",
+    )
+    projects.add_argument(
+        "--root-tokens", type=int, help="delegation: a root's soft token cap (100000000)"
+    )
+    cost = projects.add_mutually_exclusive_group()
+    cost.add_argument(
+        "--soft-cost",
+        type=float,
+        help="delegation: each work's soft cost cap, a check-in, never a stop (25)",
+    )
+    cost.add_argument(
+        "--no-soft-cost", action="store_true", help="delegation: no soft cost check-ins"
+    )
+    projects.add_argument(
+        "--max-idle-extensions",
+        type=int,
+        help="delegation: extensions without new evidence before stop or redirect (3)",
     )
     time = projects.add_mutually_exclusive_group()
     time.add_argument(
         "--research-seconds",
         type=int,
-        help="delegation: optional cumulative observed active-time allowance",
+        help="delegation: each work's soft cumulative active-time cap (14400)",
     )
     time.add_argument(
         "--no-research-time-limit",
@@ -549,8 +664,8 @@ def add_parsers(commands: Any) -> None:
         "--root-resource-renewal",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="delegation: permit root soft-allowance renewal with saved progress; "
-        "tokens still require USER approval",
+        help="delegation: permit the root's own resource_decide renewals with saved "
+        "progress, besides its automatic check-ins",
     )
     projects.add_argument(
         "--models",
@@ -561,6 +676,40 @@ def add_parsers(commands: Any) -> None:
         "--fallback",
         help="delegation: the alias a delegated run calls when the gateway lists none of "
         "its own; empty for none (the default)",
+    )
+    projects.add_argument(
+        "--child-environments",
+        choices=("off", "tasks", "all"),
+        help="delegation: which delegated runs work in an environment of their own, made "
+        "from the session's: none (off, the default), tasks, or all, checks included",
+    )
+    projects.add_argument(
+        "--child-idle-max",
+        type=int,
+        help="delegation: seconds an ended delegation's child environment may sit unused "
+        "before it is released; 0 for --child-orphan-idle's (the default)",
+    )
+    projects.add_argument(
+        "--child-orphan-grace",
+        type=int,
+        help="delegation: seconds a child environment no delegation names is kept (900)",
+    )
+    projects.add_argument(
+        "--child-orphan-idle",
+        type=int,
+        help="delegation: seconds an ended delegation's child environment is kept unused "
+        "without --child-idle-max (86400)",
+    )
+    projects.add_argument(
+        "--child-profile",
+        help="delegation: the worker's child profile for those environments; empty for the "
+        "pool's default",
+    )
+    projects.add_argument(
+        "--review-max",
+        type=int,
+        help="delegation: seconds a returned task awaits its parent's review, from its latest "
+        "return, before the platform accepts it (86400)",
     )
     sessions = commands.add_parser(
         "session",
@@ -576,6 +725,9 @@ def add_parsers(commands: Any) -> None:
     )
     sessions.add_argument("--worker", help="close: the worker that runs its kernels")
     sessions.add_argument("--token-file", type=Path)
+    sessions.add_argument(
+        "--worker-ca-file", type=Path, help="close: the worker's private CA; requires HTTPS"
+    )
     document = commands.add_parser("document", help="living documents, as the user")
     actions = document.add_subparsers(dest="action", required=True)
     common = argparse.ArgumentParser(add_help=False)

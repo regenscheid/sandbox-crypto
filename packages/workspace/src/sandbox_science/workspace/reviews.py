@@ -3,21 +3,22 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Callable
 from typing import Any, cast
 
-from aiohttp import hdrs, web
+from aiohttp import web
 
 from sandbox_science.orchestrator.consistency.findings import Findings
 from sandbox_science.orchestrator.consistency.response_bodies import ResponseBodies
 from sandbox_science.orchestrator.consistency.store import ReviewStore
-from sandbox_science.orchestrator.documents import USER, DocumentError
+from sandbox_science.orchestrator.documents import DocumentError
 from sandbox_science.orchestrator.mathchecks.contexts import finding_macro_contexts
 from sandbox_science.orchestrator.mathchecks.jobs import MathJobs
 
-from . import api, documents
+from . import errors
 from .context import json_body
+from .identity import author
+from .requests import document_store, json_response
 
 # Persisted heterogeneous review JSON is bounded by the review store.
 Json = dict[str, Any]
@@ -52,20 +53,14 @@ async def answer(
     request: web.Request, call: Callable[[ReviewStore, str, str], Json], *, writer: bool = False
 ) -> web.Response:
     project, session = request.match_info["project"], request.match_info["session"]
-    document_store = request.app[documents.WRITER if writer else documents.DOCUMENTS]
+    selected = document_store(request, access="write" if writer else "read")
 
-    def run() -> str:
-        store = ReviewStore(document_store)
+    def run() -> Json:
+        store = ReviewStore(selected)
         store.scope(project, session)
-        return api.dumps(call(store, project, session))
+        return call(store, project, session)
 
-    try:
-        result = await asyncio.to_thread(run)
-    except DocumentError as error:
-        return documents.api_error(error)
-    return web.Response(
-        text=result, content_type="application/json", headers={hdrs.CACHE_CONTROL: "no-store"}
-    )
+    return await json_response(request, run)
 
 
 async def listing(request: web.Request) -> web.Response:
@@ -76,7 +71,7 @@ async def listing(request: web.Request) -> web.Response:
 
 async def request_review(request: web.Request) -> web.Response:
     if await json_body(request, "review request") != {}:
-        return documents.api_error(
+        return errors.to_response(
             DocumentError("invalid_request", "review request must be an empty object")
         )
 
@@ -154,7 +149,9 @@ async def finding(request: web.Request) -> web.Response:
 
 
 def contexts(store: ReviewStore, project: str, finding: Json) -> Json:
-    """The finding with the macro contexts it is shown with."""
+    """The finding with the macro contexts it is shown with, and the revisions it
+    reviewed beside the current ones."""
+    finding["reviewed_revisions"] = Findings(store).reviewed_revisions(project, finding)
     found = finding_macro_contexts(store, project, finding)
     finding["macro_context"] = found.finding.model_dump(mode="json", exclude_none=True)
     for entry in finding.get("history", []):
@@ -169,10 +166,10 @@ def contexts(store: ReviewStore, project: str, finding: Json) -> Json:
 async def respond(request: web.Request) -> web.Response:
     raw = await json_body(request, "finding response")
     if not isinstance(raw, dict) or cast(Json, raw).get("finding") != request.match_info["finding"]:
-        return documents.api_error(DocumentError("invalid_request", "invalid finding response"))
+        return errors.to_response(DocumentError("invalid_request", "invalid finding response"))
     raw = cast(Json, raw)
     return await answer(
-        request, lambda s, p, sid: Findings(s).respond(p, sid, raw, USER), writer=True
+        request, lambda s, p, sid: Findings(s).respond(p, sid, raw, author(request)), writer=True
     )
 
 
@@ -186,7 +183,7 @@ async def math_checks(request: web.Request) -> web.Response:
 async def response_body(request: web.Request) -> web.Response:
     raw = request.match_info["response"]
     if not raw.isascii() or not raw.isdigit() or not 1 <= len(raw) <= 9 or int(raw) < 1:
-        return documents.api_error(
+        return errors.to_response(
             DocumentError("invalid_request", "invalid original response revision")
         )
     try:
@@ -196,7 +193,7 @@ async def response_body(request: web.Request) -> web.Response:
             else None
         )
     except DocumentError as error:
-        return documents.api_error(error)
+        return errors.to_response(error)
     return await answer(
         request,
         lambda s, p, sid: ResponseBodies(s).get(

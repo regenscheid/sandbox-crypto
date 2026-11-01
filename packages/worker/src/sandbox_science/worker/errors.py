@@ -38,5 +38,9 @@ class WorkerError(Exception):
         return ErrorInfo(kind=self.kind, message=self.message)
 
 
+class PrefixRecoveryError(WorkerError):
+    """A target positively reported loss of the required persistent prefix layout."""
+
+
 class ExecutorRefusalError(WorkerError):
     """A definite executor rejection, distinguished from an uncertain transport loss."""

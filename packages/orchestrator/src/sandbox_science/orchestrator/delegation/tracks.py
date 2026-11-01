@@ -109,6 +109,17 @@ def grant(plans: SessionPlans, context: ExecutionContext, track: str) -> PlanRef
     return current.head.ref
 
 
+def stated_outputs(plans: SessionPlans, context: ExecutionContext) -> tuple[str, ...]:
+    """The titles of the desired outputs the user stated in the session's current plan,
+    which a task brief listing no deliverables is told of (PD-45). Call it in a thread."""
+    authority = PlanAuthority(
+        scope=PlanScope(project_id=context.project_id, session_id=context.session_id),
+        role="main",
+        run_id="stated-outputs",
+    )
+    return tuple(output.title for output in plans.stated_outputs(authority))
+
+
 class TrackTools:
     """``track_read`` and ``track_progress`` for a task's run, under its grant."""
 

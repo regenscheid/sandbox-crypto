@@ -50,19 +50,23 @@ from sandbox_science.contracts import (
     StreamOutput,
     WriteFileRequest,
 )
+from sandbox_science.contracts.worker import Language
 from sandbox_science.orchestrator import cli, worker_client
+from sandbox_science.orchestrator.context.history import body
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.orchestrator.effects import UnknownEffectError
-from sandbox_science.orchestrator.harness import describe_isolation, save, tier_in_effect
-from sandbox_science.orchestrator.history import body
+from sandbox_science.orchestrator.harness import (
+    describe_isolation,
+    kernel_note,
+    save,
+    tier_in_effect,
+)
 from sandbox_science.orchestrator.jobs import JobTools
 from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.loop import run_task
 from sandbox_science.orchestrator.model import (
     ModelError,
     OpenAICompatibleModel,
-    ScriptedModel,
-    ToolCall,
     ToolSpec,
     _parse_completion,
 )
@@ -70,6 +74,9 @@ from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome, operation_id
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 from sandbox_science.testing import eventually, fake_worker_app
+
+from .scripted import ScriptedModel, ToolCall
+from .scripted import script as scripted
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.slow]
 
@@ -142,7 +149,7 @@ async def test_the_first_slice_through_the_harness(client: WorkerClient) -> None
     transcript = await run_task(model, Toolbox(client, CONTEXT), "demonstrate", run_id="run-1")
     assert transcript.stopped == "answered"
     assert transcript.final_text == "x + 1 is 42, and out.csv is published."
-    results = [json.loads(m["content"]) for m in transcript.messages if m["role"] == "tool"]
+    results = [json.loads(m["content"]) for m in transcript.context.messages if m["role"] == "tool"]
     shell, assign, add, write, published, read = results
     assert shell["state"] == "succeeded"
     assert shell["stdout"] == f"hello from {socket.gethostname()}\n"
@@ -178,7 +185,9 @@ async def test_a_delegated_run_works_in_kernels_of_its_own(client: WorkerClient)
         return ScriptedModel.from_json([*turns, {"text": "done"}])
 
     def results(transcript: Any) -> list[dict[str, Any]]:
-        return [json.loads(m["content"]) for m in transcript.messages if m["role"] == "tool"]
+        return [
+            json.loads(m["content"]) for m in transcript.context.messages if m["role"] == "tool"
+        ]
 
     await run_task(cells("x = 'main'"), Toolbox(client, CONTEXT), "go", run_id="main-1")
     child = await run_task(
@@ -274,7 +283,7 @@ async def test_tool_errors_reach_the_model(client: WorkerClient) -> None:
         ScriptedModel.from_json(script), Toolbox(client, CONTEXT), "fail", run_id="run-2"
     )
     confined, raised, unknown = [
-        json.loads(m["content"]) for m in transcript.messages if m["role"] == "tool"
+        json.loads(m["content"]) for m in transcript.context.messages if m["role"] == "tool"
     ]
     assert confined["error"]["kind"] == "invalid_request"
     assert raised["error"]["kind"] == "exception"
@@ -400,6 +409,39 @@ def test_the_toolbox_offers_the_kernels_the_environment_has() -> None:
     assert not none & {"python", "sage", "restart_kernel"}
 
 
+@pytest.mark.filterwarnings("ignore::pytest.PytestWarning")
+@pytest.mark.parametrize("languages", [("python",), ("sage",), ("python", "sage")])
+def test_the_kernel_tools_come_before_shell_and_steer_computation_to_a_kernel(
+    languages: tuple[Language, ...],
+) -> None:
+    """The model reads its tools in order, and the kernels are the default for computation:
+    each kernel tool the environment offers precedes ``shell``, and the descriptions say
+    which is for what (agents ran 1,169 shell calls in the SNOVA run)."""
+    client = WorkerClient("http://127.0.0.1:9", TOKEN)
+    specs = {spec.name: spec for spec in Toolbox(client, CONTEXT, languages=languages).specs}
+    names = list(specs)
+    assert names[: len(languages)] == list(languages)
+    assert names.index("shell") == len(languages)
+    for language in languages:
+        described = specs[language].description
+        assert "persistent" in described
+        assert "The default for" in described
+        assert "exploration" in described
+    assert "Not for computation that belongs in a kernel cell" in specs["shell"].description
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestWarning")
+def test_a_run_notes_its_kernels_and_says_why_python_can_be_missing() -> None:
+    assert kernel_note(("python", "sage")) == "kernels: python, sage"
+    for languages in ((), ("sage",)):
+        note = kernel_note(languages)
+        assert note.startswith("kernels: no python kernel, so the run has no python tool")
+        assert "ipykernel" in note
+    assert "offered: sage" in kernel_note(("sage",))
+    said = kernel_note((), "jupyter_client is not importable by /usr/bin/python3")
+    assert "no python kernel (jupyter_client is not importable by /usr/bin/python3)" in said
+
+
 class AdmittingClient(WorkerClient):
     """A worker client whose admissions come from a rule, for the admit_hosts tool."""
 
@@ -518,7 +560,7 @@ async def test_a_reused_run_id_marks_replayed_results(client: WorkerClient) -> N
         )
         for _ in range(2)
     ]
-    before, after = (json.loads(run.messages[3]["content"]) for run in runs)
+    before, after = (json.loads(run.context.messages[3]["content"]) for run in runs)
     assert "replayed" not in before
     assert after["attempt_id"] == before["attempt_id"]
     assert after["replayed"].startswith("this call was made before")
@@ -531,7 +573,7 @@ async def test_a_reused_run_id_marks_replayed_results(client: WorkerClient) -> N
         "t",
         run_id="run-1",
     )
-    assert json.loads(third.messages[3]["content"])["stdout"] == "other\n"
+    assert json.loads(third.context.messages[3]["content"])["stdout"] == "other\n"
 
 
 async def test_h1_large_results_reach_the_model(client: WorkerClient) -> None:
@@ -545,7 +587,9 @@ async def test_h1_large_results_reach_the_model(client: WorkerClient) -> None:
     toolbox = Toolbox(client, CONTEXT)
     transcript = await run_task(ScriptedModel.from_json(script), toolbox, "large", run_id="run-2")
     assert transcript.stopped == "answered"
-    tools = [message["content"] for message in transcript.messages if message["role"] == "tool"]
+    tools = [
+        message["content"] for message in transcript.context.messages if message["role"] == "tool"
+    ]
     small, large = (json.loads(text) for text in tools)
     assert small["state"] == large["state"] == "succeeded"
     assert large["stdout_total_bytes"] == 5242880
@@ -660,6 +704,38 @@ async def test_h2_run_gives_up_when_no_result_comes() -> None:
     assert raised.value.kind is ErrorKind.UNAVAILABLE
 
 
+async def test_a_call_queued_behind_an_install_gets_its_whole_limit_once_it_starts() -> None:
+    # CP-12: the time a call waits behind a package command does not count against its
+    # limit, so the harness counts the limit from the call's start, not its submission.
+    async def submit(request: web.Request) -> web.Response:
+        return web.json_response({**EXECUTION, "state": "queued"}, status=201)
+
+    async def events(request: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse()
+        await response.prepare(request)
+        for _ in range(15):  # queued most of the limit and grace from submission
+            await response.write(b"\n")
+            await asyncio.sleep(0.1)
+        await response.write(_event(1, type="state", state="running"))
+        for _ in range(15):  # past them, within them from the start
+            await response.write(b"\n")
+            await asyncio.sleep(0.1)
+        await response.write(_event(2, type="result", execution=EXECUTION))
+        await response.write_eof()
+        return response
+
+    app = fake_worker_app()
+    app.router.add_post("/v1/executions", submit)
+    app.router.add_get("/v1/executions/exe-1/events", events)
+    request = ShellRequest(operation_id="op-1", context=CONTEXT, script="true", timeout_seconds=1)
+    async with (
+        TestServer(app) as server,
+        WorkerClient(str(server.make_url("")), TOKEN, result_grace=1) as client,
+    ):
+        execution = await asyncio.wait_for(client.run(request), 10)
+    assert execution.state == "succeeded"
+
+
 @pytest.mark.filterwarnings("ignore::pytest.PytestWarning")
 def test_m4_tool_results_are_bounded_as_a_whole() -> None:
     # 20,000 displays gave the model 149 KB; a 300 KB exception message, 600 KB.
@@ -757,7 +833,7 @@ async def test_m5_one_failing_tool_call_does_not_end_the_task() -> None:
             ScriptedModel.from_json(script), Failing(client, CONTEXT), "task", run_id="run-3"
         )
     assert transcript.final_text == "carried on"
-    assert json.loads(transcript.messages[3]["content"])["error"]["kind"] == "internal"
+    assert json.loads(transcript.context.messages[3]["content"])["error"]["kind"] == "internal"
 
 
 async def test_the_openai_adapter() -> None:
@@ -1023,7 +1099,7 @@ async def test_projects_give_sessions_their_environments(
 
     async def run(session: str, turns: list[dict[str, Any]], *extra: str) -> list[str]:
         script, transcript = tmp_path / f"{session}.json", tmp_path / f"{session}-t.json"
-        script.write_text(json.dumps([*turns, {"text": "done"}]))
+        script.write_text(json.dumps(scripted([*turns, {"text": "done"}])))
         status = await asyncio.to_thread(
             cli.main,
             ["run", "--worker", worker_url, "--token-file", str(token), "--project", "p1",
@@ -1087,7 +1163,7 @@ async def test_runs_with_a_state_dir_write_living_documents(
 
     async def run(session: str, turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
         script, transcript = tmp_path / f"{session}.json", tmp_path / f"{session}-t.json"
-        script.write_text(json.dumps([*turns, {"text": "done"}]))
+        script.write_text(json.dumps(scripted([*turns, {"text": "done"}])))
         status = await asyncio.to_thread(
             cli.main,
             ["run", "--worker", worker_url, "--token-file", str(token), "--project", "p1",

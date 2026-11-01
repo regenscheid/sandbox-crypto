@@ -24,6 +24,7 @@ sandbox-science-harness document suggestions DOC (on | off) --state-dir state --
 sandbox-science-harness document decide DOC PATCH (accept [--base N] | reject) \\
     --state-dir state --project p1
 sandbox-science-harness document delete DOC --reason "…" --state-dir state --project p1
+sandbox-science-harness tool-mix --state-dir state [--project p1] [--session s1] [--json]
 ```
 
 ``run`` builds a ``Harness`` (harness.py) from its arguments: the worker client, the
@@ -46,7 +47,6 @@ import argparse
 import asyncio
 import json
 import math
-import re
 import signal
 import sys
 from collections.abc import Callable
@@ -56,14 +56,20 @@ from typing import cast
 
 from pydantic import TypeAdapter, ValidationError
 
-from sandbox_science.contracts import ErrorKind, Identifier
+from sandbox_science.contracts import Identifier
+from sandbox_science.contracts.logs import configure_logging
 
 from .chat import session_lease
+from .cli_classify import add_parser as add_classify_parser
+from .cli_classify import classify_draft
 from .cli_documents import add_parsers, document, ledger, project, read_secret, session
 from .cli_skills import add_parser as add_skills_parser
 from .cli_skills import embedding_alias, skills
-from .connectors import ProxyClient, check_proxy
+from .cli_tool_mix import add_parser as add_tool_mix_parser
+from .cli_tool_mix import tool_mix
 from .consistency.models import REVIEWER_MAX_RESPONSE_BYTES, ReviewConfig
+from .context.history import CEILING
+from .context.history.geometry import Shares
 from .control import ControlError
 from .documents import DocumentError, DocumentStore, store_path
 from .figurecheck import FigureChecker
@@ -71,7 +77,6 @@ from .harness import (
     Finished,
     Harness,
     IsolationRefusedError,
-    McpAccess,
     Role,
     RunRequest,
     Settings,
@@ -80,14 +85,13 @@ from .harness import (
     closing,
     save,
 )
-from .history import CEILING
-from .history.geometry import Shares
 from .jobstate import JobState
 from .loop import MAX_INPUT_CHARS, MAX_TURNS, TURNS_CEILING, Interruption
 from .mathcheck import MathChecker
 from .messages import ThinkingReplay
 from .model import (
     API_KINDS,
+    DEFAULT_API,
     MAX_RESPONSE_BYTES,
     ChatModel,
     GatewayModel,
@@ -96,7 +100,7 @@ from .model import (
     ScriptedModel,
     gateway_model,
 )
-from .model_profiles import Effort, ModelRole, requested
+from .model_profiles import Effort, ModelRole, default_effort, requested
 from .projects import ProjectError, ProjectStore, run_name
 from .runstate import RunState
 from .service import POLL_SECONDS, RunService
@@ -104,9 +108,6 @@ from .skills.embeddings import Embedder, SkillVectors
 from .stock_prompts import TEMPLATE_IDS
 from .tools import ToolOutcome
 from .worker_client import WorkerAPIError, WorkerClient
-
-_SERVER = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
-"""A server's name in a project policy's ``mcp.servers``."""
 
 
 class _Printer:
@@ -132,7 +133,7 @@ def _gateway(
 ) -> ChatModel:
     """The client for ``alias``, through the adapter ``--api`` names for it (CM-41)."""
     key = read_secret(args.api_key_file)
-    api = _apis(args).get(alias, "chat")
+    api = _apis(args).get(alias, _default_api(args))
     return gateway_model(
         args.model_url,
         alias,
@@ -141,15 +142,28 @@ def _gateway(
         options=_options(args).get(api),
         max_tokens=max_tokens,
         max_response_bytes=max_response_bytes,
-    ).for_role(role, requested(alias=alias, api=api, reasoning_effort=_efforts(args).get(role)))
+    ).for_role(
+        role,
+        requested(
+            alias=alias,
+            api=api,
+            reasoning_effort=default_effort(role, api, _efforts(args), _messages_efforts(args)),
+        ),
+    )
 
 
 def _efforts(args: argparse.Namespace) -> dict[ModelRole, str]:
+    """The requested effort of each role; a reviewer's is ``medium`` unless set, whatever
+    its adapter, since every adapter takes one."""
     result = dict(getattr(args, "reasoning_effort", None) or [])
-    reviewer = getattr(args, "reviewer_model", None)
-    if reviewer is not None and _apis(args).get(reviewer, "chat") != "messages":
+    if getattr(args, "reviewer_model", None) is not None:
         result.setdefault("reviewer", "medium")
     return result
+
+
+def _messages_efforts(args: argparse.Namespace) -> dict[ModelRole, str]:
+    """A role's default effort for an alias called through Messages, where it differs."""
+    return dict(getattr(args, "messages_reasoning_effort", None) or [])
 
 
 def effort_setting(value: str) -> tuple[ModelRole, str]:
@@ -176,8 +190,33 @@ def _thinking_replay(value: str) -> ThinkingReplay:
 
 
 def _apis(args: argparse.Namespace) -> dict[str, str]:
-    """The adapter ``--api`` names for each alias; any other alias's is ``chat``."""
+    """Each alias's adapter: as ``_choose_apis`` chose them when the service started, or
+    before that, as ``--api`` names them; any other alias's is ``--default-api``'s."""
+    chosen = cast(dict[str, str] | None, getattr(args, "chosen_api", None))
+    if chosen is not None:
+        return dict(chosen)
     return dict(cast(list[tuple[str, str]], getattr(args, "api", None) or []))
+
+
+def _default_api(args: argparse.Namespace) -> str:
+    return cast(str, getattr(args, "default_api", None) or DEFAULT_API)
+
+
+async def _choose_apis(args: argparse.Namespace) -> None:
+    """Choose each alias's adapter once, as the service starts, from ``--api`` and the
+    gateway's model information (CM-41), before any model is made."""
+    if getattr(args, "model_url", None) is None or getattr(args, "chosen_api", None):
+        return
+    gateway = ModelGateway(
+        args.model_url,
+        read_secret(args.api_key_file),
+        apis=_apis(args),
+        default_api=_default_api(args),
+    )
+    try:
+        args.chosen_api = await gateway.choose_apis()
+    finally:
+        await gateway.close()
 
 
 def api_setting(value: str) -> tuple[str, str]:
@@ -231,6 +270,7 @@ async def _held_run(
     args: argparse.Namespace, projects: ProjectStore | None, held: AsyncExitStack
 ) -> int:
     sink = _Printer()
+    await _choose_apis(args)
     alias = "scripted" if args.script is not None else args.model
     main = _role(args.script, "--script", alias, lambda: _gateway(args, args.model))
     request = RunRequest(
@@ -352,8 +392,10 @@ def _harness(
             args.model_url,
             read_secret(args.api_key_file),
             apis=_apis(args),
+            default_api=_default_api(args),
             options=_options(args),
             reasoning_effort=_efforts(args),
+            messages_effort=_messages_efforts(args),
         )
         closing(stack, interruption, gateway.close)
     vectors = None
@@ -361,24 +403,6 @@ def _harness(
         embedder = Embedder(args.model_url, embedding, read_secret(args.api_key_file))
         vectors = SkillVectors(embedder)
         closing(stack, interruption, vectors.close)
-    mcp = None
-    if args.mcp_proxy is not None:
-        token = read_secret(args.mcp_token_file)
-        try:
-            check_proxy(args.mcp_proxy, token)
-        except ValueError as exc:
-            raise ProjectError(ErrorKind.INVALID_REQUEST, str(exc)) from None
-        if args.mcp_token_file.stat().st_mode & 0o077:
-            print(
-                f"warning: {args.mcp_token_file} is readable by others; keep the MCP proxy "
-                "token to its owner (chmod 600)",
-                file=sys.stderr,
-            )
-        proxy = ProxyClient(args.mcp_proxy, token)
-        closing(stack, interruption, proxy.close)
-        about = {name: text for name, _, text in (item.partition("=") for item in args.mcp_about)}
-        shown = tuple(args.mcp_index) if args.mcp_index else None
-        mcp = McpAccess(proxy, tuple(args.mcp_server), args.mcp_project, about, shown)
     return Harness(
         client,
         main,
@@ -418,7 +442,6 @@ def _harness(
             cost_limits=getattr(args, "command", None) == "serve",
             run_share=None if (share := getattr(args, "run_share", None)) is None else share / 100,
         ),
-        mcp=mcp,
         vectors=vectors,
         skills_metadata=getattr(args, "skills_metadata_model", None),
     )
@@ -426,6 +449,7 @@ def _harness(
 
 async def _serve(args: argparse.Namespace) -> int:
     """Run the sessions' main agent for the GUI until stopped (RS-1)."""
+    await _choose_apis(args)
     alias = "scripted" if args.script is not None else args.model
     main = _role(args.script, "--script", alias, lambda: _gateway(args, args.model))
     interruption = Interruption()
@@ -487,9 +511,17 @@ def _agent_arguments(command: argparse.ArgumentParser) -> None:
         default=[],
         metavar="ALIAS=KIND",
         help="the gateway API a model alias is called through, in any role: chat "
-        "(/chat/completions, every alias's by default), responses (/v1/responses, GPT's "
-        "Responses API, its reasoning sent back) or messages (/v1/messages, Claude's "
-        "Messages API, with its progress notes); repeat for more aliases",
+        "(/chat/completions), responses (/v1/responses, GPT's Responses API, its "
+        "reasoning sent back) or messages (/v1/messages, Claude's Messages API, with its "
+        "progress notes); repeat for more aliases. An alias left out takes messages when "
+        "the gateway lists its provider as anthropic, else --default-api",
+    )
+    command.add_argument(
+        "--default-api",
+        choices=API_KINDS,
+        default=DEFAULT_API,
+        help="the gateway API of an alias --api leaves out that the gateway does not list "
+        "as Anthropic's (default: %(default)s)",
     )
     command.add_argument(
         "--thinking-replay",
@@ -511,15 +543,25 @@ def _agent_arguments(command: argparse.ArgumentParser) -> None:
         "descriptions runs are given; none without it",
     )
     command.add_argument("--reasoning-effort", type=effort_setting, action="append", default=[])
+    command.add_argument(
+        "--messages-reasoning-effort",
+        type=effort_setting,
+        action="append",
+        default=[],
+        metavar="ROLE=EFFORT",
+        help="a role's effort for an alias called through Messages, in place of "
+        "--reasoning-effort's, as a default that differs there",
+    )
     command.add_argument("--api-key-file", type=Path)
     command.add_argument("--min-isolation-tier", type=int, default=3)
     command.add_argument("--allow-unisolated", action="store_true")
     command.add_argument(
         "--max-turns",
         type=int,
-        help=f"the model calls a main run makes before its report round, a safety net "
-        f"rather than a bound on its work (default {MAX_TURNS:,}; 0 for the default; at "
-        f"most {TURNS_CEILING:,})",
+        help=f"the model calls a main run makes before it pauses and asks the user to "
+        f"continue for another block of as many or to stop (default {MAX_TURNS:,}; 0 for "
+        f"the default; at most {TURNS_CEILING:,}). A run without a state directory has no "
+        f"durable records to pause on and stops there with a report round",
     )
     command.add_argument(
         "--max-input-chars",
@@ -615,39 +657,6 @@ def _agent_arguments(command: argparse.ArgumentParser) -> None:
         "--figure-bundle", type=Path, help="operator-configured built figure checker bundle"
     )
     command.add_argument(
-        "--mcp-proxy", help="the MCP proxy's address; agents get its servers' tools (D-08)"
-    )
-    command.add_argument(
-        "--mcp-token-file", type=Path, help="the harness's caller token for the MCP proxy"
-    )
-    command.add_argument(
-        "--mcp-project",
-        help="the project the MCP proxy token is for: only its runs get the servers' tools",
-    )
-    command.add_argument(
-        "--mcp-server",
-        action="append",
-        default=[],
-        help="an MCP server behind the proxy whose tools runs get; repeat for more",
-    )
-    command.add_argument(
-        "--mcp-about",
-        action="append",
-        default=[],
-        metavar="SERVER[/BEHIND]=TEXT",
-        help="what an MCP server is for, which the tool index says: a --mcp-server, or "
-        "SERVER/BEHIND for a server behind a portal, the one a tool's name starts with "
-        "(crypto-research-mcp/e-print-mcp); repeat for more",
-    )
-    command.add_argument(
-        "--mcp-index",
-        action="append",
-        default=[],
-        metavar="SERVER[/BEHIND]",
-        help="a server whose tools the index lists one by one, named as for --mcp-about; the "
-        "others are found with a query. By default it lists every server's; repeat for more",
-    )
-    command.add_argument(
         "--reviewer-model", help="the consistency reviewer's model alias, which may be MAIN's"
     )
     command.add_argument(
@@ -664,8 +673,8 @@ def _agent_arguments(command: argparse.ArgumentParser) -> None:
         "--review-token-budget",
         type=int,
         default=review.token_budget,
-        help="the tokens one consistency review may use over all its calls "
-        f"(default {review.token_budget:,})",
+        help="an optional cap on the tokens one consistency review may use over all its "
+        "calls (default none: the gateway's budget alone stops spending)",
     )
     command.add_argument(
         "--review-calls-per-hour",
@@ -728,12 +737,15 @@ def _check_agent(parser: argparse.ArgumentParser, args: argparse.Namespace) -> N
         parser.error("--reasoning-effort needs --model-url")
     if len({role for role, _ in efforts}) != len(efforts):
         parser.error("--reasoning-effort repeats a role")
+    on_messages = getattr(args, "messages_reasoning_effort", [])
+    if on_messages and args.model_url is None:
+        parser.error("--messages-reasoning-effort needs --model-url")
+    if len({role for role, _ in on_messages}) != len(on_messages):
+        parser.error("--messages-reasoning-effort repeats a role")
     if args.api and args.model_url is None:
         parser.error("--api needs --model-url")
     if len({alias for alias, _ in args.api}) < len(set(args.api)):
         parser.error("--api names two adapters for one alias")
-    if args.thinking_replay is not None and "messages" not in _apis(args).values():
-        parser.error("--thinking-replay needs an alias with --api ALIAS=messages")
     if getattr(args, "skills_embedding_model", None) is not None and args.model_url is None:
         parser.error("--skills-embedding-model needs --model-url")
     if args.max_input_chars is not None and args.max_input_chars < 1:
@@ -746,35 +758,6 @@ def _check_agent(parser: argparse.ArgumentParser, args: argparse.Namespace) -> N
     for flag in ("words_share", "digest_share", "region_share", "region_cap_share"):
         if (value := getattr(args, flag, None)) is not None and not 0 < value <= 0.5:
             parser.error(f"--{flag.replace('_', '-')} must be above 0 and at most 0.5")
-    mcp = (args.mcp_proxy, args.mcp_token_file, args.mcp_project)
-    if (any(value is not None for value in mcp) and any(value is None for value in mcp)) or (
-        args.mcp_proxy is None and args.mcp_server
-    ):
-        parser.error("--mcp-proxy, --mcp-token-file, --mcp-project and --mcp-server go together")
-    if args.mcp_proxy is not None and not args.mcp_server:
-        parser.error("--mcp-proxy needs at least one --mcp-server")
-    for name in args.mcp_server:
-        if not _SERVER.fullmatch(name):
-            parser.error(f"--mcp-server {name!r} is not a server name of the project policy")
-    if (args.mcp_about or args.mcp_index) and args.mcp_proxy is None:
-        parser.error("--mcp-about and --mcp-index need --mcp-proxy")
-
-    # A key names a configured server, or SERVER/BEHIND for a server behind it: what an
-    # operator says about one server never reaches another's tools.
-    def configured(key: str) -> bool:
-        server, slash, behind = key.partition("/")
-        return server in args.mcp_server and (not slash or bool(_SERVER.fullmatch(behind)))
-
-    for item in args.mcp_about:
-        key, equals, text = item.partition("=")
-        if not equals or not configured(key) or not text.strip() or len(text) > 200:
-            parser.error(
-                "--mcp-about takes SERVER=TEXT or SERVER/BEHIND=TEXT, for a --mcp-server, "
-                f"with at most 200 characters: {item!r}"
-            )
-    for key in args.mcp_index:
-        if not configured(key):
-            parser.error(f"--mcp-index {key!r} is not a --mcp-server, or SERVER/BEHIND for one")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -810,6 +793,13 @@ def main(argv: list[str] | None = None) -> int:
     _agent_arguments(serve)
     serve.add_argument("--state-dir", type=Path, required=True, help="the projects' records")
     serve.add_argument(
+        "--log-level",
+        type=str.upper,
+        choices=("DEBUG", "INFO", "WARNING", "ERROR"),
+        default="INFO",
+        help="logging level; SS_LOG_FORMAT=json makes the log JSON lines",
+    )
+    serve.add_argument(
         "--poll", type=float, default=POLL_SECONDS, help="seconds between looks at the store"
     )
     serve.add_argument(
@@ -820,7 +810,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     add_parsers(commands)
     add_skills_parser(commands)
+    add_classify_parser(commands)
+    add_tool_mix_parser(commands)
     args = parser.parse_args(argv)
+    if args.command == "classify-draft":
+        return classify_draft(args)
+    if args.command == "tool-mix":
+        return tool_mix(args)
     if args.command == "skills":
         if args.action == "import" and args.archive is not None and args.ref is not None:
             parser.error("--ref goes with --git")
@@ -869,6 +865,7 @@ def main(argv: list[str] | None = None) -> int:
                 parser.error("--poll must be positive and finite")
             if args.run_share is not None and not 1 <= args.run_share <= 100:
                 parser.error("--run-share is a percent, 1 to 100")
+            configure_logging("harness", level=args.log_level)
             action = _serve(args)
         case "project":
             if args.action == "create" and (args.profile is None or args.policy is None):
@@ -881,6 +878,8 @@ def main(argv: list[str] | None = None) -> int:
         case _:
             if args.action == "close" and (args.worker is None or args.token_file is None):
                 parser.error("session close needs --worker and --token-file")
+            if args.worker_ca_file is not None and not str(args.worker).startswith("https://"):
+                parser.error("--worker-ca-file needs an https:// --worker")
             if args.action == "open" and args.worker is not None:
                 parser.error("session open needs no worker: the first run creates its environment")
             action = session(args)

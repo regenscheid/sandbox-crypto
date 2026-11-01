@@ -14,8 +14,11 @@ import contextlib
 import hashlib
 import json
 import logging
+import re
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
 from typing import Any, Final, TypeVar
 
 import aiohttp
@@ -28,6 +31,8 @@ from sandbox_science.contracts import (
     ArtifactRef,
     Capabilities,
     Clock,
+    EditFileRequest,
+    EditFileResult,
     EnvironmentInfo,
     EnvironmentRequest,
     ErrorKind,
@@ -37,8 +42,14 @@ from sandbox_science.contracts import (
     ExecutionRequest,
     FileContent,
     FileListing,
+    GlobListing,
+    GlobRequest,
+    GrepRequest,
+    GrepResult,
     HostPort,
     JobListing,
+    JobSandboxRelease,
+    JobSandboxReleased,
     JobStatus,
     KernelInfo,
     KernelListing,
@@ -61,12 +72,56 @@ from sandbox_science.contracts import (
     StageCheckRequest,
     StagePutRequest,
     StagePutResult,
+    StateEvent,
     WorkerErrorResponse,
     WriteFileRequest,
     WriteFileResult,
 )
 from sandbox_science.contracts.artifact_inventory import MAX_ARTIFACT_BYTES, ArtifactSnapshot
+from sandbox_science.contracts.artifact_retention import (
+    MAX_RETENTION_ACK_BYTES,
+    ArtifactRetentionAcknowledgement,
+)
+from sandbox_science.contracts.child_environments import (
+    ChildEnvironment,
+    ChildEnvironmentEnd,
+    ChildEnvironmentList,
+    ChildEnvironmentRequest,
+    ChildHandBack,
+    HandBackRequest,
+    InputPart,
+    InputStaged,
+)
+from sandbox_science.contracts.classifications import (
+    MAX_DRAFTS,
+    MAX_YAML_CHARS,
+    ClassificationAcceptance,
+    ClassificationAccepted,
+    ClassificationDraft,
+    ClassificationDrafts,
+    ClassificationInForce,
+    ClassificationsInForce,
+    DriftAcceptance,
+    DriftAccepted,
+    ListingReport,
+    ListingReported,
+    ReportedListing,
+    ReportedListings,
+    ToolClasses,
+    ToolClassQuery,
+)
 from sandbox_science.contracts.environment_claims import EnvironmentClaim, EnvironmentClaimResult
+from sandbox_science.contracts.mcp_traffic import WorkerMcpTraffic
+from sandbox_science.contracts.monitor import MonitorWindow, WorkerMonitor
+from sandbox_science.contracts.permission_requests import (
+    GrantWithdrawal,
+    GrantWithdrawn,
+    PermissionConfirmation,
+    PermissionConfirmed,
+    WorkerPermissionAnswer,
+    WorkerPermissionAnswered,
+    WorkerPermissionListing,
+)
 from sandbox_science.contracts.readiness import WorkerReadiness
 from sandbox_science.contracts.recovery import (
     EffectControl,
@@ -88,6 +143,8 @@ from sandbox_science.contracts.worker import (
     Language,
 )
 
+from .transport_tls import client_tls
+
 _log = logging.getLogger(__name__)
 _EVENT: Final = TypeAdapter[Event](Event)
 MAX_KERNEL_OBSERVATION_BYTES: Final = 1024 + 512 * MAX_SESSION_KERNELS
@@ -105,8 +162,17 @@ RESULT_GRACE: Final = 300.0
 """Seconds past an execution's own limit that ``run`` waits for its result. The worker's
 watchdog ends an overdue execution within 90 seconds of its limit."""
 PROTOCOL: Final = {PROTOCOL_HEADER: str(PROTOCOL_VERSION)}
+MAX_CLASSIFICATION_DRAFTS_BYTES: Final = MAX_DRAFTS * (MAX_YAML_CHARS + 512 * 1024)
+_SERVER_RE: Final = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+_HEX_RE: Final = re.compile(r"[0-9a-f]{64}")
 """Sent with every request, so that a worker of another protocol version refuses it."""
 _Model = TypeVar("_Model", bound=BaseModel)
+
+
+UNSUPPORTED_FILE_TOOLS: Final = (
+    "this worker predates edit_file, glob and grep; upgrade the worker to use them, or "
+    "use write_file, list_files and the shell meanwhile"
+)
 
 
 class WorkerAPIError(Exception):
@@ -155,6 +221,7 @@ class WorkerClient:
         token: str,
         *,
         session: aiohttp.ClientSession | None = None,
+        ca_file: Path | None = None,
         stream_timeout: float = STREAM_TIMEOUT,
         reconnect_delay: float = RECONNECT_DELAY,
         result_grace: float = RESULT_GRACE,
@@ -163,6 +230,9 @@ class WorkerClient:
         clock: Clock = SYSTEM_CLOCK,
     ) -> None:
         self.base_url = base_url.rstrip("/")
+        if ca_file is not None and (session is not None or not base_url.startswith("https://")):
+            raise ValueError("worker CA requires HTTPS and an owned HTTP session")
+        self._tls = client_tls(ca_file) if ca_file is not None else None
         self.stream_timeout = stream_timeout
         self.reconnect_delay = reconnect_delay
         self.result_grace = result_grace
@@ -204,7 +274,11 @@ class WorkerClient:
 
     def _http(self) -> aiohttp.ClientSession:
         if self._session is None:
-            self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(sock_connect=10))
+            connector = aiohttp.TCPConnector(ssl=self._tls) if self._tls is not None else None
+            self._session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(sock_connect=10),
+                connector=connector,
+            )
         return self._session
 
     def _observation_configuration(self) -> tuple[str, tuple[tuple[str, str], ...]]:
@@ -476,6 +550,174 @@ class WorkerClient:
             params=_project(project_id),
         )
 
+    # Network and package permission requests, for the workspace (D97).
+
+    async def permission_requests(self, project_id: str) -> WorkerPermissionListing:
+        """The project's unanswered network and package permission requests."""
+        return await self._call(
+            "GET",
+            "/v1/permission-requests",
+            WorkerPermissionListing,
+            params={"project": project_id},
+            max_bytes=4 * 1024 * 1024,
+        )
+
+    async def answer_permission_request(
+        self, seq: int, answer: WorkerPermissionAnswer
+    ) -> WorkerPermissionAnswered:
+        """Relay the user's answer to one of them."""
+        return await self._call(
+            "POST", f"/v1/permission-requests/{seq}/answer", WorkerPermissionAnswered, answer
+        )
+
+    async def withdraw_permission_grant(self, asked: GrantWithdrawal) -> GrantWithdrawn:
+        """End the live answers of a grant the user revoked (D97): the requests they answer
+        ask again on their next try."""
+        return await self._call("POST", "/v1/permission-grants/withdraw", GrantWithdrawn, asked)
+
+    async def confirm_permission_request(
+        self, seq: int, asked: PermissionConfirmation
+    ) -> PermissionConfirmed:
+        """Whether MCP request ``seq`` is ``asked``'s call and stands as its refusal said
+        (D98): any client, for its own projects."""
+        return await self._call(
+            "POST", f"/v1/permission-requests/{seq}/confirm", PermissionConfirmed, asked
+        )
+
+    async def report_mcp_listing(self, report: ListingReport) -> ListingReported:
+        """Report a listing the agent runtime's direct client read, for the worker to compare
+        with the project's pin and record a drift (D98): any client, for its own projects."""
+        return await self._call("POST", "/v1/mcp-listings", ListingReported, report)
+
+    async def mcp_tool_classes(self, query: ToolClassQuery) -> ToolClasses:
+        """The class the project's classification in force gives each listed tool, by name
+        and the digest the host computed (DA-7): any client, for its own projects."""
+        return await self._call(
+            "POST", "/v1/mcp-tool-classes", ToolClasses, query, max_bytes=1024 * 1024
+        )
+
+    async def mcp_listings(self, project_id: str) -> list[ReportedListing]:
+        """The latest listing the agent runtime's client reported of each of the project's
+        servers, each tool as the policy and classification in force decide it: an operator
+        client's read, for the workspace's MCP services view (D98)."""
+        found = await self._call(
+            "GET",
+            "/v1/mcp-listings",
+            ReportedListings,
+            params={"project": project_id},
+            max_bytes=8 * 1024 * 1024,
+        )
+        return list(found.root)
+
+    # Monitor figures, for the workspace's Monitor view (D103).
+
+    async def monitor(self, project_id: str, window: MonitorWindow) -> WorkerMonitor:
+        """The project's monitor figures for the window: an operator client's read."""
+        return await self._call(
+            "GET",
+            "/v1/monitor",
+            WorkerMonitor,
+            params={"project": project_id, "window": window},
+            max_bytes=4 * 1024 * 1024,
+        )
+
+    async def mcp_traffic(
+        self,
+        project_id: str,
+        *,
+        session: str | None = None,
+        run: str | None = None,
+        tool: str | None = None,
+        after: int = 0,
+    ) -> WorkerMcpTraffic:
+        """A page of the project's inspected MCP calls, oldest first after ``after``: an
+        operator client's read."""
+        params: dict[str, str] = {"project": project_id}
+        for name, value in (("session", session), ("run", run), ("tool", tool)):
+            if value is not None:
+                params[name] = value
+        if after:
+            params["after"] = str(after)
+        return await self._call(
+            "GET", "/v1/mcp-traffic", WorkerMcpTraffic, params=params, max_bytes=16 * 1024 * 1024
+        )
+
+    # MCP servers' classifications, for the workspace's review view (D96, CL-6).
+
+    async def classifications(self, project_id: str) -> list[ClassificationInForce]:
+        """Each configured server's classification in force for the project."""
+        found = await self._call(
+            "GET",
+            "/v1/classifications",
+            ClassificationsInForce,
+            params={"project": project_id},
+            max_bytes=8 * 1024 * 1024,
+        )
+        return list(found.root)
+
+    async def classification_drafts(
+        self, project_id: str, server: str
+    ) -> list[ClassificationDraft]:
+        """The drafts a model wrote for the project's server, newest first."""
+        found = await self._call(
+            "GET",
+            f"/v1/classifications/{_server(server)}/drafts",
+            ClassificationDrafts,
+            params={"project": project_id},
+            max_bytes=MAX_CLASSIFICATION_DRAFTS_BYTES,
+        )
+        return list(found.root)
+
+    async def accept_classification_draft(
+        self, server: str, draft: str, acceptance: ClassificationAcceptance
+    ) -> ClassificationAccepted:
+        """Relay the user's acceptance of a draft, edited or not."""
+        return await self._call(
+            "POST",
+            f"/v1/classifications/{_server(server)}/drafts/{_draft(draft)}/accept",
+            ClassificationAccepted,
+            acceptance,
+        )
+
+    async def accept_classification_drift(
+        self, server: str, acceptance: DriftAcceptance
+    ) -> DriftAccepted:
+        """Relay the user's re-acceptance of a server's drifted tool list."""
+        return await self._call(
+            "POST",
+            f"/v1/classifications/{_server(server)}/drift/accept",
+            DriftAccepted,
+            acceptance,
+        )
+
+    async def export_classification(
+        self, project_id: str, server: str, revision: str
+    ) -> ClassificationExport:
+        """A project's accepted classification revision, its YAML exactly as stored, to
+        check in; WorkerAPIError when its bytes do not hash to ``revision``."""
+        try:
+            async with self._http().get(
+                f"{self.base_url}/v1/classifications/{_server(server)}/revisions/"
+                f"{_draft(revision)}/export",
+                params={"project": project_id},
+                headers={**self._headers, **PROTOCOL},
+                timeout=aiohttp.ClientTimeout(sock_connect=10, sock_read=CALL_TIMEOUT),
+            ) as response:
+                await check_protocol(response)
+                data = await _bounded_body(response.content, MAX_YAML_CHARS + 1)
+                if response.status >= 400:
+                    raise _error(data, response.status)
+                accepted = response.headers.get("X-Classification-Accepted-At")
+        except (aiohttp.ClientError, TimeoutError) as exc:
+            raise WorkerAPIError(ErrorKind.UNAVAILABLE, f"cannot reach the worker: {exc}") from exc
+        if hashlib.sha256(data).hexdigest() != revision:
+            raise WorkerAPIError(ErrorKind.INTERNAL, "the exported revision fails its digest")
+        try:
+            at = datetime.fromisoformat(accepted) if accepted is not None else None
+        except ValueError:
+            at = None
+        return ClassificationExport(server, revision, data, at)
+
     # Executions.
 
     async def submit(self, request: ExecutionRequest) -> Execution:
@@ -589,14 +831,20 @@ class WorkerClient:
         if limit is None:
             # A job without a limit of its own has the policy's default, which the worker set.
             limit = execution.job.timeout_seconds if execution.job is not None else 0.0
+        loop = asyncio.get_running_loop()
         try:
-            async with asyncio.timeout(limit + self.result_grace):
+            async with asyncio.timeout(limit + self.result_grace) as scope:
                 async with contextlib.aclosing(events):
                     async for event in events:
                         if on_event is not None:
                             await on_event(event)
                         if isinstance(event, ResultEvent):
                             return event.execution
+                        if isinstance(event, StateEvent) and event.state == "running":
+                            # The limit counts from the start: waiting behind a package
+                            # command in the environment does not count (CP-12).
+                            when = scope.when() or 0.0
+                            scope.reschedule(max(when, loop.time() + limit + self.result_grace))
         except TimeoutError as exc:
             raise WorkerAPIError(
                 ErrorKind.UNAVAILABLE,
@@ -637,6 +885,76 @@ class WorkerClient:
             JobStatus,
             params=_project(project_id),
             max_bytes=1024 * 1024,
+        )
+
+    async def release_job_sandbox(
+        self, execution_id: str, context: ExecutionContext, operation_id: str
+    ) -> JobSandboxReleased:
+        """Release a retained job sandbox now (JS-24): the user's action, for an operator
+        client; the worker refuses a sandbox that is not retained."""
+        return await self._call(
+            "POST",
+            f"/v1/job-sandboxes/{execution_id}/release",
+            JobSandboxReleased,
+            JobSandboxRelease(context=context, operation_id=operation_id),
+        )
+
+    # Child environments (docs/specs/child-environments.md).
+
+    async def create_child_environment(self, request: ChildEnvironmentRequest) -> ChildEnvironment:
+        """Admit a delegation's own environment, made from the session's in the
+        background; refused at once, with the reason, when it may not have one (CE-9)."""
+        return await self._call("POST", "/v1/child-environments", ChildEnvironment, request)
+
+    async def child_environment(
+        self, environment_id: str, context: ExecutionContext
+    ) -> ChildEnvironment:
+        """A child environment of the session ``context`` names."""
+        return await self._call(
+            "GET",
+            f"/v1/child-environments/{environment_id}",
+            ChildEnvironment,
+            params=_session(context),
+            max_bytes=8 * 1024 * 1024,
+        )
+
+    async def child_environments(self, context: ExecutionContext) -> ChildEnvironmentList:
+        """The session's child environments, ended ones included."""
+        return await self._call(
+            "GET",
+            "/v1/child-environments",
+            ChildEnvironmentList,
+            params=_session(context),
+            max_bytes=32 * 1024 * 1024,
+        )
+
+    async def hand_back(self, environment_id: str, request: HandBackRequest) -> ChildHandBack:
+        """Copy a delegation's files into the session's ``work/<delegation_id>/`` (CE-6)."""
+        return await self._call(
+            "POST",
+            f"/v1/child-environments/{environment_id}/hand-back",
+            ChildHandBack,
+            request,
+            max_bytes=8 * 1024 * 1024,
+        )
+
+    async def stage_child_input(self, environment_id: str, part: InputPart) -> InputStaged:
+        """Part of an input from control's retained content, into a ready child
+        environment's ``inputs/`` (CE-7)."""
+        return await self._call(
+            "POST", f"/v1/child-environments/{environment_id}/inputs", InputStaged, part
+        )
+
+    async def end_child_environment(
+        self, environment_id: str, request: ChildEnvironmentEnd
+    ) -> ChildEnvironment:
+        """Release a child environment, or keep it after an incomplete hand-back (CE-4)."""
+        return await self._call(
+            "POST",
+            f"/v1/child-environments/{environment_id}/end",
+            ChildEnvironment,
+            request,
+            max_bytes=8 * 1024 * 1024,
         )
 
     # Kernels, files and artifacts.
@@ -707,6 +1025,28 @@ class WorkerClient:
     async def list_files(self, request: ListFilesRequest) -> FileListing:
         return await self._call("POST", "/v1/files/list", FileListing, request)
 
+    async def edit_file(self, request: EditFileRequest) -> EditFileResult:
+        return await self._file_tool("/v1/files/edit", EditFileResult, request)
+
+    async def glob_files(self, request: GlobRequest) -> GlobListing:
+        return await self._file_tool("/v1/files/glob", GlobListing, request)
+
+    async def grep_files(self, request: GrepRequest) -> GrepResult:
+        return await self._file_tool("/v1/files/grep", GrepResult, request)
+
+    async def _file_tool(self, path: str, model: type[_Model], request: BaseModel) -> _Model:
+        """A route of ``edit_file``, ``glob`` or ``grep``. A worker that predates them
+        answers 404 without an error of its own: it ran nothing, so that is
+        ``unsupported``, never an unknown effect (docs/COMPATIBILITY.md)."""
+        try:
+            return await self._call("POST", path, model, request)
+        except WorkerAPIError as error:
+            if error.status == 404 and error.kind is ErrorKind.INTERNAL:
+                raise WorkerAPIError(
+                    ErrorKind.UNSUPPORTED, UNSUPPORTED_FILE_TOOLS, error.status
+                ) from error
+            raise
+
     async def stage_check(self, request: StageCheckRequest) -> StageCheck:
         """Whether a skill pack is staged as expected, sealed once it is (SK-16)."""
         return await self._call("POST", "/v1/skills/check", StageCheck, request)
@@ -716,6 +1056,45 @@ class WorkerClient:
 
     async def publish(self, request: PublishRequest) -> ArtifactRef:
         return await self._call("POST", "/v1/artifacts", ArtifactRef, request)
+
+    async def acknowledge_artifact_retention(
+        self, acknowledgement: ArtifactRetentionAcknowledgement, *, timeout: float = 5.0
+    ) -> ArtifactRetentionAcknowledgement:
+        """Idempotent trusted control ACK; it never recaptures a workspace path."""
+        body = acknowledgement.model_dump_json()
+        if len(body.encode()) > MAX_RETENTION_ACK_BYTES or not 0 < timeout <= 5:
+            raise WorkerAPIError(ErrorKind.INVALID_REQUEST, "artifact retention request too large")
+        try:
+            async with self._http().post(
+                f"{self.base_url}/v1/artifacts/{acknowledgement.snapshot.artifact_id}/retention",
+                params={"project_id": acknowledgement.snapshot.project_id},
+                data=body,
+                headers={**self._headers, **PROTOCOL, "Content-Type": "application/json"},
+                timeout=aiohttp.ClientTimeout(total=timeout),
+                allow_redirects=False,
+                auto_decompress=False,
+            ) as response:
+                await check_protocol(response)
+                if response.headers.get("Content-Encoding", "identity") != "identity" or (
+                    response.content_length is not None
+                    and response.content_length > MAX_RETENTION_ACK_BYTES
+                ):
+                    raise WorkerAPIError(ErrorKind.INTERNAL, "invalid retention response bound")
+                payload = await _bounded_body(response.content, MAX_RETENTION_ACK_BYTES)
+                if response.status >= 400:
+                    raise _error(payload, response.status)
+                if response.status != 200:
+                    raise WorkerAPIError(ErrorKind.INTERNAL, "unexpected retention status")
+                echoed = ArtifactRetentionAcknowledgement.model_validate_json(payload)
+                if echoed != acknowledgement:
+                    raise WorkerAPIError(ErrorKind.CONFLICT, "retention acknowledgement differs")
+                return echoed
+        except (aiohttp.ClientError, TimeoutError) as error:
+            raise WorkerAPIError(
+                ErrorKind.UNAVAILABLE, "retention transport failed; acknowledgement remains pending"
+            ) from error
+        except (ValidationError, RecursionError, UnicodeError) as error:
+            raise WorkerAPIError(ErrorKind.INTERNAL, "invalid retention acknowledgement") from error
 
     async def publish_snapshot(self, request: PublishRequest) -> ArtifactRef:
         """Bounded metadata publication for durable control ingestion; never redirect."""
@@ -898,6 +1277,14 @@ async def check_protocol(response: aiohttp.ClientResponse) -> None:
     )
 
 
+def _session(context: ExecutionContext) -> dict[str, str]:
+    return {
+        "project_id": context.project_id,
+        "session_id": context.session_id,
+        "environment_id": context.environment_id,
+    }
+
+
 def _project(project_id: str | None) -> dict[str, str]:
     return {"project_id": project_id} if project_id is not None else {}
 
@@ -936,3 +1323,27 @@ async def _selected_owned[T](work: asyncio.Task[T], *, cancel_on_interrupt: bool
             work.result()
         raise first
     return work.result()
+
+
+@dataclass(frozen=True, slots=True)
+class ClassificationExport:
+    """An accepted classification revision as exported: its file's bytes, as stored."""
+
+    server: str
+    revision: str
+    yaml: bytes
+    accepted_at: datetime | None
+
+
+def _server(name: str) -> str:
+    """An MCP server's name for a route's path; ValueError for anything else."""
+    if not _SERVER_RE.fullmatch(name):
+        raise ValueError(f"{name!r} is not an MCP server name")
+    return name
+
+
+def _draft(name: str) -> str:
+    """A classification draft's name (hex SHA-256) for a route's path."""
+    if not _HEX_RE.fullmatch(name):
+        raise ValueError(f"{name!r} is not a classification draft")
+    return name

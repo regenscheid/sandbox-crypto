@@ -60,6 +60,9 @@ def test_stats_reports_the_store(tmp_path: Path, capsys: pytest.CaptureFixture[s
     assert json.loads(capsys.readouterr().out) == {
         "entries": 3,
         "bytes": 30,
+        "pinned_bytes": 0,
+        "protected_bytes": 0,
+        "protect_limit": 1024**2 // 2,
         "max_size": 1024**2,
     }
 
@@ -87,6 +90,9 @@ def test_prune_evicts_to_the_cap_and_deletes_old_orphans(
         "freed_bytes": 606,
         "entries": 3,
         "bytes": 900,
+        "pinned_bytes": 0,
+        "protected_bytes": 0,
+        "protect_limit": 2500,
         "max_size": 5000,
     }
     assert not old.exists()
@@ -222,3 +228,14 @@ def test_serve_warns_when_the_open_file_limit_is_low(
 def test_unknown_log_levels_are_rejected(tmp_path: Path) -> None:
     with pytest.raises(SystemExit):
         cli.main(["serve", "--settings", str(settings_file(tmp_path)), "--log-level", "loud"])
+
+
+def test_serve_sets_up_the_shared_logging(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    set_up: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        cli, "configure_logging", lambda service, **kw: set_up.append((service, kw))
+    )
+    monkeypatch.setattr(cli, "_serve", lambda settings: 0)
+    argv = ["serve", "--settings", str(settings_file(tmp_path)), "--log-level", "debug"]
+    assert cli.main(argv) == 0
+    assert set_up == [("cache", {"level": "DEBUG"})]

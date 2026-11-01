@@ -15,12 +15,22 @@ denial is built from the request's key, which the worker holds, so a store it ca
 does not stop it; a withdrawal that fails is tried again, and the request's own deadline
 (``valid_until``) ends the grant in any case.
 
+The user's answers the workspace relays name the grants they come from (D97). When the
+user revokes a grant, the worker withdraws the HTTP and MCP requests a live approval
+naming it answers, with the same kind of denial, which for them only ends their approvals
+(``granted_by``, ``withdraw``): the middleware asks again on the next try.
+
+The same store holds the middleware's tool-list drifts and their acceptances, which the
+classification review reads (``drifts``) and the user's acceptances, relayed by the
+workspace, add to (``record_acceptance``; docs/MCP-CONNECTORS.md, CL-3, CL-4).
+
 The store is the middleware's (``events.db`` in its state directory, which the worker's
 ``policy_store`` names). Writes and reads are blocking: callers run them in a thread.
 """
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import threading
 from collections.abc import Iterable, Mapping
@@ -28,7 +38,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Final
 
-from sandbox_science.event_store import EventStore, EventStoreError, StoreReader
+from sandbox_science.event_store import EventStore, EventStoreError, Record, StoreReader
 from sandbox_science.policy.approvals import (
     DENIAL,
     ESCALATION,
@@ -37,7 +47,17 @@ from sandbox_science.policy.approvals import (
     Approvals,
     PermissionRequest,
     RequestKey,
+    prepare_answer,
     withdrawal_payload,
+)
+from sandbox_science.policy.detection import (
+    ACCEPTED_RECORD,
+    CLASSIFICATION_ACCEPTED,
+    DRIFT_KINDS,
+    DRIFT_RECORD,
+    LISTING_REPORTED_RECORD,
+    RUNTIME_SOURCE,
+    DriftLedger,
 )
 
 from .provision_events import checked_payload
@@ -46,6 +66,10 @@ _log = logging.getLogger(__name__)
 
 SOURCE: Final = "worker"
 """The source of the records the worker writes."""
+ANSWERS: Final = "workspace"
+"""The source of the user's answers the workspace relays (D97)."""
+RUNTIME: Final = RUNTIME_SOURCE
+"""The source of drifts of listings the agent runtime's direct client reported (D98)."""
 STORE_TIMEOUT: Final = 5.0
 
 
@@ -63,6 +87,9 @@ class Permissions:
         self._lock = threading.Lock()
         self._keys: dict[int, RequestKey] = {}
         """The requests this worker recorded since it started, by sequence number."""
+        self._drifts = DriftLedger()
+        self._drift_lock = threading.Lock()
+        self._drift_seq = 0
 
     def _store(self) -> EventStore:
         with self._lock:
@@ -118,6 +145,65 @@ class Permissions:
         """The newest answer to request ``seq``."""
         return self._approvals.answer_to(seq)
 
+    def unanswered(self) -> list[PermissionRequest]:
+        """The requests nobody answered and the worker did not withdraw, oldest first."""
+        return [r for r in self._approvals.unanswered() if not self._approvals.withdrawn(r.seq)]
+
+    def withdrawn(self, seq: int) -> bool:
+        return self._approvals.withdrawn(seq)
+
+    def confirms(self, seq: int, reason: str, call: Mapping[str, str | int], now: datetime) -> bool:
+        """Whether a refusal with ``reason`` naming request ``seq`` is one the ledger gives
+        a call whose key has the fields ``call`` (``Approvals.confirms``)."""
+        return self._approvals.confirms(seq, reason, call, now)
+
+    def escalations(self, seqs: Iterable[int]) -> dict[int, dict[str, object]]:
+        """The payloads of the escalation records ``seqs``, for what their cards show.
+        Blocking."""
+        wanted = set(seqs)
+        if not wanted or not self.path.is_file():
+            return {}
+        found: dict[int, dict[str, object]] = {}
+        try:
+            with StoreReader(self.path, timeout=STORE_TIMEOUT) as reader:
+                for record in reader.records(after=min(wanted) - 1, kinds=(ESCALATION,)):
+                    if record.seq in wanted:
+                        with contextlib.suppress(ValueError):
+                            found[record.seq] = record.data()
+                    if record.seq >= max(wanted):
+                        break
+        except EventStoreError as exc:
+            raise PermissionStoreError(f"the event store cannot be read: {exc}") from exc
+        return found
+
+    def answer_request(
+        self,
+        seq: int,
+        *,
+        approve: bool,
+        scope: str,
+        hours: float | None,
+        now: datetime,
+        grants: tuple[str, ...] = (),
+    ) -> tuple[int, str]:
+        """Record the user's answer to request ``seq``, which the workspace relays, as the
+        source ``workspace``, naming the grants it comes from: the record's number and
+        kind. ValueError if it cannot be answered so. Blocking."""
+        self.refresh()
+        kind, payload = prepare_answer(
+            self._approvals, seq, approve=approve, scope=scope, hours=hours, now=now,
+            grants=grants,
+        )  # fmt: skip
+        try:
+            record = self._store().append(kind, ANSWERS, payload)
+        except EventStoreError as exc:
+            raise PermissionStoreError(f"the answer could not be recorded: {exc}") from exc
+        try:
+            self.refresh()
+        except PermissionStoreError as exc:
+            _log.warning("request %d was answered, but the store cannot be read: %s", seq, exc)
+        return record.seq, kind
+
     def withdraw(self, seq: int, reason: str, now: datetime) -> None:
         """Close request ``seq`` for good, answered or not, as its operation ends: a denial
         marked ``withdrawn``. Blocking.
@@ -148,6 +234,13 @@ class Permissions:
         except PermissionStoreError as exc:
             _log.warning("request %d was withdrawn, but the store cannot be read: %s", seq, exc)
 
+    def granted_by(self, grant: str, now: datetime) -> list[PermissionRequest]:
+        """The HTTP and MCP requests a live approval naming ``grant`` answers, not yet
+        withdrawn (``Approvals.granted_by``). Blocking."""
+        self.refresh()
+        found = (self._approvals.request(seq) for seq in self._approvals.granted_by(grant, now))
+        return [request for request in found if request is not None]
+
     def withdraw_operations(self, operations: Iterable[str], reason: str, now: datetime) -> None:
         """Close every request these operations made that is still open, those a crash or a
         stop left before the operation noted them included. Blocking."""
@@ -170,6 +263,42 @@ class Permissions:
             failed = failed or exc
         if failed is not None:
             raise failed
+
+    def drifts(self) -> DriftLedger:
+        """The middleware's tool-list drifts and their acceptances, read up to now. Blocking."""
+        with self._drift_lock:
+            if self.path.is_file():
+                try:
+                    with StoreReader(self.path, timeout=STORE_TIMEOUT) as reader:
+                        records = list(reader.records(after=self._drift_seq, kinds=DRIFT_KINDS))
+                except EventStoreError as exc:
+                    raise PermissionStoreError(f"the event store cannot be read: {exc}") from exc
+                self._drifts.load(records)
+                if records:
+                    self._drift_seq = records[-1].seq
+            return self._drifts
+
+    def record_acceptance(self, kind: str, payload: Mapping[str, object]) -> Record:
+        """Record the user's acceptance, relayed by the workspace (source ``workspace``): of
+        a drifted tool list (``mcp-tools-accepted``) or of a classification revision
+        (``mcp-classification-accepted``). Blocking."""
+        if kind not in (ACCEPTED_RECORD, CLASSIFICATION_ACCEPTED):
+            raise ValueError(f"{kind!r} is not an acceptance")
+        try:
+            return self._store().append(kind, ANSWERS, payload)
+        except EventStoreError as exc:
+            raise PermissionStoreError(f"the acceptance could not be recorded: {exc}") from exc
+
+    def record_drift(self, payload: Mapping[str, object], *, kind: str = DRIFT_RECORD) -> int:
+        """Record, from a listing the agent runtime's client read and reported (source
+        ``runtime``, D98), its drift, which the middleware's ``DriftLedger`` reads as its
+        own, or (``mcp-tools-listing-reported``) that the report was taken. Blocking."""
+        if kind not in (DRIFT_RECORD, LISTING_REPORTED_RECORD):
+            raise ValueError(f"{kind!r} is not a listing record")
+        try:
+            return self._store().append(kind, RUNTIME, payload).seq
+        except EventStoreError as exc:
+            raise PermissionStoreError(f"the drift could not be recorded: {exc}") from exc
 
     def close(self) -> None:
         with self._lock:

@@ -53,7 +53,7 @@ Do not print, open, list or copy the owner's key yourself. The existing launcher
 alone consumes the referenced key and prepares the confined runtime.
 
 ```sh
-.venv/bin/python -I .agents/labs/scientific_quality.py authorize "$QUALITY_LAB" --allowance 150 --key-file /absolute/authorized/key-file --authorization 'Exact owner authorization'
+.venv/bin/python -I .agents/labs/scientific_quality.py authorize "$QUALITY_LAB" --allowance 150 --gateway-url 'https://your-private-gateway.example/v1' --key-file /absolute/authorized/key-file --authorization 'Exact owner authorization'
 .venv/bin/python -I .agents/labs/scientific_quality.py up "$QUALITY_LAB"
 .venv/bin/python -I .agents/labs/scientific_quality.py inspect "$QUALITY_LAB"
 ```

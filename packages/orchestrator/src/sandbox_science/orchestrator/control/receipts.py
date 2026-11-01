@@ -41,6 +41,8 @@ class Receipts:
         "files",
         "memory",
         "models",
+        "connectors",
+        "approvals",
     )
 
     def __init__(self, scope: str, conflict: str) -> None:

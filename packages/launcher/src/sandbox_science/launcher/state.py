@@ -13,7 +13,8 @@
     worker/state/             the worker's state directory, with its lock
     control/                  the control store the run service and workspace share
     logs/<part>.log           what each part writes
-    mcp-proxy/                the MCP proxy's files, and the record of its sandbox
+    mcp-proxy/                the provider registration's directory, and the record of a
+                              sandbox of the retired MCP proxy an earlier launcher made
 ```
 
 Delete ``tokens/`` with the launcher stopped to have new tokens made; never delete the
@@ -64,6 +65,12 @@ class Layout:
             private_dir(directory)
 
 
+def _open_to_others(mode: int) -> bool:
+    """Whether a directory's permission bits are other than ``rwx------``. The setgid bit
+    Kubernetes puts on a volume's directories for the Pod's ``fsGroup`` opens nothing."""
+    return stat.S_IMODE(mode) & 0o777 != 0o700
+
+
 def private_dir(path: Path) -> Path:
     """``path`` as a directory of this user's that only they can open.
 
@@ -85,7 +92,7 @@ def private_dir(path: Path) -> Path:
         raise LauncherError(f"{path} is not yours: choose another state_dir")
     if made:
         path.chmod(0o700)  # whatever the umask took away or left
-    elif stat.S_IMODE(found.st_mode) != 0o700:
+    elif _open_to_others(found.st_mode):
         raise LauncherError(
             f"{path} is open to other users (mode {stat.S_IMODE(found.st_mode):o}): make it "
             f"mode 700 (chmod 700 {path}), or choose another state_dir"
@@ -104,7 +111,7 @@ def check_private(path: Path) -> None:
         raise LauncherError(f"{path} is not a directory")
     if found.st_uid != os.getuid():
         raise LauncherError(f"{path} is not yours: choose another state_dir")
-    if stat.S_IMODE(found.st_mode) != 0o700:
+    if _open_to_others(found.st_mode):
         raise LauncherError(
             f"{path} is open to other users (mode {stat.S_IMODE(found.st_mode):o}): make it "
             f"mode 700 (chmod 700 {path}), or choose another state_dir"
@@ -139,14 +146,23 @@ def write_private(path: Path, text: str) -> None:
     """Replace ``path`` with ``text`` in one step, as a file of mode 600.
 
     The text goes to a temporary file of a name no other writer uses, which then takes
-    ``path``'s place, so two processes writing the same file never share one."""
+    ``path``'s place, so two processes writing the same file never share one. The file is
+    synced before the rename and the directory after it, so a record written before an
+    effect (an ownership record, a pending journal entry) survives a node crash."""
     temporary = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
         temporary.replace(path)
     except BaseException:
         with contextlib.suppress(FileNotFoundError):
             temporary.unlink()
         raise
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)

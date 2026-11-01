@@ -5,8 +5,8 @@ import sqlite3
 
 import pytest
 
-from sandbox_science.orchestrator.history import Archive, Entry
-from sandbox_science.orchestrator.history.inspector_index import CHUNK, InspectorIndex
+from sandbox_science.orchestrator.context.history import Archive, Entry
+from sandbox_science.orchestrator.context.history.inspector_index import CHUNK, InspectorIndex
 
 from .test_tool_journal import RUN
 from .test_tool_journal import projects as projects

@@ -13,6 +13,7 @@ import signal
 import socket
 import stat
 import subprocess
+import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -24,6 +25,8 @@ from sandbox_science.launcher.config import load_config
 from sandbox_science.launcher.instance import alive, boot_id, read
 from sandbox_science.launcher.state import Layout
 from sandbox_science.launcher.supervise import start_time
+
+from .conftest import LAUNCHER_WAIT
 
 pytestmark = pytest.mark.slow
 
@@ -46,7 +49,7 @@ def journal(path: Path) -> list[str]:
     return [line for line in path.read_text().splitlines() if not line.startswith("openshell ")]
 
 
-def wait_for(condition: Callable[[], bool], what: str, timeout: float = 15) -> None:
+def wait_for(condition: Callable[[], bool], what: str, timeout: float = LAUNCHER_WAIT) -> None:
     deadline = time.monotonic() + timeout
     while not condition():
         assert time.monotonic() < deadline, what
@@ -316,6 +319,12 @@ def test_a_part_left_behind_is_shown_and_stopped_by_down(site: dict[str, Any]) -
     launcher.finish()
     (harness,) = [part for part in record.parts if part.name == "control-service"]
     wait_for(lambda: "sandbox-science-worker stop" in journal(site["journal"]), "worker")
+    if sys.platform == "darwin":
+        # The parent-pipe watcher ends even a SIGTERM-ignoring child.
+        wait_for(lambda: not alive(harness, record), "control service outlived its watcher")
+        assert launcher.command("down").returncode == 0
+        assert not layout.record.exists()
+        return
     assert alive(harness, record)  # it ignored the SIGTERM it got when the launcher died
     shown = launcher.command("status")
     assert shown.returncode == 4
@@ -337,6 +346,11 @@ def test_a_child_that_outlived_its_part_is_found_and_stopped_by_down(
     launcher.finish()
     # The workspace dies with the launcher; its child, which has no death signal, does not.
     wait_for(lambda: "sandbox-science-workspace stop" in journal(site["journal"]), "workspace")
+    if sys.platform == "darwin":
+        # The watcher enumerates its session, including other process groups.
+        wait_for(lambda: start_time(child) is None, "child outlived its watcher")
+        assert launcher.command("down").returncode == 0
+        return
     assert start_time(child) is not None
     shown = launcher.command("status")
     assert shown.returncode == 4
@@ -415,9 +429,19 @@ def test_runtime_loss_preserves_ui_and_explicit_replacement_rotates_only_agent(
     assert layout.token("runtime-control").read_text() != token
     assert (layout.root / "orchestrator/generation").read_text() != generation
     assert f"openshell sandbox delete {original['name']}" in site["journal"].read_text()
+    # The worker binds each runtime sandbox by ID to the project's policy revision when it is
+    # Ready, and unbinds the old one once it is deleted; the launcher writes no store.
+    project = load_config(launcher.config).mcp_project()
+    bindings = site["journal"].with_name("journal.bindings")
+    assert bindings.read_text().splitlines() == [
+        f"bind {project} {original['id']}",
+        f"unbind {original['id']}",
+        f"bind {project} {replacement['id']}",
+    ]
     assert launcher.command("status").returncode == 0
     launcher.process.send_signal(signal.SIGINT)
     assert launcher.finish() == 0
+    assert bindings.read_text().splitlines()[-1] == f"unbind {replacement['id']}"
 
 
 def test_replacement_request_for_another_launcher_cannot_stop_the_runtime(
@@ -463,10 +487,10 @@ def test_autonomous_policy_recovers_owned_worker_and_agent_without_stopping_ui(
         )
 
     os.kill(identities["worker"], signal.SIGKILL)
-    wait_for(lambda: changed("worker"), "worker did not restart", 30)
+    wait_for(lambda: changed("worker"), "worker did not restart")
     os.kill(identities["agent-runtime"], signal.SIGKILL)
-    wait_for(lambda: changed("agent-runtime"), "agent did not replace", 30)
-    wait_for(lambda: launcher.command("status").returncode == 0, "recovery not ready", 30)
+    wait_for(lambda: changed("agent-runtime"), "agent did not replace")
+    wait_for(lambda: launcher.command("status").returncode == 0, "recovery not ready")
     current = read(layout)
     assert current is not None
     now = {part.name: part.pid for part in current.parts}

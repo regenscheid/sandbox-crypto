@@ -71,7 +71,7 @@ def _keep(config: LauncherConfig, *, update: bool = False) -> list[str]:
     layout = Layout(config.state_dir)
     supervisor = Supervisor(layout, asyncio.Event(), stop_timeout=5)
     lines, failed = asyncio.run(skills.keep(config, layout, supervisor, update=update))
-    assert failed == []
+    assert failed == [], "\n".join(lines)  # the launcher's own words for each failure
     return lines
 
 
@@ -244,7 +244,7 @@ def test_a_failed_pin_is_one_projects_and_up_says_what_each_pins(
     _git(two, "commit", "-qam", "C2")
     second = _git(two, "rev-parse", "HEAD")[:12]
     lines, failed = _lines(config, update=True)
-    assert failed == []
+    assert failed == [], "\n".join(lines)
     assert f"skills: a pins two at {second}" in lines
     assert f"skills: b moves two from {first['two']} to {second}: removed alpha" in lines
     # A later commit adds gamma, which one has: a's pin cannot move, and up says so.

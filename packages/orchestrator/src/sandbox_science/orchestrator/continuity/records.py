@@ -77,7 +77,8 @@ def _pending_children(db: sqlite3.Connection, project: str, session: str, work: 
             "AND NOT EXISTS (SELECT 1 FROM response_receipts r "
             "JOIN research_attempts p ON p.project=r.project AND p.session=r.session "
             "AND p.run=r.run WHERE p.project=a.project AND p.session=a.session "
-            "AND p.work=a.work AND r.source='delegations' AND r.notice=d.delegation_id))) "
+            "AND p.work=a.work AND r.source='delegations' AND r.notice=(CASE WHEN d.results > 1 "
+            "THEN d.delegation_id || '.' || d.results ELSE d.delegation_id END)))) "
             "UNION ALL "
             "SELECT 1 FROM research_child_settlements c JOIN research_attempts a "
             "ON a.project=c.project AND a.session=c.session AND a.run=c.run "
@@ -224,6 +225,21 @@ class WorkRecords:
             if row is None
             else Ownership(project=project, session=session, work=row[0], run=run, epoch=row[1])
         )
+
+    def session_owner(self, project: str, session: str) -> Ownership | None:
+        """The session's current authority: its research tree's root work, that work's
+        current run and the session's epoch, which the worker's recovery fence admits.
+        ``None`` for a session no run has started, which the worker has not fenced."""
+        with self.control.read() as tx:
+            row = tx.sql.execute(
+                "SELECT w.work,w.current,s.epoch FROM research_sessions s "
+                "JOIN research_work w ON w.project=s.project AND w.session=s.session "
+                "AND w.work=s.root WHERE s.project=? AND s.session=?",
+                (project, session),
+            ).fetchone()
+        if row is None:
+            return None
+        return Ownership(project=project, session=session, work=row[0], run=row[1], epoch=row[2])
 
     def admit(
         self,
@@ -441,8 +457,15 @@ class WorkRecords:
                 (reason[:1000], project, session, request),
             )
 
-    def interrupt(self, project: str, session: str, root: str) -> None:
-        """Record process loss without pretending incomplete work is done or stopped."""
+    def interrupt(
+        self, project: str, session: str, root: str, *, detail: str | None = None
+    ) -> None:
+        """Record process loss without pretending incomplete work is done or stopped.
+
+        ``detail``, the error that ended a Resume, is kept in its request's reason for the
+        user; the work's own reason stays ``interrupted``, which automatic recovery reads.
+        """
+        reason = "interrupted" if detail is None else f"interrupted: {detail}"[:1000]
         with self.control.write() as tx:
             tx.sql.execute(
                 "UPDATE research_work SET state='paused',reason='interrupted' "
@@ -450,9 +473,9 @@ class WorkRecords:
                 (project, session, root),
             )
             tx.sql.execute(
-                "UPDATE research_resumes SET status='blocked',reason='interrupted' "
+                "UPDATE research_resumes SET status='blocked',reason=? "
                 "WHERE project=? AND session=? AND root=? AND status='running'",
-                (project, session, root),
+                (reason, project, session, root),
             )
 
     def page(self, project: str, session: str, root: str, *, after: str = "") -> list[Work]:
@@ -695,18 +718,67 @@ class WorkRecords:
                 (project, session, work, project, session, project, session),
             )
 
+    def never_started(self, project: str, session: str, run: str, reason: str) -> None:
+        """End a delegated run's reserved work that never started, such as one whose own
+        environment never became ready (CE-4): stopped, with nothing to resume. Work that
+        started is left as its own record leaves it."""
+        with self.control.write() as tx:
+            tx.sql.execute(
+                "UPDATE research_work SET state='stopped',reason=? WHERE project=? "
+                "AND session=? AND state='waiting' AND parent IS NOT NULL AND work=("
+                "SELECT a.work FROM research_attempts a WHERE a.project=? AND a.session=? "
+                "AND a.run=? AND a.outcome IS NULL) AND NOT EXISTS (SELECT 1 FROM runs r "
+                "WHERE r.project_id=? AND r.session_id=? AND r.name=?)",
+                (reason[:1000], project, session, project, session, run, project, session, run),
+            )
+
+    def end_unstarted(
+        self, project: str, session: str, work: str, runs: tuple[str, ...], reason: str
+    ) -> None:
+        """Stop a delegated work whose run ended before its loop began, such as at its
+        environment's wall time (CE-9), so that it holds its parent's completion no
+        longer: its delegation's outcome says how it ended."""
+        with self.control.write() as tx:
+            tx.sql.execute(
+                "UPDATE research_work SET state='stopped',reason=? WHERE project=? AND session=? "
+                "AND work=? AND parent IS NOT NULL AND state NOT IN ('completed','stopped') "
+                "AND current IN (SELECT value FROM json_each(?))",
+                (reason[:1000], project, session, work, json.dumps(list(runs))),
+            )
+
     def unfinished(self, project: str, session: str, work: str) -> bool:
         with self.control.read() as tx:
             return _pending_children(tx.sql, project, session, work)
 
     def retains_kernel(self, project: str, session: str, kernel: str) -> bool:
-        """Check an observed kernel individually; never load an unbounded tree-wide set."""
+        """Check an observed kernel individually; never load an unbounded tree-wide set.
+        A returned task that awaits its parent's review keeps its kernels (PD-46)."""
         with self.control.read() as tx:
             return (
                 tx.sql.execute(
                     "SELECT 1 FROM research_work WHERE project=? AND session=? "
-                    "AND kernel=? AND state NOT IN ('completed','stopped') LIMIT 1",
-                    (project, session, kernel),
+                    "AND kernel=? AND state NOT IN ('completed','stopped') UNION ALL "
+                    "SELECT 1 FROM research_work w JOIN research_attempts a "
+                    "ON a.project=w.project AND a.session=w.session AND a.work=w.work "
+                    "JOIN delegations d ON d.project_id=a.project AND d.session_id=a.session "
+                    "AND d.run=a.run WHERE w.project=? AND w.session=? AND w.kernel=? "
+                    "AND d.review='awaiting' LIMIT 1",
+                    (project, session, kernel, project, session, kernel),
+                ).fetchone()
+                is not None
+            )
+
+    def awaits_review(self, project: str, session: str, work: str) -> bool:
+        """Whether the work is a returned task's that awaits its parent's review, whose
+        kernels and environment are kept (PD-46)."""
+        with self.control.read() as tx:
+            return (
+                tx.sql.execute(
+                    "SELECT 1 FROM research_attempts a JOIN delegations d "
+                    "ON d.project_id=a.project AND d.session_id=a.session AND d.run=a.run "
+                    "WHERE a.project=? AND a.session=? AND a.work=? AND d.review='awaiting' "
+                    "LIMIT 1",
+                    (project, session, work),
                 ).fetchone()
                 is not None
             )

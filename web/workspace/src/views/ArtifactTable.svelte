@@ -2,6 +2,7 @@
 <!-- One group of the project's artifacts (research artifacts, RA-37): results, or every
      other recorded file, the most recently changed first, a page at a time. -->
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { api } from '../lib/api';
   import type { ArtifactEntry } from '../lib/api-types';
   import { type ArtifactFilter, type ArtifactGroup } from '../lib/artifactFiles';
@@ -27,10 +28,13 @@
       },
     };
   });
+  // The filter by content: an equal filter as a new object names the same list.
+  const named = $derived(JSON.stringify([filter.session, filter.run, filter.contains]));
   $effect(() => {
     // A new filter names another list: the one shown goes at once.
-    void [filter.session, filter.run, filter.contains];
-    void list.restart();
+    void named;
+    // Its first read reads `filter` itself: only `named` says when to read again.
+    void untrack(() => list.restart());
   });
 </script>
 

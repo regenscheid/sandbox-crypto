@@ -11,11 +11,11 @@ from pathlib import Path
 import pytest
 from pydantic import JsonValue, ValidationError
 
+from sandbox_science.orchestrator.context.history.export import EvidenceExport
+from sandbox_science.orchestrator.context.history.verify_export import verify
 from sandbox_science.orchestrator.control import ControlError, ControlStore
-from sandbox_science.orchestrator.history.export import EvidenceExport
-from sandbox_science.orchestrator.history.verify_export import verify
 from sandbox_science.orchestrator.loop import run_task
-from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel
+from sandbox_science.orchestrator.model import ModelTurn
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord
 from sandbox_science.orchestrator.run_inputs import (
     INPUT_BYTES,
@@ -26,6 +26,7 @@ from sandbox_science.orchestrator.run_inputs import (
 from sandbox_science.orchestrator.tools import ToolOutcome
 
 from .control_versions import older_store
+from .scripted import ScriptedModel
 from .test_evidence_export import decode
 from .test_tool_journal import CALL, CONTEXT, RUN, toolbox
 from .test_tool_journal import projects as projects
@@ -70,7 +71,7 @@ async def test_starting_inputs_commit_before_model_and_tool_calls_without_final_
     assert calls == ["model", "tool", "model"]
     assert result.stopped == "answered"
     original = inputs.get("p", "s", RUN)
-    assert original.pins == result.prompt_provenance
+    assert original.pins == result.context.prompt_provenance
     assert projects.runs("p", "s") == []
     projects.close()
     reopened = ProjectStore(tmp_path)
@@ -241,7 +242,9 @@ async def test_failed_preflight_retry_still_compares_nearest_same_work_pins(
             system="Changed system",
             hooks=(RecordInputs(store, CONTEXT, name, request, {}, predecessor=predecessor),),
         )
-        assert result.failure == "harness"
+        # Under an automatic Resume a change of pins stops the run before any model call,
+        # for the user's Resume, and saves nothing (D100).
+        assert (result.stopped, result.failure) == ("pins_changed", None)
         with pytest.raises(ControlError, match="no saved starting inputs"):
             store.get("p", "s", name)
     ancestor = store.previous("p", "s", retry)
@@ -268,9 +271,9 @@ def test_missing_pin_ancestor_records_gap_and_allows_resume(
     evidence: str,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
+    from sandbox_science.orchestrator.context.history import Archive, Entry
     from sandbox_science.orchestrator.continuity.models import ModelIntents
     from sandbox_science.orchestrator.continuity.records import WorkRecords
-    from sandbox_science.orchestrator.history import Archive, Entry
     from sandbox_science.orchestrator.runstate import RunState
 
     from .test_work_ownership import record
@@ -297,9 +300,9 @@ def test_never_started_proof_does_not_ignore_active_dispatch_evidence(
     projects: ProjectStore,
     evidence: str,
 ) -> None:
+    from sandbox_science.orchestrator.context.history import Archive, Entry
     from sandbox_science.orchestrator.continuity.models import ModelIntents
     from sandbox_science.orchestrator.continuity.records import WorkRecords
-    from sandbox_science.orchestrator.history import Archive, Entry
     from sandbox_science.orchestrator.runstate import RunState
 
     works = WorkRecords(projects.control)
@@ -332,3 +335,88 @@ def test_never_started_proof_does_not_ignore_active_dispatch_evidence(
         assert owner is not None
         ModelIntents(projects.control).begin(owner, kind="main", alias="fixture")
     assert store.previous("p", "s", RUN, active_run=active) is None
+
+
+async def test_the_users_resume_goes_on_with_changed_pins_and_says_so(
+    projects: ProjectStore,
+) -> None:
+    # A new orchestrator image changed the tools' descriptions, and every continuation of
+    # the interrupted session stopped on its pins (Mac, 2026-10-21).
+    from sandbox_science.orchestrator.continuity.records import WorkRecords
+
+    store = RunInputs(projects.control)
+    WorkRecords(projects.control).admit("p", "s", RUN)
+    request: dict[str, JsonValue] = {"project": "p", "session": "s", "task": "Compute"}
+
+    async def never(_):
+        pytest.fail("unexpected tool dispatch")
+
+    await run_task(
+        ScriptedModel([ModelTurn("Original")]),
+        toolbox(never),
+        "Compute",
+        run_id="original",
+        system="Pinned system",
+        hooks=(RecordInputs(store, CONTEXT, RUN, request, {}),),
+    )
+    continued = "20261017T030003000000Z-after-upgrade"
+    with projects.control.write() as tx:
+        tx.sql.execute(
+            "INSERT INTO research_attempts VALUES (?,?,?,?,?,1,NULL)",
+            ("p", "s", continued, RUN, RUN),
+        )
+    said: list[str] = []
+    result = await run_task(
+        ScriptedModel([ModelTurn("Continued")]),
+        toolbox(never),
+        "Compute",
+        run_id=continued,
+        system="Upgraded system",
+        hooks=(
+            RecordInputs(
+                store,
+                CONTEXT,
+                continued,
+                request,
+                {},
+                predecessor=RUN,
+                accept_changes=True,
+                changed=said.append,
+            ),
+        ),
+    )
+    assert result.stopped == "answered"
+    assert len(said) == 1
+    assert "the user's Resume accepted the change" in said[0]
+    saved = store.get("p", "s", continued)
+    original = store.get("p", "s", RUN)
+    assert saved.pins != original.pins  # the change is on record, not hidden
+    # A parent reopening its returned task goes on past a change as its own (PD-46).
+    reopened = "20261017T030004000000Z-reopened"
+    with projects.control.write() as tx:
+        tx.sql.execute(
+            "INSERT INTO research_attempts VALUES (?,?,?,?,?,1,NULL)",
+            ("p", "s", reopened, RUN, continued),
+        )
+    await run_task(
+        ScriptedModel([ModelTurn("Reopened")]),
+        toolbox(never),
+        "Compute",
+        run_id=reopened,
+        system="Reopened system",
+        hooks=(
+            RecordInputs(
+                store,
+                CONTEXT,
+                reopened,
+                request,
+                {},
+                predecessor=continued,
+                accept_changes=True,
+                changed=said.append,
+                accepted_by="the parent's reopening of its returned task",
+            ),
+        ),
+    )
+    assert "the parent's reopening of its returned task accepted the change" in said[1]
+    assert "Resume" not in said[1]

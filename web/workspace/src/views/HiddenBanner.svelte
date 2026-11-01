@@ -4,12 +4,14 @@
      and, with `links` (beside a rendering), every link address, title and reference
      definition a rendering shows only on hover or not at all, and what else it hides:
      math that draws nothing, references to hidden characters, a code fence's words after
-     its language. Nothing when the text hides nothing. With `quiet`, for a whole rendered
+     its language. A plain link, whose address alone shows on hover, folds into a closed
+     list; when the text hides nothing else the banner is just that list. Nothing when the
+     text hides nothing. With `quiet`, for a whole rendered
      document: shown only when it hides something, a link's address being in plain view
      on hover; it lists every link only for a short text, and otherwise only the links
      with a title, which the rendering hides. -->
 <script lang="ts">
-  import { linksIn, renderingHides } from '../lib/approval';
+  import { linksIn, plainLink, renderingHides, type FoundLink } from '../lib/approval';
   import { hiddenPlaces, visible } from '../lib/text';
 
   let {
@@ -26,6 +28,12 @@
   const hiding = $derived(places.length > 0 || hides.length > 0 || titled.length > 0);
   const shown = $derived(quiet ? hiding : places.length > 0 || all.length > 0 || hides.length > 0);
   const found = $derived(quiet && text.length > SHORT ? titled : all);
+  const plain = $derived(links && !quiet ? all.filter(plainLink) : []);
+  const misleading = $derived(links && !quiet ? all.filter((link) => !plainLink(link)) : []);
+  /** Beside a rendering, only plain links: the closed list alone, no banner. */
+  const folded = $derived(
+    plain.length > 0 && places.length === 0 && hides.length === 0 && misleading.length === 0,
+  );
   const listed = $derived(places.slice(0, 8));
   const heading = $derived(
     `${places.length} ${places.length === 1 ? 'character' : 'characters'} you may not see ` +
@@ -33,7 +41,30 @@
   );
 </script>
 
-{#if shown}
+{#snippet rows(found: FoundLink[])}
+  <ul>
+    {#each found.slice(0, 20) as link, index (index)}
+      <li>
+        {link.kind}
+        <code>{visible(link.label)}</code>:
+        <code>{visible(link.address)}</code>{#if link.title}, titled
+          <q>{visible(link.title)}</q>{/if}
+      </li>
+    {/each}
+    {#if found.length > 20}<li>and {found.length - 20} more</li>{/if}
+  </ul>
+{/snippet}
+
+{#snippet closed(label: string)}
+  <details class="plain-links">
+    <summary>{label} ({plain.length})</summary>
+    {@render rows(plain)}
+  </details>
+{/snippet}
+
+{#if shown && folded}
+  <div class="hidden-banner folded">{@render closed('Links')}</div>
+{:else if shown}
   <div role="status" class="hidden-banner">
     {#if places.length > 0}
       <p>{heading}</p>
@@ -55,23 +86,22 @@
         {#if hides.length > 8}<li>and {hides.length - 8} more</li>{/if}
       </ul>
     {/if}
-    {#if found.length > 0}
+    {#if links && !quiet}
+      {#if misleading.length > 0}
+        <p>
+          Links that may not lead where their words say, or that a rendering shows only on hover or
+          not at all:
+        </p>
+        {@render rows(misleading)}
+      {/if}
+      {#if plain.length > 0}{@render closed('Other links')}{/if}
+    {:else if found.length > 0}
       <p>
         {found.length < all.length
           ? 'Links with a title, which a rendering shows only on hover:'
           : 'Links, which a rendering shows only on hover or not at all:'}
       </p>
-      <ul>
-        {#each found.slice(0, 20) as link, index (index)}
-          <li>
-            {link.kind}
-            <code>{visible(link.label)}</code>:
-            <code>{visible(link.address)}</code>{#if link.title}, titled
-              <q>{visible(link.title)}</q>{/if}
-          </li>
-        {/each}
-        {#if found.length > 20}<li>and {found.length - 20} more</li>{/if}
-      </ul>
+      {@render rows(found)}
     {/if}
   </div>
 {/if}
@@ -92,6 +122,20 @@
   .places {
     padding: 0;
     margin: 0 0 0.3em;
+  }
+  .hidden-banner.folded {
+    border-left: none;
+    padding: 0;
+    margin: 0.2em 0 0;
+    font-size: 0.85em;
+    color: var(--muted);
+  }
+  .plain-links summary {
+    cursor: pointer;
+    width: fit-content;
+  }
+  .plain-links ul {
+    margin: 0.2em 0;
   }
   .chip {
     border: 1px solid currentColor;

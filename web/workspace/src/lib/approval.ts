@@ -115,6 +115,38 @@ export function linksIn(text: string): FoundLink[] {
   return found;
 }
 
+/** An address its words could name: with a scheme, `www.`, or a host such as `a.b.org`. */
+const NAMED =
+  /\b(?:[a-z][a-z0-9+.-]*:\/\/\S+|www\.\S+|(?:[a-z0-9-]+\.){2,}[a-z]{2,24}\b\S*|[a-z0-9-]+\.(?:com|org|net|edu|gov|int|io|dev|app|ai|co|info|xyz)\b\S*)/gi;
+
+/** An address without its scheme, `www.` and trailing marks, in lower case. */
+function bare(address: string): string {
+  return address
+    .toLowerCase()
+    .replace(/^[a-z][a-z0-9+.-]*:\/\//, '')
+    .replace(/^www\./, '')
+    .replace(/[)\].,;:!?'"/]+$/, '');
+}
+
+/**
+ * Whether a rendering of the link hides nothing but its address, shown on hover: a link
+ * without a title, to the web, an email address or a page of the workspace, whose words
+ * name no address but its own. Anything else, an image, a reference definition, a title,
+ * another scheme or words naming another address, may mislead its reader.
+ */
+export function plainLink(link: FoundLink): boolean {
+  if (link.kind !== 'link' || link.title !== '') return false;
+  const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(link.address)?.[1]?.toLowerCase();
+  if (scheme !== undefined && !['http', 'https', 'mailto'].includes(scheme)) return false;
+  const address = bare(link.address);
+  for (const [named] of link.label.matchAll(NAMED)) {
+    const prefix = bare(named);
+    const leads = address === prefix || ['/', '?', '#'].includes(address[prefix.length] ?? '');
+    if (scheme === undefined || !address.startsWith(prefix) || !leads) return false;
+  }
+  return true;
+}
+
 /** A character reference, of any number of digits, or named. */
 const REFERENCE = /&(?:#[0-9]+|#[xX][0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]{1,31});/g;
 

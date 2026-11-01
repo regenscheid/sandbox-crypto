@@ -1,0 +1,55 @@
+# SPDX-License-Identifier: MIT
+name: VM bootstrap mirror
+
+# OpenShell v0.1.5's VM driver sends its one registry credential to every pull, and
+# nvcr.io rejects a GitHub token. The Mac helper therefore boots from NVIDIA's
+# bootstrap index copied beside the private crypto-base package, digest unchanged.
+on:
+  push:
+    branches: [dev, main]
+    paths: [.github/workflows/vm-bootstrap-mirror.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SOURCE: nvcr.io/nvidia/base/ubuntu:24.04
+  DIGEST: sha256:7e0f726d635d440d28a7f18e6498d3bdb76c7038bd4c90a090c21eb7c9f40686
+  TAG: ubuntu-24.04
+
+jobs:
+  mirror:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Copy the pinned index and its platform images
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          target="ghcr.io/$REPOSITORY/vm-bootstrap"
+          package="${REPOSITORY#*/}%2Fvm-bootstrap"
+          private() {
+            visibility=$(gh api "/users/${REPOSITORY%%/*}/packages/container/$package" --jq .visibility)
+            test "$visibility" = private || { echo 'vm-bootstrap package is not private' >&2; exit 1; }
+          }
+          # A new package defaults to private; never add to one that was made public.
+          if gh api "/users/${REPOSITORY%%/*}/packages/container/$package" >/dev/null 2>&1; then
+            private
+          fi
+          auth=$(mktemp -d)
+          trap 'rm -rf "$auth"' EXIT
+          export REGISTRY_AUTH_FILE="$auth/auth.json"
+          printf '%s' "$GH_TOKEN" | skopeo login ghcr.io -u "$ACTOR" --password-stdin
+          skopeo copy --all --preserve-digests "docker://${SOURCE%%:*}@$DIGEST" "docker://$target:$TAG"
+          copied="sha256:$(skopeo inspect --raw "docker://$target@$DIGEST" | sha256sum | cut -d' ' -f1)"
+          test "$copied" = "$DIGEST" || { echo "GHCR returned $copied, expected $DIGEST" >&2; exit 1; }
+          tagged="sha256:$(skopeo inspect --raw "docker://$target:$TAG" | sha256sum | cut -d' ' -f1)"
+          test "$tagged" = "$DIGEST" || { echo "$TAG resolves to $tagged, expected $DIGEST" >&2; exit 1; }
+          private

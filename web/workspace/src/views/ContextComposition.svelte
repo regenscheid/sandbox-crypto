@@ -1,12 +1,22 @@
 <!-- SPDX-License-Identifier: MIT -->
 <script lang="ts">
-  import { onDestroy, onMount } from 'svelte';
+  import { onDestroy, onMount, untrack } from 'svelte';
   import { api } from '../lib/api';
   import type { CapturedCall, ContextPart, ContextText } from '../lib/api-types';
   import { formatTime } from '../lib/format';
   import ErrorMessage from './ErrorMessage.svelte';
 
-  let { project, session, run }: { project: string; session: string; run: string } = $props();
+  let {
+    project,
+    session,
+    run,
+    initialScope = 'attempt',
+  }: {
+    project: string;
+    session: string;
+    run: string;
+    initialScope?: 'attempt' | 'agent';
+  } = $props();
   let calls = $state<CapturedCall[]>([]);
   let selected = $state<CapturedCall | null>(null);
   let parts = $state<ContextPart[]>([]);
@@ -14,7 +24,7 @@
   let text = $state<ContextText | null>(null);
   let before = $state<number | null>(null);
   let after = $state<number | null>(null);
-  let scope = $state<'attempt' | 'agent'>('attempt');
+  let scope = $state<'attempt' | 'agent'>(untrack(() => initialScope));
   let coverage = $state('');
   let busy = $state(false);
   let loaded = $state(false);

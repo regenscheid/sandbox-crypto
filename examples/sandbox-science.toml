@@ -14,7 +14,8 @@ sessions = ["main", { id = "scratch", dedicated = true }]
 # skills = ["crypto"]
 
 [model]
-url = "https://litellm-api.npages.org/v1"
+# Replace this reserved example endpoint in your private config; do not commit your gateway URL.
+url = "https://gateway.example.invalid/v1"
 name = "sandbox-orchestrator"
 # Reviews and the workspace's math repairs, the job watcher's check-ins on long jobs, and
 # delegated runs; one alias may serve the main agent and these. A gateway that serves
@@ -23,11 +24,13 @@ name = "sandbox-orchestrator"
 reviewer = "sandbox-orchestrator"
 watcher = "sandbox-orchestrator"
 delegated = "sandbox-orchestrator"
-# The gateway API each alias is called through: "chat" (/chat/completions, every alias's
-# by default) or "responses" (/v1/responses, GPT's Responses API with its reasoning sent
-# back), or "messages" (/v1/messages, Claude's Messages API with its progress
-# notes). Leave it out until the labs confirm the others.
+# The gateway API each alias is called through: "chat" (/chat/completions), "responses"
+# (/v1/responses, GPT's Responses API with its reasoning sent back) or "messages"
+# (/v1/messages, Claude's Messages API with its progress notes). An alias left out takes
+# "messages" when the gateway lists its provider as anthropic, else default_api ("chat"
+# unless set).
 # api = { sandbox-orchestrator = "responses" }
+# default_api = "chat"
 # Uploaded by path into the confined runtime; keep it mode 600.
 api_key_file = "~/.config/sandbox-science/secrets/litellm-harness.key"
 # Claude's thinking sent back, once the CM-F30 run passes against the deployed gateway
@@ -49,8 +52,9 @@ control_listen = "127.0.0.1:8202"
 # Context tokens before the provider's input limit caps them; default 600,000.
 # Lower ceilings exercise the same folding path sooner, without changing budgets.
 # context_ceiling = 600000
-# The model calls a main run makes before its report round, a safety net rather than a
-# bound on its work: 2,000 unless set (0 is the default too), at most 100,000.
+# The model calls a main run makes before it pauses and asks you in the chat to continue
+# for another block of as many, or to stop: 2,000 unless set (0 is the default too), at
+# most 100,000.
 # max_turns = 2000
 # The math checks on the documents' formulas, and the figure checks on their charts
 # (its figures directory): npm run build:math in web/workspace, and Node 22.12 or newer
@@ -63,6 +67,9 @@ listen = "127.0.0.1:8100"
 pool_id = "babbage"
 # The project policy, granted to every project above.
 policy = "policy.yaml"
+# Optional: the config of a worker-side unit (docs/UNIT.md) started before `up`, which runs this
+# worker with the policy middleware and the package cache. `up` then starts no worker of its own.
+# unit = "unit.toml"
 
 [workspace]
 listen = "127.0.0.1:8200"
@@ -87,8 +94,8 @@ static = "../web/workspace/dist"
 
 # The worker's [openshell] table (docs/WORKER.md), for the lab .agents/labs/lab_up.sh brings up.
 [openshell]
-cli = "~/.local/opt/openshell-0.1.3/bin/openshell"
-python = "/opt/sandbox-science/bin/python"
+cli = "~/.local/opt/openshell-0.1.5/bin/openshell"
+python = "/opt/sandbox-science/bin/python"   # the default: the base images' interpreter
 isolation_tier = 3
 package_cache = "http://host.openshell.internal:8090"
 
@@ -103,40 +110,46 @@ OPENSHELL_TELEMETRY_ENABLED = "false"
 policy_store = "~/.local/state/openshell-lab/middleware/state"
 targets = "~/.local/state/openshell-lab/targets.yaml"
 ceiling = "~/.local/state/openshell-lab/middleware/pool-ceiling.yaml"
-# Suspend a project's sandbox after an hour unused, while Sandbox Science runs; its next use
-# starts it again. sandbox-science down, or Ctrl-C to up, suspends them all the same way
-# (down --keep-sandboxes leaves them running).
-suspend_after = 3600.0
+# Idle suspension is off by default: suspending a sandbox loses its kernels' memory, which a
+# long investigation may still need. To suspend a project's sandbox after an hour unused
+# (its next use starts it again), uncomment this. sandbox-science down, or Ctrl-C to up,
+# suspends them all the same way whatever this says (down --keep-sandboxes leaves them running).
+# suspend_after = 3600.0
 
 [openshell.environments.profiles]
 # The tags images/build.sh printed.
 minimal = "sandbox-science/minimal:02f85b3"
 crypto-base = "sandbox-science/crypto-base:02f85b3"
 
-# The MCP proxy, in an OpenShell sandbox of its own (docs/QUICKSTART.md): uncomment once
-# images/build.sh mcp-proxy has built its image. With provider_env_file, up registers the
-# provider from the owner's file when the gateway has none, as on each new lab gateway:
-# babbage's default for now (the owner, 2026-10-15). The path below is a placeholder: no
-# file in the repository names the real one, which only a config outside it does, as the
-# lab's (.agents/labs/README.md). Without provider_env_file, create the provider by hand
-# (docs/MCP-CONNECTORS.md). index and [mcp_proxy.about] shape the index of the servers'
+# The MCP servers the agent's connectors reach (D98, docs/MCP-CONNECTORS.md#the-direct-path):
+# the agent runtime's own client makes the connector calls from its sandbox, through
+# OpenShell's native rules and the policy middleware (whose settings need
+# mcp_listings = true); it needs [orchestrator]. The MCP proxy and its [mcp_proxy] retired
+# on 2026-10-26: sandbox-science migrate-mcp-config rewrites an older config's. With
+# provider_env_file, up registers the provider from the owner's file when the gateway has
+# none, as on each new lab gateway: babbage's default for now (the owner, 2026-10-15). The
+# path below is a placeholder: no file in the repository names the real one, which only a
+# config outside it does, as the lab's (.agents/labs/README.md). Without provider_env_file,
+# create the provider by hand (docs/MCP-CONNECTORS.md). A server's URL is the project
+# policy's; its credentials name each header's environment variable, which holds the
+# provider's placeholder. index and [mcp_direct.about] shape the index of the servers'
 # tools the main agent gets (lab 39, B5): the servers behind the portal it lists tool by
 # tool, the others by their count, found with a query; and what each server is for, which
 # it marks as the operator's. A key is SERVER/BEHIND: the portal, and the server behind it.
-# [mcp_proxy]
-# image = "sandbox-science/mcp-proxy:d27e41a"
+# [canaries] lists each server on a schedule through the runtime's client, never calling a
+# tool, for the workspace's MCP services view and the alerts
+# (docs/MCP-CONNECTORS.md#canaries).
+# [mcp_direct]
 # providers = ["crypto-research-mcp"]
-# servers = ["crypto-research-mcp"]
 # provider_env_file = "/path/to/the/owners/cloudflare.env"
 # provider_profile = "openshell/profiles/cloudflare-access.yaml"
 #
 # index = ["crypto-research-mcp/attack-catalog-mcp", "crypto-research-mcp/e-print-mcp", "crypto-research-mcp/nist-csrc-mcp", "crypto-research-mcp/paper-search-mcp", "crypto-research-mcp/web-fetch-mcp"]
 #
-# [mcp_proxy.credentials]
-# "crypto-research-mcp.CF_ACCESS_CLIENT_ID" = "CF_ACCESS_CLIENT_ID"
-# "crypto-research-mcp.CF_ACCESS_CLIENT_SECRET" = "CF_ACCESS_CLIENT_SECRET"
+# [mcp_direct.servers.crypto-research-mcp]
+# credentials = { "CF-Access-Client-Id" = "CF_ACCESS_CLIENT_ID", "CF-Access-Client-Secret" = "CF_ACCESS_CLIENT_SECRET" }
 #
-# [mcp_proxy.about]
+# [mcp_direct.about]
 # "crypto-research-mcp/attack-catalog-mcp" = "a catalog of cryptanalytic attacks: which apply to a scheme, and their sources"
 # "crypto-research-mcp/e-print-mcp" = "the IACR Cryptology ePrint Archive: search its papers, records, full text and PDFs"
 # "crypto-research-mcp/firecrawl-mcp" = "the open web: search, scrape and crawl pages; for papers, use a paper archive first"
@@ -144,3 +157,7 @@ crypto-base = "sandbox-science/crypto-base:02f85b3"
 # "crypto-research-mcp/paper-search-mcp" = "papers across arXiv, DBLP, Crossref, OpenAlex and Semantic Scholar, with citations"
 # "crypto-research-mcp/patent-search-mcp" = "patents: search"
 # "crypto-research-mcp/web-fetch-mcp" = "fetch a web page, or its links, as text"
+#
+# [canaries]
+# enabled = true
+# interval = 900

@@ -4,8 +4,8 @@
 The pins are exact, the lockfiles cover both architectures with a SHA-256 for every package,
 each image's tag covers what its build reads, the services' images install the packages they
 need, the declared OpenShell filesystem paths are valid targets sections, the Landlock emulation
-in test.sh matches the policy compiler, the MCP proxy's launcher is the image's command, and the
-license helpers that gate the permissive images behave.
+in test.sh matches the policy compiler, and the license helpers that gate the permissive
+images behave.
 """
 
 from __future__ import annotations
@@ -13,7 +13,6 @@ from __future__ import annotations
 import importlib.util
 import json
 import re
-import shutil
 import subprocess
 import sys
 import tomllib
@@ -24,13 +23,14 @@ from typing import Any
 import pytest
 import yaml
 
-from sandbox_science.policy import PoolCeiling, load_policy
 from sandbox_science.policy.openshell import (
+    BASELINE_READ_ONLY,
+    BASELINE_READ_WRITE,
+    RESEARCH_IMAGE_READ_ONLY,
     SANDBOX_DEVICES_READ_ONLY,
     SANDBOX_DEVICES_READ_WRITE,
     FilesystemPolicy,
     SandboxFilesystem,
-    compile_mcp_proxy,
     compile_orchestrator,
     parse_targets,
 )
@@ -38,11 +38,20 @@ from sandbox_science.policy.openshell import (
 IMAGES = Path(__file__).resolve().parents[1]
 ROOT = IMAGES.parent
 RESEARCH_PROFILES = ("minimal", "crypto-base")
-SERVICE_PROFILES = ("orchestrator", "mcp-proxy")
-"""The platform services' images, which install the repository's packages from wheels."""
+SERVICE_PROFILES = ("orchestrator",)
+"""The platform services' images, which install the repository's packages from wheels. The
+MCP proxy's went with the proxy (D98, 2026-10-26)."""
 PROFILES = (*RESEARCH_PROFILES, *SERVICE_PROFILES)
 PLATFORMS = ["linux-64", "linux-aarch64"]
 PREFIX = "/opt/sandbox-science"
+SERVICE_FILESYSTEM = FilesystemPolicy(
+    include_workdir=True,
+    read_only=(*BASELINE_READ_ONLY, PREFIX),
+    read_write=BASELINE_READ_WRITE,
+)
+"""A service sandbox's compiled filesystem section: OpenShell's baseline, which the compiler
+lists since its supervisor adds it only where the paths exist on its own host (OpenShell
+v0.1.5), and the prefix to read. No research devices."""
 KERNEL_PACKAGES = {"ipykernel", "jupyter_client", "pyzmq", "zeromq"}
 
 
@@ -57,6 +66,7 @@ def _load(name: str, path: Path) -> ModuleType:
 
 
 report = _load("image_report", IMAGES / "common" / "image_report.py")
+layout = _load("prefix_layout", IMAGES / "common" / "prefix_layout.py")
 checks = _load("check_image", IMAGES / "checks" / "check_image.py")
 
 
@@ -138,6 +148,17 @@ def test_every_download_in_the_containerfile_is_pinned() -> None:
         assert re.fullmatch(r"[0-9a-f]{40}", args[name])
 
 
+def test_arm64_apt_uses_the_pinned_archive_snapshot() -> None:
+    recipe = (IMAGES / "Containerfile").read_text()
+    assert 'if [ "${TARGETARCH}" = arm64 ]; then' in recipe
+    assert (
+        "s|http://ports.ubuntu.com/ubuntu-ports|"
+        "https://snapshot.ubuntu.com/ubuntu/${UBUNTU_SNAPSHOT}|g"
+    ) in recipe
+    assert "Snapshot: no" in recipe
+    assert 'APT::Snapshot="${UBUNTU_SNAPSHOT}"' in recipe
+
+
 def test_python_requirements_are_hashed() -> None:
     text = (IMAGES / "crypto-base" / "requirements.txt").read_text()
     requirements = [line for line in text.splitlines() if re.match(r"^[A-Za-z]", line)]
@@ -167,7 +188,9 @@ def test_each_research_profile_locks_the_kernel_packages(profile: str) -> None:
     names = {package["name"] for package in _lockfile(profile)["package"]}
     assert {"python", "ipykernel", "jupyter_client", "pip"} <= names
     if profile == "crypto-base":
-        assert {"sage", "sagelib", "fpylll", "fplll", "pari", "libflint", "cython"} <= names
+        assert {"sagelib", "fpylll", "fplll", "pari", "libflint", "cython"} <= names
+        # Not the `sage` metapackage, whose only addition is Jmol and its Java runtime.
+        assert not {"sage", "jmol", "openjdk"} & names
 
 
 @pytest.mark.parametrize("profile", SERVICE_PROFILES)
@@ -183,11 +206,6 @@ def test_the_services_lock_what_their_packages_require_and_no_kernels(profile: s
     assert required
     assert {"python", "pip", "pydantic-core", *required} <= names
     assert not KERNEL_PACKAGES & names
-
-
-def test_the_mcp_proxy_locks_its_dependencies() -> None:
-    names = {package["name"] for package in _lockfile("mcp-proxy")["package"]}
-    assert {"python", "aiohttp", "pydantic", "pydantic-core", "pyyaml", "pip"} <= names
 
 
 @pytest.mark.parametrize(
@@ -259,7 +277,10 @@ def test_the_service_builds_stop_without_the_wheels() -> None:
     for profile in SERVICE_PROFILES:
         assert list(stages).index("wheels") < list(stages).index(profile)
         assert "--mount=type=bind,from=wheels," in stages[profile]
-    assert '--build-context "wheels=' in (IMAGES / "build.sh").read_text()
+    build = (IMAGES / "build.sh").read_text()
+    shared = (IMAGES / "common/build_recipe.sh").read_text()
+    assert "common/build_recipe.sh" in build
+    assert '--build-context "wheels=' in shared
 
 
 # The OpenShell view.
@@ -275,32 +296,11 @@ def test_the_orchestrators_filesystem_section_reads_the_prefix_only() -> None:
     section = yaml.safe_load((IMAGES / "orchestrator" / "filesystem.yml").read_text())
     filesystem = SandboxFilesystem.model_validate(section)
     assert filesystem == SandboxFilesystem(read_only=(PREFIX,))
-    # The example targets file lists it, and the compiler adds no devices to it.
+    # The example targets file lists it, and the compiler adds the baseline but no devices.
     targets = parse_targets((ROOT / "examples" / "openshell" / "targets.yaml").read_text())
     assert targets.orchestrator is not None
     assert targets.orchestrator.filesystem == filesystem
-    assert compile_orchestrator(targets.orchestrator).filesystem_policy == FilesystemPolicy(
-        include_workdir=True, read_only=(PREFIX,)
-    )
-
-
-def test_the_mcp_proxys_filesystem_section_reads_the_prefix_only() -> None:
-    section = yaml.safe_load((IMAGES / "mcp-proxy" / "filesystem.yml").read_text())
-    filesystem = SandboxFilesystem.model_validate(section)
-    assert filesystem == SandboxFilesystem(read_only=(PREFIX,))
-    # The example targets file lists it, with the interpreter that runs the proxy's entry point
-    # as the binary, since OpenShell sees that (lab 13); the compiler adds no devices.
-    targets = parse_targets((ROOT / "examples" / "openshell" / "targets.yaml").read_text())
-    assert targets.mcp_proxy.filesystem == filesystem
-    assert targets.mcp_proxy.binaries == (checks.PROXY_BINARIES,)
-    compiled = compile_mcp_proxy(
-        load_policy(ROOT / "examples" / "policy.yaml"),
-        targets.mcp_proxy,
-        ceiling=PoolCeiling.unrestricted(),
-    )
-    assert compiled.policy.filesystem_policy == FilesystemPolicy(
-        include_workdir=True, read_only=(PREFIX,)
-    )
+    assert compile_orchestrator(targets.orchestrator).filesystem_policy == SERVICE_FILESYSTEM
 
 
 def test_the_landlock_emulation_adds_the_compilers_devices() -> None:
@@ -313,15 +313,17 @@ def test_the_landlock_emulation_adds_the_compilers_devices() -> None:
 
     assert array("devices_ro") == SANDBOX_DEVICES_READ_ONLY
     assert array("devices_rw") == SANDBOX_DEVICES_READ_WRITE
-    # compile_orchestrator() and compile_mcp_proxy() add none to the services' sandboxes.
+    assert array("frozen_ro") == RESEARCH_IMAGE_READ_ONLY == (str(layout.FROZEN), str(layout.BASE))
+    # compile_orchestrator() adds none to the service's sandbox.
     branch = re.search(
-        r"^  orchestrator \| mcp-proxy\)$(.*?)^    ;;$",
+        r"^  orchestrator\)$(.*?)^    ;;$",
         text,
         flags=re.MULTILINE | re.DOTALL,
     )
     assert branch is not None
     assert re.search(r"^    devices_ro=\(\)$", branch.group(1), flags=re.MULTILINE)
     assert re.search(r"^    devices_rw=\(\)$", branch.group(1), flags=re.MULTILINE)
+    assert re.search(r"^    frozen_ro=\(\)$", branch.group(1), flags=re.MULTILINE)
     assert "$here/$profile/filesystem.yml" in branch.group(1)
     for profile in SERVICE_PROFILES:
         assert (IMAGES / profile / "filesystem.yml").is_file()
@@ -336,32 +338,10 @@ def test_the_check_plan_names_methods_of_the_checks() -> None:
     orchestrator = checks.planned("orchestrator", landlock=True, network=True)
     assert {"landlock", "harness-cli", "harness-run", "no-kernels"} <= set(orchestrator)
     assert not {"executor", "python-kernel", "runtime-install"} & set(orchestrator)
-    proxy = checks.planned("mcp-proxy", landlock=True, network=True)
-    assert {"landlock", "proxy-cli", "launcher", "proxy-serve", "proxy-restart"} <= set(proxy)
-    assert not {"executor", "harness-run", "runtime-install"} & set(proxy)
     assert set(checks.SERVICE_PACKAGES) == set(SERVICE_PROFILES)
     for profile in SERVICE_PROFILES:
         expected = sorted(f"sandbox-science-{package}" for package in _recipe_packages(profile))
         assert sorted(checks.SERVICE_PACKAGES[profile]) == expected
-
-
-# The MCP proxy's launcher.
-
-
-def test_the_launcher_is_the_mcp_proxy_images_command() -> None:
-    launcher = IMAGES / "mcp-proxy" / "mcp-proxy-run"
-    text = launcher.read_text()
-    assert text.startswith("#!/bin/sh\n# SPDX-License-Identifier: MIT\n")
-    stage = _stages()["mcp-proxy"]
-    copy = f"COPY --chmod=0755 mcp-proxy/mcp-proxy-run {checks.LAUNCHER}"
-    assert re.search(rf"^{re.escape(copy)}$", stage, flags=re.MULTILINE)
-    assert f'CMD ["{checks.LAUNCHER}"]' in stage
-    # It runs the proxy's command, and waits for the settings where the checks write them.
-    assert f"\nproxy={checks.PROXY}\n" in text
-    assert f"\nsettings=${{1:-{checks.PROXY_SETTINGS}}}\n" in text
-    sh = shutil.which("sh")
-    if sh is not None:
-        subprocess.run([sh, "-n", str(launcher)], check=True)
 
 
 # Licenses.
@@ -496,6 +476,60 @@ def test_binding_inventory_generator_is_shared_by_build_and_executor() -> None:
     assert "from=binding-inventory,source=binding_inventory.py" in recipe
     assert "python -I -B /tmp/binding_inventory.py" in recipe
     build = (IMAGES / "build.sh").read_text()
+    shared = (IMAGES / "common/build_recipe.sh").read_text()
     revision = (IMAGES / "revision.sh").read_text()
-    assert "binding-inventory=$here/../packages/worker/src/sandbox_science/worker" in build
+    assert "common/build_recipe.sh" in build
+    assert "binding-inventory=$image_here/../packages/worker/src/sandbox_science/worker" in shared
     assert "../packages/worker/src/sandbox_science/worker/binding_inventory.py" in revision
+
+
+def test_research_images_ship_a_target_native_versioned_scheduler_shim() -> None:
+    stages = _stages()
+    build = stages["scheduler-shim"]
+    assert 'APT::Snapshot="${UBUNTU_SNAPSHOT}"' in build
+    assert "from=binding-inventory,source=shim/sched_self.c" in build
+    assert "sha256sum /tmp/sched_self.c" in build
+    assert "SANDBOX_SCIENCE_SCHED_SOURCE_SHA256" in build
+    assert "cc -shared -fPIC -O2" in build
+    source = "../packages/worker/src/sandbox_science/worker/shim/sched_self.c"
+    for profile in RESEARCH_PROFILES:
+        assert source in _recipe_inputs(profile)
+        assert (
+            "COPY --from=scheduler-shim /output/ /usr/local/lib/sandbox-science/shim/"
+            in stages[profile]
+        )
+        assert "scheduler-shim" in checks.planned(profile, landlock=True, network=False)
+    for profile in SERVICE_PROFILES:
+        assert "COPY --from=scheduler-shim" not in stages[profile]
+
+
+def test_only_the_research_layer_is_seeded_into_workspace_without_changing_services() -> None:
+    stages = _stages()
+    research = stages["research-base"]
+    assert "ln -s /sandbox/.sandbox-science-prefix /opt/sandbox-science" in research
+    assert "install -d -o 0 -g 0 -m 0755 /opt/sandbox-science-base" in research
+    assert "mv /opt/sandbox-science /sandbox" not in research
+    path = re.search(r"ENV PATH=(\S+)", research)
+    assert path is not None
+    assert path.group(1).split(":")[:2] == [
+        "/opt/sandbox-science/bin",
+        "/opt/sandbox-science-base/bin",
+    ]
+    assert "JUPYTER_PATH=/opt/sandbox-science-base/share/jupyter" in research
+    recipe = (IMAGES / "Containerfile").read_text()
+    for profile in RESEARCH_PROFILES:
+        stage = stages[profile]
+        assert f"FROM research-base AS {profile}" in recipe
+        assert "! -name .sandbox-science-prefix -exec rm -rf -- {} +" in stage
+        assert "find /sandbox -mindepth 1 -delete" not in stage
+        # The base is installed as root, never as the sandbox account, and the layer last.
+        assert "setpriv" not in stage
+        assert "-p /opt/sandbox-science-base" in stage
+        layer = stage.index("prefix_layout.py layer")
+        assert "pip install" not in stage[layer:]
+        assert "chown -R -h 1000:1000 /sandbox/.sandbox-science-prefix" in stage[layer:]
+    for profile in SERVICE_PROFILES:
+        assert f"FROM base AS {profile}" in recipe
+    script = (IMAGES / "test.sh").read_text()
+    assert "type=volume,target=/sandbox" in script
+    assert "type=volume,target=/opt/sandbox-science" not in script

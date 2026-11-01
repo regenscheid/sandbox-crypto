@@ -24,16 +24,15 @@ refusal names the first clause that does not (``gate_not_met``):
 3. ``computation``: computational evidence pinned to an artifact revision;
 4. ``review``: a completed checkpoint or terminal review (``passed`` or ``findings``)
    whose coverage was complete had in its snapshot, whole, a revision of the entry whose
-   material the change keeps; when a fix was confirmed of a ``fail`` finding raised on
-   that material, the review started after the confirmation, so the review that raised
-   it does not count;
-5. ``finding``: no ``fail`` finding anchored to the entry is unresolved: open, claimed
-   fixed or unaddressed, or superseded until a completed review that started after the
-   supersession covered the entry's material as the change leaves it. A confirmed fix or
-   a withdrawal resolves it, but only for the material it was decided for: while a
-   ``fail`` finding of any status is anchored to a revision whose material the change
-   keeps, the entry must have kept that material at every revision since, or the
-   finding holds;
+   material the change keeps; when a ``fail`` finding raised on that material was made
+   ``fixed``, the review started after that, so the review that raised it does not count;
+5. ``finding``: no ``fail`` finding anchored to the entry is unresolved (CR-41): one is
+   resolved when it is ``fixed``, or ``dismissed`` by the user or with a review's
+   acceptance of the author's reason; ``open``, ``stale`` and a dismissal by the agent
+   alone are unresolved, and a ``superseded`` finding counts as its successor does. A
+   resolution holds only for the material it was decided for: while a resolved ``fail``
+   finding is anchored to a revision whose material the change keeps, the entry must
+   have kept that material at every revision since, or the finding holds;
 6. ``flags``: no open flag on the entry (LG-28).
 
 Some clauses cannot hold in full yet, and the limits are deliberate: verification
@@ -55,7 +54,7 @@ import sqlite3
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Final
+from typing import Any, Final, cast
 
 from sandbox_science.orchestrator.documents.errors import POLICY_DENIED, DocumentError
 from sandbox_science.orchestrator.projects import run_id_of
@@ -68,7 +67,48 @@ Json = dict[str, Any]
 _NOT_COUNTING: Final = frozenset({"synthetic", "unclassified"})
 
 
-_RESOLVED: Final = frozenset({"confirmed fixed", "withdrawn"})
+SUCCESSORS: Final = 32
+"""The most successors the gate follows from a superseded finding to the one it counts as."""
+
+
+def resolved(status: str, dismissal: object, actor_kind: str | None = None) -> bool:
+    """Whether a finding in ``status`` is resolved for the gate (CR-41, LG-17): ``fixed``,
+    or ``dismissed`` by the user or with a review's acceptance of the author's reason. A
+    ``superseded`` finding with no successor is resolved only when the user set it."""
+    if status == "fixed":
+        return True
+    if status == "superseded":
+        return actor_kind == "user"
+    if status != "dismissed" or not isinstance(dismissal, dict):
+        return False
+    found = cast(Json, dismissal)
+    review = found.get("review")
+    return found.get("by") == "user" or (
+        isinstance(review, dict) and cast(Json, review).get("decision") == "accepted"
+    )
+
+
+def successor_state(db: sqlite3.Connection, finding: str) -> tuple[str, str, bool]:
+    """The finding a superseded one counts as, following ``superseded_by``: its ID, its
+    status and whether it is resolved for the gate."""
+    current, seen = finding, {finding}
+    for _ in range(SUCCESSORS):
+        row = db.execute(
+            "SELECT status,dismissal,superseded_by,(SELECT h.actor_kind FROM "
+            "review_finding_history h WHERE h.finding_id=f.finding_id ORDER BY h.seq DESC "
+            "LIMIT 1) FROM review_findings f WHERE finding_id=?",
+            (current,),
+        ).fetchone()
+        if row is None:
+            return current, "open", False
+        status, raw, successor, kind = row
+        dismissal: object = json.loads(raw) if isinstance(raw, str) else None
+        if status != "superseded" or successor is None or successor in seen:
+            return current, status, resolved(status, dismissal, kind)
+        seen.add(successor)
+        current = successor
+    return current, "superseded", False
+
 
 KEPT_REVISIONS: Final = 256
 """The most revisions since a ``fail`` finding the gate reads to see that the entry kept
@@ -320,7 +360,7 @@ def clauses(
         (
             f.confirmed
             for f in fails
-            if f.on_now and f.status == "confirmed fixed" and f.confirmed is not None
+            if f.on_now and f.status == "fixed" and f.confirmed is not None
         ),
         default=None,
     )
@@ -334,7 +374,7 @@ def clauses(
             f"no completed consistency review has covered {handle} as the change leaves "
             "it: a review whose coverage was complete, whose snapshot held, whole, a "
             "revision with the same statement, fields, assumptions and evidence, and "
-            "which started after any fix confirmed of a fail finding raised on them, "
+            "which started after any fail finding raised on them was made fixed, "
             "and after the entry was last weakened (a dispute, a flag, a reopening)",
         )
     else:
@@ -364,35 +404,37 @@ def clauses(
 def _findings(
     db: sqlite3.Connection, entry: str, handle: str, now: Material, fails: list[Failing]
 ) -> tuple[bool, str]:
-    """The finding clause: whether it holds, and why."""
+    """The finding clause: whether it holds, and why. ``entry`` and ``now`` are what the
+    findings in ``fails`` were read for."""
     for f in fails:
-        if f.status in _RESOLVED and (not f.on_now or f.kept):
+        if f.status == "superseded" and not f.resolved:
+            successor, status, _ = successor_state(db, f.finding)
+            return (
+                False,
+                f"{handle} has an unresolved fail finding, {f.finding}: it was superseded by "
+                f"{successor}, which is {status}",
+            )
+        if f.resolved and f.status == "superseded":
             continue
-        if f.status in _RESOLVED or (f.status == "superseded" and f.on_now):
+        if f.resolved and (not f.on_now or f.kept):
+            continue
+        if f.resolved:
             return (
                 False,
                 f"{handle} has a fail finding, {f.finding}, raised on the statement, "
                 "fields, assumptions and evidence the change leaves it, and the entry "
-                "has left that material since: "
-                + (
-                    "the finding was superseded when it left, not resolved"
-                    if f.status == "superseded"
-                    else f"the finding is {f.status}, which was not decided for this material"
-                ),
+                f"has left that material since: the finding is {f.status}, which was not "
+                "decided for this material",
             )
-        if (
-            f.status == "superseded"
-            and now in examined(db, entry, set(reviewed(db, entry, after=f.superseded))).values()
-        ):
-            continue
+        why = {
+            "stale": "; it is stale, and no re-check of it has run since what it reviewed "
+            "was replaced",
+            "dismissed": "; only the agent dismissed it, and no review has accepted the reason",
+        }.get(f.status, "")
         return (
             False,
-            f"{handle} has an unresolved fail finding, {f.finding}: fix or rebut it first"
-            + (
-                "; it was superseded, and no review since has covered the entry as it is"
-                if f.status == "superseded"
-                else ""
-            ),
+            f"{handle} has an unresolved fail finding, {f.finding}: fix it, or dismiss it "
+            f"with a reason a review can accept{why}",
         )
     return True, f"no fail finding on {handle} is unresolved"
 
@@ -408,9 +450,9 @@ class Failing:
     kept: bool
     """The entry has kept that material at every revision since that one."""
     confirmed: float | None
-    """When a fix of it was last confirmed."""
-    superseded: float | None
-    """When it was last superseded."""
+    """When it was last made ``fixed``."""
+    resolved: bool
+    """Whether it is resolved for the gate; a superseded one as its successor is."""
 
 
 def failing(db: sqlite3.Connection, entry: str, now: Material, before: int) -> list[Failing]:
@@ -418,11 +460,11 @@ def failing(db: sqlite3.Connection, entry: str, now: Material, before: int) -> l
     each was raised on ``now``, the material a change leaves it, and whether the entry
     has kept that material since, through ``before``, its revision before the change."""
     rows = db.execute(
-        "SELECT f.finding_id,f.status,"
-        "(SELECT max(t.created) FROM review_transitions t "
-        "WHERE t.finding_id=f.finding_id AND t.status='confirmed fixed'),"
-        "(SELECT max(t.created) FROM review_transitions t "
-        "WHERE t.finding_id=f.finding_id AND t.status='superseded') "
+        "SELECT f.finding_id,f.status,f.dismissal,"
+        "(SELECT max(h.created) FROM review_finding_history h "
+        "WHERE h.finding_id=f.finding_id AND h.status='fixed'),"
+        "(SELECT h.actor_kind FROM review_finding_history h WHERE h.finding_id=f.finding_id "
+        "ORDER BY h.seq DESC LIMIT 1) "
         "FROM review_finding_entries x JOIN review_findings f USING(finding_id) "
         "WHERE x.entry_id=? AND f.severity='fail' ORDER BY f.created",
         (entry,),
@@ -440,8 +482,9 @@ def failing(db: sqlite3.Connection, entry: str, now: Material, before: int) -> l
             anchored[finding].add(revision)
     held = examined(db, entry, {r for revisions in anchored.values() for r in revisions})
     found: list[Failing] = []
-    for finding, status, confirmed, superseded in rows:
+    for finding, status, raw, confirmed, kind in rows:
         on = sorted(r for r in anchored[finding] if held.get(r) == now)
+        dismissal: object = json.loads(raw) if isinstance(raw, str) else None
         found.append(
             Failing(
                 finding=finding,
@@ -449,7 +492,9 @@ def failing(db: sqlite3.Connection, entry: str, now: Material, before: int) -> l
                 on_now=bool(on),
                 kept=bool(on) and _kept(db, entry, on[0], before, now, held),
                 confirmed=confirmed,
-                superseded=superseded,
+                resolved=successor_state(db, finding)[2]
+                if status == "superseded"
+                else resolved(status, dismissal, kind),
             )
         )
     return found

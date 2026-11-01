@@ -938,7 +938,7 @@ def _result(
         open_findings=db.execute(
             "SELECT count(DISTINCT x.finding_id) FROM review_finding_entries x "
             "JOIN review_findings f USING(finding_id) WHERE x.entry_id=? "
-            "AND f.status NOT IN ('confirmed fixed','withdrawn','superseded')",
+            "AND f.status='open'",
             (entry,),
         ).fetchone()[0],
         open_flags=db.execute(

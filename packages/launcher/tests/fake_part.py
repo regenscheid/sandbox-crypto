@@ -13,7 +13,8 @@ Every step goes in the file ``FAKE_JOURNAL`` names, one line each, and ``FAKE_PA
 - ``child-stays``: it starts a child in its own session, which outlives it.
 - ``suspend-busy``: the worker suspends nothing, as for sandboxes in use.
 - ``suspend-slow``: the worker takes 20 s to answer a suspension.
-- ``old-protocol``: the worker speaks protocol 5.
+- ``old-protocol``: the worker speaks protocol 5 on its environment routes.
+- ``old-protocol-bind``: the worker speaks protocol 5 on its runtime-sandbox routes.
 
 The harness's ``skills`` commands answer as for a control store with no import and no
 pin: ``import`` and ``pin`` answer an import at the commit ``c`` * 40 with one skill.
@@ -23,6 +24,11 @@ for its clients' projects, from the environments in the OpenShell stand-in's fil
 (``FAKE_OPENSHELL``); a suspension stops the sandbox there too. As the worker does, it
 answers from the sandbox's phase: one recorded stopped whose sandbox is still Ready is
 stopped again.
+
+It answers ``POST /v1/runtime-sandboxes`` and ``DELETE /v1/runtime-sandboxes/{id}`` for an
+operator client's projects, and writes ``bind PROJECT ID`` and ``unbind ID`` lines to
+``FAKE_JOURNAL`` with ``.bindings`` added (apart from the journal, whose order other
+tests check).
 
 The run service and the workspace note ``LEAK_CHECK`` and ``PASSED_ON`` when they see
 them.
@@ -36,6 +42,7 @@ import os
 import re
 import signal
 import socket
+import socketserver
 import subprocess
 import sys
 import threading
@@ -53,6 +60,16 @@ name, args = sys.argv[1], sys.argv[2:]
 behaviour = json.loads(os.environ.get("FAKE_PARTS", "{}")).get(name, "")
 
 
+class NoDNSHTTPServer(ThreadingHTTPServer):
+    """A local test server must not wait for a runner's reverse DNS lookup."""
+
+    def server_bind(self) -> None:
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = str(host)
+        self.server_port = int(port)
+
+
 def note(text: str) -> None:
     with Path(os.environ["FAKE_JOURNAL"]).open("a") as journal:
         journal.write(f"{name} {text}\n")
@@ -63,6 +80,9 @@ def option(flag: str) -> str:
 
 
 def stopped(*_: object) -> None:
+    # A Darwin watcher and its supervisor can deliver TERM during the same
+    # shutdown. A second signal must not re-enter the journal write.
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
     note("stop")
     sys.exit(0)
 
@@ -88,9 +108,10 @@ def worker_api(settings: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 
         def answer(self, status: int, body: object) -> None:
             data = json.dumps(body).encode()
+            old = "old-protocol-bind" if "/runtime-sandboxes" in self.path else "old-protocol"
             self.send_response(status)
             self.send_header(
-                "X-Worker-Protocol", "5" if behaviour == "old-protocol" else str(PROTOCOL_VERSION)
+                "X-Worker-Protocol", "5" if behaviour == old else str(PROTOCOL_VERSION)
             )
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(data)))
@@ -111,10 +132,39 @@ def worker_api(settings: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             mine = [item for item in found if item["project_id"] in client["projects"]]
             return self.answer(200, {"environments": mine})
 
+        def bindings(self, line: str) -> None:
+            with lock, Path(os.environ["FAKE_JOURNAL"] + ".bindings").open("a") as handle:
+                handle.write(line + "\n")
+
+        def do_DELETE(self) -> None:
+            client = self.client()
+            if client is None:
+                return self.refuse(401, "unauthorized")
+            match = re.fullmatch(r"/v1/runtime-sandboxes/([^/]+)", self.path)
+            if match is None:
+                return self.refuse(404, "not_found")
+            if not client.get("operator"):
+                return self.refuse(403, "policy_denied")
+            self.bindings(f"unbind {match[1]}")
+            return self.answer(200, {"sandbox_id": match[1], "unbound": True})
+
         def do_POST(self) -> None:
             client = self.client()
             if client is None:
                 return self.refuse(401, "unauthorized")
+            if self.path == "/v1/runtime-sandboxes":
+                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+                if not client.get("operator") or body["project_id"] not in client["projects"]:
+                    return self.refuse(403, "policy_denied")
+                self.bindings(f"bind {body['project_id']} {body['sandbox_id']}")
+                return self.answer(
+                    200,
+                    {
+                        "sandbox_id": body["sandbox_id"],
+                        "project_id": body["project_id"],
+                        "policy": "sha256:" + "d" * 64,
+                    },
+                )
             match = re.fullmatch(r"/v1/environments/([^/]+)/suspend", self.path)
             if match is None:
                 return self.refuse(404, "not_found")
@@ -170,10 +220,15 @@ def serve(
         note("exits")
         sys.exit(4)
     signal.signal(signal.SIGTERM, signal.SIG_IGN if behaviour == "ignore-term" else stopped)
+    for seen in ("LEAK_CHECK", "PASSED_ON"):
+        if name in ("sandbox-science-worker", "sandbox-science-policy-middleware") and (
+            seen in os.environ
+        ):
+            note(f"saw {seen}")
     listener = None
     if address is not None and api is not None:
         host, port = address.rsplit(":", 1)
-        server = ThreadingHTTPServer((host, int(port)), api)
+        server = NoDNSHTTPServer((host, int(port)), api)
         threading.Thread(target=server.serve_forever, daemon=True).start()
     elif address is not None:
         host, port = address.rsplit(":", 1)
@@ -215,6 +270,9 @@ match (name, args[:2]):
     case ("sandbox-science-worker", ["serve", *_]):
         settings = tomllib.loads(Path(option("--settings")).read_text())
         serve(settings["listen"], ["worker API on " + settings["listen"]], api=worker_api(settings))
+    case ("sandbox-science-policy-middleware" | "sandbox-science-package-cache", ["serve", *_]):
+        settings = tomllib.loads(Path(option("--settings")).read_text())
+        serve(settings["listen"], [f"{name} serving on " + settings["listen"]])
     case ("sandbox-science-harness", ["project", "show"]):
         # The projects made so far, beside the journal: a project not made is not there.
         note(f"project show {option('--project')}")
@@ -258,13 +316,7 @@ match (name, args[:2]):
                 note(f"saw {seen}")
         if "--skills-embedding-model" in args:
             note(f"embeds with {option('--skills-embedding-model')}")
-        if "--mcp-proxy" in args:
-            servers = [args[i + 1] for i, arg in enumerate(args) if arg == "--mcp-server"]
-            note(f"has MCP {option('--mcp-proxy')} for {option('--mcp-project')}: {servers}")
         serve(None, [f"serving the sessions of {option('--state-dir')}"], stream=sys.stderr)
-    case ("sandbox-science-mcp-proxy", ["compile-policy", *_]):
-        Path(option("--out")).write_text("# compiled\n")
-        note("compile-policy")
     case ("sandbox-science-workspace", ["serve", *_]):
         for seen in ("LEAK_CHECK", "PASSED_ON"):
             if seen in os.environ:

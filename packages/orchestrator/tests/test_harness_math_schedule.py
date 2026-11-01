@@ -12,6 +12,7 @@ from typing import Any
 from sandbox_science.orchestrator import cli
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
 
+from .scripted import script as scripted
 from .test_harness import TOKEN, worker_url  # noqa: F401  (fixture)
 
 
@@ -44,7 +45,7 @@ async def test_an_agent_saved_revision_is_scheduled_for_a_math_check(
         },
         {"text": "done"},
     ]
-    script.write_text(json.dumps(turns))
+    script.write_text(json.dumps(scripted(turns)))
     status = await asyncio.to_thread(
         cli.main,
         ["run", "--worker", worker_url, "--token-file", str(token), "--project", "p1",

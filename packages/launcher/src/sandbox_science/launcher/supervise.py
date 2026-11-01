@@ -10,14 +10,14 @@ address), which go to a private file of their own instead.
 A part that listens must find its address free before it starts, and is ready when it
 prints its ready line and its address takes connections while it still runs. One that
 stops before it is ready, or later by itself, stops the launcher, unless it is one to
-start again (the MCP proxy's forward, which exits whenever its sandbox stops): that one
+start again (such as a forward, which exits whenever its sandbox stops): that one
 starts again after a delay that doubles while it keeps stopping, and the launcher gives
 up on it after ``RESTARTS`` in a row, or at once if something else took its address.
 Besides the parts, the launcher can have actions to take when it stops, such as deleting
 a sandbox it made; they run in the same reverse order.
 
-Each part dies with the launcher (Linux's ``PR_SET_PDEATHSIG``, set by a small
-trampoline before the part's command runs), so a launcher killed outright leaves no part
+Each part dies with the launcher (Linux's ``PR_SET_PDEATHSIG`` or a Darwin
+parent-pipe watcher), so a launcher killed outright leaves no part
 running unsupervised. A part gets only the environment variables ``ENVIRONMENT`` names
 and those the config passes on, never the whole shell's: an API key exported there does
 not reach the run service.
@@ -33,6 +33,7 @@ import signal
 import socket
 import sys
 import time
+from collections import deque
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -42,6 +43,8 @@ from sandbox_science.contracts import SYSTEM_CLOCK, Clock
 from sandbox_science.contracts.clock import wait_or_sleep
 
 from .config import LauncherError
+from .processes import members
+from .processes import start_time as start_time
 from .state import Layout, write_private
 
 CHUNK = 65536
@@ -52,6 +55,7 @@ ENVIRONMENT = frozenset(
         "PATH", "HOME", "USER", "LOGNAME", "LANG", "LANGUAGE", "TZ", "TMPDIR",
         "XDG_RUNTIME_DIR", "SSL_CERT_FILE", "SSL_CERT_DIR",
         "http_proxy", "https_proxy", "no_proxy", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+        "SS_LOG_FORMAT", "SS_LOG_LEVEL",
     }
 )  # fmt: skip
 """The variables of the launcher's environment every part gets, with the ``LC_`` ones."""
@@ -82,15 +86,6 @@ def environment() -> dict[str, str]:
 def passed(names: Iterable[str]) -> dict[str, str]:
     """The variables of the launcher's environment a part's ``pass_env`` names."""
     return {name: os.environ[name] for name in names if name in os.environ}
-
-
-def start_time(pid: int) -> int | None:
-    """When the process started, in clock ticks since boot; None if it is gone."""
-    try:
-        with open(f"/proc/{pid}/stat", "rb") as stat:
-            return int(stat.read().rsplit(b")", 1)[1].split()[19])
-    except (OSError, IndexError, ValueError):
-        return None
 
 
 def free(address: str) -> bool:
@@ -142,7 +137,12 @@ class Running:
     reported: bool = False
     start_timeout: float = 300
     restarts: int = 0
+    parent_pipe: int | None = None
+    """Darwin's write end: EOF tells the part its launcher died."""
     """Times in a row it was started again, for a part that is."""
+    recent: deque[str] = field(default_factory=lambda: deque[str](maxlen=TAIL_LINES))
+    """The part's last lines, for the error shown when it stops: all there is of its output
+    in a supervisor that keeps no log files."""
 
 
 def _append(path: Path) -> int:
@@ -170,6 +170,14 @@ async def reachable(address: str, timeout: float = 1.0) -> bool:
     return True
 
 
+async def _exited(process: asyncio.subprocess.Process) -> None:
+    """Return once the process has exited. ``Process.wait`` also waits until its output
+    pipe closes (Python 3.13), which an orphaned child of a killed Darwin watcher keeps
+    open until its session is ended: waiting on it then would never end."""
+    while process.returncode is None:
+        await asyncio.sleep(POLL)
+
+
 class Supervisor:
     """The parts started so far, in their order."""
 
@@ -185,8 +193,15 @@ class Supervisor:
         restart_delays: tuple[float, ...] = RESTART_DELAYS,
         restarts: int = RESTARTS,
         steady: float = STEADY,
+        echo: Callable[[str, str], None] | None = None,
+        keep_logs: bool = True,
     ) -> None:
         self.layout = layout
+        self.echo = echo
+        """Called with a part's name and each line it writes, secret ones left out."""
+        self.keep_logs = keep_logs
+        """Whether each part's output goes to its log in ``layout``; the unit's parts
+        write to its own output instead (unit.py)."""
         self.clock, self.restart_delays, self.restarts, self.steady = (
             clock,
             restart_delays,
@@ -222,10 +237,16 @@ class Supervisor:
         await self._wait_ready(running, timeout)
         return running
 
+    def _ending(self, running: Running) -> str:
+        """The end of a part's output, for the error shown when it stops."""
+        if not self.keep_logs:
+            return "its last lines:\n" + "\n".join(f"    {line}" for line in running.recent)
+        return f"the end of its log, {running.log}:\n" + tail(running.log)
+
     async def _wait_ready(self, running: Running, timeout: float) -> None:
         part = running.part
         ready = asyncio.ensure_future(self._ready(running))
-        exited = asyncio.ensure_future(running.process.wait())
+        exited = asyncio.ensure_future(_exited(running.process))
         stopped = asyncio.ensure_future(self.stop_requested.wait())
         try:
             done, _ = await asyncio.wait(
@@ -240,15 +261,16 @@ class Supervisor:
         if stopped in done:
             raise StopRequested
         if exited in done or running.process.returncode is not None:
+            # What it left in its session may hold its output open, as in watch().
+            await asyncio.to_thread(end_session, running.process.pid)
             if running.pump is not None:
                 await running.pump
             raise LauncherError(
                 f"the {part.title} stopped as it started, with status "
-                f"{running.process.returncode}; the end of its log, {running.log}:\n"
-                + tail(running.log)
+                f"{running.process.returncode}; {self._ending(running)}"
             )
         raise LauncherError(
-            f"the {part.title} was not ready within {timeout:g} s; its log: {running.log}"
+            f"the {part.title} was not ready within {timeout:g} s; {self._ending(running)}"
         )
 
     async def run(
@@ -306,7 +328,7 @@ class Supervisor:
         """Wait until the launcher is asked to stop (None) or a part stops by itself."""
         while True:
             exits = {
-                asyncio.ensure_future(running.process.wait()): running
+                asyncio.ensure_future(_exited(running.process)): running
                 for running in self.running
                 if not (running.reported and running.process.returncode is not None)
             }
@@ -319,6 +341,12 @@ class Supervisor:
             if stopped in done:
                 return None
             running = next(exits[waiting] for waiting in exits if waiting in done)
+            if running.parent_pipe is not None:
+                os.close(running.parent_pipe)
+                running.parent_pipe = None
+            # A Darwin watcher can be killed while its child still owns the
+            # output pipe. Drain the session before waiting for that pipe's EOF.
+            await asyncio.to_thread(end_session, running.process.pid)
             if running.pump is not None:
                 await running.pump
             if not running.part.required and not running.part.restart:
@@ -334,16 +362,14 @@ class Supervisor:
             if not running.part.restart:
                 return (
                     f"the {running.part.title} stopped by itself, with status "
-                    f"{running.process.returncode}; the end of its log, {running.log}:\n"
-                    + tail(running.log)
+                    f"{running.process.returncode}; {self._ending(running)}"
                 )
             steady = self.clock.monotonic() - running.since >= self.steady
             restarts = 1 if steady else running.restarts + 1
             if restarts > self.restarts:
                 reason = (
                     f"the {running.part.title} kept stopping: it was started again "
-                    f"{self.restarts} times in a row; the end of its log, {running.log}:\n"
-                    + tail(running.log)
+                    f"{self.restarts} times in a row; {self._ending(running)}"
                 )
                 if running.part.required:
                     return reason
@@ -359,7 +385,6 @@ class Supervisor:
             )
             if await wait_or_sleep(self.clock, self.stop_requested, delay):
                 return None
-            await asyncio.to_thread(end_session, running.process.pid)
             address = running.part.address
             if address is not None and not free(address):
                 reason = (
@@ -435,19 +460,42 @@ class Supervisor:
         # Whatever the part started and left in its session goes with it.
         await asyncio.to_thread(end_session, process.pid)
         await process.wait()
+        if running.parent_pipe is not None:
+            os.close(running.parent_pipe)
+            running.parent_pipe = None
         if running.pump is not None:
             await running.pump
 
     async def _spawn(self, part: Part) -> Running:
         log = self.layout.log(part.name)
-        os.close(_append(log))
-        process = await asyncio.create_subprocess_exec(
-            sys.executable, "-I", "-c", _TRAMPOLINE, str(os.getpid()), *part.argv,
-            cwd=part.cwd, env={**self.env, **part.env},
-            stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT, start_new_session=True,
-        )  # fmt: skip
-        running = Running(part, process, log, since=self.clock.monotonic())
+        if self.keep_logs:
+            os.close(_append(log))
+        if sys.platform == "darwin":
+            read_fd, write_fd = os.pipe()
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    sys.executable, "-I", "-m", "sandbox_science.launcher.parent_watch",
+                    str(read_fd), str(os.getpid()), *part.argv,
+                    cwd=part.cwd, env={**self.env, **part.env}, pass_fds=(read_fd,),
+                    stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT, start_new_session=True,
+                )  # fmt: skip
+            except BaseException:
+                os.close(write_fd)
+                raise
+            finally:
+                os.close(read_fd)
+            running = Running(
+                part, process, log, since=self.clock.monotonic(), parent_pipe=write_fd
+            )
+        else:
+            process = await asyncio.create_subprocess_exec(
+                sys.executable, "-I", "-c", _TRAMPOLINE, str(os.getpid()), *part.argv,
+                cwd=part.cwd, env={**self.env, **part.env},
+                stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT, start_new_session=True,
+            )  # fmt: skip
+            running = Running(part, process, log, since=self.clock.monotonic())
         running.pump = asyncio.ensure_future(self._pump(running))
         return running
 
@@ -455,23 +503,33 @@ class Supervisor:
         stream = running.process.stdout
         if stream is None:  # never: the part's output is a pipe
             return
-        with os.fdopen(_append(running.log), "w", encoding="utf-8") as log:
+        with contextlib.ExitStack() as files:
+            log = (
+                files.enter_context(os.fdopen(_append(running.log), "w", encoding="utf-8"))
+                if self.keep_logs
+                else None
+            )
             pending = b""
             while chunk := await stream.read(CHUNK):
                 *lines, pending = (pending + chunk).split(b"\n")
                 for line in lines:
                     self._line(running, line.decode("utf-8", errors="replace"), log)
-                log.flush()
+                if log is not None:
+                    log.flush()
             if pending:
                 self._line(running, pending.decode("utf-8", errors="replace"), log)
 
-    def _line(self, running: Running, line: str, log: TextIO) -> None:
+    def _line(self, running: Running, line: str, log: TextIO | None) -> None:
         part = running.part
         shown = line
         if part.private is not None and part.private[0].search(line):
             write_private(part.private[1], line.strip() + "\n")
             shown = f"[a private line, in {part.private[1]}]"
-        print(shown, file=log)
+        if log is not None:
+            print(shown, file=log)
+        running.recent.append(shown)
+        if self.echo is not None:
+            self.echo(part.name, shown)
         # Ready only once the line is written, private ones included.
         if part.ready_line is not None and part.ready_line in line:
             running.ready.set()
@@ -496,23 +554,6 @@ def end_session(session: int) -> None:
         if not _end_session(session, 0):
             return
     _end_session(session, signal.SIGKILL)
-
-
-def members(session: int) -> list[int]:
-    """The processes in ``session``, by ``/proc``."""
-    found: list[int] = []
-    for entry in os.listdir("/proc"):
-        if not entry.isdigit():
-            continue
-        try:
-            with open(f"/proc/{entry}/stat", "rb") as stat:
-                fields = stat.read().rsplit(b")", 1)[1].split()
-            # A zombie has ended already; only its parent's wait is left.
-            if fields[0] != b"Z" and int(fields[3]) == session:
-                found.append(int(entry))
-        except (OSError, IndexError, ValueError):
-            continue
-    return found
 
 
 def _end_session(session: int, signal_number: int) -> bool:

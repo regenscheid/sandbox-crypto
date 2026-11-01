@@ -5,6 +5,13 @@
 Run with the checked-out virtualenv: prepare --duration 3600, then up LAB,
 start LAB, inspect LAB, and cleanup LAB. Only a marked /var/tmp/ss-recovery-*
 directory is accepted. Never use the historical shared lab lifecycle scripts.
+
+Probes, in README order: tree, literal (a replayable cell is reconstructed after a
+kernel and agent loss), lost (a kernel killed under a cell that cannot be replayed:
+the next cell's result names the lost cells and the surviving files, Kernels 7),
+automatic (one cut model stream is tried again within the call; cuts beyond the
+client's tries are saved and continued automatically), history, narrative, upload,
+worker_cycle, then finish and cleanup.
 """
 
 from __future__ import annotations
@@ -33,9 +40,11 @@ from sandbox_science.launcher.config import load_config
 from sandbox_science.orchestrator.projects import ProjectStore
 
 REPO = Path(__file__).resolve().parents[2]
-OS_BIN = Path.home() / ".local/opt/openshell-0.1.3/bin"
+OS_BIN = Path.home() / ".local/opt/openshell-0.1.5/bin"
 PURPOSE = "disposable synthetic recovery acceptance"
 PROJECT = "recovery"
+LOST_FILE = "results/lost-seed.json"
+LOST_PURPOSE = "Computing 20! as the lost-state seed"
 
 
 def run(args, *, env=None, timeout=120, check=True):
@@ -95,27 +104,27 @@ def image_recipe(profile: str) -> dict[str, str]:
     return {"tag": tag, "revision": revision, "image_id": found["Id"]}
 
 
-def prepare(duration: int, static: Path) -> Path:
-    if not (static / "index.html").is_file():
-        raise ValueError("build web/workspace or supply --static with an existing read-only build")
-    images = {
-        profile: image_recipe(profile) for profile in ("orchestrator", "minimal", "crypto-base")
-    }
-    lab = Path("/var/tmp") / ("ss-recovery-" + secrets.token_hex(4))  # noqa: S108 - random private root
+OPENSHELL_ENV = (
+    "XDG_CONFIG_HOME",
+    "XDG_STATE_HOME",
+    "XDG_DATA_HOME",
+    "OPENSHELL_LOCAL_TLS_DIR",
+    "OPENSHELL_TELEMETRY_ENABLED",
+)
+"""The variables that point the OpenShell CLI and gateway at a lab's own state."""
+
+
+def make_root(prefix: str, purpose: str, port_names, extra: dict) -> tuple[Path, dict, dict]:
+    """A random, marked /var/tmp root with free loopback ports and its env.sh.
+
+    Shared by the disposable labs (recovery_acceptance_up.sh reads env.sh): returns the
+    root, its ports by name and the environment values env.sh exports.
+    """
+    lab = Path("/var/tmp") / (prefix + secrets.token_hex(4))  # noqa: S108 - random private root
     lab.mkdir(mode=0o700)
     ports = {}
     sockets = []
-    for name in (
-        "gateway",
-        "middleware",
-        "cache",
-        "unused",
-        "worker",
-        "workspace",
-        "preview",
-        "control",
-        "model",
-    ):
+    for name in port_names:
         peer = socket.socket()
         peer.bind(("127.0.0.1", 0))
         sockets.append(peer)
@@ -124,13 +133,12 @@ def prepare(duration: int, static: Path) -> Path:
         peer.close()
     revision = run(["git", "-C", str(REPO), "rev-parse", "HEAD"]).stdout.strip()
     identity = {
-        "purpose": PURPOSE,
+        "purpose": purpose,
         "source": str(REPO),
         "revision": revision,
         "unit_prefix": lab.name,
         "ports": ports,
-        "duration": duration,
-        "images": images,
+        **extra,
     }
     private(lab / "identity.json", json.dumps(identity, indent=2) + "\n")
     values = {
@@ -149,17 +157,33 @@ def prepare(duration: int, static: Path) -> Path:
         lab / "env.sh",
         "\n".join(f"export {name}={shlex.quote(value)}" for name, value in values.items())
         + '\nexport PATH="$OS_BIN:$PATH"\nOS_RUN_ENV=(\n'
-        + "\n".join(
-            f"--setenv={key}={shlex.quote(values[key])}"
-            for key in (
-                "XDG_CONFIG_HOME",
-                "XDG_STATE_HOME",
-                "XDG_DATA_HOME",
-                "OPENSHELL_LOCAL_TLS_DIR",
-                "OPENSHELL_TELEMETRY_ENABLED",
-            )
-        )
+        + "\n".join(f"--setenv={key}={shlex.quote(values[key])}" for key in OPENSHELL_ENV)
         + "\n)\n",
+    )
+    return lab, ports, values
+
+
+def prepare(duration: int, static: Path) -> Path:
+    if not (static / "index.html").is_file():
+        raise ValueError("build web/workspace or supply --static with an existing read-only build")
+    images = {
+        profile: image_recipe(profile) for profile in ("orchestrator", "minimal", "crypto-base")
+    }
+    lab, ports, values = make_root(
+        "ss-recovery-",
+        PURPOSE,
+        (
+            "gateway",
+            "middleware",
+            "cache",
+            "unused",
+            "worker",
+            "workspace",
+            "preview",
+            "control",
+            "model",
+        ),
+        {"duration": duration, "images": images},
     )
     private(lab / "model.key", "test-secret-recovery-" + secrets.token_hex(16) + "\n")
     data = {
@@ -172,7 +196,9 @@ def prepare(duration: int, static: Path) -> Path:
                     "sage",
                     "tree",
                     "literal",
+                    "lost",
                     "automatic",
+                    "automatic_beyond",
                     "history",
                     "narrative",
                     "upload",
@@ -275,22 +301,50 @@ print(json.dumps(value),flush=True)
     return lab
 
 
-class Lab:
+class OwnedRoot:
+    """A marked disposable /var/tmp root with its own units, gateway and ports.
+
+    Subclasses name the root's prefix and purpose, the units they start before the
+    gateway's sandboxes are deleted (``services``) and after (``infrastructure``), and the
+    prefix of the exported evidence directory. Teardown destroys only ledger-owned
+    resources and exports allowlisted JSON receipts with a SHA-256 manifest.
+    """
+
+    root_prefix = "ss-recovery-"
+    evidence_prefix = "ss-recovery-evidence-"
+    purpose = PURPOSE
+    services: tuple[str, ...] = ("launcher", "worker-probe", "model")
+    infrastructure: tuple[str, ...] = ("gateway", "middleware", "cache")
+    forbidden: tuple[str, ...] = ("/home/", "Bearer ", "test-secret-", "PRIVATE KEY")
+
     def __init__(self, path: Path):
         self.path = path.resolve()
         assert self.path.parent == Path("/var/tmp")  # noqa: S108 - marked private fixture root
-        assert self.path.name.startswith("ss-recovery-")
+        assert self.path.name.startswith(self.root_prefix)
         self.identity = json.loads((self.path / "identity.json").read_text())
-        assert self.identity["purpose"] == PURPOSE
+        assert self.identity["purpose"] == self.purpose
         assert self.identity["source"] == str(REPO)
         self.ports = self.identity["ports"]
         self.prefix = self.identity["unit_prefix"]
         assert self.prefix == self.path.name
-        self.config = self.path / "sandbox-science.toml"
-        self.env = {**os.environ, **load_config(self.config).openshell.env}
+        self.env = {**os.environ, **self.openshell_env()}
         self.env.update(LAB=str(self.path), R=str(REPO), LAB_UNIT=self.prefix, OS_BIN=str(OS_BIN))
         self.env.update({"PORT_" + name.upper(): str(port) for name, port in self.ports.items()})
-        self.base = f"http://127.0.0.1:{self.ports['workspace']}"
+
+    def openshell_env(self) -> dict[str, str]:
+        """The variables that point OpenShell at this root's own gateway state."""
+        return {
+            "XDG_CONFIG_HOME": str(self.path / "config"),
+            "XDG_STATE_HOME": str(self.path / "state"),
+            "XDG_DATA_HOME": str(self.path / "data"),
+            "OPENSHELL_LOCAL_TLS_DIR": str(self.path / "state/openshell/tls"),
+            "OPENSHELL_TELEMETRY_ENABLED": "false",
+        }
+
+    def units(self) -> list[str]:
+        return [
+            self.prefix + "-" + name + ".service" for name in (*self.services, *self.infrastructure)
+        ]
 
     def unit(self, suffix, args, *, cwd=None):
         return run(
@@ -309,26 +363,9 @@ class Lab:
     def cli(self, *args, **kwargs):
         return run([str(OS_BIN / "openshell"), *map(str, args)], env=self.env, **kwargs)
 
-    def read(self, sql, args=()):
-        projects = ProjectStore(self.path / "instance/control")
-        try:
-            with projects.control.read() as tx:
-                return tx.sql.execute(sql, args).fetchall()
-        finally:
-            projects.close()
-
     def evidence(self, name, value):
         (self.path / "evidence").mkdir(exist_ok=True)
         private(self.path / "evidence" / (name + ".json"), json.dumps(value, indent=2) + "\n")
-
-    def ready(self):
-        try:
-            with urllib.request.urlopen(
-                f"http://127.0.0.1:{self.ports['control']}/health", timeout=2
-            ) as response:
-                return json.load(response).get("runtime_connected")
-        except OSError:
-            return False
 
     def remember_sandboxes(self):
         value = json.loads(self.cli("sandbox", "list", "-o", "json").stdout)
@@ -338,6 +375,240 @@ class Lab:
         owned.update({item["id"]: item["name"] for item in value["sandboxes"]})
         private(path, json.dumps(owned, indent=2) + "\n")
         return value["sandboxes"]
+
+    def stop_owned_services(self, cleanup_error: Exception):
+        """A failed gateway query must not leave the owned host units running.
+
+        This deliberately cannot certify VM deletion or remove the private root:
+        that requires the normal gateway/ownership reconciliation to succeed.
+        """
+        assert json.loads((self.path / "identity.json").read_text()) == self.identity
+        units = self.units()
+        processes = {}
+        inventory_error = None
+        try:
+            for unit in units:
+                group = run(
+                    ["systemctl", "--user", "show", "--property=ControlGroup", "--value", unit],
+                    check=False,
+                ).stdout.strip()
+                if not group:
+                    continue
+                for file in (Path("/sys/fs/cgroup") / group.lstrip("/")).rglob("cgroup.procs"):
+                    for value in file.read_text().splitlines():
+                        pid = int(value)
+                        try:
+                            processes[pid] = (
+                                Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
+                            )
+                        except FileNotFoundError:
+                            continue
+        except Exception as error:
+            inventory_error = type(error).__name__
+        finally:
+            stops = stop_units(units)
+        status = {
+            unit: run(["systemctl", "--user", "is-active", unit], check=False).stdout.strip()
+            for unit in units
+        }
+        remaining = []
+        for pid, started in processes.items():
+            try:
+                stat = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+            except FileNotFoundError:
+                continue
+            if stat[19] == started and stat[0] != "Z":
+                remaining.append(pid)
+        open_ports = []
+        for port in self.ports.values():
+            with socket.socket() as peer:
+                peer.settimeout(0.2)
+                if peer.connect_ex(("127.0.0.1", port)) == 0:
+                    open_ports.append(port)
+        receipt = {
+            "cleanup_error_type": type(cleanup_error).__name__,
+            "stops": stops,
+            "unit_status": status,
+            "observed_process_count": len(processes),
+            "process_inventory_error": inventory_error,
+            "remaining_owned_processes": remaining,
+            "open_owned_ports": open_ports,
+            "root_preserved": True,
+            "vm_cleanup_verified": False,
+            "complete": False,
+        }
+        self.evidence("abort-owned-services", receipt)
+        assert inventory_error is None, (
+            "process inventory incomplete; inspect preserved abort receipt"
+        )
+        assert not remaining, "owned processes remain; inspect preserved abort receipt"
+        assert not open_ports, "owned ports remain; inspect preserved abort receipt"
+        assert all(value in {"inactive", "failed", "unknown"} for value in status.values()), status
+
+    def abort(self):
+        """Explicitly abandon an incomplete synthetic lab and remove owned resources."""
+        self.cleanup(incomplete=True)
+
+    def cleanup(self, *, incomplete=False):
+        """Always stop exact owned host units, retaining unresolved VM ownership."""
+        try:
+            self.cleanup_owned(incomplete=incomplete)
+        except Exception as error:
+            self.stop_owned_services(error)
+            raise RuntimeError(
+                "Full cleanup is incomplete; exact owned service shutdown was checked. "
+                "The private lab root is retained for VM ownership and evidence inspection."
+            ) from error
+
+    def before_export(self):
+        """Add last evidence before the receipts are exported."""
+
+    def private_words(self) -> tuple[str, ...]:
+        """Further text no exported receipt may contain."""
+        return ()
+
+    def cleanup_owned(self, *, incomplete=False):
+        """Destroy only ledger-owned resources, then export an allowlisted receipt."""
+        units = self.units()
+        split = len(self.services)
+        processes = {}
+        driver_directories: set[Path] = set()
+        for unit in units:
+            group = run(
+                ["systemctl", "--user", "show", "--property=ControlGroup", "--value", unit],
+                check=False,
+            ).stdout.strip()
+            if group:
+                directory = Path("/sys/fs/cgroup") / group.lstrip("/")
+                for file in directory.rglob("cgroup.procs"):
+                    for text in file.read_text().splitlines():
+                        pid = int(text)
+                        try:
+                            stat = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+                        except FileNotFoundError:
+                            continue
+                        processes[pid] = stat[19]
+                        try:
+                            command = Path(f"/proc/{pid}/cmdline").read_bytes().decode()
+                        except FileNotFoundError:
+                            continue
+                        driver_directories.update(
+                            Path(value)
+                            for value in re.findall(
+                                rf"/tmp/os-{os.getuid()}-[^/\s\x00,;]+",  # noqa: S108 - observe owned-process paths only
+                                command,
+                            )
+                        )
+        for unit in units[:split]:
+            run(["systemctl", "--user", "stop", unit], check=False)
+        listing = json.loads(self.cli("sandbox", "list", "-o", "json").stdout)
+        assert not listing.get("next_page_token")
+        owned = json.loads((self.path / "owned-sandboxes.json").read_text())
+        current = {item["id"]: item["name"] for item in listing["sandboxes"]}
+        assert current.items() <= owned.items(), "unrecorded sandbox: inspect ownership first"
+        for identity, name in current.items():
+            self.cli("sandbox", "delete", name, timeout=120)
+            remaining = json.loads(self.cli("sandbox", "list", "-o", "json").stdout)
+            assert not any(item["id"] == identity for item in remaining["sandboxes"])
+        assert not json.loads(self.cli("sandbox", "list", "-o", "json").stdout)["sandboxes"]
+        for unit in units[split:]:
+            run(["systemctl", "--user", "stop", unit], timeout=120)
+
+        def ports_closed():
+            for port in self.ports.values():
+                with socket.socket() as peer:
+                    peer.settimeout(0.2)
+                    if peer.connect_ex(("127.0.0.1", port)) == 0:
+                        return False
+            return True
+
+        def processes_gone():
+            for pid, started in processes.items():
+                try:
+                    stat = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+                except FileNotFoundError:
+                    continue
+                if stat[19] == started and stat[0] != "Z":
+                    return False
+            return True
+
+        wait(ports_closed)
+        wait(processes_gone)
+        wait(lambda: all(not path.exists() for path in driver_directories))
+        status = {
+            unit: run(["systemctl", "--user", "is-active", unit], check=False).stdout.strip()
+            for unit in units
+        }
+        assert not any(
+            value in {"active", "activating", "deactivating"} for value in status.values()
+        )
+        self.evidence(
+            "cleanup",
+            {
+                "owned_sandboxes": owned,
+                "deleted_remaining": current,
+                "gateway_empty": True,
+                "ports_closed": True,
+                "processes_gone": True,
+                "driver_directory_count": len(driver_directories),
+                "driver_directories_absent": True,
+                "unit_status": status,
+                "process_count": len(processes),
+                "at": time.time(),
+            },
+        )
+        self.before_export()
+        output = self.path.with_name(
+            self.evidence_prefix + self.path.name.removeprefix(self.root_prefix)
+        )
+        output.mkdir(mode=0o700)
+        hashes = {}
+        for file in sorted((self.path / "evidence").glob("*.json")):
+            text = file.read_text().replace(str(REPO), "$REPO").replace(str(self.path), "$LAB")
+            assert not any(word in text for word in (*self.forbidden, *self.private_words()))
+            json.loads(text)
+            private(output / file.name, text)
+            hashes[file.name] = hashlib.sha256(text.encode()).hexdigest()
+        # Recheck the same marker immediately before deleting only this lab root.
+        assert json.loads((self.path / "identity.json").read_text()) == self.identity
+        shutil.rmtree(self.path)
+        assert not self.path.exists()
+        private(
+            output / "root-removed.json",
+            json.dumps({"root_removed": True, "at": time.time()}) + "\n",
+        )
+        hashes["root-removed.json"] = hashlib.sha256(
+            (output / "root-removed.json").read_bytes()
+        ).hexdigest()
+        private(output / "SHA256.json", json.dumps(hashes, indent=2) + "\n")
+        print(output, flush=True)
+
+
+class Lab(OwnedRoot):
+    def __init__(self, path: Path):
+        self.config = path.resolve() / "sandbox-science.toml"
+        super().__init__(path)
+        self.base = f"http://127.0.0.1:{self.ports['workspace']}"
+
+    def openshell_env(self) -> dict[str, str]:
+        return load_config(self.config).openshell.env
+
+    def read(self, sql, args=()):
+        projects = ProjectStore(self.path / "instance/control")
+        try:
+            with projects.control.read() as tx:
+                return tx.sql.execute(sql, args).fetchall()
+        finally:
+            projects.close()
+
+    def ready(self):
+        try:
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{self.ports['control']}/health", timeout=2
+            ) as response:
+                return json.load(response).get("runtime_connected")
+        except OSError:
+            return False
 
     def login(self):
         wait(lambda: (self.path / "instance/workspace-login").is_file())
@@ -453,7 +724,7 @@ class Lab:
         )
 
     def intent(self, session, tool):
-        from sandbox_science.orchestrator.history.operations import ToolJournal
+        from sandbox_science.orchestrator.context.history.operations import ToolJournal
 
         found = self.read(
             "SELECT run,operation_id FROM tool_intents WHERE project=? "
@@ -546,7 +817,7 @@ class Lab:
         return rows if rows and all(row[2] == "completed" for row in rows) else None
 
     def results(self, session):
-        from sandbox_science.orchestrator.history.operations import ToolJournal
+        from sandbox_science.orchestrator.context.history.operations import ToolJournal
 
         records = self.read(
             "SELECT message_id FROM archive_tool_records WHERE project=? AND session=? ORDER BY rowid",
@@ -596,32 +867,28 @@ class Lab:
             "PASS recursive agent interruption and original child effect reconciliation", flush=True
         )
 
-    def literal(self):
-        self.login()
-        self.post(
-            "literal",
-            "messages",
-            {
-                "message_id": "lab-literal-loss",
-                "text": "LITERAL-LOSS: qualify opt-in literal reconstruction.",
-            },
-        )
-        original = wait(lambda: self.shell_running("literal"), seconds=240)
+    def kill_kernel(self, original, identity=None):
+        """Kill the one kernel process of a running session's cell by its exact PID, and
+        wait until the worker no longer observes it. ``identity`` is the ``(pid, start)``
+        the session's own seed cell reported from inside its kernel (the worker's
+        records hold no PID, and the probe cannot read another process's working
+        directory); the sessions of this lab share one environment, so another
+        session's kernel may be alive. Without it, the environment's only kernel."""
         context = original["context"]
         before = self.worker("POST", "/v1/kernels/observe", {"context": context})
         assert len(before["kernels"]) == 1, before
         environment = self.worker("GET", "/v1/environments/" + context["environment_id"])
-        # The owned VM contains one idle IPython kernel for this session. Verify
-        # its PID/start pair immediately before killing that process alone.
-        code = """import json,os,pathlib,signal
+        # Verify the PID/start pair immediately before killing that process alone.
+        code = """import json,os,pathlib,signal,sys
+want=(int(sys.argv[1]),sys.argv[2]) if len(sys.argv)>2 else None
 found=[]
 for path in pathlib.Path('/proc').glob('[0-9]*/cmdline'):
  try:
-  words=path.read_bytes().split(b'\\0')
-  if b'ipykernel_launcher' in words:
-   found.append((int(path.parent.name),(path.parent/'stat').read_text().rsplit(')',1)[1].split()[19]))
+  if b'ipykernel_launcher' in path.read_bytes().split(b'\\0'):
+   pair=(int(path.parent.name),(path.parent/'stat').read_text().rsplit(')',1)[1].split()[19])
+   if want is None or pair==want: found.append(pair)
  except (OSError,ValueError): pass
-assert len(found)==1,found
+assert len(found)==1,(want,found)
 pid,stamp=found[0]
 assert pathlib.Path(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split()[19]==stamp
 os.kill(pid,signal.SIGKILL)
@@ -639,6 +906,7 @@ print(json.dumps({'pid':pid,'start':stamp}))
                 "-I",
                 "-c",
                 code,
+                *([str(identity[0]), identity[1]] if identity else []),
             ).stdout
         )
         absent = wait(
@@ -648,6 +916,21 @@ print(json.dumps({'pid':pid,'start':stamp}))
                 else None
             )
         )
+        return before, absent, killed
+
+    def literal(self):
+        self.login()
+        self.post(
+            "literal",
+            "messages",
+            {
+                "message_id": "lab-literal-loss",
+                "text": "LITERAL-LOSS: qualify opt-in literal reconstruction.",
+            },
+        )
+        original = wait(lambda: self.shell_running("literal"), seconds=240)
+        context = original["context"]
+        before, absent, killed = self.kill_kernel(original)
         self.evidence("literal-kernel-loss", {"before": before, "absent": absent, "killed": killed})
         self.replacement("literal", original)
         wait(lambda: self.settled("literal"), seconds=180)
@@ -674,24 +957,123 @@ print(json.dumps({'pid':pid,'start':stamp}))
             flush=True,
         )
 
+    def lost(self):
+        """Kernels 7: a cell that finds its kernel's state lost is told what the lost
+        generation computed. The seed cell here cannot be replayed (so nothing restores
+        it) and saved a file; the kernel is killed under a holding shell call, and the
+        run's next plain cell reports the loss."""
+        self.login()
+        self.post(
+            "lost",
+            "messages",
+            {
+                "message_id": "lab-lost-state",
+                "text": "LOST-STATE: qualify the text a cell gets for a kernel's lost state.",
+            },
+        )
+        original = wait(lambda: self.shell_running("lost"), seconds=240)
+        seed = next(item for item in self.results("lost")["tools"] if item.get("tool") == "python")
+        # The seed cell printed its own kernel's PID and start time; that is the identity.
+        reported = json.loads(seed["execution"]["result"]["stdout"]["text"])
+        identity = (reported["kernel_pid"], reported["kernel_start"])
+        before, absent, killed = self.kill_kernel(original, identity)
+        assert killed == {"pid": identity[0], "start": identity[1]}, (killed, identity)
+        self.evidence("lost-kernel-loss", {"before": before, "absent": absent, "killed": killed})
+        wait(lambda: self.settled("lost"), seconds=180)
+        result = self.results("lost")
+        after = self.worker("POST", "/v1/kernels/observe", {"context": original["context"]})
+        assert len(after["kernels"]) == 1
+        assert after["kernels"][0]["generation"] > before["kernels"][0]["generation"]
+        python_results = [item for item in result["tools"] if item.get("tool") == "python"]
+        assert len(python_results) == 2, python_results
+        assert python_results[-1]["execution"]["result"]["state_lost"] is True, python_results
+        cells = [
+            message
+            for message, tool in self.read(
+                "SELECT message_id,json_extract(record,'$.tool') FROM archive_tool_records "
+                "WHERE project=? AND session='lost' ORDER BY rowid",
+                (PROJECT,),
+            )
+            if tool == "python"
+        ]
+        assert len(cells) == 2, cells
+        seed, check = cells
+        from sandbox_science.orchestrator.context.history import Archive
+
+        projects = ProjectStore(self.path / "instance/control")
+        try:
+            archive = Archive(projects.control)
+            assert archive.message_info(PROJECT, seed)["purpose"] == LOST_PURPOSE
+            text = archive.message(PROJECT, check).entry.content or ""
+        finally:
+            projects.close()
+        shown = json.loads(text)
+        assert "NameError" in text, text
+        assert "state_lost" in shown, shown
+        lost = shown["lost_state"]
+        # The seed cell by its archived result's message ID, with its call's purpose; the
+        # saved file that survived; and the platform's sentence about what to do.
+        assert lost["cells"] == [{"message": seed, "purpose": LOST_PURPOSE}], lost
+        assert LOST_FILE in lost["saved_files"], lost
+        assert "earlier_cells" not in lost, lost
+        assert lost["note"].endswith(
+            "Load saved files before recomputing; recompute the rest from these cells."
+        ), lost
+        # The text holds no secret by construction: the cells' IDs and purposes, and paths.
+        self.evidence(
+            "lost-result",
+            {
+                "works": result["works"],
+                "attempts": result["attempts"],
+                "generations": [
+                    before["kernels"][0]["generation"],
+                    after["kernels"][0]["generation"],
+                ],
+                "seed_message": seed,
+                "check_message": check,
+                "lost_state": lost,
+            },
+        )
+        print(
+            "PASS lost-kernel text names the lost cell, its purpose and the surviving file",
+            flush=True,
+        )
+
     def sage(self):
         records = self.results("sage")["tools"]
         jobs = [item["execution"] for item in records if item.get("tool") == "start_job"]
         assert jobs, "Sage job has not been admitted"
         return self.worker("GET", "/v1/jobs/" + jobs[-1]["execution_id"])
 
-    def automatic(self, session="automatic", marker="AUTO-RECOVERY"):
-        self.login()
+    def model_attempts(self):
+        """How many times the model client tries one call: its retries and the first try."""
+        import inspect
+
+        from sandbox_science.orchestrator.model import GatewayModel
+
+        retries = inspect.signature(GatewayModel.__init__).parameters["retries"].default
+        assert isinstance(retries, int), retries
+        assert retries >= 0, retries
+        return retries + 1
+
+    def injected_cuts(self, marker):
+        found = [
+            json.loads(line)
+            for line in (self.path / "model-observations.jsonl").read_text().splitlines()
+        ]
+        return [item for item in found if item.get("marker") == marker]
+
+    def run_automatic(self, session, marker, *, seconds):
         self.post(
             session,
             "messages",
             {
                 "message_id": "lab-" + session,
-                "text": marker + ": recover after the one injected premature stream EOF.",
+                "text": marker + ": recover after the injected premature stream EOF.",
             },
         )
         try:
-            wait(lambda: self.settled(session), seconds=180)
+            wait(lambda: self.settled(session), seconds=seconds)
         finally:
             result = self.results(session)
             result["records"] = self.read(
@@ -707,17 +1089,56 @@ print(json.dumps({'pid':pid,'start':stamp}))
             result["resumes"] = self.read(
                 "SELECT request,status,reason FROM research_resumes WHERE session=?", (session,)
             )
+            result["retried"] = [
+                json.loads(row[0])
+                for row in self.read(
+                    "SELECT json_extract(usage,'$.retried') FROM archive_model_usage "
+                    "WHERE session=? ORDER BY observed",
+                    (session,),
+                )
+                if row[0] is not None
+            ]
+            result["cuts"] = self.injected_cuts(marker)
             self.evidence(session + "-result", result)
         assert len(result["works"]) == 1
-        assert len(result["attempts"]) == 2
-        assert result["records"][0][1:] == ("error", "model")
-        assert len(result["decisions"]) == 1
-        assert len(result["resumes"]) == 1
-        assert result["resumes"][0][1] == "finished"
-        print("PASS durable automatic continuation after saved model-phase failure", flush=True)
+        return result
+
+    def automatic(self):
+        """Two scenarios of D100's recovery of a model stream that ends early. One cut is
+        the model client's to retry within the call: the run answers in one attempt, the
+        answer's usage names the retry, and nothing is saved as a failure or continued.
+        Cuts beyond the client's tries (every one of them) end the call: the failure is
+        saved and durable automatic continuation answers in a second attempt."""
+        self.login()
+        single = self.run_automatic("automatic", "AUTO-RECOVERY", seconds=180)
+        assert len(single["cuts"]) == 1, single["cuts"]
+        assert len(single["attempts"]) == 1, single["attempts"]
+        assert [row[2] for row in single["records"]] == [None], single["records"]
+        assert single["decisions"] == [], single["decisions"]
+        assert single["resumes"] == [], single["resumes"]
+        assert ["incomplete response"] in single["retried"], single["retried"]
+        print("PASS one cut model stream was tried again within the call", flush=True)
+        tries = self.model_attempts()
+        # The client's waits before its tries, 2 s doubling to a minute, then the first
+        # automatic Resume's wait and a margin.
+        backoff = sum(min(2.0 * 2**n, 60.0) for n in range(tries - 1))
+        beyond = self.run_automatic(
+            "automatic_beyond", f"AUTO-RECOVERY-CUTS{tries}", seconds=int(backoff) + 450
+        )
+        assert len(beyond["cuts"]) == tries, beyond["cuts"]
+        assert len(beyond["attempts"]) == 2, beyond["attempts"]
+        assert beyond["records"][0][1:] == ("error", "model")
+        assert len(beyond["decisions"]) == 1
+        assert len(beyond["resumes"]) == 1
+        assert beyond["resumes"][0][1] == "finished"
+        print(
+            f"PASS {tries} cut model streams, beyond the call's tries, were saved and continued "
+            "automatically",
+            flush=True,
+        )
 
     def history_result(self, session):
-        from sandbox_science.orchestrator.history import Archive
+        from sandbox_science.orchestrator.context.history import Archive
 
         result = self.results(session)
         assert len(result["works"]) == 3
@@ -1067,82 +1488,6 @@ print(json.dumps({'pid':pid,'start':stamp}))
         self.evidence("sage-final", {"job": job, "starts": starts, "final": final, "lookup": found})
         print("PASS sustained Sage computation and digest after worker/agent losses", flush=True)
 
-    def stop_owned_services(self, cleanup_error: Exception):
-        """A failed gateway query must not leave the owned host units running.
-
-        This deliberately cannot certify VM deletion or remove the private root:
-        that requires the normal gateway/ownership reconciliation to succeed.
-        """
-        assert json.loads((self.path / "identity.json").read_text()) == self.identity
-        units = [
-            self.prefix + "-" + name + ".service"
-            for name in ("launcher", "worker-probe", "model", "gateway", "middleware", "cache")
-        ]
-        processes = {}
-        inventory_error = None
-        try:
-            for unit in units:
-                group = run(
-                    ["systemctl", "--user", "show", "--property=ControlGroup", "--value", unit],
-                    check=False,
-                ).stdout.strip()
-                if not group:
-                    continue
-                for file in (Path("/sys/fs/cgroup") / group.lstrip("/")).rglob("cgroup.procs"):
-                    for value in file.read_text().splitlines():
-                        pid = int(value)
-                        try:
-                            processes[pid] = (
-                                Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
-                            )
-                        except FileNotFoundError:
-                            continue
-        except Exception as error:
-            inventory_error = type(error).__name__
-        finally:
-            stops = stop_units(units)
-        status = {
-            unit: run(["systemctl", "--user", "is-active", unit], check=False).stdout.strip()
-            for unit in units
-        }
-        remaining = []
-        for pid, started in processes.items():
-            try:
-                stat = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
-            except FileNotFoundError:
-                continue
-            if stat[19] == started and stat[0] != "Z":
-                remaining.append(pid)
-        open_ports = []
-        for port in self.ports.values():
-            with socket.socket() as peer:
-                peer.settimeout(0.2)
-                if peer.connect_ex(("127.0.0.1", port)) == 0:
-                    open_ports.append(port)
-        receipt = {
-            "cleanup_error_type": type(cleanup_error).__name__,
-            "stops": stops,
-            "unit_status": status,
-            "observed_process_count": len(processes),
-            "process_inventory_error": inventory_error,
-            "remaining_owned_processes": remaining,
-            "open_owned_ports": open_ports,
-            "root_preserved": True,
-            "vm_cleanup_verified": False,
-            "complete": False,
-        }
-        self.evidence("abort-owned-services", receipt)
-        assert inventory_error is None, (
-            "process inventory incomplete; inspect preserved abort receipt"
-        )
-        assert not remaining, "owned processes remain; inspect preserved abort receipt"
-        assert not open_ports, "owned ports remain; inspect preserved abort receipt"
-        assert all(value in {"inactive", "failed", "unknown"} for value in status.values()), status
-
-    def abort(self):
-        """Explicitly abandon an incomplete synthetic lab and remove owned resources."""
-        self.cleanup(incomplete=True)
-
     def cleanup(self, *, incomplete=False):
         """Always stop exact owned host units, retaining unresolved VM ownership."""
         if not incomplete:
@@ -1150,138 +1495,14 @@ print(json.dumps({'pid':pid,'start':stamp}))
                 "collect final Sage evidence first"
             )
             assert not self.read("SELECT run FROM run_leases")
-        try:
-            self.cleanup_owned(incomplete=incomplete)
-        except Exception as error:
-            self.stop_owned_services(error)
-            raise RuntimeError(
-                "Full cleanup is incomplete; exact owned service shutdown was checked. "
-                "The private lab root is retained for VM ownership and evidence inspection."
-            ) from error
+        super().cleanup(incomplete=incomplete)
 
-    def cleanup_owned(self, *, incomplete=False):
-        """Destroy only ledger-owned resources, then export an allowlisted receipt."""
-        units = [
-            self.prefix + "-" + name + ".service"
-            for name in ("launcher", "worker-probe", "model", "gateway", "middleware", "cache")
-        ]
-        processes = {}
-        driver_directories: set[Path] = set()
-        for unit in units:
-            group = run(
-                ["systemctl", "--user", "show", "--property=ControlGroup", "--value", unit],
-                check=False,
-            ).stdout.strip()
-            if group:
-                directory = Path("/sys/fs/cgroup") / group.lstrip("/")
-                for file in directory.rglob("cgroup.procs"):
-                    for text in file.read_text().splitlines():
-                        pid = int(text)
-                        try:
-                            stat = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
-                        except FileNotFoundError:
-                            continue
-                        processes[pid] = stat[19]
-                        try:
-                            command = Path(f"/proc/{pid}/cmdline").read_bytes().decode()
-                        except FileNotFoundError:
-                            continue
-                        driver_directories.update(
-                            Path(value)
-                            for value in re.findall(
-                                rf"/tmp/os-{os.getuid()}-[^/\s\x00,;]+",  # noqa: S108 - observe owned-process paths only
-                                command,
-                            )
-                        )
-        for unit in units[:3]:
-            run(["systemctl", "--user", "stop", unit], check=False)
-        listing = json.loads(self.cli("sandbox", "list", "-o", "json").stdout)
-        assert not listing.get("next_page_token")
-        owned = json.loads((self.path / "owned-sandboxes.json").read_text())
-        current = {item["id"]: item["name"] for item in listing["sandboxes"]}
-        assert current.items() <= owned.items(), "unrecorded sandbox: inspect ownership first"
-        for identity, name in current.items():
-            self.cli("sandbox", "delete", name, timeout=120)
-            remaining = json.loads(self.cli("sandbox", "list", "-o", "json").stdout)
-            assert not any(item["id"] == identity for item in remaining["sandboxes"])
-        assert not json.loads(self.cli("sandbox", "list", "-o", "json").stdout)["sandboxes"]
-        for unit in units[3:]:
-            run(["systemctl", "--user", "stop", unit], timeout=120)
-
-        def ports_closed():
-            for port in self.ports.values():
-                with socket.socket() as peer:
-                    peer.settimeout(0.2)
-                    if peer.connect_ex(("127.0.0.1", port)) == 0:
-                        return False
-            return True
-
-        def processes_gone():
-            for pid, started in processes.items():
-                try:
-                    stat = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
-                except FileNotFoundError:
-                    continue
-                if stat[19] == started and stat[0] != "Z":
-                    return False
-            return True
-
-        wait(ports_closed)
-        wait(processes_gone)
-        wait(lambda: all(not path.exists() for path in driver_directories))
-        status = {
-            unit: run(["systemctl", "--user", "is-active", unit], check=False).stdout.strip()
-            for unit in units
-        }
-        assert not any(
-            value in {"active", "activating", "deactivating"} for value in status.values()
-        )
-        self.evidence(
-            "cleanup",
-            {
-                "owned_sandboxes": owned,
-                "deleted_remaining": current,
-                "gateway_empty": True,
-                "ports_closed": True,
-                "processes_gone": True,
-                "driver_directory_count": len(driver_directories),
-                "driver_directories_absent": True,
-                "unit_status": status,
-                "process_count": len(processes),
-                "at": time.time(),
-            },
-        )
+    def before_export(self):
         observations = self.path / "model-observations.jsonl"
         if observations.exists():
             self.evidence(
                 "models", [json.loads(line) for line in observations.read_text().splitlines()]
             )
-        output = self.path.with_name(
-            "ss-recovery-evidence-" + self.path.name.removeprefix("ss-recovery-")
-        )
-        output.mkdir(mode=0o700)
-        hashes = {}
-        for file in sorted((self.path / "evidence").glob("*.json")):
-            text = file.read_text().replace(str(REPO), "$REPO").replace(str(self.path), "$LAB")
-            assert not any(
-                word in text for word in ("/home/", "Bearer ", "test-secret-", "PRIVATE KEY")
-            )
-            json.loads(text)
-            private(output / file.name, text)
-            hashes[file.name] = hashlib.sha256(text.encode()).hexdigest()
-        # Recheck the same marker immediately before deleting only this lab root.
-        assert json.loads((self.path / "identity.json").read_text()) == self.identity
-        shutil.rmtree(self.path)
-        assert not self.path.exists()
-        private(
-            output / "root-removed.json",
-            json.dumps({"root_removed": True, "at": time.time()}) + "\n",
-        )
-        hashes["root-removed.json"] = hashlib.sha256(
-            (output / "root-removed.json").read_bytes()
-        ).hexdigest()
-        private(output / "SHA256.json", json.dumps(hashes, indent=2) + "\n")
-        print(output, flush=True)
 
 
 def main():
@@ -1295,6 +1516,7 @@ def main():
             "inspect",
             "tree",
             "literal",
+            "lost",
             "automatic",
             "history",
             "narrative",

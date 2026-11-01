@@ -7,6 +7,7 @@ Contracts hold shapes, per-field bounds and the cross-field rules that define a 
 
 from __future__ import annotations
 
+import re
 import secrets
 from typing import Annotated, Final
 
@@ -27,6 +28,27 @@ class StrictContract(Contract):
 
 Identifier = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")]
 """Project, session, environment, operation and generated IDs: printable, path-safe, short."""
+
+MAX_PROJECT_ID: Final = 63
+"""The longest ID a new project gets: the agent runtime's sandbox is labelled with it on the
+direct MCP path, and a Kubernetes label value is at most 63 characters."""
+
+_LABEL_VALUE: Final = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9._-]{0,61}[A-Za-z0-9])?$")
+
+PROJECT_ID_RULE: Final = (
+    f"a project ID is at most {MAX_PROJECT_ID} characters of letters, digits, '.', '_' and '-', "
+    "starting and ending with a letter or digit, because the direct MCP path labels the "
+    "agent runtime's sandbox with it and a Kubernetes label value allows no more"
+)
+
+
+def project_id_label_problem(project_id: str) -> str | None:
+    """Why ``project_id`` cannot be a Kubernetes label value (the direct MCP path labels
+    the agent runtime's sandbox with the project), or None when it can."""
+    if _LABEL_VALUE.fullmatch(project_id) is not None:
+        return None
+    return f"project ID {project_id!r} cannot label the agent runtime's sandbox: {PROJECT_ID_RULE}"
+
 
 MAX_COUNTER: Final = 2**62
 """The largest count, size or sequence number a contract carries: below SQLite's integer

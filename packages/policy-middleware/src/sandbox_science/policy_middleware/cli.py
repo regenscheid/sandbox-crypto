@@ -10,7 +10,13 @@ sandbox-science-policy-middleware pending --settings middleware.toml [--request 
 sandbox-science-policy-middleware approve --settings middleware.toml --request SEQ \
     [--scope host] [--for HOURS]
 sandbox-science-policy-middleware deny --settings middleware.toml --request SEQ
+sandbox-science-policy-middleware accept-tools --settings middleware.toml --server NAME
 ```
+
+``accept-tools`` records that a server whose tool list drifted has had its classification
+reviewed and accepted again: its non-read calls stop asking (D103). Holds of a session's
+calls are permission requests too: ``approve`` clears one, ``deny`` leaves its session
+stopped, as the workspace's card does.
 
 The gateway asks the middleware to validate a compiled sandbox policy before it
 creates the sandbox, so store the project policy first; bind the sandbox once
@@ -32,10 +38,12 @@ from types import FrameType
 
 import grpc
 
+from sandbox_science.contracts.logs import configure_logging
 from sandbox_science.event_store import EventStore, EventStoreError, Record, StoreReader
 from sandbox_science.policy import HardFloor, PolicyLoadError, load_ceiling
-from sandbox_science.policy.approvals import ALL_SCOPES, KINDS
+from sandbox_science.policy.approvals import ALL_SCOPES
 from sandbox_science.policy.approvals import commands as approval_commands
+from sandbox_science.policy.detection import ACCEPTED_RECORD, RECORD_KINDS
 from sandbox_science.policy.loader import read_limited
 
 from .archives import CacheArchiveLookup
@@ -49,6 +57,8 @@ from .auth import (
 from .errors import MiddlewareError, SettingsError, StoreError
 from .evaluator import PolicyMiddleware
 from .events import OPERATOR, STORE_TIMEOUT, StoreSink
+from .inspection import INSPECTION_STATE, Bounds, Inspection
+from .mcp import ToolListings, load_tool_pins
 from .service import MiddlewareService, build_server
 from .settings import Settings, load_settings
 from .store import PolicyStore
@@ -82,6 +92,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=int,
         help="show this request in full, answered or not, with every package file it lists",
     )
+    accept = commands.add_parser(
+        "accept-tools",
+        help="accept a drifted MCP server's classification again, so its calls stop asking",
+    )
+    accept.add_argument("--settings", type=Path, required=True)
+    accept.add_argument("--server", required=True)
     for name, text in (("approve", "approve a permission request"), ("deny", "deny one")):
         answer = commands.add_parser(name, help=text)
         answer.add_argument("--settings", type=Path, required=True)
@@ -98,10 +114,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         match args.command:
             case "serve":
-                logging.basicConfig(
-                    level=args.log_level.upper(),
-                    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-                )
+                configure_logging("middleware", level=args.log_level)
                 return _serve(load_settings(args.settings))
             case "store":
                 loaded = PolicyStore(args.state_dir).add_policy(read_limited(args.policy))
@@ -116,6 +129,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             case "unbind":
                 removed = PolicyStore(args.state_dir).unbind(args.sandbox)
                 print(f"unbound {args.sandbox}" if removed else f"{args.sandbox} was not bound")
+                return 0
+            case "accept-tools":
+                path = load_settings(args.settings).event_store_path
+                with EventStore(path) as events:
+                    seq = events.append(ACCEPTED_RECORD, OPERATOR, {"server": args.server}).seq
+                print(f"accepted the tool list of {args.server} as record {seq}")
                 return 0
             case "pending":
                 path = load_settings(args.settings).event_store_path
@@ -132,10 +151,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _read_records(path: Path, after: int) -> list[Record]:
-    """Permission requests and answers after ``after``, read with a connection of this
-    thread's own; the store's other records are left in it."""
+    """Permission requests and answers (holds among them) and tool-list drifts and their
+    acceptances after ``after``, read with a connection of this thread's own; the store's
+    other records are left in it."""
     with StoreReader(path) as reader:
-        return list(reader.records(after=after, kinds=KINDS))
+        return list(reader.records(after=after, kinds=RECORD_KINDS))
 
 
 def _answer(path: Path, command: str, seq: int, scope: str | None, hours: float | None) -> int:
@@ -160,20 +180,75 @@ def _serve(settings: Settings) -> int:
     ceiling = load_ceiling(settings.ceiling)
     with EventStore(settings.event_store_path, timeout=STORE_TIMEOUT) as events:
         _log.info("recording escalations, alerts and monitor findings in %s", events.path)
+        sink = StoreSink(events)
         middleware = PolicyMiddleware(
             PolicyStore(settings.state_dir),
             ceiling=ceiling,
             floor=HardFloor(frozenset(settings.admin_hosts)),
-            events=StoreSink(events),
+            events=sink,
             requests=partial(_read_records, settings.event_store_path),
             archives=(
                 CacheArchiveLookup(settings.package_cache_url)
                 if settings.package_cache_url is not None
                 else None
             ),
+            listings=(
+                load_tool_pins(settings.mcp_tool_pins)
+                if settings.mcp_tool_pins is not None
+                else ToolListings()
+                if settings.mcp_listings
+                else None
+            ),
+            response_statuses=settings.response_statuses,
+            listing_report_grace=timedelta(seconds=settings.listing_report_grace),
+            inspection=(
+                Inspection(
+                    sink,
+                    bounds=Bounds(
+                        argument_bytes=settings.inspect.argument_bytes,
+                        answer_bytes=settings.inspect.answer_bytes,
+                        run_bytes=settings.inspect.run_bytes,
+                    ),
+                    patterns=settings.inspect.patterns,
+                    defaults=settings.inspect.defaults,
+                )
+                if settings.inspect.enabled
+                else None
+            ),
         )
+        record_inspection_state(sink, settings)
         middleware.prime_approvals()
-        return _run(settings, middleware)
+        try:
+            return _run(settings, middleware)
+        finally:
+            if middleware.inspection is not None:
+                middleware.inspection.flush()  # the answers queued before the stop
+
+
+def record_inspection_state(sink: StoreSink, settings: Settings) -> None:
+    """Record, as the middleware starts, whether MCP traffic inspection is on and with
+    which bounds (``mcp-inspection-state``): the deployment's status, which the worker's
+    monitor figures show. A store that cannot take it is logged."""
+    inspect = settings.inspect
+    enabled = inspect.enabled and settings.mcp_listings_on
+    _log.info("MCP traffic inspection is %s", "on" if enabled else "off")
+    try:
+        sink.record(
+            INSPECTION_STATE,
+            {
+                "enabled": enabled,
+                "configured": inspect.enabled,
+                "argument_bytes": inspect.argument_bytes,
+                "answer_bytes": inspect.answer_bytes,
+                "run_bytes": inspect.run_bytes,
+                "response_streams": settings.response_streams,
+                "sandbox_streams": settings.sandbox_streams,
+                "patterns": len(inspect.patterns),
+                "defaults": inspect.defaults,
+            },
+        )
+    except Exception:
+        _log.exception("could not record the MCP traffic inspection state")
 
 
 def _run(settings: Settings, middleware: PolicyMiddleware) -> int:
@@ -203,6 +278,8 @@ def _run(settings: Settings, middleware: PolicyMiddleware) -> int:
         authenticator,
         max_payload_bytes=settings.max_payload_bytes,
         expected_audience=audience,
+        response_streams=settings.response_streams,
+        sandbox_streams=settings.sandbox_streams,
     )
     server, port = build_server(
         service, listen=settings.listen, workers=settings.workers, credentials=credentials

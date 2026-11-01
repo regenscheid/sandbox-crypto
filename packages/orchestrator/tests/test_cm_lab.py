@@ -18,8 +18,8 @@ from typing import Any
 import pytest
 
 from sandbox_science.contracts import ExecutionContext
-from sandbox_science.orchestrator.history import Archive, Entry
-from sandbox_science.orchestrator.history.record import FORMAT, FoldRecord
+from sandbox_science.orchestrator.context.history import Archive, Entry
+from sandbox_science.orchestrator.context.history.record import FORMAT, FoldRecord
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord, run_name
 
 LABS = Path(__file__).resolve().parents[3] / ".agents" / "labs"

@@ -9,10 +9,12 @@ from typing import Any
 
 import pytest
 
-from sandbox_science.orchestrator.history import Archive, Entry, geometry, session_view
-from sandbox_science.orchestrator.history.delegated import delegated_folder
-from sandbox_science.orchestrator.history.geometry import DEFAULT_SHARES
-from sandbox_science.orchestrator.history.view import spanned
+from sandbox_science.orchestrator.context.agent import AgentContext
+from sandbox_science.orchestrator.context.folding import FoldPoint
+from sandbox_science.orchestrator.context.history import Archive, Entry, geometry, session_view
+from sandbox_science.orchestrator.context.history.delegated import delegated_folder
+from sandbox_science.orchestrator.context.history.geometry import DEFAULT_SHARES
+from sandbox_science.orchestrator.context.history.view import spanned
 from sandbox_science.orchestrator.loop import Transcript
 from sandbox_science.orchestrator.model import ModelTurn
 from sandbox_science.orchestrator.projects import ProjectStore
@@ -65,7 +67,11 @@ async def test_scoped_folds_survive_reopen_without_other_agents_context(
         shares=DEFAULT_SHARES,
         model=narrator if narrative else None,
     )
-    transcript = Transcript([{"role": "system", "content": "s" * 400}, *made.view.messages])
+    transcript = Transcript(
+        context=AgentContext(
+            messages=[{"role": "system", "content": "s" * 400}, *made.view.messages]
+        )
+    )
     first = None
     for batch in range(3):
         for n in range(200):
@@ -81,11 +87,11 @@ async def test_scoped_folds_survive_reopen_without_other_agents_context(
                 parent="root",
             )
             first = first or row
-            transcript.messages.append(row.chat())
-        assert await made.before_call(transcript)
+            transcript.context.messages.append(row.chat())
+        assert await made.before_call(FoldPoint(transcript.context, transcript.turns))
         assert made.geometry is not None
-        assert made.tokens(transcript) <= made.geometry.wall
-        sent = json.dumps(transcript.sent)
+        assert made.tokens(FoldPoint(transcript.context, transcript.turns)) <= made.geometry.wall
+        sent = json.dumps(transcript.context.sent)
         assert brief in sent
         assert all(text not in sent for text in forbidden)
         if constraints:
@@ -115,10 +121,14 @@ async def test_scoped_folds_survive_reopen_without_other_agents_context(
             chunk=32_000,
             shares=DEFAULT_SHARES,
         )
-        resumed = Transcript([{"role": "system", "content": "s" * 400}, *rebuilt.view.messages])
-        assert await rebuilt.before_call(resumed)
-        assert brief in json.dumps(resumed.sent)
-        assert all(text not in json.dumps(resumed.sent) for text in forbidden)
+        resumed = Transcript(
+            context=AgentContext(
+                messages=[{"role": "system", "content": "s" * 400}, *rebuilt.view.messages]
+            )
+        )
+        assert await rebuilt.before_call(FoldPoint(resumed.context, resumed.turns))
+        assert brief in json.dumps(resumed.context.sent)
+        assert all(text not in json.dumps(resumed.context.sent) for text in forbidden)
         assert first is not None
         assert archive.message(PROJECT, first.message_id).entry.content == first.entry.content
         main = session_view(archive, CONTEXT, geometry=geometry(160_000, 0, 32_000))
@@ -155,21 +165,25 @@ async def test_production_harness_folds_each_delegated_role_using_its_model_limi
 
 async def test_production_child_narrates_on_its_own_alias_and_grant(delegating: Harness) -> None:
     from .test_delegation import configure
-    from .test_history_folds import ENRICHED, folds
+    from .test_history_folds import ROOMY_ENRICHED, folds
 
     configure(delegating, depth=1, task_tokens=2_000_000)
     delegating.gateway.per_token = 4.0
     delegating.gateway.enrich = [
         Reply(json.dumps({"narrative": "Exact child evidence remains available.", "keys": []}))
     ] * 8
-    notes = Reply("Child-only evidence. " + "observation " * 9000, calls=[("plan_read", {})])
+    # Distinct answers: the same text again and again would be a loop check-in (D102).
+    notes = [
+        Reply(f"Child-only evidence {n}. " + "observation " * 9000, calls=[("plan_read", {})])
+        for n in range(6)
+    ]
     root = await delegating.run(
         "root",
         [Reply(calls=[TASK]), wait(), Reply("Done.")],
-        delegated=[notes] * 6 + [Reply(json.dumps(DONE))],
+        delegated=[*notes, Reply(json.dumps(DONE))],
         task="PARENT PRIVATE REASONING",
         options=[
-            *ENRICHED,
+            *ROOMY_ENRICHED,
             "--delegated-model",
             "delegated",
             "--reasoning-effort",

@@ -13,10 +13,17 @@ import base64
 from dataclasses import asdict
 from typing import Annotated, Any, Literal, cast
 
-from pydantic import Field, JsonValue, StringConstraints, TypeAdapter
+from pydantic import Field, JsonValue, StringConstraints, TypeAdapter, model_validator
 
-from sandbox_science.contracts.model import Contract, Counter, Identifier
-from sandbox_science.orchestrator.history.capture import CapturedRequest, ContextMessage, Origin
+from sandbox_science.contracts.classifications import MAX_REPORTED_TOOLS, ReportedTool
+from sandbox_science.contracts.model import Contract, Counter, Identifier, Revision, Sha256
+from sandbox_science.contracts.worker import MediaType
+from sandbox_science.orchestrator.connectors import MAX_ANSWER_BYTES
+from sandbox_science.orchestrator.context.history.capture import (
+    CapturedRequest,
+    ContextMessage,
+    Origin,
+)
 from sandbox_science.orchestrator.hooks import Effect, Notice, Point
 from sandbox_science.orchestrator.memory_prompt import MemoryGiven
 from sandbox_science.orchestrator.model import (
@@ -26,10 +33,11 @@ from sandbox_science.orchestrator.model import (
     ToolCall,
     ToolSpec,
 )
-from sandbox_science.orchestrator.model_profiles import ModelProfile, ModelRole
+from sandbox_science.orchestrator.model_profiles import ApiKind, ModelProfile, ModelRole
 from sandbox_science.orchestrator.pricing import CostSource
 from sandbox_science.orchestrator.projects import FailurePhase, ModelUsage, RunName
 from sandbox_science.orchestrator.prompts import PromptPins, Section
+from sandbox_science.orchestrator.recording import MAX_FILES
 from sandbox_science.orchestrator.skills.index import SkillsGiven
 from sandbox_science.orchestrator.tools import ToolOutcome
 
@@ -41,15 +49,24 @@ ModelAlias = Annotated[
 AttemptId = Annotated[str, Field(pattern=r"^cap-[0-9a-f]{48}$")]
 MAX_VIEW_BYTES = 8 * 1024 * 1024
 MAX_MODEL_RESPONSE_BYTES = 6 * 1024 * 1024
+MAX_BINARY_BYTES = MAX_ANSWER_BYTES
+"""The decoded bytes of one binary item, and of all one call's items: the harness's bound
+on a whole MCP answer (8 MiB), which holds them as base64."""
+MAX_BINARY_ITEMS = MAX_FILES
+"""Binary items one call keeps: the recorder's bound on the files one call records."""
+_MAX_BINARY_B64 = 4 * -(-MAX_BINARY_BYTES // 3)
 
 
 class Hello(Contract):
-    protocol: Literal[3] = CONTROL_PROTOCOL
+    protocol: Literal[6] = CONTROL_PROTOCOL
     image_revision: str = Field(min_length=1, max_length=128)
+    apis: dict[ModelAlias, ApiKind] | None = Field(default=None, max_length=256)
+    """The adapter the runtime chose for each of its aliases from the gateway's model
+    information (CM-41); ``None`` when the gateway could not be asked."""
 
 
 class Ready(Contract):
-    protocol: Literal[3] = CONTROL_PROTOCOL
+    protocol: Literal[6] = CONTROL_PROTOCOL
     generation: Identifier
     projects: tuple[Identifier, ...] = Field(min_length=1, max_length=128)
     control_schema: Counter
@@ -177,6 +194,9 @@ class HookGiven(Contract):
     name: str = Field(min_length=1, max_length=128)
     veto: bool = False
     planning: bool = False
+    turn_limit: bool = False
+    """Whether the hook sets the attempt's turn limit, which the runtime then asks it before
+    each model call (``turn_limit``)."""
 
 
 class ToolboxGiven(Contract):
@@ -246,6 +266,124 @@ class HookRequest(Attempt):
     answer: str | None = Field(default=None, max_length=MAX_VIEW_BYTES)
     stopped: str | None = Field(default=None, max_length=128)
     record: dict[str, JsonValue] | None = None
+
+
+class RequestConfirmation(Attempt):
+    """A refusal that names MCP permission request ``request``, and the call it refused:
+    no project, which the host takes from the attempt."""
+
+    request: int = Field(strict=True, ge=1, le=10**18)
+    reason: Literal["approval_required", "approval_denied", "escalation_timed_out"]
+    server: str = Field(max_length=600)
+    method: str = Field(max_length=600)
+    tool: str = Field(max_length=600)
+    arguments: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class RequestConfirmed(Contract):
+    confirmed: bool
+
+
+class BinaryResult(Attempt):
+    """One binary item of a direct-path connector call's result (``publish_mcp_binary``):
+    the model's call ID, which the host resolves to its tool and server, the item's media
+    type, the SHA-256 of its decoded bytes, and the bytes as base64."""
+
+    call: str = Field(min_length=1, max_length=256)
+    mime: MediaType
+    sha256: Sha256
+    data_b64: str = Field(min_length=1, max_length=_MAX_BINARY_B64)
+
+
+class BinaryKept(Contract):
+    """What the host kept: the artifact revision (none when its publication is held) and
+    the note that replaces the item in the result the model sees."""
+
+    sha256: Sha256
+    size: Counter
+    artifact: Identifier | None = None
+    revision: Revision | None = None
+    path: str | None = Field(default=None, max_length=512)
+    note: str = Field(min_length=1, max_length=2048)
+
+
+class ListingReportRequest(Contract):
+    """A complete listing of ``server`` (``report_mcp_listing``), as the server sent it:
+    each tool's name, digest and hint, and the listing's digest. ``attempt`` names the
+    attempt whose client listed, or none for the canaries' client; the host names the
+    project, session and run."""
+
+    attempt: AttemptId | None = None
+    server: Identifier
+    tools: tuple[ReportedTool, ...] = Field(max_length=MAX_REPORTED_TOOLS)
+    listing: Sha256
+
+
+class ListingReportReply(Contract):
+    drifted: bool
+
+
+class ToolListing(Contract):
+    """A canary's request to the runtime (``list_mcp_tools``): list one server's tools."""
+
+    server: Identifier
+
+
+class ToolsListed(Contract):
+    """One bounded listing's outcome, as ``mcp_canaries.Listing`` says it."""
+
+    status: Literal["listed", "unavailable", "denied", "timeout"]
+    tool_count: int | None = Field(default=None, strict=True, ge=0, le=1_000_000)
+    digest: Sha256 | None = None
+    error_kind: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_]{0,63}$")
+
+    @model_validator(mode="after")
+    def _consistent(self) -> ToolsListed:
+        listed = self.status == "listed"
+        if listed != (self.tool_count is not None and self.digest is not None) or listed == (
+            self.error_kind is not None
+        ):
+            raise ValueError("a listed outcome has a count and digest, any other an error kind")
+        return self
+
+
+class McpRequest(Attempt):
+    """One MCP request of an attempt's connectors on the direct path (``mcp_request``,
+    host to runtime): the server, the method and its parameters, the session and run the
+    request names, and for a ``tools/call`` the model's call ID, under which the runtime
+    hands the result's binary items to the host (``publish_mcp_binary``)."""
+
+    call: str | None = Field(default=None, min_length=1, max_length=256)
+    server: Identifier
+    method: Literal["tools/list", "tools/call"]
+    params: dict[str, JsonValue]
+    session: str = Field(min_length=1, max_length=256)
+    run: str | None = Field(default=None, min_length=1, max_length=256)
+
+
+class McpFailure(Contract):
+    """Why an MCP request has no result, as the client's ``ConnectorError`` says it: a
+    refusal's reason, and the permission request a held call names, or the one a server
+    named that the control side did not confirm."""
+
+    kind: str = Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")
+    message: str = Field(max_length=4096)
+    request: int | None = Field(default=None, strict=True, ge=1, le=10**18)
+    unconfirmed_request: int | None = Field(default=None, strict=True, ge=1, le=10**18)
+
+
+class McpAnswer(Contract):
+    """The runtime's answer to ``mcp_request``: the method's result, its binary items
+    replaced by the host's notes, or the failure."""
+
+    result: dict[str, JsonValue] | None = None
+    failure: McpFailure | None = None
+
+    @model_validator(mode="after")
+    def _one(self) -> McpAnswer:
+        if (self.result is None) == (self.failure is None):
+            raise ValueError("an MCP answer has a result or a failure")
+        return self
 
 
 class ToolRequest(Attempt):

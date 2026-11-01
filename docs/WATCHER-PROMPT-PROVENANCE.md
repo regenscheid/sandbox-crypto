@@ -58,8 +58,11 @@ model rather than substituting the configured alias.
 A watcher check in a run with the project's stores is also given the project memory
 as it is at the check, since a job can outlive its run ([project memory](MEMORY.md),
 PM-8). The system message is the watcher's system text, a blank line, then the memory
-section: the framing `sandbox-memory-watcher-1`, which says the entries are guidance,
-not instructions to act, and grant nothing, then the entries. Such a call's envelope
+section: the framing `sandbox-memory-watcher-2`, which says the entries are guidance,
+not instructions to act, and grant nothing, what the prefix before each entry says (its
+date, basis, ID, revision and scope) and to prefer `user` and `observed` notes to
+`interpreted` and `not recorded` ones, then the entries, each with its prefix, which
+shows the date, and its anchors. Such a call's envelope
 is format 2 and adds `memory`: the framing's version, the memory's version, the
 entries given (`mem-N@R`), how many the bound left out, and the section's byte count
 and SHA-256; the envelope digest covers it, and the section's text is pinned by its

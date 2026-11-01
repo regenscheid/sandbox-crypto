@@ -97,14 +97,14 @@ async def test_pinned_scope_reads_and_origin_guard(client, review_data) -> None:
     origin = str(client.make_url("/")).rstrip("/")
     result = await client.post(base + f"/findings/{finding}", json=body, headers={"Origin": origin})
     assert result.status == 200
-    assert (await result.json())["status"] == "withdrawn"
+    assert (await result.json())["status"] == "dismissed"
     replay = await client.post(base + f"/findings/{finding}", json=body, headers={"Origin": origin})
     assert (await replay.json())["replayed"]
     history = await (await client.get(base + f"/findings/{finding}")).json()
     assert history["history"][-1]["actor"] == "user:user"
     stale = await client.post(
         base + f"/findings/{finding}",
-        json={**body, "action": "reopen", "operation_id": "stale"},
+        json={**body, "action": "set", "status": "open", "operation_id": "stale"},
         headers={"Origin": origin},
     )
     assert stale.status == 409
@@ -270,7 +270,7 @@ async def test_main_response_body_read_is_scoped_readonly_and_preserves_original
         {
             "finding": finding,
             "expected": 1,
-            "action": "rebut",
+            "action": "dismiss",
             "explanation": r"Original $\unknown{x}$",
             "operation_id": "original",
         },
@@ -332,7 +332,7 @@ async def test_explanation_check_evidence_and_queue_never_cross_session(
         {
             "finding": finding,
             "expected": 1,
-            "action": "rebut",
+            "action": "dismiss",
             "explanation": r"Private $\unknown{x}$",
             "operation_id": "private",
         },
@@ -350,3 +350,124 @@ async def test_explanation_check_evidence_and_queue_never_cross_session(
     listed = await (await client.get(other + "/math-checks")).json()
     assert listed["checks"] == []
     assert listed["queue"] == []
+
+
+async def test_the_api_serves_each_status_with_its_history_dismissal_and_successor(
+    client, review_data
+) -> None:
+    """The workspace serves a finding's five statuses (CR-41), its attributed history
+    (CR-45), the dismissal and the successor link (CR-46, CR-47), and refuses the
+    earlier actions."""
+    _, _, finding = review_data
+    base = "/api/v0/projects/p1/sessions/a"
+    origin = {"Origin": str(client.make_url("/")).rstrip("/")}
+    first = await (await client.get(base + f"/findings/{finding}")).json()
+    assert first["status"] == "open"
+    assert (first["latest_recheck"], first["dismissal"], first["superseded_by"]) == (
+        None,
+        None,
+        None,
+    )
+    assert first["recheck"] is None
+    assert first["at_bound"] is False
+    assert first["history"][0]["actor_kind"] == "controller"
+    revision = first["revision"]
+    for action in ("rebut", "confirm", "reopen"):
+        refused = await client.post(
+            base + f"/findings/{finding}",
+            json={"finding": finding, "expected": revision, "action": action,
+                  "explanation": "Old.", "operation_id": f"old-{action}"},
+            headers=origin,
+        )  # fmt: skip
+        assert refused.status == 400
+    for status in ("fixed", "stale", "superseded", "open", "dismissed"):
+        body: dict[str, Any] = {
+            "finding": finding,
+            "expected": revision,
+            "action": "set",
+            "status": status,
+            "explanation": f"The user sets it {status}.",
+            "operation_id": f"set-{status}",
+        }
+        if status == "superseded":
+            # A well-formed ID no finding has: only the last character changes (`replace`
+            # would also rewrite the prefix and make a malformed ID, a 400).
+            body["successor"] = finding[:-1] + ("0" if finding[-1] != "0" else "1")
+            missing = await client.post(base + f"/findings/{finding}", json=body, headers=origin)
+            assert missing.status == 404
+            del body["successor"]
+        result = await client.post(base + f"/findings/{finding}", json=body, headers=origin)
+        assert result.status == 200, await result.text()
+        assert (await result.json())["status"] == status
+        revision = (await result.json())["revision"]
+    found = await (await client.get(base + f"/findings/{finding}")).json()
+    assert found["status"] == "dismissed"
+    assert found["dismissal"]["by"] == "user"
+    assert found["dismissal"]["reason"] == "The user sets it dismissed."
+    assert [h["status"] for h in found["history"]] == [
+        "open",
+        "fixed",
+        "stale",
+        "superseded",
+        "open",
+        "dismissed",
+    ]
+    assert {h["actor_kind"] for h in found["history"][1:]} == {"user"}
+    listed = await (await client.get(base + "/findings")).json()
+    assert listed["findings"][0]["status"] == "dismissed"
+
+
+async def test_a_finding_names_the_revision_it_reviewed_beside_the_current_one(
+    client, state_dir: Path
+) -> None:
+    """The card shows the revision a finding reviewed and the current one (CR-46): a
+    document the finding is anchored to, at the revision reviewed, beside its head after
+    a later revision; a finding on transcript evidence alone names none."""
+    from sandbox_science.orchestrator.documents import USER, Author
+
+    main = Author(kind="agent", session_id="a", run_id="run-1", role="main", model="scripted")
+    documents = DocumentStore(store_path(state_dir))
+    store = ReviewStore(documents)
+    doc = documents.create(
+        "p1", name="claimed", title="N", text="The count is 16.\n", author=main, session_id="a"
+    ).document_id
+    store.ingest_documents("p1", "a")
+    review = store.dispatch(
+        "p1", "a", "terminal", author_run="run-1", owner="fixture", alias="scripted-reviewer"
+    )
+    assert review
+    held = store.manifest("p1", "a", review, limit=20)["evidence"]
+    evidence = next(i["evidence"] for i in held if i["kind"] == "document")
+    finding = Findings(store).create(
+        "p1",
+        "a",
+        review,
+        "fixture",
+        {
+            "severity": "warn",
+            "category": "contradicting_value",
+            "statement": "The count is wrong.",
+            "anchors": [{"evidence": evidence}],
+            "operation_id": "fixture-doc",
+        },
+    )["finding_id"]
+    store.finish("p1", "a", review, "fixture", "findings", "A document finding.")
+    documents.edit_source(
+        "p1", doc, base=1, text="The count is 15.\n", author=USER, reason="Correct",
+        operation_id="revise-doc",
+    )  # fmt: skip
+    documents.close()
+    base = "/api/v0/projects/p1/sessions/a"
+    found = await (await client.get(base + f"/findings/{finding}")).json()
+    assert found["reviewed_revisions"] == [
+        {"kind": "document", "id": doc, "reviewed": 1, "current": 2}
+    ]
+    listed = await (await client.get(base + "/findings")).json()
+    shown = {f["finding_id"]: f["reviewed_revisions"] for f in listed["findings"]}
+    assert shown[finding] == found["reviewed_revisions"]
+
+
+async def test_a_transcript_finding_names_no_reviewed_revision(client, review_data) -> None:
+    _, _, finding = review_data
+    found = await (await client.get(f"/api/v0/projects/p1/sessions/a/findings/{finding}")).json()
+    assert found["reviewed_revisions"] == []

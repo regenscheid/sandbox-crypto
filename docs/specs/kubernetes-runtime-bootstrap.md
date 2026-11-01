@@ -1,0 +1,459 @@
+# Kubernetes runtime bootstrap
+
+Status: Design with owner decisions (2026-10-22). Stages 1 to 3 are built (the
+ownership extraction, control's credential endpoint, and the manager against a fake
+OpenShell CLI; see [the manager as built](#the-manager-as-built)), and the renderer
+part of stage 4 ([the renderer as built](#the-renderer-as-built)); live acceptance is
+not. It closes the runtime bootstrap gate of
+[the offline bundle](../KUBERNETES-BUNDLE.md#bootstrap-the-agent-runtime). It applies
+[orchestrator confinement](orchestrator-confinement.md#launcher-and-replacement),
+[Kubernetes operations](kubernetes-operations.md#first-deployment-bundle) and
+[research continuity](research-continuity.md#orchestrator-boundary) (RC-26 to RC-29,
+RC-F20) to the cluster. Requirements are numbered KRB-n. OpenShell facts come from
+the v0.1.5 source; file references are paths in that tree.
+
+## Context
+
+Every agent and model loop runs in one OpenShell sandbox from the `orchestrator`
+image. On babbage the host launcher (`launcher/orchestrator.py`) writes the policy, a
+fresh `runtime-<24hex>` generation, a rotated control token, `control.json` and
+`runtime.json`; records the name before create and the immutable ID before Ready;
+uploads token, model key and settings to `/sandbox/runtime`; and holds an `openshell
+sandbox exec` session running the runtime. Explicit replacement (`replacement.py`) and
+bounded recovery (`infrastructure.py`) reuse the identity-checked `delete_recorded`.
+Nothing does this in the rendered bundle. Control is cluster-ready: TLS, optional CA,
+and token and generation files reread on every frame and at handshake
+(`confinement/server.py`). One runtime process serves one control connection with
+one generation and exits when it ends (`runtime.py`).
+
+On Kubernetes, OpenShell 0.1.5 makes each sandbox two Pods (`docs/kubernetes/setup.mdx`
+19-32): a **workload Pod** (runs `sleep infinity` and our exec'd runtime; new
+connections from it are denied) and a **supervisor Pod**, which holds the gateway
+session and opens every approved upstream connection. The runtime therefore reaches
+control from the supervisor Pod's address. RuntimeClass, node selector and template
+labels go on the workload Pod only (`crates/openshell-driver-kubernetes/src/driver.rs`
+~6531-6584); the supervisor Pod gets fixed OpenShell labels and neither of the others
+(`src/sandbox_runtime.rs` 213-497, 636-668).
+
+## Non-goals
+
+No agent loop, runtime CLI or model call in a trusted Pod. No research or MCP sandbox
+lifecycle (that stays with the worker). No multiple runtimes, app replicas or
+failover; no public ingress, image publication, ARM64 Kata or operator/CRD; no
+Kubernetes API use by the manager; no change to the control protocol, generation
+fencing or attempt model. Starting sandboxes on demand without an operator command is
+a later direction (backlog), not this design.
+
+## Placement and authority
+
+- KRB-1. **A `runtime-manager` Deployment of its own:** one replica, `Recreate`, any
+  node (arm64 or amd64; the image carries both, or the renderer pins the one it has),
+  `automountServiceAccountToken: false`, no Service or listener. It alone creates,
+  attaches to, replaces or deletes the runtime sandbox, and runs no agent loop or
+  model call. The app Pod (control and workspace) never sees the gateway credential.
+- KRB-2. **Its gateway credential.** The manager Secret holds an OpenShell CLI profile
+  with its own mTLS client certificate, the model key, the control CA, its control
+  bearer token and `runtime-manager.json`; a copy init builds the CLI's XDG tree
+  (`openshell/active_gateway`, `gateways/<name>/metadata.json`, `mtls/*`) in a memory
+  volume. This amends the bundle doc's rule that only the worker holds one. **Authority
+  (Q2):** a verified certificate becomes a user principal, CN as subject and OU values
+  as roles (`crates/openshell-server/src/multiplex.rs` `extract_peer_identity`
+  ~1417-1450). Without OIDC there is no authorization policy and the admin role is
+  empty (`lib.rs` ~433), so every certificate user is platform admin in every
+  workspace (`auth/workspace_authz.rs` `authorize_workspace`, `is_platform_admin`).
+  A separate certificate is distinguishable in audit (`auth/principal.rs`) but the
+  server has no revocation list: revoking it means replacing the client CA. Scoping
+  exists only in OIDC RBAC mode (`auth/authz.rs` `check`): a certificate whose OU is
+  the user role must then be a member, by CN, of the workspace it acts in, and
+  workspace User suffices to create, get and delete sandboxes (`grpc/sandbox.rs`). A
+  runtime-only workspace would confine the manager (unqualified; R1).
+- KRB-3. **The manager acts only on its own record:** a recorded name matching
+  `ss-orch-[0-9a-f]{10}` for which the gateway reports the recorded ID. With full
+  gateway authority this guards against a corrupt record; it is not authorization.
+- KRB-4. **Network**, default deny. Manager Pod: no ingress; egress to the app Pod's
+  TCP 8444 (KRB-7), `network.gateway` and `network.dns`. App Pod: ingress 8444 only
+  from the manager Pod's labels; 8443 from `network.runtimes` as today; no gateway
+  egress. `network.runtimes` must select **supervisor** Pods. **Labels (Q3):**
+  `allowed_pod_labels` lets a sandbox template set allowlisted keys outside
+  `openshell.ai` and `agents.x-k8s.io` (`src/config.rs` 275-287, 891-896; `driver.rs`
+  `validate_pod_metadata` ~6919-6941), but only on the workload Pod. The supervisor Pod
+  carries only `openshell.ai/{managed-by,sandbox-id,component,gateway-id}` and
+  boundary-pair labels; the sandbox ID is known only after create and the renderer is
+  static. The narrowest peer is the sandbox namespace plus
+  `openshell.ai/component=supervisor` and this gateway's `openshell.ai/gateway-id`,
+  so every supervisor of the gateway reaches 8443; each sandbox's OpenShell policy
+  (only `compile_orchestrator` permits control) and the token remain the gates (R2).
+- KRB-5. **Kata only (tier 3).** The manager refuses a runtime profile without the
+  Kata `runtime_class_name` and an `amd64` node selector, and creates with
+  `--driver-config-json` from it. OpenShell applies the RuntimeClass to the workload
+  Pod; the supervisor runs under the cluster default runtime. The gateway enables
+  `allow_driver_config`; the RuntimeClass carries `openshell.ai/sandbox-attachable=true`
+  ([gateway settings](../KUBERNETES.md#gateway-settings-for-profile-placement)). The
+  driver JSON is recorded with ownership; a replacement reuses it unless an explicit
+  request names another.
+
+## Credential handoff: control is the authority
+
+- KRB-6. **Control mints and records every generation and token.** The token lives in
+  a memory `emptyDir` mounted only into control. The generation and an issue journal
+  (request ID, generation, token SHA-256, state) live in control's state directory,
+  mode 600, written atomically. `control.json` points `runtime_token_file` and
+  `generation_file` there, so the per-frame token reread and handshake generation read
+  are unchanged; its static `generation` becomes a placeholder never issued. At
+  process start control writes a fresh unissued token and marks the last issue
+  superseded, so a control restart revokes the runtime. Only the digest is durable.
+- KRB-7. **A narrow manager endpoint.** A second TLS listener (TCP 8444, same
+  certificate, on the control Service) serves only `GET /health` and `POST
+  /runtime/credentials`; the runtime listener does not serve the latter. It exists only
+  when `control.json` names `manager_token_sha256_file`, so the host is unchanged.
+  The manager's bearer token is compared by digest in constant time; failure answers
+  404. Body `{"request": "<32 hex>"}`; requests are serialized:
+  1. The latest request, still issued and current: the same generation and token.
+  2. An older or superseded request: 410, no token. Control never returns an older one.
+  3. A new request: journal it `revoked` and replace the token with a fresh unissued
+     value, which refuses any connected runtime at its next frame. If a runtime is
+     connected or draining, answer 409; the manager retries the same request once
+     `/health` shows both false.
+  4. Otherwise mint `runtime-<24hex>` (never a journaled value) and a 32-byte token;
+     write generation, then token, then journal `issued`; return both. A crash before
+     the journal write leaves the request `revoked`, so a retry mints fresh values.
+- KRB-8. **Why control mints.** Control already owns durable state and fences
+  generations, so "never older, never while occupied" is enforced in one place. A
+  manager-pushed token would need an endpoint that lets the caller choose values, plus
+  the same checks. The manager keeps no lasting runtime capability, and the gateway
+  credential and control state stay in different Pods. A stolen manager token, usable
+  only from the manager Pod's address, can revoke the runtime and get a token for a
+  new one: what the manager may do anyway.
+
+| Event | Behavior |
+| --- | --- |
+| Manager crash after issue, before upload | The manager journals the request ID before calling and replays it: the same values if current, else 410 and a new request. The unused token is revoked by the next issue. |
+| Control restart | Startup revokes; the runtime exits; a replay gets 410; the manager reconnects (KRB-17). |
+| Replay or second caller | Only the latest request replays. Only the manager Pod reaches 8444. |
+| Orphan runtime still connected | Step 3 revokes it; step 4 waits for the drain. |
+
+## Durable state (manager PVC)
+
+- KRB-9. **Its own small RWO PVC** (a storage class attachable from any node the
+  manager may use), at `/var/lib/sandbox-science/runtime`, mode 700, from
+  `initialize-state --component runtime-manager`. Records, atomic and mode 600:
+  `sandbox.json` (name, ID or null, image digest and revision, driver-config digest;
+  today's `{name, id}` keys, so `recorded()` stays compatible);
+  `infrastructure-recovery.json` (`RecoveryState`); `credentials.json` (the in-flight
+  request ID); `request.json` and `result.json` for operator requests; `policy.yaml`;
+  `runtime.json`. The runtime token is held in memory only until uploaded.
+
+## Process model: exec session, not main process
+
+- KRB-10. The sandbox's main process stays `sleep infinity`; the manager holds one
+  `openshell sandbox exec -n N --no-tty --no-login-shell -- python -m
+  sandbox_science.orchestrator.confinement.runtime --settings /sandbox/runtime/runtime.json`.
+  The runtime as main process was rejected: it would start before its files can be
+  uploaded; its exit after control loss would be restarted by kubelet outside the
+  journal, or end the sandbox; and it would leave the qualified host path.
+- KRB-11. **Fencing does not rely on the exec stream (Q5).** If the CLI's stream closes
+  while the gateway is up, the gateway closes the SSH channel
+  (`crates/openshell-server/src/grpc/sandbox.rs` ~3812-3829) and the supervisor
+  SIGKILLs the exec process (`crates/openshell-supervisor-process/src/ssh.rs`
+  `channel_close` ~495-520; `crates/openshell-sandbox-backend/src/runtime.rs`
+  ~541-545). After an abrupt loss (gateway restart, relay loss) no channel close
+  arrives, the handler's `Drop` (`ssh.rs` ~431-447) does not terminate exec processes,
+  and the runtime can survive as an orphan. So every start revokes first (KRB-7 step 3)
+  and waits for the drain; live acceptance qualifies both cases.
+
+## Sequences
+
+The host steps keep their order; placement, storage, credentials and trigger change.
+
+- KRB-12. **Bootstrap (first create)**, only by the operator: `kubectl exec
+  deploy/runtime-manager -- sandbox-science-runtime-manager request bootstrap`. It
+  requires that no `sandbox.json` exists and resets the journal. An empty PVC, failed
+  handshake or missing record never creates a runtime. Steps: write `policy.yaml` from
+  `compile_orchestrator`; choose `ss-orch-<10hex>`, refusing one in use; record
+  `{name, id: null}`; `sandbox create --from <digest> --policy … --driver-config-json …
+  --no-auto-providers --detach -- sleep infinity`; record the first observed ID before
+  checking the phase; wait for Ready, refusing dead phases; then Attach.
+  *Amended 2026-10-25 (B3 defects):* a create the gateway rolled back (the create
+  returned, then the gateway answered NotFound for the name, as OpenShell does with a
+  sandbox that is not ready within its bootstrap grace) is marked on the record
+  (`outcome: create_rolled_back`, the gateway's `reason` when its last `sandbox get`
+  gave one, and `at`), said in the request's answer and in `status`, and never acted on
+  automatically. `request bootstrap` is admitted on such a record: it clears it as
+  `forget` would, only once the gateway answers NotFound for the name (any other answer
+  or error refuses), logs why, and then bootstraps. `forget` keeps its own case.
+- KRB-13. **Attach (start into the recorded sandbox).** Precondition: the recorded
+  name reports the recorded ID and is Ready. Journal a request ID; get generation and
+  token (KRB-7), retrying 409 within the stop timeout, else refuse and retry later;
+  derive `runtime.json` (KRB-19); upload `runtime.token`, `model.key`,
+  `control-ca.crt` and `runtime.json`, `chmod 600` the credentials; run the exec.
+  Ready is the "confined agent runtime ready" line plus `runtime_ready` in `/health`.
+  Attach never deletes or creates, so it is not a replacement.
+- KRB-14. **Replace**, in `orchestrator.replace` order: stop the exec, identity-checked
+  and confirmed `delete_recorded`, the drain wait, Bootstrap's create step, Attach.
+  Only on `request replace` or bounded recovery (KRB-17). Uncertain deletion keeps the
+  record and refuses. *Amended 2026-10-25 (B3 defects):* every failed action, replace
+  or any other, operator's or automatic, names what failed and is never blank: for a CLI
+  call, the command's name, its exit code and the last line of its stderr
+  (`openshell sandbox create failed (exit 1): …`), `no error text from openshell` when
+  it wrote none, and `openshell <command> gave no answer within <n> s` for one that
+  timed out; for any other error its message, or its type when it has none.
+- KRB-15. **Stop.** SIGTERM ends the exec session and exits without deleting: Pod
+  termination is not teardown. Teardown is `request stop --delete`: identity-checked
+  deletion, removing the record once confirmed; a later start needs a bootstrap.
+
+## Recovery and its bounds
+
+- KRB-16. **One journal for every automatic action.** The existing `RecoveryState`:
+  at most 10 attempts, delays of 2 to 60 s, reset after 60 s of steady health, pending
+  turns into blocked at startup. Every automatic Attach or Replace is saved as pending
+  before any effect. Explicit operator requests reset it, as `_manage` does today.
+  *Amended 2026-10-25 (B3 defects):* `status.json`'s `note` describes the current
+  condition only, with `note_kind` (`blocked`, `gateway_unreachable`,
+  `control_unreachable` or `action_failed`, shown in that order of precedence when
+  several hold) and `note_since`, when the condition began, kept while it lasts. A note
+  is cleared when its condition ends: control's or the gateway's next answer, an action
+  that succeeds after a failed one (an attach, or an operator request), a journal no
+  longer blocked, a rolled-back record cleared. `note` keeps its 512-character bound.
+- KRB-17. **Without the operator.** Reconnect (Attach to the same identity-checked
+  sandbox) is automatic at manager start and after a control restart, seen as a new
+  `control_instance` (a random per-process value added to `/health`). A runtime exit
+  under the same control instance (crash or revocation) is reattached only with
+  `recover_infrastructure`, as on the host. Replace needs `recover_infrastructure` and
+  a confirmed `delete_recorded`, never just a probe failure or restart. An unknown or
+  changed ID, a pending journal or undeterminable presence blocks all automatic action
+  and shows in status. *Amended 2026-10-25 (B3 defects):* an unreachable gateway is
+  waited for, at start and later, never a reason to exit (under Kubernetes an exit
+  crash-loops the Pod). The manager comes up, asks the gateway (`openshell sandbox get`
+  of the recorded name, or of a probe name the manager never makes; any answer,
+  NotFound included, means it answers) and, while it gets none, starts no automatic
+  action and uses none of the ten attempts; it asks again after 5 s, doubling to at most
+  60 s, without limit, and every 60 s while the gateway answers, and again after any
+  failed action. Once the gateway answers, the ownership algorithm proceeds unchanged.
+  Fatal at start are only bad settings, an unusable state directory or `serve.lock`, and
+  another OpenShell release: each exits 1 with `error: …`.
+
+| Event | Behavior |
+| --- | --- |
+| App Pod restart or control crash | Control revokes at start; the runtime exits; the manager reconnects. |
+| Manager Pod restart | The CLI dies with it, which normally kills the runtime (KRB-11). The manager reconnects, revoking any survivor first. Nothing is deleted. |
+| Runtime node lost | Not Ready, not confirmed gone: deletion cannot be confirmed (the Pod stays Terminating), so the record stays and the attempt counts. Force-deleting is an operator action. |
+| Manager node lost | Rescheduled once its RWO volume detaches; then as a manager restart. |
+| Gateway unavailable | No ownership change; a transport error is never absence. The runtime may survive (KRB-11). The manager keeps running and waits for the gateway, noting since when, without using the budget; an error from the gateway during an attempt still counts (KRB-17, amended 2026-10-25). |
+| Manager PVC lost | No record, so nothing is created; the operator reconciles any old sandbox. |
+
+## Control and Secret projection
+
+- KRB-18. **Control.** `control.json` gains `manager_listen` and
+  `manager_token_sha256_file`; token and generation paths follow KRB-6; `/health`
+  gains `control_instance`. `control-token` leaves the control Secret's
+  `REQUIRED_FILES`, which gains `runtime-manager-token.sha256`.
+- KRB-19. **Runtime settings.** The manager Secret carries the non-secret model part
+  of `control.json` (aliases, APIs, efforts, embedding, image revision), from which the
+  manager derives `runtime.json` as `prepare()` does, plus the issued generation. Its
+  settings supply `control_url` (Service, 8443), `manager_url` (8444),
+  `control_ca_file`, `model_url`, `thinking_replay` and the runtime image digest and
+  revision. It refuses a revision differing from the copy's (control's handshake also
+  refuses one differing from control's) and a `control_url` off the control Service.
+
+## Renderer changes
+
+- KRB-20. `kubernetes_config` gains `images.runtime` (digest-pinned);
+  `secrets.runtime_manager` (`runtime-manager.json`, `manager-control.token`,
+  `model.key`, `control-ca.crt`, `gateway-ca.crt`, `gateway-tls.crt`,
+  `gateway-tls.key`, `gateway-metadata.json`); a `runtime` section (KubernetesProfile
+  fields with Kata required, gateway workspace and name, `recover_infrastructure`);
+  `network.gateway` (manager only); capacity and storage for `runtime_manager`.
+- KRB-21. `kubernetes_bundle` gains the manager Deployment (KRB-1; no probes, which
+  give no replacement authority; uid 1000, read-only root), its PVC, copy init (nested
+  destinations, which `copy_credentials.py` accepts) and `initialize-state` init;
+  control's `runtime-credentials` memory volume and port 8444 on container and
+  Service; the KRB-4 NetworkPolicies; and per-container app PVC subPath mounts so
+  workspace never mounts `control/`. Output stays deterministic; the renderer never
+  reads Secrets or a kubeconfig.
+
+## Reuse and new code
+
+- KRB-22. **Extract `sandbox_science.launcher.runtime_owner`** for the host launcher
+  and the manager: `recorded`, `_record`, `delete_recorded` over an `OwnershipStore`
+  and a `SandboxCli` protocol; `_agent`'s create, Ready and ID part as
+  `create_owned(...)` with optional driver JSON; its upload part as `install(...)` and
+  `exec_argv(...)`; `agent_settings(...)` from `prepare`; `_occupied` with TLS, CA and
+  hostname. `InfrastructureRecovery` takes a liveness predicate, a replace coroutine
+  and a journal path instead of a `Supervisor`; `replacement` receipts bind to the
+  manager's instance nonce. Host behavior and tests are unchanged.
+- KRB-23. **Move and fix.** `KubernetesProfile` and `driver_json` move to
+  `sandbox_science.policy` (the worker re-exports them). `OpenShell.sandbox()` reports
+  absence only for a successful lookup saying "no such sandbox" (checked against the
+  0.1.5 CLI), never for stderr containing "not found", as `launcher/mcp.py` and
+  `worker/environments.py` do today.
+- KRB-24. **New code.** Orchestrator: `confinement/credentials.py` (journal, mint,
+  revoke at start, the KRB-7 states) and the second listener in `server.py`. Launcher:
+  `sandbox_science.launcher.runtime_manager` (`serve`: reconcile, reconnect, watch the
+  exec, recover; `request bootstrap|replace|stop|status`), `RuntimeManagerSettings`, a
+  credentials client and the `sandbox-science-runtime-manager` script. `trusted-app`
+  gains the launcher and policy wheels and the OpenShell CLI at the gateway's release.
+
+## Delivery and tests
+
+Stages, each merged green: (1) `runtime_owner` extraction and the absence fix; (2) the
+control endpoint and listener, off unless configured; (3) the manager with the fake
+CLI; (4) renderer and image; (5) live acceptance.
+
+- KRB-25. **Unit tests.** Control: digest auth and 404; replay of the latest request;
+  410 for older and superseded; revoke before 409 while connected or draining; a crash
+  between token and journal yielding fresh values; revoke at start; no reissued
+  generation; the runtime listener lacking the endpoint. Manager, with
+  `tests/fake_openshell.py` extended (exec streams, upload, driver config, gateway
+  errors containing "not found"): bootstrap refused without a request, on an empty PVC
+  or with a record; record before create, ID before Ready; uncertain create and delete
+  keeping the record; name or ID mismatch and non-Kata profiles refused; request ID
+  replay after a crash; reconnect at start and on a new control instance only;
+  blocked-at-startup and the 10-attempt bound; Replace only with opt-in and confirmed
+  absence; SIGTERM not deleting.
+- KRB-26. **Process test:** real TLS control with both listeners, the real manager and
+  the fake CLI, whose exec runs the real runtime against a fake model: handshake,
+  orphan revocation, manager restart, control restart and explicit replace keep
+  control's history. Renderer tests: manager Deployment, PVC, Secret and policies; no
+  `control-token`; only the manager mounts the gateway profile; workspace lacks
+  `control/`.
+- KRB-27. **Live acceptance on Kata (amd64), disposable:** the workload Pod admitted
+  under Kata; no agent loop in a trusted Pod; the app Pod unable to read the gateway
+  profile; the runtime's supervisor reaching 8443 and a research sandbox refused by
+  its own policy; 8444 reachable only from the manager; denied egress still denied;
+  app Pod and manager Pod deletion each followed by reconnect to the same sandbox ID;
+  whether a gateway restart orphans the runtime, and revocation ending it; explicit
+  replace, then a user Resume while a child computation continues in its surviving
+  workload sandbox (RC-F20); confirmed teardown. Fixtures do not count.
+
+## The manager as built
+
+`sandbox_science.launcher.runtime_manager` (stage 3): `settings`
+(`RuntimeManagerSettings`), `control` (the credentials client), `records` (the PVC
+files), `manager` (`serve`) and `operations` (the operator's requests and `main`), with
+the `sandbox-science-runtime-manager` script. Where the design left a choice:
+
+- **Settings** are `runtime-manager.json`, named by `--settings`, else
+  `$SANDBOX_SCIENCE_RUNTIME_MANAGER_SETTINGS`, else
+  `/etc/sandbox-science/runtime-manager/runtime-manager.json`, so `request …` needs no
+  flag in the Pod. They carry the runtime's policy as an `OrchestratorTarget`, which the
+  manager compiles to `policy.yaml` at each create, and the Kata profile as a
+  `KubernetesProfile` (`runtime_class_name` `kata` or `kata-*`, `amd64` pinned).
+  `control_url` and `manager_url` are explicit `https://host:port` origins on the same
+  host. `control_models_file` may be the whole `control.json`: keys outside the model
+  part are ignored.
+- **Requests** reuse the replacement request and receipt, bound to the serving
+  process's `instance` nonce, which `status.json` names with its PID; the command
+  writes `request.json`, sends SIGUSR2 and waits for `result.json`, one request at a
+  time (`request.lock`). `request stop` requires `--delete`; a stop that keeps the
+  sandbox is SIGTERM. `request status` reads the files and needs no serving process.
+- **Placement.** `sandbox.json` keeps the image, revision and driver JSON with its
+  digest. Recovery's replacement reuses the recorded driver JSON; an explicit
+  `request replace` or `bootstrap` uses the configured profile.
+- **Credentials.** `credentials.json` holds the request ID and whether an exec was
+  started with its values. Only a request no exec used is replayed after a restart;
+  otherwise the manager asks anew, which revokes any survivor. On 410 it makes one new
+  request; on 409 it waits for `/health` to show no runtime, within `stop_timeout`, and
+  retries the same request. The token reaches the sandbox from a private temporary file
+  removed after upload.
+- **Bounds.** An automatic attempt starts only while control's health and the
+  gateway answer, so neither a control restart nor a gateway outage consumes the
+  budget. A gateway error (never absence) during an attempt counts as one, and ten of
+  them block, as the table above says.
+- **One serving process.** `serve` holds an exclusive `flock` on `serve.lock` in the
+  state directory for its lifetime and refuses to start (exit 1) while another holds
+  it; the renderer's `ReadWriteOncePod` PVC keeps a second Pod off the volume too.
+- **Durable records.** Every PVC record is written to a temporary file, synced,
+  renamed over the old one and the directory synced (`state.write_private`, which the
+  host launcher shares), as control's `_publish` does.
+- **Output.** The exec's output is read in bounded chunks until it ends; a line over
+  64 KiB is cut there with a notice and its rest dropped, so a long line never stops
+  the reading and the runtime never blocks on a full pipe.
+- **Interrupted actions.** The journal's `retryable` marks a pending attempt that has
+  only reattached the recorded sandbox: after a restart it is retried, still counting
+  toward the ten (control revokes the previous token at every issue). Before a
+  deletion the attempt is marked not retryable, so a pending replacement still blocks.
+  SIGTERM during a stop keeps the exec's handle until the process is waited or killed.
+- **Operator requests that fail part-way.** Each error is in the receipt. If the drain
+  check after a confirmed deletion cannot reach control, the create goes ahead, since
+  no runtime can hold control's connection and Attach's issue fences any survivor;
+  another drain failure leaves nothing recorded and asks for `request bootstrap`. Once
+  an operator's bootstrap or replace has created a sandbox whose attach failed, the
+  serve loop keeps attaching it under the journal (pending, at most ten, blocks apply).
+- **`request forget`** clears a record without an ID only when the gateway answers
+  that the name is absent (`SandboxMissingError`); it refuses a record with an ID, a
+  name the gateway has, and any gateway error. Absence observed without an identity
+  is no proof that nothing was made, so this is the operator's decision, never an
+  automatic one. A record marked `create_rolled_back` needs no `forget`: `request
+  bootstrap` clears it on the same proof (KRB-12, amended).
+- **Notes and errors** (KRB-14 and KRB-16, amended). Each source of a note (control,
+  the gateway, the last action, an exited runtime, the journal's block, a rolled-back
+  record) is held separately with its kind and since time, and the status shows the
+  highest by precedence. A CLI failure's text comes from the shared `OpenShell.run`, so
+  the host launcher's messages gain the exit code and last line too.
+- **Request channel.** The serving process claims `request.json` by renaming it to
+  `request.claimed.json` before reading it, so a newer request is never deleted;
+  writes `status.json` with `runtime: starting` before its first reconcile, so a
+  restart is reachable at once; and the command waits as long as a replace can take
+  at the configured timeouts and the CLI's and control's per-call bounds
+  (`request_deadline`), with a margin.
+- **Settings default.** `openshell.env.XDG_CONFIG_HOME` defaults to `/private/xdg`,
+  where the bundle mounts the CLI's gateway profile; an explicit value wins.
+- **Control's journal** keeps the latest 256 issues, so it never reaches its 16 MiB
+  start refusal: the latest replays, the window refuses recent requests as superseded,
+  an older request mints fresh values, and new generations are still checked against
+  the retained ones and the generation file.
+
+## The renderer as built
+
+`kubernetes_config` and `kubernetes_bundle` (stage 4). Where the design left a choice
+or was inconsistent:
+
+- **Settings stay in the Secret.** `runtime-manager.json` is operator-written and
+  projected like `control.json`, so the TOML has no `images.runtime` or `runtime`
+  section (KRB-20): the renderer would have no consumer for them and could not check
+  them against the Secret. The TOML gains `[runtime_manager]` (architecture, PVC size
+  and class, container bounds, `openshell_gateway`), `secrets.runtime_manager` and
+  `network.gateway`.
+- **Two more Secret keys.** `control-models.json` carries the model part KRB-19 puts in
+  the Secret, and `active-gateway` becomes the CLI's `openshell/active_gateway`, since
+  the copy init only copies keys. The profile lands under `/private/xdg`, read-only,
+  and `runtime-manager.json` names it in `openshell.env.XDG_CONFIG_HOME`.
+- **Workspace still mounts `control/`.** It is the harness's state directory, which the
+  workspace reads and writes (the W4 exception in the conventions), so it cannot lack
+  it. Each app container mounts only `control/` and its own managed home/config
+  directories by subPath, and only control mounts the runtime token's memory volume.
+  The journal and generation file there carry no token.
+- **Stricter than the design.** `network.runtimes` selector peers must name
+  `openshell.ai/component=supervisor` and an `openshell.ai/gateway-id`; the manager's
+  Secret is its own and takes no `extra_files`; no other service may project its token,
+  model key or gateway profile keys; its `/tmp` is a memory volume; its PVC is
+  `ReadWriteOncePod`, so no second manager Pod can mount it even on the same node.
+
+## Blockers in existing code
+
+- Trusted images pin OpenShell CLI 0.1.3, and `driver_json` targets its schema.
+- `trusted-app` has no OpenShell CLI and no launcher or policy wheels.
+- Absence by the string "not found" (KRB-23) could erase a record in a gateway outage.
+- `OrchestratorTarget.worker_api` is required though the runtime never calls the
+  worker; making it optional is cleaner.
+
+## Decisions (2026-10-22)
+
+1. The manager runs in its own Pod with its own PVC and holds the only gateway
+   credential outside the worker; control issues runtime credentials (KRB-1, KRB-6).
+2. The agent runtime always runs under Kata (tier 3) on amd64 (KRB-5).
+3. The first start is an operator command through `kubectl exec`; on-demand starts
+   are a later direction (KRB-12).
+4. The manager reconnects automatically to the same recorded sandbox; replacing it
+   still needs `recover_infrastructure` and the 10-attempt bound (KRB-17).
+
+Accepted trade-offs (owner, 2026-10-22), for the first deployment:
+
+- R1. The manager's gateway certificate can do anything on the gateway, including to
+  the worker's sandboxes. OpenShell can confine it to one workspace only if the gateway
+  turns on OIDC roles (for example through Authentik), which also changes how the
+  worker and you sign in. Accepted; gateway roles are on the backlog.
+- R2. Kubernetes cannot tell the runtime's traffic from any other sandbox's on this
+  gateway, so every sandbox can reach control's runtime port; each sandbox's own
+  OpenShell rules and the runtime token still stop them. The alternative is a separate
+  gateway for the runtime. Accepted; live acceptance proves the refusal (KRB-27).

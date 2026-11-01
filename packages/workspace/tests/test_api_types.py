@@ -65,3 +65,52 @@ def test_two_models_of_one_name_are_refused() -> None:
     ledger = create_model("Ledger", revision=(create_model("Revision", x=(str, ...)), ...))
     with pytest.raises(SystemExit, match="two response models share a name"):
         _generate((documents, ledger))
+
+
+def test_response_defaults_stay_required() -> None:
+    class Defaults(BaseModel):
+        absent: str | None = None
+        count: int = 0
+
+    text, _ = _generate((Defaults,))
+    assert "  absent: string | null;" in text
+    assert "  count: number;" in text
+
+
+def test_request_defaults_aliases_and_wire_omissions() -> None:
+    module = runpy.run_path(str(SCRIPT))
+    generate = cast(Callable[[], str], module["generate"])
+    text = generate()
+    # Requests use validation aliases and required lists; responses retain real omissions.
+    insert = text.split("export interface DocumentRequestInsert {", 1)[1].split("}", 1)[0]
+    assert 'op: "insert";' in insert
+    assert "before?: string | null;" in insert
+    replace = text.split("export interface DocumentRequestReplaceText {", 1)[1].split("}", 1)[0]
+    assert "with: string;" in replace
+    assert "with_" not in replace
+    anchor = text.split("export interface CommentRequestAnchorInput {", 1)[1].split("}", 1)[0]
+    assert "revision: number;" in anchor
+    assert "math?: string | null;" in anchor
+    change = text.split("export interface CommentChange {", 1)[1].split("}", 1)[0]
+    assert "request_id: string | null;" in change
+    assert "replayed?: boolean;" in change
+    revision = text.split("export interface DocumentRevision {", 1)[1].split("}", 1)[0]
+    assert "macro_context: DocumentMacroContext;" in revision
+    assert "pins: Record<string, JsonValue>[];" in revision
+
+
+def test_conflicting_wire_and_model_names_are_refused() -> None:
+    from pydantic import TypeAdapter
+    from typing_extensions import TypedDict
+
+    class Wire(TypedDict):
+        other: str
+
+    model = create_model("Wire", value=(int, ...))
+    module = runpy.run_path(str(SCRIPT))
+    generate = cast(Callable[[], str], module["generate"])
+    generate.__globals__["MODELS"] = (model,)
+    generate.__globals__["WIRE_TYPES"] = {"Wire": TypeAdapter(Wire)}
+    generate.__globals__["REQUESTS"] = {}
+    with pytest.raises(SystemExit, match="different shapes: Wire"):
+        generate()

@@ -37,7 +37,13 @@ from typing import Final
 
 from sandbox_science.contracts import ErrorKind
 
+from .artifact_retention import create_schema as _artifact_retention
+from .child_records import create_schema as _child_environments
+from .classification_receipts import create_schema as _classification_receipts
 from .errors import WorkerError
+from .job_records import create_progress_schema as _job_progress
+from .job_records import create_schema as _job_sandboxes
+from .listing_reports import create_schema as _listing_reports
 
 BASELINE: Final = 1
 """The version ``baseline.sql`` creates."""
@@ -246,11 +252,30 @@ def _recovery_fences(db: sqlite3.Connection) -> None:
     )
 
 
+def _workspace_prefixes(db: sqlite3.Connection) -> None:
+    db.execute(
+        f"""CREATE TABLE workspace_prefixes (
+    environment_id TEXT PRIMARY KEY CHECK {_identifier("environment_id", nul=True)},
+    identity TEXT NOT NULL CHECK (length(identity)=39 AND identity GLOB 'prefix-*'
+        AND substr(identity,8) NOT GLOB '*[^0-9a-f]*'),
+    incarnation TEXT NOT NULL CHECK {_prefixed("incarnation", "inc", nul=True)},
+    restore_revision INTEGER CHECK (restore_revision IS NULL OR restore_revision {_COUNT})
+) STRICT"""
+    )
+
+
 MIGRATIONS: list[Migration] = [
     _admission_checks,
     _nul_checks_and_clears,
     _run_kernels,
     _recovery_fences,
+    _workspace_prefixes,
+    _artifact_retention,
+    _job_sandboxes,
+    _job_progress,
+    _classification_receipts,
+    _child_environments,
+    _listing_reports,
 ]
 """Steps after the baseline: the one at index ``i`` takes a store to ``BASELINE + i + 1``."""
 

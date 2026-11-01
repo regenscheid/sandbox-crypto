@@ -690,7 +690,7 @@ async def server(tmp_path: Path) -> AsyncIterator[daemon.Daemon]:
             instance.writer.close()
             await instance.writer.wait_closed()
         await instance.executor.shutdown()
-        await asyncio.gather(*list(instance.executor.tasks), return_exceptions=True)
+        await asyncio.gather(*list(instance.executor.lifecycle.tasks), return_exceptions=True)
 
 
 async def raw_request(writer: asyncio.StreamWriter, number: int, **fields: Any) -> None:
@@ -1025,11 +1025,20 @@ async def test_offline_rollover_preserves_full_log_and_same_attempt(worker: Harn
         ReadFileRequest(context=CONTEXT, path=job.job.stdout_path, length=4_000_000)
     )
     assert base64.b64decode(log.content_b64) == b"z" * 3_000_000
-    assert any(
-        # Changed by C-02: a gap is not only from a disconnect now.
-        event.type == "stream" and "output chunks omitted" in event.text
+    # Output the daemon dropped is reported, never silent (C-02: a gap is not only from a
+    # disconnect now). Whether it dropped any depends on when the new worker attached: the
+    # daemon trims a journal over its bound when the end event arrives, so a worker that
+    # attaches while the executor is still sending (and a loaded host makes that likely)
+    # receives the whole of the streamed head, 1 MB of the 2 MB limit, and has no gap. The
+    # explicit omission itself is pinned by test_rollover_pins_same_attempt_and_reports_
+    # explicit_omission, against a daemon of our own.
+    streamed = [
+        event.text
         for event in worker.store.events_after(job.execution_id, 0)
-    )
+        if event.type == "stream"
+    ]
+    omitted = any("output chunks omitted" in text for text in streamed)
+    assert omitted or "".join(streamed) == "z" * 1_000_000
 
 
 @pytest.mark.asyncio
@@ -1356,7 +1365,7 @@ async def test_replaced_controller_cannot_dispatch_already_buffered_shutdown(
         old_gate.set()  # Deliver the old reader's buffered result after replacement.
         await asyncio.wait_for(old_task, 3)
         assert not instance.stop.is_set()
-        assert not instance.executor.closing
+        assert not instance.executor.lifecycle.closing
     finally:
         old_task.cancel()
         if new_task is not None:
@@ -1380,7 +1389,7 @@ async def test_shutdown_exits_even_when_acknowledgement_is_lost(
     monkeypatch.setattr(server, "write", fail_ack)
     await raw_request(writer, 91, op="daemon_shutdown")
     await asyncio.wait_for(server.stop.wait(), 3)
-    assert server.executor.closing
+    assert server.executor.lifecycle.closing
     assert await asyncio.wait_for(reader.readline(), 3) == b""
     writer.close()
     await writer.wait_closed()

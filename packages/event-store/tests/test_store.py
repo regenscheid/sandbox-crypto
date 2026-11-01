@@ -103,6 +103,21 @@ def test_a_reader_can_read_only_some_kinds(path: Path) -> None:
             list(reader.records(kinds="escalation"))
 
 
+def test_a_reader_reads_the_newest_records_of_some_kinds_newest_first(path: Path) -> None:
+    with EventStore(path) as store:
+        for kind in ("monitor", "escalation", "monitor", "approval", "alert", "denial"):
+            store.append(kind, SOURCE, {})
+    with StoreReader(path) as reader:
+        wanted = ("escalation", "approval", "denial")
+        assert [r.seq for r in reader.newest(100, wanted)] == [6, 4, 2]
+        # Among the newest three records only: the cap counts every kind.
+        assert [r.seq for r in reader.newest(3, wanted)] == [6, 4]
+        assert list(reader.newest(0, wanted)) == []
+        assert list(reader.newest(10, ())) == []
+        with pytest.raises(TypeError):
+            list(reader.newest(10, "escalation"))
+
+
 def test_a_reader_reports_an_error_partway_through_a_read(path: Path) -> None:
     with EventStore(path) as store:
         for kind in ("escalation", "monitor", "approval", "denial"):

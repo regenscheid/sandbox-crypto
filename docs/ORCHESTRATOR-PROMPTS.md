@@ -19,20 +19,20 @@ IDs are the version strings in the code.
 
 | Input | ID in code | Source | When it is sent |
 | --- | --- | --- | --- |
-| MAIN base system | `sandbox-main-11` (`loop.py` `MAIN_VERSION`) | [loop.py](../packages/orchestrator/src/sandbox_science/orchestrator/loop.py) `SYSTEM_PROMPT`; new user messages may mean root work, plan creation or revision, child steering, or feedback on a pinned result | Every MAIN run, unless the caller supplies a custom `system` |
+| MAIN base system | `sandbox-main-19` (`loop.py` `MAIN_VERSION`) | [loop.py](../packages/orchestrator/src/sandbox_science/orchestrator/loop.py) `SYSTEM_PROMPT`; new user messages may mean root work, plan creation or revision, child steering, or feedback on a pinned result | Every MAIN run, unless the caller supplies a custom `system` |
 | MAIN planning guidance | `sandbox-main-plan-2` | [plan_tools.py](../packages/orchestrator/src/sandbox_science/orchestrator/plan_tools.py) `GUIDANCE` | Appended when the six plan tools are offered (stateful MAIN runs) |
-| Delegated check system | `sandbox-delegated-check-8` (`delegation/prompt.py` `CHECK_VERSION`) | [delegation/prompt.py](../packages/orchestrator/src/sandbox_science/orchestrator/delegation/prompt.py) `CHECK_PROMPT`; its first user message is the brief the platform writes (`check_task`, `evidence_line`, `brief_text`): the task, the entry's evidence and the parent's note; later parent messages cannot predetermine its verdict | Every delegated run, which checks one ledger entry ([plans and delegation](specs/plans-and-delegation.md), PD-13) |
-| Delegated task system | `sandbox-delegated-task-8` (`delegation/prompt.py` `TASK_VERSION`) | [delegation/prompt.py](../packages/orchestrator/src/sandbox_science/orchestrator/delegation/prompt.py) `TASK_PROMPT`; its first user message is the parent's brief (`task_text`): the task, the context and the inputs; later parent messages can steer it | Every delegated run that does a task ([plans and delegation](specs/plans-and-delegation.md), PD-11) |
+| Delegated check system | `sandbox-delegated-check-14` (`delegation/prompt.py` `CHECK_VERSION`) | [delegation/prompt.py](../packages/orchestrator/src/sandbox_science/orchestrator/delegation/prompt.py) `CHECK_PROMPT`; its first user message is the brief the platform writes (`check_task`, `evidence_line`, `brief_text`): the task, the entry's evidence and the parent's note, then the platform's line naming its write area (`write_area_text`, DA-19; one wording for a run in the session's environment, which reads every file of the session, and one for a run in an environment of its own, which does not), and for a run in an environment of its own the line mapping its inputs to their copies under `inputs/` (`inputs_text`, CE-7); later parent messages cannot predetermine its verdict; it says what its read-only connector tools are and that a call needing approval waits for the user | Every delegated run, which checks one ledger entry ([plans and delegation](specs/plans-and-delegation.md), PD-13) |
+| Delegated task system | `sandbox-delegated-task-17` (`delegation/prompt.py` `TASK_VERSION`) | [delegation/prompt.py](../packages/orchestrator/src/sandbox_science/orchestrator/delegation/prompt.py) `TASK_PROMPT`; its first user message is the parent's brief (`task_text`): the task, the context and the inputs, and a line when the brief has references, then the platform's line naming its write area (`write_area_text`, DA-19; one wording for a run in the session's environment, which reads every file of the session, and one for a run in an environment of its own, which does not), and for a run in an environment of its own the line mapping its inputs to their copies under `inputs/` (`inputs_text`, CE-7); later parent messages can steer it; it says what its connector tools are, that a call needing approval waits for the user, how a draft plan holds outward calls, that its parent may give it records by reference, and that a child lacking context asks its parent with `message_parent` (DA-15) | Every delegated run that does a task ([plans and delegation](specs/plans-and-delegation.md), PD-11) |
 
-| Project memory framings | `sandbox-memory-run-1`, `sandbox-memory-reviewer-1`, `sandbox-memory-watcher-1` | [memory_prompt.py](../packages/orchestrator/src/sandbox_science/orchestrator/memory_prompt.py) `RUN_FRAMING`, `REVIEWER_FRAMING`, `WATCHER_FRAMING`, each followed by the accepted entries | With the project's stores, when the project memory has entries: every main and delegated run, every reviewer call (the reviewed run's memory) and every watcher check (the memory at the check) ([project memory](MEMORY.md)) |
+| Project memory framings | `sandbox-memory-run-2`, `sandbox-memory-reviewer-2`, `sandbox-memory-watcher-2` | [memory_prompt.py](../packages/orchestrator/src/sandbox_science/orchestrator/memory_prompt.py) `RUN_FRAMING`, `REVIEWER_FRAMING`, `WATCHER_FRAMING`, each followed by the accepted entries | With the project's stores, when the project memory has entries: every main and delegated run, every reviewer call (the reviewed run's memory) and every watcher check (the memory at the check) ([project memory](MEMORY.md)) |
 | Skills index framing | `sandbox-skills-index-4` | [skills/index.py](../packages/orchestrator/src/sandbox_science/orchestrator/skills/index.py) `FRAMING_VERSION` | With the project's pinned skills, less those it excludes, and the skills it loads at a run's start, in the system message of every main and delegated run whose project pins skills ([skills](SKILLS.md#a-runs-skills)) |
 | Research templates | `sandbox-stock-intake-2`, `sandbox-stock-literature-2`, `sandbox-stock-experiment-2`, `sandbox-stock-proof-audit-1`, `sandbox-stock-report-2` | [stock_prompts.py](../packages/orchestrator/src/sandbox_science/orchestrator/stock_prompts.py) | Only with `--research-template` ([research framing](STOCK-RESEARCH-PROMPTS.md)) |
 | MAIN prompt pins | `sandbox-prompt-pins-1` | [prompts.py](../packages/orchestrator/src/sandbox_science/orchestrator/prompts.py) `assemble`; `loop.py` `_sections` | Every MAIN run's record: section, tool and notice-framing pins ([MAIN provenance](MAIN-PROMPT-PROVENANCE.md)) |
-| Offered tool descriptions and schemas | Pinned by hash, not versioned | `tools.py` `SPECS`, `SAGE`, `PDF_SPECS`, `ADMIT_HOSTS` and `Toolbox` (`restart_kernel`); `jobs.py` `JOB_SPECS`; `provision.py` `PROVISION_SPECS`; `documents/tool.py` and `documents/annotation_tools.py` `SPECS`; `consistency/controller.py` `AUTHOR_SPECS`; `plan_tools.py` `SPECS`; `ledger/tool.py`, `memory_tools.py`, `delegation/specs.py`, `agent_messages.py`, `skills/tool.py` and `history/tool.py` `SPECS`; `view_image.py` `SPEC`; connector tools, which their MCP servers list when a run starts (`connectors.py`) | Every model call, filtered by the worker's features and the run's capabilities |
-| Platform notices | `sandbox-notice-requests-1`, `-jobs-1`, `-jobs-attached-1`, `-plans-1`, `-review-findings-1`, `-review-challenged-1`, `-review-counts-2`, `-math-1`, `-delegations-2`, `-delegations-attached-1`, `-delegations-running-2`, `-outcome-correction-1`, `-skills-3`, `-skills-words-2`, `-redelivered-1`; the view's `sandbox-state-block-2`, `sandbox-digest-2`, `sandbox-fold-region-3` and `sandbox-kernel-lines-1`, a fold's enrichment instruction, `sandbox-fold-enrich-2`, an overview's update, `sandbox-fold-overview-1`, a consolidation run's instruction, `sandbox-consolidation-1`, a delegated task's `sandbox-task-constraints-1`, an image's line, `sandbox-image-1`, and the report round's instruction at a limit, `sandbox-notice-report-1` | [notices.py](../packages/orchestrator/src/sandbox_science/orchestrator/notices.py) | User-role messages for document work requests, job completions, reviewer findings and counts, plan reread requirements, closing math findings, delegation outcomes, the delegated runs a closing answer waits for, a delegated run's one correction of its result, the skills that match a run's task or a user message, a user's message the run's view already holds, the state block a main run's view begins with once older messages are folded, the fold region holding its fold records, the line before each earlier run's part of a view naming its kernels ([context management](specs/context-management.md), CM-26, CM-29a, CM-29c), and the instruction of a run's last call at a limit to report what it found ([run service](specs/run-service.md), RS-6f); job completions and delegation outcomes also ride on tool results |
+| Offered tool descriptions and schemas | Pinned by hash, not versioned; each with the required `purpose_note` that [purpose.py](../packages/orchestrator/src/sandbox_science/orchestrator/purpose.py) `offered` adds | `tools.py` `SPECS`, `SAGE`, `PDF_SPECS`, `ADMIT_HOSTS` and `Toolbox` (`restart_kernel`); `jobs.py` `JOB_SPECS`; `provision.py` `PROVISION_SPECS`; `documents/tool.py` and `documents/annotation_tools.py` `SPECS`; `consistency/controller.py` `AUTHOR_SPECS`; `plan_tools.py` `SPECS`; `ledger/tool.py`, `memory_tools.py`, `delegation/specs.py`, `agent_messages.py`, `skills/tool.py` and `context/history/tool.py` `SPECS`; `view_image.py` `SPEC`; connector tools, which their MCP servers list when a run starts (`connectors.py`) | Every model call, filtered by the worker's features and the run's capabilities |
+| Platform notices | `sandbox-notice-requests-1`, `-jobs-1`, `-jobs-attached-1`, `-plans-1`, `-review-findings-2`, `-review-counts-3`, `-math-1`, `-delegations-2`, `-delegations-attached-1`, `-delegations-running-2`, `-outcome-correction-1`, `-skills-3`, `-skills-words-2`, `-redelivered-1`; the view's `sandbox-state-block-2`, `sandbox-digest-2`, `sandbox-fold-region-3` and `sandbox-kernel-lines-1`, a fold's enrichment instruction, `sandbox-fold-enrich-3`, an overview's update, `sandbox-fold-overview-2`, a consolidation run's instruction, `sandbox-consolidation-1`, a delegated task's `sandbox-task-constraints-1` and its referenced records' `sandbox-referenced-1` (CM-37b), an image's line, `sandbox-image-1`, and the report round's instruction at a limit, `sandbox-notice-report-1` | [notices.py](../packages/orchestrator/src/sandbox_science/orchestrator/notices.py) | User-role messages for document work requests, job completions, reviewer findings and counts, plan reread requirements, closing math findings, delegation outcomes, the delegated runs a closing answer waits for, a delegated run's one correction of its result, the skills that match a run's task or a user message, a user's message the run's view already holds, the state block a main run's view begins with once older messages are folded, the fold region holding its fold records, the line before each earlier run's part of a view naming its kernels ([context management](specs/context-management.md), CM-26, CM-29a, CM-29c), and the instruction of a run's last call at a limit to report what it found ([run service](specs/run-service.md), RS-6f); job completions and delegation outcomes also ride on tool results |
 | Kernel package notice | `sandbox-kernels-1` | [notices.py](../packages/orchestrator/src/sandbox_science/orchestrator/notices.py) `KERNELS` | Before a model call in a stateful MAIN run, once per kernel and package revision ([kernel check](KERNEL-REVISIONS.md#kernel-check-before-each-turn)) |
 | Job watcher | `sandbox-job-watcher-1` | [jobs.py](../packages/orchestrator/src/sandbox_science/orchestrator/jobs.py) `WATCHER_PROMPT`; `watcher_prompt.py` | Each due check-in when a watcher alias is configured ([background jobs](BACKGROUND-JOBS.md), [watcher provenance](WATCHER-PROMPT-PROVENANCE.md)) |
-| Consistency reviewer | Rubric `sandbox-consistency-8`; assembly `sandbox-reviewer-bundle-1` | [consistency/rubric.py](../packages/orchestrator/src/sandbox_science/orchestrator/consistency/rubric.py) `RUBRIC`; `consistency/runner.py` `SPECS` (five read-only review tools) | Each reviewer call ([consistency review](CONSISTENCY-REVIEW.md), [reviewer provenance](REVIEWER-PROMPT-PROVENANCE.md)) |
+| Consistency reviewer | Rubric `sandbox-consistency-9`, then the re-check instructions `sandbox-recheck-1`, then the purpose guidance `sandbox-reviewer-purpose-1`; assembly `sandbox-reviewer-bundle-3` | [consistency/rubric.py](../packages/orchestrator/src/sandbox_science/orchestrator/consistency/rubric.py) `RUBRIC`, `RECHECK`; [consistency/prompt_bundle.py](../packages/orchestrator/src/sandbox_science/orchestrator/consistency/prompt_bundle.py) `PURPOSE`; `consistency/runner.py` `SPECS` (the read-only review tools) | Each reviewer call ([consistency review](CONSISTENCY-REVIEW.md), [reviewer provenance](REVIEWER-PROMPT-PROVENANCE.md)) |
 | Display math repair | Not versioned | [workspace/mathrepair.py](../packages/workspace/src/sandbox_science/workspace/mathrepair.py) `SYSTEM_PROMPT` | An opt-in repair request from the workspace |
 
 What each input does:
@@ -50,6 +50,17 @@ What each input does:
   management](specs/context-management.md), CM-4a, CM-48). The delegated prompts say
   the same of their own run's archive; task parents can also retrieve descendants'
   complete archived history, while checks remain own-run only (CM-48a, CM-48b).
+- **Purpose of each call** ([tools spec](specs/tools.md#purpose-of-each-call), B9).
+  Every tool a model is offered, the harness's own, connector tools and the
+  reviewer's, has a required `purpose_note` parameter, added where the tools are
+  assembled for a model (`Toolbox.specs`, the reviewer's `ReviewerRunner.specs`): a
+  string of 8 to 120 characters, about 20 tokens a schema. What a good purpose is, and
+  that it holds no line break, `[`, `]` or `"`, the prompts say once (`purpose.py`
+  `GUIDANCE`): the MAIN, task and check prompts as their own sentences, the reviewer's
+  bundle as a section after the rubric. The toolbox checks the purpose before anything
+  else reads the call (a refusal is `invalid_request`, naming the field and the limit),
+  then passes the call on without it, so no gate, plan fence, approval, handler, worker
+  request or connector call sees it; the run's records keep it as `purpose`.
 - **Tool descriptions.** These are model-facing product guidance and need the same
   review as system text. `start_job` says that recovery after a worker or bridge
   restart needs the original executor daemon and sandbox, and that confirmed daemon
@@ -60,7 +71,9 @@ What each input does:
   before saying it made them; the harness runs a script as written
   ([tools spec](specs/tools.md), Shell 1). `shell`, `python` and `sage` say that
   output too long for the result comes back as its head and tail, marked as a
-  sample, and saved whole to a file the result names (Shell 5).
+  sample, and saved whole to a file the result names (Shell 5). `shell` and
+  `write_file` point to `grep`, `glob` and `edit_file` for searching files and for
+  changing part of one (Files 7 to 9).
 - **Platform notices.** Fixed framings in `notices.py`, each with an ID and a version,
   followed by bounded JSON data. The run record pins them, and the saved transcript
   keeps the text actually sent. Delivered notice IDs are tracked separately from fetched ones and
@@ -238,7 +251,49 @@ authority or proof of provider behavior:
   because of one, cites the entry's handle (owner, 2026-10-16; CM-48). `sandbox-main-10`
   adds guidance for explicitly extended exploratory research. `sandbox-main-11`
   adds explicit routing for new user messages: the root's work, plan creation or revision,
-  direct-child steering, and feedback on pinned research records (D87, PD-44). The
+  direct-child steering, and feedback on pinned research records (D87, PD-44).
+  `sandbox-main-16` adds that the file tools search as well: `edit_file` changes part of
+  a file rather than writing it whole, and `grep` and `glob` search rather than grep or
+  find in the shell ([tools spec](specs/tools.md), Files 7 to 9). `sandbox-main-17` and
+  `sandbox-delegated-task-15` add that each project memory note shows its basis: prefer
+  `user` and `observed` notes to `interpreted` and `not recorded` ones, and name a note's
+  ID when relying on one ([project memory](MEMORY.md)). `sandbox-main-17` also adds that a
+  delegated task lists deliverables whenever the user named outputs (the plan's desired
+  outputs) or it makes files the user will want, and skips them for small tasks; that a
+  brief's context, and `message_child`, give the tool lessons the main agent learned as
+  observations cited by references; and that a child's lessons are passed on as the main
+  agent's own text ([plans and delegation](specs/plans-and-delegation.md), PD-45;
+  [delegated agents](specs/delegated-agents.md), DA-27). `sandbox-delegated-task-15` also
+  adds that a task accounts for every deliverable of its brief, `not_produced` with its
+  reason rather than left out and `complete` only when every one was produced, that it may
+  give at most 5 one-line `lessons`, and that lessons and a context's observations are
+  notes that never state policy or claim a permission. `sandbox-main-17` also adds that a consistency finding is answered with `review_respond`:
+  a `fix` names the revision, or the later message, that addresses it and queues its
+  re-check, which alone makes it fixed, and `dismiss` sets it aside with a reason that
+  the user and the next review see (CR-43, CR-47). `sandbox-main-17`,
+  `sandbox-delegated-task-15` and `sandbox-delegated-check-14` add that every call
+  names its purpose (Purpose 6). `sandbox-main-18` adds that a returned task awaits the
+  parent's review: it reads the outcome, then accepts it with `accept_delegation` or sends
+  feedback with `message_child`, which has the task continue from its own history,
+  kernels and files and return again, and that a task left unreviewed is accepted when
+  the parent's run ends. `sandbox-delegated-task-16` adds that the parent reviews what the
+  task returns, and that a reopened task continues from its own history with the
+  parent's message as its next input, in the same kernels and files, without repeating
+  its work, and returns its whole result again, every deliverable accounted for
+  ([plans and delegation](specs/plans-and-delegation.md#parent-review), PD-46). A reopened
+  task's run starts with the platform's fixed opening (`delegation/prompt.py`
+  `REOPENED_TASK`) in place of its brief, which its state block keeps; the parent's
+  message reaches it as an agent message. `sandbox-main-19` adds when to give a task an
+  environment of its own, where the project offers them: work heavy in compute, memory
+  or disk, or that must not disturb the session's environment, with short tasks kept
+  shared; and that a returned task keeps its environment until its acceptance copies
+  its result's files, and those the platform could not keep, into
+  `work/<delegation_id>/`, then releases it. `sandbox-delegated-task-17` adds that an
+  environment of its own is working memory, gone once the task closes, so what it keeps
+  it records or publishes and names in `result_files`, and that its brief may narrow its connectors, so that `mcp_tools` lists only the ones named and a task needing another tells its parent with `message_parent` ([delegated agents](specs/delegated-agents.md), DA-6). The `delegate` tool's description
+  says that such a task starts once its environment is ready, about one to five
+  minutes, and that a small task asks for `environment: shared`
+  ([child environments](specs/child-environments.md), CE-5, CE-13). The
   delegated prompts add parent messaging in `sandbox-delegated-task-8` and
   `sandbox-delegated-check-8`; the latter still requires an independent verdict. Task and tool messages are not pinned; the
   notice framings are.
@@ -251,8 +306,10 @@ authority or proof of provider behavior:
   system text, `sandbox-job-watcher-1` and empty-tool pins are stored on each
   call reservation, atomically with its budget admission. Legacy rows stay unknown.
 - **Reviewer** ([reviewer provenance](REVIEWER-PROMPT-PROVENANCE.md)). The exact
-  `sandbox-consistency-8` rubric text and ordered six-tool pins are stored on each
-  call reservation, atomically with its counters.
+  `sandbox-consistency-9` rubric text, the `sandbox-recheck-1` re-check instructions,
+  the `sandbox-reviewer-purpose-1` purpose guidance's pin (both in format 3,
+  `sandbox-reviewer-bundle-3`) and the ordered six-tool pins are stored on each call
+  reservation, atomically with its counters.
 - **Display repair.** No record: the prompt is `SYSTEM_PROMPT` in `mathrepair.py`, and
   nothing about a repair call is kept beyond the server's in-memory cache.
 
@@ -365,7 +422,7 @@ The proposed IDs below were never built; the built IDs are in the
 | `consistency-vNext` | Existing reviewer dispatch | Existing pinned review tools; preserve decision/read/CAS guards |
 | `display-repair-vNext` | Opt-in configured repair request | Existing parser/sanitizer/limits; source remains untouched |
 | `resume-v1` | Explicit resumed run | Saved transcript plus actual effect reconciliation and live scope checks |
-| `sandbox-fold-overview-1` | An overview's update (the enrichment instruction, `sandbox-fold-enrich-2`, is built); they replace the earlier `compact-v1` proposal | The approved [context management](specs/context-management.md) spec: the archive, fold records with markers and search keys that code checks, and the research-state digest (CM-16 to CM-21b) |
+| `sandbox-fold-overview-2` | An overview's update (the enrichment instruction, `sandbox-fold-enrich-3`, is built); they replace the earlier `compact-v1` proposal | The approved [context management](specs/context-management.md) spec: the archive, fold records with markers and search keys that code checks, and the research-state digest (CM-16 to CM-21b) |
 
 The built research templates are short framing aids, not copied methods or a
 replacement for the external crypto-analysis-skills pack. Pack bodies remain

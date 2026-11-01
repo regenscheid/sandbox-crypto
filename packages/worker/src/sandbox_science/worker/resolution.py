@@ -97,6 +97,18 @@ _SOLVE_WORDS: Final = (
 )
 
 
+_FROZEN_PIN: Final = re.compile(
+    r"pin on (?P<name>[a-z0-9_][a-z0-9._+-]*) ==(?P<version>[A-Za-z0-9_.+!-]+) "
+    r"(?P<build>[A-Za-z0-9_.+!-]+) is not installable"
+)
+"""micromamba's account of a solve that would change a package ``conda-meta/pinned`` holds at
+its exact build, as images hold the packages whose files they keep read-only."""
+FROZEN_NEXT_STEP: Final = (
+    "Install something that works with the image's build of it, or ask the operator for an "
+    "image with the version wanted: only a new image changes a frozen package."
+)
+
+
 class ResolveError(Exception):
     """A dry run's output cannot be used: it failed, or names what the worker cannot hold."""
 
@@ -250,6 +262,69 @@ def _file(fields: Mapping[str, object], what: str) -> ResolvedFile:
         first = exc.errors(include_url=False, include_input=False)[0]
         where = ".".join(str(part) for part in first["loc"])
         raise ResolveError(f"{what} names a package the worker cannot hold ({where})") from None
+
+
+def frozen_refusal(output: str) -> str | None:
+    """Why a failed Conda dry run cannot be met, when it would change a frozen package.
+
+    The research images keep some packages' files (GAP, Giac, Maxima's, the compilers) in a
+    read-only image path and pin each at its build in ``conda-meta/pinned``, so micromamba
+    refuses a solve that would replace one (docs/IMAGES.md, "Prefix layout"). Its message
+    names the pin; this says what it means. None for any other failure.
+    """
+    found = {match["name"]: match for match in _FROZEN_PIN.finditer(output)}
+    if not found:
+        return None
+    named = ", ".join(
+        f"{name} {match['version']} ({match['build']})" for name, match in sorted(found.items())
+    )
+    return (
+        f"the request would change {named}, which the image freezes: its files are in the "
+        "image's read-only /opt/sandbox-science-frozen and conda-meta/pinned holds it at "
+        "that build, so no install may replace it"
+    )
+
+
+REMOVAL_NEXT_STEP: Final = (
+    "Ask for versions the installed packages accept, for example without the upper bound "
+    "that forces the removal; a package the image provides changes only with a new image."
+)
+
+
+def conda_removals(stdout: str) -> list[str]:
+    """The installed packages micromamba's JSON dry run would unlink without linking one of
+    the same name (``actions.UNLINK`` less ``actions.LINK``): a solve that removes them."""
+    document = _document(stdout, "the Conda dry run")
+    actions = document.get("actions")
+    fields = cast(dict[str, Any], actions) if isinstance(actions, dict) else {}
+
+    def names(key: str) -> set[str]:
+        entries = fields.get(key)
+        found: set[str] = set()
+        for entry in cast(list[object], entries) if isinstance(entries, list) else []:
+            name = (
+                _text(cast(dict[str, Any], entry).get("name")) if isinstance(entry, dict) else None
+            )
+            if name is not None:
+                found.add(name)
+        return found
+
+    return sorted(names("UNLINK") - names("LINK"))
+
+
+def removal_refusal(removed: Sequence[str], specs: Sequence[str]) -> str:
+    """Why a solve that would remove installed packages is refused (CP-1: the provisioning
+    tool installs and upgrades). In a research image's layer such a package is the base's,
+    which no install can take away (docs/IMAGES.md); elsewhere it is still in use."""
+    shown = ", ".join(removed[:10]) + (
+        f" and {len(removed) - 10} more" if len(removed) > 10 else ""
+    )
+    asked = " ".join(specs)[:300]
+    return (
+        f"the request ({asked}) would remove {shown} without replacing it: the provisioning "
+        "tool installs and upgrades packages and never removes one, and a package of the "
+        "image's base stays in the image whatever a solve says; nothing was changed"
+    )
 
 
 def parse_conda_dry_run(stdout: str, cache: str | None) -> list[Resolved]:

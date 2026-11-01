@@ -20,8 +20,9 @@ from sandbox_science.orchestrator.confinement.models import (
 )
 from sandbox_science.orchestrator.confinement.runtime_loop import RuntimeLoops
 from sandbox_science.orchestrator.confinement.transport import Capability, Channel, TransportError
+from sandbox_science.orchestrator.context.agent import AgentContext
+from sandbox_science.orchestrator.context.history.limits import WorkingMemoryLimitError
 from sandbox_science.orchestrator.harness import Role
-from sandbox_science.orchestrator.history.limits import WorkingMemoryLimitError
 from sandbox_science.orchestrator.hooks import RunView, TurnHook
 from sandbox_science.orchestrator.loop import Transcript
 from sandbox_science.orchestrator.model import ChatModel, ModelGateway
@@ -65,10 +66,10 @@ async def test_vm_loop_commits_host_state_without_a_local_harness_fallback(
         finishing, release = asyncio.Event(), asyncio.Event()
         order: list[str] = []
         guarded_runs: set[int] = set()
-        original_sent = Transcript.sent.fget
+        original_sent = AgentContext.sent.fget
         assert original_sent is not None
 
-        def guarded_sent(run: Transcript):
+        def guarded_sent(run: AgentContext):
             if id(run) in guarded_runs:
                 guarded_runs.remove(id(run))
                 raise WorkingMemoryLimitError("synthetic host working-state ceiling")
@@ -86,8 +87,9 @@ async def test_vm_loop_commits_host_state_without_a_local_harness_fallback(
 
             async def observe_tool(self, run: RunView, record: dict[str, Any]) -> None:
                 transcript = cast(Transcript, run)
-                guarded_runs.add(id(transcript))
-                _ = transcript.sent  # actual host property failure crosses the typed channel
+                guarded_runs.add(id(transcript.context))
+                # The actual host property failure crosses the typed channel.
+                _ = transcript.context.sent
 
             async def finishing(self, run: RunView, stopped: str) -> str | None:
                 assert stopped == "memory_limit"
@@ -98,7 +100,7 @@ async def test_vm_loop_commits_host_state_without_a_local_harness_fallback(
                 return None
 
         if memory_pause:
-            monkeypatch.setattr(Transcript, "sent", property(guarded_sent))
+            monkeypatch.setattr(AgentContext, "sent", property(guarded_sent))
 
         class ProfileGuard(TurnHook):
             name = "profile_context_fixture"
@@ -263,7 +265,9 @@ def test_loop_metadata_never_iterates_historical_delivery_membership() -> None:
         def __iter__(self):
             raise AssertionError("historical identities must stay behind the capability")
 
-    transcript = Transcript(messages=[{"role": "system", "content": "bounded"}])
+    transcript = Transcript(
+        context=AgentContext(messages=[{"role": "system", "content": "bounded"}])
+    )
     transcript.delivered["jobs"] = Historical()
     transcript.offered["jobs"] = Historical()
     wire = state(transcript)

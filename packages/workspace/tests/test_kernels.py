@@ -25,8 +25,8 @@ from sandbox_science.orchestrator.worker_client import (
 )
 from sandbox_science.testing import fake_worker_app
 from sandbox_science.workspace import kernels
-from sandbox_science.workspace.api import TIMEOUTS, Timeouts
 from sandbox_science.workspace.app import create_app
+from sandbox_science.workspace.context import TIMEOUTS, Timeouts
 
 TOKEN = "test-secret-kernel-workspace-login-0123456789"
 PATH = "/api/v0/projects/p1/sessions/a/kernels"

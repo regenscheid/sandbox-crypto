@@ -12,11 +12,12 @@ reaches a terminal state whatever the executor does.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import math
 from collections.abc import AsyncGenerator
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sandbox_science.contracts import (
     SYSTEM_CLOCK,
@@ -24,6 +25,8 @@ from sandbox_science.contracts import (
     ArtifactRef,
     Capabilities,
     Clock,
+    EditFileRequest,
+    EditFileResult,
     ErrorKind,
     Event,
     Execution,
@@ -31,6 +34,10 @@ from sandbox_science.contracts import (
     ExecutionRequest,
     FileContent,
     FileListing,
+    GlobListing,
+    GlobRequest,
+    GrepRequest,
+    GrepResult,
     JobListing,
     JobStatus,
     KernelInfo,
@@ -63,7 +70,7 @@ from .channel import ExecutorChannel
 from .connections import Activity, Connection, ConnectionHooks, EnvironmentConnections
 from .dispatcher import Dispatcher
 from .errors import WorkerError
-from .files import Files
+from .files import Files, RangeWritten
 from .journal import ExecutionJournal
 from .kernels import KernelRegistry
 from .lifecycle import (
@@ -86,6 +93,9 @@ from .shared_sync import SharedSync
 from .store import Store
 from .timeouts import MANAGER_TIMEOUTS, ManagerTimeouts
 from .usability import Usability
+
+if TYPE_CHECKING:
+    from .job_sandboxes import JobSandboxes
 
 _log = logging.getLogger(__name__)
 
@@ -239,7 +249,10 @@ class ExecutionManager:
             timeouts=timeouts,
             shared=shared,
             lifecycle=lifecycle,
+            sandboxes=lambda: self.job_sandboxes,
         )
+        self.job_sandboxes: JobSandboxes | None = None
+        """Job sandboxes (D93), set when the worker is built with job profiles."""
 
     # Settings, fixed when the manager is built.
 
@@ -313,6 +326,8 @@ class ExecutionManager:
         """
         self._publication.settle_orphans()
         await self._dispatcher.restore(daemon_enabled=self.backend.daemon)
+        if self.job_sandboxes is not None:
+            await self.job_sandboxes.start(self._journal, self._spawn)
 
     async def release(self, environment_id: str) -> None:
         """Stop an environment's executor before its sandbox goes away.
@@ -325,9 +340,39 @@ class ExecutionManager:
 
     async def _release(self, environment_id: str) -> None:
         await self._publication.cancel(environment_id)
-        jobs = self._journal.running_jobs(environment_id)
+        # A job sandbox's job runs elsewhere, and its run ends it (``end_job_sandboxes``);
+        # it is never reported lost for its session environment's executor.
+        jobs = [
+            job
+            for job in self._journal.running_jobs(environment_id)
+            if not self._dispatcher.sandboxed(job)
+        ]
         await self._dispatcher.cancel_jobs(jobs)
         await self._connections.release(environment_id)
+
+    async def end_job_sandboxes(self, environment_id: str) -> None:
+        """Before a session environment's deletion: cancel its job sandboxes' jobs, which
+        then end without copying anything more into it and release their sandboxes, and
+        release its retained job sandboxes (JS-25). Waits for the jobs as a session close
+        does, for the cancel grace; one still ending goes on in the background. A deletion
+        the package guard refuses ends nothing."""
+        sandboxes = self.job_sandboxes
+        if sandboxes is None:
+            return
+        await self.guard_package_deletion(environment_id)
+        jobs = [
+            job
+            for job in self._journal.running_jobs(environment_id)
+            if self._dispatcher.sandboxed(job)
+        ]
+        await self._close_job_sandboxes(jobs, deleted=True)
+        await sandboxes.release_retained(environment_id)
+
+    def environment_given_up(self, environment_id: str) -> None:
+        """The worker gave up an environment whose sandbox went or was replaced: its job
+        sandboxes end as on its deletion, in the background."""
+        if self.job_sandboxes is not None:
+            self._spawn(self.end_job_sandboxes(environment_id))
 
     async def activity(self, environment_id: str) -> Activity | None:
         """What an environment is doing now; None when its executor cannot say."""
@@ -354,6 +399,8 @@ class ExecutionManager:
             raise asyncio.CancelledError
 
     async def _close(self) -> None:
+        if self.job_sandboxes is not None:
+            await self.job_sandboxes.close()
         await self._publication.close()
         tasks = list(self._tasks)
         for task in tasks:
@@ -369,7 +416,7 @@ class ExecutionManager:
             saved = self.store.recovery(live.execution.execution_id)
             recoverable = (
                 self.backend.daemon and live.dispatched and saved is not None and bool(saved[1])
-            )
+            ) or self._dispatcher.sandboxed(live.execution)
             if live.execution.state not in TERMINAL_STATES and not recoverable:
                 self._dispatcher.lose(live, "the worker")
 
@@ -416,11 +463,21 @@ class ExecutionManager:
 
     async def forget_package_gate(self, environment_id: str) -> None:
         """Only confirmed deletion, after provisioning drain, may remove this fence."""
-        self._admission.forget(environment_id)
+        self._admission.forget(environment_id, disposable=self._disposable(environment_id))
 
     async def guard_package_deletion(self, environment_id: str) -> None:
-        """Require original-binding proof before any explicit guest teardown."""
+        """Require original-binding proof before any explicit guest teardown, except of a
+        job sandbox (D93): it is disposable, since its packages were replayed from the
+        session's lockfile and its outputs are the files collected and its manifest, so
+        a held package gate never keeps it from being stopped, released or deleted."""
+        if self._disposable(environment_id):
+            return
         self._admission.guard_deletion(environment_id)
+
+    def _disposable(self, environment_id: str) -> bool:
+        """Whether the environment is a job sandbox, whose package state is not durable.
+        Session and child environments keep the package guard."""
+        return self.job_sandboxes is not None and self.job_sandboxes.owns(environment_id)
 
     async def guard_package_reuse(self, environment_id: str) -> None:
         """A new VM cannot replace the unknown original held package binding."""
@@ -488,8 +545,31 @@ class ExecutionManager:
         return self._journal.jobs(context, limit, after)
 
     async def job_status(self, execution_id: str, project_id: str | None = None) -> JobStatus:
-        """Read bounded live output without opening a new executor or waiting for the job."""
-        return await self._journal.job_status(execution_id, project_id)
+        """Read bounded live output without opening a new executor or waiting for the job.
+        A job sandbox's status carries its result manifest once it has ended, and its
+        sandbox's current phase, which retention changes after the job's end."""
+        status = await self._journal.job_status(execution_id, project_id)
+        job = status.execution.job
+        if job is None or job.sandbox is None:
+            return status
+        record = self.store.job_sandboxes.get(execution_id)
+        found = self.store.job_sandboxes.manifest(execution_id)
+        if record is not None:
+            sandbox = job.sandbox.model_copy(
+                update={
+                    "phase": record.phase,
+                    "retained_until": record.retained_until,
+                    "collection": record.collection,
+                    "manifest_sha256": found[1] if found is not None else None,
+                }
+            )
+            execution = status.execution.model_copy(
+                update={"job": job.model_copy(update={"sandbox": sandbox})}
+            )
+            status = status.model_copy(update={"execution": execution})
+        if found is not None:
+            status = status.model_copy(update={"manifest": found[0]})
+        return status
 
     def events(
         self, execution_id: str, after: int, *, heartbeat: float | None = None
@@ -524,8 +604,29 @@ class ExecutionManager:
                 if job.context.project_id == context.project_id
                 and job.context.session_id == context.session_id
             ]
-            await self._dispatcher.cancel_jobs(jobs)
+            sandboxed = {job.execution_id for job in jobs if self._dispatcher.sandboxed(job)}
+            await asyncio.gather(
+                self._dispatcher.cancel_jobs(
+                    [job for job in jobs if job.execution_id not in sandboxed]
+                ),
+                self._close_job_sandboxes([job for job in jobs if job.execution_id in sandboxed]),
+            )
             return await self._close_session(request)
+
+    async def _close_job_sandboxes(self, jobs: list[Execution], *, deleted: bool = False) -> None:
+        """Cancel job sandboxes' jobs, which collect (unless their session environment is
+        ``deleted``) and then release their sandboxes without retention (JS-25). A job
+        still collecting after the cancel grace goes on in the background, and is never
+        reported lost for it."""
+        sandboxes = self.job_sandboxes
+        if not jobs or sandboxes is None:
+            return
+        for job in jobs:
+            sandboxes.release_on_close(job, deleted=deleted)
+        await asyncio.gather(*(self._dispatcher.cancel(job.execution_id) for job in jobs))
+        with contextlib.suppress(TimeoutError):
+            async with asyncio.timeout(self._timeouts.cancel_grace):
+                await asyncio.gather(*(self._journal.wait(job.execution_id) for job in jobs))
 
     async def _close_session(self, request: SessionCloseRequest) -> SessionClosed:
         """Stop the session's kernels; a seam that tests replace to hold a close open."""
@@ -542,7 +643,15 @@ class ExecutionManager:
             languages=tuple(name for name in environment.languages if name in LANGUAGES),
             location=self._packages.located(environment_id, environment) or environment.location,
             features=tuple(name for name in environment.features if name in FEATURES),
+            kernel_reason=environment.kernel_reason,
         )
+
+    def measured_tier(self, environment_id: str) -> int | None:
+        """The isolation tier the probe measured when the environment's executor last
+        opened, without connecting; None when none has opened since the worker started."""
+        found = self._connections.get(environment_id)
+        location = found.location if found is not None else None
+        return location.isolation_tier if location is not None else None
 
     # Files. Replies are checked like events: a malformed one is an internal error.
 
@@ -557,6 +666,43 @@ class ExecutionManager:
     async def list_files(self, request: ListFilesRequest) -> FileListing:
         with self.store.recovery_fences.bind(request.context):
             return await self._files.listing(request)
+
+    async def read_part(
+        self, context: ExecutionContext, path: str, offset: int, length: int
+    ) -> tuple[bytes, int]:
+        """A range of a file, unhashed, and the file's size (``Files.read_part``)."""
+        with self.store.recovery_fences.bind(context):
+            return await self._files.read_part(context, path, offset, length)
+
+    async def write_range(
+        self,
+        context: ExecutionContext,
+        path: str,
+        upload: str,
+        offset: int,
+        content: bytes,
+        *,
+        sha256: str | None = None,
+        size: int | None = None,
+        discard: bool = False,
+    ) -> RangeWritten:
+        """Write part of a file of the session, committed whole (``Files.write_range``)."""
+        with self.store.recovery_fences.bind(context):
+            return await self._files.write_range(
+                context, path, upload, offset, content, sha256=sha256, size=size, discard=discard
+            )
+
+    async def edit_file(self, request: EditFileRequest) -> EditFileResult:
+        with self.store.recovery_fences.bind(request.context):
+            return await self._files.edit(request)
+
+    async def glob_files(self, request: GlobRequest) -> GlobListing:
+        with self.store.recovery_fences.bind(request.context):
+            return await self._files.glob(request)
+
+    async def grep_files(self, request: GrepRequest) -> GrepResult:
+        with self.store.recovery_fences.bind(request.context):
+            return await self._files.grep(request)
 
     async def stage_check(self, request: StageCheckRequest) -> StageCheck:
         with self.store.recovery_fences.bind(request.context):

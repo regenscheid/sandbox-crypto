@@ -1,122 +1,195 @@
 <!-- SPDX-License-Identifier: MIT -->
+<!-- The session's agents from its run tree: those working now, then the returned tasks
+     that await their parent's review (PD-46), then those that finished, each by name with
+     its state, in words (what it was asked, how it ended) rather than its
+     record, and who delegated it when that was not the research agent. "View activity"
+     shows a run's events, "Its transcript" the run view, "Its delegation card" the whole
+     delegation (open when a link or a chat block names it, `focus`), "Context management"
+     what its model was given; the full run tree has every field. -->
 <script lang="ts">
   import { untrack } from 'svelte';
   import { browserState } from '../lib/browserState';
-  import { formatTime } from '../lib/format';
-  import { api } from '../lib/api';
-  import type { RunTree } from '../lib/api-types';
-  import { briefView, stateText } from '../lib/runTree';
-  import { initialPoll, Poller, type PollState } from '../lib/poller';
-  import { treeHref } from '../lib/router';
-  import PollStatus from './PollStatus.svelte';
+  import type { Delegation, RunTree, TreeRun } from '../lib/api-types';
+  import { clock, firstLine } from '../lib/conversation';
+  import {
+    agentName,
+    briefView,
+    earlierResults,
+    endedText,
+    resultView,
+    standingText,
+    stateText,
+  } from '../lib/runTree';
+  import { runHref, treeHref } from '../lib/router';
+  import { visible } from '../lib/text';
   import AgentActivity from './AgentActivity.svelte';
-  let { projectId, sessionId }: { projectId: string; sessionId: string } = $props();
-  let view = $state<PollState<RunTree>>(initialPoll());
+  import DelegationCard from './DelegationCard.svelte';
+  import SavedContext from './SavedContext.svelte';
+  let {
+    projectId,
+    sessionId,
+    tree,
+    focus = null,
+  }: {
+    projectId: string;
+    sessionId: string;
+    tree: RunTree | null;
+    /** A delegation whose card to open and bring into view. */
+    focus?: string | null;
+  } = $props();
   const scope = untrack(() => `agents:${projectId}:${sessionId}`);
   const kept = untrack(() => browserState.load(scope).draft ?? {});
   let selected = $state<string | null>(kept.selected || null);
-  let search = $state(kept.search ?? '');
-  let filter = $state(kept.filter ?? 'all');
   $effect(() => {
-    browserState.save(scope, { selected: selected ?? '', search, filter });
+    browserState.save(scope, { selected: selected ?? '' });
   });
-  const runs = $derived(
-    view.data?.runs.filter((run) => {
-      const delegation = view.data?.delegations.find(
-        (item) => item.delegation_id === run.delegation,
-      );
-      return (
-        (filter === 'all' || run.state === filter) &&
-        `${run.name} ${run.role} ${delegation ? briefView(delegation).task : ''}`
-          .toLocaleLowerCase()
-          .includes(search.toLocaleLowerCase())
-      );
-    }) ?? [],
-  );
+  const delegation = (run: TreeRun) =>
+    tree?.delegations.find((item) => item.delegation_id === run.delegation) ?? null;
+  const runs = $derived([...(tree?.runs ?? [])].reverse());
+  const running = $derived(runs.filter((run) => run.state === 'running'));
+  /** A returned task's latest run, while the task awaits its parent's review (PD-46). */
+  const reviewing = (run: TreeRun) => {
+    const record = delegation(run);
+    return record?.review === 'awaiting' && record.run === run.name;
+  };
+  const returned = $derived(runs.filter((run) => run.state !== 'running' && reviewing(run)));
+  const finished = $derived(runs.filter((run) => run.state !== 'running' && !reviewing(run)));
+  /** The run that delegated a run, when that was not the research agent. */
+  const delegator = (run: TreeRun) => {
+    const parent = tree?.runs.find((item) => item.name === run.parent);
+    return parent && parent.role !== 'main' ? agentName(parent, delegation(parent)) : null;
+  };
+  /** How an agent stands, in a word or two: running, or how it ended. */
+  function standing(run: TreeRun, record: Delegation | null): string {
+    if (run.state === 'running') return 'running';
+    if (record?.ended) return standingText(record);
+    return stateText(run);
+  }
+  let section = $state<HTMLElement | null>(null);
+  /** The focus last brought into view: once each, not at every read of the tree. */
+  let shownFocus: string | null = null;
+  // A focused card is brought into view once the tree lists it.
   $effect(() => {
-    const project = projectId,
-      session = sessionId;
-    const poller = new Poller(
-      (signal) => api.runTree(project, session, signal),
-      (value) => {
-        view = value;
-      },
-      { intervalMs: 2000 },
+    const id = focus;
+    if (id === null || id === shownFocus) return;
+    if (!tree?.delegations.some((item) => item.delegation_id === id)) return;
+    shownFocus = id;
+    queueMicrotask(() =>
+      section
+        ?.querySelector(`[data-delegation="${CSS.escape(id)}"]`)
+        ?.scrollIntoView?.({ block: 'nearest' }),
     );
-    return poller.watch();
   });
+
+  function summary(run: TreeRun, record: Delegation | null): string {
+    if (record === null) {
+      if (run.state === 'interrupted') return 'Interrupted: its process ended.';
+      if (run.stopped === 'answered') return 'Answered.';
+      return run.stopped === null
+        ? 'Ended.'
+        : `Stopped: ${visible(run.stopped.replaceAll('_', ' '))}.`;
+    }
+    const result = resultView(record);
+    return result?.summary ? firstLine(result.summary, 280) : endedText(record);
+  }
 </script>
 
-<section aria-label="Session agents">
-  <h2>Agents</h2>
-  <p class="muted">Follow the main agent and its delegated research.</p>
-  <PollStatus phase={view.phase} hasData={view.data !== null} what="Agent activity" />
-  <label>Search agents <input type="search" bind:value={search} /></label>
-  <label
-    >Observed state <select bind:value={filter}
-      ><option value="all">All</option><option value="running">Running</option><option value="ended"
-        >Ended</option
-      ><option value="interrupted">Interrupted</option></select
-    ></label
+{#snippet card(run: TreeRun, live: boolean)}
+  {@const record = delegation(run)}
+  {@const by = delegator(run)}
+  <article
+    class="agent-card"
+    class:finished={!live}
+    class:agent-selected={selected === run.name || (focus !== null && run.delegation === focus)}
+    data-delegation={run.delegation ?? undefined}
   >
-  {#if view.data}
-    {#each runs as run (run.name)}
-      {@const delegation = view.data.delegations.find((d) => d.delegation_id === run.delegation)}
-      <article class="agent-card" class:agent-selected={selected === run.name}>
-        <div class="agent-heading">
-          <strong>{run.role === 'main' ? 'Main agent' : 'Research agent'}</strong><span
-            class="state-badge"
-            class:running={run.state === 'running'}>{stateText(run)}</span
-          >
-        </div>
-        {#if delegation}<p class="agent-task">
-            {briefView(delegation).task || briefView(delegation).note}
-          </p>{/if}
-        <p class="muted agent-id">
-          {run.run_id}{#if run.parent}<br />Child of {run.parent}{/if}
-        </p>
-        <p class="muted">Started {formatTime(run.started_at)} · recorded state: {run.state}</p>
-        <button
-          onclick={() => {
-            selected = selected === run.name ? null : run.name;
-          }}
-          aria-expanded={selected === run.name}
-          >{selected === run.name ? 'Hide activity' : 'View activity'}</button
+    <div class="agent-heading">
+      {#if live}<span class="session-dot" aria-hidden="true"></span>{/if}
+      <strong>{agentName(run, record)}</strong>
+      <span class="pill" class:running={live}>{standing(run, record)}</span>
+      <span class="muted"
+        >{live
+          ? `since ${clock(run.started_at)}`
+          : record?.ended_at
+            ? `${clock(run.started_at)}–${clock(record.ended_at)}`
+            : clock(run.started_at)}</span
+      >
+    </div>
+    {#if live}
+      {#if record && run.role !== 'main' && record.kind === 'task' && briefView(record).note}<p
+          class="agent-task"
         >
-      </article>
-    {:else}<p class="empty-note">
-        No agents have started yet. Their progress will appear here.
-      </p>{/each}
-    {#if view.data.delegations_total > view.data.delegations.length}<p class="muted">
-        Showing the latest {view.data.delegations.length} of {view.data.delegations_total} delegations.
-      </p>{/if}
-  {/if}
-  {#if selected && view.data}{@const agent = view.data.runs.find(
-      (run) => run.name === selected,
-    )}{@const record = view.data.delegations.find(
-      (item) => item.delegation_id === agent?.delegation,
-    )}
-    <section aria-label="Selected agent details">
-      <h3>Recorded brief and outcome</h3>
-      {#if record}<pre>{JSON.stringify(record, null, 2)}</pre>{:else}<p>
-          No delegated brief for this main agent.
+          {firstLine(briefView(record).note, 200)}
         </p>{/if}
-    </section>
-  {/if}
-  {#if selected}{#key selected}<AgentActivity {projectId} {sessionId} run={selected} />{/key}{/if}
-  <a class="back-link" href={treeHref(projectId, sessionId)}>Open full run tree ↗</a>
-</section>
+    {:else}<p class="agent-task">{summary(run, record)}</p>{/if}
+    {#if by}<p class="agent-by muted">Delegated by {by}</p>{/if}
+    <div class="agent-detail">
+      <span
+        >{run.alias ? visible(run.alias) : 'Default model'} · {run.role === 'main'
+          ? 'main agent'
+          : record?.kind === 'check'
+            ? 'independent check'
+            : 'subagent'}</span
+      >
+      <button
+        type="button"
+        class="link-button"
+        aria-expanded={selected === run.name}
+        onclick={() => {
+          selected = selected === run.name ? null : run.name;
+        }}>{selected === run.name ? 'Hide activity' : 'View activity'}</button
+      >
+      {#if run.role !== 'main'}<a href={runHref(projectId, sessionId, run.name)}>Its transcript</a
+        >{/if}
+      <!-- What the agent's model was given, and how its context was folded. -->
+      <SavedContext
+        project={projectId}
+        session={sessionId}
+        run={run.name}
+        compact
+        scope={run.role === 'main' ? 'agent' : 'attempt'}
+      />
+    </div>
+    {#if record}
+      <details class="agent-delegation" open={focus === record.delegation_id}>
+        <summary>Its delegation card</summary>
+        <DelegationCard
+          {projectId}
+          {sessionId}
+          runId={run.run_id}
+          delegation={record}
+          earlier={earlierResults(tree, record.delegation_id)}
+        />
+      </details>
+    {/if}
+  </article>
+{/snippet}
 
-<style>
-  pre {
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-    max-height: 24rem;
-    overflow: auto;
-  }
-  label {
-    display: inline-grid;
-    gap: 0.25rem;
-    margin: 0.4rem;
-  }
-</style>
+<section aria-label="Session agents" bind:this={section}>
+  {#if tree}
+    <h2>Working now</h2>
+    {#each running as run (run.name)}{@render card(run, true)}{:else}<p class="muted">
+        No agent is working now.
+      </p>{/each}
+    {#if returned.length}
+      <h2>Awaiting review</h2>
+      <p class="muted">
+        Returned to the agent that delegated them, which accepts each or sends it feedback.
+      </p>
+      {#each returned as run (run.name)}{@render card(run, false)}{/each}
+    {/if}
+    {#if finished.length}
+      <h2>Finished</h2>
+      {#each finished as run (run.name)}{@render card(run, false)}{/each}
+    {/if}
+    {#if tree.delegations_total > tree.delegations.length}<p class="muted">
+        Showing the latest {tree.delegations.length} of {tree.delegations_total} delegations.
+      </p>{/if}
+  {:else}
+    <p class="muted">Reading the session's agents…</p>
+  {/if}
+  {#if selected}{#key selected}<div class="agent-activity">
+        <AgentActivity {projectId} {sessionId} run={selected} />
+      </div>{/key}{/if}
+  <a class="back-link" href={treeHref(projectId, sessionId)}>Open the full run tree ↗</a>
+</section>

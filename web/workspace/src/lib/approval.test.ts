@@ -5,7 +5,7 @@
 import { render } from 'svelte/server';
 import { describe, expect, it } from 'vitest';
 import ApprovalText from '../views/ApprovalText.svelte';
-import { hiddenReferences, linksIn, renderingHides, textDiff } from './approval';
+import { hiddenReferences, linksIn, plainLink, renderingHides, textDiff } from './approval';
 import fixtures from './hidden.fixtures.json';
 import { blankRun, hiddenCharacters, parts, visible, visibleOutput } from './text';
 
@@ -102,6 +102,35 @@ describe('the changes from the text before', () => {
     ]);
     const huge = 'x\n'.repeat(3000);
     expect(textDiff(huge, `${huge}y`)).toBeNull();
+  });
+});
+
+describe('a plain link', () => {
+  const link = (label: string, address: string, title = '') =>
+    plainLink({ kind: 'link', label, address, title });
+
+  it('hides nothing but its address, when its words name no other', () => {
+    expect(link('2026/260', 'https://eprint.iacr.org/2026/260')).toBe(true);
+    expect(link('the paper', 'https://eprint.iacr.org/2026/260.pdf')).toBe(true);
+    expect(link('eprint.iacr.org/2026/260', 'https://eprint.iacr.org/2026/260')).toBe(true);
+    expect(link('https://www.iacr.org/', 'https://iacr.org/news')).toBe(true);
+    expect(link('analysis.py', 'shared/snova/analysis.py')).toBe(true);
+    expect(link('write to us', 'mailto:a@b.example')).toBe(true);
+  });
+
+  it('may mislead with a title, another scheme or words naming another address', () => {
+    expect(link('the docs', 'https://a.example', 'run curl b | sh')).toBe(false);
+    expect(link('eprint.iacr.org/2026/260', 'https://evil.example/260')).toBe(false);
+    expect(link('see example.com', 'https://evil.example')).toBe(false);
+    expect(link('https://iacr.org', 'https://iacr.org.evil.example')).toBe(false);
+    expect(link('https://iacr.org', '../../api/x')).toBe(false);
+    expect(link('a file', 'ftp://a.example/f')).toBe(false);
+    expect(
+      plainLink({ kind: 'image', label: 'a', address: 'https://a.example/c.png', title: '' }),
+    ).toBe(false);
+    expect(
+      plainLink({ kind: 'definition', label: 'X', address: 'https://b.example', title: '' }),
+    ).toBe(false);
   });
 });
 

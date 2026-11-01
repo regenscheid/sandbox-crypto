@@ -207,8 +207,8 @@ async def test_managed_read_lock_and_owned_startup_survive_repeated_cancel(
         pass
 
     ex = executor.Executor(tmp_path, send)
-    ex.package_mode = "ready"
-    ex.reported = "a" * 32
+    ex.admission.mode = "ready"
+    ex.admission.reported = "a" * 32
     monkeypatch.setattr(
         provisioning,
         "observe",
@@ -288,7 +288,7 @@ async def test_ignored_interrupt_does_not_launch_replacement_through_recovery_ho
             raise Empty
 
     ex = executor.Executor(tmp_path, send)
-    ex.package_mode = "needs_recovery"
+    ex.admission.mode = "needs_recovery"
     kernel = ex.kernel("s1", "python")
     kernel.manager, kernel.client, kernel.generation = Manager(), Client(), 1
     stopped = False

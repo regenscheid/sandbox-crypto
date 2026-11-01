@@ -20,14 +20,14 @@ from typing import Any, cast
 import pytest
 
 from sandbox_science.orchestrator import cli
-from sandbox_science.orchestrator.history import Archive, RunArchive
-from sandbox_science.orchestrator.history.descriptors import (
+from sandbox_science.orchestrator.context.history import Archive, RunArchive
+from sandbox_science.orchestrator.context.history.descriptors import (
     descriptor,
     nist_key,
     paper_key,
     url_key,
 )
-from sandbox_science.orchestrator.history.reads import (
+from sandbox_science.orchestrator.context.history.reads import (
     Read,
     Register,
     merged,
@@ -59,6 +59,20 @@ FULLTEXT = (
     "rejection of Lyubashevsky-2012 to achieve the zero-knowledge property."
 )
 UNMATCHED = "[2024/1234]\n" + EPRINT_RECORD + "\n\nNo passage matching 'pebble'."
+# The e-print tools as the server answers since 2026-10-31 (the older answers above stay
+# readable: archives of before hold them).
+PAGES = (
+    "[2024/1234] EagleSignV3\nPhysical pages 2-3 of 10.\n\n## Page 2\n\nText.\n\n## Page 3\n\n"
+    'More.\n\nNext: eprint_fulltext(paper_id="2024/1234", start_page=4, page_count=2).'
+)
+ALL_PAGES = "[2024/1234] EagleSignV3\nPhysical pages 1-2 of 2.\n\n## Page 1\n\nA\n\nEnd of paper."
+SEARCHED = (
+    "[2024/1234] EagleSignV3\n\n1 passage(s) matching 'rejection':\n\nPhysical page 4\n\n"
+    "rejection of Lyubashevsky-2012 to achieve the zero-knowledge property.\n"
+)
+SEARCH_MISSED = (
+    "[2024/1234] EagleSignV3\n\nNo body passage matching 'pebble'. The body text is available."
+)
 FETCHED = (
     "[direct] https://eprint.iacr.org/2024/1234 (HTTP 200)\nExtraction: trafilatura\n\n"
     "# EagleSignV3\n\n##### Abstract\n\nWith the potential arrival of quantum computers, it is "
@@ -100,6 +114,14 @@ def placed(tool: str, arguments: dict[str, Any], text: str) -> list[Read]:
          UNMATCHED, [("eprint", "2024/1234", "abstract_only")]),
         ("e-print-mcp_eprint_fulltext", {"paper_id": "2025/1"},
          "Queued for the fetcher; try again shortly.", []),
+        ("e-print-mcp_eprint_fulltext", {"paper_id": "2024/1234", "start_page": 2}, PAGES,
+         [("eprint", "2024/1234", "partial")]),
+        ("e-print-mcp_eprint_fulltext", {"paper_id": "2024/1234"}, ALL_PAGES,
+         [("eprint", "2024/1234", "whole")]),
+        ("e-print-mcp_search_eprint_fulltext", {"paper_id": "2024/1234", "query": "rejection"},
+         SEARCHED, [("eprint", "2024/1234", "partial")]),
+        ("e-print-mcp_search_eprint_fulltext", {"paper_id": "2024/1234", "query": "pebble"},
+         SEARCH_MISSED, []),
         ("e-print-mcp_eprint_file", {"paper_id": "2024/1234"}, "https://signed.example/x", []),
         ("web-fetch-mcp_fetch_page", {"url": "https://eprint.iacr.org/2024/1234"}, FETCHED,
          [("web", "eprint.iacr.org/2024/1234", "partial")]),
@@ -176,6 +198,11 @@ def test_reads_put_together_cover_their_source() -> None:
     abstract = Read("eprint", "e", "abstract_only")
     passages = Read("eprint", "e", "partial", {"passages": 2})
     assert extent([abstract, passages]) == "partial"
+    # An ePrint read by page (2026-10-31): its pages add up to the paper.
+    head = placed("e-print-mcp_eprint_fulltext", {}, PAGES.replace("2-3", "1-5"))
+    tail = placed("e-print-mcp_eprint_fulltext", {}, PAGES.replace("2-3", "6-10"))
+    assert extent([abstract, *head, passages]) == "partial"
+    assert extent([abstract, *head, *tail, passages]) == "whole"
     sample = Read("file", "f", "preview_only", {"size": 100})
     assert extent([sample]) == "preview_only"
     assert spans([1, 2, 3, 7, 9, 10]) == "1-3, 7, 9-10"

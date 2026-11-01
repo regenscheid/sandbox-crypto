@@ -65,7 +65,8 @@ async def test_scripted_confirmation_checks_exact_seeded_corrected_revision(
         with pytest.raises(ValueError, match="correct the synthetic count to 15"):
             await fixture["confirm"](state)
         assert len(store.listing("review-demo", "main")["reviews"]) == 1
-        assert findings.get("review-demo", "main", finding)["status"] == "claimed fixed"
+        refused = findings.get("review-demo", "main", finding)
+        assert (refused["status"], refused["recheck"]["cause"]) == ("open", "fix")
         documents.edit_source(
             "review-demo",
             document,
@@ -91,7 +92,7 @@ async def test_scripted_confirmation_checks_exact_seeded_corrected_revision(
         await fixture["confirm"](state)
         outcome = json.loads(capsys.readouterr().out)
         assert outcome["finding"]["finding_id"] == finding
-        assert outcome["finding"]["status"] == "confirmed fixed"
+        assert outcome["finding"]["status"] == "fixed"
         assert outcome["review"]["resolved_model"] == "scripted"
         assert outcome["review"]["alias"] == "scripted-reviewer"
     finally:

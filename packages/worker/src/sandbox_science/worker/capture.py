@@ -323,6 +323,39 @@ class Pool:
                 if cancelled:
                     raise asyncio.CancelledError
 
+    async def read_request(self, request: dict[str, Any]) -> dict[str, Any]:
+        """A capture endpoint's bounded read and cleanup acknowledgement payload."""
+        data = {
+            key: request.get(key)
+            for key in ("session", "path", "offset", "length", "max_bytes", "hash")
+        }
+        try:
+            result = await self.read(request.get("capture_id"), data, request.get("timeout"))
+        except asyncio.CancelledError:
+            return {
+                "capture_id": request.get("capture_id"),
+                "cleaned": True,
+                "capture_error": {
+                    "kind": "cancelled",
+                    "message": "capture cancelled after cleanup",
+                },
+            }
+        except CaptureError as exc:
+            return {
+                "capture_id": request.get("capture_id"),
+                "cleaned": exc.cleaned,
+                "capture_error": {"kind": exc.kind, "message": exc.message},
+            }
+        return {**result, "capture_id": request["capture_id"], "cleaned": True}
+
+    async def cancel_request(self, request: dict[str, Any]) -> dict[str, Any]:
+        """End only the named helper, acknowledging cleanup after it is reaped."""
+        capture_id = request.get("capture_id")
+        if not isinstance(capture_id, str) or re.fullmatch(r"cap-[0-9a-f]{24}", capture_id) is None:
+            raise CaptureError("invalid_request", "invalid capture ID")
+        await self.cancel(capture_id)
+        return {"capture_id": capture_id, "cleaned": True}
+
     async def cancel(self, capture_id: str) -> None:
         """Cancel only a helper owned by this pool, and await its actual cleanup."""
         self.remember(capture_id)

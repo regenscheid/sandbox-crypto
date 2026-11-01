@@ -2,7 +2,7 @@
 
 Durable comment openings and replies share the isolated mechanical checker,
 findings and closing delivery of [document revisions](MATH-CHECKS.md) (D82,
-comment portion of LD-53 to LD-55 and CR-36 to CR-38). Eligible MAIN fix/rebut
+comment portion of LD-53 to LD-55 and CR-36 to CR-38). Eligible MAIN fix and dismissal
 explanations are checked as described in [finding prose math](FINDING-PROSE-MATH.md).
 [Ledger statements](LEDGER.md) are checked the same way. Other ledger fields,
 other excluded prose, idle scheduling and model repair proposals are not built. The renderer stays operator-configured and unavailable by default.
@@ -54,7 +54,7 @@ Only a new proved edit to the failing block consumes a reflag. Repeated macro or
 renderer changes refresh exact assessment/history without consuming either failed
 patch opportunity. Last available immutable ownership proof covers accepted checks
 and older stale owner caches; unavailable or invalid proof cannot spend that budget.
-Dependency refresh preserves unaddressed and explicit USER resolutions.
+Dependency refresh preserves a finding at its re-flag bound and explicit USER resolutions.
 
 Thread history renders under the selected document's diagnostic macro context,
 with a visible warning; it does not claim to reproduce each body's save-time

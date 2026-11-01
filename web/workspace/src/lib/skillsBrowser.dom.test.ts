@@ -53,7 +53,13 @@ function project(revision = 2) {
   };
 }
 
-it('filters catalog, exposes detail, and resizes its pane', async () => {
+/** The first skill's "Always" choice in its row. */
+const always = (target: HTMLElement) =>
+  [...target.querySelectorAll<HTMLButtonElement>('.skill-mode button')].find(
+    (button) => button.textContent === 'Always',
+  )!;
+
+it("filters the catalog and opens a skill's details in its row", async () => {
   vi.stubGlobal('innerWidth', 1400);
   vi.stubGlobal(
     'fetch',
@@ -69,11 +75,16 @@ it('filters catalog, exposes detail, and resizes its pane', async () => {
   search.dispatchEvent(new Event('input', { bubbles: true }));
   flushSync();
   expect(target.querySelectorAll('.browser-row')).toHaveLength(1);
-  expect(target.querySelector('.browser-detail')?.textContent).toContain('abc123');
-  const splitter = target.querySelector<HTMLElement>('[aria-label="Resize skill details"]')!;
-  splitter.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+  // Details open inside the row, not in a pane beside the list, and close again.
+  expect(target.querySelector('.browser-detail')).toBeNull();
+  const row = target.querySelector<HTMLButtonElement>('.browser-row')!;
+  row.click();
   flushSync();
-  expect(splitter.getAttribute('aria-valuenow')).toBe('700');
+  expect(row.getAttribute('aria-expanded')).toBe('true');
+  expect(target.querySelector('.skill-item .skill-detail')?.textContent).toContain('abc123');
+  row.click();
+  flushSync();
+  expect(target.querySelector('.skill-detail')).toBeNull();
 });
 
 it('reviews and saves a choice at the loaded settings revision', async () => {
@@ -102,11 +113,8 @@ it('reviews and saves a choice at the loaded settings revision', async () => {
   document.body.append(target);
   mounted.push(mount(SkillsPage, { target, props: { projectId: 'p1' } }));
   await settle();
-  // The second radio is "always loaded"; select it by its label for a stable test.
-  const choice = [...target.querySelectorAll<HTMLLabelElement>('.mode-choice label')].find(
-    (label) => label.textContent?.includes('Always loaded'),
-  )!;
-  choice.querySelector<HTMLInputElement>('input')!.click();
+  // Each row has its own choice: On request, Always, Off.
+  always(target).click();
   flushSync();
   target.querySelector<HTMLButtonElement>('[role="tab"]:nth-child(3)')!.click();
   flushSync();
@@ -137,10 +145,7 @@ it('warns only for unsaved skill changes when browser storage is full', async ()
   mounted.push(mount(SkillsPage, { target, props: { projectId: 'skills-storage-full' } }));
   await settle();
   expect(target.textContent).not.toContain('kept only in this tab');
-  const choice = [...target.querySelectorAll<HTMLLabelElement>('.mode-choice label')].find(
-    (label) => label.textContent?.includes('Always loaded'),
-  )!;
-  choice.querySelector<HTMLInputElement>('input')!.click();
+  always(target).click();
   flushSync();
   expect(target.textContent).toContain('These skill loading edits are kept only in this tab');
 });

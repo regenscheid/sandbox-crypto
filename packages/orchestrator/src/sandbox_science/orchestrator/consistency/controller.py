@@ -16,12 +16,12 @@ from typing import TYPE_CHECKING, Any, Final, Literal, cast
 from sandbox_science.contracts import ExecutionContext, new_id
 from sandbox_science.contracts.artifact_inventory import ArtifactRevisionRef
 from sandbox_science.orchestrator.aio import lease, threaded
+from sandbox_science.orchestrator.context.history import Archive, body
+from sandbox_science.orchestrator.context.history.collections import Collection as RunCollection
+from sandbox_science.orchestrator.context.history.snapshot import inline
 from sandbox_science.orchestrator.documents.errors import POLICY_DENIED, DocumentError
 from sandbox_science.orchestrator.documents.models import Author
 from sandbox_science.orchestrator.documents.store import DocumentStore
-from sandbox_science.orchestrator.history import Archive, body
-from sandbox_science.orchestrator.history.collections import Collection as RunCollection
-from sandbox_science.orchestrator.history.snapshot import inline
 from sandbox_science.orchestrator.hooks import (
     Closing,
     Effect,
@@ -32,12 +32,9 @@ from sandbox_science.orchestrator.hooks import (
 )
 from sandbox_science.orchestrator.memory_prompt import MemoryGiven
 from sandbox_science.orchestrator.model import ChatModel, Message, ToolSpec
-from sandbox_science.orchestrator.notices import (
-    REVIEW_CHALLENGED,
-    REVIEW_COUNTS,
-    REVIEW_FINDINGS,
-)
+from sandbox_science.orchestrator.notices import REVIEW_COUNTS, REVIEW_FINDINGS
 from sandbox_science.orchestrator.projects import recorded
+from sandbox_science.orchestrator.purpose import without
 from sandbox_science.orchestrator.view_image import ImageViewer
 
 from .actions import action_of
@@ -47,9 +44,9 @@ from .delegated import observe_delegated
 from .executions import execution_projection
 from .findings import Findings
 from .ledger import ingest_ledger
-from .models import EvidenceAnchor, ReviewType
+from .models import DISMISSAL_CHARACTERS, FINDING_STATUSES, EvidenceAnchor, ReviewType
 from .notices import FindingNotices
-from .quotes import EPRINT_TOOL, PDF_TOOLS, eprint_record, mark_of, pdf_record
+from .quotes import EPRINT_TOOLS, PDF_TOOLS, eprint_record, mark_of, pdf_record
 from .rubric import CLASSIFIER_VERSION
 from .runner import ReviewerRunner, schema
 from .store import MAX_ITEM_BYTES, Json, ReviewStore, clipped, dump
@@ -60,8 +57,9 @@ if TYPE_CHECKING:
 AUTHOR_SPECS = (
     schema(
         "review_findings",
-        "List the session's unresolved consistency findings.",
-        {"after": {"type": "string"}},
+        "List the session's consistency findings by status: open by default, or fixed, "
+        "dismissed, superseded or stale.",
+        {"after": {"type": "string"}, "status": {"enum": list(FINDING_STATUSES)}},
         [],
     ),
     schema(
@@ -90,14 +88,16 @@ AUTHOR_SPECS = (
     schema(
         "review_respond",
         (
-            "Main agent only: claim a fix with explanation and changed "
-            "revision references, or rebut with evidence. Authors cannot "
-            "confirm their own fixes."
+            "Main agent only, on an open finding: fix names the revisions, or for a "
+            "finding on messages the later message, that address it and queues its "
+            "re-check, which alone makes it fixed; dismiss sets it aside with a reason of "
+            f"at most {DISMISSAL_CHARACTERS:,} characters, which the user and the next "
+            "review see."
         ),
         {
             "finding": {"type": "string"},
             "expected": {"type": "integer"},
-            "action": {"enum": ["fix", "rebut"]},
+            "action": {"enum": ["fix", "dismiss"]},
             "explanation": {"type": "string"},
             "evidence": {
                 "type": "array",
@@ -127,6 +127,13 @@ AUTHOR_SPECS = (
                 "maxItems": 16,
                 "description": "Changed ledger entry revisions: [entry handle or ID, revision]",
                 "items": {"type": "array"},
+            },
+            "messages": {
+                "type": "array",
+                "maxItems": 8,
+                "description": "For a finding on messages: the later archive messages that "
+                "correct it, by their IDs (msg-...)",
+                "items": {"type": "string"},
             },
             "operation_id": {"type": "string"},
         },
@@ -217,7 +224,13 @@ def source_of(
         for c in cast(list[Any], (asked or {}).get("tool_calls") or [])
         if cast(Json, c).get("id") == call_id
     ]
-    if len(made) != 1 or made[0].get("name") != name or made[0].get("arguments") != raw:
+    written = made[0].get("arguments") if len(made) == 1 else None
+    # The record keeps the call's arguments without its purpose (Purpose 3).
+    if (
+        len(made) != 1
+        or made[0].get("name") != name
+        or (without(written) if isinstance(written, str) else written) != raw
+    ):
         return None
     try:
         arguments: object = json.loads(str(raw or "{}"))
@@ -229,7 +242,7 @@ def source_of(
     record: Json | None = None
     if name in PDF_TOOLS and isinstance(call.get("pdf"), dict):
         record = pdf_record(name, given, cast(Json, call["pdf"]))
-    elif name == EPRINT_TOOL and call.get("connector") in servers and "error" not in call:
+    elif name in EPRINT_TOOLS and call.get("connector") in servers and "error" not in call:
         # The result's text after its archive header (CM-4a), as the server wrote it.
         record = eprint_record(name, given, body(str(messages[-1].get("content", ""))))
     if record is None:
@@ -494,7 +507,7 @@ class ReviewController:
             # No reviewer is configured: reviews are off, said once, not failed (lab 43's B6).
             await asyncio.to_thread(self.store.off, *self.scope, REVIEWS_OFF)
             return None
-        await asyncio.to_thread(self.findings.supersede, *self.scope)
+        await asyncio.to_thread(self.findings.queue_rechecks, *self.scope)
         review = await asyncio.to_thread(
             self.store.dispatch,
             *self.scope,
@@ -586,7 +599,7 @@ class ReviewController:
         label = classify(
             final_text,
             effects=effects or self.effects,
-            unresolved=bool(states.get("open") or states.get("claimed fixed")),
+            unresolved=bool(states.get("open")),
         )
         label["document_ingestion"] = ingestion
         label["artifact_ingestion"] = artifact_ingestion
@@ -698,10 +711,14 @@ class ReviewController:
         self, name: str, args: Json, operation: str, *, model: str | None = None
     ) -> tuple[str, Json]:
         if name == "review_findings":
-            if set(args) - {"after"}:
+            if set(args) - {"after", "status"}:
                 raise DocumentError("invalid_request", "unknown finding-list field")
+            status = args.get("status", "open")
+            if status not in FINDING_STATUSES:
+                raise DocumentError("invalid_request", "unknown finding status")
             result = await asyncio.to_thread(
-                self.findings.listing, *self.scope, after=args.get("after"), unresolved=True
+                partial(self.findings.listing, after=args.get("after"), statuses=(status,)),
+                *self.scope,
             )
         elif name == "review_finding_read":
             if set(args) - {"finding", "before", "start", "count"} or "finding" not in args:
@@ -881,7 +898,7 @@ class Reviews(TurnHook):
     async def notices(self, point: Point, run: RunView) -> Sequence[Notice]:
         if point != "turn":
             return ()
-        await self.controller.safe_point(run.messages)
+        await self.controller.safe_point(run.context.messages)
         return await self._pending()
 
     async def model_returned(self, run: RunView) -> None:
@@ -891,11 +908,11 @@ class Reviews(TurnHook):
     async def observe_tool(self, run: RunView, record: Json) -> None:
         executed = run.tool_records
         call = dict(executed[-1]) if executed else None
-        await self.controller.safe_point(run.messages, tool=record, call=call)
+        await self.controller.safe_point(run.context.messages, tool=record, call=call)
 
     async def closing(self, run: RunView, answer: str | None) -> Closing:
         controller = self.controller
-        self.result = await controller.terminal(run.messages, answer)
+        self.result = await controller.terminal(run.context.messages, answer)
         if "user_message" in self.result:
             return Closing("stop", stopped="user_message")
         configuration, _ = await asyncio.to_thread(
@@ -916,7 +933,7 @@ class Reviews(TurnHook):
             await asyncio.to_thread(
                 controller.findings.bound,
                 *controller.scope,
-                "The bounded author response rounds ended; no fix was confirmed.",
+                "The bounded author response rounds ended; no re-check found it fixed.",
                 notices=controller.delivered,
             )
             if self.result is not None:
@@ -938,15 +955,11 @@ class Reviews(TurnHook):
         changed = bool(counts) and counts != controller.last_counts
         controller.last_counts = counts
         notices: list[Notice] = []
-        # Open findings ask for a response; challenged ones only inform (CR-26 as amended).
-        for framing, shown in (
-            (REVIEW_FINDINGS, [n for n in found if n.get("status") != "challenged"]),
-            (REVIEW_CHALLENGED, [n for n in found if n.get("status") == "challenged"]),
-        ):
-            if shown:
-                ids = tuple(str(notice["notice_id"]) for notice in shown)
-                controller.seen.update(ids)
-                notices.append(Notice(self.name, ids, framing.text, shown))
+        # Open findings ask for a response; dismissed and stale ones are not injected.
+        if found:
+            ids = tuple(str(notice["notice_id"]) for notice in found)
+            controller.seen.update(ids)
+            notices.append(Notice(self.name, ids, REVIEW_FINDINGS.text, found))
         if changed:
             notices.append(Notice(self.name, (), REVIEW_COUNTS.text, counts))
         return tuple(notices)

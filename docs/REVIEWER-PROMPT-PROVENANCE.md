@@ -12,15 +12,21 @@ separate in [MAIN-PROMPT-PROVENANCE.md](MAIN-PROMPT-PROVENANCE.md) and
 
 [consistency/prompt_bundle.py](../packages/orchestrator/src/sandbox_science/orchestrator/consistency/prompt_bundle.py)
 assembles one owned reviewer bundle from the unchanged `RUBRIC`,
-`RUBRIC_VERSION="sandbox-consistency-8"` and ordered six `SPECS` in
-[runner.py](../packages/orchestrator/src/sandbox_science/orchestrator/consistency/runner.py).
+`RUBRIC_VERSION="sandbox-consistency-9"`, the re-check instructions `RECHECK`
+(`RECHECK_VERSION="sandbox-recheck-1"`, also in
+[rubric.py](../packages/orchestrator/src/sandbox_science/orchestrator/consistency/rubric.py)),
+the purpose guidance `PURPOSE` (`sandbox-reviewer-purpose-1`) and the ordered six `SPECS` in
+[runner.py](../packages/orchestrator/src/sandbox_science/orchestrator/consistency/runner.py),
+each offered with the required `purpose_note` (`purpose.offered`; [tools
+spec](specs/tools.md#purpose-of-each-call)), so the schema pin covers the field.
+Every new reviewer call is format 3 ([below](#the-re-check-instructions-and-the-purpose-guidance-format-3)).
 It reuses MAIN's schema encoder (`prompts.schema_json`), without MAIN's sections.
 
-The actual schemas, descriptions and order remain `review_manifest`,
+The actual descriptions and order remain `review_manifest`,
 `review_read`, `review_checked`, `review_finding`, `review_decide`, `review_citation`. Each call
-passes `SPECS` itself; the pins are recorded with the call's reservation and not
+passes the runner's offered specs; the pins are recorded with the call's reservation and not
 checked again before the call (owner decision 3). The existing tool dispatch whitelist, evidence grants, read audits, finding
-operation replay, scientific decisions and confirmation CAS are unchanged.
+operation replay, scientific decisions and re-check CAS are unchanged.
 
 The fixed first user instruction, dynamic evidence/tool results and final-format
 retry instruction are unchanged and outside this system/tool pin. This is not
@@ -31,11 +37,13 @@ separate existing columns; a missing resolved model is not replaced by an alias.
 
 ## Historical envelope and bounds
 
-The envelope contains format version 1, assembly version
+A format 1 envelope contains format version 1, assembly version
 `sandbox-reviewer-bundle-1`, fixed role `reviewer`, bounded rubric version, exact
 rubric text and its UTF-8 byte length/SHA256, ordered tool names/count, canonical
-schema byte length/hash and a bundle digest. The installed rubric is 2,450
-UTF-8 bytes and fits inside the complete 16-KiB envelope ceiling.
+schema byte length/hash and a bundle digest; formats 2 and 3 add the pins below. The
+installed rubric is 8,717 UTF-8 bytes and, with the re-check instructions and the purpose
+guidance, fits inside the
+complete 16-KiB envelope ceiling.
 
 Hashes use lowercase hexadecimal SHA256. Canonical JSON uses sorted object
 keys, compact separators, UTF-8 without ASCII escaping and no non-finite values.
@@ -64,16 +72,57 @@ refuses before a model call; there is no custom-input fallback.
 A reviewer of a run with the project's stores is also given the project memory, as
 the reviewed run was given it when it started, even if the user accepted entries
 since ([project memory](MEMORY.md), PM-8). The system message is the rubric, a blank
-line, then the memory section: the framing `sandbox-memory-reviewer-1`, which says the
+line, then the memory section: the framing `sandbox-memory-reviewer-2`, which says the
 entries are guidance on how the work should be done and not evidence (a claim is not
 supported because a note states it, and a note never excuses a claim the evidence does
-not support), then the entries. Such a call's envelope is format 2, assembly
+not support), what the prefix before each entry says (its date, its basis: `user`,
+`user, quoted`, `observed`, `interpreted` or `not recorded`, with `accepted` for an
+agent's proposal the user accepted, and its ID, revision and scope; the basis says what
+kind of record a note is, never that it is true), to prefer `user` and `observed` notes
+to `interpreted` and `not recorded` ones, and to name a note's ID when relying on one,
+then the entries, each with its prefix and its anchors. The prefix shows the date, so
+the section is the same for the same memory version. Such a call's envelope is format 2, assembly
 `sandbox-reviewer-bundle-2`, and adds `memory`: the framing's version, the memory's
 version, the entries given (`mem-N@R`), how many the bound left out, and the
 section's byte count and SHA-256; the bundle digest covers it. The section's text is
 pinned by its hash, not kept. A memory without entries gives no section, and the
 envelope still names its version. Format 1 envelopes, without memory, read as before,
 and a format 2 envelope without a memory pin, or a format 1 one with it, is refused.
+
+## The re-check instructions and the purpose guidance (format 3)
+
+Since B9 (a finding's lifecycle, CR-42, CR-43, decided by the owner on 2026-10-25, and
+each call's purpose, [tools spec](specs/tools.md#purpose-of-each-call), Purpose 5 and 6),
+every reviewer call is format 3, assembly `sandbox-reviewer-bundle-3`. Its system message
+is the rubric, a blank line, the re-check instructions, a blank line, the purpose
+guidance, and then, when the reviewed run had the project memory, a blank line and the
+memory section.
+
+The rubric `sandbox-consistency-9` is unchanged; its paragraph on confirmation, rebuttals
+and challenged findings is replaced, as the re-check instructions (`sandbox-recheck-1`)
+say, by them: a finding item with a queued re-check is answered with `review_decide`
+`resolved` or `unresolved`, with at least one anchor in the new revision or message, and
+no answer when the evidence cannot decide; an author's dismissal is accepted or rejected
+(`accept_dismissal`, `reject_dismissal`) and stands either way; a better finding of the
+same work names the one it replaces in `supersedes`. The `review_decide` and
+`review_finding` schemas say the same, so the schema digest changed too. The purpose
+guidance (`sandbox-reviewer-purpose-1`) says every call names its purpose in
+`purpose_note`, for the reader, and that the purpose changes nothing about what the call
+may do.
+
+The envelope adds two pins. `recheck` holds the re-check instructions' version, exact
+text, UTF-8 byte count and SHA-256 (at most 4 KiB of text). `purpose` is the purpose
+guidance's section pin (ID `reviewer-purpose`, version, byte count and SHA-256).
+`memory` is there exactly when a memory pin was given, as in format 2. The bundle digest
+covers all three. Format 1 and 2 envelopes of earlier calls read as before and are no
+longer written; a format 3 envelope without both the re-check and the purpose pins, or a
+format 1 or 2 one with either, is refused, as is a re-check pin whose text does not
+match its byte count and hash.
+
+The runner checks each call's purpose before anything else reads it, refuses one
+without a valid purpose with `invalid_request`, and passes the call on without it. The
+review's record of the call (`review_records`, kind `tool`) keeps its arguments without
+the purpose and the purpose beside them.
 
 ## Reservation and legacy reads
 
@@ -119,7 +168,7 @@ outcomes remain durable; a late dropped finish cannot overwrite a terminal
 outcome or a replacement owner.
 
 This ownership covers the accounting awaits only. Raw tool, evidence,
-model-observation, confirmation and controller thread paths keep their own
+model-observation, re-check decision and controller thread paths keep their own
 lifetime rules; this is **not** proof of whole-runner or whole-controller SQL
 ownership under every cancellation race. No SQL transaction spans a model await.
 

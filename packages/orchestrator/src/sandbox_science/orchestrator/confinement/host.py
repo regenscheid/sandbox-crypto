@@ -9,11 +9,18 @@ import logging
 import secrets
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
+from dataclasses import replace
 from typing import Any, cast
 
 from pydantic import JsonValue, TypeAdapter
 
 from sandbox_science.orchestrator.aio import owned, threaded
+from sandbox_science.orchestrator.connectors import ConnectorError
+from sandbox_science.orchestrator.context.agent import AgentContext
+from sandbox_science.orchestrator.context.folding import FoldPoint, Folds
+from sandbox_science.orchestrator.context.history.collections import Collection
+from sandbox_science.orchestrator.context.history.log import RunArchive
+from sandbox_science.orchestrator.context.history.retention import fits
 from sandbox_science.orchestrator.continuity.models import ModelIntents
 from sandbox_science.orchestrator.continuity.records import (
     CURRENT,
@@ -22,27 +29,36 @@ from sandbox_science.orchestrator.continuity.records import (
     check_owner,
 )
 from sandbox_science.orchestrator.control import ControlError, ControlStore
-from sandbox_science.orchestrator.history.collections import Collection
-from sandbox_science.orchestrator.history.log import RunArchive
-from sandbox_science.orchestrator.history.retention import fits
-from sandbox_science.orchestrator.hooks import Appended, Closing, MessageLog, Notice, TurnHook
+from sandbox_science.orchestrator.hooks import (
+    Appended,
+    Closing,
+    MessageLog,
+    Notice,
+    TurnHook,
+    wraps_calls,
+)
 from sandbox_science.orchestrator.images import IMAGE
 from sandbox_science.orchestrator.kernel_check import KernelCheck
 from sandbox_science.orchestrator.loop import (
-    Folds,
     Transcript,
     attach_notices,
     not_run,
     notice_message,
 )
+from sandbox_science.orchestrator.mcp_direct import HeldCall, RequestCheck, parameters_digest
 from sandbox_science.orchestrator.model import AssistantMessage, ChatModel, ToolCall
 from sandbox_science.orchestrator.model_profiles import PROFILES, ModelProfile, ModelRole, profiles
 from sandbox_science.orchestrator.notices import DELEGATIONS, REPORT
 from sandbox_science.orchestrator.plan_tools import Plans
+from sandbox_science.orchestrator.purpose import without
 from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome, operation_id
 
+from .binaries import CallBinaries
+from .connector_calls import failure
+from .listings import WorkerListings, report
 from .models import CallbackModel
-from .transport import Capability, Channel, TransportError
+from .requests import confirm
+from .transport import PATIENCE_SECONDS, Capability, Channel, TransportError
 from .wire import (
     AppendReply,
     Attempt,
@@ -52,12 +68,17 @@ from .wire import (
     FoldRequest,
     HookGiven,
     HookRequest,
+    ListingReportRequest,
     LogAppend,
     LogTool,
     LoopState,
+    McpAnswer,
+    McpRequest,
     ModelIntent,
     ModelObserved,
     ModelTicket,
+    RequestConfirmation,
+    RequestConfirmed,
     RunGiven,
     RunReply,
     ToolboxGiven,
@@ -70,6 +91,9 @@ from .wire import (
 )
 
 _log = logging.getLogger(__name__)
+RELAY_SECONDS = 1800.0
+"""How long the host waits for the runtime's answer to one relayed MCP request: a call's
+own bound (``CALL_SECONDS``) and the publication of its binary results."""
 
 
 def remote_outcome(outcome: ToolOutcome) -> ToolOutcome:
@@ -104,6 +128,9 @@ class Prepared:
         self.log, self.folds, self.on_tool = log, folds, on_tool
         self.leases: dict[int, AbstractAsyncContextManager[None]] = {}
         self.shadow: Transcript | None = None
+        self.max_turns = given.max_turns
+        """The attempt's turn limit: the admitted one, until a hook's ``turn_limit`` sets
+        it; the runtime's loop state must carry it."""
         self.task_pending = given.task is not None
         self.tool: ToolOutcome | None = None
         self.tool_call: ToolRequest | None = None
@@ -113,6 +140,13 @@ class Prepared:
         self.observed_tool: tuple[ToolCall, ToolOutcome] | None = None
         self.pending_calls: dict[str, ToolCall] = {}
         self.intent: LogTool | None = None
+        self.binaries = CallBinaries()
+        self.relaying: ToolCall | None = None
+        """The connector call whose request the host is relaying to the runtime (D98)."""
+        self.confirmed: dict[int, HeldCall] = {}
+        """The permission requests the host confirmed for this attempt (``confirm_request``),
+        each with the call it was confirmed for: its server, method, tool and the digest of
+        its parameters."""
         self.observation: dict[str, Any] | None = None
         self.observed_slots: set[int] = set()
         self._memory_close: Callable[[], None] | None = None
@@ -125,10 +159,10 @@ class Prepared:
     def sync(self, state: LoopState) -> Transcript:
         """Apply loop metadata while retaining historical payloads at the host store."""
         given = self.given
-        if (state.max_turns, state.max_input_chars) != (given.max_turns, given.max_input_chars):
+        if (state.max_turns, state.max_input_chars) != (self.max_turns, given.max_input_chars):
             raise TransportError("denied", "runtime changed the admitted attempt limits")
         if self.shadow is None:
-            from sandbox_science.orchestrator.history.memory import RunMemory
+            from sandbox_science.orchestrator.context.history.memory import RunMemory
 
             if not isinstance(self.log, RunArchive):
                 raise TransportError(
@@ -136,27 +170,45 @@ class Prepared:
                 )
             memory = RunMemory.archived(self.log)
             self.shadow = Transcript(
-                memory=memory,
-                messages=memory.messages(
-                    [state.system.message(), *(m.message() for m in given.history)]
+                context=AgentContext(
+                    memory=memory,
+                    messages=memory.messages(
+                        [state.system.message(), *(m.message() for m in given.history)]
+                    ),
+                    usage=memory.usage(),
                 ),
                 tool_records=memory.tools(),
-                usage=memory.usage(),
             )
         run = self.shadow
-        if len(run.messages) != state.message_count or len(run.tool_records) != state.tool_count:
+        if (
+            len(run.context.messages) != state.message_count
+            or len(run.tool_records) != state.tool_count
+        ):
             raise TransportError("conflict", "runtime state does not match committed events")
-        if state.usage_count == len(run.usage) + 1 and state.last_usage is not None:
-            run.usage.append(state.last_usage)
-        if len(run.usage) != state.usage_count:
+        if state.usage_count == len(run.context.usage) + 1 and state.last_usage is not None:
+            run.context.usage.append(state.last_usage)
+        if len(run.context.usage) != state.usage_count:
             raise TransportError("conflict", "runtime usage is not contiguous")
-        omitted = {"system", "message_count", "tool_count", "usage_count", "last_usage"}
+        omitted = {
+            "system",
+            "message_count",
+            "tool_count",
+            "usage_count",
+            "last_usage",
+            "max_input_chars",
+            "tools_chars",
+            "base",
+            "since",
+        }
         for name, value in state.model_dump(exclude=omitted).items():
             if name not in {"delivered", "offered", "prompt_provenance"}:
                 setattr(run, name, value)
         if state.delivered or state.offered:
             raise TransportError("invalid_request", "historical receipts do not cross loop state")
-        run.prompt_provenance = state.prompt_provenance
+        run.context.max_input_chars = state.max_input_chars
+        run.context.tools_chars = state.tools_chars
+        run.context.restore(run.context.rebuilt, base=state.base, since=state.since)
+        run.context.prompt_provenance = state.prompt_provenance
         return run
 
     async def call(self, kind: Capability, value: JsonValue) -> JsonValue:
@@ -213,18 +265,18 @@ class Prepared:
                 if self.folds is None:
                     raise TransportError("denied", "this attempt has no folding capability")
                 proceed = await (
-                    self.folds.before_call(run)
+                    self.folds.before_call(FoldPoint(run.context, run.turns))
                     if kind is Capability.FOLD_BEFORE
-                    else self.folds.overflow(run)
+                    else self.folds.overflow(FoldPoint(run.context, run.turns))
                 )
                 return payload(
                     FoldReply(
                         proceed=proceed,
-                        rebuilt=tuple(WireMessage.of(m) for m in run.rebuilt)
-                        if run.rebuilt is not None
+                        rebuilt=tuple(WireMessage.of(m) for m in run.context.rebuilt)
+                        if run.context.rebuilt is not None
                         else None,
-                        base=run.base,
-                        since=run.since,
+                        base=run.context.base,
+                        since=run.context.since,
                     )
                 )
             if kind is Capability.TOOL_DONE:
@@ -233,7 +285,7 @@ class Prepared:
                     raise TransportError("conflict", "no completed tool observation")
                 call, outcome = self.observed_tool
                 if self.on_tool is not None:
-                    await self.on_tool(call.name, call.arguments, outcome)
+                    await self.on_tool(call.name, without(call.arguments), outcome)
                 self.observed_tool, self.observation = None, None
                 return None
             request = typed(HookRequest, value)
@@ -286,6 +338,11 @@ class Prepared:
                 return json_value(
                     TypeAdapter(tuple[Notice, ...]).dump_python(tuple(result), mode="json")
                 )
+            if kind is Capability.TURN_LIMIT:
+                ceiling = await hook.turn_limit(run)
+                if ceiling is not None:
+                    self.max_turns = ceiling
+                return ceiling
             if kind is Capability.HALT:
                 return await hook.halt(run)
             if kind is Capability.LAST_CALL:
@@ -319,6 +376,19 @@ class Prepared:
             else:
                 raise TransportError("denied", "capability is not available on an attempt")
             return None
+
+    async def publish(self, value: JsonValue) -> JsonValue:
+        """``publish_mcp_binary``: one binary item of the connector call the host is relaying
+        to the runtime (D98). Outside the attempt's lock, which that call's ``tool`` holds
+        while the runtime answers it; the host's index names its tool's server."""
+        with authority(self.owner):
+            if not isinstance(self.log, RunArchive):
+                raise TransportError("internal", "missing canonical attempt archive")
+            with self.log.archive.control.read() as tx:
+                check_owner(tx.sql, self.owner)
+            if self._closing:
+                raise TransportError("denied", "attempt capability is closing")
+            return await self.binaries.publish(value, self.relaying, self.toolbox.connectors)
 
     async def append(self, request: LogAppend) -> JsonValue:
         if self.shadow is None:
@@ -377,6 +447,10 @@ class Prepared:
                     self.tool_call.operation,
                 )
                 attach_notices(self.shadow, outcome, self.toolbox.output_chars, self.tool_notices)
+            if kept := self.binaries.recorded(call.id):
+                # The items the runtime kept over publish_mcp_binary, with the call.
+                merged = {**outcome.record, "mcp_binaries": kept, "binary_results": len(kept)}
+                outcome = replace(outcome, record=merged)
             source = {"role": "tool", "tool_call_id": call.id, "content": outcome.text}
         consumed = (
             {key: set(ids) for key, ids in request.consumed.items()}
@@ -405,12 +479,12 @@ class Prepared:
         if IMAGE in source:
             message = {**message, IMAGE: source[IMAGE]}
         if (
-            not isinstance(self.shadow.messages, Collection)
+            not isinstance(self.shadow.context.messages, Collection)
             or not isinstance(self.log, RunArchive)
             or self.log.last_message is None
         ):
             raise TransportError("internal", "confined history has no canonical archive entry")
-        self.shadow.messages.append_encoded(
+        self.shadow.context.messages.append_encoded(
             {
                 "archive_message": self.log.last_message,
                 **({IMAGE: source[IMAGE]} if IMAGE in source else {}),
@@ -423,11 +497,11 @@ class Prepared:
                 self.shadow.identities(key, delivered=True).update(ids)
         if request.kind == "assistant" and request.reply is not None:
             self.pending_calls = {call.id: call for call in request.reply.tool_calls}
-        if request.usage is not None and request.usage_index == len(self.shadow.usage) + 1:
-            self.shadow.usage.append(request.usage)
+        if request.usage is not None and request.usage_index == len(self.shadow.context.usage) + 1:
+            self.shadow.context.usage.append(request.usage)
         retained = None
         if request.kind == "tool_result" and call is not None and outcome is not None:
-            record = {"tool": call.name, "arguments": call.arguments, **outcome.record}
+            record = {"tool": call.name, "arguments": without(call.arguments), **outcome.record}
             retained = self.log.retained_tool(record)
             self.shadow.tool_records.append(retained)
             self.observation, self.observed_slots = record, set()
@@ -490,6 +564,19 @@ class Prepared:
                     exits.push_async_exit(self.leases.pop(slot))
 
 
+def _relayed(
+    project: str, server: str, method: str, params: Mapping[str, object]
+) -> HeldCall | None:
+    """The held call a relayed request is, as the middleware keys it; None for parameters
+    that cannot be digested."""
+    tool = params.get("name") if method == "tools/call" else None
+    try:
+        digest = parameters_digest(params)
+    except (TypeError, ValueError, RecursionError):
+        return None
+    return HeldCall(project, server, method, tool if isinstance(tool, str) else "", digest)
+
+
 def toolbox_given(toolbox: Toolbox) -> ToolboxGiven:
     return ToolboxGiven(
         specs=toolbox.specs,
@@ -511,9 +598,22 @@ class HostLoops:
         *,
         control: ControlStore | None = None,
         model_roles: Mapping[str, frozenset[str]] | None = None,
+        run_share: float | None = None,
+        requests: RequestCheck | None = None,
+        listings: WorkerListings | None = None,
+        mcp_servers: Sequence[str] = (),
     ) -> None:
+        """``run_share`` is the part of a configured project cost limit one run may use;
+        ``requests`` checks a refusal that names an MCP permission request for an attempt
+        (``confirm_request``, D98), for the attempt's project only; ``mcp_servers`` are
+        the direct path's servers, whose listings an attempt being prepared may report."""
         self.channel, self.projects = channel, projects
+        self.requests = requests
+        self.listings = listings
+        """Forwards the listings an attempt's direct client reports to the worker (D98)."""
+        self.mcp_servers = tuple(mcp_servers)
         self.control, self.model_roles = control, model_roles or {}
+        self.run_share = run_share
         self.attempts: dict[str, Prepared] = {}
         self.owners: dict[str, Ownership] = {}
         self.profiles: dict[str, dict[ModelRole, ModelProfile]] = {}
@@ -555,7 +655,7 @@ class HostLoops:
             if owner is None or self.control is None:
                 raise TransportError("denied", "model capability is absent or revoked")
             with authority(owner):
-                intents = ModelIntents(self.control)
+                intents = ModelIntents(self.control, run_share=self.run_share)
                 if kind is Capability.MODEL_INTENT:
                     request = typed(ModelIntent, value)
                     pinned = self.profiles.get(identity.attempt, {})
@@ -641,9 +741,118 @@ class HostLoops:
                     )
                 await threaded(intents.observe, owner, observed.identity, observed.usage)
                 return None
+        if prepared is None and kind is Capability.REPORT_MCP_LISTING:
+            owner = self.owners.get(identity.attempt)
+            if owner is not None:
+                # An attempt being prepared lists its connectors through the runtime before
+                # it runs (D98): its project, session and run, and the direct path's servers.
+                return payload(
+                    await report(
+                        self.listings,
+                        typed(ListingReportRequest, value),
+                        project=owner.project,
+                        servers=self.mcp_servers,
+                        session=owner.session,
+                        run=owner.run,
+                    )
+                )
         if prepared is None:
             raise TransportError("denied", "attempt capability is absent or revoked")
+        if kind is Capability.CONFIRM_REQUEST:
+            # The attempt's project, never one the runtime names: a yes or a no about one
+            # request, read from the middleware's records through the worker.
+            reply = await confirm(self.requests, prepared.owner.project, value)
+            if typed(RequestConfirmed, reply).confirmed:
+                asked = typed(RequestConfirmation, value)
+                prepared.confirmed[asked.request] = HeldCall(
+                    prepared.owner.project, asked.server, asked.method, asked.tool, asked.arguments
+                )
+            return reply
+        if kind is Capability.PUBLISH_MCP_BINARY:
+            return await prepared.publish(value)
+        if kind is Capability.REPORT_MCP_LISTING:
+            # The attempt's project, session and run, never the runtime's word, and one of
+            # the attempt's connector servers only.
+            connectors = prepared.toolbox.connectors
+            owner = prepared.owner
+            return payload(
+                await report(
+                    self.listings,
+                    typed(ListingReportRequest, value),
+                    project=owner.project,
+                    servers=connectors.servers if connectors is not None else (),
+                    session=owner.session,
+                    run=owner.run,
+                )
+            )
         return await prepared.call(kind, value)
+
+    async def relay_mcp(
+        self,
+        server: str,
+        method: str,
+        params: Mapping[str, object],
+        *,
+        session: str,
+        run: str | None,
+    ) -> dict[str, Any]:
+        """One MCP request of the current attempt's connectors, made by the runtime's direct
+        client (``mcp_request``, D98): its listings while the attempt is prepared, and the
+        calls its toolbox admitted. A ``tools/call`` names the model's call while it is
+        relayed, so that the runtime can publish its binary results; a held call's failure
+        is taken only for a request the host confirmed for this attempt."""
+        identity = self.model_capability()
+        prepared = self.attempts.get(identity)
+        call: ToolCall | None = None
+        if prepared is not None and method == "tools/call":
+            intent = prepared.intent
+            call = intent.call if intent is not None and prepared.tool is None else None
+        try:
+            asked = McpRequest(
+                attempt=identity,
+                call=call.id if call is not None else None,
+                server=server,
+                method=cast(Any, method),
+                params=cast(dict[str, JsonValue], dict(params)),
+                session=session,
+                run=run,
+            )
+        except ValueError:
+            raise ConnectorError("unavailable", "the MCP request cannot be relayed") from None
+        if prepared is not None:
+            prepared.relaying = call
+        try:
+            answer = typed(
+                McpAnswer,
+                await self.channel.request(
+                    Capability.MCP_REQUEST, payload(asked), timeout=RELAY_SECONDS
+                ),
+            )
+        except TransportError as error:
+            # A call may have left before the runtime's answer was lost: its effect is
+            # unknown. A listing changes nothing.
+            if method == "tools/call" and error.kind not in ("denied", "invalid_request"):
+                raise ConnectorError(
+                    "no_usable_answer", "the agent runtime's answer was lost"
+                ) from None
+            raise ConnectorError(
+                "unavailable", f"the agent runtime did not make the request ({error.kind})"
+            ) from None
+        finally:
+            if prepared is not None:
+                prepared.relaying = None
+        if answer.failure is not None:
+            # A hold is this call's only if the host confirmed its request for this very
+            # call: the server, method, tool and parameters the host relayed, not the ones
+            # the runtime named when it asked.
+            held = (
+                prepared.confirmed.get(answer.failure.request)
+                if prepared is not None and answer.failure.request is not None
+                else None
+            )
+            confirmed = held is not None and held == _relayed(held.project, server, method, params)
+            raise failure(answer.failure, confirmed)
+        return cast(dict[str, Any], answer.result)
 
     async def run(
         self, model: ChatModel, toolbox: Toolbox, task: str | None, **options: Any
@@ -651,13 +860,18 @@ class HostLoops:
         """Match Harness.loop_runner; options are its internal run_task keyword arguments."""
         if toolbox.context.project_id not in self.projects:
             raise TransportError("denied", "project is outside this control capability")
+        hooks = tuple(cast(Sequence[TurnHook], options.get("hooks") or toolbox.turn_hooks()))
+        if any(wraps_calls(hook) for hook in hooks):
+            # The runtime's proxies of these hooks carry no wrap: it would be skipped.
+            raise TransportError(
+                "denied", "a hook that wraps model or tool calls cannot be confined"
+            )
         if not isinstance(model, CallbackModel):
             raise TransportError("denied", "host model execution is forbidden in confined mode")
         log = cast(MessageLog | None, options.get("log"))
         if not isinstance(log, RunArchive):
             raise TransportError("denied", "confined attempts require durable archive logging")
         identity = self.model_capability()
-        hooks = tuple(cast(Sequence[TurnHook], options.get("hooks") or toolbox.turn_hooks()))
         if self.control is None:
             self.control = log.archive.control
         given = RunGiven(
@@ -673,7 +887,12 @@ class HostLoops:
             memory=options.get("memory"),
             toolbox=toolbox_given(toolbox),
             hooks=tuple(
-                HookGiven(name=hook.name, veto=hook.veto, planning=isinstance(hook, Plans))
+                HookGiven(
+                    name=hook.name,
+                    veto=hook.veto,
+                    planning=isinstance(hook, Plans),
+                    turn_limit=type(hook).turn_limit is not TurnHook.turn_limit,
+                )
                 for hook in hooks
             ),
             logged=True,
@@ -702,6 +921,9 @@ class HostLoops:
                 raise TransportError("conflict", "runtime returned no terminal receipt")
             run = prepared.sync(result.state)
             run.summaries.update(result.summaries)
+            if toolbox.tool_mix is not None:
+                # The calls ran here, through this toolbox: its counts are the run's.
+                run.summaries["tool_mix"] = toolbox.tool_mix.summary()
             for hook in hooks:
                 if (summary := hook.summary()) is not None:
                     run.summaries[hook.name] = summary
@@ -714,7 +936,10 @@ class HostLoops:
                     payload(
                         CancelRequest(attempt=identity, explicit=stop is not None and stop.is_set())
                     ),
-                    timeout=1800,
+                    # The runtime's cancelled loop exits its hooks' leases, as a parent's
+                    # waits for its children to save their outcomes.
+                    timeout=None,
+                    patience=PATIENCE_SECONDS,
                 )
             )
             raise

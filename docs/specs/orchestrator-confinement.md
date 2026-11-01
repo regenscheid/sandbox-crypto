@@ -78,6 +78,45 @@ The operation catalog is explicit:
 - Admit a child against its durable parent, role, grants and Stop state; enumerate
   unfinished children; receive and acknowledge each terminal child outcome. The
   runtime schedules child loops, while the service validates their admission.
+- Confirm whether one MCP permission request is a refused call's, for the attempt's
+  project, which the host binds: yes or no from the policy middleware's records through
+  the worker (`confirm_request`, D98), never the request's record.
+- In the other direction, make one MCP request of the attempt's connectors on the direct
+  path (`mcp_request`, host to runtime, D98, `[mcp_direct]`): a `tools/list`, or a
+  `tools/call` the host's toolbox admitted, with the attempt, session, run and the model's
+  call ID. The runtime's direct client makes it from its sandbox, through OpenShell's
+  native rules and the policy middleware, and answers the result (binary items replaced by
+  the host's notes) or the failure; the host takes a held call's failure only for a
+  request it confirmed for that very call (its server, method, tool and parameters'
+  digest), and a lost answer to a call is an unknown effect.
+- Keep one binary item of a direct-path connector call's result as an artifact revision
+  of the attempt's run (`publish_mcp_binary`, runtime to host, D98): the model's call ID,
+  media type, SHA-256 and bytes. The call must be the connector call whose `mcp_request`
+  the host is relaying at that moment; the host takes its tool and server from its own
+  index.
+  At most 8 MiB decoded per item and per call and 100 items per call; a digest mismatch,
+  a non-binary media type (other than `image/*`, `audio/*`, `application/*`) and any other
+  call ID are refused. A retry of the same item answers the recorded reply; the kept items
+  are recorded in the call's tool record with the source `runtime`, and published as the
+  runtime's (`runtime-mcp:<tool>`). It is off unless the run's connector calls take the
+  direct path (`Connectors.path`), and it runs outside the attempt's lock, which that
+  call's `tool` holds while the runtime answers. The runtime's direct MCP client runs in its
+  own sandbox; the host holds no MCP credential or placeholder.
+- Report a complete listing the runtime's direct MCP client read (`report_mcp_listing`,
+  runtime to host, D98): the server, each tool's name, digest and hint (at most 2,048) and
+  the listing's digest. The client first removes the tools its server's compiled native
+  rules deny, so the model never sees one. The host binds the project, session and run
+  (the attempt's, also while it is being prepared and lists its connectors, or with no
+  attempt the canaries' project) and admits only one of the attempt's connector servers,
+  the direct path's while it is prepared, or the canaries' servers, then forwards it to the worker,
+  which decides drift and records it; a report can start or keep a hold, never end one,
+  and the worker takes at most 10 a minute per caller, project and server. A listing the
+  host or worker refuses is not shown.
+- In the other direction, list one MCP server's tools through the runtime's direct client
+  for the control service's canaries (`list_mcp_tools`, host to runtime, D103): `tools/list`
+  only, at most 32 pages within 15 s, answering the outcome (status, count, digest, error
+  kind), never the tools and never a tool call. Like `model` and `embedding`, it asks the
+  runtime for what only the runtime's sandbox can reach; it carries no attempt.
 - Evaluate closing/finishing guards and atomically finalize the attempt with its
   archive/checkpoint references and delivery receipts.
 
@@ -91,7 +130,10 @@ outcome is reconciled.
 ## Launcher and replacement
 
 The launcher starts the worker and control service first. It compiles the sandbox
-policy with only model gateway, worker, MCP proxy and scoped state-service egress.
+policy with only model gateway, worker and scoped state-service egress and, with
+`[mcp_direct]`, the direct path's `protocol: mcp` endpoints and the policy middleware for
+their hosts (D98), with their provider attached; the MCP proxy, an alternative before,
+retired on 2026-10-26.
 It records a fresh sandbox name before create and its first observed immutable ID
 before phase validation. An uncertain create retains its record; observed absence
 without an identity is not deletion proof. Replacement waits for identity-checked,
@@ -217,8 +259,95 @@ Unconsumed annotation offers remain associated with their unfinished durable wor
 so explicit Resume can continue them while a new user request may start separate work.
 
 Private control protocol 3 additionally carries attempt-pinned requested model profiles
-for role-specific reasoning effort. Older control/runtime peers are refused.
+for role-specific reasoning effort. Private control protocol 4 carries a hook's turn
+limit (`turn_limit`, asked only of a hook that sets one): a child's runtime loop runs to
+its `turn_ceiling`, not to its soft turn cap, and the host holds the runtime's loop state
+to the limit the hook last gave, so a runtime cannot raise its own. Private control
+protocol 5 adds a `progress` frame: while either side handles a request, it tells the
+peer every 30 s that it is still working on it. A request whose handler may wait on work
+of unbounded length is made with patience instead of a timeout: it waits for as long as
+those frames keep coming, and its outcome is unknown only after 300 s without one, as
+when the connection dies without closing. Private control protocol 6 adds the
+runtime's model adapters to its handshake (`Hello.apis`): the runtime, which alone reaches
+the model gateway, chooses the adapter of each of its aliases the deployment names none
+for from the gateway's model information before it connects, and control adopts that
+choice before any caller's profile is read ([context management](context-management.md),
+CM-41). A model call's adapter is the one its attempt pinned, so a runtime builds the
+adapter the request's profile names. Older control/runtime peers are refused.
+
+How long each request may wait:
+
+| Request | Direction | Limit |
+| --- | --- | --- |
+| A hook's calls (`hook_enter`, `hook_exit`, `notices`, `turn_limit`, `last_call`, `consumption`, `model_returned`, `gate`, `observe_tool`, `closing`, `accept`, `finishing`), `tool`, `fold_before`, `fold_overflow` | runtime to host | patience: a parent's `finishing` and lease exit wait for its children, a tool may run or wait for hours, a gate or call may be held for the user |
+| `halt` | runtime to host | 2,400 s: a check-in's 1,800 s wait for its parent, then the automatic decision ([adaptive resources](adaptive-research-resources.md#check-ins)) |
+| `model` | host to runtime | patience: the runtime's client retries a slow gateway, 600 s a try |
+| `cancel` | host to runtime | patience: the cancelled loop exits its hooks' leases |
+| `run`, `resume_branch`, `list_mcp_tools` | either | none: they last as long as the run, and end with the connection |
+| `mcp_request` | host to runtime | 1,800 s: a call's own 330 s bound and its binary results |
+| `embedding` | host to runtime | 120 s; a failure is an embedding error, not a failed run |
+| `log_init`, `log_tool`, `log_append`, `tool_done`, `model_intent`, `model_observed`, `confirm_request`, `handshake`, `queue`, `admit`, `resume_next`, `publish_mcp_binary`, `report_mcp_listing` | either | 30 to 300 s: bounded store writes, reads and checks |
 
 Unexpected capability failures retain a local diagnostic with capability name, exception
 class and stack locations, never request payloads, exception text or local variables.
 Prepared host callbacks restore both captured ownership and model-profile context.
+
+### Verified cluster callback
+
+The control command remains `sandbox-science-control --settings control.json`.
+`listen` defaults to `127.0.0.1:8202`; any non-loopback IP bind requires an explicit
+`tls` object with `certificate` and `private_key` file paths. IPv6 bind addresses
+are bracketed. The key must be a private regular file, as capability tokens are;
+projected Kubernetes Secret files must be copied into private regular mode-600
+files before use. A missing or unusable TLS identity prevents startup.
+
+The separate runtime command remains
+`sandbox-science-agent-runtime --settings runtime.json`. Its `control_url` accepts
+an explicit HTTPS `/control` endpoint; `control_ca_file` optionally adds a private
+CA to system trust. Certificate and hostname verification are always enabled,
+redirects are refused before following them, and userinfo, query strings, fragments
+and other paths are invalid. Existing HTTP callbacks for the local OpenShell path
+remain supported. A CA file cannot be paired with HTTP. These are trusted
+deployment settings, unavailable to agent tools. TLS does not replace runtime
+capability, protocol, image, generation or exclusive-connection checks.
+
+`GET /live` reports process availability. `GET /ready` reports whether the service
+accepts admission (200, or 503 during shutdown), independently of runtime presence.
+`GET /health` retains `ready`, `protocol`, `runtime_connected` and
+`runtime_draining`, and adds `process_alive`, `service_ready`, `draining` and
+`runtime_ready` (a connected runtime whose image/worker handshake succeeded).
+These passive probes create no stores, sandboxes, model calls or recovery intent.
+Readiness must not depend on runtime connection: the runtime needs the Service
+before connecting. Probes expose no project, credential or prompt data.
+
+On the cluster, control issues runtime credentials itself
+([runtime bootstrap](kubernetes-runtime-bootstrap.md#credential-handoff-control-is-the-authority),
+KRB-6 and KRB-7). This is off unless `control.json` names
+`manager_token_sha256_file`: a private file holding the lowercase SHA-256 hex of the
+runtime manager's bearer token, reread per request. It then requires
+`generation_file`, and control opens a second listener at `manager_listen` (default
+`127.0.0.1:8444`; non-loopback requires `tls`, whose certificate it shares) serving
+only `GET /health` and `POST /runtime/credentials`; the runtime listener does not
+serve the latter. `/health` on both listeners gains `control_instance`, a random value
+per process. At startup control writes a fresh unissued token to
+`runtime_token_file` (a memory volume) and marks the last issue superseded, which
+revokes any runtime. The issue journal `runtime-credentials.json` in `state_dir`
+keeps each request ID, state, generation and token digest, never a token.
+
+The request is `{"request": "<32 lowercase hex>"}` with the manager's bearer token,
+at most 1 KiB. A wrong or missing token answers 404. Replaying the latest issued
+request answers 200 with the same `{"generation", "token"}` while both files still
+hold them. An older or superseded request answers 410 `superseded`. A new request
+(or a retry of the latest unissued one) first replaces the token, then answers 409
+`occupied` while a runtime is connected or draining; otherwise control mints a
+`runtime-<24hex>` generation never journaled before and a 32-byte hex token, writes
+the generation file, the token file and then the journal, and answers 200. A
+malformed body answers 400 (413 if too large) `invalid_request`, and shutdown 503
+`unavailable`.
+
+SIGTERM stops admission and closes the active WebSocket while owned admitted
+effects and service cleanup drain. Successful retained effects keep their original
+identities; socket shutdown does not stop research sandboxes, submit a replacement
+operation or create Resume intent. The deployment must allow sufficient termination
+grace for receipt cleanup; a forced process kill still follows durable interruption
+and explicit recovery semantics, not an exactly-once process-memory guarantee.

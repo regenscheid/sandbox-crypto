@@ -53,6 +53,7 @@ from sandbox_science.contracts.revisions import (
     MAX_LOCKFILE_BYTES,
     MAX_LOCKFILE_ENTRIES,
     MAX_PROBES,
+    MAX_REVISION_NOTES,
     MAX_REVISION_PAGE,
     MAX_REVISION_PAGE_BYTES,
 )
@@ -190,6 +191,7 @@ class Revisions:
         omitted: int = 0,
         lockfile: Prepared | None = None,
         operation: str | None = None,
+        notes: Sequence[str] = (),
     ) -> int | None:
         """The environment's revision once ``fingerprint`` is counted.
 
@@ -209,6 +211,7 @@ class Revisions:
                 omitted,
                 lockfile,
                 operation,
+                notes,
             )
         finally:
             if lockfile is not None:
@@ -224,6 +227,7 @@ class Revisions:
         omitted: int,
         lockfile: Prepared | None,
         operation: str | None = None,
+        notes: Sequence[str] = (),
     ) -> int | None:
         record = self.store.revision(environment_id)
         if not isinstance(fingerprint, str) or not _FINGERPRINT.fullmatch(fingerprint):
@@ -243,6 +247,7 @@ class Revisions:
             omitted_commands=0 if first else omitted,
             lockfile=lockfile.ref if lockfile is not None else None,
             operation=None if first else operation,
+            notes=() if first else tuple(notes)[:MAX_REVISION_NOTES],
             recorded_at=_now(),
         )
         current = RevisionRecord(revision, fingerprint, entry.changed_by or "")

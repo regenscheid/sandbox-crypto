@@ -1,4 +1,4 @@
-# OpenShell v0.1.3 provider profile for a GitHub token in research sandboxes.
+# OpenShell v0.1.5 provider profile for a GitHub token in research sandboxes.
 #
 # It has no endpoints: the project policy's credentials.providers entry names the
 # hosts the token may reach, and the compiled sandbox policy binds it there with

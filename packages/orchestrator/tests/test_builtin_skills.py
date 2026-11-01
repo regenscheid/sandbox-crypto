@@ -24,14 +24,14 @@ from markdown_it import MarkdownIt
 from markdown_it.token import Token
 
 from sandbox_science.orchestrator.consistency.controller import AUTHOR_SPECS
-from sandbox_science.orchestrator.consistency.quotes import EPRINT_TOOL, PDF_TOOLS
+from sandbox_science.orchestrator.consistency.quotes import EPRINT_TOOLS, PDF_TOOLS
 from sandbox_science.orchestrator.delegation.tracks import SPECS as TRACK_SPECS
 from sandbox_science.orchestrator.loop import SYSTEM_PROMPT
 from sandbox_science.orchestrator.plan_tools import NAMES as PLAN_NAMES
 from sandbox_science.orchestrator.question_tool import SPECS as QUESTION_SPECS
 from sandbox_science.orchestrator.skills import from_archive, snapshot
 from sandbox_science.orchestrator.skills.builtin import ROLES as BUILTIN_ROLES
-from sandbox_science.orchestrator.tools import HARNESS_TOOL_NAMES, MCP_TOOLS, SHARED_IN_CODE
+from sandbox_science.orchestrator.tools import HARNESS_TOOL_NAMES, SHARED_IN_CODE
 
 PACK: Final = Path(__file__).resolve().parents[3] / "skills" / "builtin"
 
@@ -44,11 +44,10 @@ DELEGATED: Final = (
     - {spec.name for spec in AUTHOR_SPECS}
     - PLAN_NAMES
     - {spec.name for spec in QUESTION_SPECS}
-    - {MCP_TOOLS}
 )
 """A delegated task's tools: its parent's without the review, plan and question tools
-and connectors (PD-16, PD-34, PD-41), with its track's tools (PD-9), and the delegate
-tools where a main run allows it two levels (PD-15)."""
+(PD-16, PD-34, PD-41), with its connectors' ``mcp_tools`` (DA-3), its track's tools
+(PD-9), and the delegate tools where a main run allows it two levels (PD-15)."""
 TABLES: Final = {"main": MAIN, "delegated": DELEGATED}
 
 ROLES: Final = BUILTIN_ROLES
@@ -163,7 +162,7 @@ def test_the_skills_name_the_tools_the_citation_check_reads() -> None:
     tools' results (CR-4): a renamed source tool fails here."""
     pdf = inline_code(body("pdf-reading"))
     assert all(tool in pdf for tool in PDF_TOOLS)
-    assert EPRINT_TOOL in body("literature-search")
+    assert all(tool in body("literature-search") for tool in EPRINT_TOOLS)
 
 
 @pytest.mark.parametrize("skill", sorted(ROLES))
@@ -181,3 +180,18 @@ def test_json_examples_parse_and_links_stay_in_the_pack(skill: str) -> None:
             continue
         target = posixpath.normpath(posixpath.join(skill, href.partition("#")[0]))
         assert target in files, f"{skill}: the link {href} names no file of the pack"
+
+
+def test_the_computation_skill_leads_with_the_kernels() -> None:
+    """Exploration belongs in a persistent kernel: the computation skill names the kernel
+    tools before ``shell``, teaches the kernel workflow before the state-loss warning, and
+    describes itself kernels first, as the index shows it."""
+    names = inline_code(body("computation"))
+    assert names.index("python") < names.index("shell")
+    assert names.index("sage") < names.index("shell")
+    text = body("computation")
+    assert text.index("## Explore in a kernel") < text.index("A kernel loses its state")
+    assert text.index("1. Set up in one cell") < text.index("A kernel loses its state")
+    front = (PACK / "computation" / "SKILL.md").read_text(encoding="utf-8").partition("\n---\n")[0]
+    (description,) = [line for line in front.splitlines() if line.startswith("description:")]
+    assert description.index("kernels") < description.index("shell")

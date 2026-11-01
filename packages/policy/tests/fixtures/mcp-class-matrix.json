@@ -1,0 +1,17 @@
+{
+  "about": "Calls of crypto-research-mcp's tools under the example policy's MCP settings (its classification, portal_list_servers allowed and portal_* denied by name, the shipped class defaults), with the effect class and action each must get. The policy library, the MCP proxy and the policy middleware each check it, so the three agree (D96).",
+  "calls": [
+    {"tool": "e-print-mcp_search_eprint", "arguments": {"query": "SNOVA"}, "effect": "read", "action": "allow"},
+    {"tool": "firecrawl-mcp_firecrawl_scrape", "arguments": {"url": "https://example.org/"}, "effect": "read", "action": "allow"},
+    {"tool": "firecrawl-mcp_firecrawl_scrape", "arguments": {"url": "https://example.org/", "actions": [{"type": "click", "selector": "#go"}]}, "effect": "browse", "action": "deny"},
+    {"tool": "firecrawl-mcp_firecrawl_scrape", "arguments": {"url": "https://example.org/", "profile": {"name": "p", "saveChanges": true}}, "effect": "write", "action": "escalate"},
+    {"tool": "firecrawl-mcp_firecrawl_crawl", "arguments": {"url": "https://example.org/", "webhook": "https://hooks.example.org/x"}, "effect": "communicate", "action": "escalate"},
+    {"tool": "firecrawl-mcp_firecrawl_agent", "arguments": {"prompt": "find SNOVA attacks"}, "effect": "browse", "action": "deny"},
+    {"tool": "firecrawl-mcp_firecrawl_feedback", "arguments": {"endpoint": "search", "jobId": "00000000-0000-0000-0000-000000000000", "rating": "good"}, "effect": "write", "action": "escalate"},
+    {"tool": "firecrawl-mcp_firecrawl_monitor_create", "arguments": {"page": "https://example.org/", "goal": "changes"}, "effect": "communicate", "action": "escalate"},
+    {"tool": "e-print-mcp_refresh_eprint", "arguments": {}, "effect": "admin", "action": "escalate"},
+    {"tool": "portal_list_servers", "arguments": {}, "effect": "read", "action": "allow"},
+    {"tool": "portal_toggle_servers", "arguments": {}, "effect": "admin", "action": "deny"},
+    {"tool": "web-fetch-mcp_made_up", "arguments": {"url": "https://example.org/"}, "effect": "unclassified", "action": "escalate"}
+  ]
+}

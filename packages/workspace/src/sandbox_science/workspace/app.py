@@ -6,7 +6,17 @@ and prints a login URL once. ``GET /login?token=…`` with that token sets a ses
 cookie, HttpOnly and SameSite=Strict, and redirects to the app; sessions last until the
 server stops. Browsers send a host's cookies to every port on it, so the cookie's name
 carries the server's port, and two workspaces on one machine keep their sessions apart.
-Every ``/api/`` route needs a session. A request with any method other than GET or HEAD
+Every ``/api/`` route needs a session.
+
+Behind Authentik, ``forward_auth`` (forward_auth.py, D104) opens sessions too: an API
+request without a session whose Authentik token is believed gets one, named by the
+token's user, and the answer sets its cookie as the login does. The session ends when
+the token expires; a request that brings another token (a new login, or Authentik's
+refresh) ends it and opens the token's own, and one whose new token is refused ends it
+and is refused. A session the login link opened is the operator's, and an Authentik
+token never replaces it. The plain ``X-authentik-*`` headers are never read. Each API
+request carries its session's ``Identity`` (identity.py), which the admin-only actions
+check. A request with any method other than GET or HEAD
 also needs an ``Origin`` that is this server's own, so that a page on another site
 cannot act through the user's browser; nothing here answers CORS. The API's routes,
 POST ones included, are listed in docs/WORKSPACE.md. This module adds logout and
@@ -14,7 +24,11 @@ POST ones included, are listed in docs/WORKSPACE.md. This module adds logout and
 (mathrepair.py) within the limits of the browser session. With a loopback
 listener, every request must also name this server in ``Host`` (localhost, 127.0.0.1,
 ::1 or the address it listens on, with its port), which stops a DNS name rebound to
-127.0.0.1 from reaching it.
+127.0.0.1 from reaching it. Behind a TLS-terminating proxy, ``exposure`` (proxy.py) may
+name the public origin, which then replaces both: the server answers only to its host,
+a change needs exactly that ``Origin``, and the cookie is Secure and ``__Host-`` prefixed;
+it may also name the proxies whose ``X-Forwarded-Proto`` and ``X-Forwarded-Host`` are
+believed.
 
 Every response carries the security headers below. The Content-Security-Policy admits
 scripts, styles, fonts and fetches from this origin only, and inline style attributes,
@@ -33,11 +47,13 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import hmac
+import logging
 import secrets
+import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Final
+from typing import Final, cast
 
 from aiohttp import hdrs, web
 
@@ -51,8 +67,11 @@ from sandbox_science.orchestrator.worker_client import WorkerClient
 
 from . import (
     api,
+    approvals,
     artifacts,
     chat,
+    child_environments,
+    classifications,
     context_inspector,
     documents,
     errors,
@@ -61,33 +80,56 @@ from . import (
     kernels,
     ledger,
     mcp_services,
+    mcp_traffic,
     memory,
     messages,
+    monitor,
     plan_edits,
     plans,
     project_settings,
     provisioning,
     reviews,
+    session_opening,
     skills,
     uploads,
+    usage_view,
 )
-from .context import CONTEXT, WorkspaceContext, json_body, listener, own_hosts
+from .context import (
+    CONTEXT,
+    MAX_RUN_BYTES,
+    TIMEOUTS,
+    Timeouts,
+    WorkspaceContext,
+    json_body,
+    listener,
+    own_hosts,
+)
 from .errors import json_error
+from .forward_auth import TokenRefusedError, Verifier
+from .identity import ADMIN_GROUP, IDENTITY, OPERATOR, Identity, me
 from .mathrepair import (
     MathRepairService,
     RepairRequestError,
     SessionLimitError,
     parse_request,
 )
-from .mcp_metadata import MetadataClient
+from .mcp_metadata import AvailabilityClient
 from .preview import Preview
+from .proxy import Exposure, ForwardedHeaderError
+
+_log = logging.getLogger(__name__)
 
 Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
 
 SESSION_COOKIE: Final = "sandbox_science_workspace"
 """The session cookie's name, followed by ``-<port>``."""
+HOST_PREFIX: Final = "__Host-"
+"""Prefixes the session cookie's name behind a public origin: the browser then keeps it
+only as set Secure, on Path ``/``, without ``Domain``, so no sibling host under the same
+parent domain (such as the preview origin's) can set or shadow it."""
 MAX_SESSIONS: Final = 64
-"""Sessions kept at once; logging in beyond it ends the oldest."""
+"""Sessions kept at once; logging in beyond it ends the oldest Authentik session, or the
+oldest one when every session is the login link's."""
 MAX_TOKEN: Final = 256
 SAFE_METHODS: Final = frozenset({hdrs.METH_GET, hdrs.METH_HEAD})
 
@@ -145,16 +187,16 @@ under ``assets/`` are cached for a year and everything else is revalidated."""
 
 
 class Sessions:
-    """The login token, and the browser sessions it opened, kept by their cookies' digests.
-
-    A lookup by digest compares no secret directly.
+    """The login token, and the browser sessions open, kept by their cookies' digests with
+    their identities. A lookup by digest compares no secret directly.
     """
 
-    def __init__(self, login_token: str) -> None:
+    def __init__(self, login_token: str, *, clock: Callable[[], float] = time.time) -> None:
         if len(login_token) < 32:
             raise ValueError("a login token needs at least 32 characters")
         self._token = login_token.encode()
-        self._digests: OrderedDict[bytes, None] = OrderedDict()
+        self._sessions: OrderedDict[bytes, Identity] = OrderedDict()
+        self._clock = clock
 
     def login(self, presented: str) -> str | None:
         """A new session's cookie value, when ``presented`` is the login token."""
@@ -163,20 +205,37 @@ class Sessions:
         # Query values that are not UTF-8 arrive as surrogates; they must not raise.
         if not hmac.compare_digest(presented.encode("utf-8", "surrogateescape"), self._token):
             return None
+        return self.open(OPERATOR)
+
+    def open(self, identity: Identity) -> str:
+        """A new session for ``identity``; its cookie's value."""
         session = secrets.token_urlsafe(32)
-        self._digests[_digest(session)] = None
-        while len(self._digests) > MAX_SESSIONS:
-            self._digests.popitem(last=False)
+        self._sessions[_digest(session)] = identity
+        while len(self._sessions) > MAX_SESSIONS:
+            oldest = next(
+                (key for key, kept in self._sessions.items() if kept.login == "forward"),
+                next(iter(self._sessions)),
+            )
+            del self._sessions[oldest]
         return session
 
+    def identity(self, session: str | None) -> Identity | None:
+        """The session's identity; None for no session, or one that ended or expired."""
+        if session is None or len(session) > MAX_TOKEN:
+            return None
+        key = _digest(session)
+        found = self._sessions.get(key)
+        if found is not None and found.expires is not None and found.expires <= self._clock():
+            del self._sessions[key]
+            return None
+        return found
+
     def valid(self, session: str | None) -> bool:
-        return (
-            session is not None and len(session) <= MAX_TOKEN and _digest(session) in self._digests
-        )
+        return self.identity(session) is not None
 
     def end(self, session: str | None) -> None:
         if session is not None and len(session) <= MAX_TOKEN:
-            self._digests.pop(_digest(session), None)
+            self._sessions.pop(_digest(session), None)
 
 
 def _digest(value: str) -> bytes:
@@ -199,18 +258,22 @@ def create_app(
     *,
     login_token: str,
     check_host: bool = True,
-    max_run_bytes: int = api.MAX_RUN_BYTES,
+    max_run_bytes: int = MAX_RUN_BYTES,
     math_repair: MathRepairService | None = None,
     document_store: DocumentStore | None = None,
     job_worker: WorkerClient | None = None,
     job_state: JobState | None = None,
-    timeouts: api.Timeouts = api.TIMEOUTS,
+    timeouts: Timeouts = TIMEOUTS,
     preview: Preview | None = None,
     skills_metadata: str | None = None,
     mcp_project: str | None = None,
     mcp_inventory: tuple[mcp_services.ServiceConfig, ...] = (),
-    mcp_metadata: MetadataClient | None = None,
+    mcp_checks: AvailabilityClient | None = None,
+    mcp_listings: mcp_services.ListingSource | None = None,
+    mcp_classifications: classifications.ClassificationSource | None = None,
     model_configuration: project_settings.ModelConfiguration | None = None,
+    exposure: Exposure | None = None,
+    forward_auth: Verifier | None = None,
 ) -> web.Application:
     """The workspace's application. ``check_host`` is off only for a listener that is not
     on loopback, where the names that reach it are not known. Without ``math_repair``,
@@ -222,7 +285,14 @@ def create_app(
     application closes ``job_worker``. With ``preview``, it lists published artifacts with
     links that open a PDF in the viewer on the preview origin, and may frame that origin.
     With ``skills_metadata``, the alias of the import's pass, the skills page shows what
-    that pass derived, as runs are given it."""
+    that pass derived, as runs are given it. ``exposure`` names a public origin and the
+    proxies trusted to forward the scheme and host (proxy.py); without it a request is seen
+    as it arrives. ``mcp_classifications`` reads and accepts the configured services'
+    classifications, and ``mcp_listings`` reads the listings the agent runtime reported;
+    without them, ``job_worker`` does when its client has those routes. ``mcp_checks``
+    asks the control service for the user's availability check of a service.
+    ``forward_auth`` believes Authentik's forward-auth token and opens sessions from it
+    (forward_auth.py); without it only the login link does."""
     if not store.readonly:
         raise ValueError("the workspace's project store must be read-only")
     if mcp_inventory and mcp_project is None:
@@ -230,6 +300,12 @@ def create_app(
     if document_store is not None and not document_store.readonly:
         raise ValueError("the workspace's document_store must be read-only")
     sessions = Sessions(login_token)
+    reached = exposure if exposure is not None else Exposure()
+
+    def session_cookie(request: web.Request) -> str:
+        name = cookie_name(request)
+        return HOST_PREFIX + name if reached.public is not None else name
+
     files = StaticFiles(static_dir)
     repairs = math_repair if math_repair is not None else MathRepairService()
     if document_store is None:
@@ -240,31 +316,89 @@ def create_app(
     check_figures(writer)  # and its figures, by the run service (FG-19)
 
     def principal(request: web.Request) -> str:
-        return _digest(request.cookies.get(cookie_name(request), "")).hex()
+        opened = request.get(OPENED)
+        return _digest(opened or request.cookies.get(session_cookie(request), "")).hex()
+
+    async def authenticate(request: web.Request) -> Identity | str:
+        """The request's identity, opening a session from Authentik's token where that is
+        due (the module's docstring); else why there is none."""
+        presented = request.cookies.get(session_cookie(request))
+        found = sessions.identity(presented)
+        if forward_auth is None:
+            return found or "open the login URL that sandbox-science-workspace printed"
+        tokens = request.headers.getall(forward_auth.header, [])
+        if not tokens or (found is not None and found.login == "token"):
+            return found or "no Authentik token reached the workspace"
+        if len(tokens) > 1:
+            return "the request carries more than one Authentik token"
+        token = tokens[0]
+        digest = hashlib.sha256(token.encode("utf-8", "surrogateescape")).digest()
+        if found is not None and hmac.compare_digest(found.token, digest):
+            return found
+        if found is not None:
+            sessions.end(presented)  # the token changed: the session is the new token's or none
+        try:
+            claimed = await forward_auth.verify(token)
+        except TokenRefusedError as refused:
+            _log.warning("an Authentik token was refused: %s", refused)
+            return f"Authentik's token was refused: {refused}"
+        opened = Identity(
+            user=claimed.user,
+            login="forward",
+            admin=claimed.admin,
+            expires=claimed.expires,
+            token=digest,
+        )
+        request[OPENED] = sessions.open(opened)
+        _log.info("opened a session for %s through Authentik", claimed.user)
+        return opened
 
     @web.middleware
     async def guard(request: web.Request, handler: Handler) -> web.StreamResponse:
-        host = request.headers.get(hdrs.HOST, "").lower()
+        try:
+            seen = reached.seen(request)
+        except ForwardedHeaderError:
+            return _refusal("The proxy's forwarded headers are ambiguous.")
+        host = seen.host
         if check_host and host not in own_hosts(request):
             return _refusal("This server answers only to its own address.")
+        if not reached.answers(seen):
+            return _refusal("This server answers only to its public origin.")
         if request.method not in SAFE_METHODS:
             origin = request.headers.get(hdrs.ORIGIN, "").lower()
-            if not host or origin != f"{request.scheme}://{host}":
+            if not host or origin != reached.origin(seen):
                 return _refusal("A request from another origin is refused.")
         if is_api(request.path):
-            if not sessions.valid(request.cookies.get(cookie_name(request))):
-                return json_error(
-                    401,
-                    ErrorKind.POLICY_DENIED,
-                    "not logged in: open the login URL that sandbox-science-workspace printed",
-                )
+            found = await authenticate(request)
+            if not isinstance(found, Identity):
+                return json_error(401, ErrorKind.POLICY_DENIED, f"not logged in: {found}")
+            request[IDENTITY] = found
             try:
-                return await handler(request)
+                response = await handler(request)
             except web.HTTPException:
                 raise
             except Exception as caught:
-                return errors.to_response(caught)
+                response = errors.to_response(caught)
+            opened = request.get(OPENED)
+            if opened is not None and not response.prepared:
+                # A session opened from Authentik's token for this request. An answer the
+                # route streamed has sent its headers: the next request opens another.
+                set_session(request, response, opened)
+            return response
         return await handler(request)
+
+    def set_session(request: web.Request, response: web.StreamResponse, session: str) -> None:
+        # Strict holds behind Authentik too: the login answer sets the cookie on a
+        # top-level navigation, which a browser accepts from any site, and the page it
+        # redirects to needs no cookie; only the app's own same-origin requests carry it.
+        response.set_cookie(
+            session_cookie(request),
+            session,
+            path="/",
+            httponly=True,
+            samesite="Strict",
+            secure=reached.secure(reached.seen(request)),
+        )
 
     async def secure(request: web.Request, response: web.StreamResponse) -> None:
         response.headers.update(SECURITY_HEADERS)
@@ -283,21 +417,19 @@ def create_app(
         response = web.Response(
             status=303, headers={hdrs.LOCATION: "/", hdrs.CACHE_CONTROL: "no-store"}
         )
-        response.set_cookie(
-            cookie_name(request),
-            session,
-            path="/",
-            httponly=True,
-            samesite="Strict",
-            secure=request.secure,
-        )
+        set_session(request, response, session)
         return response
 
     async def logout(request: web.Request) -> web.StreamResponse:
-        name = cookie_name(request)
+        name = session_cookie(request)
         sessions.end(request.cookies.get(name))
+        sessions.end(request.get(OPENED))
+        request.pop(OPENED, None)  # a session this very request opened sets no cookie
         response = web.Response(status=204, headers={hdrs.CACHE_CONTROL: "no-store"})
-        response.del_cookie(name, path="/")
+        if reached.public is not None:
+            response.del_cookie(name, path="/", secure=True)  # a __Host- cookie needs it
+        else:
+            response.del_cookie(name, path="/")
         return response
 
     async def repair_math(request: web.Request) -> web.StreamResponse:
@@ -327,14 +459,15 @@ def create_app(
             stack.callback(writer.close)
 
     app = web.Application(middlewares=[guard], client_max_size=64 * 1024)
-    app[api.STORE] = store
-    app[api.MAX_RUN] = max_run_bytes
-    app[documents.DOCUMENTS] = document_store
-    app[documents.WRITER] = writer
+    if forward_auth is not None and forward_auth.settings.admin_group is not None:
+        app[ADMIN_GROUP] = forward_auth.settings.admin_group
     if skills_metadata is not None:
         app[skills.METADATA] = skills_metadata
+    listings = mcp_listings
+    if listings is None and callable(getattr(job_worker, "mcp_listings", None)):
+        listings = cast(mcp_services.ListingSource, job_worker)
     app[mcp_services.CONFIGURATION] = mcp_services.Configuration(
-        mcp_project, mcp_inventory, mcp_metadata
+        mcp_project, mcp_inventory, mcp_checks, listings
     )
     if model_configuration is not None:
         app[project_settings.MODEL_CONFIGURATION] = model_configuration
@@ -345,6 +478,7 @@ def create_app(
         worker=job_worker,
         job_state=job_state,
         timeouts=timeouts,
+        max_run_bytes=max_run_bytes,
     )
     if preview is not None:
         app[artifacts.PREVIEW] = preview
@@ -358,6 +492,7 @@ def create_app(
         reviews,
         jobs,
         kernels,
+        child_environments,
         provisioning,
         plans,
         plan_edits,
@@ -368,16 +503,39 @@ def create_app(
         context_inspector,
         skills,
         mcp_services,
+        classifications,
+        monitor,
+        mcp_traffic,
         messages,
         uploads,
+        usage_view,
+        session_opening,
+        approvals,
     ):
         feature.add_routes(app)
+    if job_worker is not None:
+        # Cards for the tool calls, network and package requests the middleware holds (D97).
+        approvals.configure(app, job_worker)
+    classifications.configure(
+        app,
+        mcp_classifications
+        if mcp_classifications is not None
+        else classifications.from_worker(job_worker),
+    )
+    monitor.configure(app, job_worker)
+    mcp_traffic.configure(app, job_worker)
     app.router.add_post("/api/v0/logout", logout)
+    app.router.add_get("/api/v0/me", me)
     app.router.add_post("/api/v0/math-repair", repair_math)
     app.router.add_get("/api/{tail:.*}", no_route)
     app.router.add_get("/login", login)
     app.router.add_get("/{path:.*}", files.handle)
     return app
+
+
+OPENED: Final = web.RequestKey("workspace_opened_session", str)
+"""A session the guard opened for this request from Authentik's token: its cookie value,
+which the answer sets."""
 
 
 def _refusal(text: str) -> web.Response:

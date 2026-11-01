@@ -29,7 +29,7 @@ A line has the same number in `pdf_pages` and `pdf_search`. Running headers, foo
 Agents have no tool to look at an image, so rendering such a page does not let you read it yourself. What helps:
 
 - name the pages you could not read in your answer, instead of guessing what they say;
-- render them, publish the PNGs, and ask the user to read the part that matters;
+- render them, publish the PNGs, and ask the user to read the part that matters (a delegated run asks its parent);
 - run OCR in the sandbox, if the project lets you install it. OCR text is your own computation, not a line the PDF tools returned, so it cannot serve as a quote's source.
 
 Extracted text of formulas can drop subscripts and superscripts, merge symbols, or reorder a matrix. Before relying on a formula from extracted text, derive it again or have the user compare it with a render.
@@ -58,4 +58,4 @@ The quote is an evidence item on the claim or result, in a `ledger_change` call:
 
 ## When a PDF quote confirms a result
 
-The platform cannot tell a downloaded paper from a PDF an agent made. So a PDF quote confirms a published result through the citation check only when the user has vouched for that PDF: the user checks a revision of the reference that names it, in the workspace's entry view or with the harness's ledger check command. Until then the result stays unverified, whatever the check found. Once a reference's PDF is pinned, it helps to ask the user to check that reference. A quote of an ePrint passage needs no such step (see the literature-search skill).
+The platform cannot tell a downloaded paper from a PDF an agent made. So a PDF quote confirms a published result through the citation check only when the user has vouched for that PDF: the user checks a revision of the reference that names it, in the workspace's entry view or with the harness's ledger check command. Until then the result stays unverified, whatever the check found. Once a reference's PDF is pinned, it helps to ask the user to check that reference, or, from a delegated run, to tell the parent that it needs checking. A quote of an ePrint passage needs no such step (see the literature-search skill).

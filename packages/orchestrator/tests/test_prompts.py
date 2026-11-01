@@ -15,7 +15,13 @@ import pytest
 
 from sandbox_science.contracts import ErrorKind, ExecutionContext
 from sandbox_science.orchestrator import cli, notices
-from sandbox_science.orchestrator.consistency.rubric import RUBRIC, RUBRIC_VERSION
+from sandbox_science.orchestrator.consistency.prompt_bundle import PURPOSE as REVIEWER_PURPOSE
+from sandbox_science.orchestrator.consistency.rubric import (
+    RECHECK,
+    RECHECK_VERSION,
+    RUBRIC,
+    RUBRIC_VERSION,
+)
 from sandbox_science.orchestrator.delegation.prompt import (
     CHECK_PROMPT,
     CHECK_VERSION,
@@ -63,6 +69,41 @@ HOSTILE = "Authorization: Bearer test-secret-prompt-not-a-credential"
 # Each installed version and the SHA-256 of its UTF-8 text. Changing a text means a new
 # version: add it here, and keep the old version's entry for its records.
 GOLDEN = {
+    "sandbox-main-19": "74e546698352d3cb2ae235e460d55442ca02259c9cb2a504adbf03d3973f8bbe",
+    "sandbox-delegated-task-17": "88951b020a690c47b379833f454f27dc661f1336c603be2311befca42dfbcfc7",
+    "sandbox-main-18": "22e826b62aeea833f17d60b81df71da7cce20962825137aec955d1577e2270f8",
+    "sandbox-delegated-task-16": "14d76afa16bd7619b4cc741d1d5a1867455f4155d232a924a893a02950da1440",
+    "sandbox-main-17": "e561ed7a48219b4f77e36f1aef66fff91470eee6a25e1209872a34f48b913a03",
+    "sandbox-delegated-check-14": (
+        "bfdcf6ddb5c617e0ed8e57be6b487eee00ff83b634db256a134ca49a4c11728f"
+    ),
+    "sandbox-delegated-task-15": "7d4103e50fed2edab8d374551b316ea5a210e4d2f277c24af3c0edc609956c73",
+    "sandbox-reviewer-purpose-1": (
+        "4f5db2eae8a280b2143acc04406570ee23c04cb6578ddd488755d962fb16ec6e"
+    ),
+    "sandbox-memory-run-2": "c867f955b0a7f7cd8afd5cd2a8d7be993ec43cd9972643518dd71b27c647ee40",
+    "sandbox-memory-reviewer-2": (
+        "c06234678fe2609a96d97ba8ab39a15121085ba9befbcca14c02ce350f3e75d1"
+    ),
+    "sandbox-memory-watcher-2": (
+        "218f07632d937043a15ec3410890db954f77ca5152fc4867cbd7ca8493926964"
+    ),
+    "sandbox-main-16": "9f5b5ad89971ca327f50e2339d47f8738ad7dd866b781303d4118c57e6f08f3a",
+    "sandbox-main-15": "af20158edc4af5d4ad4930e869fe63e50f2ddaf9111faa51e08e9a0d50eff240",
+    "sandbox-delegated-check-13": (
+        "a37f12e337620c81928a5203073b1d6656c6ed713b110528b165d91c1e38960f"
+    ),
+    "sandbox-delegated-task-13": "5100c90d70c6c6d7874f802f7117f655943073b896ad6f568702d0849223bf20",
+    "sandbox-delegated-task-14": "282c8f5ce712c22144077103fc20efa141eedb9ed1185284f77ee0713231d5e1",
+    "sandbox-delegated-check-12": (
+        "d7aedb60054af516dbcf4d434c40316b54417a3550856bfb5745f39aa1bc7c19"
+    ),
+    "sandbox-delegated-task-12": "dbc6ffade88a1a97f17fa76cbf4b8cf567aedb89c2365628d78b1c973c62dc23",
+    "sandbox-main-14": "2e7fb45eafdd59d481bbbe05b9180117d1f2778fbce6772200773690e0c5e8d2",
+    "sandbox-delegated-check-11": (
+        "5b889a336e9bac771e63eedfdfc0cef5c1c5c6144bb3a3bd0c1fc1642628aad6"
+    ),
+    "sandbox-delegated-task-11": "32813ebc1a6b0724e242ace6a78e7e5708c070a1518014493f1c507759f8229c",
     "sandbox-main-13": "f711149fab6e3794b8dc812d2b5cc045b586f75f0402d82e920f899c27c4c3d6",
     "sandbox-delegated-check-10": (
         "7a7a25a2f16db7fd2b1aa785fb4a16311a94298eaed54559fe079495e71a155b"
@@ -101,6 +142,12 @@ GOLDEN = {
     "sandbox-notice-review-findings-1": (
         "d9fe98f7e1b697bb2d3264496fd601484a9dbce030d3fd0985e049aabd9e67a1"
     ),
+    "sandbox-notice-review-findings-2": (
+        "9e4659970a1e74fe7bedc00b01ee88617d668680ed96723dbcfb90495a790207"
+    ),
+    "sandbox-notice-review-counts-3": (
+        "dfe8661e41ed5d39580aa412d49c6e115480bb04e4d468affe2d6d4f5edc8c64"
+    ),
     "sandbox-notice-review-challenged-1": (
         "11b7df629d84233aae8275c05199f83db8d5f4f94b75517e4b77065b759ec47c"
     ),
@@ -124,7 +171,8 @@ GOLDEN = {
     "sandbox-delegated-check-8": "1911d9d5cf0036fe6d952132042f96124e0845bde8271078eb65c5960b655a78",
     "sandbox-delegated-task-8": "0928db5b6b9d08a097dd67464f69ff56eae48890d32f982dd2e516d71ae157fc",
     "sandbox-job-watcher-1": "4b545fe81e35622bf1b894c435833d78fb122116f9364d429b21c6c3551e1ab1",
-    "sandbox-consistency-8": "281329d55429f83ae3ff2bcbe05b486dcfb8ac7403a7adca86c0f3c8761739ce",
+    "sandbox-consistency-9": "3905f61a0b76144e6ec941e436cd37dea2343b76a7f84f34e5ecf65d8048a588",
+    "sandbox-recheck-1": "70923310becc982206fb8caad884bacc282ce182c065f9e978f653ff412eb7fa",
     "sandbox-memory-run-1": "b69cc482f75853487a499ac89b5701b148066e919842a9970e6e318b2bdce121",
     "sandbox-memory-reviewer-1": (
         "d391d1a7e6c33b4fca0970450432103c38b5ea34b80821210f7c9d27f80b9742"
@@ -143,13 +191,14 @@ GOLDEN = {
     "sandbox-task-constraints-1": (
         "5c0a224ad9bba6d3803ebf613e5b4df51e0341425b6f7e8b95244294d9f81681"
     ),
+    "sandbox-referenced-1": "53d8f0c92d3cfb623a246a3eaab31836e02796330d59453ba1dda6e52606966a",
     "sandbox-notice-redelivered-1": (
         "706f5ef5f1441a5194177af083185c8eb53cf9f9b31cfd7bb5609d3e666b4726"
     ),
     "sandbox-kernel-lines-1": "99de31152145fd974d443f21919e252f90f922b3c961e183522d98c46c79c246",
     "sandbox-fold-region-3": "b844c1fa240b73328d646cb1304caff16d5114ebee7b6c4a0ddf75a886e6cf00",
-    "sandbox-fold-enrich-2": "6c66a8694849373c6d7eecc23158e6c2b1862fb8afae640c660f20634876d37b",
-    "sandbox-fold-overview-1": ("55cf72856d831930c9953d972e16f2da74626f4972e3b787a32d49378efe23cd"),
+    "sandbox-fold-enrich-3": "c76e9d3e1abb63bb694323af221cfd8fd772b36d096b72368356f01cf40156aa",
+    "sandbox-fold-overview-2": "019dbbdb8a5b18c94d8a82b88b06b42bc5e81048e4c668481404bfefb3e7ddb9",
     "sandbox-consolidation-1": ("d67d1fdf2583ba97951b057b2246ce1d458a60806edf9bf7a7545920cf33f20a"),
     "sandbox-image-1": "6aad833a6a22472424296c64943b54adcd0d064aef1db5403c5f5eea2eb95f11",
     "sandbox-notice-report-1": "93112b881cb91462c7b85f862d93cd154a9d5c47684af6815a4eedc9156c9c48",
@@ -162,6 +211,8 @@ def installed() -> dict[str, str]:
         GUIDANCE_VERSION: GUIDANCE,
         PROMPT_VERSION: WATCHER_PROMPT,
         RUBRIC_VERSION: RUBRIC,
+        RECHECK_VERSION: RECHECK,
+        REVIEWER_PURPOSE.version or "": REVIEWER_PURPOSE.text,
         RUN_VERSION: RUN_FRAMING,
         REVIEWER_VERSION: REVIEWER_FRAMING,
         WATCHER_VERSION: WATCHER_FRAMING,
@@ -247,9 +298,9 @@ def record(transcript, **changes) -> RunRecord:
         "stopped": transcript.stopped,
         "failure": transcript.failure,
         "final_text": transcript.final_text,
-        "messages": transcript.messages,
+        "messages": transcript.context.messages,
         "tools": transcript.tool_records,
-        "prompt_provenance": transcript.prompt_provenance,
+        "prompt_provenance": transcript.context.prompt_provenance,
     }
     return RunRecord(**(fields | changes))
 
@@ -277,7 +328,7 @@ async def test_a_run_records_the_sections_and_tools_its_model_was_given(tmp_path
     finally:
         adapter.projects.close()
         documents.close()
-    pins = transcript.prompt_provenance
+    pins = transcript.context.prompt_provenance
     assert isinstance(pins, PromptPins)
     assert [(p.id, p.version) for p in pins.sections] == [("main", MAIN_VERSION)] + (
         [("planning", GUIDANCE_VERSION)] if planning else []
@@ -408,7 +459,7 @@ async def test_the_cli_keeps_the_pins_without_credentials(tmp_path, monkeypatch,
             location = SimpleNamespace(
                 isolation_evidence=None, pool_id="p", backend="local", sandbox_id="e", hostname="h"
             )
-            return SimpleNamespace(languages=(), features=(), location=location)
+            return SimpleNamespace(languages=(), features=(), location=location, kernel_reason=None)
 
     class Model:
         async def complete(self, messages, tools):
@@ -425,7 +476,6 @@ async def test_the_cli_keeps_the_pins_without_credentials(tmp_path, monkeypatch,
         watcher_calls_per_hour=1, watcher_first_check=1, watcher_interval=1,
         review_token_budget=400000, review_calls_per_hour=240,
         task="A small factual reply", max_turns=1, max_input_chars=400_000, transcript=None,
-        mcp_proxy=None, mcp_token_file=None, mcp_server=[],
     )  # fmt: skip
     monkeypatch.setattr(cli, "WorkerClient", Client)
     monkeypatch.setattr(cli, "read_secret", lambda _: "test-secret-unused-not-a-credential")

@@ -27,7 +27,7 @@ from sandbox_science.orchestrator.harness import (
 from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.memory import ProjectMemory
 from sandbox_science.orchestrator.memory_tools import MemoryTool
-from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel, ToolCall
+from sandbox_science.orchestrator.model import ModelTurn
 from sandbox_science.orchestrator.plan_tools import PlanTools
 from sandbox_science.orchestrator.projects import ProjectStore, run_name
 from sandbox_science.orchestrator.runstate import RunState
@@ -35,6 +35,7 @@ from sandbox_science.orchestrator.session_plans import SessionPlans
 from sandbox_science.orchestrator.tools import Toolbox
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
+from .scripted import ScriptedModel, ToolCall
 from .test_run_harness import Sink, Worker
 
 CONTEXT = ExecutionContext(project_id="p", session_id="s", environment_id="env")
@@ -91,11 +92,14 @@ async def test_agents_propose_and_a_retry_returns_the_first(documents: DocumentS
     retry = await tools.call(ToolCall("c1", "memory_propose", json.dumps(calls[0][1])), "c1")
     assert json.loads(retry.text) == {**answers[0], "replayed": True}
     listed = await call(tools, "memory_list")
-    assert listed == {
-        "version": 1,
-        "entries": [{"entry_id": "mem-1", "revision": 1, "text": "Write finite fields as GF(p)."}],
-        "next_from": None,
-    }
+    (item,) = listed["entries"]
+    assert (listed["version"], listed["next_from"]) == (1, None)
+    assert item["prefix"] == "[just now] [user] [mem-1@1 \u00b7 project]"
+    assert (item["entry_id"], item["revision"], item["text"]) == (
+        "mem-1",
+        1,
+        "Write finite fields as GF(p).",
+    )
     (proposal, *_) = ProjectMemory(documents).proposals("p")
     assert proposal.proposer.model_dump(exclude_none=True) == {
         "kind": "agent",
@@ -281,7 +285,7 @@ async def test_main_and_delegated_runs_have_the_tools(tmp_path: Path) -> None:
     finally:
         documents.close()
     for finished in (first, second):
-        pins = finished.transcript.prompt_provenance
+        pins = finished.transcript.context.prompt_provenance
         assert pins is not None
         assert {"memory_list", "memory_propose"} <= set(pins.tools.names)
     assert [(p.proposer.run_id, p.proposer.role) for p in proposals] == [

@@ -9,7 +9,10 @@
      nothing. -->
 <script lang="ts">
   import type { Question } from '../lib/api-types';
+  import { clock } from '../lib/conversation';
   import { ageText, closedText, type AnswerBody } from '../lib/questions';
+  import { splitAttachments } from '../lib/uploads';
+  import FileChips from './FileChips.svelte';
   import { idle, submit } from '../lib/submit';
   import { visible } from '../lib/text';
   import ApprovalText from './ApprovalText.svelte';
@@ -51,11 +54,19 @@
 
 <section class="question" class:open aria-label="A question from the agent">
   {#if open}
-    <h3>The agent asks you <span class="muted">(asked {ageText(question.asked_at, now)})</span></h3>
+    <h3>The agent asks you <span class="muted">· asked {ageText(question.asked_at, now)}</span></h3>
+    <ApprovalText text={question.text} label="The agent's question" preview />
   {:else}
-    <h3>The agent asked you</h3>
+    <h3>
+      Question from the agent{#if question.closed_at && clock(question.closed_at)}<span
+          class="muted"
+        >
+          · {question.state === 'answered' ? 'answered' : 'closed'}
+          {clock(question.closed_at)}</span
+        >{/if}
+    </h3>
+    <p class="asked">{visible(question.text)}</p>
   {/if}
-  <ApprovalText text={question.text} label="The agent's question" preview />
   {#if open && !live}
     <p class="muted">
       Its run no longer holds the session, so it takes no answer; it closes when the run service
@@ -105,35 +116,71 @@
     {/if}
     {#if sending.error}<ErrorMessage error={sending.error} />{/if}
   {:else}
-    <p>{closedText(question)}</p>
+    <p class="muted">{closedText(question)}</p>
     {#if question.answer?.kind === 'free' && question.answer.text}
-      <pre class="answer">{visible(question.answer.text)}</pre>
+      {@const split = splitAttachments(question.answer.text)}
+      {#if split.text.trim()}<p class="answer">{visible(split.text.trim())}</p>{/if}
+      <FileChips files={split.files} />
     {/if}
   {/if}
 </section>
 
 <style>
   .question {
-    border-left: 3px solid var(--border, #9996);
-    padding-left: 0.6rem;
-    margin: 0.6rem 0;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
   }
   .question.open {
-    border-left-color: var(--accent, #1a73e8);
+    border-color: var(--warn-line);
+    background: var(--warn-soft);
+    margin-top: 22px;
+  }
+  .question > :global(*) {
+    margin: 0;
   }
   h3 {
-    font-size: 1rem;
+    font-size: 12px;
+    font-weight: 500;
+    text-transform: none;
+    letter-spacing: normal;
+    color: var(--muted);
     margin: 0;
+  }
+  .question.open h3 {
+    color: var(--warn-text);
+  }
+  .asked,
+  .answer {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .asked {
+    display: -webkit-box;
+    -webkit-line-clamp: 8;
+    line-clamp: 8;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .answer {
+    padding-left: 10px;
+    border-left: 3px solid var(--border);
   }
   .options {
     list-style: none;
     padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
   }
   .options li {
-    margin: 0.3rem 0;
-  }
-  .answer {
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 10px;
   }
 </style>

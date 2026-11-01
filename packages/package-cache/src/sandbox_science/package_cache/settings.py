@@ -18,6 +18,9 @@ upstream_rate = 20           # upstream fetches per second
 upstream_burst = 200
 sandbox_rate = 10            # of those, per sandbox (the policy middleware names it)
 sandbox_burst = 100
+worker_state_dir = "/var/lib/sandbox-science/worker"  # optional: whose lockfiles pin files
+protect_days = 7             # grace after a lockfile stops being current
+protect_share = 0.5          # pinned files are protected up to this share of max_size
 
 [pypi]
 index = "https://pypi.org/simple"
@@ -47,8 +50,9 @@ repository = "https://hackage.haskell.org"
 ```
 
 ``public_url`` and ``cache_dir`` are required; every other key has the default
-shown. An ecosystem whose table is absent is disabled; a table with no keys
-enables it with the default upstreams. Relative paths resolve against the
+shown, except ``worker_state_dir``, which is unset (nothing is pinned) unless given.
+An ecosystem whose table is absent is disabled; a table with no keys enables it
+with the default upstreams. Relative paths resolve against the
 settings file's directory. URLs are normalized without a trailing slash, so
 adapters append paths with ``f"{url}/..."``.
 
@@ -263,6 +267,15 @@ class Settings(_Model):
     """Upstream requests per second for each sandbox, which the policy middleware names in
     its requests; 0 turns the per-sandbox budgets off."""
     sandbox_burst: Annotated[int, Field(ge=1)] = 100
+    worker_state_dir: Path | None = None
+    """The worker's state directory, read only: package files that its environments'
+    current and known-good lockfiles list are protected from eviction (``pins``). None
+    pins nothing."""
+    protect_days: Annotated[int, Field(ge=0, le=3650)] = 7
+    """How long a lockfile keeps pinning after it stopped being an environment's current."""
+    protect_share: Annotated[float, Field(gt=0, le=1, allow_inf_nan=False)] = 0.5
+    """The share of ``max_size`` that pinned files may hold protected; beyond it the
+    oldest pinned are evicted."""
     pypi: PypiSettings | None = None
     conda: CondaSettings | None = None
     cargo: CargoSettings | None = None
@@ -341,9 +354,10 @@ def load_settings(path: Path) -> Settings:
             data = tomllib.load(handle)
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise SettingsError(f"cannot read settings {path}: {exc}") from exc
-    cache_dir = data.get("cache_dir")
-    if isinstance(cache_dir, str) and cache_dir:
-        data["cache_dir"] = path.absolute().parent / cache_dir
+    for key in ("cache_dir", "worker_state_dir"):
+        value = data.get(key)
+        if isinstance(value, str) and value:
+            data[key] = path.absolute().parent / value
     try:
         return Settings.model_validate(data)
     except ValidationError as exc:

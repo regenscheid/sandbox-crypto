@@ -12,9 +12,9 @@ from typing import Any
 import pytest
 
 from sandbox_science.contracts import ExecutionContext
+from sandbox_science.orchestrator.context.history import Archive, RunArchive
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.orchestrator.documents.models import Author
-from sandbox_science.orchestrator.history import Archive, RunArchive
 from sandbox_science.orchestrator.hooks import Appended
 from sandbox_science.orchestrator.model import ToolCall
 from sandbox_science.orchestrator.projects import ProjectStore
@@ -678,7 +678,7 @@ async def test_the_user_accepts_and_dismisses_fold_proposals(
 ) -> None:
     """CM-15: the session's waiting proposals list; the user accepts one with the user's
     authority, again without effect, and dismisses another with a reason; same-origin."""
-    from sandbox_science.orchestrator.history import Entry
+    from sandbox_science.orchestrator.context.history import Entry
     from sandbox_science.orchestrator.ledger.proposals import FoldProposals
 
     documents = DocumentStore(store_path(seeded))

@@ -7,7 +7,8 @@
  * - `#/projects/<project>/sessions/<session>` one session and its runs, and
  *   `…/findings/<finding>` one of its review findings, as a ledger entry links to it, and
  *   `…/reviews/<review>` the session with one of its reviews chosen, as a quote's citation
- *   check links to it, `…/tree` its run tree and `…/runs/<run>` one run's events;
+ *   check links to it, `…/agents/<delegation>` the session with one delegation's card open
+ *   in its Agents panel, `…/tree` its run tree and `…/runs/<run>` one run's events;
  * - `#/projects/<project>/documents/<document>` a living document's current revision,
  *   `…/revisions/<number>` one of its revisions, and `…/revisions/<number>/blocks/<block>`
  *   that revision with one block in focus (a finding's anchor, say);
@@ -18,6 +19,11 @@
  *   recorded, as a delegation's files link to them;
  * - `#/projects/<project>/memory` the project memory: its entries and the proposals that
  *   wait for the user;
+ * - `#/projects/<project>/monitor` the project's monitor figures (D103): calls, approvals,
+ *   holds and drift, spend and tokens, sandbox tiers and canaries;
+ * - `#/projects/<project>/usage` the project's spend by session over a window, with its
+ *   check-ins and loop detections (D102), and `…/sessions/<session>/usage` one session with
+ *   its Usage tab open;
  * - `#/projects/<project>/ledger` the project's ledger browser,
  *   `#/projects/<project>/ledger/issues` its issues and what they concern, and
  *   `#/projects/<project>/ledger/<entry>` one entry by its handle or ID, with
@@ -31,6 +37,7 @@ export type Route =
   | { view: 'project'; project: string }
   | { view: 'session'; project: string; session: string }
   | { view: 'review'; project: string; session: string; review: string }
+  | { view: 'agent'; project: string; session: string; delegation: string }
   | { view: 'tree'; project: string; session: string }
   | { view: 'files'; project: string; session: string; run: string }
   | { view: 'run'; project: string; session: string; run: string }
@@ -54,6 +61,12 @@ export type Route =
   | { view: 'memory'; project: string }
   | { view: 'skills'; project: string }
   | { view: 'mcp'; project: string }
+  | { view: 'monitor'; project: string }
+  | { view: 'usage'; project: string }
+  | { view: 'session_usage'; project: string; session: string }
+  | { view: 'documents'; project: string }
+  | { view: 'artifacts'; project: string }
+  | { view: 'settings'; project: string }
   | { view: 'message'; project: string; message: string }
   | { view: 'ledger'; project: string }
   | { view: 'issues'; project: string }
@@ -92,6 +105,11 @@ export function parseRoute(hash: string): Route {
   if (parts.length === 3 && parts[2] === 'memory') return { view: 'memory', project };
   if (parts.length === 3 && parts[2] === 'skills') return { view: 'skills', project };
   if (parts.length === 3 && parts[2] === 'mcp') return { view: 'mcp', project };
+  if (parts.length === 3 && parts[2] === 'monitor') return { view: 'monitor', project };
+  if (parts.length === 3 && parts[2] === 'usage') return { view: 'usage', project };
+  if (parts.length === 3 && parts[2] === 'documents') return { view: 'documents', project };
+  if (parts.length === 3 && parts[2] === 'artifacts') return { view: 'artifacts', project };
+  if (parts.length === 3 && parts[2] === 'settings') return { view: 'settings', project };
   if (parts.length === 4 && parts[2] === 'messages') {
     const message = parts[3]!;
     return MESSAGE_ID.test(message) ? { view: 'message', project, message } : { view: 'missing' };
@@ -116,6 +134,9 @@ export function parseRoute(hash: string): Route {
   if (parts[2] === 'sessions' && parts.length === 5 && parts[4] === 'tree') {
     return { view: 'tree', project, session: name };
   }
+  if (parts[2] === 'sessions' && parts.length === 5 && parts[4] === 'usage') {
+    return { view: 'session_usage', project, session: name };
+  }
   if (parts[2] === 'sessions' && parts.length === 6 && parts[4] === 'runs') {
     const run = decoded(parts[5]!);
     if (run !== null) return { view: 'run', project, session: name, run };
@@ -123,6 +144,10 @@ export function parseRoute(hash: string): Route {
   if (parts[2] === 'sessions' && parts.length === 6 && parts[4] === 'reviews') {
     const review = decoded(parts[5]!);
     if (review !== null) return { view: 'review', project, session: name, review };
+  }
+  if (parts[2] === 'sessions' && parts.length === 6 && parts[4] === 'agents') {
+    const delegation = decoded(parts[5]!);
+    if (delegation !== null) return { view: 'agent', project, session: name, delegation };
   }
   if (parts[2] === 'sessions' && parts.length === 6 && parts[4] === 'findings') {
     const finding = decoded(parts[5]!);
@@ -181,6 +206,35 @@ export function mcpHref(project: string): string {
   return `${projectHref(project)}/mcp`;
 }
 
+/** The project's Monitor view (D103). */
+export function monitorHref(project: string): string {
+  return `${projectHref(project)}/monitor`;
+}
+
+/** The project's usage view (D102). */
+export function usageHref(project: string): string {
+  return `${projectHref(project)}/usage`;
+}
+
+/** A session with its Usage tab open (D102). */
+export function sessionUsageHref(project: string, session: string): string {
+  return `${sessionHref(project, session)}/usage`;
+}
+
+/** The project's documents, beside the one chosen. */
+export function documentsHref(project: string): string {
+  return `${projectHref(project)}/documents`;
+}
+
+/** Every file the project's runs recorded, results first. */
+export function artifactsHref(project: string): string {
+  return `${projectHref(project)}/artifacts`;
+}
+
+export function settingsHref(project: string): string {
+  return `${projectHref(project)}/settings`;
+}
+
 export function sessionHref(project: string, session: string): string {
   return `${projectHref(project)}/sessions/${encodeURIComponent(session)}`;
 }
@@ -203,6 +257,11 @@ export function runHref(project: string, session: string, run: string): string {
 /** A session with one of its consistency reviews chosen in its review panel. */
 export function reviewHref(project: string, session: string, review: string): string {
   return `${sessionHref(project, session)}/reviews/${encodeURIComponent(review)}`;
+}
+
+/** A session with one delegation's card open in its Agents panel. */
+export function agentHref(project: string, session: string, delegation: string): string {
+  return `${sessionHref(project, session)}/agents/${encodeURIComponent(delegation)}`;
 }
 
 export function findingHref(project: string, session: string, finding: string): string {

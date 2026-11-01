@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: MIT
 """USER project settings for the three agent model roles.
 
-The deployment supplies the trusted alias catalog and each alias's adapter. A project
-may choose an alias from that catalog and an effort value; it cannot supply an API,
-gateway address or credential. A fresh research tree snapshots the effective profiles,
-so changing these settings never mutates an admitted tree.
+The deployment supplies the trusted alias catalog and the adapters it names. A project
+may choose an alias from that catalog and an effort value, which every adapter takes; it
+cannot supply an API, gateway address or credential. A fresh research tree snapshots the
+effective profiles, so changing these settings never mutates an admitted tree.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from .control import Receipts
 from .documents import DocumentStore
 from .documents.errors import CONFLICT, INTERNAL, INVALID_REQUEST, POLICY_DENIED, DocumentError
 from .documents.models import Author
-from .model_profiles import Effort, ModelProfile
+from .model_profiles import ApiKind, Effort, ModelProfile
 
 AgentModelRole = Literal["main", "delegated", "reviewer"]
 AGENT_MODEL_ROLES: Final[tuple[AgentModelRole, ...]] = ("main", "delegated", "reviewer")
@@ -44,12 +44,33 @@ _RECEIPTS = Receipts("models", "operation ID already names another model setting
 class AgentModelSelection(Contract):
     alias: str = Field(min_length=1, max_length=200)
     reasoning_effort: Effort | None = None
+    deployment_default: bool = False
+    """The deployment's default effort for the role on the API the alias is called
+    through, which the run service resolves when the API is its own choice
+    (docs/specs/context-management.md, CM-41), rather than ``reasoning_effort``."""
+
+    @model_validator(mode="after")
+    def one_effort(self) -> AgentModelSelection:
+        if self.deployment_default and self.reasoning_effort is not None:
+            raise ValueError("a deployment default names no effort of its own")
+        return self
+
+
+class RoleDefault(Contract):
+    """The deployment's default effort for a role, and, where it differs, on Messages."""
+
+    effort: Effort | None = None
+    messages: Effort | None = None
 
 
 class ModelOption(Contract):
     alias: str = Field(min_length=1, max_length=200)
-    api: Literal["chat", "responses", "messages"]
-    effort_supported: bool
+    api: ApiKind | None
+    """The adapter the deployment names for the alias, or ``None`` when the run service
+    chooses it from the gateway's model information (docs/specs/context-management.md,
+    CM-41)."""
+    effort_supported: bool = True
+    """Whether a requested effort applies: every adapter takes one."""
 
 
 class ModelSettings(Contract):
@@ -57,6 +78,9 @@ class ModelSettings(Contract):
     revision: int = Field(ge=0)
     roles: dict[AgentModelRole, AgentModelSelection] = Field(max_length=3)
     defaults: dict[AgentModelRole, AgentModelSelection] = Field(max_length=3)
+    default_efforts: dict[AgentModelRole, RoleDefault] = Field(
+        default_factory=dict[AgentModelRole, RoleDefault], max_length=3
+    )
     available: tuple[ModelOption, ...] = Field(max_length=64)
     known_efforts: tuple[str, ...] = KNOWN_EFFORTS
 
@@ -91,11 +115,12 @@ class ProjectModels:
         self,
         project: str,
         defaults: Mapping[AgentModelRole, ModelProfile],
-        available: Mapping[str, Literal["chat", "responses", "messages"]],
+        available: Mapping[str, ApiKind | None],
+        messages_defaults: Mapping[AgentModelRole, str] | None = None,
     ) -> ModelSettings:
         _scope(project)
         revision, stored = self.selections(project)
-        return _view(project, revision, stored, defaults, available)
+        return _view(project, revision, stored, defaults, available, messages_defaults)
 
     def change(
         self,
@@ -104,7 +129,8 @@ class ProjectModels:
         author: Author,
         *,
         defaults: Mapping[AgentModelRole, ModelProfile],
-        available: Mapping[str, Literal["chat", "responses", "messages"]],
+        available: Mapping[str, ApiKind | None],
+        messages_defaults: Mapping[AgentModelRole, str] | None = None,
     ) -> tuple[ModelSettings, bool]:
         _scope(project)
         if author.kind != "user":
@@ -116,14 +142,9 @@ class ProjectModels:
         if set(change.roles) != set(defaults):
             raise DocumentError(INVALID_REQUEST, "model settings must name every configured role")
         for role, selection in change.roles.items():
-            api = available.get(selection.alias)
-            if api is None:
+            if selection.alias not in available:
                 raise DocumentError(
                     INVALID_REQUEST, f"{role} model is outside the deployment catalog"
-                )
-            if api == "messages" and selection.reasoning_effort is not None:
-                raise DocumentError(
-                    INVALID_REQUEST, f"{role} model's Messages adapter does not accept effort"
                 )
         fingerprint = hashlib.sha256(
             json.dumps(change.model_dump(mode="json"), sort_keys=True).encode()
@@ -133,7 +154,8 @@ class ProjectModels:
             replay = _RECEIPTS.find(db, project, author.actor, change.operation_id, fingerprint)
             if replay is not None:
                 revision, stored = _read(db, project)
-                return _view(project, revision, stored, defaults, available), True
+                view = _view(project, revision, stored, defaults, available, messages_defaults)
+                return view, True
             revision, current = _read(db, project)
             if revision != change.expected:
                 raise DocumentError(CONFLICT, "the project's model settings changed meanwhile")
@@ -158,7 +180,7 @@ class ProjectModels:
             if _RECEIPTS.count(db, project) >= 4096:
                 raise DocumentError(CONFLICT, "the model settings' operation quota is reached")
             revision, stored = _read(db, project)
-            result = _view(project, revision, stored, defaults, available)
+            result = _view(project, revision, stored, defaults, available, messages_defaults)
             _RECEIPTS.record(
                 db, project, author.actor, change.operation_id, fingerprint,
                 {"revision": result.revision},
@@ -171,10 +193,16 @@ def _view(
     revision: int,
     stored: Mapping[AgentModelRole, AgentModelSelection],
     defaults: Mapping[AgentModelRole, ModelProfile],
-    available: Mapping[str, Literal["chat", "responses", "messages"]],
+    available: Mapping[str, ApiKind | None],
+    messages_defaults: Mapping[AgentModelRole, str] | None = None,
 ) -> ModelSettings:
+    on_messages = {
+        role: effort
+        for role, effort in (messages_defaults or {}).items()
+        if role in defaults and effort != defaults[role].reasoning_effort
+    }
     base: dict[AgentModelRole, AgentModelSelection] = {
-        role: AgentModelSelection(alias=profile.alias, reasoning_effort=profile.reasoning_effort)
+        role: _default(profile, available.get(profile.alias), on_messages.get(role))
         for role, profile in defaults.items()
     }
     return ModelSettings(
@@ -182,11 +210,30 @@ def _view(
         revision=revision,
         roles=dict(stored) if stored else base,
         defaults=base,
+        default_efforts={
+            role: RoleDefault(effort=profile.reasoning_effort, messages=on_messages.get(role))
+            for role, profile in defaults.items()
+        },
         available=tuple(
-            ModelOption(alias=alias, api=api, effort_supported=api != "messages")
-            for alias, api in sorted(available.items())
+            ModelOption(alias=alias, api=api) for alias, api in sorted(available.items())
         ),
     )
+
+
+def _default(
+    profile: ModelProfile, api: ApiKind | None, on_messages: str | None
+) -> AgentModelSelection:
+    """A role's default selection: its effort on the alias's API, or, when that default
+    differs on Messages and the run service chooses the API, the deployment's default."""
+    if on_messages is None:
+        effort = profile.reasoning_effort
+    elif api == "messages":
+        effort = on_messages
+    elif api is None:
+        return AgentModelSelection(alias=profile.alias, deployment_default=True)
+    else:
+        effort = profile.reasoning_effort
+    return AgentModelSelection(alias=profile.alias, reasoning_effort=effort)
 
 
 def _read(

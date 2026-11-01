@@ -6,6 +6,7 @@ description = "Project policy model, validation and evaluation for Sandbox Scien
 requires-python = ">=3.12"
 license = "MIT"
 dependencies = [
+    "google-re2>=1.1.20251105",
     "pydantic>=2.9",
     "pyyaml>=6.0",
 ]

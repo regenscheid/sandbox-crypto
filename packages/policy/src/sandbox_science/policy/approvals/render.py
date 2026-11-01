@@ -21,6 +21,9 @@ def describe(key: RequestKey) -> str:
         return f"{fields['sandbox_id']}  {fields['method']} {where}"
     if key.kind == "packages":
         return f"{fields['sandbox_id']}  install package files for {fields['operation']}"
+    if key.kind == "hold":
+        whose = f"session {fields['session']}" if fields["session"] else "research code"
+        return f"{fields['sandbox_id']}  hold of {whose}'s outward calls ({fields['rule']})"
     return f"{fields['caller']}  {fields['server']} {fields['method']} {fields['tool']}"
 
 
@@ -51,8 +54,10 @@ def request_lines(approvals: Approvals, seq: int) -> list[str] | None:
     if request is None:
         return None
     answer = approvals.answer_to(seq)
-    if approvals.withdrawn(seq):
+    if approvals.withdrawn(seq) and request.key.kind == "packages":
         state = "withdrawn: its operation has ended"
+    elif approvals.withdrawn(seq):
+        state = "withdrawn: its grant was revoked"
     elif answer is None:
         state = f"waiting (after {request.timeout.total_seconds() / 60:.0f} min: "
         state += f"{request.on_timeout})"

@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 import pytest_asyncio
 from aiohttp.test_utils import TestClient
+from pydantic import TypeAdapter
 
 from sandbox_science.orchestrator.artifacts import ArtifactInventory
 from sandbox_science.orchestrator.consistency.store import ReviewStore
@@ -22,6 +23,16 @@ from sandbox_science.orchestrator.documents import USER, Author, DocumentStore, 
 from sandbox_science.orchestrator.mathchecks.jobs import MathJobs
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.workspace.app import create_app
+from sandbox_science.workspace.domain_contracts import (
+    CommentChange,
+    CommentListing,
+    CommentThread,
+    DocumentChange,
+    DocumentHistory,
+    DocumentListing,
+    DocumentRevision,
+    PatchPreview,
+)
 
 from .test_pdf_viewer import publish
 
@@ -93,7 +104,23 @@ async def get(client: TestClient[Any, Any], path: str, status: int = 200) -> Any
     response = await client.get(path)
     assert response.status == status, await response.text()
     assert response.headers["Cache-Control"] == "no-store"
-    return await response.json()
+    payload = await response.json()
+    if status == 200:
+        schema = (
+            DocumentHistory
+            if "/history" in path
+            else PatchPreview
+            if "/patches/" in path
+            else CommentThread
+            if "/comments/" in path
+            else CommentListing
+            if "/comments" in path
+            else DocumentRevision
+            if "/documents/" in path
+            else DocumentListing
+        )
+        TypeAdapter(schema).validate_python(payload)
+    return payload
 
 
 async def test_a_projects_documents(
@@ -117,6 +144,21 @@ async def test_a_revision_with_its_block_map_and_formulas(
     assert found["document"]["title"] == "FF"
     assert (found["title"], found["macros"]) == ("Fermat", {"\\F": "\\mathbb{F}"})
     assert found["matched"] is True
+    assert set(found) == {
+        "document",
+        "revision",
+        "text",
+        "title",
+        "macros",
+        "macro_context",
+        "matched",
+        "blocks",
+        "removed",
+        "removed_math",
+        "pins",
+        "figure_checks",
+    }
+    assert found["document"]["created_by"]["model"] is None
     revision = found["revision"]
     assert (revision["number"], revision["reason"]) == (2, "primes")
     assert revision["author"]["kind"] == "agent"
@@ -156,6 +198,9 @@ async def test_who_changed_what(client: TestClient[Any, Any], documents: dict[st
         (2, "changed"),
     ]
     assert [patch["state"] for patch in found["patches"]] == ["applied"]
+    assert found["revisions"][0]["author"] == {"kind": "user", "user": "user"}
+    assert found["patches"][0]["session_id"] == "a"
+    assert "decided_at" not in found["patches"][0]
 
 
 async def test_a_workbook_document_by_its_id(
@@ -307,7 +352,10 @@ async def post_change(
         headers={"Origin": str(client.make_url("/")).rstrip("/")},
     )
     assert response.status == status, await response.text()
-    return await response.json()
+    payload = await response.json()
+    if status == 200:
+        TypeAdapter(DocumentChange).validate_python(payload)
+    return payload
 
 
 async def test_user_edit_attribution_base_conflict_and_retained_patch(
@@ -460,6 +508,12 @@ async def test_comments_write_user_attribution_anchor_and_scope(
     )
     assert response.status == 200, await response.text()
     result = await response.json()
+    TypeAdapter(CommentChange).validate_python(result)
+    assert set(result) == {"thread_id", "entry_id", "revision", "request_id", "outcome"}
+    replay = await client.post(
+        path, json=payload, headers={"Origin": str(client.make_url("/")).rstrip("/")}
+    )
+    assert await replay.json() == {**result, "replayed": True}
     page = await get(client, path)
     thread = page["threads"][0]
     assert thread["opener"]["kind"] == "user"
@@ -638,3 +692,120 @@ async def test_a_revision_shows_its_pins_and_the_user_moves_one(
     assert moved["text"] == text
     assert moved["revision"]["number"] == 2
     assert [(found["revision"], found.get("latest")) for found in moved["pins"]] == [(2, None)]
+
+
+async def test_the_user_declines_a_suggestion_and_the_document_stays(
+    client: TestClient[Any, Any], documents: dict[str, str], state_dir: Path
+) -> None:
+    doc = documents["ff"]
+    store = DocumentStore(store_path(state_dir), producer="test")
+    store.set_suggestions("p1", doc, on=True, author=USER)
+    suggested = store.patch(
+        "p1",
+        doc,
+        base=2,
+        author=AGENT.model_copy(update={"delegated": True}),
+        reason="tighter",
+        operation_id="s1",
+        operations=[{"op": "replace", "block": documents["paragraph"], "markdown": "Agent."}],
+    )
+    store.close()
+    assert suggested.outcome == "suggested"
+    body = {"action": "decline", "patch_id": suggested.patch_id}
+    declined = await post_change(client, doc, body)
+    assert (declined["outcome"], declined["revision"]) == ("declined", 2)
+    latest = await get(client, f"/api/v0/projects/p1/documents/{doc}")
+    assert latest["document"]["head"] == 2
+    assert "Agent." not in latest["text"]
+    # A second decline, as a retry, finds no waiting suggestion; an unknown field is refused.
+    again = await post_change(client, doc, body, status=409)
+    assert "not a waiting suggestion" in again["error"]["message"]
+    await post_change(client, doc, {**body, "author": {"kind": "agent"}}, status=400)
+
+
+async def test_a_revision_downloads_as_its_markdown_source(
+    client: TestClient[Any, Any], documents: dict[str, str]
+) -> None:
+    path = f"/api/v0/projects/p1/documents/{documents['ff']}/source"
+    head = await client.get(path)
+    assert head.status == 200
+    assert head.headers["Content-Type"] == "text/markdown; charset=utf-8"
+    assert head.headers["Content-Disposition"] == 'attachment; filename="ff-r2.md"'
+    assert head.headers["X-Content-Type-Options"] == "nosniff"
+    assert "Let $p$ be prime." in await head.text()
+    first = await client.get(path, params={"revision": "1"})
+    assert first.headers["Content-Disposition"] == 'attachment; filename="ff-r1.md"'
+    assert await first.text() == FF
+    for params, status in (({"revision": "0"}, 400), ({"revision": "9"}, 404)):
+        assert (await client.get(path, params=params)).status == status
+    other = f"/api/v0/projects/p1/documents/{documents['other']}/source"
+    assert (await client.get(other)).status == 404
+
+
+async def test_unresolved_file_warning_retains_its_path(
+    client: TestClient[Any, Any], documents: dict[str, str]
+) -> None:
+    changed = await post_change(
+        client,
+        documents["notes"],
+        {
+            "action": "source",
+            "base": 1,
+            "reason": "Reference a missing image",
+            "operation_id": "missing-image",
+            "text": "![Plot](missing.png)\n",
+        },
+    )
+    assert changed["warnings"][0]["path"] == "missing.png"
+    found = await get(client, f"/api/v0/projects/p1/documents/{documents['notes']}")
+    assert found["revision"]["warnings"][0]["path"] == "missing.png"
+
+
+async def test_normalized_math_flag_survives_edit_and_revision_read(
+    client: TestClient[Any, Any], documents: dict[str, str]
+) -> None:
+    changed = await post_change(
+        client,
+        documents["notes"],
+        {
+            "action": "source",
+            "base": 1,
+            "reason": "Normalize math delimiters",
+            "operation_id": "normalized-math",
+            "text": r"Let \(x\) be prime." + "\n",
+        },
+    )
+    assert changed["normalized"]["normalized"] is True
+    assert changed["normalized"]["converted"] == {"inline": 1}
+    found = await get(client, f"/api/v0/projects/p1/documents/{documents['notes']}")
+    assert found["revision"]["normalized"] == changed["normalized"]
+    assert found["text"] == "Let $x$ be prime.\n"
+
+
+async def test_range_comment_positions_survive_listing_and_thread_read(
+    client: TestClient[Any, Any], documents: dict[str, str]
+) -> None:
+    path = f"/api/v0/projects/p1/documents/{documents['ff']}/comments"
+    response = await client.post(
+        path,
+        json={
+            "action": "create",
+            "anchor": {"revision": 2, "block": documents["paragraph"], "start": 4, "end": 7},
+            "body": "Explain this formula",
+            "operation_id": "range-comment",
+        },
+        headers={"Origin": str(client.make_url("/")).rstrip("/")},
+    )
+    assert response.status == 200, await response.text()
+    result = await response.json()
+    page = await get(client, path + "?revision=2")
+    shown = page["threads"][0]["attachment"]
+    assert shown == {
+        "status": "current",
+        "quote": "$p$",
+        "current": "Let $p$ be prime.",
+        "start": 4,
+        "end": 7,
+    }
+    thread = await get(client, path + f"/{result['thread_id']}")
+    assert thread["attachment"] == shown

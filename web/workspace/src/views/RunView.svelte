@@ -1,16 +1,18 @@
 <!-- SPDX-License-Identifier: MIT -->
-<!-- A run's conversation: the task, the agent's messages and its tool calls, the answer. -->
+<!-- A run's conversation: the task, the agent's messages and its tool calls, the answer;
+     and the MCP traffic the policy middleware inspected for it. -->
 <script lang="ts">
   import type { RunRecord } from '../lib/api';
   import { duration, formatTime } from '../lib/format';
   import Markdown from '../lib/Markdown.svelte';
   import HiddenBanner from './HiddenBanner.svelte';
   import { stoppedText } from '../lib/chat';
-  import { entries, usageLine } from '../lib/transcript';
+  import { entries, toolMixLine, usageLine } from '../lib/transcript';
   import RunFolds from './RunFolds.svelte';
   import RunSkills from './RunSkills.svelte';
   import ContextInspector from './ContextInspector.svelte';
   import ToolCall from './ToolCall.svelte';
+  import TrafficSection from './TrafficSection.svelte';
 
   let { run, runName }: { run: RunRecord; runName: string } = $props();
   let contextOpen = $state(false);
@@ -26,6 +28,7 @@
       : '',
   );
   const usage = $derived(usageLine(run.usage));
+  const toolMix = $derived(toolMixLine(run.summaries));
 </script>
 
 <dl class="facts">
@@ -37,6 +40,10 @@
   {#if usage}
     <dt>Model</dt>
     <dd>{usage}</dd>
+  {/if}
+  {#if toolMix}
+    <dt>Computation</dt>
+    <dd>{toolMix}</dd>
   {/if}
   <dt>Environment</dt>
   <dd><code>{run.context.environment_id}</code></dd>
@@ -84,6 +91,11 @@
 
 <RunSkills {run} />
 <RunFolds {run} />
+<TrafficSection
+  projectId={run.context.project_id}
+  sessionId={run.context.session_id}
+  run={runName}
+/>
 
 {#if run.stopped === 'error'}
   <p class="problem">Partial transcript. No final answer was recorded.</p>

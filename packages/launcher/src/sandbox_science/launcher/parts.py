@@ -14,11 +14,14 @@ settings hold the digests of the two clients' tokens:
 
 The run service and the workspace share the control store and need no token between
 them; the browser logs in to the workspace with the address the workspace makes at
-each start.
+each start. With ``[mcp_direct]`` the workspace asks the control service to check a
+server's availability with a token of its own, ``workspace-control``, whose digest the
+control service holds (orchestrator.py).
 """
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -27,13 +30,16 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from . import mcp, toml
+from . import openshell_version, toml, unit
 from .config import LauncherConfig, LauncherError
 from .state import Layout, ensure_token, write_private
 
 WORKER = "sandbox-science-worker"
 HARNESS = "sandbox-science-harness"
 WORKSPACE = "sandbox-science-workspace"
+CHECK_CALLER = "workspace-control"
+"""The workspace's token for the control service's availability check, by its file's name
+in tokens/: the control service holds its digest (orchestrator.py)."""
 CLIENTS = ("harness", "workspace", "launcher")
 """The worker's clients, each with a token limited to the config's projects: the launcher's
 own lists and suspends the projects' research sandboxes (sandboxes.py)."""
@@ -69,24 +75,37 @@ def check(config: LauncherConfig) -> None:
             f"no web app build at {config.workspace.static}: in web/workspace, run "
             "npm ci --ignore-scripts && npm run build"
         )
-    if shutil.which(config.openshell.cli) is None:
-        problems.append(f"no OpenShell CLI {config.openshell.cli}")
+    cli_problem = openshell_version.problem(config.openshell.cli)
+    if cli_problem is not None:
+        problems.append(cli_problem)
     names = [WORKER, HARNESS, WORKSPACE, "sandbox-science-control"]
-    if config.mcp_proxy is not None:
-        names.append(mcp.COMMAND)
-        problems.extend(
-            f"no MCP proxy {what} at {path}"
-            for what, path in mcp.sources(config).items()
-            if not path.is_file()
-        )
     problems.extend(
         f"no {name} in {commands(config)}"
         for name in names
         if shutil.which(name, path=str(commands(config))) is None
     )
     problems.extend(_math_problems(config))
+    problems.extend(unit_problems(config))
     if problems:
         raise LauncherError("cannot start:\n" + "\n".join(f"  {problem}" for problem in problems))
+
+
+def unit_problems(config: LauncherConfig) -> list[str]:
+    """What is wrong with the unit config the worker runs in, if there is one."""
+    if config.worker.unit is None:
+        return []
+    try:
+        found = unit.load(config.worker.unit, read=False)
+    except LauncherError as exc:
+        return [str(exc)]
+    worker = found.services["worker"].settings_file
+    expected = Layout(config.state_dir).worker_settings
+    if worker is None or Path(os.path.abspath(worker)) != Path(os.path.abspath(expected)):
+        return [
+            f"{found.path}: [worker] must be settings_file = {str(expected)!r}, the worker "
+            "settings that sandbox-science prepare writes, so the clients' tokens reach it"
+        ]
+    return []
 
 
 def key_problems(config: LauncherConfig) -> list[str]:
@@ -146,8 +165,6 @@ def prepare(config: LauncherConfig) -> Layout:
     ensure_token(layout.token("worker"))
     digests = {name: ensure_token(layout.token(f"{name}-worker")) for name in CLIENTS}
     write_private(layout.worker_settings, toml.dumps(worker_settings(config, layout, digests)))
-    if config.mcp_proxy is not None:
-        mcp.prepare(config, layout)
     return layout
 
 
@@ -162,17 +179,32 @@ def worker_settings(
         "state_dir": str(layout.worker_state),
         "pool_id": config.worker.pool_id,
         "openshell": config.openshell.model_dump(mode="json", exclude_none=True),
-        "clients": [
-            {
-                "name": name,
-                "token_sha256": digests[name],
-                "projects": projects,
-                "recovery_control": name == "harness",
-                "operator": name in {"workspace", "launcher"},
-            }
-            for name in CLIENTS
-        ],
+        "clients": [worker_client(name, digests[name], projects) for name in CLIENTS],
     }
+
+
+def worker_client(
+    name: str, digest: str, projects: list[str], max_environments: int | None = None
+) -> dict[str, Any]:
+    """One of ``CLIENTS`` in the worker's settings: the run service (``harness``) alone
+    installs recovery epochs and acknowledges retention; the workspace and the launcher are
+    operators; the Kubernetes runtime manager (``manager``) may only bind and unbind the
+    runtime's sandbox on the direct MCP path (``binding_only``). ``max_environments`` is
+    the client's limit on live environments across its projects; unset, the worker's own
+    default (8) applies."""
+    client: dict[str, Any] = {
+        "name": name,
+        "token_sha256": digest,
+        "projects": projects,
+        "recovery_control": name == "harness",
+        "artifact_retention": name == "harness",
+        "operator": name in {"workspace", "launcher"},
+    }
+    if max_environments is not None:
+        client["max_environments"] = max_environments
+    if name == "manager":
+        client["binding_only"] = True
+    return client
 
 
 def worker_url(config: LauncherConfig) -> str:
@@ -259,13 +291,19 @@ def harness_argv(config: LauncherConfig, layout: Layout) -> list[str]:
     if model.watcher_interval is not None:
         watcher += ["--watcher-interval", f"{model.watcher_interval:g}"]
     delegated = ["--delegated-model", model.delegated] if model.delegated else []
-    # Each alias's gateway API (CM-41); an alias left out takes chat completions.
+    # Each alias's gateway API (CM-41); the run service chooses one for an alias left out.
     efforts = [
         option
         for role, effort in model.effective_efforts().items()
         for option in ("--reasoning-effort", f"{role}={effort}")
     ]
+    efforts += [
+        option
+        for role, effort in model.messages_reasoning_effort.items()
+        for option in ("--messages-reasoning-effort", f"{role}={effort}")
+    ]
     apis = [option for alias, kind in model.api.items() for option in ("--api", f"{alias}={kind}")]
+    apis += ["--default-api", model.default_api]
     # The aliases the deployment declares accept images (figures, FG-33).
     apis += [option for alias in model.images for option in ("--images", alias)]
     # Claude's thinking replay setting (CM-39).
@@ -298,7 +336,6 @@ def harness_argv(config: LauncherConfig, layout: Layout) -> list[str]:
         "--model-url", model.url, "--model", model.name,
         "--api-key-file", str(model.api_key_file), *reviewer, *watcher, *delegated, *apis, *efforts,
         *shared, *math,
-        *mcp.harness_options(config, layout),
     ]  # fmt: skip
 
 
@@ -334,24 +371,31 @@ def workspace_argv(config: LauncherConfig, layout: Layout) -> list[str]:
     ]
     agent_models += [
         option
+        for role, effort in model.messages_reasoning_effort.items()
+        if role in role_aliases
+        for option in ("--agent-messages-effort", f"{role}={effort}")
+    ]
+    agent_models += [
+        option
         for alias in dict.fromkeys(role_aliases.values())
-        for option in ("--agent-api", f"{alias}={model.api.get(alias, 'chat')}")
+        if alias in model.api
+        for option in ("--agent-api", f"{alias}={model.api[alias]}")
     ]
     # The skills page shows what the pass runs are given derived.
     derived = config.skills.metadata_model
     page = [] if derived is None else ["--skills-metadata-model", derived]
-    services = []
-    if config.mcp_proxy is not None:
-        services = [
-            "--mcp-project",
-            config.mcp_project(),
-            "--mcp-proxy",
-            f"http://{config.mcp_proxy.listen}",
-            "--mcp-proxy-token-file",
-            str(layout.token(mcp.PROXY_CALLER)),
-        ]
-        for server in config.mcp_proxy.servers:
-            services += ["--mcp-service", f"{server}={config.mcp_proxy.about.get(server, '')}"]
+    services: list[str] = []
+    direct = config.mcp_direct
+    if direct is not None and config.orchestrator is not None:
+        services = ["--mcp-project", config.mcp_project()]
+        for server in direct.servers:
+            services += ["--mcp-service", f"{server}={direct.about.get(server, '')}"]
+        # The user's "Check availability": a listing by the runtime's client, asked of the
+        # control service with the workspace's own token (D98).
+        services += [
+            "--mcp-check", f"http://{config.orchestrator.control_listen}",
+            "--mcp-check-token-file", str(layout.token(CHECK_CALLER)),
+        ]  # fmt: skip
     named = workspace.preview_name
     viewer = [] if named is None else ["--preview-name", named]
     return [

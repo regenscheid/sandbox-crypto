@@ -442,8 +442,8 @@ async def test_a_conversation_over_the_budget_stops_cleanly_before_the_call(
         None,
         None,
     )
-    assert transcript.messages[-1]["role"] == "tool"
-    assert [usage.model for usage in transcript.usage] == ["scripted"]
+    assert transcript.context.messages[-1]["role"] == "tool"
+    assert [usage.model for usage in transcript.context.usage] == ["scripted"]
 
 
 async def test_a_failure_is_logged_with_its_cause(
@@ -495,7 +495,7 @@ async def test_a_closing_round_past_the_budget_keeps_the_answer(
         )
     assert len(model.requests) == 1
     assert (transcript.stopped, transcript.final_text) == ("answered", "The answer.")
-    assert "Findings: " not in str(transcript.messages)  # no model would see them
+    assert "Findings: " not in str(transcript.context.messages)  # no model would see them
 
 
 @pytest.mark.parametrize("action", ["respond", "continue"])

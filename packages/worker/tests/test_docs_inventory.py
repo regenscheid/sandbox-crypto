@@ -6,11 +6,16 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from sandbox_science.policy.store import PolicyStore
 from sandbox_science.worker.app import create_app
 from sandbox_science.worker.artifacts import Blobs
 from sandbox_science.worker.backends import LocalBackend
+from sandbox_science.worker.classifications import ClassificationDesk
 from sandbox_science.worker.documents_catalog import DocumentsCatalog
 from sandbox_science.worker.manager import ExecutionManager
+from sandbox_science.worker.monitor import MonitorDesk
+from sandbox_science.worker.permission_requests import PermissionDesk
+from sandbox_science.worker.permissions import Permissions
 from sandbox_science.worker.settings import LocalBackendSettings
 from sandbox_science.worker.store import Store
 
@@ -48,8 +53,27 @@ async def registered_routes(tmp_path: Path) -> set[Route]:
         state_dir=tmp_path,
     )
     try:
-        # The document-catalog routes are registered only with a catalog: include them.
-        app = create_app(manager, "test-secret-pool-token", document_catalog=catalog)
+        # The document-catalog, permission, classification and monitor routes are
+        # registered only with a catalog and their desks: include them.
+        permissions = Permissions(tmp_path / "events.db")
+        desk = PermissionDesk(permissions, list)
+        review = ClassificationDesk(
+            PolicyStore(tmp_path / "policy"),
+            permissions,
+            lambda _project: None,
+            store.classification_receipts,
+            listings=store.listing_reports,
+        )
+        app = create_app(
+            manager,
+            "test-secret-pool-token",
+            document_catalog=catalog,
+            permission_desk=desk,
+            classification_desk=review,
+            monitor_desk=MonitorDesk(
+                permissions, lambda _projects: [], declared_tier=None, measured_tier=lambda _: None
+            ),
+        )
         return {
             _canonical(route.method, route.resource.canonical)
             for route in app.router.routes()

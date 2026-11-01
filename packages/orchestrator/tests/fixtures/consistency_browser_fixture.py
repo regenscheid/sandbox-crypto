@@ -226,7 +226,8 @@ async def confirm(path: Path) -> None:
         if (
             found["review_id"] != marker["review"]
             or found["category"] != "contradicting_value"
-            or found["status"] != "claimed fixed"
+            or found["status"] != "open"
+            or (found.get("recheck") or {}).get("cause") != "fix"
             or documents.revision("review-demo", marker["document"], 1).text != REPORT
         ):
             raise ValueError("the target is not the seeded synthetic contradiction")
@@ -261,7 +262,14 @@ async def confirm(path: Path) -> None:
                 break
             after = page["next_after"]
         calls = [
-            {"name": "review_read", "arguments": {"evidence": item["evidence"]}} for item in items
+            {
+                "name": "review_read",
+                "arguments": {
+                    "purpose_note": "Reading one evidence item of the snapshot",
+                    "evidence": item["evidence"],
+                },
+            }
+            for item in items
         ]
         turns: list[dict[str, Any]] = [
             {"tool_calls": calls[start : start + 16]} for start in range(0, len(calls), 16)
@@ -281,9 +289,10 @@ async def confirm(path: Path) -> None:
                     {
                         "name": "review_decide",
                         "arguments": {
+                            "purpose_note": "Confirming the claimed fix of the finding",
                             "finding": finding,
                             "expected": revision,
-                            "decision": "confirm",
+                            "decision": "resolved",
                             "explanation": (
                                 "Synthetic scripted acceptance: the exact changed "
                                 "revision agrees with the pinned15 output."
@@ -301,7 +310,7 @@ async def confirm(path: Path) -> None:
                     {
                         "outcome": "findings",
                         "summary": (
-                            "The synthetic claimed fix was confirmed; other "
+                            "The synthetic fix's re-check found it resolved; other "
                             "findings retain their own states."
                         ),
                         "cap_reached": False,

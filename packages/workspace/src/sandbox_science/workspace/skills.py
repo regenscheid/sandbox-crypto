@@ -21,13 +21,14 @@ from aiohttp import web
 from pydantic import AwareDatetime, Field, JsonValue, ValidationError
 
 from sandbox_science.contracts import Contract, ErrorKind, Identifier
-from sandbox_science.orchestrator.documents import USER, DocumentStore
+from sandbox_science.orchestrator.documents import DocumentStore
 from sandbox_science.orchestrator.projects import ProjectError
 from sandbox_science.orchestrator.skills import SkillSettings, SkillStore
 from sandbox_science.orchestrator.skills.derive import VERSION as PASS_VERSION
 
-from . import documents
 from .context import json_body
+from .identity import author
+from .requests import document_answer
 
 PATH: Final = "/api/v0/projects/{project}/skills"
 METADATA: Final = web.AppKey("skills_metadata", str)
@@ -193,7 +194,7 @@ async def skills(request: web.Request) -> web.Response:
         raise ProjectError(ErrorKind.INVALID_REQUEST, "the skills read takes no parameters")
     project = request.match_info["project"]
     alias = request.app.get(METADATA)
-    return await documents.answer(request, lambda store: _read(store, project, alias))
+    return await document_answer(request, lambda store: _read(store, project, alias))
 
 
 async def settings(request: web.Request) -> web.Response:
@@ -208,11 +209,11 @@ async def settings(request: web.Request) -> web.Response:
     def changed(store: DocumentStore) -> dict[str, object]:
         found = SkillStore.of(store).set_settings(
             project,
-            USER,
+            author(request),
             change.expected,
             always=tuple(change.always),
             excluded=tuple(change.excluded),
         )
         return _settings(found).model_dump(mode="json")
 
-    return await documents.answer(request, changed, writer=True)
+    return await document_answer(request, changed, access="write")

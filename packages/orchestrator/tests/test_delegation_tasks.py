@@ -12,11 +12,11 @@ from typing import Any
 
 import pytest
 
+from sandbox_science.orchestrator.context.history import body
 from sandbox_science.orchestrator.delegation.outcome import TASK_FORMAT, parse_task
-from sandbox_science.orchestrator.delegation.prompt import TASK_PROMPT
+from sandbox_science.orchestrator.delegation.prompt import TASK_PROMPT, write_area_text
 from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords
 from sandbox_science.orchestrator.documents import DocumentError
-from sandbox_science.orchestrator.history import body
 from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.projects import ProjectStore
 
@@ -25,7 +25,7 @@ from .loop_harness import PROJECT, SESSION, Harness, Reply, call
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
-from .test_delegation import children, configure, delegation, results, started, wait
+from .test_delegation import children, configure, decide, delegation, results, started, wait
 from .test_delegation import delegating as delegating
 from .test_ledger import MAIN
 from .test_ledger_delegated_check import link
@@ -63,15 +63,16 @@ async def test_a_task_runs_with_its_own_prompt_brief_and_limits(delegating: Harn
     first = delegating.gateway.children[0]
     assert str(first[0]["content"]).startswith(TASK_PROMPT[:60])
     brief = body(str(first[1]["content"]))
+    (delegation_id,) = started(root)
     assert brief == (
         "Task: Tabulate a^16 mod 17 for a = 1..16 and save it as table.txt.\n\n"
         "Context from your parent: We need the table for C-1's proof.\n\n"
-        "Inputs:\n- documents/notes"
+        "Inputs:\n- documents/notes\n\n" + write_area_text(f"work/{delegation_id}")
     )
     began = json.loads(results(root)[0])
     assert began["task"] == TASK[1]["task"]
     assert began["limits"] == {"turns": 300, "tokens": 20_000_000}
-    (delegation_id,) = started(root)
+    assert began["write_area"] == f"work/{delegation_id}/"
     found = delegation(delegating, delegation_id)
     assert (found.kind, found.ended) == ("task", "returned")
     assert found.result == KEPT
@@ -270,49 +271,39 @@ PARTIAL = "Partial: a^16 mod 17 is 1 for a = 1..8; a = 9..16 is not done yet."
 
 
 @pytest.mark.parametrize(
-    ("limits", "replies", "stopped"),
+    ("limits", "replies"),
     [
-        # Its turns run out while it works.
-        ({"task_turns": 2}, [Reply(calls=[call("no_such_tool")])] * 2, "turn_limit"),
-        # Its tokens leave room for one more call (the owner's lab, 2026-10-16).
-        (
-            {"task_tokens": 50_000},
-            [Reply(calls=[call("no_such_tool")], tokens=20_000)],
-            "run_budget",
-        ),
+        # Its soft turn cap is reached while it works.
+        ({"task_turns": 2}, [Reply(calls=[call("no_such_tool")]), Reply(calls=[call("other")])]),
+        # Its soft token cap is reached by its first call.
+        ({"task_tokens": 50_000}, [Reply(calls=[call("no_such_tool")], tokens=60_000)]),
     ],
 )
-async def test_a_task_at_a_limit_reports_what_it_found_to_its_parent(
-    delegating: Harness, limits: dict[str, int], replies: list[Reply], stopped: str
+async def test_a_task_at_a_soft_cap_checks_in_and_reports_when_stopped(
+    delegating: Harness, limits: dict[str, int], replies: list[Reply]
 ) -> None:
-    """RS-6f, PD-19: a task stopped by a limit while it works takes a report round, whose
-    answer reaches its parent as the delegation's report; it ended ``limit_reached``, and
-    the report gives no result (one stands only for a run that answered)."""
+    """D102, RS-6f, PD-19: a task at a soft cap checks in and waits; its parent's stop
+    makes its next call its report round, whose answer reaches the parent as the
+    delegation's report; it ended ``limit_reached``, with no result."""
     configure(delegating, depth=1, **limits)
     root = await delegating.run(
         "root",
-        [Reply(calls=[TASK]), wait(), Reply("Done.")],
+        [Reply(calls=[TASK]), wait(), decide("stop"), wait(), Reply("Done.")],
         delegated=[*replies, Reply(PARTIAL)],
         status=3,
     )
-    assert root.stopped == "unfinished_children"
+    assert root.stopped == "unfinished_children"  # its stopped child's work stays open
     (child,) = children(delegating, root)
-    assert (child.stopped, child.final_text) == (stopped, PARTIAL)
+    assert (child.stopped, child.final_text) == ("resource_report", PARTIAL)
     (delegation_id,) = started(root)
     found = delegation(delegating, delegation_id)
     assert (found.ended, found.stopped, found.report, found.result) == (
         "limit_reached",
-        stopped,
+        "resource_report",
         PARTIAL,
         None,
     )
-    waited = json.loads(results(root)[1])
-    if "tool_result" in waited:
-        waited = json.loads(waited["tool_result"])
-    # The child's warning can wake the parent before its bounded report round ends.
-    # Either ordering is valid; the durable delegation record above must retain the
-    # report even when this particular wait returned the resource check-in first.
-    assert waited["reason"] in {"ended", "resource_request"}
-    if waited["reason"] == "ended":
-        (reported,) = waited["delegations"]
-        assert reported["answer"] == PARTIAL
+    checked_in = json.loads(results(root)[1])
+    assert checked_in.get("reason", "resource_request") == "resource_request"
+    decided = json.loads(results(root)[2])
+    assert decided["request"]["action"] == "stop"

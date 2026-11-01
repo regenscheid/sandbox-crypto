@@ -17,9 +17,12 @@ import {
   endedText,
   filesView,
   limitsText,
+  noticeKey,
   readingText,
   resultView,
+  reviewText,
   runForest,
+  standingText,
   stateText,
 } from './runTree';
 
@@ -37,6 +40,7 @@ const run = (name: string, fields: Partial<TreeRun> = {}): TreeRun => ({
   kept: true,
   alias: 'main-model',
   limits: { max_turns: 40, run_share: 0.5 },
+  tool_mix: null,
   ...fields,
 });
 
@@ -76,6 +80,14 @@ const delegation = (fields: Partial<Delegation> = {}): Delegation => ({
   read_entry: true,
   read_proofs: false,
   files: null,
+  environment_id: null,
+  environment: null,
+  results: 0,
+  review: null,
+  reviewed_at: null,
+  reviewed_by: null,
+  review_reason: null,
+  review_note: null,
   ...fields,
 });
 
@@ -421,4 +433,36 @@ describe('the files a delegated run recorded', () => {
       for (const [, code] of hidden) expect(html).toContain(`⟦${code}⟧`);
     },
   );
+});
+
+describe("a returned task's review (PD-46)", () => {
+  it('says how it stands, in words', () => {
+    expect(reviewText({ review: 'awaiting' })).toBe('awaiting review');
+    expect(reviewText({ review: 'accepted', review_reason: 'parent' })).toBe(
+      'accepted by its parent',
+    );
+    expect(reviewText({ review: 'accepted', review_reason: 'review_max' })).toBe(
+      'accepted after it waited too long for review',
+    );
+    expect(reviewText({ review: 'accepted', review_reason: 'session_closed' })).toBe(
+      'accepted as the session closed',
+    );
+    expect(reviewText({ review: 'cancelled', review_reason: 'parent' })).toBe(
+      'cancelled by its parent after it returned',
+    );
+    expect(reviewText({ review: null })).toBeNull();
+    expect(standingText({ ended: null, review: null })).toBe('running');
+    expect(standingText({ ended: 'returned', review: 'awaiting' })).toBe(
+      'returned · awaiting review',
+    );
+    expect(standingText({ ended: 'returned', review: 'accepted' })).toBe('accepted');
+    expect(standingText({ ended: 'limit_reached', review: null })).toBe('limit reached');
+  });
+
+  it("reads a notice's key as its delegation and result", () => {
+    const id = 'dlg-0123456789abcdef01234567';
+    expect(noticeKey(id)).toEqual({ delegation: id, result: null });
+    expect(noticeKey(`${id}.3`)).toEqual({ delegation: id, result: 3 });
+    expect(noticeKey('dlg-x.3')).toEqual({ delegation: 'dlg-x.3', result: null });
+  });
 });

@@ -26,19 +26,20 @@ from sandbox_science.orchestrator.confinement.wire import (
 )
 from sandbox_science.orchestrator.consistency.controller import ReviewController, Reviews
 from sandbox_science.orchestrator.consistency.store import ReviewStore
+from sandbox_science.orchestrator.context.agent import AgentContext
+from sandbox_science.orchestrator.context.history import Archive, RunArchive
 from sandbox_science.orchestrator.continuity.records import WorkRecords
 from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
-from sandbox_science.orchestrator.history import Archive, RunArchive
 from sandbox_science.orchestrator.hooks import Closing, TurnHook
 from sandbox_science.orchestrator.loop import Transcript
-from sandbox_science.orchestrator.model import ToolCall
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome
 from sandbox_science.orchestrator.worker_client import WorkerClient
 from sandbox_science.testing import FakeClock, eventually
 
+from .scripted import ToolCall
 from .test_consistency import claim, dispatch, raise_finding
 from .test_tool_journal import RUN, logger
 from .test_tool_journal import projects as projects
@@ -126,7 +127,10 @@ async def test_attempt_drains_before_its_publisher_closes(projects: ProjectStore
     await prepared.call(Capability.HOOK_ENTER, payload(HookRequest(attempt=given.attempt, slot=0)))
     if operation in {"closing", "finishing"}:
         transcript = Transcript(
-            messages=[{"role": "system", "content": "system"}], max_turns=3, max_input_chars=100000
+            context=AgentContext(
+                messages=[{"role": "system", "content": "system"}], max_input_chars=100000
+            ),
+            max_turns=3,
         )
         request = HookRequest(
             attempt=given.attempt, slot=0, state=state(transcript), stopped="turn_limit"

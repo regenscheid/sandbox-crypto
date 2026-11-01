@@ -21,7 +21,7 @@ Applies to all code and documentation in this repository. Change this file throu
 | `web/<app>/` | Browser apps, each an npm project of its own: `web/workspace/` is the research workspace GUI (D80, [workspace](../docs/WORKSPACE.md)). Not uv members, since uv, pyright and pytest search `packages/` |
 | `skills/builtin/` | The built-in skills, one `skills/builtin/<name>/SKILL.md` each: Markdown with standard front matter, shipped with the harness, imported and pinned at a run's start as the source `builtin` ([skills](../docs/SKILLS.md#the-built-in-pack)). Edit one in the pull request that changes the tool or rule it describes; `test_builtin_skills.py` checks the tools it names |
 | `examples/` | Illustrative configuration (policy, deployment profiles); tests load these to keep them valid |
-| `images/` | Recipes for the base profile images (`minimal`, `crypto-base`) and the `orchestrator` and `mcp-proxy` images: Containerfile, Conda lockfiles, build, lock and test scripts ([images](../docs/IMAGES.md)) |
+| `images/` | Recipes for the base profile images (`minimal`, `crypto-base`) and the `orchestrator` image: Containerfile, Conda lockfiles, build, lock and test scripts ([images](../docs/IMAGES.md)) |
 | `scripts/` | Repository tooling, such as the license check |
 | `.github/workflows/` | CI |
 
@@ -37,14 +37,13 @@ Planned members (created when work starts on them):
 | `contracts` | `sandbox_science.contracts` | Library: shared contracts (`ExecutionContext`, `ArtifactRef`, `Event`, …) |
 | `worker` | `sandbox_science.worker` | Worker service (trusted, per pool) |
 | `orchestrator` | `sandbox_science.orchestrator` | Control application and harness |
-| `mcp-proxy` | `sandbox_science.mcp_proxy` | MCP proxy (runs in its own OpenShell sandbox) |
 | `policy-middleware` | `sandbox_science.policy_middleware` | OpenShell supervisor middleware that decides each request with the policy library (D69) |
 | `package-cache` | `sandbox_science.package_cache` | Pull-through package cache for research sandboxes (D71) |
 | `event-store` | `sandbox_science.event_store` | Library: append-only event store with a hash chain (D74, shared) |
 | `connector-auth` | `sandbox_science.connector_auth` | Connector auth service (OAuth for MCP) |
 | `workspace` | `sandbox_science.workspace` | The research workspace's web server: the GUI's files and its API (D80) |
 | `launcher` | `sandbox_science.launcher` | `sandbox-science up`: starts, supervises and stops a local Sandbox Science from one config file, running the other members as commands, never importing them |
-| `testing` | `sandbox_science.testing` | Development only: support for this repository's tests (`FakeClock`, `eventually()`, the worker API client `WorkerApi`, the leftover-process check in `processes`, and a fake MCP server with TLS for the MCP proxy's and the harness's tests in `mcp`). A dev dependency; no production member imports it |
+| `testing` | `sandbox_science.testing` | Development only: support for this repository's tests (`FakeClock`, `eventually()`, the worker API client `WorkerApi`, the leftover-process check in `processes`, a fake MCP server with TLS for the harness's tests in `mcp`, and the pytest plugin that divides a test run into shards in `shards`). A dev dependency; no production member imports it |
 
 The browser front end itself is not a member: it lives in `web/workspace/`, with Node's toolchain (D60, D80).
 
@@ -70,6 +69,8 @@ uv run pyright
 uv run pytest -n auto
 uv run python scripts/tiers.py check
 uv run python scripts/check_licenses.py
+uv run python scripts/check_licenses.py --image trusted-app
+uv run python scripts/check_licenses.py --image trusted-worker
 uv run python scripts/generate_protos.py --check
 uv run python scripts/check_repo_hygiene.py
 ```
@@ -87,7 +88,7 @@ npm run build
 npm run build:math
 ```
 
-CI runs the same checks, and the math checker's tests (`uv run pytest -q packages/orchestrator/tests/test_mathcheck.py`) after `npm run build:math`. On a pull request it runs them on Python 3.13, with the fast tier, the general slow tier and two process-staging shards beside the web app's checks. Each staging module has its own runner and one xdist worker, so its executor processes do not compete with another staging module; the general jobs retain work-level balancing. `scripts/ci_pytest.sh` keeps each job's output in a file, printed when pytest ends or its diagnostic deadline stops it: 18 minutes for the general tiers and 10 minutes for staging. A push to main also runs the whole suite serially on Python 3.12 and 3.13. A nightly run does the same, and runs the slow tier ten times over to measure how often its tests flake.
+The two `--image` checks compare each trusted image's `licenses.txt` with the licenses of its locked Python wheels (they fetch a wheel the synced environment lacks, such as `boto3`'s, so they need the network or `uv`'s cache). CI runs the same checks, and the math checker's tests (`uv run pytest -q packages/orchestrator/tests/test_mathcheck.py`) after `npm run build:math`. On a pull request it runs them on Python 3.13, with the fast tier and the general slow tier, each divided into three shards by test module (`tiers.py run <tier> --shard I/3`), and two process-staging jobs beside the web app's checks. Each staging module has its own runner and one xdist worker, so its executor processes do not compete with another staging module; the general jobs retain work-level balancing. `scripts/ci_pytest.sh` keeps each job's output in a file, printed when pytest ends or its diagnostic deadline stops it: 18 minutes for the general tiers and 10 minutes for staging. A push to main also runs the non-staging suite serially on Python 3.12 and 3.13, in four shards on each, with each staging module in its own single-worker job on both versions. A nightly run does the same, then repeats the general slow tier twice (five shards, each a job of two repetitions) and each isolated staging module ten times (two jobs of five) to measure how often their tests flake; each repeat job's summary gives the flake rate it saw (`scripts/flake_report.py`). The nightly runs the workflow file on `main`, so a CI fix reaches it only when merged there. A weekly `audit` workflow runs `pip-audit` on `uv.lock`'s production set and `npm audit --audit-level=high` on the web app's lockfile; it is not a pull request check, and Dependabot proposes weekly, grouped updates for GitHub Actions and the web app's npm packages only (`.github/dependabot.yml`).
 
 ## Licensing
 
@@ -126,6 +127,7 @@ CI runs the same checks, and the math checker's tests (`uv run pytest -q package
 - A component with a deadline, a lease or a polling interval reads time through the `Clock` protocol in `contracts` and takes its timeouts and intervals as constructor parameters, defaulting to `SYSTEM_CLOCK` and the production values. Code that predates this rule is converted as the refactoring plan reaches it. Tests pass `sandbox_science.testing.FakeClock` and short timeouts instead of patching module constants, and wait for a condition with `eventually()` instead of sleeping. A timeout test uses a peer that never answers, so the timeout is the only possible outcome.
 - Tests run in parallel (pytest-xdist), so a test owns its files (`tmp_path`) and does not depend on other tests or their order. `pytest-repeat` (`--count 50`) with `-n 8` checks a test for flakiness; add `-o tmp_path_retention_policy=failed`, since many repetitions fill `/tmp` otherwise.
 - **Tiers.** A test module that starts real processes for its tests (kernels, executors, sandbox daemons, package managers) is marked slow, with `pytestmark = pytest.mark.slow` beside any other marks. The fast tier is everything else, and is meant to stay near two minutes on four CPUs. Marks are strict (`--strict-markers`), so a misspelt one fails. `scripts/tiers.py` holds each tier's marker expression; `scripts/tiers.py check` fails when a test is in no tier or in two, or when a `test_*.py` file yields no test, such as one outside `testpaths`.
+- **Shards.** `scripts/tiers.py run <tier> --shard I/N` runs the I-th of N parts of what the tier and the other arguments select (the pytest plugin `sandbox_science.testing.shards`; plain pytest takes it as `-p sandbox_science.testing.shards --shard I/N`). Tests are divided by module, so a module's tests and module-scoped fixtures stay together: modules go, largest first, to the shard with the fewest tests so far. The assignment depends only on the selected tests, so every job given the same arguments computes the same shards, and the N shards together are the selection. Shards are balanced by test count, not by time, so a shard of the slow tier can take much longer than another; add a shard to a CI job when its slowest shard nears the deadline.
 - **No processes left behind.** After each test module, the root `conftest.py` looks for processes still running from the run's temporary directory: executors and sandbox daemons whose `--root` is there, and kernels and commands working in a directory there, and commands of the test's own session that name a path there as an argument (such as `harness serve --state-dir`). It counts only this user's processes started after the test process, never the test process's ancestors, and only live directories, since other agents' test runs share the machine. It gives them ten seconds, then kills them and fails the module's last test. A test that kills an executor on purpose gives its commands a way to end with it.
 - pyright reports unnecessary `# type: ignore` and `# pyright: ignore` comments as errors, and ruff reports unused `noqa` comments. Tests may run subprocesses, build SQL and use synthetic secrets and temporary paths without inline suppressions.
 

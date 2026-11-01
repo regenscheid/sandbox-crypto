@@ -5,6 +5,12 @@
  * resolved against the current revision.
  */
 import type { DocumentChange, DocumentRevision } from './api';
+import type {
+  DocumentRequestSourceEdit,
+  DocumentRequestBlockEdit,
+  DocumentRequestPromote,
+  DocumentRequestRevert,
+} from './api-types';
 import type { DocumentDraft } from './drafts';
 
 /** A draft of the whole source (`block` null) or of one block, based on `found`. */
@@ -19,7 +25,10 @@ export function startDraft(
 }
 
 /** The change a draft sends: a source edit, or a patch that replaces its block. */
-export function draftChange(draft: DocumentDraft): Record<string, unknown> {
+export function draftChange(
+  draft: DocumentDraft,
+):
+  Omit<DocumentRequestSourceEdit, 'operation_id'> | Omit<DocumentRequestBlockEdit, 'operation_id'> {
   const { base, reason, block, text } = draft;
   return block === null
     ? { action: 'source', base, reason, text }
@@ -53,7 +62,7 @@ export function documentAction(
   found: DocumentRevision,
   action: 'promote' | 'revert',
   name: string,
-): Record<string, unknown> {
+): Omit<DocumentRequestPromote, 'operation_id'> | Omit<DocumentRequestRevert, 'operation_id'> {
   const base = found.document.head;
   return action === 'promote'
     ? { action, base, reason: 'Move workbook document to project', name }

@@ -13,21 +13,18 @@ In the orchestrator profile it runs the harness's command by its full path, with
 environment variables, as an OpenShell sandbox would: its help, a project record in the
 workdir, and a scripted task against a stub of the worker API on loopback.
 
-In the mcp-proxy profile it starts the image's launcher the same way, as the proxy's sandbox
-runs its command: it waits for the settings, starts the proxy, which then answers on loopback
-and keeps its stores in the workdir, and starts it again when it dies.
-
 It prints one JSON object per check (``check``, ``ok``, ``seconds``, ``detail``) and exits 1 if
 any failed. It needs only the standard library.
 
-Usage: check_image.py --profile minimal|crypto-base|orchestrator|mcp-proxy --worker-files DIR
+Usage: check_image.py --profile minimal|crypto-base|orchestrator --worker-files DIR
        [--network] [--landlock]
 """
 
 from __future__ import annotations
 
 import argparse
-import fnmatch
+import ctypes
+import errno
 import hashlib
 import http.client
 import http.server
@@ -38,10 +35,8 @@ import os
 import pwd
 import queue
 import re
+import shlex
 import shutil
-import signal
-import socket
-import stat
 import subprocess
 import sys
 import threading
@@ -51,13 +46,24 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-PROFILES = ("minimal", "crypto-base", "orchestrator", "mcp-proxy")
-SERVICES = ("orchestrator", "mcp-proxy")
-"""The platform services' images: no executor or kernels, and a read-only prefix."""
+PROFILES = ("minimal", "crypto-base", "orchestrator")
+SERVICES = ("orchestrator",)
+"""The platform services' images: no executor or kernels, and a read-only prefix. The MCP
+proxy's went with the proxy (D98, 2026-10-26)."""
 PREFIX = "/opt/sandbox-science"
+FROZEN = Path("/opt/sandbox-science-frozen")
+"""The research images' frozen trees, which the base links to (common/prefix_layout.py)."""
+BASE = Path("/opt/sandbox-science-base")
+"""The research images' read-only environment, under the workspace's layer, which ``PREFIX``
+links to (docs/IMAGES.md, "The environment outside the workspace")."""
+LAYER = Path("/sandbox/.sandbox-science-prefix")
+MAX_LAYER_ENTRIES = 5000
+"""Entries the image may seed into each workspace: the layer, not the environment."""
 EXECUTOR_DIR = Path("/sandbox/.sandbox-science")
 WORKER_FILES = (
     "executor.py",
+    "executor_lifecycle.py",
+    "executor_admission.py",
     "binding_inventory.py",
     "provisioning.py",
     "pdfhelper.py",
@@ -66,7 +72,9 @@ WORKER_FILES = (
     "capture.py",
     "sandbox_files.py",
     "sandbox_processes.py",
+    "sandbox_search.py",
     "sandbox_setup.py",
+    "workspace_prefix.py",
 )
 """The worker's files that run inside a sandbox (packages/worker/src/sandbox_science/worker)."""
 PROJECT = Path("/sandbox/project")
@@ -79,7 +87,11 @@ FEATURES = {"minimal": ["jobs"], "crypto-base": ["jobs", "pdf"]}
 MARKER = "Sandbox Science image check"
 
 HARNESS = f"{PREFIX}/bin/sandbox-science-harness"
-HARNESS_PACKAGES = ("sandbox-science-contracts", "sandbox-science-orchestrator")
+HARNESS_PACKAGES = (
+    "sandbox-science-contracts",
+    "sandbox-science-policy",
+    "sandbox-science-orchestrator",
+)
 HARNESS_DISTS = (*HARNESS_PACKAGES, "aiohttp", "pydantic", "pydantic-core")
 HARNESS_MODULES = (
     "sandbox_science.orchestrator.cli",
@@ -94,78 +106,17 @@ SERVICE_ENV = {"HOME": "/sandbox", "PATH": "/usr/local/bin:/usr/bin:/bin"}
 """The services' environment in the checks: a home and a system ``PATH``, not the image's
 variables, which OpenShell's VM driver does not apply."""
 KERNEL_PACKAGES = ("ipykernel", "jupyter_client", "zmq")
-TEST_TOKEN = "test-secret-image-check"  # noqa: S105 - synthetic, for the stub worker and the proxy
+TEST_TOKEN = "test-secret-image-check"  # noqa: S105 - synthetic, for the stub worker
 
-PROXY = f"{PREFIX}/bin/sandbox-science-mcp-proxy"
-EVENTS = f"{PREFIX}/bin/sandbox-science-events"
-LAUNCHER = f"{PREFIX}/bin/mcp-proxy-run"
-PROXY_PACKAGES = (
-    "sandbox-science-contracts",
-    "sandbox-science-policy",
-    "sandbox-science-event-store",
-    "sandbox-science-mcp-proxy",
-)
-PROXY_DISTS = (*PROXY_PACKAGES, "aiohttp", "pydantic", "pydantic-core", "pyyaml")
-PROXY_MODULES = (
-    "sandbox_science.mcp_proxy.cli",
-    "sandbox_science.policy",
-    "sandbox_science.event_store",
-    "sandbox_science.contracts",
-    "aiohttp",
-    "pydantic",
-    "pydantic_core",
-    "yaml",
-)
-SERVICE_PACKAGES = {"orchestrator": HARNESS_PACKAGES, "mcp-proxy": PROXY_PACKAGES}
+SERVICE_PACKAGES = {"orchestrator": HARNESS_PACKAGES}
 """The repository's packages each service image installs from wheels."""
 PACKAGE_LICENSES = {
     "sandbox-science-contracts": "MIT",
     "sandbox-science-orchestrator": "MIT AND Apache-2.0",
     "sandbox-science-policy": "MIT",
-    "sandbox-science-event-store": "MIT",
-    "sandbox-science-mcp-proxy": "MIT",
 }
 """Each of those packages' license, as its ``pyproject.toml`` declares it (a recipe test keeps
 them in step): the orchestrator's holds Apache-2.0 code since b426d7df."""
-PROXY_BINARIES = f"{PREFIX}/bin/python*"
-"""The targets file's ``mcp_proxy.binaries``: OpenShell sees the interpreter (lab 13)."""
-PROXY_DIR = Path("/sandbox/mcp-proxy")
-"""The proxy's directory in the workdir: its settings, where the launcher waits for them, and
-its stores (``state``)."""
-PROXY_SETTINGS = PROXY_DIR / "proxy.toml"
-PROXY_ADDRESS = ("127.0.0.1", 8080)
-PROXY_SERVER = "papers"
-PROXY_PLACEHOLDER = ("PAPERS_TOKEN", "openshell:resolve:env:v1_PAPERS_TOKEN")
-"""A credential variable as OpenShell sets it in the sandbox: a placeholder, never a secret."""
-PROXY_CEILING = "apiVersion: sandbox-science/v0alpha1\nkind: PoolCeiling\n"
-PROXY_POLICY = f"""\
-apiVersion: sandbox-science/v0alpha1
-kind: ProjectPolicy
-metadata:
-  name: image-check
-mcp:
-  servers:
-    {PROXY_SERVER}:
-      url: https://mcp.example.invalid/mcp
-      revision: "2025-11-25"
-      auth: {{mode: none}}
-      tools: {{allow: [search]}}
-"""
-"""A policy with one server, which the checks never reach: no call gets past the session check."""
-PROXY_TOML = f"""\
-listen = "{PROXY_ADDRESS[0]}:{PROXY_ADDRESS[1]}"
-state_dir = "state"
-ceiling = "pool-ceiling.yaml"
-
-[[callers]]
-name = "image-check"
-token_sha256 = "{hashlib.sha256(TEST_TOKEN.encode()).hexdigest()}"
-kind = "orchestrator"
-project = "{SESSION}"
-"""
-"""The proxy's settings, as an operator uploads them: one caller, with the token's hash."""
-LIST_TOOLS = {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-
 Message = dict[str, Any]
 
 
@@ -351,79 +302,6 @@ class Executor:
             self.process.kill()
 
 
-class Launcher:
-    """The mcp-proxy image's command, started as the proxy's sandbox starts it: by its full path,
-    without the image's environment, with a credential placeholder as OpenShell sets one."""
-
-    def __init__(self, log: Path) -> None:
-        self.log = log
-        with log.open("wb") as output:
-            self.process = subprocess.Popen(  # noqa: S603 - the image's own command
-                [LAUNCHER],
-                stdin=subprocess.DEVNULL,
-                stdout=output,
-                stderr=subprocess.STDOUT,
-                env={**SERVICE_ENV, PROXY_PLACEHOLDER[0]: PROXY_PLACEHOLDER[1]},
-            )
-
-    def text(self) -> str:
-        """What the launcher and the proxy have logged."""
-        return self.log.read_text(errors="replace")
-
-    def proxies(self) -> list[int]:
-        """The proxy processes the launcher started, oldest first, as its log names them."""
-        return [int(pid) for pid in re.findall(r"started the proxy \(pid (\d+)\)", self.text())]
-
-    def expect_running(self) -> None:
-        code = self.process.poll()
-        expect(code is None, f"the launcher exited with {code}: {self.text()[-1500:]}")
-
-    def wait_for(self, what: str, found: Callable[[], bool], timeout: float = 60) -> None:
-        """Wait until ``found()``, while the launcher runs."""
-        deadline = time.monotonic() + timeout
-        while not found():
-            self.expect_running()
-            if time.monotonic() > deadline:
-                raise CheckError(f"no {what} within {timeout:g} s: {self.text()[-1500:]}")
-            time.sleep(0.1)
-
-    def close(self) -> None:
-        if self.process.poll() is None:
-            self.process.terminate()
-            try:
-                self.process.wait(timeout=30)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
-
-
-def proxy_post(token: str | None, message: Message) -> tuple[int, Message]:
-    """POST a JSON-RPC message to the proxy's endpoint for the checks' server, as a caller does;
-    return the status and the JSON answer. Raises OSError while nothing listens."""
-    headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
-    if token is not None:
-        headers["Authorization"] = f"Bearer {token}"
-    connection = http.client.HTTPConnection(*PROXY_ADDRESS, timeout=30)
-    try:
-        connection.request("POST", f"/mcp/{PROXY_SERVER}", json.dumps(message), headers)
-        response = connection.getresponse()
-        return response.status, json.loads(response.read() or b"{}")
-    finally:
-        connection.close()
-
-
-def refusal(answer: Message) -> object:
-    """The reason code of the proxy's refusal (``error.data.reason``)."""
-    return answer.get("error", {}).get("data", {}).get("reason")
-
-
-def proxy_listening() -> bool:
-    try:
-        socket.create_connection(PROXY_ADDRESS, timeout=5).close()
-    except ConnectionRefusedError:
-        return False
-    return True
-
-
 class Checks:
     def __init__(self, profile: str, worker_files: Path, network: bool, landlock: bool) -> None:
         self.profile = profile
@@ -431,7 +309,6 @@ class Checks:
         self.under_landlock = landlock
         self.worker_files = worker_files
         self.client: Executor | None = None
-        self.proxy_launcher: Launcher | None = None
         self.failed = 0
 
     @property
@@ -457,6 +334,43 @@ class Checks:
         print(json.dumps({**line, "detail": detail}), flush=True)
 
     # The sandbox as the executor sees it.
+
+    def scheduler_shim(self) -> str:
+        revision = hashlib.sha256((self.worker_files / "sched_self.c").read_bytes()).hexdigest()
+        path = (
+            Path("/usr/local/lib/sandbox-science/shim") / revision / "libsandbox-science-sched.so"
+        )
+        shim = ctypes.CDLL(str(path))
+        source = shim.sandbox_science_sched_source_sha256
+        source.restype = ctypes.c_char_p
+        expect(source() == revision.encode(), "scheduler shim source revision differs")
+        libc = ctypes.CDLL(None)
+        libc.pthread_self.restype = ctypes.c_ulong
+        thread = libc.pthread_self()
+        policy, priority = ctypes.c_int(), ctypes.c_int()
+        libc.pthread_getschedparam.argtypes = (
+            ctypes.c_ulong,
+            ctypes.POINTER(ctypes.c_int),
+            ctypes.POINTER(ctypes.c_int),
+        )
+        expect(
+            libc.pthread_getschedparam(thread, ctypes.byref(policy), ctypes.byref(priority)) == 0,
+            "cannot read the calling thread's scheduler",
+        )
+        shim.pthread_setschedparam.argtypes = (
+            ctypes.c_ulong,
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_int),
+        )
+        expect(
+            shim.pthread_setschedparam(thread, policy, ctypes.byref(priority)) == 0,
+            "scheduler shim refused the calling thread",
+        )
+        expect(
+            shim.pthread_setschedparam(thread + 1, policy, ctypes.byref(priority)) == errno.EPERM,
+            "scheduler shim admitted another thread",
+        )
+        return f"native scheduler shim, source {revision}"
 
     def identity(self) -> str:
         entry = pwd.getpwuid(os.getuid())
@@ -490,14 +404,53 @@ class Checks:
             expect(bool(records), f"nothing readable in {PREFIX}/conda-meta")
             json.loads(records[0].read_text())
         else:
-            # Runtime installs go into the prefix (D48); multiprocessing needs /dev/shm.
+            # Runtime installs go into the workspace's layer, which the prefix links to (D48);
+            # multiprocessing needs /dev/shm. The base and the frozen trees are the image's,
+            # read-only (an image without them has none to write).
             allowed += ["/dev/shm", PREFIX]  # noqa: S108
+            refused += [str(BASE), f"{BASE}/bin", f"{BASE}/conda-meta", str(FROZEN)]
         wrongly = [path for path in refused if writable(path)]
         missing = [path for path in allowed if not writable(path)]
         expect(not wrongly, f"writable but should not be: {wrongly}")
         expect(not missing, f"not writable: {missing}")
         detail = f"writable: {', '.join(allowed)}; read-only: {', '.join(refused)}"
         return detail + (f"; {PREFIX} readable" if self.service else "")
+
+    def layer(self) -> str:
+        """The workspace holds only the layer over the read-only base: few entries, the
+        base's records without their files, and an interpreter whose prefix is the layer."""
+        entries = sum(len(dirs) + len(names) for _, dirs, names in os.walk(LAYER))
+        expect(entries <= MAX_LAYER_ENTRIES, f"{entries} entries in {LAYER}")
+        expect(Path(PREFIX).resolve() == LAYER, f"{PREFIX} -> {Path(PREFIX).resolve()}")
+        marker = json.loads((LAYER / ".sandbox-science-layer").read_text())
+        expect(
+            (marker["version"], marker["base"]) == (1, str(BASE))
+            and re.fullmatch(r"[0-9a-f]{64}", marker["identity"]) is not None,
+            f"marker {marker}",
+        )
+        records = sorted(path.name for path in (BASE / "conda-meta").glob("*.json"))
+        slim = sorted(path.name for path in (LAYER / "conda-meta").glob("*.json"))
+        expect(records == slim and bool(records), "the layer's records differ from the base's")
+        # A base record in the layer owns only the layer's own entries: programs, whose
+        # scripts are copies, and shared libraries.
+        for name in slim:
+            for relative in json.loads((LAYER / "conda-meta" / name).read_text())["files"]:
+                path = LAYER / relative
+                expect(relative.split("/")[0] in ("bin", "lib"), f"{name} owns {relative}")
+                expect(path.is_symlink() or path.is_file(), f"{name}'s {relative} is missing")
+                if not path.is_symlink():
+                    expect(path.read_bytes()[:2] == b"#!", f"{relative} is copied, not a script")
+        code = "import sys; print(sys.prefix, sys.base_prefix)"
+        found = subprocess.run(  # noqa: S603 - the image's interpreter, fixed arguments
+            [f"{PREFIX}/bin/python", "-I", "-c", code], capture_output=True, text=True, check=True
+        ).stdout.split()
+        expect(Path(found[0]).resolve() == LAYER and found[1] == str(BASE), f"prefixes {found}")
+        size = sum(
+            (Path(directory) / name).lstat().st_size
+            for directory, _, names in os.walk(LAYER)
+            for name in names
+        )
+        return f"{entries} entries ({size} bytes) in {LAYER}, over {len(records)} base packages"
 
     def landlock(self) -> str:
         """The ruleset is in effect: a system file outside OpenShell's baseline is unreadable."""
@@ -546,7 +499,10 @@ class Checks:
     def python_kernel(self) -> str:
         stdout, result = self.ex().cell("import sys\nprint(sys.executable)\n6 * 7")
         expect(result == "42", f"result {result!r}")
-        expect(stdout.strip() == f"{PREFIX}/bin/python", f"kernel interpreter {stdout.strip()}")
+        expect(
+            Path(stdout.strip()).resolve() == (Path(PREFIX) / "bin/python").resolve(),
+            f"kernel interpreter {stdout.strip()}",
+        )
         return f"6 * 7 = {result} in {stdout.strip()}"
 
     def tools_on_path(self) -> str:
@@ -565,7 +521,10 @@ class Checks:
         missing = [tool for tool in tools if not found.get(tool, "").strip()]
         expect(not missing, f"not on PATH: {missing}")
         prefix = found.get("prefix", "").strip()
-        expect(prefix == PREFIX, f"python ({found['python'].strip()}) runs in {prefix}")
+        expect(
+            Path(prefix).resolve() == Path(PREFIX).resolve(),
+            f"python ({found['python'].strip()}) runs in {prefix}",
+        )
         return ", ".join(f"{tool}={found[tool].strip()}" for tool in tools[:4]) + ", ..."
 
     def multiprocessing(self) -> str:
@@ -602,6 +561,45 @@ class Checks:
         stdout, _ = self.ex().cell(code, language="sage")
         expect(stdout.split() == ["4", "120", "21"], f"output {stdout!r}")
         return f"gp and Singular through pexpect, libgap: {stdout.strip()}"
+
+    def frozen_trees(self) -> str:
+        """GAP's, Giac's, Maxima's and the compilers' trees are the image's read-only copies,
+        each behind the exact link the image left in the prefix, pinned, and in use: Sage's
+        interfaces run them, and the compilers build a program against the prefix's shared
+        libraries."""
+        manifest = json.loads((FROZEN / "manifest.json").read_text())
+        prefix = BASE
+        for tree in manifest["trees"]:
+            link = prefix / tree
+            expect(link.is_symlink(), f"{link} is not a link")
+            expect(os.readlink(link) == str(FROZEN / tree), f"{link} -> {os.readlink(link)}")
+            expect(not os.access(FROZEN / tree, os.W_OK), f"{FROZEN / tree} is writable")
+        pinned = (prefix / "conda-meta" / "pinned").read_text().splitlines()
+        layer = (LAYER / "conda-meta" / "pinned").read_text().splitlines()
+        expect(
+            layer[:-1] == pinned and layer[-1].startswith("python=="),
+            "the layer's pins are not the base's and Python's",
+        )
+        for package in manifest["packages"]:
+            line = f"{package['name']}=={package['version']}={package['build']}"
+            expect(line in pinned, f"{package['name']} is not pinned")
+        code = "print(gap.eval('Factorial(10)'), maxima('2+2'), giac('3+3'))"
+        stdout, _ = self.ex().cell(code, language="sage")
+        expect(stdout.split() == ["3628800", "4", "6"], f"output {stdout!r}")
+        program = (
+            "#include <pari/pari.h>\n#include <gmp.h>\nint main(void) { pari_init(1000000, 0);"
+            ' pari_printf("%Ps\\n", factor(gp_read_str("2^64+1"))); mpz_t z;'
+            ' mpz_init_set_ui(z, 7); mpz_mul_ui(z, z, 6); gmp_printf("%Zd\\n", z); return 0; }\n'
+        )
+        built = self.ex().shell(
+            f"cd \"$(mktemp -d)\" && printf '%s' '{program}' > p.c && "
+            "gcc -O2 p.c -o p -lpari -lgmp && ./p"
+        )
+        expect(built.split() == ["[274177,", "1;", "67280421310721,", "1]", "42"], f"{built!r}")
+        return (
+            f"{len(manifest['trees'])} trees under {FROZEN}, {len(manifest['packages'])} "
+            f"packages pinned; GAP, Maxima and Giac: {stdout.strip()}; gcc -lpari -lgmp ran"
+        )
 
     def fpylll(self) -> str:
         code = (
@@ -713,18 +711,92 @@ By \cref{thm:mink}, $\mathbb{F}_{17}^\times$ has order $16$.
         return f"{parser}: page facts, line anchors, {len(hits)} search hits and a {size} render"
 
     def runtime_install(self) -> str:
-        # Neither package is in either image.
+        # None of these packages is in either image. xz-tools is a program that needs the
+        # base's liblzma, which it finds through the layer's links.
         out = self.ex().shell(
-            "micromamba install -y -q -c conda-forge --override-channels toolz >/dev/null"
-            " && python -m pip install -q --no-deps --no-cache-dir tomli-w"
-            " && python -c 'import toolz, tomli_w; print(toolz.__file__, tomli_w.__file__)'",
+            "micromamba install -y -q -c conda-forge --override-channels toolz xz-tools"
+            " >/dev/null && python -m pip install -q --no-deps --no-cache-dir tomli-w"
+            " && python -c 'import toolz, tomli_w; print(toolz.__file__, tomli_w.__file__)'"
+            ' && command -v xz && xz --version | head -1 && ! ldd "$(command -v xz)" | grep -q'
+            " 'not found'",
             limit=600,
         )
-        paths = out.split()
-        expect(len(paths) == 2 and all(path.startswith(PREFIX) for path in paths), f"{out!r}")
-        return "micromamba and pip installed into the Conda prefix"
+        lines = out.splitlines()
+        paths = [*lines[0].split(), lines[1]] if len(lines) >= 3 else []
+        expect(
+            len(paths) == 3 and all(Path(path).resolve().is_relative_to(LAYER) for path in paths),
+            f"{out!r}",
+        )
+        cell, _ = self.ex().cell("import toolz, tomli_w\nprint(toolz.__name__, tomli_w.__name__)")
+        expect(cell.split() == ["toolz", "tomli_w"], f"a new kernel imports {cell!r}")
+        installed = [*BASE.glob("lib/python3*/site-packages/toolz"), *BASE.glob("bin/xz")]
+        expect(not installed, f"installed into the base: {installed}")
+        return f"micromamba and pip installed into the layer; {lines[2]} runs"
 
-    # The services' images (orchestrator, mcp-proxy).
+    def runtime_upgrade(self) -> str:
+        """Replacing base packages at runtime: one with a command (pygments), and in
+        crypto-base one that Sage depends on (networkx). The replacement goes into the layer,
+        what imports and runs is the replacement, the layer keeps a record of every package
+        (Sage's too), and the lockfile says what conda-meta and importlib.metadata say. In
+        crypto-base, the dry run of ``sympy<1.14`` unlinks Sage without linking it, which is
+        what the provisioning tool refuses (resolution.conda_removals reads the same JSON)."""
+        names = ["pygments", *(["networkx"] if self.crypto else [])]
+        specs = ['"pygments<2.19"', *(['"networkx<3.6.1"'] if self.crypto else [])]
+        if self.crypto:
+            dry = json.loads(
+                self.ex().shell(
+                    "micromamba install --dry-run --json -y -q -c conda-forge "
+                    '--override-channels "sympy<1.14"',
+                    limit=600,
+                )
+            )
+            actions = dry.get("actions", {})
+            linked = {entry["name"] for entry in actions.get("LINK", [])}
+            unlinked = {entry["name"] for entry in actions.get("UNLINK", [])}
+            expect("sagelib" in unlinked - linked, f"sympy<1.14 removes {unlinked - linked}")
+        self.ex().shell(
+            "micromamba install -y -q -c conda-forge --override-channels "
+            f"{' '.join(specs)} >/dev/null",
+            limit=1200,
+        )
+        probe = (
+            "import importlib.metadata as metadata, json, pathlib, sys\n"
+            f"sys.path.insert(0, {str(EXECUTOR_DIR)!r})\n"
+            "import provisioning\n"
+            "places = provisioning.Places.here()\n"
+            "lock = provisioning.lockfile(places)\n"
+            "records = {}\n"
+            "for path in pathlib.Path(places.conda_meta).glob('*.json'):\n"
+            "    data = json.loads(path.read_text())\n"
+            "    records[data['name']] = data['version']\n"
+            "print(json.dumps({'conda': {x['name']: x['version'] for x in lock['conda']},"
+            " 'pip': sorted(x['name'].lower() for x in lock['pip']), 'records': records,"
+            f" 'imports': {{n: metadata.version(n) for n in {names!r}}}}}))"
+        )
+        found = json.loads(self.ex().shell(f"python -I -c {shlex.quote(probe)}"))
+        conda, records = found["conda"], found["records"]
+        wrong = {n: (v, conda.get(n)) for n, v in records.items() if conda.get(n) != v}
+        expect(not wrong, f"the lockfile differs from the layer's records: {wrong}")
+        for name in names:
+            seen = (found["imports"][name], records.get(name), conda.get(name))
+            expect(len(set(seen)) == 1, f"{name}: imports, record, lockfile {seen}")
+            expect(name not in found["pip"], f"{name} is listed as pip's too")
+            base = [path.name for path in (BASE / "conda-meta").glob(f"{name}-[0-9]*.json")]
+            expect(
+                len(base) == 1 and not base[0].startswith(f"{name}-{records[name]}-"),
+                f"the base's {name} changed: {base}",
+            )
+        if self.crypto:
+            expect("sagelib" in records, "the layer lost Sage's record")
+        version = self.ex().shell("pygmentize -V")
+        expect(records["pygments"] in version, f"pygmentize says {version!r}")
+        cell, _ = self.ex().cell(
+            f"import importlib.metadata as m\nprint(*(m.version(n) for n in {names!r}))"
+        )
+        expect(cell.split() == [records[name] for name in names], f"a kernel imports {cell!r}")
+        return ", ".join(f"{name} {records[name]}" for name in names) + " from the layer"
+
+    # The services' images (orchestrator).
 
     def command(self, program: str, *args: str) -> str:
         """Run one of the image's commands by its full path, as a service's sandbox would;
@@ -829,165 +901,30 @@ By \cref{thm:mink}, $\mathbb{F}_{17}^\times$ has order $16$.
             "then the scripted answer"
         )
 
-    # mcp-proxy: the proxy as its sandbox runs it, kept running by the image's launcher.
-
-    def proxy_cli(self) -> str:
-        """The proxy's command and the event store's: on ``PATH``, and by full path without it."""
-        found = shutil.which("sandbox-science-mcp-proxy")
-        expect(found == PROXY, f"sandbox-science-mcp-proxy on PATH is {found}")
-        interpreter = Path(PROXY).read_text().splitlines()[0]
-        expect(interpreter.startswith(f"#!{PREFIX}/bin/python"), f"it starts {interpreter!r}")
-        for command in ([], ["serve"], ["bind"], ["pending"], ["approve"], ["deny"]):
-            usage = self.command(PROXY, *command, "--help")
-            expect(usage.startswith("usage: sandbox-science-mcp-proxy"), f"help: {usage[:200]!r}")
-        usage = self.command(EVENTS, "--help")
-        expect(usage.startswith("usage: sandbox-science-events"), f"help: {usage[:200]!r}")
-        return (
-            f"{PROXY} ({interpreter}): --help for itself, serve, bind, pending, approve and deny;"
-            f" {EVENTS} --help"
-        )
-
-    def proxy_imports(self) -> str:
-        """The proxy and its dependencies import from the prefix, with their versions; the
-        default TLS context trusts the prefix's CA bundle (OpenShell sets its own in a sandbox)."""
-        versions = self.prefix_imports(PROXY_MODULES, PROXY_DISTS)
-        code = (
-            "import ssl\n"
-            "print(ssl.get_default_verify_paths().cafile,"
-            " ssl.create_default_context().cert_store_stats()['x509_ca'])"
-        )
-        cafile, count = self.command(f"{PREFIX}/bin/python", "-I", "-c", code).split()
-        expect(cafile.startswith(PREFIX) and int(count) > 0, f"CA bundle {cafile}, {count} CAs")
-        found = ", ".join(f"{name} {versions[name]}" for name in PROXY_DISTS)
-        return f"{found} from {PREFIX}; {count} CAs in {cafile}"
-
-    def launched(self) -> Launcher:
-        if self.proxy_launcher is None:
-            raise CheckError("the launcher did not start")
-        return self.proxy_launcher
-
-    def proxy_answer(self, token: str | None) -> tuple[int, Message]:
-        """The proxy's answer to a call once it listens, while the launcher runs."""
-        launcher = self.launched()
-        deadline = time.monotonic() + 60
-        while True:
-            try:
-                return proxy_post(token, LIST_TOOLS)
-            except (OSError, http.client.HTTPException):
-                launcher.expect_running()
-                if time.monotonic() > deadline:
-                    raise CheckError(f"no answer within 60 s: {launcher.text()[-1500:]}") from None
-                time.sleep(0.2)
-
-    def launcher(self) -> str:
-        """The sandbox's command: in the prefix, executable, and waiting for the settings."""
-        path = Path(LAUNCHER)
-        mode = stat.S_IMODE(path.stat().st_mode)
-        expect(mode == 0o755 and os.access(path, os.X_OK), f"{LAUNCHER} has mode {mode:o}")
-        first = path.read_text().splitlines()[0]
-        expect(first == "#!/bin/sh", f"it starts {first!r}")
-        expect(not PROXY_DIR.exists(), f"{PROXY_DIR} exists before the settings are written")
-        launcher = Launcher(Path("/tmp/mcp-proxy-run.log"))  # noqa: S108 - writable in the checks
-        self.proxy_launcher = launcher
-        launcher.wait_for("wait", lambda: f"waiting for {PROXY_SETTINGS}" in launcher.text())
-        time.sleep(2)  # it looks for the settings every second
-        launcher.expect_running()
-        expect(not launcher.proxies(), f"it started the proxy without settings: {launcher.text()}")
-        expect(not proxy_listening(), f"something listens on {PROXY_ADDRESS}")
-        return (
-            f"{LAUNCHER} (mode 755, {first}), started without the image's environment, waits"
-            f" for {PROXY_SETTINGS} and starts nothing"
-        )
-
-    def proxy_serve(self) -> str:
-        """Once the settings are there, the launcher starts the proxy, which keeps its stores in
-        the workdir and decides each call under the project's current binding."""
-        launcher = self.launched()
-        # As the operator uploads them: the ceiling, then the settings.
-        PROXY_DIR.mkdir(parents=True, exist_ok=True)
-        (PROXY_DIR / "pool-ceiling.yaml").write_text(PROXY_CEILING)
-        PROXY_SETTINGS.write_text(PROXY_TOML)
-        status, answer = self.proxy_answer(None)
-        expect((status, refusal(answer)) == (401, "unauthenticated"), f"{status} {answer}")
-        status, answer = proxy_post(TEST_TOKEN, LIST_TOOLS)
-        expect((status, refusal(answer)) == (503, "project_unbound"), f"{status} {answer}")
-        policy = PROXY_DIR / "policy.yaml"
-        policy.write_text(PROXY_POLICY)
-        project = ["--state-dir", str(PROXY_DIR / "state"), "--project", SESSION]
-        bound = self.command(PROXY, "bind", *project, "--policy", str(policy))
-        expect(bound.startswith(f"bound {SESSION} to image-check sha256:"), f"bind: {bound!r}")
-        status, answer = proxy_post(TEST_TOKEN, LIST_TOOLS)
-        expect((status, refusal(answer)) == (400, "session_required"), f"{status} {answer}")
-        pending = self.command(PROXY, "pending", "--settings", str(PROXY_SETTINGS)).strip()
-        expect(pending == "no permission requests are waiting", f"pending: {pending!r}")
-        # The process OpenShell sees connect to the servers, and the environment it got.
-        pid = launcher.proxies()[-1]
-        executable = os.readlink(f"/proc/{pid}/exe")
-        expect(fnmatch.fnmatchcase(executable, PROXY_BINARIES), f"the proxy runs {executable}")
-        environ = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
-        expect("=".join(PROXY_PLACEHOLDER).encode() in environ, "the placeholder did not reach it")
-        return (
-            f"{executable} (pid {pid}), matching {PROXY_BINARIES}, with the launcher's"
-            f" environment: 401 without the token; with it project_unbound, then"
-            f" session_required once bound; no pending requests"
-        )
-
-    def proxy_restart(self) -> str:
-        """When the proxy dies the launcher starts it again, with its binding and records
-        intact; SIGTERM stops both."""
-        launcher = self.launched()
-        first = launcher.proxies()[-1]
-        os.kill(first, signal.SIGKILL)
-        launcher.wait_for("new proxy", lambda: len(launcher.proxies()) > 1)
-        second = launcher.proxies()[-1]
-        status, answer = self.proxy_answer(TEST_TOKEN)
-        expect((status, refusal(answer)) == (400, "session_required"), f"{status} {answer}")
-        expect("exited with status 137" in launcher.text(), f"log: {launcher.text()[-1500:]}")
-        # One record per authenticated call, and the chain verifies after the crash.
-        store = str(PROXY_DIR / "state" / "events.db")
-        verified = self.command(EVENTS, "verify", store).strip()
-        expect(verified.startswith("ok: "), f"verify: {verified!r}")
-        exported = [json.loads(line) for line in self.command(EVENTS, "export", store).splitlines()]
-        calls = [(r["kind"], r["source"], r["payload"]["reason_code"]) for r in exported]
-        reasons = ("project_unbound", "session_required", "session_required")
-        expect(calls == [("mcp-call", "mcp-proxy", reason) for reason in reasons], f"{calls}")
-        launcher.process.terminate()
-        code = launcher.process.wait(timeout=30)
-        expect(code == 0, f"the launcher exited with {code} on SIGTERM: {launcher.text()[-500:]}")
-        expect(not Path(f"/proc/{second}").exists(), f"the proxy (pid {second}) is still there")
-        return (
-            f"after SIGKILL to pid {first}, the launcher started pid {second}, which kept the"
-            f" binding; events.db {verified.removeprefix('ok: ')}; SIGTERM stopped both"
-        )
-
     def run(self) -> int:
         for name in planned(self.profile, landlock=self.under_landlock, network=self.network):
             self.check(name, getattr(self, name.replace("-", "_")))
         if self.client is not None:
             self.client.close()
-        if self.proxy_launcher is not None:
-            self.proxy_launcher.close()
         return 1 if self.failed else 0
 
 
 def planned(profile: str, *, landlock: bool, network: bool) -> list[str]:
     """The checks for a profile, in order; each is the ``Checks`` method of the same name."""
     names = ["identity", "filesystem", *(["landlock"] if landlock else []), "record"]
+    if profile in ("minimal", "crypto-base"):
+        names.append("layer")
     if profile == "orchestrator":
         # The harness's image: no executor or kernels, and nothing installed at runtime.
         harness = ["harness-cli", "harness-imports", "no-kernels", "harness-state", "harness-run"]
         return names + harness
-    if profile == "mcp-proxy":
-        # The MCP proxy's image: the same, and a launcher as the sandbox's command.
-        proxy = ["proxy-cli", "proxy-imports", "no-kernels"]
-        proxy += ["launcher", "proxy-serve", "proxy-restart"]
-        return names + proxy
-    names += ["executor", "python-kernel", "tools-on-path", "multiprocessing"]
+    names += ["scheduler-shim", "executor", "python-kernel", "tools-on-path", "multiprocessing"]
     if profile == "crypto-base":
-        names += ["sage-kernel", "sage-interfaces", "fpylll", "g6k", "lattice-estimator"]
+        names += ["sage-kernel", "sage-interfaces", "frozen-trees", "fpylll", "g6k"]
+        names += ["lattice-estimator"]
         names += ["latexmk", "pdftotext", "pdf-oxide", "pdf-tools"]
     if network:
-        names.append("runtime-install")
+        names += ["runtime-install", "runtime-upgrade"]
     return names
 
 

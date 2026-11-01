@@ -31,16 +31,19 @@ def recipient_state(
 ) -> tuple[str, bool, str | None] | None:
     """Current run, terminal responsibility, and stable work behind an address."""
     row = db.execute(
-        "SELECT d.run,d.ended,w.work,w.current,w.state FROM delegations d "  # noqa: S608 - fixed joins
+        "SELECT d.run,d.ended,w.work,w.current,w.state,d.review FROM delegations d "  # noqa: S608 - fixed joins
         + _WORK_JOIN
         + "WHERE d.project_id=? AND d.session_id=? AND d.delegation_id=?",
         (project, session, delegation),
     ).fetchone()
     if row is None:
         return None
+    # A returned task that awaits its parent's review is open: a message reopens it
+    # (PD-46), so it has not ended for its mailbox.
+    reviewing = row[5] == "awaiting"
     if row[2] is None:
-        return str(row[0]), row[1] is not None, None
-    return str(row[3]), row[4] in ("completed", "stopped"), str(row[2])
+        return str(row[0]), row[1] is not None and not reviewing, None
+    return str(row[3]), row[4] in ("completed", "stopped") and not reviewing, str(row[2])
 
 
 def recipient_target(
@@ -54,11 +57,14 @@ def recipient_target(
     )
     if delegation is None:
         # A dead attempt is still a resumable responsibility. Do not let the root
-        # consume its queued instructions as failures before Resume can deliver them.
+        # consume its queued instructions as failures before Resume can deliver them;
+        # nor a returned task's that awaits review, which a reopening run receives
+        # (PD-46).
         return (
             "(recipient_delegation IS NULL OR recipient_delegation IN ("
             + linked
-            + "d.ended IS NOT NULL AND (w.work IS NULL OR w.state IN ('completed','stopped'))))",
+            + "d.ended IS NOT NULL AND coalesce(d.review, '') <> 'awaiting' "
+            "AND (w.work IS NULL OR w.state IN ('completed','stopped'))))",
             (project, session),
         )
     state = recipient_state(db, project, session, delegation)

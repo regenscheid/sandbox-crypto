@@ -6,12 +6,15 @@ labels as the digest shows them, and the state blocks of main and delegated runs
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from sandbox_science.orchestrator import digest as digest_module
+from sandbox_science.orchestrator.context.history import Archive, Entry, body
+from sandbox_science.orchestrator.context.history.reads import Read
 from sandbox_science.orchestrator.digest import (
     Digest,
     Line,
@@ -27,8 +30,6 @@ from sandbox_science.orchestrator.documents import (
     DocumentStore,
     store_path,
 )
-from sandbox_science.orchestrator.history import Archive, Entry, body
-from sandbox_science.orchestrator.history.reads import Read
 from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.notices import DIGEST, TASK_CONSTRAINTS
 from sandbox_science.orchestrator.projects import ProjectStore
@@ -163,10 +164,17 @@ def research_state(state: Path, project: str = PROJECT, session: str = SESSION) 
 
 
 @pytest.fixture
-def state(delegating: Harness) -> Path:
+def state(delegating: Harness) -> Iterator[Path]:
     """The delegating harness's state, with C-1 and the research state above."""
-    research_state(delegating.state)
-    return delegating.state
+    projects = ProjectStore(delegating.state)
+    try:
+        # Keep a writer open as the live harness does. Otherwise a seed connection's
+        # cleanup can remove WAL sidecars before a later read-only authority check.
+        projects.get(PROJECT)
+        research_state(delegating.state)
+        yield delegating.state
+    finally:
+        projects.close()
 
 
 def digest_of(state: Path, budget: int = 20000) -> tuple[str, Digest]:

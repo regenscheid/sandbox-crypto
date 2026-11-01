@@ -6,7 +6,8 @@ links in one queue and one link table (version 16); a migrated store answers as 
 from __future__ import annotations
 
 import sqlite3
-from contextlib import nullcontext
+from contextlib import closing, nullcontext
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
@@ -46,7 +47,7 @@ def explained(reviews: ReviewStore, category: str, body: str, *, legacy: bool = 
     payload = {
         "finding": found["finding_id"],
         "expected": 1,
-        "action": "rebut",
+        "action": "dismiss",
         "explanation": body,
         "operation_id": f"explain-{category}",
     }
@@ -92,6 +93,31 @@ async def history(docs: DocumentStore, reviews: ReviewStore) -> dict[str, Any]:
         "decision": decision,
         "findings": [finding, held_finding, legacy_finding],
     }
+
+
+_LIFECYCLE = ("status", "superseded_by", "latest_recheck", "dismissal", "recheck", "at_bound")
+"""A finding's lifecycle columns (version 83), which a store in version 14 or 15 cannot
+hold: an older copy keeps a dismissed finding's history but not its status."""
+
+
+def migrate(source: Path, copied: Path) -> DocumentStore:
+    """``copied``, made from ``source`` by ``older_store``, brought to the current
+    version, with its findings' lifecycle as ``source`` holds it."""
+    store = DocumentStore(copied)
+    store.initialize()  # the writer brings the store to the current version
+    store.close()
+    with closing(sqlite3.connect(copied)) as db:
+        db.execute("ATTACH DATABASE ? AS src", (str(source),))
+        assignments = ",".join(
+            f"{column}=(SELECT s.{column} FROM src.review_findings s "
+            "WHERE s.finding_id=review_findings.finding_id)"
+            for column in _LIFECYCLE
+        )
+        db.execute(f"UPDATE review_findings SET {assignments}")
+        db.commit()
+    store = DocumentStore(copied)
+    store.initialize()
+    return store
 
 
 def answers(docs: DocumentStore, reviews: ReviewStore, made: dict[str, Any]) -> dict[str, Any]:
@@ -168,16 +194,16 @@ def shape(found: dict[str, Any]) -> dict[str, Any]:
 async def test_texts_from_an_older_version_answer_and_are_checked_as_before(
     stores, tmp_path, version
 ):
-    """A store copied back to version 14 or 15 answers as before after migrating, and
+    """A store copied back to version 14 or 15, its findings' lifecycle carried over,
+    answers as before after migrating, and
     its texts' next revisions are queued and checked as the original store's are."""
     docs, reviews, clock = stores
     made = await history(docs, reviews)
     before = answers(docs, reviews, made)
     old = store_path(tmp_path / "old")
     older_store(docs.path, old, version)
-    copied = DocumentStore(old)
+    copied = migrate(docs.path, old)
     try:
-        copied.initialize()  # the writer brings the store to the current version
         moved = ReviewStore(copied, clock=lambda: clock[0])
         assert answers(copied, moved, made) == before
         await more(copied, moved, made)

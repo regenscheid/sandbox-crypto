@@ -17,6 +17,8 @@ import contextlib
 import hmac
 import logging
 import re
+import secrets
+import sqlite3
 from collections.abc import Awaitable, Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -31,6 +33,7 @@ from sandbox_science.contracts import (
     AdmissionRequest,
     AdmissionResult,
     ArtifactRef,
+    EditFileRequest,
     EnvironmentInfo,
     EnvironmentList,
     EnvironmentRequest,
@@ -41,7 +44,10 @@ from sandbox_science.contracts import (
     Execution,
     ExecutionContext,
     ExecutionRequest,
+    GlobRequest,
+    GrepRequest,
     Identifier,
+    JobSandboxRelease,
     KernelRestartRequest,
     KernelStatusRequest,
     ListFilesRequest,
@@ -50,6 +56,9 @@ from sandbox_science.contracts import (
     ProvisionRequest,
     PublishRequest,
     ReadFileRequest,
+    RuntimeSandboxBinding,
+    RuntimeSandboxRequest,
+    RuntimeSandboxUnbound,
     SessionClosed,
     SessionCloseRequest,
     StageCheckRequest,
@@ -57,6 +66,27 @@ from sandbox_science.contracts import (
     SuspendResult,
     WorkerErrorResponse,
     WriteFileRequest,
+)
+from sandbox_science.contracts.artifact_retention import (
+    MAX_RETENTION_ACK_BYTES,
+    ArtifactRetentionAcknowledgement,
+)
+from sandbox_science.contracts.child_environments import (
+    ChildEnvironmentEnd,
+    ChildEnvironmentList,
+    ChildEnvironmentRequest,
+    HandBackRequest,
+    InputPart,
+)
+from sandbox_science.contracts.classifications import (
+    MAX_RUNTIME_SERVERS,
+    ClassificationAcceptance,
+    ClassificationDrafts,
+    ClassificationsInForce,
+    DriftAcceptance,
+    ListingReport,
+    ReportedListings,
+    ToolClassQuery,
 )
 from sandbox_science.contracts.documents import (
     MAX_CATALOG_PAGE_BYTES,
@@ -69,6 +99,16 @@ from sandbox_science.contracts.documents import (
 )
 from sandbox_science.contracts.environment_claims import EnvironmentClaim, EnvironmentClaimResult
 from sandbox_science.contracts.lockfile_diffs import LockfileDiffPage, LockfileSelection
+from sandbox_science.contracts.logs import log_context
+from sandbox_science.contracts.mcp_traffic import WorkerMcpTraffic
+from sandbox_science.contracts.monitor import WINDOWS, MonitorWindow
+from sandbox_science.contracts.permission_requests import (
+    GrantWithdrawal,
+    PermissionConfirmation,
+    PermissionConfirmed,
+    WorkerPermissionAnswer,
+    WorkerPermissionListing,
+)
 from sandbox_science.contracts.provision_observations import MAX_OBSERVATION_BYTES
 from sandbox_science.contracts.readiness import WorkerReadiness
 from sandbox_science.contracts.recovery import EffectControl, OperationLookupRequest, RecoveryFence
@@ -81,13 +121,28 @@ from sandbox_science.contracts.worker import (
     PROTOCOL_VERSION,
     MediaType,
 )
+from sandbox_science.policy import effective_resources
 
+from .checkpoint_records import restore_refusing_deletion
+from .child_environments import RESERVED_OPERATION as RESERVED_CHILD_OPERATION
+from .child_environments import ChildEnvironments
+from .classifications import (
+    ClassificationDesk,
+    ClassificationReviewError,
+    runtime_classifications,
+)
 from .documents_catalog import DocumentsCatalog
 from .environments import Environments
 from .errors import WorkerError
+from .job_sandboxes import RESERVED_OPERATION as RESERVED_JOB_OPERATION
+from .job_sandboxes import offers
 from .lockfile_diffs import LockfileDiffs, Pair
 from .manager import ExecutionManager
+from .mcp_traffic import TrafficQuery, read_traffic
+from .monitor import MonitorDesk
 from .operation_lookup import lookup
+from .permission_requests import PermissionDesk, PermissionRequestError
+from .permissions import PermissionStoreError
 from .provisioner import MAX_WAIT, RESERVED_OPERATION, Provisioner
 from .recovery_fence import operator_scope
 from .settings import ClientSettings, token_digest
@@ -99,7 +154,11 @@ _log = logging.getLogger(__name__)
 
 MANAGER: Final = web.AppKey("manager", ExecutionManager)
 ENVIRONMENTS: Final = web.AppKey("environments", Environments)
+CHILDREN: Final = web.AppKey("child_environments", ChildEnvironments)
 PROVISIONER: Final = web.AppKey("provisioner", Provisioner)
+PERMISSION_DESK: Final = web.AppKey("permission_desk", PermissionDesk)
+CLASSIFICATION_DESK: Final = web.AppKey("classification_desk", ClassificationDesk)
+MONITOR_DESK: Final = web.AppKey("monitor_desk", MonitorDesk)
 DOCUMENT_CATALOG: Final = web.AppKey("document_catalog", DocumentsCatalog)
 CATALOG_WORK: Final = web.AppKey("catalog_work", set[asyncio.Task[CatalogStatus]])
 CATALOG_EXECUTOR: Final = web.AppKey("catalog_executor", ThreadPoolExecutor)
@@ -119,7 +178,16 @@ _MEDIA_TYPE = TypeAdapter[str](MediaType)
 Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
 _CLIENT: Final = "sandbox_science.client"
 _MAX_TOKEN: Final = 4096
-_READS: Final = frozenset({"/v1/files/read", "/v1/files/list", "/v1/kernels/observe"})
+_READS: Final = frozenset(
+    {
+        "/v1/files/read",
+        "/v1/files/list",
+        "/v1/files/glob",
+        "/v1/files/grep",
+        "/v1/kernels/observe",
+        "/v1/mcp-tool-classes",
+    }
+)
 """Requests that change nothing, though sent with POST: not logged as changes."""
 
 
@@ -133,6 +201,10 @@ class Client:
     document_catalog: bool = False
     recovery_control: bool = False
     operator: bool = False
+    artifact_retention: bool = False
+    binding_only: bool = False
+    """Only the runtime sandbox's bind and unbind routes and the read of its project's
+    classification revisions in force (``ClientSettings.binding_only``)."""
 
     def allows(self, project_id: str) -> bool:
         return self.projects is None or project_id in self.projects
@@ -171,6 +243,10 @@ def create_app(
     provisioner: Provisioner | None = None,
     document_catalog: DocumentsCatalog | None = None,
     *,
+    permission_desk: PermissionDesk | None = None,
+    classification_desk: ClassificationDesk | None = None,
+    monitor_desk: MonitorDesk | None = None,
+    children: ChildEnvironments | None = None,
     heartbeat: float = EVENT_HEARTBEAT_SECONDS,
     file_write_timeout: float = 300.0,
 ) -> web.Application:
@@ -181,7 +257,14 @@ def create_app(
     if clients and environments is None:
         raise ValueError("clients need managed environments to keep their projects apart")
     expected = f"Bearer {token}".encode()
-    pool = Client("pool", None, document_catalog=True, recovery_control=True, operator=True)
+    pool = Client(
+        "pool",
+        None,
+        document_catalog=True,
+        recovery_control=True,
+        operator=True,
+        artifact_retention=True,
+    )
     by_digest = {
         c.token_sha256: Client(
             c.name,
@@ -190,6 +273,8 @@ def create_app(
             c.document_catalog,
             c.recovery_control,
             c.operator,
+            c.artifact_retention,
+            c.binding_only,
         )
         for c in clients
     }
@@ -212,6 +297,19 @@ def create_app(
         return resource is not None and "/provisioning/observations" in resource.canonical
 
     @web.middleware
+    async def tagged(request: web.Request, handler: Handler) -> web.StreamResponse:
+        """Put a request ID and the project and environment its route names on every log
+        record the request makes. They are labels for finding records, set before the
+        caller is known, so they say nothing about what the caller may do."""
+        names = request.match_info
+        with log_context(
+            request=secrets.token_hex(6),
+            project=names.get("project_id"),
+            environment=names.get("environment_id"),
+        ):
+            return await handler(request)
+
+    @web.middleware
     async def guard(request: web.Request, handler: Handler) -> web.StreamResponse:
         client = identify(request.headers.get("Authorization", ""))
         if client is None:
@@ -220,6 +318,14 @@ def create_app(
                 response.headers["Cache-Control"] = "no-store"
             return response
         request[_CLIENT] = client
+        if client.binding_only and not _binding_route(request):
+            response = _error(
+                ErrorKind.POLICY_DENIED,
+                "this client may only bind the runtime's sandbox and read its classifications",
+                403,
+            )
+            _audit(request, client, response.status)
+            return response
         try:
             _check_protocol(request)
             with operator_scope(client.operator):
@@ -239,7 +345,7 @@ def create_app(
         _audit(request, client, response.status)
         return response
 
-    app = web.Application(middlewares=[guard], client_max_size=MAX_BODY)
+    app = web.Application(middlewares=[tagged, guard], client_max_size=MAX_BODY)
     app.on_response_prepare.append(_speak_protocol)
     app[FILE_WRITES] = asyncio.Lock()
     app[FILE_WRITE_TIMEOUT] = file_write_timeout
@@ -268,6 +374,7 @@ def create_app(
         app[ENVIRONMENTS] = environments
         environments.deleted.append(manager.forget_revisions)
         environments.required_deleting.append(manager.guard_package_deletion)
+        environments.required_deleting.append(restore_guard(environments))
         environments.confirmed_deleted.append(manager.forget_package_gate)
         environments.reusing.append(manager.guard_package_reuse)
 
@@ -281,6 +388,30 @@ def create_app(
         app[PROVISIONER] = provisioner
         if environments is not None:
             environments.required_deleted.append(provisioner.forget)
+    if permission_desk is not None:
+        # The user's answers to network and package requests, relayed (D97).
+        app[PERMISSION_DESK] = permission_desk
+        app.add_routes(
+            [
+                web.get("/v1/permission-requests", permission_requests),
+                web.post("/v1/permission-requests/{seq}/answer", answer_permission_request),
+                web.post("/v1/permission-requests/{seq}/confirm", confirm_permission_request),
+                web.post("/v1/permission-grants/withdraw", withdraw_permission_grant),
+            ]
+        )
+    if classification_desk is not None:
+        # The classification review: in force, drafts and the user's acceptances (CL-6).
+        app[CLASSIFICATION_DESK] = classification_desk
+        app.add_routes(CLASSIFICATION_ROUTES)
+    if children is not None:
+        # Delegated runs' own environments (docs/specs/child-environments.md); without
+        # them, their routes answer ``unsupported``.
+        app[CHILDREN] = children
+    app.add_routes(CHILD_ROUTES)
+    if monitor_desk is not None:
+        # A project's monitor figures, counted from the records (D103).
+        app[MONITOR_DESK] = monitor_desk
+        app.add_routes([web.get("/v1/monitor", monitor), web.get("/v1/mcp-traffic", mcp_traffic)])
     app.add_routes(
         [
             web.get("/v1/ready", readiness),
@@ -289,6 +420,9 @@ def create_app(
             web.get("/v1/environments", list_environments),
             web.get("/v1/environments/{environment_id}", get_environment),
             web.post("/v1/environments/{environment_id}/policy", revise_environment),
+            web.post("/v1/runtime-sandboxes", bind_runtime_sandbox),
+            web.delete("/v1/runtime-sandboxes/{sandbox_id}", unbind_runtime_sandbox),
+            web.get("/v1/runtime-classifications", runtime_classifications_in_force),
             web.delete("/v1/environments/{environment_id}", delete_environment),
             web.post("/v1/environments/{environment_id}/admissions", admit_hosts),
             web.post("/v1/environments/{environment_id}/suspend", suspend_environment),
@@ -334,6 +468,7 @@ def create_app(
             web.post("/v1/recovery/fence", install_recovery_fence),
             web.get("/v1/jobs", list_jobs),
             web.get("/v1/jobs/{execution_id}", job_status),
+            web.post("/v1/job-sandboxes/{execution_id}/release", release_job_sandbox),
             web.get("/v1/executions/{execution_id}", get_execution),
             web.get("/v1/executions/{execution_id}/events", events),
             web.post("/v1/executions/{execution_id}/cancel", cancel),
@@ -344,11 +479,15 @@ def create_app(
             web.post("/v1/files/read", read_file),
             web.post("/v1/files/write", write_file),
             web.post("/v1/files/list", list_files),
+            web.post("/v1/files/edit", edit_file),
+            web.post("/v1/files/glob", glob_files),
+            web.post("/v1/files/grep", grep_files),
             web.post("/v1/skills/check", skills_check),
             web.post("/v1/skills/put", skills_put),
             web.post("/v1/artifacts", publish),
             web.get("/v1/artifacts/{artifact_id}", get_artifact),
             web.get("/v1/artifacts/{artifact_id}/content", get_artifact_content),
+            web.post("/v1/artifacts/{artifact_id}/retention", acknowledge_artifact_retention),
         ]
     )
 
@@ -410,7 +549,7 @@ async def _catalog_body[T: BaseModel](request: web.Request, model: type[T], limi
     while part := await request.content.read(min(16_384, limit + 1 - len(data))):
         data.extend(part)
         if len(data) > limit:
-            raise WorkerError(ErrorKind.INVALID_REQUEST, "catalog request exceeds byte limit")
+            raise WorkerError(ErrorKind.INVALID_REQUEST, "request exceeds byte limit")
     return model.model_validate_json(bytes(data))
 
 
@@ -480,11 +619,34 @@ def _audit(request: web.Request, client: Client, status: int) -> None:
     template = route.canonical if route is not None else "an unknown route"
     if template in _READS:
         return
-    _log.info("%s %s by %s: %d", request.method, template, client.name, status)
+    _log.info(
+        "%s %s by %s: %d",
+        request.method,
+        template,
+        client.name,
+        status,
+        extra={"event": "worker_request", "status": status},
+    )
 
 
 def _client(request: web.Request) -> Client:
     return cast(Client, request[_CLIENT])
+
+
+_BINDING_ROUTES = frozenset(
+    {
+        ("POST", "/v1/runtime-sandboxes"),
+        ("DELETE", "/v1/runtime-sandboxes/{sandbox_id}"),
+        ("GET", "/v1/runtime-classifications"),
+    }
+)
+"""The only routes a ``binding_only`` client reaches: binding the runtime's sandbox, and
+reading the classification revisions in force its fence is compiled with."""
+
+
+def _binding_route(request: web.Request) -> bool:
+    resource = request.match_info.route.resource
+    return resource is not None and (request.method, resource.canonical) in _BINDING_ROUTES
 
 
 def _visible(request: web.Request, project_id: str, what: str) -> None:
@@ -517,6 +679,13 @@ def _context(request: web.Request, context: ExecutionContext, *, hide: bool = Fa
     environment_id = context.environment_id
     info = environments.records.get(environment_id)
     limited = _client(request).projects is not None
+    if info is not None and info.kind == "job":
+        # A job sandbox runs its job only; no client names it (D93, JS-1).
+        raise WorkerError(ErrorKind.NOT_FOUND, f"no environment {environment_id!r}")
+    if info is not None and info.kind == "child" and info.session_id != context.session_id:
+        # A child environment is its session's delegated run's (CE-1): no other
+        # session's context names it.
+        raise WorkerError(ErrorKind.NOT_FOUND, f"no environment {environment_id!r}")
     if info is None:
         if not limited and environments.handmade(environment_id):
             return
@@ -621,6 +790,9 @@ def _environment(request: web.Request, environments: Environments) -> str:
     environment_id = request.match_info["environment_id"]
     info = environments.get(environment_id)
     _visible(request, info.project_id, f"environment {environment_id!r}")
+    if info.kind != "session":
+        # Job sandboxes and child environments are the worker's to delete (JS-1, CE-4).
+        raise WorkerError(ErrorKind.NOT_FOUND, f"no environment {environment_id!r}")
     return environment_id
 
 
@@ -633,7 +805,9 @@ async def list_environments(request: web.Request) -> web.Response:
     """The environments of the client's projects, so an operator can see what runs."""
     environments = _environments(request)
     listed = environments.records.listed(_client(request).projects)
-    return _json(EnvironmentList(environments=tuple(listed)))
+    return _json(
+        EnvironmentList(environments=tuple(info for info in listed if info.kind == "session"))
+    )
 
 
 async def suspend_environment(request: web.Request) -> web.Response:
@@ -682,6 +856,95 @@ async def revise_environment(request: web.Request) -> web.Response:
     project_id = environments.get(environment_id).project_id
     _revision(request, environments, project_id, body.policy)
     return _json(await environments.revise(environment_id, body.policy))
+
+
+def _runtime_sandbox(request: web.Request) -> Environments:
+    """Only an operator client (the launcher) or a binding-only one (the Kubernetes runtime
+    manager) binds the agent runtime's sandbox, which no environment record names."""
+    client = _client(request)
+    if not (client.operator or client.binding_only):
+        raise WorkerError(
+            ErrorKind.POLICY_DENIED, "binding the runtime's sandbox needs an operator client"
+        )
+    return _environments(request)
+
+
+async def bind_runtime_sandbox(request: web.Request) -> web.Response:
+    """Bind the agent runtime's sandbox to its project's policy revision in the policy
+    store, so that the policy middleware decides its MCP requests."""
+    body = RuntimeSandboxRequest.model_validate_json(await _body(request))
+    environments = _runtime_sandbox(request)
+    _allowed(request, body.project_id)
+    projects = _client(request).projects
+    if projects is not None:
+        # A project-scoped client binds only its own project's runtime sandbox, as the
+        # gateway shows it (its project label); the pool's own token binds any.
+        await environments.runtime_sandbox_of(body.project_id, body.sandbox_id)
+    revision = await asyncio.to_thread(
+        environments.bind_runtime, body.project_id, body.sandbox_id, _client(request).projects
+    )
+    return _json(
+        RuntimeSandboxBinding(
+            sandbox_id=body.sandbox_id, project_id=body.project_id, policy=revision
+        )
+    )
+
+
+async def unbind_runtime_sandbox(request: web.Request) -> web.Response:
+    """Remove the binding of a runtime sandbox that was deleted."""
+    environments = _runtime_sandbox(request)
+    sandbox_id = _identifier(request.match_info["sandbox_id"], "sandbox_id")
+    projects = _client(request).projects
+    removed = await asyncio.to_thread(environments.unbind_runtime, sandbox_id, projects)
+    return _json(RuntimeSandboxUnbound(sandbox_id=sandbox_id, unbound=removed))
+
+
+async def runtime_classifications_in_force(request: web.Request) -> web.Response:
+    """The project's classification revisions in force for the servers named, each file as
+    stored: what the Kubernetes runtime manager compiles the agent runtime's fence with at
+    each creation of its sandbox. Read-only and for the client's own project; it shows no
+    draft, acceptance record or drift (the operator's ``/v1/classifications`` do)."""
+    environments = _runtime_sandbox(request)
+    if set(request.query) - {"project", "server"} or len(request.query.getall("project", [])) != 1:
+        raise WorkerError(ErrorKind.INVALID_REQUEST, "name one project and its servers")
+    project = _identifier(request.query["project"], "project")
+    servers = request.query.getall("server", [])
+    if not 1 <= len(servers) <= MAX_RUNTIME_SERVERS or len(set(servers)) != len(servers):
+        raise WorkerError(
+            ErrorKind.INVALID_REQUEST, f"name 1 to {MAX_RUNTIME_SERVERS} distinct servers"
+        )
+    for server in servers:
+        if not _SERVER_RE.fullmatch(server):
+            raise WorkerError(ErrorKind.INVALID_REQUEST, "invalid server name")
+    _allowed(request, project)
+    found = await asyncio.to_thread(runtime_classifications, environments.store, project, servers)
+    return _json(found)
+
+
+def restore_guard(environments: Environments) -> Callable[[str], Awaitable[None]]:
+    """Refuse deleting an environment while a restore writes into its sandbox: only the
+    restore's own discard may delete it (docs/KUBERNETES-BUNDLE.md#restoring-a-checkpoint).
+    Records it cannot read refuse the deletion too."""
+
+    async def guard(environment_id: str) -> None:
+        sandbox = environments.get(environment_id).sandbox
+        try:
+            restoring = await asyncio.to_thread(
+                restore_refusing_deletion, environments.state_dir, environment_id, sandbox
+            )
+        except (sqlite3.Error, OSError, ValueError) as error:
+            raise WorkerError(
+                ErrorKind.UNAVAILABLE,
+                f"cannot check restores ({type(error).__name__}); not deleting",
+            ) from None
+        if restoring is not None:
+            raise WorkerError(
+                ErrorKind.CONFLICT,
+                f"restore {restoring} is writing into environment {environment_id}; discard"
+                " the restore to delete it",
+            )
+
+    return guard
 
 
 async def delete_environment(request: web.Request) -> web.Response:
@@ -802,12 +1065,32 @@ async def capabilities(request: web.Request) -> web.Response:
         raise WorkerError(ErrorKind.INVALID_REQUEST, "environment_id is required")
     environment_id = _identifier(environment_id, "environment_id")
     environments = request.app.get(ENVIRONMENTS)
+    if environments is not None:
+        info = environments.records.get(environment_id)
+        if info is not None and info.kind == "job":
+            raise WorkerError(ErrorKind.NOT_FOUND, f"no environment {environment_id!r}")
     if environments is not None and _client(request).projects is not None:
         info = environments.records.get(environment_id)
         if info is None or info.state is EnvironmentState.DELETED:
             raise WorkerError(ErrorKind.NOT_FOUND, f"no environment {environment_id!r}")
         _visible(request, info.project_id, f"environment {environment_id!r}")
-    offered = await request.app[MANAGER].capabilities(environment_id)
+    manager = request.app[MANAGER]
+    offered = await manager.capabilities(environment_id)
+    sandboxes = manager.job_sandboxes
+    if (sandboxes is not None or CHILDREN in request.app) and environments is not None:
+        governing = environments.governing(environment_id)
+        if governing is not None:
+            resources = effective_resources(governing.policy.policy, governing.ceiling)[0]
+            profiles = offers(environments.settings, resources)
+            children = request.app.get(CHILDREN)
+            if children is not None and children.offered(resources):
+                features = tuple(dict.fromkeys([*offered.features, "child_environments"]))
+                offered = offered.model_copy(update={"features": features})
+            if profiles:
+                features = tuple(dict.fromkeys([*offered.features, "job_sandboxes"]))
+                offered = offered.model_copy(
+                    update={"features": features, "job_profiles": profiles}
+                )
     if environments is not None and environments.settings.admission:
         info = environments.records.get(environment_id)
         if info is not None and info.state is not EnvironmentState.DELETED:
@@ -839,6 +1122,15 @@ async def lookup_operation(request: web.Request) -> web.Response:
 async def submit(request: web.Request) -> web.Response:
     execution_request = _REQUEST.validate_json(await _body(request))
     _context(request, execution_request.context)
+    if RESERVED_JOB_OPERATION.fullmatch(
+        execution_request.operation_id
+    ) or RESERVED_CHILD_OPERATION.fullmatch(execution_request.operation_id):
+        raise WorkerError(
+            ErrorKind.INVALID_REQUEST,
+            "operation IDs of the form jsb-<24 hex digits>.<step> or chd-<12 hex"
+            " digits>.<step> are the worker's own, for job sandboxes' and child environments'"
+            " steps",
+        )
     if RESERVED_OPERATION.fullmatch(execution_request.operation_id):
         raise WorkerError(
             ErrorKind.INVALID_REQUEST,
@@ -868,7 +1160,402 @@ async def job_status(request: web.Request) -> web.Response:
     return _json(await request.app[MANAGER].job_status(execution.execution_id, _project(request)))
 
 
+async def release_job_sandbox(request: web.Request) -> web.Response:
+    """Release a retained job sandbox now (JS-24): the user's action, relayed by the
+    workspace, so only an operator client may ask. The job must be the session's own."""
+    if not _client(request).operator:
+        raise WorkerError(
+            ErrorKind.POLICY_DENIED, "releasing a job sandbox needs an operator client"
+        )
+    manager = request.app[MANAGER]
+    sandboxes = manager.job_sandboxes
+    if sandboxes is None:
+        raise WorkerError(ErrorKind.UNSUPPORTED, "this worker has no job sandboxes")
+    execution_id = _identifier(request.match_info["execution_id"], "execution_id")
+    body = JobSandboxRelease.model_validate_json(await _body(request))
+    _allowed(request, body.context.project_id)
+    execution = manager.get(execution_id, body.context.project_id)
+    _visible(request, execution.context.project_id, f"job sandbox for {execution_id}")
+    if execution.context != body.context or sandboxes.sandbox(execution_id) is None:
+        raise WorkerError(ErrorKind.NOT_FOUND, f"no job sandbox for {execution_id}")
+    return _json(await sandboxes.release_now(execution_id, body.operation_id))
+
+
 # Provisioning operations (Conda provisioning, CP-1 to CP-25).
+
+
+def _desk(request: web.Request) -> PermissionDesk:
+    """Only an operator client (the workspace) lists and answers permission requests: the
+    run service's token never answers its own sandbox's requests."""
+    if not _client(request).operator:
+        raise WorkerError(ErrorKind.POLICY_DENIED, "permission requests need an operator client")
+    return request.app[PERMISSION_DESK]
+
+
+async def permission_requests(request: web.Request) -> web.Response:
+    """A project's unanswered network and package permission requests (D97)."""
+    desk = _desk(request)
+    if set(request.query) != {"project"}:
+        raise WorkerError(ErrorKind.INVALID_REQUEST, "name exactly one project")
+    project_id = _identifier(request.query["project"], "project")
+    _allowed(request, project_id)
+    now = desk.clock.now()
+    try:
+        found = await asyncio.to_thread(desk.listing, project_id, now)
+    except PermissionStoreError as exc:
+        raise WorkerError(ErrorKind.UNAVAILABLE, str(exc)) from None
+    return _json(WorkerPermissionListing(requests=found))
+
+
+async def answer_permission_request(request: web.Request) -> web.Response:
+    """The user's answer to one, relayed by the workspace (D97)."""
+    desk = _desk(request)
+    raw = request.match_info["seq"]
+    if not raw.isascii() or not raw.isdigit() or len(raw) > 18:
+        raise WorkerError(ErrorKind.INVALID_REQUEST, "invalid permission request")
+    answer = WorkerPermissionAnswer.model_validate_json(await _body(request))
+    client = _client(request)
+    try:
+        answered = await asyncio.to_thread(
+            desk.answer, int(raw), client.allows, answer, desk.clock.now()
+        )
+    except PermissionRequestError as exc:
+        if exc.missing:
+            raise WorkerError(ErrorKind.NOT_FOUND, str(exc)) from None
+        raise WorkerError(ErrorKind.CONFLICT, str(exc)) from None
+    except PermissionStoreError as exc:
+        raise WorkerError(ErrorKind.UNAVAILABLE, str(exc)) from None
+    return _json(answered, status=201)
+
+
+async def withdraw_permission_grant(request: web.Request) -> web.Response:
+    """End the live answers of a grant the user revoked, relayed by the workspace (D97)."""
+    desk = _desk(request)
+    asked = GrantWithdrawal.model_validate_json(await _body(request))
+    _allowed(request, asked.project_id)
+    try:
+        withdrawn = await asyncio.to_thread(
+            desk.withdraw_grant, asked, _client(request).allows, desk.clock.now()
+        )
+    except PermissionRequestError as exc:
+        raise WorkerError(ErrorKind.NOT_FOUND, str(exc)) from None
+    except PermissionStoreError as exc:
+        raise WorkerError(ErrorKind.UNAVAILABLE, str(exc)) from None
+    return _json(withdrawn)
+
+
+async def confirm_permission_request(request: web.Request) -> web.Response:
+    """Whether MCP request ``seq`` is a call's and stands as its refusal said (D98): any
+    client, for its own projects. The harness asks before it trusts a refusal that names a
+    request; the answer is yes or no, never the request's record."""
+    desk = request.app[PERMISSION_DESK]
+    raw = request.match_info["seq"]
+    if not raw.isascii() or not raw.isdigit() or len(raw) > 18:
+        raise WorkerError(ErrorKind.INVALID_REQUEST, "invalid permission request")
+    asked = PermissionConfirmation.model_validate_json(await _body(request))
+    _allowed(request, asked.project_id)
+    try:
+        confirmed = await asyncio.to_thread(
+            desk.confirm, int(raw), _client(request).allows, asked, desk.clock.now()
+        )
+    except PermissionStoreError as exc:
+        raise WorkerError(ErrorKind.UNAVAILABLE, str(exc)) from None
+    return _json(PermissionConfirmed(confirmed=confirmed))
+
+
+async def monitor(request: web.Request) -> web.Response:
+    """One project's monitor figures for a window (D103): an operator client's only, as
+    they count other clients' calls and requests."""
+    if not _client(request).operator:
+        raise WorkerError(ErrorKind.POLICY_DENIED, "monitor figures need an operator client")
+    if set(request.query) != {"project", "window"}:
+        raise WorkerError(ErrorKind.INVALID_REQUEST, "name a project and a window")
+    project_id = _identifier(request.query["project"], "project")
+    window = request.query["window"]
+    if window not in WINDOWS:
+        raise WorkerError(ErrorKind.INVALID_REQUEST, "the window is 24h or 7d")
+    _allowed(request, project_id)
+    desk = request.app[MONITOR_DESK]
+    found = await asyncio.to_thread(desk.figures, project_id, cast(MonitorWindow, window))
+    children = request.app.get(CHILDREN)
+    if children is not None and children.settings.child_profiles:
+        # The child environments' seeding (CE-13), read on a connection of its own.
+        seeding = await children.seeding(project_id, found.since, found.at)
+        found = found.model_copy(update={"child_environments": seeding})
+    return _json(found)
+
+
+_TRAFFIC_QUERY: Final = frozenset({"project", "session", "run", "tool", "after"})
+_TOOL_RE: Final = re.compile(r"[A-Za-z0-9_./-]{1,256}")
+
+
+async def mcp_traffic(request: web.Request) -> web.Response:
+    """A page of one project's inspected MCP calls with their arguments and answers: an
+    operator client's only, like the permission requests, since they hold other clients'
+    calls and the servers' words."""
+    if not _client(request).operator:
+        raise WorkerError(ErrorKind.POLICY_DENIED, "MCP traffic needs an operator client")
+    query = request.query
+    if "project" not in query or set(query) - _TRAFFIC_QUERY or len(query) != len(set(query)):
+        raise WorkerError(
+            ErrorKind.INVALID_REQUEST, "name a project, and at most a session, run, tool, after"
+        )
+    project_id = _identifier(query["project"], "project")
+    session = _identifier(query["session"], "session") if "session" in query else None
+    run = _identifier(query["run"], "run") if "run" in query else None
+    tool = query.get("tool")
+    if tool is not None and not _TOOL_RE.fullmatch(tool):
+        raise WorkerError(ErrorKind.INVALID_REQUEST, "invalid tool name")
+    raw = query.get("after", "0")
+    if not raw.isascii() or not raw.isdigit() or len(raw) > 18:
+        raise WorkerError(ErrorKind.INVALID_REQUEST, "after is a record number")
+    _allowed(request, project_id)
+    desk = request.app[MONITOR_DESK]
+    if desk.permissions is None:
+        return _json(
+            WorkerMcpTraffic(
+                project_id=project_id,
+                calls=[],
+                scanned=0,
+                unavailable="the worker has no policy middleware event store",
+            )
+        )
+    found_query = TrafficQuery(project_id, session, run, tool, int(raw))
+    try:
+        found = await asyncio.to_thread(read_traffic, desk.permissions.path, found_query)
+    except PermissionStoreError as exc:
+        found = WorkerMcpTraffic(
+            project_id=project_id, calls=[], scanned=0, unavailable=str(exc)[:300]
+        )
+    return _json(found)
+
+
+# MCP servers' classifications (D96, CL-1 to CL-6).
+
+
+def _classifications(request: web.Request, project: str | None = None) -> ClassificationDesk:
+    """Only an operator client (the workspace, whose one user holds its token) reads and
+    accepts classifications, and only for its own projects."""
+    if not _client(request).operator:
+        raise WorkerError(ErrorKind.POLICY_DENIED, "classifications need an operator client")
+    if project is not None:
+        _allowed(request, project)
+    return request.app[CLASSIFICATION_DESK]
+
+
+def _project_query(request: web.Request) -> str:
+    if set(request.query) != {"project"}:
+        raise WorkerError(ErrorKind.INVALID_REQUEST, "name exactly one project")
+    return _identifier(request.query["project"], "project")
+
+
+def _server_name(request: web.Request) -> str:
+    server = request.match_info["server"]
+    if not _SERVER_RE.fullmatch(server):
+        raise WorkerError(ErrorKind.INVALID_REQUEST, "invalid MCP server name")
+    return server
+
+
+async def _reviewed[T](call: Callable[[], T]) -> T:
+    """Run a review call in a thread, its refusals as the API's errors."""
+    try:
+        return await asyncio.to_thread(call)
+    except ClassificationReviewError as exc:
+        kind = {"missing": ErrorKind.NOT_FOUND, "invalid": ErrorKind.INVALID_REQUEST}
+        raise WorkerError(kind.get(exc.kind, ErrorKind.CONFLICT), str(exc)) from None
+    except PermissionStoreError as exc:
+        raise WorkerError(ErrorKind.UNAVAILABLE, str(exc)) from None
+
+
+async def classifications_in_force(request: web.Request) -> web.Response:
+    """Each configured server's classification in force for a project (CL-1)."""
+    project = _project_query(request)
+    desk = _classifications(request, project)
+    found = await _reviewed(lambda: desk.in_force(project))
+    return _json(ClassificationsInForce(found))
+
+
+async def classification_drafts(request: web.Request) -> web.Response:
+    """The drafts a model wrote for a project's server, newest first (CL-2)."""
+    project = _project_query(request)
+    desk = _classifications(request, project)
+    server = _server_name(request)
+    found = await _reviewed(lambda: desk.drafts(project, server))
+    return _json(ClassificationDrafts(found))
+
+
+async def accept_classification_draft(request: web.Request) -> web.Response:
+    """The user's acceptance of a draft, edited or not, relayed by the workspace (CL-3)."""
+    _classifications(request)
+    body = ClassificationAcceptance.model_validate_json(await _body(request))
+    desk = _classifications(request, body.project)
+    server = _server_name(request)
+    draft = request.match_info["draft"]
+    if not _HEX_RE.fullmatch(draft):
+        raise WorkerError(ErrorKind.INVALID_REQUEST, "invalid draft")
+    accepted = await _reviewed(
+        lambda: desk.accept_draft(
+            body.project, server, draft, body.yaml, body.reason, body.operation_id
+        )
+    )
+    return _json(accepted, status=201)
+
+
+async def accept_classification_drift(request: web.Request) -> web.Response:
+    """The user's re-acceptance of a server's drifted tool list (CL-4)."""
+    _classifications(request)
+    body = DriftAcceptance.model_validate_json(await _body(request))
+    desk = _classifications(request, body.project)
+    server = _server_name(request)
+    accepted = await _reviewed(
+        lambda: desk.accept_drift(
+            body.project, server, body.reason, body.operation_id, body.listings
+        )
+    )
+    return _json(accepted, status=201)
+
+
+async def report_mcp_listing(request: web.Request) -> web.Response:
+    """A listing the agent runtime's direct client read (D98): any client, for its own
+    projects; the server must be the project's. A drift from the project's pin is recorded
+    as the middleware records one, once per listing."""
+    report = ListingReport.model_validate_json(await _body(request))
+    _allowed(request, report.project_id)
+    desk = request.app[CLASSIFICATION_DESK]
+    caller = _client(request).name
+    return _json(await _reviewed(lambda: desk.report_listing(report, caller)))
+
+
+async def mcp_tool_classes(request: web.Request) -> web.Response:
+    """The class the project's classification in force gives each tool a listing named, by
+    name and the digest the host computed (DA-7): any client, for its own projects; the
+    server must be the project's. Read-only."""
+    query = ToolClassQuery.model_validate_json(await _body(request))
+    _allowed(request, query.project_id)
+    desk = request.app[CLASSIFICATION_DESK]
+    return _json(await _reviewed(lambda: desk.tool_classes(query)))
+
+
+async def mcp_listings(request: web.Request) -> web.Response:
+    """The latest listing the agent runtime's client reported of each of a project's servers,
+    each tool as the policy and classification in force decide it (D98): for the workspace's
+    MCP services view, an operator client's, for its own projects."""
+    project = _project_query(request)
+    desk = _classifications(request, project)
+    found = await _reviewed(lambda: desk.listings(project))
+    return _json(ReportedListings(found))
+
+
+async def export_classification(request: web.Request) -> web.Response:
+    """A project's accepted revision, its YAML exactly as stored, to check in (CL-3)."""
+    project = _project_query(request)
+    desk = _classifications(request, project)
+    server = _server_name(request)
+    revision = request.match_info["revision"]
+    if not _HEX_RE.fullmatch(revision):
+        raise WorkerError(ErrorKind.INVALID_REQUEST, "invalid classification revision")
+    data, acceptance = await _reviewed(lambda: desk.export(project, server, revision))
+    headers = {
+        "X-Classification-Server": server,
+        "X-Classification-Revision": revision,
+        "Cache-Control": "no-store",
+    }
+    if acceptance is not None:
+        headers["X-Classification-Accepted-At"] = acceptance.accepted_at.isoformat()
+    return web.Response(body=data, content_type="application/yaml", headers=headers)
+
+
+# Child environments (docs/specs/child-environments.md): the orchestrator's, for its
+# delegations. Each request names the session's context, whose environment the child
+# environment was made from; another session's child environment is not found.
+
+
+def _children(request: web.Request) -> ChildEnvironments:
+    children = request.app.get(CHILDREN)
+    if children is None:
+        raise WorkerError(ErrorKind.UNSUPPORTED, "this worker offers no child environments")
+    return children
+
+
+def _child_id(request: web.Request) -> str:
+    return _identifier(request.match_info["environment_id"], "environment_id")
+
+
+async def create_child_environment(request: web.Request) -> web.Response:
+    body = ChildEnvironmentRequest.model_validate_json(await _body(request))
+    _context(request, body.context, hide=True)
+    found, created = await _children(request).admit(body)
+    return _json(found, 201 if created else 200)
+
+
+def _session_context(request: web.Request) -> ExecutionContext:
+    """The session's context a read names in its query."""
+    query = request.query
+    context = ExecutionContext(
+        project_id=_identifier(query.get("project_id", ""), "project_id"),
+        session_id=_identifier(query.get("session_id", ""), "session_id"),
+        environment_id=_identifier(query.get("environment_id", ""), "environment_id"),
+    )
+    _context(request, context, hide=True)
+    return context
+
+
+async def list_child_environments(request: web.Request) -> web.Response:
+    context = _session_context(request)
+    found = [
+        child
+        for child in _children(request).listed(context.project_id, context.session_id)
+        if child.session_environment == context.environment_id
+    ]
+    return _json(ChildEnvironmentList(environments=tuple(found)))
+
+
+async def get_child_environment(request: web.Request) -> web.Response:
+    context = _session_context(request)
+    return _json(_children(request).get(_child_id(request), context))
+
+
+async def hand_back_child_environment(request: web.Request) -> web.Response:
+    body = HandBackRequest.model_validate_json(await _body(request))
+    _context(request, body.context, hide=True)
+    return _json(await _children(request).hand_back(_child_id(request), body))
+
+
+async def stage_child_input(request: web.Request) -> web.Response:
+    """Part of an input from control's retained content (CE-7)."""
+    body = InputPart.model_validate_json(await _body(request))
+    _context(request, body.context, hide=True)
+    return _json(await _children(request).stage_input(_child_id(request), body))
+
+
+async def end_child_environment(request: web.Request) -> web.Response:
+    body = ChildEnvironmentEnd.model_validate_json(await _body(request))
+    _context(request, body.context, hide=True)
+    return _json(await _children(request).end(_child_id(request), body))
+
+
+CHILD_ROUTES: Final = (
+    web.post("/v1/child-environments", create_child_environment),
+    web.get("/v1/child-environments", list_child_environments),
+    web.get("/v1/child-environments/{environment_id}", get_child_environment),
+    web.post("/v1/child-environments/{environment_id}/inputs", stage_child_input),
+    web.post("/v1/child-environments/{environment_id}/hand-back", hand_back_child_environment),
+    web.post("/v1/child-environments/{environment_id}/end", end_child_environment),
+)
+
+
+CLASSIFICATION_ROUTES: Final = (
+    web.get("/v1/classifications", classifications_in_force),
+    web.get("/v1/classifications/{server}/drafts", classification_drafts),
+    web.post("/v1/classifications/{server}/drafts/{draft}/accept", accept_classification_draft),
+    web.post("/v1/classifications/{server}/drift/accept", accept_classification_drift),
+    web.post("/v1/mcp-listings", report_mcp_listing),
+    web.get("/v1/mcp-listings", mcp_listings),
+    web.post("/v1/mcp-tool-classes", mcp_tool_classes),
+    web.get("/v1/classifications/{server}/revisions/{revision}/export", export_classification),
+)
+_SERVER_RE: Final = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+_HEX_RE: Final = re.compile(r"[0-9a-f]{64}")
 
 
 def _provisioner(request: web.Request) -> Provisioner:
@@ -885,6 +1572,11 @@ def _provision(request: web.Request) -> ProvisionOperation:
     _visible(
         request, operation.request.context.project_id, f"provisioning operation {provision_id}"
     )
+    _not_job_sandbox(
+        request,
+        operation.request.context.environment_id,
+        f"provisioning operation {provision_id}",
+    )
     return operation
 
 
@@ -892,6 +1584,14 @@ async def submit_provision(request: web.Request) -> web.Response:
     """Ask for a capability or packages in an environment: one operation, queued."""
     body = ProvisionRequest.model_validate_json(await _body(request))
     _context(request, body.context, hide=True)  # the agent may name the environment
+    if RESERVED_JOB_OPERATION.fullmatch(body.operation_id) or RESERVED_CHILD_OPERATION.fullmatch(
+        body.operation_id
+    ):
+        raise WorkerError(
+            ErrorKind.INVALID_REQUEST,
+            "operation IDs of the form jsb-<24 hex digits>.<step> or chd-<12 hex"
+            " digits>.<step> are the worker's own",
+        )
     operation, created = await _provisioner(request).submit(body)
     return _json(operation, 201 if created else 200)
 
@@ -1138,7 +1838,16 @@ def _execution(request: web.Request) -> Execution:
     execution_id = request.match_info["execution_id"]
     execution = request.app[MANAGER].get(execution_id, _project(request))
     _visible(request, execution.context.project_id, f"execution {execution_id}")
+    _not_job_sandbox(request, execution.context.environment_id, f"execution {execution_id}")
     return execution
+
+
+def _not_job_sandbox(request: web.Request, environment_id: str, what: str) -> None:
+    """A job sandbox's own steps are the worker's: no client reads them (D93, JS-1)."""
+    environments = request.app.get(ENVIRONMENTS)
+    info = environments.records.get(environment_id) if environments is not None else None
+    if info is not None and info.kind == "job":
+        raise WorkerError(ErrorKind.NOT_FOUND, f"no {what}")
 
 
 async def get_execution(request: web.Request) -> web.Response:
@@ -1196,7 +1905,12 @@ async def close_session(request: web.Request) -> web.Response:
             raise
         # No environment, so no kernels to stop: the session is closed as it is.
         return _json(SessionClosed())
-    return _json(await request.app[MANAGER].close_session(body))
+    closed = await request.app[MANAGER].close_session(body)
+    children = request.app.get(CHILDREN)
+    if children is not None and body.run is None:
+        # The whole session closes: its child environments go without retention (CE-4).
+        await children.close_session(body.context)
+    return _json(closed)
 
 
 async def restart_kernel(request: web.Request) -> web.Response:
@@ -1245,6 +1959,24 @@ async def list_files(request: web.Request) -> web.Response:
     return _json(await request.app[MANAGER].list_files(body))
 
 
+async def edit_file(request: web.Request) -> web.Response:
+    body = EditFileRequest.model_validate_json(await _body(request))
+    _context(request, body.context)
+    return _json(await request.app[MANAGER].edit_file(body))
+
+
+async def glob_files(request: web.Request) -> web.Response:
+    body = GlobRequest.model_validate_json(await _body(request))
+    _context(request, body.context)
+    return _json(await request.app[MANAGER].glob_files(body))
+
+
+async def grep_files(request: web.Request) -> web.Response:
+    body = GrepRequest.model_validate_json(await _body(request))
+    _context(request, body.context)
+    return _json(await request.app[MANAGER].grep_files(body))
+
+
 async def publish(request: web.Request) -> web.Response:
     body = PublishRequest.model_validate_json(await _body(request))
     _context(request, body.context)
@@ -1261,6 +1993,24 @@ def _artifact(request: web.Request) -> ArtifactRef:
 
 async def get_artifact(request: web.Request) -> web.Response:
     return _json(_artifact(request))
+
+
+async def acknowledge_artifact_retention(request: web.Request) -> web.Response:
+    """Authenticate and scope before accepting the exact durable control receipt."""
+    if not _client(request).artifact_retention:
+        raise WorkerError(ErrorKind.POLICY_DENIED, "artifact retention needs control permission")
+    artifact_id = _identifier(request.match_info["artifact_id"], "artifact_id")
+    retention = request.app[MANAGER].store.artifact_retention
+    artifact = retention.original(artifact_id)
+    _visible(request, artifact.project_id, "artifact")
+    project = _project(request)
+    if project is not None and project != artifact.project_id:
+        raise WorkerError(ErrorKind.NOT_FOUND, "no artifact")
+    body = await _catalog_body(request, ArtifactRetentionAcknowledgement, MAX_RETENTION_ACK_BYTES)
+    if body.snapshot.artifact_id != artifact.artifact_id:
+        raise WorkerError(ErrorKind.CONFLICT, "retention snapshot differs from route artifact")
+    _visible(request, body.snapshot.project_id, "artifact")
+    return _json(retention.acknowledge(body))
 
 
 async def get_artifact_content(request: web.Request) -> web.StreamResponse:

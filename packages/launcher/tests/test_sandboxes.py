@@ -271,3 +271,12 @@ def test_a_worker_of_another_protocol_is_refused(research: dict[str, Any]) -> No
     assert stopped.returncode == 1
     assert "version mismatch: the worker reports protocol '5'" in stopped.stdout
     assert launcher.finish() == 1
+
+
+def test_a_worker_of_another_protocol_cannot_bind_the_runtime_sandbox(
+    research: dict[str, Any],
+) -> None:
+    launcher = research["launch"]({"sandbox-science-worker": "old-protocol-bind"})
+    with pytest.raises(AssertionError, match="is not bound in the policy store: version mismatch"):
+        launcher.expect("Stop:")
+    assert launcher.finish() == 1

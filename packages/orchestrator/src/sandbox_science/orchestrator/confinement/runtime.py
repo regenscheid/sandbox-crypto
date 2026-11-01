@@ -6,20 +6,27 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+from functools import partial
 from pathlib import Path
+from typing import cast
 
 import aiohttp
-from pydantic import Field, JsonValue, TypeAdapter
+from pydantic import Field, JsonValue, TypeAdapter, field_validator, model_validator
 
 from sandbox_science.contracts.clock import SYSTEM_CLOCK, Clock
+from sandbox_science.contracts.logs import configure_logging
 from sandbox_science.contracts.model import Contract, Identifier
 from sandbox_science.orchestrator.control.migrations import VERSION
 from sandbox_science.orchestrator.messages import ThinkingReplay
-from sandbox_science.orchestrator.model import ModelGateway
-from sandbox_science.orchestrator.model_profiles import Effort, ModelRole
+from sandbox_science.orchestrator.model import DEFAULT_API, ModelGateway
+from sandbox_science.orchestrator.model_profiles import ApiKind, Effort, ModelRole
 from sandbox_science.orchestrator.skills.embeddings import Embedder
 
+from .canaries import DirectSettings, RuntimeListings
+from .connector_calls import RuntimeConnectorCalls
 from .embeddings import RuntimeEmbeddings
+from .endpoints import client_tls, control_endpoint, control_trace
+from .listings import ControlListingReports
 from .models import RuntimeModels
 from .runtime_loop import RuntimeLoops
 from .scheduling import Scheduling
@@ -36,13 +43,17 @@ from .wire import MAX_MODEL_RESPONSE_BYTES, Hello, ModelAlias, Ready, payload, t
 
 
 class RuntimeSettings(Contract):
-    control_url: str = Field(pattern=r"^http://[A-Za-z0-9.-]+:[0-9]{1,5}/control$")
+    control_url: str = Field(min_length=1, max_length=2048)
+    control_ca_file: Path | None = None
     token_file: Path
     model_url: str = Field(min_length=1, max_length=2048)
     model_key_file: Path
     models: tuple[ModelAlias, ...] = Field(min_length=1, max_length=128)
     reasoning_effort: dict[ModelRole, Effort] = Field(default_factory=dict[ModelRole, Effort])
-    apis: dict[str, str] = Field(default_factory=dict[str, str])
+    apis: dict[str, ApiKind] = Field(default_factory=dict[str, ApiKind])
+    default_api: ApiKind = DEFAULT_API
+    """The adapter of an alias ``apis`` leaves out that the gateway does not list as
+    Anthropic's (CM-41)."""
     options: dict[str, dict[str, JsonValue]] = Field(
         default_factory=dict[str, dict[str, JsonValue]]
     )
@@ -51,6 +62,21 @@ class RuntimeSettings(Contract):
     embedding: ModelAlias | None = None
     thinking_replay: ThinkingReplay | None = None
     generation: Identifier
+    mcp: DirectSettings | None = None
+    """The direct MCP client, which runs here, beside OpenShell's proxy and the provider's
+    placeholders (D98): it makes the attempts' connector requests the host relays
+    (``mcp_request``) and the control service's canary listings."""
+
+    @field_validator("control_url")
+    @classmethod
+    def valid_control_url(cls, value: str) -> str:
+        return control_endpoint(value)
+
+    @model_validator(mode="after")
+    def ca_requires_tls(self) -> RuntimeSettings:
+        if self.control_ca_file is not None and not self.control_url.startswith("https://"):
+            raise ValueError("a control CA requires an HTTPS control endpoint")
+        return self
 
 
 async def serve(settings: RuntimeSettings, *, clock: Clock = SYSTEM_CLOCK) -> None:
@@ -76,6 +102,7 @@ async def serve(settings: RuntimeSettings, *, clock: Clock = SYSTEM_CLOCK) -> No
         settings.model_url,
         private_credential(settings.model_key_file),
         apis=settings.apis,
+        default_api=settings.default_api,
         reasoning_effort=settings.reasoning_effort,
         options={
             **settings.options,
@@ -86,9 +113,18 @@ async def serve(settings: RuntimeSettings, *, clock: Clock = SYSTEM_CLOCK) -> No
             ),
         },
     )
-    session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(sock_connect=10))
+    session = aiohttp.ClientSession(
+        timeout=aiohttp.ClientTimeout(sock_connect=10), trace_configs=[control_trace()]
+    )
     loops: RuntimeLoops | None = None
+    calls: RuntimeConnectorCalls | None = None
+    listings = RuntimeListings(
+        None, frozenset(settings.mcp.servers) if settings.mcp is not None else frozenset()
+    )
     try:
+        # Each alias's adapter, chosen once from the gateway's model information; control
+        # adopts the choice in the handshake (CM-41).
+        apis = cast(dict[str, ApiKind], await gateway.choose_apis(settings.models))
         # The endpoint and egress are fixed by trusted launcher configuration;
         # no caller or agent tool supplies a connection URL.
         async with session.ws_connect(
@@ -98,6 +134,7 @@ async def serve(settings: RuntimeSettings, *, clock: Clock = SYSTEM_CLOCK) -> No
                 CONTROL_HEADER: str(CONTROL_PROTOCOL),
             },
             max_msg_size=MAX_FRAME_BYTES,
+            ssl=client_tls(settings.control_ca_file),
             heartbeat=15,
             autoping=True,
         ) as socket:
@@ -109,6 +146,12 @@ async def serve(settings: RuntimeSettings, *, clock: Clock = SYSTEM_CLOCK) -> No
                     return await embedding.embed(value)
                 if kind is Capability.MODEL_INFO:
                     return await models.info(value)
+                if kind is Capability.LIST_MCP_TOOLS:
+                    return await listings.list(value)
+                if kind is Capability.MCP_REQUEST:
+                    if calls is None:
+                        raise TransportError("denied", "this runtime has no direct MCP client")
+                    return await calls.request(value)
                 if loops is None:
                     raise TransportError("unavailable", "runtime is not initialized")
                 if kind is Capability.RUN:
@@ -118,9 +161,22 @@ async def serve(settings: RuntimeSettings, *, clock: Clock = SYSTEM_CLOCK) -> No
                 raise TransportError("denied", "host requested an unavailable runtime capability")
 
             channel = Channel(socket.send_str, handle)
+            if settings.mcp is not None:
+                # A client for each listing, so a new session each (D103); their complete
+                # listings go to the host for the drift check (D98).
+                listings.clients = partial(
+                    settings.mcp.client, ControlListingReports(channel, None)
+                )
+                # The attempts' connector requests, each with a client of its attempt's.
+                calls = RuntimeConnectorCalls(settings.mcp, channel)
             models = RuntimeModels(gateway, frozenset(settings.models), channel)
             embedding = RuntimeEmbeddings(embedder, channel)
-            loops = RuntimeLoops(channel, gateway, settings.scratch)
+            loops = RuntimeLoops(
+                channel,
+                gateway,
+                settings.scratch,
+                released=calls.release if calls is not None else None,
+            )
 
             async def read() -> None:
                 try:
@@ -141,7 +197,9 @@ async def serve(settings: RuntimeSettings, *, clock: Clock = SYSTEM_CLOCK) -> No
                 ready = typed(
                     Ready,
                     await channel.request(
-                        Capability.HANDSHAKE, payload(Hello(image_revision=revision)), timeout=30
+                        Capability.HANDSHAKE,
+                        payload(Hello(image_revision=revision, apis=apis)),
+                        timeout=30,
                     ),
                 )
                 if ready.control_schema != VERSION or ready.generation != settings.generation:
@@ -168,6 +226,8 @@ async def serve(settings: RuntimeSettings, *, clock: Clock = SYSTEM_CLOCK) -> No
     finally:
         await session.close()
         await gateway.close()
+        if calls is not None:
+            await calls.close()
         if embedder is not None:
             await embedder.close()
 
@@ -176,6 +236,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--settings", type=Path, required=True)
     args = parser.parse_args()
+    configure_logging("agent-runtime")
     settings = RuntimeSettings.model_validate_json(args.settings.read_text(encoding="utf-8"))
     asyncio.run(serve(settings))
 

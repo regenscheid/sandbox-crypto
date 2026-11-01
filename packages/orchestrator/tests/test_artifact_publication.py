@@ -31,7 +31,6 @@ from sandbox_science.orchestrator import cli, harness
 from sandbox_science.orchestrator.artifact_publisher import ArtifactPublisher
 from sandbox_science.orchestrator.artifacts import ArtifactInventory, ArtifactLimits
 from sandbox_science.orchestrator.documents import DocumentError, DocumentStore
-from sandbox_science.orchestrator.model import ToolCall
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.tools import Toolbox
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
@@ -42,6 +41,8 @@ from sandbox_science.worker.backends import LocalBackend
 from sandbox_science.worker.manager import ExecutionManager
 from sandbox_science.worker.settings import LocalBackendSettings
 from sandbox_science.worker.store import Store
+
+from .scripted import ToolCall
 
 pytestmark = pytest.mark.asyncio
 TOKEN = "test-secret-artifact"
@@ -389,9 +390,6 @@ async def test_cli_closes_borrowed_store_and_models_after_publisher_drain_cancel
         task="test",
         max_turns=1,
         max_input_chars=400_000,
-        mcp_proxy=None,
-        mcp_token_file=None,
-        mcp_server=[],
     )
     projects = ProjectStore(args.state_dir)
     projects.create("p1", "minimal", "sha256:" + "a" * 64)

@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from sandbox_science.orchestrator.history import Archive, Entry
-from sandbox_science.orchestrator.history.operations import CHUNK_BYTES, ToolRecord
+from sandbox_science.orchestrator.context.history import Archive, Entry
+from sandbox_science.orchestrator.context.history.operations import CHUNK_BYTES, ToolRecord
 from sandbox_science.orchestrator.projects import ProjectStore
 
 from .route_support import ClientFactory, error_of, workspace
@@ -88,7 +88,7 @@ async def test_large_archived_message_content_has_exact_scoped_byte_pages(
 async def test_tool_record_survives_run_loss_and_is_scoped_and_bounded(
     aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
 ) -> None:
-    from sandbox_science.orchestrator.history.operations import READ_BYTES, ToolRecord
+    from sandbox_science.orchestrator.context.history.operations import READ_BYTES, ToolRecord
 
     store = ProjectStore(state_dir)
     full = {"tool": "arithmetic", "arguments": "{}", "result": {"value": 4, "text": "whole\n"}}
@@ -206,7 +206,7 @@ async def test_record_chunk_query_is_bounded_and_unambiguous(
 async def test_run_record_discovery_without_a_final_record_and_with_legacy_gaps(
     aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
 ) -> None:
-    from sandbox_science.orchestrator.history.operations import ToolJournal
+    from sandbox_science.orchestrator.context.history.operations import ToolJournal
     from sandbox_science.orchestrator.model import ToolCall
 
     from .route_support import context_of

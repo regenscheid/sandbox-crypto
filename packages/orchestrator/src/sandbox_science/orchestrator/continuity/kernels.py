@@ -6,24 +6,46 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import random
 import sqlite3
-from typing import Any, cast
+from dataclasses import dataclass
+from typing import Any, Final, Literal, cast
 
 from sandbox_science.contracts import (
     SYSTEM_CLOCK,
+    Clock,
+    ErrorKind,
     Execution,
     ExecutionContext,
     ExecutionState,
+    KernelInfo,
     KernelObservation,
     new_id,
 )
-from sandbox_science.contracts.worker import CellRequest
+from sandbox_science.contracts.worker import KERNEL_OBSERVATION_BUSY, CellRequest
 from sandbox_science.orchestrator.aio import threaded
 from sandbox_science.orchestrator.control import ControlError, ControlStore
 from sandbox_science.orchestrator.control.errors import CONFLICT
-from sandbox_science.orchestrator.worker_client import WorkerClient
+from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 
 from .records import Ownership, check_owner
+
+BUSY_RETRIES: Final = 8
+"""How many times a busy kernel observation is asked again before its answer stands."""
+BUSY_SECONDS: Final = 0.25
+"""The first wait after a busy answer; each later wait doubles, up to ``BUSY_MAX_SECONDS``."""
+BUSY_MAX_SECONDS: Final = 4.0
+
+
+def observation_busy(error: BaseException) -> bool:
+    """Whether ``error`` is the worker's answer that it is already observing the
+    environment's kernels (or as many environments as it observes at once): a capacity
+    answer, not a lost worker."""
+    return (
+        isinstance(error, WorkerAPIError)
+        and error.kind is ErrorKind.UNAVAILABLE
+        and error.message == KERNEL_OBSERVATION_BUSY
+    )
 
 
 def _pure_python_assignments(code: str) -> bool:
@@ -76,8 +98,37 @@ def _unjournaled_cell(db: sqlite3.Connection, project: str, session: str) -> boo
 
 
 class KernelJournal:
-    def __init__(self, control: ControlStore, owner: Ownership, scope: str | None) -> None:
+    def __init__(
+        self,
+        control: ControlStore,
+        owner: Ownership,
+        scope: str | None,
+        *,
+        clock: Clock = SYSTEM_CLOCK,
+        busy_retries: int = BUSY_RETRIES,
+        busy_seconds: float = BUSY_SECONDS,
+        busy_max_seconds: float = BUSY_MAX_SECONDS,
+    ) -> None:
         self.control, self.owner, self.scope = control, owner, scope
+        self.clock = clock
+        self.busy_retries, self.busy_seconds = busy_retries, busy_seconds
+        self.busy_max_seconds = busy_max_seconds
+
+    async def _observe(self, client: WorkerClient, context: ExecutionContext) -> KernelObservation:
+        """The environment's kernels. The worker observes one environment's kernels at a
+        time and answers another observation busy meanwhile, as when sibling continuations
+        in one shared environment start together: ask again after a short, growing,
+        jittered wait, a bounded number of times, and let the last busy answer stand."""
+        delay = self.busy_seconds
+        for remaining in range(self.busy_retries, -1, -1):
+            try:
+                return await client.observe_kernels(context)
+            except WorkerAPIError as error:
+                if remaining == 0 or not observation_busy(error):
+                    raise
+            await self.clock.sleep(delay * random.uniform(0.5, 1.0))  # noqa: S311
+            delay = min(delay * 2, self.busy_max_seconds)
+        raise AssertionError("unreachable")  # the last attempt returns or raises
 
     async def record(self, observation: KernelObservation) -> None:
         await threaded(self._record, observation)
@@ -183,14 +234,31 @@ class KernelJournal:
                 )
             self._save_snapshot(tx.sql, encoded)
 
-    async def reconcile(self, client: WorkerClient, context: ExecutionContext) -> None:
+    async def reconcile(
+        self,
+        client: WorkerClient,
+        context: ExecutionContext,
+        *,
+        accept_loss: bool = False,
+        accepted_by: Literal["user", "automatic"] = "user",
+    ) -> None:
+        """Bring the work's kernel back, or recompute from recorded history (RC-11, D100).
+
+        Without ``accept_loss`` a lost kernel that cannot be rebuilt exactly stops
+        recovery. Every Resume passes it (D100): the loss is recorded with what was lost
+        and who accepted it, the work expects no kernel, its next cell starts a clean one,
+        and the resumed agent's view says the kernel stopped and its variables are gone
+        (``KERNEL_LINES``), so the agent recomputes them from its recorded cells. A partial
+        reconstruction is then acknowledged automatically, with the same provenance record
+        an operator's ``kernel_recompute`` decision leaves, and discarded."""
         pending = await threaded(self._pending_restore)
         if pending is not None:
             work, identity, detail, observed_at = pending
             snapshot_sha256 = detail.get("snapshot_sha256")
-            if not isinstance(snapshot_sha256, str) or not await threaded(
+            acknowledged = isinstance(snapshot_sha256, str) and await threaded(
                 self._recompute_acknowledged, work, observed_at, snapshot_sha256
-            ):
+            )
+            if not acknowledged and not accept_loss:
                 raise ControlError(
                     CONFLICT, "lost_kernel: partial reconstruction needs operator review"
                 )
@@ -198,19 +266,30 @@ class KernelJournal:
             run = detail.get("run")
             if language not in ("python", "sage") or run != self.scope:
                 raise ControlError(CONFLICT, "lost_kernel: reconstruction scope is uncertain")
-            observed = await client.observe_kernels(context)
-            if any(k.language == language and k.run == self.scope for k in observed.kernels):
+            observed = await self._observe(client, context)
+            live = any(k.language == language and k.run == self.scope for k in observed.kernels)
+            if live and not accept_loss:
                 raise ControlError(
                     CONFLICT, "lost_kernel: partial kernel is live; close it before recompute"
                 )
-            # No worker effect is needed. Clear the saved lineage atomically after
-            # the explicit decision; the next cell lazily starts a clean kernel.
+            if not acknowledged:
+                await threaded(
+                    self._acknowledge_recompute, work, identity, snapshot_sha256, accepted_by
+                )
+            if live:
+                # Partly rebuilt state is not the recorded state: start a clean
+                # generation in its place. No recorded cell is run again here.
+                await client.restart_kernel(
+                    context, "python" if language == "python" else "sage", self.scope
+                )
+            # Clear the saved lineage atomically after the decision; the next cell
+            # lazily starts a clean kernel.
             await threaded(self._abandon_restore, work, identity)
             return
         expected = await threaded(self._expected)
         if not expected:
             return
-        observation = await client.observe_kernels(context)
+        observation = await self._observe(client, context)
         actual = {
             (k.language, k.kernel_id, k.generation)
             for k in observation.kernels
@@ -224,19 +303,51 @@ class KernelJournal:
         if len(missing) != 1 or any(
             k.language == next(iter(missing))[0] for k in observation.kernels if k.run == self.scope
         ):
+            if accept_loss:
+                await threaded(self._accept_loss, missing, accepted_by)
+                return
             raise ControlError(
                 CONFLICT, "lost_kernel: saved kernel identity or generation is unavailable"
             )
         language, kernel_id, generation = next(iter(missing))
         if language not in ("python", "sage"):
+            if accept_loss:
+                await threaded(self._accept_loss, missing, accepted_by)
+                return
             raise ControlError(CONFLICT, "lost_kernel: saved kernel language is unavailable")
         typed_language = language
         cells = await threaded(self._replay_cells, language, kernel_id, generation)
         if cells is None:
+            if accept_loss:
+                await threaded(self._accept_loss, missing, accepted_by)
+                return
             raise ControlError(
                 CONFLICT, "lost_kernel: complete replayable cell provenance is unavailable"
             )
         identity = hashlib.sha256(f"{language}\0{kernel_id}\0{generation}".encode()).hexdigest()
+        try:
+            await self._rebuild(client, context, typed_language, identity, cells)
+        except ControlError:
+            if not accept_loss:
+                raise
+            # The exact rebuild failed: acknowledge, discard any partial kernel and
+            # continue with the loss reported (D100). The pending branch never replays.
+            if await threaded(self._pending_restore) is not None:
+                await self.reconcile(client, context, accept_loss=True, accepted_by=accepted_by)
+            else:
+                await threaded(self._accept_loss, missing, accepted_by)
+
+    async def _rebuild(
+        self,
+        client: WorkerClient,
+        context: ExecutionContext,
+        typed_language: Literal["python", "sage"],
+        identity: str,
+        cells: list[dict[str, Any]],
+    ) -> None:
+        """Replay verified literal cells into a fresh kernel, under a durable intent."""
+        language = typed_language
+        kernel_id, generation = cells[0]["kernel_id"], cells[0]["generation"]
         await threaded(self._begin_restore, identity, cells)
         # The durable intent deliberately remains pending if restart/replay has an
         # unknown or failed outcome. An operator can inspect it and choose recovery;
@@ -290,7 +401,7 @@ class KernelJournal:
                     "replayed_from": cell["operation"],
                 }
             )
-        rebuilt = await client.observe_kernels(context)
+        rebuilt = await self._observe(client, context)
         if not any(
             (k.language, k.kernel_id, k.generation)
             == (language, replacement.kernel_id, replacement.generation)
@@ -441,6 +552,65 @@ class KernelJournal:
         work, identity, encoded, observed = rows[0]
         return work, identity, json.loads(encoded), observed
 
+    def _acknowledge_recompute(
+        self, work: str, identity: str, snapshot: object, accepted_by: str
+    ) -> None:
+        """The provenance an operator's ``kernel_recompute`` decision leaves, made by Resume."""
+        owner = self.owner
+        detail = json.dumps(
+            {
+                "resolution": {
+                    "kind": "kernel_recompute",
+                    "identity": snapshot if isinstance(snapshot, str) else None,
+                    "restore": identity,
+                    "reason": "lost kernel recomputed from recorded history under Resume",
+                },
+                "operator": accepted_by,
+                "automatic": True,
+            },
+            separators=(",", ":"),
+        )
+        with self.control.write() as tx:
+            check_owner(tx.sql, owner)
+            tx.sql.execute(
+                "INSERT INTO research_observations "
+                "VALUES (?,?,?,'resolution:kernel_recompute',?,?,?) "
+                "ON CONFLICT(project,session,work,kind,identity) DO NOTHING",
+                (
+                    owner.project,
+                    owner.session,
+                    work,
+                    "auto-" + identity,
+                    SYSTEM_CLOCK.now().timestamp(),
+                    detail,
+                ),
+            )
+
+    def _accept_loss(self, missing: set[tuple[str, str, int]], accepted_by: str = "user") -> None:
+        """Record the kernels accepted as lost and by whom; expect none for the work."""
+        owner = self.owner
+        lost = [
+            {"language": language, "kernel_id": kernel_id, "generation": generation}
+            for language, kernel_id, generation in sorted(missing)
+        ]
+        detail = json.dumps({"lost": lost, "accepted_by": accepted_by}, separators=(",", ":"))
+        identity = hashlib.sha256(detail.encode()).hexdigest()
+        with self.control.write() as tx:
+            check_owner(tx.sql, owner)
+            tx.sql.execute(
+                "INSERT INTO research_observations VALUES (?,?,?,'kernel_loss_accepted',?,?,?) "
+                "ON CONFLICT(project,session,work,kind,identity) DO NOTHING",
+                (
+                    owner.project,
+                    owner.session,
+                    owner.work,
+                    identity,
+                    SYSTEM_CLOCK.now().timestamp(),
+                    detail,
+                ),
+            )
+            self._save_snapshot(tx.sql, "[]")
+
     def _recompute_acknowledged(self, work: str, since: float, snapshot: str) -> bool:
         owner = self.owner
         with self.control.read() as tx:
@@ -523,3 +693,152 @@ class KernelJournal:
             if row is None
             else {(k["language"], k["kernel_id"], k["generation"]) for k in json.loads(row[0])}
         )
+
+
+MAX_LOST_CELLS: Final = 20
+"""The cells of a lost kernel generation a cell's result lists, the newest (Kernels 7)."""
+MAX_SAVED_FILES: Final = 20
+"""The files those cells wrote that the result lists, the newest."""
+_LINE_CHARS: Final = 120
+_PATH_CHARS: Final = 256
+
+
+@dataclass(frozen=True)
+class LostCell:
+    """One cell of a lost generation, as the records keep it: its archived result's
+    message ID and its call's purpose, or, for a call without a purpose, its tool and its
+    code's first line. A cell the archive does not hold (a replayed one) has neither."""
+
+    language: str
+    count: int | None
+    message: str | None = None
+    purpose: str | None = None
+    first_line: str | None = None
+
+
+@dataclass(frozen=True)
+class LostGeneration:
+    """The newest ``MAX_LOST_CELLS`` cells of a lost generation, oldest first, how many
+    earlier ones are left out, and the paths they wrote and did not delete since, the
+    most recently written last."""
+
+    cells: tuple[LostCell, ...]
+    earlier: int
+    written: tuple[str, ...]
+
+
+class LostKernels:
+    """What a kernel that lost its state had computed, read from the records: the kernel
+    cell observations ``KernelJournal`` keeps after each cell, and the archive's tool
+    records and purposes. Nothing here reads the model's context or writes."""
+
+    def __init__(self, control: ControlStore, project: str, session: str, scope: str | None):
+        self.control, self.project, self.session, self.scope = control, project, session, scope
+
+    async def lost(self, language: str, current: KernelInfo | None) -> LostGeneration | None:
+        """The generation of ``language``'s kernel (the session's, or the scope's run's)
+        whose cells the records keep last, other than ``current``: the one whose state a
+        cell's ``state_lost`` reports gone. ``None`` when the records hold none."""
+        return await threaded(self._lost, language, current)
+
+    def _lost(self, language: str, current: KernelInfo | None) -> LostGeneration | None:
+        with self.control.read() as tx:
+            db = tx.sql
+            found = db.execute(
+                "SELECT json_extract(detail,'$.kernel_id'),json_extract(detail,'$.generation') "
+                "FROM research_observations WHERE project=? AND session=? AND kind='kernel_cell' "
+                "AND json_extract(detail,'$.run') IS ? AND json_extract(detail,'$.language')=? "
+                "AND NOT (json_extract(detail,'$.kernel_id') IS ? "
+                "AND json_extract(detail,'$.generation') IS ?) ORDER BY observed DESC,rowid DESC "
+                "LIMIT 1",
+                (
+                    self.project,
+                    self.session,
+                    self.scope,
+                    language,
+                    current.kernel_id if current is not None else None,
+                    current.generation if current is not None else None,
+                ),
+            ).fetchone()
+            if found is None:
+                return None
+            rows = db.execute(
+                "SELECT identity,json_extract(detail,'$.count') FROM research_observations "
+                "WHERE project=? AND session=? AND kind='kernel_cell' "
+                "AND json_extract(detail,'$.run') IS ? AND json_extract(detail,'$.language')=? "
+                "AND json_extract(detail,'$.kernel_id')=? "
+                "AND json_extract(detail,'$.generation')=? "
+                "ORDER BY json_extract(detail,'$.count'),rowid",
+                (self.project, self.session, self.scope, language, *found),
+            ).fetchall()
+            cells: list[LostCell] = []
+            written: dict[str, None] = {}
+            for operation, count in rows:
+                record = db.execute(
+                    "SELECT t.message_id,m.purpose,json_extract(t.record,'$.tool'),"
+                    "substr(CASE WHEN json_valid(json_extract(t.record,'$.arguments')) THEN "
+                    "json_extract(json_extract(t.record,'$.arguments'),'$.code') END,1,4096),"
+                    "json_extract(t.record,'$.recorded_files.files'),"
+                    "json_extract(t.record,'$.execution.result.written_files'),"
+                    "json_extract(t.record,'$.execution.result.deleted_files') "
+                    "FROM archive_tool_records t JOIN archive_messages m "
+                    "ON m.project=t.project AND m.message_id=t.message_id "
+                    "WHERE t.project=? AND t.session=? AND t.operation_id=? LIMIT 1",
+                    (self.project, self.session, operation),
+                ).fetchone()
+                if record is None:
+                    cells.append(LostCell(language, count))
+                    continue
+                message, purpose, tool, code, recorded, wrote, deleted = record
+                cells.append(
+                    LostCell(
+                        str(tool or language),
+                        count,
+                        message,
+                        purpose,
+                        None if purpose is not None else _first_line(code),
+                    )
+                )
+                _changed(written, recorded, wrote, deleted)
+        shown = tuple(cells[-MAX_LOST_CELLS:])
+        return LostGeneration(shown, len(cells) - len(shown), tuple(written))
+
+
+def _first_line(code: object) -> str:
+    lines = [line.strip() for line in str(code or "").splitlines() if line.strip()]
+    first = lines[0] if lines else ""
+    return first if len(first) <= _LINE_CHARS else first[: _LINE_CHARS - 1] + "…"
+
+
+def _changed(written: dict[str, None], recorded: object, wrote: object, deleted: object) -> None:
+    """Apply one call's files to ``written``, in order: the recorder's revisions and
+    tombstones when it kept them, otherwise what the worker reported."""
+    files = _json_list(recorded)
+    if files:
+        for item in files:
+            if not isinstance(item, dict):
+                continue
+            entry = cast(dict[str, object], item)
+            path = entry.get("path")
+            if isinstance(path, str) and len(path) <= _PATH_CHARS:
+                written.pop(path, None)
+                if entry.get("deleted") is not True:
+                    written[path] = None
+        return
+    for path in _json_list(wrote):
+        if isinstance(path, str) and len(path) <= _PATH_CHARS:
+            written.pop(path, None)
+            written[path] = None
+    for path in _json_list(deleted):
+        if isinstance(path, str):
+            written.pop(path, None)
+
+
+def _json_list(value: object) -> list[object]:
+    if not isinstance(value, str):
+        return []
+    try:
+        found: object = json.loads(value)
+    except (ValueError, RecursionError):
+        return []
+    return cast(list[object], found) if isinstance(found, list) else []

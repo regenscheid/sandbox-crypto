@@ -21,29 +21,36 @@ from sandbox_science.contracts import (
     ExecutionState,
     JobDetails,
     JobListing,
+    JobProfileOffer,
     JobRequest,
+    JobResultManifest,
+    JobSandbox,
     JobStatus,
     Result,
     StreamOutput,
 )
+from sandbox_science.contracts.worker import UncollectedFile
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.orchestrator.effects import UnknownEffectError
-from sandbox_science.orchestrator.jobs import WATCHER_PROMPT, JobTools, WatcherAnswer, clipped
+from sandbox_science.orchestrator.jobs import (
+    JOB_SPECS,
+    WATCHER_PROMPT,
+    JobTools,
+    WatcherAnswer,
+    clipped,
+    start_job_spec,
+    summary,
+)
 from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.loop import run_task
-from sandbox_science.orchestrator.model import (
-    Message,
-    ModelError,
-    ModelTurn,
-    ScriptedModel,
-    ToolCall,
-    ToolSpec,
-)
+from sandbox_science.orchestrator.model import Message, ModelError, ModelTurn, ToolSpec
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.tools import Toolbox
 from sandbox_science.orchestrator.watcher_prompt import assemble_watcher
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 from sandbox_science.testing import FakeClock, eventually
+
+from .scripted import ScriptedModel, ToolCall
 
 CONTEXT = ExecutionContext(project_id="p", session_id="s", environment_id="env")
 
@@ -167,7 +174,7 @@ async def test_wait_calls_no_main_model_until_job_ends(tmp_path: Path) -> None:
     # answer has its summary only.
     (record,) = transcript.tool_records
     assert [e["state"] for e in record["executions"]] == ["succeeded"]
-    assert "_ended_executions" not in transcript.messages[-2]["content"]
+    assert "_ended_executions" not in transcript.context.messages[-2]["content"]
 
 
 @pytest.mark.asyncio
@@ -314,7 +321,7 @@ async def test_last_turn_job_notice_keeps_answer_and_waits_for_next_run(tmp_path
     )
     assert transcript.stopped == "answered"
     assert transcript.final_text == "final answer"
-    assert transcript.messages[-1] == {"role": "assistant", "content": "final answer"}
+    assert transcript.context.messages[-1] == {"role": "assistant", "content": "final answer"}
     assert sorted(transcript.delivered_ids("jobs")) == []
     # Nothing acknowledged the notice, so the next run delivers it.
     notices = await tools(worker, tmp_path).notices()
@@ -670,3 +677,106 @@ def test_a_job_state_closes_only_a_store_it_opened(tmp_path: Path) -> None:
     own.close()
     with pytest.raises(sqlite3.ProgrammingError):
         connection.execute("SELECT 1")
+
+
+MEDIUM = JobProfileOffer(
+    name="medium",
+    description="6 cores, 16 GiB memory, up to 7 days",
+    cpu_millicores=6000,
+    memory_mib=16384,
+    wall_time_max_seconds=604800,
+)
+
+
+def test_start_job_names_granted_profiles_and_is_unchanged_without() -> None:
+    assert start_job_spec(()) is JOB_SPECS[0]
+    spec = start_job_spec((MEDIUM,))
+    properties = spec.parameters["properties"]
+    assert properties["profile"]["enum"] == ["medium"]
+    assert "6 cores, 16 GiB" in properties["profile"]["description"]
+    assert properties["inputs"]["maxItems"] == 64
+    # The agent names a size, never resources or placement (JS-5).
+    assert not {"cpu", "memory", "node_selector", "runtime_class_name"} & set(properties)
+    assert "profile" not in JOB_SPECS[0].parameters["properties"]
+
+
+async def test_a_sized_job_carries_the_harness_minimum_tier(tmp_path: Path) -> None:
+    worker = FakeWorker()
+    jobs = tools(worker, tmp_path, job_profiles=(MEDIUM,), min_isolation_tier=3)
+    assert jobs.specs[0].parameters["properties"]["profile"]["enum"] == ["medium"]
+    base = {"script": "python big.py", "purpose": "search", "expected_progress": "lines"}
+    await jobs.start({**base, "profile": "medium", "inputs": ["data"]}, "op-1")
+    (request,) = worker.requested
+    assert (request.profile, request.inputs, request.min_isolation_tier) == ("medium", ("data",), 3)
+    # A model's own tier is refused like any unknown argument; a plain job is as before.
+    with pytest.raises(WorkerAPIError):
+        await jobs.start({**base, "profile": "medium", "min_isolation_tier": 0}, "op-2")
+    with pytest.raises(WorkerAPIError, match="unknown job profile"):
+        await jobs.start({**base, "profile": "huge"}, "op-3")
+    await jobs.start(base, "op-4")
+    assert worker.requested[-1].profile is None
+    assert worker.requested[-1].min_isolation_tier is None
+    unsized = tools(FakeWorker(), tmp_path / "unsized")
+    with pytest.raises(WorkerAPIError, match="unknown start_job arguments"):
+        await unsized.start({**base, "profile": "medium"}, "op-5")
+
+
+def sandboxed(state: ExecutionState = ExecutionState.FAILED) -> JobStatus:
+    """A failed job whose sandbox is retained, with its manifest."""
+    now = datetime.now(UTC)
+    base = execution(state=state)
+    assert base.job is not None
+    sandbox = JobSandbox(
+        environment_id="p-job-0123456789ab",
+        profile="large",
+        phase="retained",
+        cpu_millicores=12000,
+        memory_mib=32768,
+        retained_until=now + timedelta(days=3),
+        collection="incomplete",
+        manifest_sha256="a" * 64,
+    )
+    manifest = JobResultManifest(
+        job_id="exe-1",
+        attempt_id="att-1",
+        profile="large",
+        driver_config_sha256="b" * 64,
+        image="registry.example/image:1",
+        environment_id="p-job-0123456789ab",
+        isolation_tier=3,
+        submitted_at=now,
+        ended_at=now,
+        outcome=state,
+        reason="sandbox_lost",
+        collection="incomplete",
+        not_collected=tuple(
+            UncollectedFile(path=f"out/{n}.bin", reason="over the file limit") for n in range(25)
+        ),
+    )
+    job = base.job.model_copy(update={"profile": "large", "sandbox": sandbox})
+    return JobStatus(execution=base.model_copy(update={"job": job}), manifest=manifest)
+
+
+def test_a_sandbox_jobs_summary_carries_what_the_gui_shows() -> None:
+    value = summary(sandboxed(), datetime.now(UTC))
+    sandbox = cast(dict[str, Any], value["sandbox"])
+    assert sandbox["profile"] == "large"
+    assert sandbox["phase"] == "retained"
+    assert sandbox["environment_id"] == "p-job-0123456789ab"
+    assert (sandbox["cpu_millicores"], sandbox["memory_mib"]) == (12000, 32768)
+    assert sandbox["collection"] == "incomplete"
+    assert sandbox["retained_until"] is not None
+    assert sandbox["manifest_sha256"] == "a" * 64
+    manifest = cast(dict[str, Any], value["manifest"])
+    assert manifest["reason"] == "sandbox_lost"
+    assert manifest["collected"] == 0
+    assert manifest["not_collected_total"] == 25  # the list below is bounded
+    assert len(manifest["not_collected"]) == 20
+    assert manifest["replayed_packages"] == 0
+    assert manifest["isolation_tier"] == 3
+
+
+def test_a_job_in_the_session_has_no_sandbox_in_its_summary() -> None:
+    value = summary(JobStatus(execution=execution()), datetime.now(UTC))
+    assert "sandbox" not in value
+    assert "manifest" not in value

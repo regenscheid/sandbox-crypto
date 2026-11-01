@@ -89,7 +89,7 @@ async def test_control_checks_auth_protocol_readiness_scope_and_rotation(tmp_pat
                 hello = await ask(3, Capability.HANDSHAKE, {"image_revision": "a" * 40})
                 assert hello.error is None
                 assert isinstance(hello.payload, dict)
-                assert hello.payload["protocol"] == 3
+                assert hello.payload["protocol"] == CONTROL_PROTOCOL == 6
                 assert seen == ["ready"]
                 with pytest.raises(aiohttp.WSServerHandshakeError) as duplicate:
                     await client.ws_connect("/control", headers=headers)
@@ -103,7 +103,7 @@ async def test_control_checks_auth_protocol_readiness_scope_and_rotation(tmp_pat
 
 def test_large_tool_evidence_stays_host_side_before_its_canonical_commit() -> None:
     from sandbox_science.orchestrator.confinement.host import remote_outcome
-    from sandbox_science.orchestrator.history.retention import fits
+    from sandbox_science.orchestrator.context.history.retention import fits
     from sandbox_science.orchestrator.tools import ToolOutcome
 
     large = "x" * (25 * 1024 * 1024)

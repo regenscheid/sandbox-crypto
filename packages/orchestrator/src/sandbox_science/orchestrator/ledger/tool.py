@@ -260,7 +260,9 @@ _ANCHORS = {
             "One of: message (an archive ID, msg-…, from a message's header; quote for the "
             "user's words), call (a tool call's ID, or the message ID of its result, for "
             "the result; start and end for a range of its output), artifact with revision, "
-            "document with revision and block, or entry (with revision)"
+            "document with revision and block, entry (with revision), or memory "
+            "(a project memory entry at a revision, such as mem-3@2: it exists, and is "
+            "never an observation)"
         ),
         "properties": {
             "message": {"type": "string"},
@@ -271,6 +273,7 @@ _ANCHORS = {
             "artifact": {"type": "string"},
             "document": {"type": "string"},
             "entry": {"type": "string"},
+            "memory": {"type": "string"},
             "revision": {"type": "integer", "minimum": 1},
             "block": {"type": "string"},
             "sha256": {"type": "string"},

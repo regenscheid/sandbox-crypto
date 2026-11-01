@@ -11,7 +11,8 @@ sessions = ["main"]
 skills = ["crypto"]
 
 [model]
-url = "https://litellm-api.npages.org/v1"
+# Example only: put the real endpoint in a private config outside the checkout.
+url = "https://gateway.example.invalid/v1"
 name = "sandbox-orchestrator"
 api_key_file = "~/.config/sandbox-science/secrets/litellm-harness.key"
 
@@ -30,7 +31,7 @@ git = "https://github.com/OWNER/REPO"   # or archive = "pack.tar.gz"
 ref = "main"                            # optional: the default branch otherwise
 
 [openshell]
-cli = "~/.local/opt/openshell-0.1.3/bin/openshell"
+cli = "~/.local/opt/openshell-<version>/bin/openshell"
 python = "/opt/sandbox-science/bin/python"
 isolation_tier = 3
 
@@ -46,7 +47,11 @@ address is a loopback one. ``[openshell]`` is the worker's own table (docs/WORKE
 the launcher passes it on with its paths made absolute, and runs its own OpenShell
 commands with its ``cli`` and ``env``. The model's key file is only named here: the
 launcher never reads it, and gives its path to the run service. Nor does it open
-``[mcp_proxy] provider_env_file``: a process of its own does (access_provider.py).
+``[mcp_direct] provider_env_file``: a process of its own does (access_provider.py).
+
+``[mcp_direct]`` is a deployment's MCP configuration (D98). ``[mcp_proxy]``, the MCP
+proxy's, is refused since the proxy retired (2026-10-26): ``sandbox-science
+migrate-mcp-config`` rewrites it (docs/MCP-CONNECTORS.md, "Migrating from [mcp_proxy]").
 """
 
 from __future__ import annotations
@@ -72,6 +77,8 @@ from pydantic import (
     model_validator,
 )
 
+from sandbox_science.contracts import project_id_label_problem
+
 from .access_provider import PROVIDER
 
 Identifier = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")]
@@ -90,8 +97,22 @@ def _said(text: str) -> str:
 Variable = Annotated[str, StringConstraints(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")]
 
 
+CLUSTER_SERVICES = "cluster_services"
+"""Validation context key, holding a Kubernetes site's cluster DNS domain: its model
+gateway may be an http Service name, ``.svc`` or ``.svc.<domain>``."""
+
+
 class LauncherError(Exception):
     """What the launcher refuses, with a message for the user."""
+
+
+def error_text(exc: BaseException, limit: int = 512) -> str:
+    """``exc``'s message, at most ``limit`` characters and never blank: an exception that
+    says nothing (a timeout from ``asyncio.wait_for``, for one) is named by its type."""
+    said = " ".join(str(exc).split())
+    if not said:
+        said = f"{type(exc).__name__} (no error text)"
+    return said[:limit]
 
 
 def _path(value: Path, info: ValidationInfo) -> Path:
@@ -188,19 +209,29 @@ class ModelConfig(_Strict):
     (docs/specs/context-management.md, CM-41): ``chat`` (``/chat/completions``),
     ``responses`` (``/v1/responses``, GPT's Responses API, with its reasoning sent back,
     CM-40) or ``messages`` (``/v1/messages``, Claude's Messages API with its progress
-    notes, CM-38). An alias it leaves out takes ``chat``, as every alias does by default,
-    until the labs confirm the others."""
+    notes, CM-38). An alias it leaves out takes ``messages`` when the gateway lists its
+    provider as ``anthropic``, else ``default_api``; the run service chooses as it
+    starts, since only it reaches the gateway."""
+    default_api: ApiKind = "chat"
+    """The API of an alias ``api`` leaves out that the gateway does not list as
+    Anthropic's."""
     reasoning_effort: dict[str, str] = Field(default_factory=dict[str, str], max_length=7)
     """Requested effort by caller role. Omitted roles retain provider defaults; the
-    launcher's effective profile defaults a non-Messages reviewer to ``medium``."""
+    launcher's effective profile defaults a configured reviewer to ``medium``, whatever
+    its API, since every API takes an effort."""
+
+    messages_reasoning_effort: dict[str, str] = Field(default_factory=dict[str, str], max_length=7)
+    """Requested effort by caller role for an alias called through ``messages``, in place
+    of ``reasoning_effort``'s: a default that differs there, such as the Kubernetes
+    bundle's ``high`` for the research roles. Empty by default."""
 
     def effective_efforts(self) -> dict[str, str]:
         result = dict(self.reasoning_effort)
-        if self.reviewer and self.api.get(self.reviewer, "chat") != "messages":
+        if self.reviewer:
             result.setdefault("reviewer", "medium")
         return result
 
-    @field_validator("reasoning_effort")
+    @field_validator("reasoning_effort", "messages_reasoning_effort")
     @classmethod
     def _efforts(cls, values: dict[str, str]) -> dict[str, str]:
         roles = {"main", "delegated", "reviewer", "watcher", "fold", "overview", "skills_metadata"}
@@ -217,7 +248,7 @@ class ModelConfig(_Strict):
     run is offered it when the gateway says its model accepts images."""
     thinking_replay: ThinkingReplayConfig | None = None
     """Claude's thinking sent back on the gateway image a CM-F30 run verified (CM-39),
-    for the aliases ``api`` names ``messages``; off by default, until a LiteLLM release
+    for the aliases called through ``messages``; off by default, until a LiteLLM release
     with its thinking fixes passes it."""
     daily_cost_limit: float | None = Field(default=None, ge=0, le=1_000_000_000)
     """What each project's runs may cost over a rolling 24 hours, as the gateway reports
@@ -226,25 +257,24 @@ class ModelConfig(_Strict):
 
     @field_validator("url")
     @classmethod
-    def _gateway(cls, value: str) -> str:
+    def _gateway(cls, value: str, info: ValidationInfo) -> str:
         parts = urlsplit(value)
         host = parts.hostname or ""
         try:
             local = ipaddress.ip_address(host).is_loopback
         except ValueError:
             local = False  # a name, which could resolve anywhere: https only
-        if (parts.scheme == "https" and host) or (parts.scheme == "http" and local):
+        # A Kubernetes site (kubernetes_site.py) may reach an in-cluster gateway by its
+        # Service name over the Pod network, which only that cluster's DNS resolves.
+        context = cast(dict[str, object], info.context or {})
+        domain = context.get(CLUSTER_SERVICES)
+        cluster = isinstance(domain, str) and host.endswith((".svc", f".svc.{domain}"))
+        if (parts.scheme == "https" and host) or (parts.scheme == "http" and (local or cluster)):
             return value
         raise ValueError(
             "the model gateway's URL is https, or http on a loopback IP address such as "
             "127.0.0.1: the key would go to it in the clear"
         )
-
-    @model_validator(mode="after")
-    def _replay(self) -> Self:
-        if self.thinking_replay is not None and "messages" not in self.api.values():
-            raise ValueError('thinking_replay is for the aliases api names "messages"; none is')
-        return self
 
 
 class SessionConfig(_Strict):
@@ -332,6 +362,8 @@ class SkillsConfig(_Strict):
 
 class ProjectConfig(_Strict):
     id: Identifier
+    """At most 63 characters, so that it can label the agent runtime's sandbox
+    (``project_id_label_problem``)."""
     profile: Identifier
     """The base profile of the project's environments: a key of ``openshell.environments
     .profiles``."""
@@ -341,6 +373,18 @@ class ProjectConfig(_Strict):
     """Sessions opened for chat: a name, or ``{ id = "...", dedicated = true }``."""
     skills: tuple[SourceName, ...] = ()
     """The packs of ``[skills.packs]`` the project pins, besides the built-in skills."""
+
+    @field_validator("id")
+    @classmethod
+    def _fits_a_label(cls, value: str) -> str:
+        problem = project_id_label_problem(value)
+        if problem is not None:
+            raise ValueError(
+                f"{problem}. A project already in the state directory under this ID cannot be "
+                "renamed (there is no rename tool): list a new project with a shorter ID "
+                "instead, and leave this one out"
+            )
+        return value
 
 
 class WorkerConfig(_Strict):
@@ -353,6 +397,13 @@ class WorkerConfig(_Strict):
     """Environment variables this part gets besides the usual few (``PATH``, ``HOME``, the
     locale, proxies and CA settings). Never a secret: the parts run in the control zone
     (docs/THREAT-MODEL.md), which holds no engine or cluster credentials."""
+    unit: ConfigPath | None = None
+    """The config of the worker-side unit (docs/UNIT.md) that runs the worker with the policy
+    middleware and the package cache, started apart because the OpenShell gateway checks
+    the middleware when it starts. With it, ``up`` starts no worker: it waits for the unit
+    to be healthy, watches it, and never stops it. The unit's ``[worker]`` section must be
+    ``settings_file`` naming the worker settings ``sandbox-science prepare`` writes. Unset:
+    ``up`` starts the worker alone, as before."""
 
 
 class RunServiceConfig(_Strict):
@@ -360,8 +411,9 @@ class RunServiceConfig(_Strict):
     """Context tokens before the provider limit caps them; unset keeps 600,000.
     This controls folding, not the run's cumulative token or monetary budget."""
     max_turns: int | None = Field(default=None, ge=0, le=100_000)
-    """The model calls a main run makes before its report round: a safety net, not a bound
-    on its work. Unset or 0: the run service's default, 2,000."""
+    """The model calls a main run makes before it pauses and asks the user to continue for
+    another block of as many, or to stop: a check-in, not a bound on its work. Unset or 0:
+    the run service's default, 2,000."""
     run_share: int | None = Field(default=None, ge=1, le=100)
     """The percent of a project's daily cost limit one run may use, when the project has
     a limit; none when unset."""
@@ -451,18 +503,44 @@ class OpenShellConfig(BaseModel):
         }
 
 
-class McpProxyConfig(_Strict):
-    """The MCP proxy in an OpenShell sandbox of its own (docs/MCP-CONNECTORS.md)."""
+RETIRED_PROXY = (
+    "[mcp_proxy] is retired: the MCP proxy retired on 2026-10-26 (D98), and the agent "
+    "runtime's own client reaches the servers, configured by [mcp_direct]. Run "
+    "sandbox-science migrate-mcp-config CONFIG to rewrite it (docs/MCP-CONNECTORS.md, "
+    '"Migrating from [mcp_proxy]")'
+)
+"""Why a config with ``[mcp_proxy]`` is refused, and what replaces it."""
 
-    image: str = Field(min_length=1)
-    """Its image, as ``images/build.sh mcp-proxy`` tagged it."""
-    providers: tuple[Identifier, ...] = Field(min_length=1)
-    """The OpenShell providers with the servers' credentials, which the owner creates."""
-    credentials: dict[str, str] = Field(default_factory=dict[str, str])
-    """The proxy's ``[credentials]``: the environment variable that holds each provider
-    credential a server's headers name (docs/MCP-CONNECTORS.md)."""
-    servers: tuple[Identifier, ...] = Field(min_length=1)
-    """The policy's MCP servers whose tools the main agent gets."""
+
+class McpDirectServer(_Strict):
+    """A server the agent runtime's MCP client reaches (D98)."""
+
+    url: str | None = Field(default=None, pattern=r"^https?://[\x21-\x7e]{1,2040}$")
+    """Its URL: by default the project policy's, which it must equal when given."""
+    credentials: dict[
+        Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,128}$")],
+        Annotated[str, StringConstraints(pattern=r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")],
+    ] = Field(default_factory=dict[str, str], max_length=16)
+    """Each credential header, and the environment variable in the runtime's sandbox that
+    holds its OpenShell placeholder: the provider's, never a value."""
+
+
+class McpDirectConfig(_Strict):
+    """The deployment's MCP configuration (D98, docs/MCP-CONNECTORS.md, "The direct path"):
+    the agent's connector calls made by the agent runtime's own client, in its sandbox,
+    through OpenShell's native ``protocol: mcp`` rules and the policy middleware. ``up``
+    compiles the runtime sandbox's egress to these servers from the project policy
+    (``compile_agent_mcp``), attaches ``providers`` to the sandbox and binds it to the
+    project's policy revision. Needs ``[orchestrator]``.
+    """
+
+    servers: dict[Identifier, McpDirectServer] = Field(min_length=1, max_length=64)
+    """The policy's MCP servers whose tools the agent gets."""
+    project: Identifier | None = None
+    """The project whose policy the policy middleware applies; by default the only one."""
+    providers: tuple[Identifier, ...] = Field(default=(), max_length=16)
+    """The OpenShell providers with the servers' credentials, attached to the runtime's
+    sandbox: its processes hold their placeholders, never the values."""
     about: dict[
         IndexKey, Annotated[str, StringConstraints(max_length=200), AfterValidator(_said)]
     ] = Field(default_factory=dict[str, str])
@@ -472,21 +550,6 @@ class McpProxyConfig(_Strict):
     index: tuple[IndexKey, ...] | None = Field(default=None, min_length=1)
     """The servers whose tools the index lists one by one, named as in ``about``; the
     others are found with a query. By default it lists every server's."""
-    project: Identifier | None = None
-    """The project whose runs get them; by default the only project."""
-    policy: ConfigPath | None = None
-    """The policy with the servers; by default the worker's project policy."""
-    targets: ConfigPath | None = None
-    """By default the worker's targets file, which has an ``mcp_proxy`` section."""
-    ceiling: ConfigPath | None = None
-    """By default the worker's pool ceiling."""
-    sandbox: Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9-]{0,11}$")] = (
-        "ss-mcp-proxy"
-    )
-    """The start of the sandbox's name: each launch adds a dash and six random hex digits,
-    within OpenShell's 19 characters."""
-    listen: Listen = "127.0.0.1:18080"
-    """Where the forward to the proxy listens, for the run service."""
     provider_env_file: ConfigPath | None = None
     """The owner's file with the Cloudflare Access service token of the provider
     ``crypto-research-mcp``. With it, ``up`` registers the provider from the file, in a
@@ -501,19 +564,19 @@ class McpProxyConfig(_Strict):
         for key in (*self.about, *(self.index or ())):
             if key.partition("/")[0] not in self.servers:
                 raise ValueError(
-                    f"mcp_proxy.about and index name one of mcp_proxy.servers, or "
+                    f"mcp_direct.about and index name one of mcp_direct.servers, or "
                     f"SERVER/BEHIND for one behind it: {key!r}"
                 )
         if self.provider_env_file is not None:
             if self.provider_profile is None:
                 raise ValueError(
-                    "mcp_proxy.provider_env_file needs provider_profile, the provider's "
+                    "mcp_direct.provider_env_file needs provider_profile, the provider's "
                     "OpenShell profile (examples/openshell/profiles/cloudflare-access.yaml)"
                 )
             if PROVIDER not in self.providers:
                 raise ValueError(
-                    f"mcp_proxy.provider_env_file registers the provider {PROVIDER}, which "
-                    "mcp_proxy.providers must name"
+                    f"mcp_direct.provider_env_file registers the provider {PROVIDER}, which "
+                    "mcp_direct.providers must name"
                 )
         return self
 
@@ -527,6 +590,17 @@ class OrchestratorConfig(_Strict):
     python: str = "/opt/sandbox-science/bin/python"
     recover_infrastructure: bool = False
     """Restart owned services/agent VM and admit interrupted tree recovery."""
+
+
+class CanariesConfig(_Strict):
+    """Scheduled MCP canaries (D103, docs/MCP-CONNECTORS.md, "Canaries"): every ``interval``
+    seconds, one bounded ``tools/list`` per server, never a tool call. Off by default; on,
+    it needs ``[mcp_direct]``: the control service asks the agent runtime to list each of
+    its servers through the runtime's own client (``list_mcp_tools``)."""
+
+    enabled: bool = False
+    interval: float = Field(default=900.0, ge=60, le=86400)
+    """Seconds between runs: 15 minutes by default."""
 
 
 class LauncherConfig(_Strict):
@@ -545,20 +619,35 @@ class LauncherConfig(_Strict):
     run_service: RunServiceConfig = Field(default_factory=RunServiceConfig)
     workspace: WorkspaceConfig
     openshell: OpenShellConfig
-    mcp_proxy: McpProxyConfig | None = None
+    mcp_direct: McpDirectConfig | None = None
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
     orchestrator: OrchestratorConfig | None = None
+    canaries: CanariesConfig = Field(default_factory=CanariesConfig)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _no_proxy(cls, data: object) -> object:
+        if isinstance(data, dict) and "mcp_proxy" in cast(dict[str, object], data):
+            raise ValueError(RETIRED_PROXY)
+        return cast(object, data)
 
     @model_validator(mode="after")
     def _consistent(self) -> Self:
         ids = [project.id for project in self.projects]
         if len(set(ids)) != len(ids):
             raise ValueError("each project is listed once")
-        if self.mcp_proxy is not None:
-            if self.mcp_proxy.project is None and len(ids) != 1:
-                raise ValueError("mcp_proxy.project names the project whose runs use it")
-            if self.mcp_project() not in ids:
-                raise ValueError(f"mcp_proxy.project {self.mcp_project()!r} is not a project")
+        if self.canaries.enabled and self.mcp_direct is None:
+            raise ValueError(
+                "canaries list the servers through the agent runtime's own client: configure "
+                "[mcp_direct], or leave canaries.enabled off"
+            )
+        if self.mcp_direct is not None:
+            if self.orchestrator is None:
+                raise ValueError("mcp_direct's client runs in the agent runtime: [orchestrator]")
+            if self.mcp_direct.project is None and len(ids) != 1:
+                raise ValueError("mcp_direct.project names the project whose policy applies")
+            if (self.mcp_direct.project or ids[0]) not in ids:
+                raise ValueError(f"mcp_direct.project {self.mcp_direct.project!r} is not a project")
         profiles = self.openshell.environments.profiles
         for project in self.projects:
             if project.profile not in profiles:
@@ -584,16 +673,15 @@ class LauncherConfig(_Strict):
             "workspace": self.workspace.listen,
             "workspace preview": self.workspace.preview(),
         }
-        if self.mcp_proxy is not None:
-            addresses["MCP proxy's forward"] = self.mcp_proxy.listen
         if self.orchestrator is not None:
             addresses["control capability service"] = self.orchestrator.control_listen
         return addresses
 
     def mcp_project(self) -> str:
-        """The project whose runs use the MCP proxy, when there is one."""
-        if self.mcp_proxy is not None and self.mcp_proxy.project is not None:
-            return self.mcp_proxy.project
+        """The project whose runs get the MCP servers' tools, by default the only one; the
+        runtime's sandbox is bound to its policy revision."""
+        if self.mcp_direct is not None and self.mcp_direct.project is not None:
+            return self.mcp_direct.project
         return self.projects[0].id
 
     @staticmethod
@@ -617,6 +705,8 @@ def load_config(path: Path) -> LauncherConfig:
         raise LauncherError(f"cannot read {path}: {exc}") from None
     except tomllib.TOMLDecodeError as exc:
         raise LauncherError(f"{path} is not TOML: {exc}") from None
+    if "mcp_proxy" in raw:
+        raise LauncherError(f"{path}: {RETIRED_PROXY}")
     try:
         return LauncherConfig.model_validate(raw, context={"base": path.absolute().parent})
     except ValidationError as exc:

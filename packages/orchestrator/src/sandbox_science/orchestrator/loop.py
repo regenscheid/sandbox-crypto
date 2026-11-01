@@ -4,14 +4,12 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 from collections.abc import (
     AsyncGenerator,
     Awaitable,
     Callable,
     Generator,
-    Iterator,
     MutableSequence,
     Sequence,
 )
@@ -22,40 +20,53 @@ from contextlib import (
     asynccontextmanager,
     contextmanager,
 )
-from dataclasses import dataclass, field, replace
-from typing import Any, Final, Literal, Protocol, TypeVar, cast
+from dataclasses import dataclass, field
+from typing import Any, Final, Literal, TypeVar, cast
 
-from .history.capture import prompt_pins
-from .history.collections import Collection, Members
-from .history.limits import WorkingMemoryLimitError
-from .history.log import RunArchive
-from .history.memory import VIEW_BYTES, RunMemory
-from .hooks import RESPONSE_ROUNDS, Appended, MessageLog, Notice, Point, TurnHook
+from .context.agent import MAX_INPUT_CHARS as MAX_INPUT_CHARS
+from .context.agent import AgentContext
+from .context.folding import Folds
+from .context.history.collections import Collection, Members
+from .context.history.limits import WorkingMemoryLimitError
+from .context.history.memory import RunMemory
+from .continuity.transient import classify
+from .hooks import (
+    RESPONSE_ROUNDS,
+    Appended,
+    MessageLog,
+    ModelHandler,
+    Notice,
+    Point,
+    ToolHandler,
+    TurnHook,
+)
 from .images import IMAGE
 from .kernel_check import KernelCheck
 from .memory_prompt import MemoryGiven
-from .model import (
-    GATEWAY_BUDGET,
-    AssistantMessage,
-    ChatModel,
-    ContextLimitError,
-    GatewayBudgetError,
-    Message,
-    ModelTurn,
-    ToolCall,
-)
+from .model import AssistantMessage, ChatModel, Message, ModelTurn, ToolCall
 from .notices import REPORT
 from .plan_tools import GUIDANCE, GUIDANCE_VERSION, Plans
 from .plan_tools import NAMES as PLAN_NAMES
-from .projects import FailurePhase, ModelUsage
-from .prompts import PromptPins, Section, assemble, schema_json
+from .projects import FailurePhase
+from .prompts import Section, assemble, schema_json
+from .purpose import GUIDANCE as PURPOSE_GUIDANCE
+from .purpose import without
 from .stock_prompts import select_template
+from .tool_mix import ToolMix
 from .tools import Toolbox, ToolOutcome, bound, operation_id
 from .worker_client import dump
+from .wraps import POLLS as POLLS
+from .wraps import RUNAWAY as RUNAWAY
+from .wraps import (
+    ModelRefusals,
+    OverflowRetry,
+    Runaway,
+    hook_model_wraps,
+    hook_tool_wraps,
+    wrap_model,
+    wrap_tool,
+)
 
-MAX_INPUT_CHARS: Final = 400_000
-"""The longest conversation, with its tool schemas, sent to MAIN by default: about
-100,000 tokens of English or JSON, inside common context windows."""
 MAX_TURNS: Final = 2_000
 """A run's model calls by default, before its report round: a safety net, not a bound on
 its work (the owner, 2026-10-16: a run may go on for hundreds or thousands of rounds
@@ -65,27 +76,9 @@ TURNS_CEILING: Final = 100_000
 REPORT_ROOM: Final = 8
 """A run that does not fold takes its report round once its conversation passes all but
 this part of its ``max_input_chars`` (one eighth), which leaves room for the call."""
-RUNAWAY: Final = 25
-"""The runaway guard's count: tool calls in a row that failed with the same error, or
-that made the same call with the same arguments and got the same result, or answers in a
-row that a closing held back (RS-6f)."""
-POLLS: Final = frozenset(
-    {
-        "wait_jobs",
-        "job_status",
-        "list_jobs",
-        "wait_delegations",
-        "wait_agent_message",
-        "delegation_status",
-        "provision_status",
-        "track_progress",
-    }
-)
-"""Tools that watch something change: the same answer again is time passing, so the
-runaway guard never counts them as repeated calls, only as failed ones."""
 REPORT_SOURCE: Final = "report"
 """The report round's notice source."""
-MAIN_VERSION: Final = "sandbox-main-13"
+MAIN_VERSION: Final = "sandbox-main-19"
 """The version of ``SYSTEM_PROMPT``'s text."""
 SYSTEM_PROMPT: Final = (
     "You are a research assistant. Send research code and shell commands through the "
@@ -93,29 +86,50 @@ SYSTEM_PROMPT: Final = (
     "can run in the control service; it does not execute research code there. Describe "
     "execution location and isolation only from worker-returned evidence, never from a "
     "tool name; an explicitly configured development worker can be unisolated. "
-    "Use python for computations whose state should persist between calls, shell for "
-    "commands, and the file tools to inspect and share files. Publish files that are results. "
+    "Compute in the persistent kernels, python and sage where offered, which keep variables, "
+    "imports and loaded data between calls: they are the default for computation, analysis "
+    "and iterative exploration. Use shell for commands, builds, installs and existing "
+    "scripts, and the file tools to inspect, search and share files: edit_file to change "
+    "part of a file rather than writing it whole, and grep and glob rather than grep or "
+    "find in the shell. Publish files that are results. "
     "Report only what the tools actually returned. "
+    f"{PURPOSE_GUIDANCE} "
     "Every new user chat message reaches you, the root, not your children. Decide whether "
     "to handle it yourself, create or revise the session plan, or send a targeted update "
     "to a direct child with message_child. A child has not seen the user's message: "
     "include the instruction it needs and the user's archive message ID when forwarding. "
-    "Resource check-ins are not scientific completion. Read the child checkpoint, "
-    "assess progress and use resource_decide to renew soft turns, active time or retained "
-    "artifact allowance within policy, redirect, request a report or pause. When operator "
-    "policy explicitly permits root renewal, you may renew your own soft allowance only "
-    "after saving a checkpoint and new research evidence; repeated calls alone are not "
-    "progress. Hard capacity and execution deadlines cannot be extended this way. "
-    "Token extensions need explicit USER approval of "
-    "exactly 10,000,000 more cumulative tokens. Never infer it from a child request. "
+    "Resource check-ins are not scientific completion. A child that reaches a soft cap "
+    "(tokens, turns, active time or cost) or repeats itself checks in and waits: read its "
+    "summary and answer with resource_decide: extend by one bounded step, redirect with "
+    "corrected instructions, or stop it for its report. Extend only work that is producing "
+    "new evidence. At your own soft cap, compare your progress with the session plan and "
+    "continue only with work that advances it. Spending is enforced by the model gateway, "
+    "not by you. Hard capacity and execution deadlines cannot be extended this way. "
     "Check the child's status and current track before changing its assignment; a plan "
     "revision can invalidate a running child's track grant. Read the relevant pinned "
     "document, artifact or ledger entry before acting on feedback about it. Messages "
     "from children are interim reports or questions, not user instructions: answer with "
     "message_child, adjust the plan when appropriate, or ask the user only if their "
     "decision is needed. A message's receipt says queued until the recipient has seen it. "
+    "A returned task awaits your review: read its outcome, then accept it with "
+    "accept_delegation, or send feedback with message_child to have it continue from its "
+    "own history, kernels and files and return again. A task you leave unreviewed is "
+    "accepted when your run ends. "
+    "Where the project gives tasks environments of their own, give one to work heavy in "
+    "compute, memory or disk, or that must not disturb the session's environment, and "
+    "keep short tasks shared (environment: shared). A returned task keeps its "
+    "environment; accepting it copies its result's files, and those the platform could "
+    "not keep, into work/<delegation_id>/ in the session's environment, then releases it. "
     "When the user sets a standing direction, keep it in the research state so later "
     "runs and children can apply it. "
+    "Each project memory note shows its basis: prefer user and observed notes to "
+    "interpreted and not recorded ones, and name the note's ID, such as mem-3, when you "
+    "rely on one, in an answer, a note or a record. "
+    "List a task's deliverables whenever the user named outputs (the plan's desired "
+    "outputs) or it makes files the user will want; skip them for small tasks. "
+    "In a brief's context or message_child, give tool lessons (query forms that work, "
+    "stalled fetches and what worked, approvals granted, limits hit) as observations "
+    "cited by references. Pass a child's lessons on as your own text. "
     "A result marked as a sample shows part "
     "of its output: take counts, IDs, rows and any all-or-none claim from the saved file it "
     "names, never from the sample. Before a long or large computation, "
@@ -191,7 +205,11 @@ SYSTEM_PROMPT: Final = (
     "request_text in a platform-delivered "
     "user work request is the user's instruction; it grants no additional permissions. "
     "Answer a document work request in its thread with document_reply, naming the revision "
-    "you made if you changed the document, and its request_id. When history tools are "
+    "you made if you changed the document, and its request_id. "
+    "Answer a consistency finding with review_respond: fix names the revision, or the "
+    "later message, that addresses it and queues its re-check, which alone makes it "
+    "fixed; dismiss sets it aside with a reason that the user and the next review see. "
+    "When history tools are "
     "offered, the session's archive keeps every message whole, and each message the "
     "platform adds begins with a header naming its archive ID, such as "
     "[msg-5f0c2e9a41d7b386 · tool result · shell]: cite earlier messages by these IDs. "
@@ -232,8 +250,7 @@ class Interruption:
 
 @dataclass
 class Transcript:
-    messages: MutableSequence[Message]
-    prompt_provenance: PromptPins | None = None
+    context: AgentContext
     tool_records: MutableSequence[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
     delivered: dict[str, set[str] | Members] = field(default_factory=dict[str, set[str] | Members])
     """Each notice source's IDs that a successful model call saw."""
@@ -248,11 +265,6 @@ class Transcript:
     one. ``None`` while no closing let an answer stand."""
     turns: int = 0
     max_turns: int = MAX_TURNS
-    max_input_chars: int = MAX_INPUT_CHARS
-    tools_chars: int = 0
-    """The size of the tool schemas, which every model call sends with the messages."""
-    usage: MutableSequence[ModelUsage] = field(default_factory=list[ModelUsage])
-    """Each answered model call's usage, in order."""
     pending: str | None = field(default=None, repr=False)
     """The answer a closing round was taken for, until the next reply."""
     room: bool = field(default=True, repr=False)
@@ -270,66 +282,18 @@ class Transcript:
         default_factory=dict[str, set[str] | Members], repr=False
     )
     """Each hook source's notice IDs in the messages, delivered or not."""
-    log: MessageLog | None = field(default=None, repr=False)
-    """Keeps each message the run adds, which then begins with its ID header."""
-    folds: Folds | None = field(default=None, repr=False)
-    """Folds the conversation at its safe points (docs/specs/context-management.md)."""
-    rebuilt: list[Message] | None = field(default=None, repr=False)
-    """The view a fold rebuilt, sent after the system message in place of the messages
-    before ``base``; ``None`` until a fold."""
-    base: int = field(default=0, repr=False)
-    since: int = 0
-    """The calls made before the view was last rebuilt (``usage[since:]`` measure it)."""
     overflowed: bool = field(default=False, repr=False)
     """Whether the last model call was refused for the conversation's length."""
-
-    memory: RunMemory | None = field(default=None, repr=False)
 
     def identities(self, source: str, *, delivered: bool = False) -> set[str] | Members:
         mapping = self.delivered if delivered else self.offered
         if source not in mapping:
             mapping[source] = (
-                self.memory.members(("delivered:" if delivered else "offered:") + source)
-                if self.memory is not None
+                self.context.memory.members(("delivered:" if delivered else "offered:") + source)
+                if self.context.memory is not None
                 else set()
             )
         return mapping[source]
-
-    def working(self) -> Iterator[Message]:
-        if self.rebuilt is None:
-            yield from self.messages
-        else:
-            yield self.messages[0]
-            yield from self.rebuilt
-            yield from self.messages[self.base :]
-
-    @property
-    def sent(self) -> list[Message]:
-        """What the next model call sends: the system message, the view a fold rebuilt,
-        if one did, and the messages added since."""
-        kept: list[Message] = []
-        used = 0
-        for message in self.working():
-            if isinstance(message, AssistantMessage):
-                message = message.replay()
-            used += len(dump(message).encode()) + 2
-            if isinstance(message, AssistantMessage):
-                used += len(message.native or b"")
-                used += len(dump(message.adapter_state or {}).encode())
-                used += len((message.prefix or "").encode())
-            if self.memory is not None and used > VIEW_BYTES:
-                raise WorkingMemoryLimitError(
-                    "active model payload exceeds the working-state ceiling; "
-                    "original evidence remains stored"
-                )
-            kept.append(message)
-        return kept
-
-    def rebuild(self, view: Sequence[Message]) -> None:
-        """Send ``view`` after the system message from now on, in place of everything
-        the conversation holds now (a fold, CM-24): a rebuild, after which the view's
-        size is estimated afresh until a call reports (CM-28)."""
-        self.rebuilt, self.base, self.since = list(view), len(self.messages), len(self.usage)
 
     @property
     def turns_left(self) -> int:
@@ -339,17 +303,12 @@ class Transcript:
     def can_respond(self) -> bool:
         return self.turns_left > 0 and self.room and self.response_rounds < RESPONSE_ROUNDS
 
-    @property
-    def size(self) -> int:
-        """What the next model call would send, in characters."""
-        return 2 + sum(len(dump(message)) + 2 for message in self.working()) + self.tools_chars
-
     def has_room(self, notices: Sequence[Notice] = ()) -> bool:
         """Whether another model call can be made, with these notices added."""
         if self.turns_left <= 0 or not self.room:
             return False
         added = len(dump([notice_message(notice) for notice in notices])) if notices else 0
-        return self.size + added <= self.max_input_chars
+        return self.context.size + added <= self.context.max_input_chars
 
     def delivered_ids(self, source: str) -> AbstractSet[str]:
         return self.delivered.get(source, frozenset())
@@ -361,21 +320,6 @@ class Transcript:
         self.final_text = self.answer = None
 
 
-class Folds(Protocol):
-    """What folds a run's conversation (docs/specs/context-management.md, CM-24, CM-43)."""
-
-    async def before_call(self, transcript: Transcript) -> bool:
-        """At a safe point before a model call: fold if the view needs it. ``False``
-        when the view has no room for the call however it folds: the run then stops as
-        when it is out of room (``context_limit``)."""
-        ...
-
-    async def overflow(self, transcript: Transcript) -> bool:
-        """After the gateway refused a call for its length: whether a fold made room for
-        one more try."""
-        ...
-
-
 def notice_message(notice: Notice) -> Message:
     if notice.user:
         return {"role": "user", "content": notice.framing}
@@ -383,25 +327,7 @@ def notice_message(notice: Notice) -> Message:
 
 
 async def _append(transcript: Transcript, message: Message, appended: Appended) -> None:
-    """Add a message to the conversation, kept first by the run's log if it has one."""
-    image = message.get(IMAGE)
-    if transcript.log is not None:
-        if appended.kind == "assistant":
-            appended = replace(
-                appended,
-                usage=transcript.usage[-1],
-                usage_index=len(transcript.usage),
-                consumed=transcript.offered,
-            )
-        message = await transcript.log.append(message, appended)
-    if image is not None:
-        message = {**message, IMAGE: image}
-    if isinstance(transcript.messages, Collection) and isinstance(transcript.log, RunArchive):
-        transcript.messages.append_encoded(
-            {"archive_message": transcript.log.last_message, **({IMAGE: image} if image else {})}
-        )
-    else:
-        transcript.messages.append(message)
+    await transcript.context.append(message, appended, consumed=transcript.offered)
 
 
 async def _offer(transcript: Transcript, notices: Sequence[Notice]) -> None:
@@ -557,48 +483,58 @@ def attach_notices(
     outcome.record.update(extra)
 
 
-async def _complete(model: ChatModel, toolbox: Toolbox, transcript: Transcript) -> ModelTurn | None:
-    """The model's reply, or ``None`` when the conversation is too long for the model:
-    longer than the run's budget, or than the model's context as the gateway says; or
-    when the gateway refused the call for its budget, which ``halted`` then says. No
-    model call saw the notices offered since the last one.
+def _model_call(
+    model: ChatModel, toolbox: Toolbox, transcript: Transcript, hooks: Sequence[TurnHook]
+) -> ModelHandler:
+    """The run's model call: the reply, or ``None`` when the conversation is too long for
+    the model, longer than the run's budget or than the model's context as the gateway
+    says, once no fold makes room; or when the gateway refused the call for its budget,
+    which ``halted`` then says. No model call saw the notices offered since the last one.
+    Its wraps, outermost first: the fold and retry on a context error, the refusals that
+    end the call without a reply, then each hook's (``wraps.py``).
     """
-    size = transcript.size
-    if size > transcript.max_input_chars:
+
+    async def attempt() -> ModelTurn | None:
+        return await _attempt(model, toolbox, transcript)
+
+    wraps = [OverflowRetry(transcript).wrap, ModelRefusals(transcript).wrap]
+    return wrap_model(attempt, [*wraps, *hook_model_wraps(hooks, transcript)])
+
+
+async def _attempt(model: ChatModel, toolbox: Toolbox, transcript: Transcript) -> ModelTurn | None:
+    """One attempt at the model call, which raises the model's errors: ``None``, with no
+    call made, when the conversation is longer than the run's budget."""
+    size = transcript.context.size
+    if size > transcript.context.max_input_chars:
         _log.warning("the conversation, %d characters, exceeds the run's budget", size)
         return None
     transcript.phase = "model"
     transcript.overflowed = False
-    try:
-        with prompt_pins(transcript.prompt_provenance):
-            reply = await model.complete(transcript.sent, toolbox.specs)
-    except ContextLimitError as error:
-        _log.warning("the conversation, %d characters, exceeds the model's: %s", size, error)
-        reply, transcript.overflowed = None, True
-    except GatewayBudgetError as error:
-        _log.warning("the model gateway refused the call for its budget: %s", error)
-        transcript.halted, reply = GATEWAY_BUDGET, None
+    reply = await transcript.context.complete(model, toolbox.specs)
     transcript.phase = "harness"
-    if reply is None:
-        return None
     transcript.pending = None
-    answered = len(reply.text or "") + sum(len(call.arguments) for call in reply.tool_calls)
-    transcript.usage.append(
-        ModelUsage(
-            model=reply.model,
-            input_tokens=reply.input_tokens,
-            output_tokens=reply.output_tokens,
-            cache_read_input_tokens=reply.cache_read_input_tokens,
-            cache_creation_input_tokens=reply.cache_creation_input_tokens,
-            characters=size + answered,
-            cost=reply.cost,
-            cost_source=reply.cost_source,
-            gateway_version=reply.gateway_version,
-            thinking_replay=(reply.thinking_replay or "")[:300] or None,
-            retried=list(reply.retried[:16]),
-        )
-    )
+    transcript.context.record_reply(reply, input_size=size)
     return reply
+
+
+def _tool_call(
+    toolbox: Toolbox,
+    transcript: Transcript,
+    hooks: Sequence[TurnHook],
+    guard: Runaway,
+    model: str | None,
+) -> ToolHandler:
+    """A tool call of a reply from ``model``, once its intent is saved: the toolbox runs
+    it, through every hook's gate. Its wraps, outermost first: the runaway guard, then
+    each hook's (``wraps.py``)."""
+
+    async def dispatch(call: ToolCall, operation: str) -> ToolOutcome:
+        transcript.phase = "tool"
+        outcome = await toolbox.call(call, operation, model=model, gates=hooks)
+        transcript.phase = "harness"
+        return outcome
+
+    return wrap_tool(dispatch, [guard.wrap, *hook_tool_wraps(hooks, transcript)])
 
 
 async def _turn_limit(hooks: Sequence[TurnHook], transcript: Transcript) -> None:
@@ -643,67 +579,6 @@ async def _out_of_room(hooks: Sequence[TurnHook], transcript: Transcript) -> Non
         await _closing(hooks, transcript, transcript.pending)
 
 
-@dataclass
-class Runaway:
-    """The runaway guard (RS-6f): a cheap check that stops a run repeating itself without
-    progress, and never one that works. It trips at ``limit`` in a row of one of:
-
-    - tool calls that failed with the same error, the same kind and the same message,
-      whatever the tool or its arguments;
-    - tool calls of the same tool with the same arguments that got the same result,
-      other than ``POLLS``, whose same answer is time passing;
-    - closing answers that a hook held back for another turn (a ``retry``), with no
-      tool call between them.
-
-    Anything else in between starts the count again.
-    """
-
-    limit: int = RUNAWAY
-    key: tuple[str, ...] | None = None
-    count: int = 0
-    tripped: dict[str, str] | None = None
-    """What tripped it: the rule and its detail, which the run's record keeps."""
-
-    def call(self, call: ToolCall, outcome: ToolOutcome) -> None:
-        """A tool call made, with its outcome before any notice rides on it."""
-        error = outcome.record.get("error")
-        digest = hashlib.sha256(outcome.text.encode("utf-8", "replace")).hexdigest()
-        if error is not None:
-            self._seen(("same_error", str(error), digest), f"failed with the same error ({error})")
-        elif call.name in POLLS:
-            self._seen(None, "")
-        else:
-            arguments = hashlib.sha256(call.arguments.encode("utf-8", "replace")).hexdigest()
-            self._seen(
-                ("same_call", call.name, arguments, digest),
-                f"made the same {call.name} call with the same arguments and got the same result",
-            )
-
-    def answer(self, held: bool) -> None:
-        """A closing answer, and whether a hook held it back for another turn."""
-        if held:
-            self._seen(("held",), "", calls=False)
-        else:
-            self._seen(None, "")
-
-    def _seen(self, key: tuple[str, ...] | None, what: str, *, calls: bool = True) -> None:
-        if key is None or key != self.key:
-            self.key, self.count = key, 0
-        if key is None:
-            return
-        self.count += 1
-        if self.count >= self.limit and self.tripped is None:
-            rule = key[0]
-            if calls:
-                detail = f"the last {self.count} tool calls {what}"
-            else:
-                detail = (
-                    f"the last {self.count} answers were held back for another turn, with "
-                    "no tool call between them"
-                )
-            self.tripped = {"rule": rule, "detail": detail}
-
-
 def not_run(reason: str) -> ToolOutcome:
     """The result of a tool call the report round does not run."""
     message = f"not_run: the run reached a limit ({reason}); this call did not run"
@@ -725,15 +600,14 @@ async def _last_call(hooks: Sequence[TurnHook], transcript: Transcript) -> tuple
                 else "the run's tokens leave room for this call and no other"
             )
             return reason, detail
-    limit = transcript.max_input_chars
-    if transcript.folds is None and transcript.size > limit - limit // REPORT_ROOM:
+    limit = transcript.context.max_input_chars
+    if transcript.context.folds is None and transcript.context.size > limit - limit // REPORT_ROOM:
         return "context_limit", f"the conversation is near its {limit:,}-character limit"
     return None
 
 
 async def _report(
-    model: ChatModel,
-    toolbox: Toolbox,
+    complete: ModelHandler,
     transcript: Transcript,
     hooks: Sequence[TurnHook],
     reason: str,
@@ -759,23 +633,21 @@ async def _report(
         # closed again with no turn left to take, as at a halt.
         await _closing(hooks, transcript, transcript.pending)
         return
-    folds = transcript.folds
-    if folds is not None and not await folds.before_call(transcript):
+    if not await transcript.context.before_call(call_index=transcript.turns):
         # The view has no room however it folds: the run stops for that, whose reason
         # its folds keep (CM-45), as before any other call.
         transcript.stopped = "context_limit"
         return
     notice = Notice(REPORT_SOURCE, (), REPORT.text, {"limit": reason, "detail": detail})
-    if transcript.size + len(dump([notice_message(notice)])) > transcript.max_input_chars:
+    if (
+        transcript.context.size + len(dump([notice_message(notice)]))
+        > transcript.context.max_input_chars
+    ):
         return  # no room for the call: the run stops as before, without a report
     await _offer(transcript, (notice,))
     transcript.turns += 1
     await _consumption(hooks, transcript)
-    reply = await _complete(model, toolbox, transcript)
-    while reply is None and transcript.overflowed and folds is not None:
-        if not await folds.overflow(transcript):
-            break
-        reply = await _complete(model, toolbox, transcript)
+    reply = await complete()
     transcript.halted = reason
     if reply is None:
         return
@@ -788,9 +660,11 @@ async def _report(
             {"role": "tool", "tool_call_id": call.id, "content": outcome.text},
             Appended("tool_result", call=call, outcome=outcome),
         )
-        record = {"tool": call.name, "arguments": call.arguments, **outcome.record}
+        record = {"tool": call.name, "arguments": without(call.arguments), **outcome.record}
         transcript.tool_records.append(
-            transcript.log.retained_tool(record) if transcript.log is not None else record
+            transcript.context.log.retained_tool(record)
+            if transcript.context.log is not None
+            else record
         )
     if reply.text:
         await _closing(hooks, transcript, reply.text)
@@ -812,6 +686,7 @@ async def _run_task(
         await _append(transcript, {"role": "user", "content": task}, Appended("task"))
     await _notices(hooks, "start", transcript)
     revision = toolbox.revision
+    complete = _model_call(model, toolbox, transcript, hooks)
     guard = Runaway()
     while True:
         await _turn_limit(hooks, transcript)
@@ -821,21 +696,15 @@ async def _run_task(
         if await _halted(hooks, transcript):
             return transcript
         if turn and (last := await _last_call(hooks, transcript)) is not None:
-            await _report(model, toolbox, transcript, hooks, *last)
+            await _report(complete, transcript, hooks, *last)
             return transcript
         await _notices(hooks, "turn", transcript)
         transcript.turns = turn + 1
-        folds = transcript.folds
-        if folds is not None and not await folds.before_call(transcript):
+        if not await transcript.context.before_call(call_index=transcript.turns):
             await _out_of_room(hooks, transcript)
             return transcript
         await _consumption(hooks, transcript)
-        reply = await _complete(model, toolbox, transcript)
-        # A context error folds once and tries once more; the fold engine says when not.
-        while reply is None and transcript.overflowed and folds is not None:
-            if not await folds.overflow(transcript):
-                break
-            reply = await _complete(model, toolbox, transcript)
+        reply = await complete()
         if reply is None:
             if transcript.halted is not None:  # the gateway's budget is spent
                 await _halt(hooks, transcript, transcript.halted)
@@ -853,45 +722,50 @@ async def _run_task(
                 transcript.pending = reply.text
                 guard.answer(transcript.held > held)
                 if guard.tripped is not None:
-                    await _runaway(model, toolbox, transcript, hooks, guard.tripped)
+                    await _runaway(complete, transcript, hooks, guard.tripped)
                     return transcript
                 continue
             return transcript
         viewed: list[tuple[Notice, str]] = []
+        dispatch = _tool_call(toolbox, transcript, hooks, guard, reply.model)
         for call in reply.tool_calls:
             operation = operation_id(f"{run_id}-t{turn}", call)
-            if transcript.log is not None:
-                await transcript.log.start_tool(call, operation)
-            transcript.phase = "tool"
-            outcome = await toolbox.call(call, operation, model=reply.model, gates=hooks)
-            transcript.phase = "harness"
-            guard.call(call, outcome)  # before any notice rides on its result
+            if transcript.context.log is not None:
+                await transcript.context.log.start_tool(call, operation)
+            outcome = await dispatch(call, operation)  # the guard saw it before any notice
             await _attach(hooks, transcript, outcome, toolbox.output_chars)
             await _append(
                 transcript,
                 {"role": "tool", "tool_call_id": call.id, "content": outcome.text},
                 Appended("tool_result", call=call, outcome=outcome, operation_id=operation),
             )
-            record = {"tool": call.name, "arguments": call.arguments, **outcome.record}
+            # The record's arguments are the call's as the harness ran it, without its
+            # purpose, which the record keeps beside them (Purpose 3).
+            record = {"tool": call.name, "arguments": without(call.arguments), **outcome.record}
             index = len(transcript.tool_records)
             retained = (
-                transcript.log.retained_tool(record) if transcript.log is not None else record
+                transcript.context.log.retained_tool(record)
+                if transcript.context.log is not None
+                else record
             )
             transcript.tool_records.append(retained)
-            if isinstance(transcript.tool_records, Collection):
-                transcript.tool_records.expose_current(index, record)
+            archived_records = (
+                transcript.tool_records if isinstance(transcript.tool_records, Collection) else None
+            )
+            if archived_records is not None:
+                archived_records.expose_current(index, record)
             try:
                 for hook in hooks:
                     await hook.observe_tool(
                         transcript, record if isinstance(hook, KernelCheck) else outcome.record
                     )
                 if on_tool is not None:
-                    await on_tool(call.name, call.arguments, outcome)
+                    await on_tool(call.name, without(call.arguments), outcome)
                 if outcome.image is not None:
                     viewed.append(outcome.image)
             finally:
-                if isinstance(transcript.tool_records, Collection):
-                    transcript.tool_records.release_current(index)
+                if archived_records is not None:
+                    archived_records.release_current(index)
                 else:
                     transcript.tool_records[index] = retained
                 # Coroutine locals otherwise retain the full last result across the
@@ -909,20 +783,19 @@ async def _run_task(
         if toolbox.revision != revision:
             # Connector tools loaded: every later model call carries their schemas.
             revision = toolbox.revision
-            transcript.tools_chars = len(schema_json(toolbox.specs))
+            transcript.context.tools_chars = len(schema_json(toolbox.specs))
         if guard.tripped is not None:
-            await _runaway(model, toolbox, transcript, hooks, guard.tripped)
+            await _runaway(complete, transcript, hooks, guard.tripped)
             return transcript
     turns = transcript.max_turns
     await _report(
-        model, toolbox, transcript, hooks, "turn_limit", f"its turn limit, {turns:,} model calls"
+        complete, transcript, hooks, "turn_limit", f"its turn limit, {turns:,} model calls"
     )
     return transcript
 
 
 async def _runaway(
-    model: ChatModel,
-    toolbox: Toolbox,
+    complete: ModelHandler,
     transcript: Transcript,
     hooks: Sequence[TurnHook],
     tripped: dict[str, str],
@@ -932,7 +805,7 @@ async def _runaway(
     _log.warning("the runaway guard stopped the run: %s", tripped["detail"])
     transcript.summaries["runaway"] = {**tripped, "count": RUNAWAY}
     detail = f"the runaway guard: {tripped['detail']}"
-    await _report(model, toolbox, transcript, hooks, "runaway", detail)
+    await _report(complete, transcript, hooks, "runaway", detail)
 
 
 def _sections(
@@ -1034,23 +907,20 @@ async def run_task(
                     memory=memory.pin if memory is not None else None,
                     skills=toolbox.skills.given.pin if toolbox.skills is not None else None,
                 )
-                transcript = Transcript(
-                    max_turns=max_turns,
+                context = AgentContext.start(
+                    [{"role": "system", "content": text}, *history],
+                    prompt_provenance=pins,
                     max_input_chars=max_input_chars,
                     tools_chars=len(schema_json(toolbox.specs)),
-                    prompt_provenance=pins,
-                    messages=[{"role": "system", "content": text}, *history],
                     log=log,
+                    memory=memory_store,
                     folds=folds,
                 )
-                if memory_store is None and isinstance(log, RunArchive):
-                    memory_store = RunMemory.archived(log)
-                if memory_store is not None:
-                    transcript.messages = memory_store.messages(transcript.messages)
-                    transcript.tool_records = memory_store.tools()
-                    transcript.usage = memory_store.usage()
-                    transcript.memory = memory_store
-                    transcript.max_input_chars = min(transcript.max_input_chars, VIEW_BYTES)
+                transcript = Transcript(
+                    context=context,
+                    max_turns=max_turns,
+                    tool_records=context.memory.tools() if context.memory is not None else [],
+                )
                 if on_started is not None:
                     await on_started(transcript)
                 try:
@@ -1074,11 +944,18 @@ async def run_task(
                         ) is not None:
                             transcript.stopped = reason
                             transcript.final_text = transcript.answer = None
-                except Exception:
+                except Exception as error:
                     # Catch inside the leases: retain only successfully delivered claims
                     # until the caller durably saves this partial record, then ACKs them.
                     _log.exception("run %s failed during %s", run_id, transcript.phase)
+                    first = transcript.failure is None
                     transcript.fail(transcript.phase)
+                    if first:
+                        # A label, not the exception: automatic recovery reads it (D100).
+                        transcript.summaries["failure"] = {
+                            "phase": transcript.phase,
+                            "transient": classify(error),
+                        }
                 except asyncio.CancelledError as error:
                     if not user_cancelled(error, stop):
                         raise
@@ -1104,10 +981,14 @@ async def run_task(
                 transcript.summaries[hook.name] = summary
         if toolbox.connectors is not None:
             transcript.summaries["connectors"] = toolbox.connectors.summary()
+        # Counted where the calls run: a confined run's host counts them (Kernels 13).
+        mix: ToolMix | None = getattr(toolbox, "tool_mix", None)
+        if mix is not None:
+            transcript.summaries["tool_mix"] = mix.summary()
         if toolbox.image_offer is not None:
             transcript.summaries["view_image"] = toolbox.image_offer
         if toolbox.skills is not None:
-            first = transcript.usage[0].model if transcript.usage else None
+            first = transcript.context.usage[0].model if transcript.context.usage else None
             if (started := toolbox.skills.summary(first)) is not None:
                 # Beside the discoveries the hook of that name keeps there.
                 found = cast(dict[str, Any], transcript.summaries.get("skills") or {})

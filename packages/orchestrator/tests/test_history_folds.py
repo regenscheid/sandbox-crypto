@@ -20,10 +20,9 @@ from typing import Any, cast
 import pytest
 
 from sandbox_science.contracts import ExecutionContext
-from sandbox_science.orchestrator.control import ControlStore
-from sandbox_science.orchestrator.harness import Harness as Harness_
-from sandbox_science.orchestrator.harness import Role
-from sandbox_science.orchestrator.history import (
+from sandbox_science.orchestrator.context.agent import AgentContext
+from sandbox_science.orchestrator.context.folding import FoldLifecycle, FoldPoint
+from sandbox_science.orchestrator.context.history import (
     Archive,
     Archived,
     Entry,
@@ -36,11 +35,14 @@ from sandbox_science.orchestrator.history import (
     session_view,
     settle,
 )
-from sandbox_science.orchestrator.history.enrich import check
-from sandbox_science.orchestrator.history.folds import build, span
-from sandbox_science.orchestrator.history.geometry import input_limit
-from sandbox_science.orchestrator.history.reads import Read, Register
-from sandbox_science.orchestrator.history.skeleton import _fit
+from sandbox_science.orchestrator.context.history.enrich import check
+from sandbox_science.orchestrator.context.history.folds import build, span
+from sandbox_science.orchestrator.context.history.geometry import input_limit
+from sandbox_science.orchestrator.context.history.reads import Read, Register
+from sandbox_science.orchestrator.context.history.skeleton import _fit
+from sandbox_science.orchestrator.control import ControlStore
+from sandbox_science.orchestrator.harness import Harness as Harness_
+from sandbox_science.orchestrator.harness import Role
 from sandbox_science.orchestrator.loop import Transcript, run_task
 from sandbox_science.orchestrator.model import (
     GatewayModel,
@@ -64,10 +66,16 @@ from .test_model_limits import TOO_LONG
 
 Json = dict[str, Any]
 CONTEXT = ExecutionContext(project_id=PROJECT, session_id=SESSION, environment_id="e")
-ENRICHED = ["--context-ceiling", "110000", "--fold-chunk", "10000"]
-"""C = 110,000 and K = 10,000: trigger 82,500, wall 99,000."""
+ENRICHED = ["--context-ceiling", "120000", "--fold-chunk", "10000"]
+"""C = 120,000 and K = 10,000: trigger 90,000, wall 108,000. The system message and
+the tools, every tool with its purpose_note (Purpose 5), stay under a fifth of C."""
 SMALL = [*ENRICHED, "--skeleton-only-folds"]
 """The same, its folds skeleton-only and applied at once."""
+ROOMY_ENRICHED = ["--context-ceiling", "130000", "--fold-chunk", "10000"]
+"""``ENRICHED`` with room for a system message and tools past 24,000 tokens, up to 26,000,
+20% of 130,000 (CM-27), as the MAIN prompt, the delegate tools and every tool's
+purpose_note have grown (about 24,700 tokens with all four B9 lanes)."""
+ROOMY = [*ROOMY_ENRICHED, "--skeleton-only-folds"]
 
 
 @pytest.fixture
@@ -153,9 +161,9 @@ def test_the_geometry_scales_its_budgets_on_small_ceilings_and_refuses_too_littl
 
 async def test_the_gateways_input_limit_caps_the_ceiling(harness: Harness) -> None:
     # Keep this positive capping fixture above the system/tool geometry floor.
-    harness.gateway.limits = {"main": {"max_input_tokens": 100_000, "max_output_tokens": 8_000}}
+    harness.gateway.limits = {"main": {"max_input_tokens": 120_000, "max_output_tokens": 8_000}}
     record = await harness.run("run-1", [Reply("Hi.")])
-    assert folds(record)["geometry"]["ceiling"] == 100_000  # the output is not in it
+    assert folds(record)["geometry"]["ceiling"] == 120_000  # the output is not in it
 
 
 async def test_a_claude_models_window_is_shared_with_its_answer(harness: Harness) -> None:
@@ -168,7 +176,9 @@ async def test_a_claude_models_window_is_shared_with_its_answer(harness: Harness
             "litellm_provider": "anthropic",
         }
     }
-    record = await harness.run("run-1", [Reply("Hi.")])
+    # On chat completions, which sets no answer length, the model's whole output comes
+    # off; the gateway lists it as Anthropic's, so the API is named (CM-41).
+    record = await harness.run("run-1", [Reply("Hi.")], options=["--api", "main=chat"])
     assert folds(record)["geometry"]["ceiling"] == 136_000
 
 
@@ -213,7 +223,7 @@ async def test_past_the_trigger_the_oldest_span_folds_and_old_large_results_beco
     finally:
         store.close()
     results += seed(harness, 7, run="later")
-    record = await harness.run("run-1", [Reply("Done.")], options=SMALL)
+    record = await harness.run("run-1", [Reply("Done.")], options=ROOMY)
     (made,) = folds(record)["folds"]
     assert made["state"] == "skeleton_only"
     assert made["freed"] > 0.1 * 86_000
@@ -248,6 +258,42 @@ async def test_past_the_trigger_the_oldest_span_folds_and_old_large_results_beco
     assert (view["folds"], view["stubs"]) == ([made["fold"]], raw[:-5])
     assert folds(after)["folds"] == []
     assert stubs(harness.gateway.main[0]) == raw[:-5]
+
+
+async def test_applied_fold_keeps_recent_context_beyond_five_results(harness: Harness) -> None:
+    """Drive the real fold path: the recent floor protects more than five raw results."""
+    harness.gateway.per_token = 4.0
+    identifiers = seed(harness, 60, size=6_000)
+    options = ["--context-ceiling", "120000", "--fold-chunk", "40000", "--skeleton-only-folds"]
+    result = await harness.run("recent-floor", [Reply("Done.")], options=options)
+    assert folds(result)["folds"]
+    (request,) = harness.gateway.main
+    omitted = stubs(request)
+    assert omitted
+    assert not set(identifiers[-10:]) & set(omitted)
+    store = ProjectStore(harness.state)
+    try:
+        archive = Archive(store.control)
+        for identifier in identifiers[-10:]:
+            assert archive.message(PROJECT, identifier).chat() in request
+        # Stubs keep exact original IDs, and neither stubbing nor a new run rewrites them.
+        originals = {identifier: archive.message(PROJECT, identifier) for identifier in omitted}
+        assert all(len(row.entry.content or "") > 6_000 for row in originals.values())
+    finally:
+        store.close()
+    await harness.run("after-recent-floor", [Reply("Again.")], options=options)
+    (reopened,) = harness.gateway.main
+    assert stubs(reopened) == omitted
+    store = ProjectStore(harness.state)
+    try:
+        archive = Archive(store.control)
+        assert all(
+            archive.message(PROJECT, identifier) == row for identifier, row in originals.items()
+        )
+        for identifier in identifiers[-10:]:
+            assert archive.message(PROJECT, identifier).chat() in reopened
+    finally:
+        store.close()
 
 
 async def test_between_rebuilds_a_request_only_grows_at_its_end(harness: Harness) -> None:
@@ -293,7 +339,7 @@ def folder(archive: Archive, top: int, chunk: int) -> tuple[Folder, Transcript]:
     view = session_view(archive, CONTEXT, geometry=start)
     made = Folder(archive, CONTEXT, run="r", view=view, start=start, ceiling=top, chunk=chunk)
     system = {"role": "system", "content": "s" * 400}
-    return made, Transcript(messages=[system, *view.messages])
+    return made, Transcript(context=AgentContext(messages=[system, *view.messages]))
 
 
 async def test_three_weak_folds_trip_the_breaker(archive: Archive) -> None:
@@ -301,8 +347,8 @@ async def test_three_weak_folds_trip_the_breaker(archive: Archive) -> None:
         worked(archive, "earlier", n, 1_000)
     worked(archive, "earlier", 99, 600_000)  # the newest, which no fold may take
     made, transcript = folder(archive, 160_000, 2_000)
-    transcript.usage.append(ModelUsage(model="m"))  # the run has called: its folds count
-    assert not await made.before_call(transcript)
+    transcript.context.usage.append(ModelUsage(model="m"))  # the run has called: its folds count
+    assert not await made.before_call(FoldPoint(transcript.context, transcript.turns))
     assert (made.weak, made.stopped) == (3, "breaker")
     assert len(made.folds) == 3
 
@@ -310,24 +356,24 @@ async def test_three_weak_folds_trip_the_breaker(archive: Archive) -> None:
 async def test_a_view_over_the_wall_with_nothing_to_fold_stops(archive: Archive) -> None:
     worked(archive, "earlier", 0, 700_000)
     made, transcript = folder(archive, 160_000, 50_000)
-    assert not await made.before_call(transcript)
+    assert not await made.before_call(FoldPoint(transcript.context, transcript.turns))
     assert (made.stopped, made.folds) == ("irreducible", [])
-    assert transcript.rebuilt is None  # nothing changed
+    assert transcript.context.rebuilt is None  # nothing changed
 
 
 async def test_past_the_wall_it_folds_until_the_view_fits(archive: Archive) -> None:
     for n in range(200):
         worked(archive, "earlier", n, 4_000)  # too short to stub
     made, transcript = folder(archive, 160_000, 32_000)
-    assert made.tokens(transcript) > made.start.wall
-    assert await made.before_call(transcript)
+    assert made.tokens(FoldPoint(transcript.context, transcript.turns)) > made.start.wall
+    assert await made.before_call(FoldPoint(transcript.context, transcript.turns))
     assert made.geometry is not None
-    assert made.tokens(transcript) <= made.geometry.wall
+    assert made.tokens(FoldPoint(transcript.context, transcript.turns)) <= made.geometry.wall
     spans = [cast(list[int], fold["span"]) for fold in made.folds]
     assert len(spans) >= 2
     # Contiguous and never overlapping (CM-F1).
     assert all(later[0] > earlier[1] for earlier, later in pairwise(spans))
-    sent = transcript.sent
+    sent = transcript.context.sent
     assert sent[0]["content"] == "s" * 400
     assert FOLD_REGION.text in str(sent[2]["content"])
 
@@ -341,21 +387,21 @@ async def test_each_rebuild_renders_the_research_state_as_it_is_then(archive: Ar
     state = {"version": 1}
     made.digest = lambda budget: f"Research state {state['version']} in {budget} characters."
     state["version"] = 2
-    assert await made.before_call(transcript)
+    assert await made.before_call(FoldPoint(transcript.context, transcript.turns))
     assert made.geometry is not None
-    block = str(transcript.sent[1]["content"])
+    block = str(transcript.context.sent[1]["content"])
     assert f"Research state 2 in {made.geometry.digest * 4} characters." in block
     # Between rebuilds, the research state may change; the view does not.
     state["version"] = 3
-    transcript.messages.append({"role": "user", "content": "More."})
-    assert str(transcript.sent[1]["content"]) == block
+    transcript.context.messages.append({"role": "user", "content": "More."})
+    assert str(transcript.context.sent[1]["content"]) == block
     # Past the trigger again: the next safe point folds, and renders it again.
     folded = len(made.folds)
-    transcript.messages.append({"role": "user", "content": "x" * 160_000})
-    assert made.tokens(transcript) > made.geometry.trigger
-    assert await made.before_call(transcript)
+    transcript.context.messages.append({"role": "user", "content": "x" * 160_000})
+    assert made.tokens(FoldPoint(transcript.context, transcript.turns)) > made.geometry.trigger
+    assert await made.before_call(FoldPoint(transcript.context, transcript.turns))
     assert len(made.folds) == folded + 1
-    assert "Research state 3 in " in str(transcript.sent[1]["content"])
+    assert "Research state 3 in " in str(transcript.context.sent[1]["content"])
 
 
 # Spans (CM-23).
@@ -496,7 +542,10 @@ async def test_a_rebuilt_view_shows_the_records_in_its_region_and_names_those_le
     made, transcript = folder(archive, 160_000, 4_000)  # each fold frees over a tenth
     made.geometry = made.start
     for _ in range(6):
-        assert await made._fold(transcript, made.tokens(transcript))
+        assert await made._fold(
+            FoldPoint(transcript.context, transcript.turns),
+            made.tokens(FoldPoint(transcript.context, transcript.turns)),
+        )
     view = session_view(  # a region of 1,500 characters
         archive, CONTEXT, geometry=Geometry(10_000, 0, 2_000, 1.0), per_token=1.0
     )
@@ -543,11 +592,11 @@ async def test_a_large_archive_folds_to_fit_before_the_first_call(archive: Archi
     for n in range(200):
         worked(archive, "earlier", n, 4_000)  # about 200,000 tokens, folded never
     made, transcript = folder(archive, 160_000, 16_000)
-    assert made.tokens(transcript) > 200_000
-    assert await made.before_call(transcript)
+    assert made.tokens(FoldPoint(transcript.context, transcript.turns)) > 200_000
+    assert await made.before_call(FoldPoint(transcript.context, transcript.turns))
     assert made.geometry is not None
     assert (made.weak, made.stopped) == (0, None)
-    assert made.tokens(transcript) <= made.geometry.wall
+    assert made.tokens(FoldPoint(transcript.context, transcript.turns)) <= made.geometry.wall
     assert len(made.folds) >= 3
 
 
@@ -574,9 +623,9 @@ async def test_a_context_error_caps_the_ceiling_at_what_the_model_took(archive: 
     for n in range(30):
         worked(archive, "earlier", n, 4_000)
     made, transcript = folder(archive, 160_000, 10_000)
-    assert await made.before_call(transcript)
-    transcript.usage.append(ModelUsage(model="m", input_tokens=40_000, output_tokens=10))
-    assert await made.overflow(transcript)
+    assert await made.before_call(FoldPoint(transcript.context, transcript.turns))
+    transcript.context.usage.append(ModelUsage(model="m", input_tokens=40_000, output_tokens=10))
+    assert await made.overflow(FoldPoint(transcript.context, transcript.turns))
     assert made.geometry is not None
     assert made.geometry.ceiling == 40_000
     assert cast(Json, made.summary())["capped"] == 40_000
@@ -712,7 +761,10 @@ async def test_a_span_too_large_for_its_record_is_folded_smaller(archive: Archiv
     worked(archive, "earlier", 99, 40_000)
     made, transcript = folder(archive, 160_000, 4_000)
     made.geometry = made.start
-    assert await made._fold(transcript, made.tokens(transcript))
+    assert await made._fold(
+        FoldPoint(transcript.context, transcript.turns),
+        made.tokens(FoldPoint(transcript.context, transcript.turns)),
+    )
     (fold,) = made.folds
     assert fold["span"][1] - fold["span"][0] + 1 < 24  # fewer than the chunk's 12 calls
 
@@ -727,7 +779,9 @@ class Run:
     def __init__(self, archive: Archive, name: str, made: Folder, system: int) -> None:
         self.archive, self.name, self.made = archive, name, made
         self.transcript = Transcript(
-            messages=[{"role": "system", "content": "s" * system}, *made.view.messages]
+            context=AgentContext(
+                messages=[{"role": "system", "content": "s" * system}, *made.view.messages]
+            )
         )
         self.calls = 0
 
@@ -743,7 +797,7 @@ class Run:
 
     def add(self, entry: Entry) -> Archived:
         row = self.archive.append(PROJECT, SESSION, self.name, entry)
-        self.transcript.messages.append(row.chat())
+        self.transcript.context.messages.append(row.chat())
         return row
 
     def work(self, size: int, *, answered: bool = True) -> None:
@@ -760,8 +814,10 @@ class Run:
     async def safe_point(self) -> bool:
         """A safe point before a model call, and the call made: it reports nothing, so the
         view is estimated afresh, as the run's own calls count toward the breaker."""
-        found = await self.made.before_call(self.transcript)
-        self.transcript.usage.append(ModelUsage(model="m"))
+        found = await self.made.before_call(
+            FoldPoint(self.transcript.context, self.transcript.turns)
+        )
+        self.transcript.context.usage.append(ModelUsage(model="m"))
         return found
 
 
@@ -829,7 +885,9 @@ async def test_a_session_with_an_interrupted_run_folds_without_losing_a_message(
             if number == 3 and step == 6:
                 break  # the run is interrupted during a call
             assert await run.safe_point()
-            largest = max(largest, run.made.tokens(run.transcript))
+            largest = max(
+                largest, run.made.tokens(FoldPoint(run.transcript.context, run.transcript.turns))
+            )
     assert largest <= 100_000
     spans = spans_of(archive)
     assert len(spans) >= 5
@@ -859,7 +917,7 @@ async def test_the_users_constraint_survives_twenty_runs_of_folds(archive: Archi
         for _ in range(10):
             run.work(4_500)
             assert await run.safe_point()
-            assert constraint in json.dumps(run.transcript.sent, ensure_ascii=False)
+            assert constraint in json.dumps(run.transcript.context.sent, ensure_ascii=False)
         folds += len(run.made.folds)
     assert folds >= 10
 
@@ -964,12 +1022,13 @@ async def test_a_learned_ceiling_carries_to_the_next_run(harness: Harness) -> No
     the model took, is kept in the run's record; a later run whose first call fails for
     its length caps at it."""
     harness.gateway.per_token = 4.0
-    seed(harness, 18)  # about 106,000 tokens with the system message and tools
+    seed(harness, 20)  # about 118,000 tokens with the system message and tools: its cap
+    # leaves the prompt within 20% of the ceiling (MAX_PROMPT)
     first = await harness.run(
         "run-1", [Reply(calls=[("plan_read", {})]), Reply(status=400, error=TOO_LONG)]
     )
     capped = folds(first)["capped"]
-    assert 100_000 < capped < 120_000
+    assert 100_000 < capped < 130_000
     # Run 1's fold and stubs leave run 2 nothing above its floor to fold: it caps, and
     # stops for the length the gateway refused.
     second = await harness.run("run-2", [Reply(status=400, error=TOO_LONG)], status=3)
@@ -1007,7 +1066,7 @@ async def test_a_fold_enriched_while_the_run_goes_on_is_applied_by_the_wall(
     run goes on, by the run's own model sent the run's request unchanged and one
     instruction; past the wall the run waits for it and applies it with its narrative."""
     harness.gateway.per_token = 4.0
-    seed(harness, 13)
+    seed(harness, 14)
     outputs = Reply(calls=[("shell", {"script": PRINT}), ("shell", {"script": PRINT})])
     record = await harness.run("run-1", [outputs, Reply("Done.")], options=ENRICHED)
     (made,) = folds(record)["folds"]
@@ -1040,7 +1099,7 @@ async def test_a_fold_enrichment_reads_the_prompt_cache_of_the_run_it_follows(
     before it did, and then the one instruction: the gateway can read all of the run's
     view from the cache the run wrote."""
     harness.gateway.per_token = 4.0
-    seed(harness, 13)
+    seed(harness, 14)
     outputs = Reply(calls=[("shell", {"script": PRINT}), ("shell", {"script": PRINT})])
     options = [*ENRICHED, "--api", "main=responses"]
     record = await harness.run("run-1", [outputs, Reply("Done.")], options=options)
@@ -1066,7 +1125,7 @@ async def test_a_failed_enrichment_is_tried_once_more_then_the_fold_is_skeleton_
     skeleton-only, the view unchanged until it is applied."""
     harness.gateway.per_token = 4.0
     harness.gateway.enrich = [Reply(calls=[("plan_read", {})]), Reply("Not JSON at all.")]
-    seed(harness, 13)
+    seed(harness, 14)
     outputs = Reply(calls=[("shell", {"script": PRINT}), ("shell", {"script": PRINT})])
     record = await harness.run("run-1", [outputs, Reply("Done.")], options=ENRICHED)
     (made,) = folds(record)["folds"]
@@ -1089,7 +1148,7 @@ async def test_a_fold_ready_when_its_run_ends_is_kept_for_the_next_run(
     harness.gateway.per_token = 4.0
     narrative = json.dumps({"narrative": "Earlier work, as its outline shows.", "keys": []})
     harness.gateway.enrich = [Reply(narrative, cost="0.0042")]
-    seed(harness, 13)
+    seed(harness, 14)
 
     async def kept() -> None:
         for _ in range(200):
@@ -1134,7 +1193,7 @@ async def test_a_fold_ready_when_its_run_ends_is_kept_for_the_next_run(
 async def test_saved_answer_includes_fold_cancelled_during_run_cleanup(harness: Harness) -> None:
     """The persisted run summary is captured after its fold lease settles."""
     harness.gateway.per_token = 4.0
-    seed(harness, 13)
+    seed(harness, 14)
     entered, release = asyncio.Event(), asyncio.Event()
 
     async def blocked_enrichment() -> None:
@@ -1188,12 +1247,16 @@ async def test_past_the_wall_a_fold_not_ready_in_time_folds_skeleton_only(
         events.append(data)
 
     made.events = write
-    transcript = Transcript(messages=[{"role": "system", "content": "s"}, *view.messages])
-    assert await made.before_call(transcript)  # past the trigger: the fold begins
+    transcript = Transcript(
+        context=AgentContext(messages=[{"role": "system", "content": "s"}, *view.messages])
+    )
+    assert await made.before_call(
+        FoldPoint(transcript.context, transcript.turns)
+    )  # past the trigger: the fold begins
     assert made.running is not None
     assert [e["state"] for e in events] == ["started"]
-    transcript.messages.append({"role": "user", "content": "x" * 40_000})  # past the wall
-    assert await made.before_call(transcript)
+    transcript.context.messages.append({"role": "user", "content": "x" * 40_000})  # past the wall
+    assert await made.before_call(FoldPoint(transcript.context, transcript.turns))
     assert [e["state"] for e in events] == ["started", "waiting", "waited", "skeleton_only"]
     assert events[2]["seconds"] >= 0.2
     assert events[3]["reason"] == "skeleton-only: it was not ready"
@@ -1397,10 +1460,12 @@ async def wall_run(archive: Archive, model: object) -> tuple[Folder, Transcript,
         events.append(data)
 
     made.events = write
-    transcript = Transcript(messages=[{"role": "system", "content": "s"}, *view.messages])
-    assert await made.before_call(transcript)
-    transcript.messages.append({"role": "user", "content": "x" * 40_000})
-    assert await made.before_call(transcript)
+    transcript = Transcript(
+        context=AgentContext(messages=[{"role": "system", "content": "s"}, *view.messages])
+    )
+    assert await made.before_call(FoldPoint(transcript.context, transcript.turns))
+    transcript.context.messages.append({"role": "user", "content": "x" * 40_000})
+    assert await made.before_call(FoldPoint(transcript.context, transcript.turns))
     return made, transcript, events
 
 
@@ -1457,9 +1522,11 @@ async def test_run_end_counts_only_a_dispatched_fold_once(archive: Archive, stag
         model=cast(Any, Waiting()),
         admit=admit,
     )
-    transcript = Transcript(messages=[{"role": "system", "content": "s"}, *view.messages])
-    async with made.lease():
-        assert await made.before_call(transcript)
+    transcript = Transcript(
+        context=AgentContext(messages=[{"role": "system", "content": "s"}, *view.messages])
+    )
+    async with FoldLifecycle(made).lease():
+        assert await made.before_call(FoldPoint(transcript.context, transcript.turns))
         await asyncio.wait_for(entered.wait(), 1)
         made.summary()
         made.summary()
@@ -1513,7 +1580,7 @@ async def test_cancelled_run_snapshots_fold_receipt_after_lease(archive: Archive
             run_id="r",
             history=view.messages,
             stop=stop,
-            hooks=(folder,),
+            hooks=(FoldLifecycle(folder),),
             folds=folder,
             system="System.",
         )
@@ -1556,9 +1623,11 @@ async def test_journaled_fold_never_adds_identityless_cancel_estimate(
         archive, CONTEXT, run="r", view=view, start=start, ceiling=48_000,
         chunk=10_000, model=model,
     )  # fmt: skip
-    transcript = Transcript(messages=[{"role": "system", "content": "s"}, *view.messages])
-    async with made.lease():
-        assert await made.before_call(transcript)
+    transcript = Transcript(
+        context=AgentContext(messages=[{"role": "system", "content": "s"}, *view.messages])
+    )
+    async with FoldLifecycle(made).lease():
+        assert await made.before_call(FoldPoint(transcript.context, transcript.turns))
         await asyncio.wait_for(entered.wait(), 1)
     assert cast(Json, made.summary())["calls"] == []
     assert journal == ([] if phase == "pre_intent" else [("model-1", "observed")])
@@ -1568,7 +1637,7 @@ async def test_fold_response_cancelled_during_validation_has_no_input_estimate(
     archive: Archive, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The returned call's usage owns it, including if validation is interrupted."""
-    from sandbox_science.orchestrator.history.enrich import EnrichmentProgress, enrich
+    from sandbox_science.orchestrator.context.history.enrich import EnrichmentProgress, enrich
     from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel
 
     rows, record = spanned(archive, "A supported result remains open.")
@@ -1578,7 +1647,9 @@ async def test_fold_response_cancelled_during_validation_has_no_input_estimate(
         entered.set()
         await asyncio.sleep(3600)
 
-    monkeypatch.setattr("sandbox_science.orchestrator.history.enrich.threaded", waiting_check)
+    monkeypatch.setattr(
+        "sandbox_science.orchestrator.context.history.enrich.threaded", waiting_check
+    )
     model = ScriptedModel([ModelTurn(answer_with("A supported result remains open."))])
     progress = EnrichmentProgress()
     spent: list[ModelUsage] = []
@@ -1648,8 +1719,10 @@ async def test_a_fold_whose_archiving_failed_counts_its_calls_once(archive: Arch
         raise OSError("the archive is gone")
 
     made._keep = unkept  # type: ignore[method-assign]
-    transcript = Transcript(messages=[{"role": "system", "content": "s"}, *view.messages])
-    assert await made.before_call(transcript)
+    transcript = Transcript(
+        context=AgentContext(messages=[{"role": "system", "content": "s"}, *view.messages])
+    )
+    assert await made.before_call(FoldPoint(transcript.context, transcript.turns))
     running = made.running
     assert running is not None
     assert running.task is not None
@@ -1667,7 +1740,7 @@ async def test_size_rejected_enrichment_gets_measured_bounded_repair(
     archive: Archive,
     failure: str,
 ) -> None:
-    from sandbox_science.orchestrator.history.enrich import enrich
+    from sandbox_science.orchestrator.context.history.enrich import enrich
     from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel
 
     rows, record = spanned(archive, "Known result; the proof obligation remains open.")
@@ -1726,7 +1799,7 @@ async def test_size_rejected_enrichment_gets_measured_bounded_repair(
 async def test_second_size_failure_keeps_same_honest_skeleton_and_call_bound(
     archive: Archive,
 ) -> None:
-    from sandbox_science.orchestrator.history.enrich import enrich
+    from sandbox_science.orchestrator.context.history.enrich import enrich
     from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel
 
     rows, record = spanned(archive, "Unresolved proof obligation and retained source.")
@@ -1752,7 +1825,7 @@ async def test_second_size_failure_keeps_same_honest_skeleton_and_call_bound(
 async def test_fold_admission_denial_keeps_the_skeleton_without_a_paid_call(
     archive: Archive,
 ) -> None:
-    from sandbox_science.orchestrator.history.enrich import enrich
+    from sandbox_science.orchestrator.context.history.enrich import enrich
     from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel
 
     rows, record = spanned(archive, "An unresolved proof obligation remains.")
@@ -1780,7 +1853,7 @@ async def test_fold_admission_denial_keeps_the_skeleton_without_a_paid_call(
 async def test_fold_retry_checks_admission_again_and_releases_its_first_hold(
     archive: Archive,
 ) -> None:
-    from sandbox_science.orchestrator.history.enrich import enrich
+    from sandbox_science.orchestrator.context.history.enrich import enrich
     from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel
 
     rows, record = spanned(archive, "An unresolved proof obligation remains.")
@@ -1816,7 +1889,7 @@ async def test_fold_retry_checks_admission_again_and_releases_its_first_hold(
 async def test_fold_admission_hold_releases_when_model_call_is_cancelled(
     archive: Archive,
 ) -> None:
-    from sandbox_science.orchestrator.history.enrich import enrich
+    from sandbox_science.orchestrator.context.history.enrich import enrich
     from sandbox_science.orchestrator.model import ModelTurn
 
     rows, record = spanned(archive, "An unresolved proof obligation remains.")
@@ -1849,7 +1922,7 @@ async def test_fold_size_repair_runs_through_gateway_and_keeps_cached_prefix(
     harness: Harness,
 ) -> None:
     harness.gateway.per_token = 4.0
-    seed(harness, 13)
+    seed(harness, 14)
     harness.gateway.enrich = [
         Reply(answer_with("x" * 20_000)),
         Reply(answer_with("Earlier work remains conditional.", keys=[])),

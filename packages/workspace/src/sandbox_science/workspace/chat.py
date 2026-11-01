@@ -55,7 +55,7 @@ from sandbox_science.orchestrator.runstate import PAGE, ChatMessage, RunEvent, R
 from sandbox_science.orchestrator.runtree import RunTrees
 from sandbox_science.orchestrator.worker_client import WorkerAPIError
 
-from . import api, recovery_controls, uploads
+from . import recovery_controls, uploads
 from .context import (
     CONTEXT,
     USER_ID,
@@ -65,6 +65,7 @@ from .context import (
     json_body,
     session_record,
 )
+from .requests import dumps
 
 PATH: Final = "/api/v0/projects/{project}/sessions/{session}"
 _IDENTIFIER: Final = TypeAdapter[str](Identifier)
@@ -199,7 +200,7 @@ async def post(request: web.Request) -> web.Response:
             question=found if isinstance(found, Question) else None,
             run=state.lease(project, session),
         )
-        return api.dumps(written.model_dump(mode="json"))
+        return dumps(written.model_dump(mode="json"))
 
     return json_answer(await asyncio.to_thread(write))
 
@@ -227,7 +228,7 @@ async def listed(request: web.Request) -> web.Response:
     ):
         state = await _environment_state(context, environment)
         listing = listing.model_copy(update={"environment": state})
-    return json_answer(api.dumps(listing.model_dump(mode="json")))
+    return json_answer(dumps(listing.model_dump(mode="json")))
 
 
 async def _environment_state(
@@ -261,7 +262,7 @@ async def events(request: web.Request) -> web.Response:
         # A delegated run holds no lease: it is active while its root holds the session.
         now = RunTrees(context.documents).state(project, session, run)
         status: Literal["active", "ended", "interrupted"] = "active" if now == "running" else now
-        return api.dumps(EventPage(state=status, events=found).model_dump(mode="json"))
+        return dumps(EventPage(state=status, events=found).model_dump(mode="json"))
 
     return json_answer(await asyncio.to_thread(read))
 
@@ -294,7 +295,7 @@ async def resume(request: web.Request) -> web.Response:
         # Durable tree claims admit only their own inputs atomically. Global legacy
         # requeue here could release another tree's or a stopped branch's messages.
         resumed = RunState(context.writer).resume(project, session) if recovery is None else 0
-        return api.dumps(
+        return dumps(
             Requested(requested=True, resumed=resumed, resume_request=recovery).model_dump(
                 mode="json"
             )
@@ -312,7 +313,7 @@ async def cancel(request: web.Request) -> web.Response:
     def write() -> str:
         session_record(context.projects, project, session)
         RunState(context.writer).cancel(project, session, run)
-        return api.dumps(Requested(requested=True).model_dump(mode="json"))
+        return dumps(Requested(requested=True).model_dump(mode="json"))
 
     return json_answer(await asyncio.to_thread(write))
 
@@ -333,7 +334,7 @@ async def questions(request: web.Request) -> web.Response:
             else store.listed(project, session),
             run=RunState(context.documents).lease(project, session),
         )
-        return api.dumps(listing.model_dump(mode="json"))
+        return dumps(listing.model_dump(mode="json"))
 
     return json_answer(await asyncio.to_thread(read))
 
@@ -357,6 +358,6 @@ async def answer(request: web.Request) -> web.Response:
         answered = Questions(context.writer).answer(
             project, session, question_id, given, live_after=live_after
         )
-        return api.dumps(QuestionAnswer(question=answered).model_dump(mode="json"))
+        return dumps(QuestionAnswer(question=answered).model_dump(mode="json"))
 
     return json_answer(await asyncio.to_thread(write))

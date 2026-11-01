@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from sandbox_science.launcher.config import LauncherError, load_config
+from sandbox_science.launcher.config import LauncherConfig, LauncherError, load_config
 
 
 def test_paths_are_against_the_file_and_home(make_config: Any, home: Path) -> None:
@@ -133,7 +133,8 @@ def test_the_example_config_is_a_launcher_config(home: Path) -> None:
     assert config.workspace.static == example.parent / "../web/workspace/dist"
     assert config.workspace.preview() == "127.0.0.1:8201"
     assert config.workspace.preview_name is None  # the workspace's default, localhost
-    assert config.openshell.model_dump()["environments"]["suspend_after"] == 3600.0
+    # Idle suspension is off by default (D100), and the example leaves it off.
+    assert config.openshell.model_dump()["environments"].get("suspend_after") is None
     assert config.run_service.math_checks == example.parent / "../web/workspace/dist-math"
     assert config.model.watcher == config.model.name == config.model.reviewer
     assert config.model.delegated == config.model.name
@@ -154,7 +155,7 @@ def test_the_labs_config_needs_nothing_added_by_hand(home: Path, tmp_path: Path)
         [
             sys.executable, "-I", str(script), str(out), "--state-dir", str(tmp_path / "state"),
             "--project", "lab41", "--profile", "crypto-base", "--session", "a",
-            "--mcp-proxy", "sandbox-science/mcp-proxy:test", "--provider-env-file", str(owner),
+            "--mcp", "--provider-env-file", str(owner),
         ],
         capture_output=True, text=True, check=False, env={**os.environ, "HOME": str(home)},
     )  # fmt: skip
@@ -162,14 +163,18 @@ def test_the_labs_config_needs_nothing_added_by_hand(home: Path, tmp_path: Path)
     assert out.stat().st_mode & 0o777 == 0o600
     config = load_config(out)
     assert config.model.delegated == config.model.reviewer == config.model.name
-    proxy = config.mcp_proxy
-    assert proxy is not None
-    assert proxy.provider_env_file == owner
+    direct = config.mcp_direct
+    assert direct is not None
+    assert direct.provider_env_file == owner
     assert not owner.exists()
+    assert direct.servers["crypto-research-mcp"].credentials == {
+        "CF-Access-Client-Id": "CF_ACCESS_CLIENT_ID",
+        "CF-Access-Client-Secret": "CF_ACCESS_CLIENT_SECRET",
+    }
     listed = ("attack-catalog-mcp", "e-print-mcp", "nist-csrc-mcp", "paper-search-mcp")
-    assert proxy.index == tuple(f"crypto-research-mcp/{n}" for n in (*listed, "web-fetch-mcp"))
-    assert len(proxy.about) == 7
-    assert proxy.about["crypto-research-mcp/web-fetch-mcp"] == (
+    assert direct.index == tuple(f"crypto-research-mcp/{n}" for n in (*listed, "web-fetch-mcp"))
+    assert len(direct.about) == 7
+    assert direct.about["crypto-research-mcp/web-fetch-mcp"] == (
         "fetch a web page, or its links, as text"
     )
     (project,) = config.projects
@@ -212,27 +217,29 @@ def test_the_labs_config_sets_the_skills(home: Path, tmp_path: Path) -> None:
     assert "a pack is NAME=GIT[@REF]" in refused.stderr
 
 
-def test_the_examples_mcp_proxy_works_uncommented(home: Path, tmp_path: Path) -> None:
+def test_the_examples_mcp_direct_works_uncommented(home: Path, tmp_path: Path) -> None:
     example = Path(__file__).parents[3] / "examples" / "sandbox-science.toml"
     lines = example.read_text().splitlines()
-    start = lines.index("# [mcp_proxy]")
+    start = lines.index("# [mcp_direct]")
     uncommented = [line.removeprefix("# ").removeprefix("#") for line in lines[start:]]
     path = tmp_path / "sandbox-science.toml"
     path.write_text("\n".join([*lines[:start], *uncommented]) + "\n")
-    proxy = load_config(path).mcp_proxy
-    assert proxy is not None
-    assert proxy.providers == ("crypto-research-mcp",)
-    assert proxy.credentials["crypto-research-mcp.CF_ACCESS_CLIENT_SECRET"] == (
-        "CF_ACCESS_CLIENT_SECRET"
-    )
+    loaded = load_config(path)
+    assert loaded.canaries.enabled
+    assert loaded.canaries.interval == 900
+    direct = loaded.mcp_direct
+    assert direct is not None
+    assert direct.providers == ("crypto-research-mcp",)
+    credentials = direct.servers["crypto-research-mcp"].credentials
+    assert credentials["CF-Access-Client-Secret"] == "CF_ACCESS_CLIENT_SECRET"
     # Only named: loading the config opens nothing there.
-    assert proxy.provider_env_file == Path("/path/to/the/owners/cloudflare.env")
-    assert proxy.provider_profile == tmp_path / "openshell/profiles/cloudflare-access.yaml"
+    assert direct.provider_env_file == Path("/path/to/the/owners/cloudflare.env")
+    assert direct.provider_profile == tmp_path / "openshell/profiles/cloudflare-access.yaml"
     # The tool index (lab 39, B5): what each server behind the portal is for.
     listed = ("attack-catalog-mcp", "e-print-mcp", "nist-csrc-mcp", "paper-search-mcp")
-    assert proxy.index == tuple(f"crypto-research-mcp/{n}" for n in (*listed, "web-fetch-mcp"))
-    assert proxy.about["crypto-research-mcp/e-print-mcp"].startswith("the IACR Cryptology ePrint")
-    assert len(proxy.about) == 7
+    assert direct.index == tuple(f"crypto-research-mcp/{n}" for n in (*listed, "web-fetch-mcp"))
+    assert direct.about["crypto-research-mcp/e-print-mcp"].startswith("the IACR Cryptology ePrint")
+    assert len(direct.about) == 7
 
 
 def test_skill_packs_name_urls_as_they_are_and_paths_against_the_file(
@@ -284,45 +291,24 @@ def test_the_examples_skills_work_uncommented(home: Path, tmp_path: Path) -> Non
     assert config.skills.embedding_model == "sandbox-embedding"
 
 
-MCP = {"image": "sandbox-science/mcp-proxy:abc1234", "providers": ["p"], "servers": ["s"]}
+PROXY = {"image": "sandbox-science/mcp-proxy:abc1234", "providers": ["p"], "servers": ["s"]}
+"""An ``[mcp_proxy]`` as configs had it until the MCP proxy retired (D98, 2026-10-26)."""
 
 
-def test_the_mcp_proxy_defaults_to_the_only_project(make_config: Any) -> None:
-    config = load_config(make_config({"mcp_proxy": MCP}))
-    assert config.mcp_project() == "crypto"
-    assert config.mcp_proxy is not None
-    assert config.mcp_proxy.sandbox == "ss-mcp-proxy"
-    assert config.addresses()["MCP proxy's forward"] == "127.0.0.1:18080"
-
-
-@pytest.mark.parametrize(
-    ("changes", "message"),
-    [
-        (
-            {"projects": [{"id": "a", "profile": "minimal"}, {"id": "b", "profile": "minimal"}]},
-            "mcp_proxy.project names the project",
-        ),
-        ({"mcp_proxy": {"project": "other"}}, "is not a project"),
-        ({"mcp_proxy": {"sandbox": "a-name-far-too-long-for-it"}}, "mcp_proxy.sandbox"),
-        ({"mcp_proxy": {"listen": "127.0.0.1:18100"}}, "the worker and the MCP proxy's forward"),
-        ({"mcp_proxy": {"servers": []}}, "mcp_proxy.servers"),
-        (
-            {"mcp_proxy": {"providers": ["crypto-research-mcp"], "provider_env_file": "a.env"}},
-            "mcp_proxy.provider_env_file needs provider_profile",
-        ),
-        (
-            {"mcp_proxy": {"provider_env_file": "a.env", "provider_profile": "a.yaml"}},
-            "registers the provider crypto-research-mcp, which mcp_proxy.providers must name",
-        ),
-    ],
-)
-def test_an_mcp_proxy_that_cannot_work_is_refused(
-    make_config: Any, changes: dict[str, Any], message: str
+@pytest.mark.parametrize("proxy", [PROXY, {}])
+def test_the_retired_mcp_proxy_is_refused_with_its_replacement(
+    make_config: Any, proxy: dict[str, Any]
 ) -> None:
-    proxy = {**MCP, **changes.get("mcp_proxy", {})}
     with pytest.raises(LauncherError) as error:
-        load_config(make_config({**changes, "mcp_proxy": proxy}))
-    assert message in str(error.value)
+        load_config(make_config({"mcp_proxy": proxy}))
+    said = str(error.value)
+    assert "[mcp_proxy] is retired" in said
+    assert "[mcp_direct]" in said
+    assert "sandbox-science migrate-mcp-config" in said
+    assert "Migrating from [mcp_proxy]" in said
+    # Built in code rather than read from a file, it is refused the same.
+    with pytest.raises(ValueError, match=r"\[mcp_proxy\] is retired"):
+        LauncherConfig.model_validate({"mcp_proxy": proxy})
 
 
 def test_sessions_are_names_or_tables_with_dedicated(make_config: Any) -> None:
@@ -378,3 +364,114 @@ def test_the_run_service_takes_a_watcher_and_the_math_checks(make_config: Any) -
     assert service.math_checks == site / "dist-math"
     assert service.node == str(site / "bin/node")
     assert load_config(make_config()).run_service.node == "node"  # a name on PATH
+
+
+DIRECT = {
+    "servers": {
+        "papers": {
+            "url": "https://mcp.example.test/mcp",
+            "credentials": {"CF-Access-Client-Id": "CF_ACCESS_CLIENT_ID"},
+        }
+    }
+}
+
+
+def test_the_canaries_ask_the_runtimes_client_and_are_off_by_default(
+    make_config: Any, tmp_path: Path
+) -> None:
+    import json
+
+    from sandbox_science.launcher import orchestrator, parts
+
+    from .test_direct_mcp import DIRECT, direct_files
+
+    direct_files(tmp_path)
+    config = load_config(make_config({"mcp_direct": DIRECT}))
+    assert not config.canaries.enabled
+    assert config.canaries.interval == 900
+    config = load_config(make_config({"mcp_direct": DIRECT, "canaries": {"enabled": True}}))
+    layout = parts.prepare(config)
+    # The control service runs them over the runtime's connection.
+    directory, upload = orchestrator.prepare(config, layout)
+    host = json.loads((directory / "control.json").read_text())
+    assert host["canaries"] == {
+        "project": "crypto",
+        "servers": ["crypto-research-mcp"],
+        "interval": 900.0,
+    }
+    assert "proxy" not in host
+    assert json.loads((upload / "runtime.json").read_text())["mcp"]["project"] == "crypto"
+    # Off, control runs none; the runtime keeps its client.
+    config = load_config(make_config({"mcp_direct": DIRECT}))
+    directory, upload = orchestrator.prepare(config, parts.prepare(config))
+    assert "canaries" not in json.loads((directory / "control.json").read_text())
+    assert "mcp" in json.loads((upload / "runtime.json").read_text())
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"mcp_direct": DIRECT, "orchestrator": None}, "mcp_direct's client runs in the agent"),
+        ({"mcp_direct": DIRECT, "mcp_proxy": PROXY}, "[mcp_proxy] is retired"),
+        (
+            {"mcp_direct": {**DIRECT, "provider_env_file": "cf.env"}},
+            "provider_env_file needs provider_profile",
+        ),
+        (
+            {
+                "mcp_direct": {
+                    **DIRECT,
+                    "provider_env_file": "cf.env",
+                    "provider_profile": "profile.yaml",
+                }
+            },
+            "mcp_direct.providers must name",
+        ),
+        ({"mcp_direct": {**DIRECT, "about": {"other": "x"}}}, "mcp_direct.about and index"),
+        ({"mcp_direct": {**DIRECT, "project": "other"}}, "is not a project"),
+        ({"mcp_direct": {"servers": {}}}, "mcp_direct.servers"),
+        ({"mcp_direct": {"servers": {"p": {"url": "ftp://x"}}}}, "mcp_direct.servers"),
+        (
+            {"mcp_direct": {"servers": {"p": {"url": "https://x", "credentials": {"A": "b c"}}}}},
+            "mcp_direct.servers",
+        ),
+    ],
+)
+def test_a_direct_path_that_cannot_work_is_refused(
+    make_config: Any, changes: dict[str, Any], message: str
+) -> None:
+    with pytest.raises(LauncherError) as error:
+        load_config(make_config(changes))
+    assert message in str(error.value)
+
+
+@pytest.mark.parametrize("project_id", ["p" * 64, "ends-with-dash-"])
+def test_a_project_id_that_cannot_be_a_label_value_is_refused(
+    make_config: Any, project_id: str
+) -> None:
+    """Whether or not the config has [mcp_direct]: one rule for every project."""
+    bad = {"id": project_id, "profile": "minimal", "sessions": ["main"]}
+    for extra in ({}, {"mcp_direct": DIRECT}):
+        with pytest.raises(LauncherError, match="cannot label the agent runtime") as error:
+            load_config(make_config({"projects": [bad], **extra}))
+        assert "63 characters" in str(error.value)
+        assert "no rename tool" in str(error.value)
+        assert project_id in str(error.value)
+    ok = {"id": "p" * 63, "profile": "minimal", "sessions": ["main"]}
+    assert load_config(make_config({"projects": [ok]})).projects[0].id == "p" * 63
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"canaries": {"enabled": True}}, "canaries list the servers through the agent runtime"),
+        ({"canaries": {"interval": 30}}, "canaries.interval"),
+        ({"canaries": {"enabled": True, "every": 60}}, "canaries.every"),
+    ],
+)
+def test_canaries_that_cannot_work_are_refused(
+    make_config: Any, changes: dict[str, Any], message: str
+) -> None:
+    with pytest.raises(LauncherError) as error:
+        load_config(make_config(changes))
+    assert message in str(error.value)

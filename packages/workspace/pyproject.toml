@@ -9,6 +9,7 @@ dependencies = [
     "sandbox-science-contracts",
     "sandbox-science-orchestrator",
     "aiohttp>=3.10",
+    "pyjwt[crypto]>=2.9",
 ]
 
 [project.scripts]

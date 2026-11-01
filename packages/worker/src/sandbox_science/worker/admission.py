@@ -14,7 +14,7 @@ its traffic anyway. The worker names admitted hosts in its own compilation
 instead, like the hosts the policy names, and the middleware decides every
 request to them.
 
-``openshell rule get`` has no JSON output at v0.1.3, so the watcher reads its text.
+``openshell rule get`` has no JSON output at v0.1.5, so the watcher reads its text.
 A sandbox chooses the host names and program paths in it. A crafted path can at
 most add hosts the sandbox could have tried anyway, which are decided like any
 other, or hide its own draft. Each check of an environment handles at most

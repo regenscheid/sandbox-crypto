@@ -7,10 +7,12 @@ docs/POLICY.md defines the semantics.
 
 from __future__ import annotations
 
+import ipaddress
 import re
+from dataclasses import dataclass
 from datetime import timedelta
 from enum import StrEnum
-from typing import Annotated, Final, Literal, Self
+from typing import Annotated, Final, Literal, Self, cast
 from urllib.parse import urlsplit
 
 from pydantic import (
@@ -24,13 +26,16 @@ from pydantic import (
     StrictFloat,
     StrictInt,
     StringConstraints,
+    ValidationInfo,
     WithJsonSchema,
     field_validator,
     model_validator,
 )
 
 from .decision import Action
-from .hosts import HostPattern, normalize_host, parse_ip
+from .effects import CATALOG, ClassActions, EffectClass, ToolName
+from .hosts import HostKind, HostPattern, normalize_host, parse_ip
+from .linear_regex import compile_linear
 from .units import ByteSize, Duration
 
 API_VERSION: Final = "sandbox-science/v0alpha1"
@@ -51,6 +56,11 @@ HttpMethod = Literal["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS",
 
 # Strict types: "4_43" or "yes" in quotes must not quietly become 443 or true.
 Port = Annotated[StrictInt, Field(ge=1, le=65535)]
+
+AnyPort = Literal["any"]
+"""``ports: any``: the rule matches every port, not only the scheme's default (D95)."""
+
+Ports = tuple[Port, ...] | AnyPort
 
 
 def _parse_host_pattern(value: object) -> HostPattern:
@@ -147,12 +157,20 @@ class Escalation(StrictModel):
 
 
 class RuleEscalation(StrictModel):
-    """Per-rule escalation overrides."""
+    """Per-rule escalation overrides.
+
+    ``on_timeout`` unset takes the rule's default: ``allow`` for a read-only rule, so that
+    an unanswered read proceeds as an alert (D95), ``deny`` otherwise.
+    """
 
     timeout: Duration | None = None
     on_timeout: OnTimeout | None = None
     allow_credentialed: StrictBool = False
     """With ``on_timeout: allow``, also let a request to a credentialed host proceed."""
+
+
+JobProfileName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")]
+"""A job profile's name, as the worker's settings give it (D93)."""
 
 
 class Resources(StrictModel):
@@ -167,6 +185,21 @@ class Resources(StrictModel):
     job_wall_time_max: Annotated[Duration, Field(le=timedelta(days=7))] | None = None
     jobs_per_session: Annotated[StrictInt, Field(gt=0, le=1024)] | None = None
     jobs_per_environment: Annotated[StrictInt, Field(gt=0, le=1024)] | None = None
+    job_profiles: tuple[JobProfileName, ...] | None = Field(default=None, max_length=32)
+    """The worker's job profiles (D93) a project may run a job sandbox with; the list is
+    the grant. In a pool ceiling, the profiles any project may be granted."""
+    job_sandboxes: Annotated[StrictInt, Field(ge=0, le=64)] | None = None
+    """Job sandboxes a project may have creating, preparing, running or collecting at
+    once (D93); unset at both layers means 0, so the feature is off until granted."""
+    child_profiles: tuple[JobProfileName, ...] | None = Field(default=None, max_length=32)
+    """The worker's child profiles a project's child environments may have (CE-3); the
+    list is the grant, and the ceiling's list, if any, the profiles it permits. Unset, a
+    project may use only its own delegation setting's ``child_profile`` (or the pool's
+    default)."""
+    child_environments_max: Annotated[StrictInt, Field(ge=0, le=64)] | None = None
+    """Child environments a project may have at once, for delegated runs that each work
+    in an environment of their own (docs/specs/child-environments.md, CE-9); unset at
+    both layers means 2, and 0 turns them off whatever the project's setting says."""
     model_budget_usd_per_day: Annotated[StrictFloat, Field(ge=0, allow_inf_nan=False)] | None = None
 
 
@@ -230,7 +263,7 @@ class HttpMatch(StrictModel):
     hosts: tuple[HostPatternField, ...] = Field(min_length=1)
     paths: tuple[PathPrefix, ...] = ()
     methods: tuple[HttpMethod, ...] = ()
-    ports: tuple[Port, ...] = ()
+    ports: Ports = ()
 
 
 class GitMatch(StrictModel):
@@ -239,7 +272,7 @@ class GitMatch(StrictModel):
     hosts: tuple[HostPatternField, ...] = Field(min_length=1)
     paths: tuple[PathPrefix, ...] = ()
     git_service: Literal["upload-pack", "receive-pack"] | None = None
-    ports: tuple[Port, ...] = ()
+    ports: Ports = ()
 
 
 class RuleLimits(StrictModel):
@@ -327,6 +360,38 @@ class MonitorRule(StrictModel):
     name: Name
     when: MonitorConditions
     action: Literal["alert"] = "alert"
+
+
+class Detection(StrictModel):
+    """Detect-and-hold thresholds (D95, D103), which the policy middleware applies to the
+    outward calls of each session: research code's HTTP and git requests by sandbox, the
+    agent's MCP calls by session. Generous by default: about 1,000 calls a day is normal,
+    so velocity and shape decide, and the daily ceiling only stops a runaway."""
+
+    enabled: StrictBool = True
+    host_rate_per_second: Annotated[StrictInt, Field(gt=0)] = 5
+    """Requests to one host per second, sustained over ``host_rate_window``, that hold."""
+    host_rate_window: Duration = timedelta(minutes=1)
+    distinct_hosts: Annotated[StrictInt, Field(gt=0)] = 60
+    """More distinct hosts than this within ``distinct_hosts_window`` hold."""
+    distinct_hosts_window: Duration = timedelta(minutes=10)
+    same_url: Annotated[StrictInt, Field(gt=0)] = 100
+    """The same method and URL this many times within ``shape_window`` holds."""
+    sequential_ids: Annotated[StrictInt, Field(gt=1)] = 50
+    """A run of this many requests to one host whose paths differ only in a number that
+    steps by one, within ``shape_window``, holds (enumeration)."""
+    failures_per_host: Annotated[StrictInt, Field(gt=0)] = 30
+    """Failed responses (4xx or 5xx) or refusals from one host within ``shape_window``."""
+    shape_window: Duration = timedelta(minutes=10)
+    denials: Annotated[StrictInt, Field(gt=0)] = 20
+    """Policy refusals of the session's calls within ``denials_window`` that hold."""
+    denials_window: Duration = timedelta(minutes=5)
+    daily_calls: Annotated[StrictInt, Field(gt=0)] = 20_000
+    """Outward calls per project and UTC day; past it, each session is held."""
+    action_urls: StrictBool = True
+    """Hold a GET or HEAD whose URL reads as an action (a token beside ``confirm``,
+    ``unsubscribe``, ``delete``, ``approve``, ``verify`` and the like) as a permission
+    request of its own."""
 
 
 class ToolRules(StrictModel):
@@ -434,7 +499,7 @@ _MCP_PATH_RE: Final = re.compile(r"/[A-Za-z0-9._~!$&'()+,=:@/-]*")
 
 
 class McpServer(StrictModel):
-    """One MCP server reached through the MCP proxy (D67).
+    """One MCP server, reached by the agent runtime's own client (D98).
 
     ``tool_prefix`` names a namespace prefix the server puts on every tool name,
     such as a portal's ``crypto_research_mcp-``. Tool patterns then match the
@@ -446,6 +511,20 @@ class McpServer(StrictModel):
     auth: McpAuth
     tool_prefix: Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9_./-]{1,64}$")] | None = None
     tools: ToolRules = ToolRules()
+    classification: Name | None = None
+    """The checked-in classification of the server's tools (``classifications/<name>``)."""
+    classify: dict[ToolName, EffectClass] = Field(default_factory=dict[str, EffectClass])
+    """The policy's own classes for tools, by exact name after the prefix; they win over
+    the classification file and the server's hints."""
+    effects: ClassActions = Field(default_factory=ClassActions)
+    """Per-class actions and grant ceilings for this server, over ``mcp.effects``."""
+
+    @field_validator("classification")
+    @classmethod
+    def _known_classification(cls, value: str | None) -> str | None:
+        if value is not None and not (CATALOG / value).is_dir():
+            raise ValueError(f"there is no checked-in classification {value!r}")
+        return value
 
     @field_validator("url")
     @classmethod
@@ -485,27 +564,235 @@ class McpServer(StrictModel):
         return normalize_host(urlsplit(self.url).hostname or "")
 
 
-class McpProxy(StrictModel):
-    """MCP proxy settings (D67).
+STORED: Final = "stored_revision"
+"""Validation context key: the policy is a revision the store kept, read again. A revision
+stored before the MCP proxy retired may set ``mcp.proxy.worker_access`` or ``worker_tools``;
+it still loads, read as if it did not (``Mcp``), so a sandbox bound to it keeps its policy
+instead of failing to load one."""
 
-    ``max_argument_bytes`` bounds the ``params`` of each request the proxy
-    forwards, as compact JSON (for ``tools/call``, the tool name and its
-    arguments): tool arguments can carry data out, as URLs can.
-    ``max_response_bytes`` bounds each answer the proxy reads from a server.
+RETIRED_WORKER_ACCESS: Final = (
+    "mcp.proxy.worker_access and worker_tools are retired with the MCP proxy (D98, "
+    "2026-10-26): research code has no MCP access, so remove them from the policy "
+    "(docs/POLICY.md)"
+)
+
+LEGACY_PROXY_SETTINGS: Final = ("max_response_bytes", "binary_results")
+"""Settings of the retired ``mcp.proxy`` section that nothing reads any more: accepted in
+the old section, dropped when it is read as ``mcp.limits``."""
+
+
+class McpLimits(StrictModel):
+    """MCP request limits, which the policy middleware applies to the agent runtime's MCP
+    requests (D98).
+
+    ``max_argument_bytes`` bounds the ``params`` of each request, as compact JSON (for
+    ``tools/call``, the tool name and its arguments): tool arguments can carry data out,
+    as URLs can. This section was ``mcp.proxy`` until 2026-10-31, named for the MCP proxy
+    that applied it; ``Mcp`` still reads the old name (a policy file or stored revision
+    that says ``proxy``), and the old section's settings the proxy alone used.
     """
 
-    worker_access: StrictBool = False
-    worker_tools: Literal["inherit"] | tuple[ToolPattern, ...] = "inherit"
     max_argument_bytes: Annotated[ByteSize, Field(gt=0)] = 64 * 1024
-    max_response_bytes: ByteSize = 2 * 1024 * 1024
-    binary_results: Literal["artifact"] = "artifact"
+
+
+def _read_legacy_proxy(legacy: object, stored: bool) -> dict[str, object]:
+    """The settings of an old ``mcp.proxy`` section, as ``mcp.limits`` takes them.
+
+    ``worker_access`` and ``worker_tools`` let research code call MCP servers through the
+    proxy. With the proxy retired (D98, 2026-10-26) research code has no MCP access: a
+    policy may still say ``worker_access: false`` and ``worker_tools: inherit``, the
+    defaults, and is refused if it sets anything else. A stored revision read again is
+    read with the defaults instead. ``max_response_bytes`` and ``binary_results`` are
+    read by nothing and dropped; anything else is left for ``McpLimits`` to refuse."""
+    if not isinstance(legacy, dict):
+        raise ValueError("mcp.proxy must be a mapping (it is now mcp.limits)")
+    fields = cast("dict[str, object]", dict(cast("dict[object, object]", legacy)))
+    access, tools = fields.get("worker_access", False), fields.get("worker_tools", "inherit")
+    if not (access is False and tools == "inherit") and not stored:
+        raise ValueError(RETIRED_WORKER_ACCESS)
+    return {
+        key: value
+        for key, value in fields.items()
+        if key not in ("worker_access", "worker_tools", *LEGACY_PROXY_SETTINGS)
+    }
+
+
+InspectionName = Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9-]{0,39}$")]
+"""A pattern's name: it becomes part of a reason code (``answer_blocked_<name>``)."""
+MAX_INSPECTION_REGEX: Final = 512
+"""The longest regular expression an inspection pattern may have, in characters."""
+MAX_INSPECTION_PATTERNS: Final = 64
+
+
+def _check_inspection_regex(value: str) -> str:
+    """Compile an inspection pattern with RE2, which matches in time linear in its input
+    (answers come from MCP servers) and refuses what it cannot: backreferences and
+    lookaround."""
+    compile_linear(value)
+    return value
+
+
+InspectionRegex = Annotated[
+    str,
+    StringConstraints(min_length=1, max_length=MAX_INSPECTION_REGEX),
+    AfterValidator(_check_inspection_regex),
+]
+
+
+class InspectionPattern(StrictModel):
+    """A pattern the policy middleware looks for in MCP answers on the direct path (D98):
+    a match is a finding in the answer's record; ``alert`` also writes an
+    ``mcp-answer-alert`` record, and ``block`` withholds the answer (a JSON answer is
+    refused, an event stream cut at the piece that matched). ``servers`` limits it to some
+    declared servers; without it, it applies to every one. Matched with RE2 (linear time:
+    no backreferences or lookaround), case-sensitive unless the pattern says ``(?i)``."""
+
+    name: InspectionName
+    regex: InspectionRegex
+    action: Literal["alert", "block"] = "alert"
+    servers: tuple[Name, ...] | None = None
+
+
+class McpInspection(StrictModel):
+    """MCP traffic inspection's patterns (docs/POLICY-MIDDLEWARE.md, "MCP traffic
+    inspection"). The deployment's patterns (the middleware's settings) and the shipped
+    defaults apply unless the project's name the same pattern, which replaces them;
+    ``defaults: false`` drops the shipped defaults for the project."""
+
+    defaults: StrictBool = True
+    patterns: tuple[InspectionPattern, ...] = Field(default=(), max_length=MAX_INSPECTION_PATTERNS)
+
+    @model_validator(mode="after")
+    def _unique_names(self) -> Self:
+        names = [pattern.name for pattern in self.patterns]
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        if duplicates:
+            raise ValueError(f"inspection pattern names must be unique: {', '.join(duplicates)}")
+        return self
 
 
 class Mcp(StrictModel):
-    """MCP servers and the proxy that all MCP traffic goes through."""
+    """MCP servers, reached by the agent runtime's own client through OpenShell's native
+    rules and the policy middleware (D98), and their limits."""
 
-    proxy: McpProxy = McpProxy()
+    limits: McpLimits = McpLimits()
+    """Request limits (the section's name until 2026-10-31 was ``proxy``)."""
+    inspection: McpInspection = McpInspection()
+    """Pattern checks on the answers the policy middleware inspects (D98's direct path)."""
     servers: dict[Name, McpServer] = Field(default_factory=dict[str, McpServer])
+    effects: ClassActions = Field(default_factory=ClassActions)
+    """Cross-server per-class actions and grant ceilings, over the shipped defaults (D97)."""
+    browser_automation: Literal["disabled", "enabled"] = "disabled"
+    """Whether ``browse`` calls may happen at all: disabled, they are denied (D96)."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _read_old_proxy_name(cls, data: object, info: ValidationInfo) -> object:
+        """Read ``proxy``, this section's name until 2026-10-31, as ``limits``, so that
+        policy files and stored revisions written before still load."""
+        if not isinstance(data, dict):
+            return data
+        fields = cast("dict[str, object]", dict(cast("dict[object, object]", data)))
+        if "proxy" not in fields:
+            return fields
+        if "limits" in fields:
+            raise ValueError("mcp sets both proxy (the old name) and limits: keep limits")
+        context = info.context
+        stored = isinstance(context, dict) and bool(cast("dict[str, object]", context).get(STORED))
+        fields["limits"] = _read_legacy_proxy(fields.pop("proxy"), stored)
+        return fields
+
+    @model_validator(mode="after")
+    def _inspected_servers_declared(self) -> Self:
+        unknown = sorted(
+            {
+                server
+                for pattern in self.inspection.patterns
+                for server in pattern.servers or ()
+                if server not in self.servers
+            }
+        )
+        if unknown:
+            raise ValueError(f"inspection patterns name undeclared servers: {', '.join(unknown)}")
+        return self
+
+    @model_validator(mode="after")
+    def _browse_needs_automation(self) -> Self:
+        if self.browser_automation == "disabled" and (
+            EffectClass.BROWSE in self.effects
+            or any(EffectClass.BROWSE in server.effects for server in self.servers.values())
+        ):
+            raise ValueError("effects for browse need browser_automation: enabled")
+        return self
+
+
+@dataclass(frozen=True, slots=True)
+class ListedHost:
+    """An entry of a network allowlist: an exact host, ``*.suffix`` or an address range."""
+
+    pattern: HostPattern | None
+    network: ipaddress.IPv4Network | ipaddress.IPv6Network | None = None
+
+    @classmethod
+    def parse(cls, raw: str) -> ListedHost:
+        """Parse an entry as written. Raises ValueError."""
+        if "/" in raw:
+            return cls(None, ipaddress.ip_network(raw, strict=True))
+        pattern = HostPattern.parse(raw)
+        if pattern.kind is HostKind.ANY:
+            raise ValueError("'*' lists every host; use network: open-reads instead")
+        return cls(pattern)
+
+    def matches(self, host: str) -> bool:
+        """Whether a normalized host is listed."""
+        if self.network is not None:
+            address = parse_ip(host)
+            return address is not None and address in self.network
+        return self.pattern is not None and self.pattern.matches(host)
+
+    def __str__(self) -> str:
+        return str(self.network if self.network is not None else self.pattern)
+
+
+def _parse_listed(value: object) -> ListedHost:
+    if isinstance(value, ListedHost):
+        return value
+    if not isinstance(value, str):
+        raise ValueError("allowlist entries must be strings")
+    return ListedHost.parse(value)
+
+
+ListedHostField = Annotated[
+    ListedHost,
+    PlainValidator(_parse_listed),
+    PlainSerializer(str, return_type=str),
+    WithJsonSchema({"type": "string"}),
+]
+
+
+class Lockdown(StrictModel):
+    """Per-project lockdown modes, set by the admin (D95).
+
+    ``network: allowlist`` lets HTTP and git reach only the listed hosts, domains
+    (``*.suffix``) and address ranges; a request elsewhere takes ``unlisted``, whatever the
+    rules say. ``mcp: locked`` makes only tools the policy names callable, so a tool a server
+    adds is unavailable until it is named.
+    """
+
+    network: Literal["open-reads", "allowlist"] = "open-reads"
+    hosts: tuple[ListedHostField, ...] = ()
+    unlisted: Literal[Action.DENY, Action.ESCALATE] = Action.DENY
+    mcp: Literal["declared", "locked"] = "declared"
+
+    @model_validator(mode="after")
+    def _hosts_need_allowlist(self) -> Self:
+        if self.network != "allowlist" and (self.hosts or self.unlisted is not Action.DENY):
+            raise ValueError("hosts and unlisted apply only to network: allowlist")
+        return self
+
+    def listed(self, host: str) -> bool:
+        """Whether network traffic may reach a normalized host under this lockdown."""
+        return self.network != "allowlist" or any(entry.matches(host) for entry in self.hosts)
 
 
 def _parse_credential_host(value: object) -> str:
@@ -607,6 +894,8 @@ class ProjectPolicy(StrictModel):
     credentials: Credentials = Credentials()
     shared_data: SharedData = SharedData()
     data: Data = Data()
+    lockdown: Lockdown = Lockdown()
+    detection: Detection = Detection()
 
     @model_validator(mode="after")
     def _unique_rule_names(self) -> Self:

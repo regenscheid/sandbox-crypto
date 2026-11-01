@@ -7,8 +7,11 @@
   import { guardedWrite } from '../lib/mutation';
   import { idle, type Submitting } from '../lib/submit';
   import ErrorMessage from './ErrorMessage.svelte';
+  import { adminBlock } from '../lib/viewer.svelte';
 
-  let { projectId }: { projectId: string } = $props();
+  let { projectId, open = false }: { projectId: string; open?: boolean } = $props();
+  /** Why this user may not change the agents' models (D104); null when they may. */
+  const blocked = $derived(adminBlock());
   type AgentModelRole = 'main' | 'delegated' | 'reviewer';
   let settings = $state<ModelSettings | null>(null);
   let expected = $state(0);
@@ -42,6 +45,28 @@
     }
   }
 
+  /** The effort choice that keeps the deployment's default, which depends on the API the
+   * run service chooses for the alias (Messages or another). */
+  const DEPLOYMENT = '@deployment';
+
+  function onMessages(role: AgentModelRole): string | null {
+    return settings?.default_efforts?.[role]?.messages ?? null;
+  }
+
+  function deploymentLabel(role: AgentModelRole): string {
+    const usual = settings?.default_efforts?.[role]?.effort ?? 'provider default';
+    const messages = onMessages(role);
+    return messages === null
+      ? `Deployment default (${usual})`
+      : `Deployment default (${messages} on Messages, else ${usual})`;
+  }
+
+  function chooseEffort(role: AgentModelRole, value: string) {
+    const selected = roles[role]!;
+    selected.deployment_default = value === DEPLOYMENT;
+    selected.reasoning_effort = value === DEPLOYMENT ? null : value || null;
+  }
+
   function useDefaults() {
     if (settings) roles = structuredClone(settings.defaults);
   }
@@ -73,7 +98,7 @@
   }
 </script>
 
-<details>
+<details {open}>
   <summary>Agent models and reasoning effort</summary>
   <p class="muted">
     These choices apply when the next research tree starts. Active agents, their children and an
@@ -102,21 +127,21 @@
             <label>
               Reasoning effort
               <select
-                value={roles[role]!.reasoning_effort ?? ''}
+                value={roles[role]!.deployment_default
+                  ? DEPLOYMENT
+                  : (roles[role]!.reasoning_effort ?? '')}
                 disabled={saving.busy || option(roles[role]!.alias)?.effort_supported === false}
-                onchange={(event) => {
-                  roles[role]!.reasoning_effort = event.currentTarget.value || null;
-                }}
+                onchange={(event) => chooseEffort(role, event.currentTarget.value)}
               >
                 <option value="">Provider default</option>
+                {#if onMessages(role) !== null || roles[role]!.deployment_default}
+                  <option value={DEPLOYMENT}>{deploymentLabel(role)}</option>
+                {/if}
                 {#each settings.known_efforts as effort (effort)}
                   <option value={effort}>{effort}</option>
                 {/each}
               </select>
             </label>
-            {#if option(roles[role]!.alias)?.effort_supported === false}
-              <p class="muted">This model's Messages adapter does not accept an effort setting.</p>
-            {/if}
           </fieldset>
         {/each}
       </div>
@@ -131,8 +156,14 @@
         <button type="button" disabled={saving.busy} onclick={useDefaults}
           >Use deployment defaults</button
         >
-        <button type="button" disabled={saving.busy} onclick={save}>Save agent models</button>
+        <button
+          type="button"
+          disabled={saving.busy || blocked !== null}
+          title={blocked ?? undefined}
+          onclick={save}>Save agent models</button
+        >
       </div>
+      {#if blocked}<p class="admin-only">{blocked} The models decide spend.</p>{/if}
       {#if status}<p role="status">{status}</p>{/if}
       {#if saving.error}<ErrorMessage error={saving.error} />{/if}
     {/if}

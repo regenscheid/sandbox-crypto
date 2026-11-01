@@ -9,14 +9,9 @@ session's records (``runstate.py``), which its two hooks and its job waits share
   continue (RS-8). After the run's record is saved, the messages a model call saw are
   marked delivered (RS-9). A message, or a work request addressed to the session's
   main agent, also ends a job wait (``RunChat.arrived``).
-- ``ModelBudget`` keeps the project's MAIN budget during a run the service starts
-  (RS-6a): before each model call after the first, the run stops once the project has
-  spent its budget over the last 24 hours (``budget``), or once the run's own calls have
-  used its share of it, or a delegated run's its token limit (``run_budget``); a
-  delegated run whose tokens leave room for one more call makes it its report round
-  (RS-6f). With
-  delegation, the root's share bounds its whole tree, and the tree's calls in flight
-  count toward both (``delegation/budget.py``, PD-38).
+- No hook here keeps a budget: a configured project cost limit is checked by the
+  model-call journal alone (``continuity/models.py``, D102), and the gateway's budget
+  stops a run as before (RS-6d).
 - ``SessionHeld`` refuses a delegated run's calls that may change something once its
   root run no longer holds the session; ``UserMessages`` does the same for the root.
 - ``EventLog`` writes what the run does as events, as it happens (RS-13, RS-14), from
@@ -51,15 +46,16 @@ from .control.errors import CONFLICT
 from .hooks import Closing, Effect, Notice, Point, Refusal, RunView, TurnHook
 from .notices import REDELIVERED
 from .projects import ModelUsage, RunRecord
+from .purpose import purpose_of, without
 from .runstate import (
     MAX_EVENT_BYTES,
     PAGE,
     ChatMessage,
     EventKind,
     RunState,
-    call_tokens,
 )
 from .tool_status import scalar as _scalar
+from .tool_status import tool_gloss
 from .tool_status import tool_outcome as tool_outcome
 from .tools import bound
 
@@ -118,6 +114,8 @@ class RunChat:
         self.shown: Mapping[str, str] = {}
         """The user's messages whose text the run's view holds already, by ID: each
         one's archive ID (docs/specs/context-management.md, CM-29a)."""
+        self.said = ""
+        """The text of the run's latest assistant step: a waiting call's own words."""
 
     async def pending(self) -> list[ChatMessage]:
         """Queued messages this run has not offered yet, oldest first, every page."""
@@ -155,6 +153,8 @@ class RunChat:
 
     async def write(self, kind: EventKind, data: dict[str, Any]) -> None:
         context = self.context
+        if kind == "assistant":
+            self.said = str(data.get("text") or "")
         try:
             await threaded(
                 self.state.append,
@@ -169,77 +169,27 @@ class RunChat:
         except Exception:
             _log.exception("the %s event of run %s could not be written", kind, self.run)
 
+    async def approval(self, wait: dict[str, object] | None) -> None:
+        """A connector call began waiting for the user's answer to its permission request
+        (its number, server and tool), or the wait ended (``None``)."""
+        if wait is None:
+            await self.write("waiting", {"permission_request": None})
+        else:
+            await self.write(
+                "waiting",
+                {
+                    "permission_request": wait["permission_request"],
+                    "server": wait["server"],
+                    "tool": wait["tool"],
+                },
+            )
+
     async def waiting(self, wait: dict[str, object] | None) -> None:
         """A job wait began, or ended (``None``)."""
         if wait is None:
             await self.write("waiting", {"job_ids": None, "mode": None})
         else:
             await self.write("waiting", {"job_ids": wait["job_ids"], "mode": wait["mode"]})
-
-
-class ModelBudget(TurnHook):
-    """The project's daily cost limit, if it has one, kept at the run's safe points
-    (RS-6a, RS-6c), and a delegated run's own token limit (PD-38)."""
-
-    name = "budget"
-
-    def __init__(
-        self,
-        chat: RunChat,
-        share: float | None = None,
-        *,
-        tokens: int | None = None,
-        require_cost_limit: bool = False,
-        auxiliary_tokens: Callable[[], Awaitable[int]] | None = None,
-    ):
-        """``share`` is the part of the project's daily cost limit one run may use, above
-        0 and at most 1, if any; ``tokens`` is a delegated run's limit."""
-        self.chat, self.share, self.tokens = chat, share, tokens
-        self.require_cost_limit = require_cost_limit
-        self.auxiliary_tokens = auxiliary_tokens
-
-    async def halt(self, run: RunView) -> str | None:
-        state, project = self.chat.state, self.chat.context.project_id
-        limit, blocked = await threaded(
-            state.cost_gate,
-            project,
-            self.chat.clock.now(),
-            require_limit=self.require_cost_limit,
-        )
-        if blocked:
-            return "budget"
-        if limit is not None:
-            # Its own calls are among the project's: their events are written as they
-            # return. Unknown costs remain visible but do not fill the local cap.
-            own = sum(usage.cost or 0 for usage in run.usage)
-            if self.share is not None and own > 0 and own >= self.share * limit:
-                return "run_budget"
-        # A delegated run stops before a call that would take it past its limit.
-        used = sum(call_tokens(usage) for usage in run.usage)
-        if self.auxiliary_tokens is not None:
-            used += await self.auxiliary_tokens()
-        if self.tokens is not None and used + estimate(run) >= self.tokens:
-            return "run_budget"
-        return None
-
-    async def last_call(self, run: RunView) -> str | None:
-        """A delegated run whose tokens leave room for its next call but not for one more
-        after it makes that call its report round (RS-6f), so that it reports what it found
-        rather than stopping without a word."""
-        if self.tokens is None:
-            return None
-        used = sum(call_tokens(usage) for usage in run.usage)
-        if self.auxiliary_tokens is not None:
-            used += await self.auxiliary_tokens()
-        # The next call sends at least what the last one sent and answered.
-        last = call_tokens(run.usage[-1]) if run.usage else 0
-        return "run_budget" if used + 2 * max(estimate(run), last) >= self.tokens else None
-
-
-def estimate(run: RunView) -> int:
-    """What a run's next call may cost: what it sends, as a quarter of its characters
-    with the tool schemas, and an allowance for the answer."""
-    return run.size // 4 + ANSWER_TOKENS
 
 
 async def _held(chat: RunChat) -> bool:
@@ -379,21 +329,31 @@ class EventLog(TurnHook):
         self.written: dict[str, set[str]] = {}
         """Each source's notice IDs written as events."""
         self.replies = self.calls = 0
+        self.purposes: dict[str, str] = {}
+        """Each call's purpose, by its ID, for the result's event to carry."""
 
     async def notices(self, point: Point, run: RunView) -> Sequence[Notice]:
-        await self._catch_up(run.messages, run.usage, run.tool_records, run.offered, run)
+        await self._catch_up(
+            run.context.messages, run.context.usage, run.tool_records, run.offered, run
+        )
         if point == "turn":
             await self.chat.write("model", {"turn": run.turns + 1})
         return ()
 
     async def model_returned(self, run: RunView) -> None:
-        await self._catch_up(run.messages, run.usage, run.tool_records, run.offered, run)
+        await self._catch_up(
+            run.context.messages, run.context.usage, run.tool_records, run.offered, run
+        )
 
     async def observe_tool(self, run: RunView, record: dict[str, Any]) -> None:
-        await self._catch_up(run.messages, run.usage, run.tool_records, run.offered, run)
+        await self._catch_up(
+            run.context.messages, run.context.usage, run.tool_records, run.offered, run
+        )
 
     async def accept(self, run: RunView) -> None:
-        await self._catch_up(run.messages, run.usage, run.tool_records, run.offered, run)
+        await self._catch_up(
+            run.context.messages, run.context.usage, run.tool_records, run.offered, run
+        )
 
     async def acknowledge(self, record: RunRecord) -> None:
         await self._catch_up(record.messages, record.usage, record.tools, {}, None)
@@ -419,7 +379,7 @@ class EventLog(TurnHook):
         chat = self.chat
         if not self.started:
             self.started = True
-            pins = run.prompt_provenance if run is not None else None
+            pins = run.context.prompt_provenance if run is not None else None
             await chat.write(
                 "started",
                 {
@@ -461,14 +421,22 @@ class EventLog(TurnHook):
             elif message.get("role") == "tool":
                 record: Mapping[str, Any] = tools[self.calls] if self.calls < len(tools) else {}
                 self.calls += 1
+                result = str(message.get("content") or "")
+                call_id = message.get("tool_call_id")
+                purpose = self.purposes.get(call_id) if isinstance(call_id, str) else None
                 await chat.write(
                     "tool",
                     {
                         "turn": self.replies,
-                        "call_id": message.get("tool_call_id"),
+                        "call_id": call_id,
                         "name": record.get("tool"),
-                        "result": str(message.get("content") or ""),
+                        "result": result,
                         "outcome": tool_outcome(record),
+                        # The result at a glance, from the record by code (B10, item 1),
+                        # and the call's purpose, the agent's words, so that a row shows
+                        # both without pairing the result with its call.
+                        "gloss": tool_gloss(record, result),
+                        **({"purpose": purpose} if purpose is not None else {}),
                     },
                 )
         self.seen = len(messages)
@@ -477,27 +445,47 @@ class EventLog(TurnHook):
         used = usage[self.replies] if self.replies < len(usage) else None
         self.replies += 1
         calls = cast(list[dict[str, Any]], message.get("tool_calls") or [])
+        shown = [shown_call(call) for call in calls]
+        for call in shown:
+            if isinstance(call.get("id"), str) and isinstance(call.get("purpose"), str):
+                self.purposes[call["id"]] = call["purpose"]
         await self.chat.write(
             "assistant",
             {
                 "turn": self.replies,
                 "text": message.get("content"),
-                "tool_calls": [
-                    {
-                        "id": call.get("id"),
-                        "name": call.get("function", {}).get("name"),
-                        "arguments": call.get("function", {}).get("arguments"),
-                    }
-                    for call in calls
-                ],
+                # Each call's arguments as the harness ran them, and its purpose apart
+                # from them, the agent's words (Purpose 3): what a card shows of a call.
+                "tool_calls": shown,
                 "usage": used.model_dump(mode="json") if used is not None else None,
             },
         )
 
 
+def shown_call(call: Mapping[str, Any]) -> dict[str, Any]:
+    """A tool call as the run's events show it: its arguments without its purpose, and
+    the purpose, when it named a valid one, apart from them."""
+    function = cast(Mapping[str, Any], call.get("function") or {})
+    arguments = function.get("arguments")
+    shown: dict[str, Any] = {
+        "id": call.get("id"),
+        "name": function.get("name"),
+        "arguments": without(arguments) if isinstance(arguments, str) else arguments,
+    }
+    if isinstance(arguments, str) and (purpose := purpose_of(arguments)) is not None:
+        shown["purpose"] = purpose
+    return shown
+
+
 def _context_stop(record: RunRecord) -> dict[str, Any]:
     """Why a run that folds stopped for its context, as its folds say (CM-43 to CM-45);
-    or what tripped the runaway guard (RS-6f)."""
+    or what tripped the runaway guard (RS-6f); or that the root's turn limit is a check-in
+    waiting for the user (D102)."""
+    resources = record.summaries.get("resources")
+    if record.stopped == "turn_limit" and isinstance(resources, dict):
+        # A root that paused at its turn limit asks the user, with no report round (D102).
+        found = cast(dict[str, Any], resources)
+        return {"reason": "check_in", "detail": f"{found.get('total', 0):,} model calls"}
     runaway = record.summaries.get("runaway")
     if record.stopped == "runaway" and isinstance(runaway, dict):
         found = cast(dict[str, Any], runaway)

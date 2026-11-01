@@ -24,7 +24,7 @@ from .test_tool_journal import RUN
 from .test_work_ownership import CHILD, CONTINUATION, record
 
 
-def tree(tmp_path, *, saved=True, finished=True, persisted=True):
+def tree(tmp_path, *, saved=True, finished=True, persisted=True, checkpoint=True):
     state, documents = stores(tmp_path)
     state.projects.open_session("p", "s", dedicated=False)
     works = WorkRecords(state.projects.control)
@@ -58,7 +58,8 @@ def tree(tmp_path, *, saved=True, finished=True, persisted=True):
         "Checked original evidence.",
         result={"verdict": "confirmed", "status": "complete", "summary": "Original typed answer"},
     )
-    settlement.keep("p", "s", CHILD, delegation.delegation_id, outcome)
+    if checkpoint:
+        settlement.keep("p", "s", CHILD, delegation.delegation_id, outcome)
     child_record = record(CHILD).model_copy(
         update={"parent": RUN, "delegation": delegation.delegation_id, "role": "delegated"}
     )
@@ -268,9 +269,10 @@ def test_pages_exclude_missing_final_records_before_limit_and_remain_bounded(tmp
 
 
 def test_schema64_upgrade_preserves_existing_run_and_archive(tmp_path, monkeypatch):
+    from sandbox_science.orchestrator.context.history import Archive, inspector_index
+    from sandbox_science.orchestrator.context.history import archive as archive_module
+    from sandbox_science.orchestrator.context.history.archive import Entry
     from sandbox_science.orchestrator.control import migrations
-    from sandbox_science.orchestrator.history import Archive, inspector_index
-    from sandbox_science.orchestrator.history.archive import Entry
 
     current = migrations.MIGRATIONS
     with monkeypatch.context() as previous:
@@ -281,6 +283,10 @@ def test_schema64_upgrade_preserves_existing_run_and_archive(tmp_path, monkeypat
         # Schema 64's archive writer had no inspector index. Keep its real
         # immutable append and old schema, omitting only that newer derived hook.
         previous.setattr(inspector_index, "append", lambda *args: None)
+        # Nor had it a tool result's purpose (version 83): its writer's columns.
+        fields = tuple(name for name in archive_module._FIELDS if name != "purpose")
+        previous.setattr(archive_module, "_FIELDS", fields)
+        previous.setattr(archive_module, "_COLUMNS", ", ".join((*archive_module._PLACE, *fields)))
         state, documents = stores(tmp_path)
         state.projects.open_session("p", "s", dedicated=False)
         state.projects.save_run(record(RUN))

@@ -58,6 +58,7 @@ from sandbox_science.contracts import (
     Identifier,
     PolicyRevision,
     new_id,
+    project_id_label_problem,
 )
 from sandbox_science.contracts.model import Contract
 
@@ -465,6 +466,10 @@ class ProjectStore:
                     f"project {project_id!r} exists with profile {existing.profile} and policy "
                     f"{existing.policy}; revise its policy instead",
                 )
+            problem = project_id_label_problem(project_id)
+            if problem is not None:
+                # Only a new project is held to it: one made earlier keeps its ID.
+                raise ProjectError(ErrorKind.INVALID_REQUEST, problem)
             now = datetime.now(UTC)
             record = self._validated(
                 project_id=project_id,
@@ -558,6 +563,11 @@ class ProjectStore:
                 state="cancelled",
                 reason=SESSION_CLOSED,
             )
+            # Its returned tasks that await review are accepted for their parents; their
+            # environments and kernels go with the session's (PD-46).
+            from .delegation.records import close_awaiting
+
+            close_awaiting(tx.sql, project_id, session_id, "session_closed", now.isoformat())
             return closed
 
     def project_ids(self) -> list[str]:

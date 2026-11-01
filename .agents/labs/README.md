@@ -25,6 +25,7 @@ From the checkout that will remain fixed throughout the lab:
 .venv/bin/python -I .agents/labs/recovery_acceptance.py start "$LAB"
 .venv/bin/python -I .agents/labs/recovery_acceptance.py tree "$LAB"
 .venv/bin/python -I .agents/labs/recovery_acceptance.py literal "$LAB"
+.venv/bin/python -I .agents/labs/recovery_acceptance.py lost "$LAB"
 .venv/bin/python -I .agents/labs/recovery_acceptance.py automatic "$LAB"
 .venv/bin/python -I .agents/labs/recovery_acceptance.py history "$LAB"
 .venv/bin/python -I .agents/labs/recovery_acceptance.py narrative "$LAB"
@@ -41,9 +42,20 @@ then verifies one literal cell reconstruction and exact stdout. Replacement may
 refuse after the configured bounded control-connection drain while the old tool
 still runs. The fixture retries that known pre-creation refusal only after the
 control health endpoint reports disconnected; it never repeats an unknown effect.
-`automatic` separately tests durable automatic continuation after a saved model
-stream EOF. `history` proves a delegated parent reads the original leaf archive in
-a three-level tree. `narrative` uses paced synthetic text to force model-written
+`lost` (run after `literal`) tests the text a cell gets when its kernel's state is
+gone (tools spec, Kernels 7). Its seed cell cannot be replayed, has a purpose and
+saves `results/lost-seed.json`; the fixture kills that session's exact kernel PID
+under a holding shell call, and the run's next plain cell must report `state_lost`
+with a `lost_state` that names the seed cell by archive message ID and purpose,
+lists the saved file, and says to load saved files before recomputing. The text is
+quoted in `lost-result.json`; a replayed cell, as in `literal`, would hide it.
+`automatic` tests D100's recovery of a model stream that ends early in two sessions.
+One cut stream is tried again within the model call: the run answers in one attempt,
+the answer's usage records the retry (`retried`), and nothing is saved as a failure
+or continued. Cuts of every try the client makes (ten, its default) are the saved
+model-phase failure: durable automatic continuation answers in a second attempt,
+after about five minutes of the client's waits. `history` proves a delegated parent
+reads the original leaf archive in a three-level tree. `narrative` uses paced synthetic text to force model-written
 child folds, then checks alias/effort, canonical usage and the original grant.
 `upload` sends an exact 100 MiB deterministic binary through the authenticated
 workspace API, streams its retained original back, attaches it to one synthetic
@@ -68,6 +80,127 @@ success. No raw logs, tokens, gateway databases or TLS material are exported.
 See the [qualification report](../docs/agent-reports/openshell-recovery-acceptance-2026-10-18.md)
 for baseline failures, the narrow host fix and the exact revisions qualified.
 
+## Direct MCP path against the owner's portal (D98, A2)
+
+`direct_mcp.py` runs proofs 1 to 5 of the [prototype](../../docs/specs/mcp-middleware-prototype.md#recommendation)
+against the owner's real MCP portal, with the owner's approval (2026-10-26) to reuse the
+personal instance's Cloudflare Access file by path. It reuses this file's machinery
+(`make_root`, `OwnedRoot`, `recovery_acceptance_up.sh` with `MIDDLEWARE_EXTRA="mcp_listings = true"`):
+a marked `/var/tmp/ss-direct-mcp-*` root, its own gateway, middleware, worker, ports and units,
+and an agent runtime sandbox from the `orchestrator` image (built from committed inputs) with
+the `crypto-research-mcp` provider attached. The provider is registered by
+`sandbox_science.launcher.access_provider` from the file's path, as the launcher's
+`provider_env_file` does; the fixture never opens anything under the secrets directory. The
+portal's URL lives in the policy file, not in the launcher config: the lab reads it at run
+time from the personal instance's policy (`personal-policy.yaml`), which the `[worker] policy`
+of `~/.config/sandbox-science/personal.toml` names, and never writes it to the repository or
+exports it. A deployment's portal URL is in its own policy file in the same way. The portal's
+servers share one `tools/list` and one policy entry, `crypto-research-mcp`, and their tools'
+server is the prefix of their names (`attack-catalog-mcp_`, `e-print-mcp_`, `portal_`). The
+personal instance is not touched.
+
+The lab registers the provider with the product's helper and the installed CLI as they are
+(the helper no longer takes an empty `.git` directory in babbage's home for a checkout), and
+then wires the agent sandbox as `sandbox-science up` does with `[mcp_direct]`: the launcher's
+`direct_mcp.compile_direct` compiles the egress, `merged` puts it beside the runtime's
+`compile_orchestrator` policy (here with the lab worker as its one platform service), and
+`runtime_owner.create_owned` makes the sandbox with the provider attached and binds it
+through the worker (`WorkerBinding`, the route the runtime manager uses too).
+
+```bash
+.venv/bin/python -I .agents/labs/direct_mcp.py prepare
+.venv/bin/python -I .agents/labs/direct_mcp.py up "$LAB"
+.venv/bin/python -I .agents/labs/direct_mcp.py proofs "$LAB"   # --plan rerun after a first lab
+.venv/bin/python -I .agents/labs/direct_mcp.py cleanup "$LAB"   # or abort "$LAB"
+```
+
+The lab policy is `examples/policy.yaml` with the portal's URL, `attack-catalog-mcp_get_catalog_info`
+escalated and `attack-catalog-mcp_list_taxonomy` denied; every other tool's class comes from the
+checked-in classification. `proofs` uploads `direct_mcp_agent.py` and runs `DirectClient` in the
+agent sandbox over one `openshell sandbox exec` session whose standard streams carry the
+confinement `Channel`: the client's `ControlRequestCheck` asks the lab host's `confirm_request`,
+which binds the lab's project and asks the worker (`confinement.requests.confirm` with
+`WorkerRequestCheck`, as `HostLoops` does). A confirmed hold is answered through the worker's
+answer route with the operator token, as the workspace does, and the client calls again every
+3 s. Upstream calls are kept to the listings, one read each on e-print, nist-csrc, web-fetch and
+attack-catalog (the escalated tool, after approval), one firecrawl scrape of a small public page,
+and one attack-catalog call without its required argument for the error answer. A later lab runs
+`proofs --plan rerun`, which calls the portal's own `portal_list_servers` as the allowed tool and
+skips the error answer, so the earlier lab's upstream reads are not repeated. Proof 5 (binary
+results): after proofs 1 to 4 the lab host relays one `mcp_request` of web-fetch's
+`web_capture` of the same small page, the cheapest of the portal's tools that captures an image,
+to the agent's production `RuntimeConnectorCalls`, which withholds each image, audio or blob
+item and sends it over `publish_mcp_binary`; the host keeps it with the production
+`CallBinaries` (only while it relays that call), through a lab sink that writes the bytes under
+`kept/` in the root instead of a session's workspace. The receipt has each kept item's SHA-256,
+size and media type. A probe through the owner's client on 2026-10-26 showed `web_capture`
+answering a `resource_link` beside its text rather than inline image content: if the live answer
+holds no binary item, proof 5 says `NO BINARY` (`pass: null`) and the lab says which content
+types came back; firecrawl's `screenshot` format answers a URL in its text as well. OpenShell 0.1.5 never offers `WHOLE_BODY_BYTES` for a
+`text/event-stream` response (an open-ended response in its `permitted_body_modes`), so the
+middleware blocks the portal's event-stream listings (`tool_listing_unreadable`); the lab of
+2026-10-26 found proof 3's listing half failing for that reason. Such a listing now passes unread
+(`mcp-tools-listing-unread`): the agent's client, with the production `ControlListingReports`,
+filters it and reports it over `report_mcp_listing`, which the lab host forwards to the worker
+as `HostLoops` does (`WorkerListings`). Proof 3 then shows a hold: `up` puts a project
+classification revision in force whose pin of `attack-catalog-mcp_get_filter_contract` is wrong,
+so the reported listing drifts (source `runtime`); a call of
+`firecrawl-mcp_firecrawl_search_feedback`, a write the lab policy allows by name, is held as a
+`tool-list-drift` request that nobody answers, until the lab host re-accepts the drifted listings
+through the worker as the workspace's review does; the retry, without the tool's required
+arguments, then reaches the server, which refuses them. The lab also asks once for a JSON-only
+listing, which the middleware reads and rewrites if the portal answers JSON. Receipts carry counts, reason codes, request numbers and tool
+names only, and are exported with a SHA-256 manifest to `/var/tmp/ss-direct-mcp-evidence-*`.
+
+`prepare --variant locked` and `prepare --variant inspection` (2026-10-31) make the same lab with
+another policy and plan, each its own root and teardown. **locked** (A3): `lockdown: {mcp: locked}`
+and a `binding_only` worker client (`manager`); `locked LAB` calls `e-print-mcp_corpus_stats` and a
+nist-csrc read, accepts mid-session a project classification revision that leaves the first out, reads
+`GET /v1/runtime-classifications` as the manager, calls again on the stale fence (the middleware
+refuses, `lockdown.mcp`), compiles the fence with the runtime manager's `compile_egress` through the
+worker and replaces the runtime sandbox as the manager does (the tool is then refused natively), and
+compiles once more against a closed port for the fallback warning. **inspection**: two project patterns
+beside the shipped defaults (a `block` on a nonce and an `alert` only the JSON-decoded reading matches);
+`inspection LAB` fetches three small httpbin `/base64/` pages through web-fetch and judges the
+`mcp-call`, `mcp-answer` and `mcp-answer-alert` records. The agent side runs a generic plan
+(`direct_mcp_agent.py --calls`). Receipts keep labels, finding names, offsets, decisions and facts about
+an excerpt (booleans), never its text or a URL.
+
+## Workspace answers to network and package requests (A4, D97)
+
+`a4_approvals.py` shows research code's network requests and package requests reaching the
+workspace as cards, and the user's answers (once, a session grant, a project grant, deny)
+going back through the worker to the policy middleware or the provisioning operation. It
+reuses this file's machinery (`make_root`, `OwnedRoot`, `recovery_acceptance_up.sh` with
+`LAB_POLICY`): a marked `/var/tmp/ss-a4lab-*` root with its own gateway, middleware, cache,
+worker and workspace server (`sandbox-science-workspace serve --worker`), on random loopback
+ports. No agent runtime and no model: research code runs as shell executions the lab submits
+through the worker, and provisioning operations as the `provision` tool would ask for them.
+Every answer goes through the workspace's API with its printed login token, same origin.
+It needs `sandbox-science/minimal` built from the committed inputs (`images/build.sh minimal`)
+and the workspace UI built (`npm run build` in `web/workspace`).
+
+```bash
+.venv/bin/python -I .agents/labs/a4_approvals.py prepare
+.venv/bin/python -I .agents/labs/a4_approvals.py up "$LAB"
+.venv/bin/python -I .agents/labs/a4_approvals.py cards "$LAB"     # one network and one package card wait
+# optional: log in to the printed workspace URL in a browser and take screenshots of the cards
+.venv/bin/python -I .agents/labs/a4_approvals.py answers "$LAB"
+.venv/bin/python -I .agents/labs/a4_approvals.py cleanup "$LAB"   # or abort "$LAB"
+```
+
+The lab policy is the example's without its MCP server and credential, with GETs to
+example.com, example.org and www.example.com escalated and PyPI's files escalated. Receipts
+keep status and reason codes, request numbers, offered scopes, card shapes and grant rows,
+and are exported with a SHA-256 manifest to `/var/tmp/ss-a4lab-evidence-*`
+([report](../docs/agent-reports/babbage-a4-approvals-lab-2026-10-27.md)).
+
+`a4_approvals.py extras LAB [--hours H]` (2026-10-31) adds the cases the first run left out: a
+conda-forge package card and a session grant on the channel, git (`ls-remote` passes as a read, a push
+asks and is denied), a project grant with fractional `hours` and what the middleware does after it
+expires, and a revoked host grant. `lockdown LAB` runs research code in a second project, `a4lock`,
+under `lockdown: {network: allowlist}` (its policy is `policy-lock.yaml`, written by `prepare`).
+
 Lab32's `provisioning_revision_packages.py` reads exact recorded package/license
 inventories. Root-owned acceptance on signed `6d4c448`/helper `c85126d4` passed
 worker/workspace/native paging and separately qualified stopped-VM reads. The old
@@ -85,8 +218,8 @@ Some scripts are historical: they exercise code since removed, and run only at t
 
 ## Prerequisites
 
-- OpenShell 0.1.3 unpacked at `~/.local/opt/openshell-0.1.3/bin` (gateway, driver and CLI).
-- The images in the local Docker store, which OpenShell's VM driver reads directly: `sandbox-science/minimal:02f85b3`, `sandbox-science/crypto-base:02f85b3`, `sandbox-science/mcp-proxy:d27e41a` and `sandbox-science/orchestrator:174e72e` (built from `images/`; see [images](../../docs/IMAGES.md)). Only create, tag or remove `sandbox-science/*` images: the Docker store is shared with the user's own projects, and is never pruned.
+- OpenShell 0.1.5 unpacked at `~/.local/opt/openshell-0.1.5/bin` (gateway, driver and CLI).
+- The images in the local Docker store, which OpenShell's VM driver reads directly: `sandbox-science/minimal:02f85b3`, `sandbox-science/crypto-base:02f85b3` and `sandbox-science/orchestrator:174e72e` (the retired `sandbox-science/mcp-proxy:d27e41a` may still be there) (built from `images/`; see [images](../../docs/IMAGES.md)). Only create, tag or remove `sandbox-science/*` images: the Docker store is shared with the user's own projects, and is never pruned.
 - `uv sync --locked` in the repository, whose `.venv` the scripts run (`R`, by default the repository these scripts are in).
 
 ## Running a lab
@@ -101,14 +234,13 @@ All state goes under `~/.local/state/openshell-lab`, and every service runs as a
    openshell provider profile import -f examples/openshell/profiles/github-token.yaml
    GITHUB_TOKEN="test-secret-lab-github-$(openssl rand -hex 8)" openshell provider create --name github-readonly --type github-token --credential GITHUB_TOKEN
    ```
-   A lab with the MCP proxy writes its own launcher config, outside the repository, from the example: `uv run python -I .agents/labs/launcher_config.py "$LAB/sandbox-science.toml" --state-dir "$LAB/launcher" --project <id> --profile crypto-base --session a --mcp-proxy sandbox-science/mcp-proxy:<tag> --provider-env-file <the owner's file>`. The config has every setting the example has, the `delegated` alias included, and the tool index the example keeps in comments (`index` and `about`); `--profile` sets the project's profile, and each `--session` names a session in the project's environment, in place of the example's two. A lab with skills adds `--skills-pack NAME=GIT[@REF]` for each pack, which the project then pins, and `--skills-embedding-model ALIAS` and `--skills-metadata-model ALIAS` for `[skills]`'s models (lab 42, B8). So the lab adds nothing by hand (lab 40, B7; lab 41). Beside the config it writes the example policy with crypto-research-mcp's address in place of its placeholder, which the config grants. The coordinator gives the owner's file's path when the lab runs; only that config names it, and no file in the repository does. `up` then registers `crypto-research-mcp` on the new gateway from it, the one real provider a lab uses (the owner, 2026-10-15). No agent opens the owner's file or anything else in its directory: only the launcher's helper process reads it.
+   A lab with MCP writes its own launcher config, outside the repository, from the example: `uv run python -I .agents/labs/launcher_config.py "$LAB/sandbox-science.toml" --state-dir "$LAB/launcher" --project <id> --profile crypto-base --session a --mcp --provider-env-file <the owner's file>` (`[mcp_direct]`, D98; the MCP proxy retired on 2026-10-26). The config has every setting the example has, the `delegated` alias included, and the tool index the example keeps in comments (`index` and `about`); `--profile` sets the project's profile, and each `--session` names a session in the project's environment, in place of the example's two. A lab with skills adds `--skills-pack NAME=GIT[@REF]` for each pack, which the project then pins, and `--skills-embedding-model ALIAS` and `--skills-metadata-model ALIAS` for `[skills]`'s models (lab 42, B8). So the lab adds nothing by hand (lab 40, B7; lab 41). Beside the config it writes the example policy with crypto-research-mcp's address in place of its placeholder, which the config grants. The coordinator gives the owner's file's path when the lab runs; only that config names it, and no file in the repository does. `up` then registers `crypto-research-mcp` on the new gateway from it, the one real provider a lab uses (the owner, 2026-10-15). No agent opens the owner's file or anything else in its directory: only the launcher's helper process reads it.
 
    **The registered token.** Once it is registered, the token is in the lab gateway's database, under `$LAB/state`, with the key that encrypts it beside it. Never copy, archive or query that database or key file, and never include them in evidence. `lab_down.sh` deletes them with the rest of the lab directory (`rm -rf -- "$LAB"` once the gateway has stopped), and its last check reports any OpenShell path left under `~/.local/state`.
 4. `bash worker_up.sh`: the worker on 127.0.0.1:8100 with `[openshell.environments]`, a client limited to `$PROJECT` (default `lab17`, token in `$LAB/worker/client-a.token`) and the example policy granted to that project (digest in `$LAB/policy.digest`).
 5. Checks, through the worker's API (they use project `lab17`, environments `lab17-a` and `lab17-c`):
    - `python -I checks.py $LAB/worker/client-a.token $(cat $LAB/policy.digest) envs sync mmap packages cancel idioms orphans revisions`: any subset of the parts, in order. `envs` creates the two environments first.
    - `python -I budget.py $LAB/worker/client-a.token header|budget`: the cache's per-sandbox header and budgets (restart the cache with `sandbox_rate = 0.5` and `sandbox_burst = 2` in `$LAB/cache.toml` for `budget`, then restore it).
-   - `bash forward.sh`: the MCP proxy in its own sandbox, with its forward run as the example unit runs it, across a stop and start.
 6. To test a branch before it merges, restart the worker unit from that branch's worktree (`<worktree>/.venv/bin/sandbox-science-worker serve --settings worker.toml`, working directory `$LAB/worker`). Do not switch branches in the main checkout while a lab runs: the cache and the middleware run from its editable install.
 7. `bash lab_down.sh` deletes every sandbox, stops every lab unit (the forward unit included, which restarts forever otherwise), removes the lab directory and checks that no process, port, OpenShell path or driver socket is left. Labs are always torn down completely. The owner's personal instance ([`docs/PERSONAL-BABBAGE.md`](../../docs/PERSONAL-BABBAGE.md): units `ss-personal-*`, state under `~/.local/state/sandbox-science-personal`) is not a lab: never stop, delete or clean up any of it, and `lab_down.sh`'s checks leave its processes and driver socket directory out.
 
@@ -497,3 +629,29 @@ claimed. Preserve original failures, identities and owners before any retry.
 ## Context-management lab, round 1: the continuity probes
 
 The kit for the acceptance condition of context management's first build: a scripted research scenario on synthetic sources, a driver that records its seed once with folding off and runs each arm (250,000 and 600,000, and the skeleton-only control) from a copy of it, within per-arm caps and the round's budget, and a scorer for CM-P1 to CM-P9. Round 1 runs OpenAI models alone, through the gateway's `arrcodex` aliases, within USD 500; the Claude arms are deferred. It waits for steps (f2b) and (f3). Its runbook, with the models, each arm's configuration, the expected cost and the teardown, is [cm-lab-round-1.md](cm-lab-round-1.md); the code is in `cm_lab/`, run through `cm_drive.py` and `cm_score.py`.
+
+## Real-model lab of the Phase A/B items (2026-10-31)
+
+`model_lab.py` brings up the whole product with `sandbox-science up` in a marked
+`/var/tmp/ss-modellab-*` root (its own gateway, middleware with `mcp_listings`, cache, worker, control,
+workspace and agent runtime), `[mcp_direct]` on the owner's portal (the provider registered by the
+launcher from the owner's Cloudflare Access file, by path) and the gateway's `sandbox-orchestrator`
+alias for every role, read with the key file's path from the personal config at `prepare`; the key is
+never opened by the fixture. The project's local daily cost limit is set to USD 15. Steps are small,
+since a real model is not scripted: `send LAB SESSION STAGE` (a prompt from `PROMPTS`, once), `wait`,
+`api` (one workspace call as the browser makes it), `sql` (read-only), `delegation` (project settings,
+after `--`), `revision` (a classification revision accepted mid-session), `replace` (runtime deleted,
+`replace-orchestrator`, Resume; a child's long shell call can make the replacement refuse until the old
+control connection drains), `capture` (a sanitized receipt of a session), `fence` (the launcher's fence
+note lines), and `cleanup` or `abort`.
+
+```bash
+.venv/bin/python -I .agents/labs/model_lab.py prepare
+.venv/bin/python -I .agents/labs/model_lab.py up "$LAB"
+.venv/bin/python -I .agents/labs/model_lab.py send "$LAB" review review
+.venv/bin/python -I .agents/labs/model_lab.py wait "$LAB" review
+.venv/bin/python -I .agents/labs/model_lab.py capture "$LAB" review review-final
+.venv/bin/python -I .agents/labs/model_lab.py cleanup "$LAB"
+```
+
+[Report](../docs/agent-reports/babbage-phase-ab-labs-2026-10-31.md).

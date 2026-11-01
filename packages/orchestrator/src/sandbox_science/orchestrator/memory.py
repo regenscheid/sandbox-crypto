@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated, Any, Final, Literal, Self
 
-from pydantic import ConfigDict, Field, ValidationError, model_validator
+from pydantic import ConfigDict, Field, JsonValue, ValidationError, model_validator
 
 from sandbox_science.contracts.model import Contract
 from sandbox_science.orchestrator.control import EventLog, Receipts
@@ -32,6 +32,8 @@ from sandbox_science.orchestrator.control import EventLog, Receipts
 from .documents.agent_text import agent_text
 from .documents.errors import CONFLICT, INVALID_REQUEST, NOT_FOUND, POLICY_DENIED, DocumentError
 from .documents.models import Author
+from .ledger import provenance as anchoring
+from .ledger.models import AnchorInput
 
 if TYPE_CHECKING:
     from .documents.store import DocumentStore
@@ -53,11 +55,13 @@ MAX_PROPOSALS: Final = 10_000
 """The changes and the proposals a project's memory keeps, its history included."""
 GIVEN_CHARS: Final = 16_000
 """The characters of the memory section an agent receives, as sent (PM-7)."""
-SECTION_RESERVE: Final = 1_000
+SECTION_RESERVE: Final = 2_000
 """The characters of the section kept for its framing, its opening and closing lines and
 the line on entries left out; the entries' blocks take the rest."""
 MARKER: Final = 16
 """The length of the code that marks where each entry begins and ends in a section."""
+MAX_ANCHORS: Final = 10
+"""The anchors a proposal, and so a version, holds (PM-13)."""
 
 EntryId = Annotated[str, Field(pattern=r"^mem-[1-9][0-9]{0,8}$")]
 ProposalId = Annotated[str, Field(pattern=r"^prop-[1-9][0-9]{0,8}$")]
@@ -66,7 +70,18 @@ _Operation = Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
 Action = Literal["add", "change", "remove"]
 State = Literal["waiting", "accepted", "declined"]
 Change = Literal["added", "edited", "removed", "moved"]
+ProposedBasis = Literal["user_quoted", "observed", "interpreted"]
+"""What an agent's proposal may say it rests on (CM-9; PM-13)."""
+Basis = Literal["user", "user_quoted", "observed", "interpreted", "not recorded"]
+"""What an item rests on: ``user`` for the user's own addition or edit, an accepted
+proposal's basis, or ``not recorded`` for what was accepted before the basis was kept."""
+Scope = Literal["project", "session", "run"]
+"""Where an item holds. Every item is ``project``'s; the others are reserved for a store
+of session or run notes, if the owner decides on one (PM-13)."""
+Anchors = tuple[dict[str, JsonValue], ...]
 
+_USER_SOURCE: Final = ("user", "[]")
+"""The basis and anchors of a version the user made without a proposal."""
 RECEIPTS: Final = Receipts("memory", "operation ID {operation!r} names another memory change")
 _USER: Final = "user"
 """The actor of the user's receipts; an agent's is its run."""
@@ -81,6 +96,15 @@ class MemoryEntry(Contract):
     revision: int
     text: str
     changed_at: datetime
+    """When the entry last changed, a move included."""
+    basis: Basis
+    accepted: bool
+    """Whether the user accepted an agent's proposal to make this text (PM-13): the text is
+    the agent's, whatever the user's acceptance."""
+    recorded_at: datetime
+    """When this text was recorded: added, edited or accepted."""
+    scope: Scope = "project"
+    anchors: Anchors = ()
 
 
 class Memory(Contract):
@@ -113,6 +137,10 @@ class MemoryProposal(Contract):
     decided_at: datetime | None
     current: MemoryEntry | None
     """For a change or a removal, the entry now; ``None`` once it is removed."""
+    basis: Literal["user_quoted", "observed", "interpreted", "not recorded"]
+    """What the proposal says it rests on; a proposal made before it was kept reads ``not
+    recorded`` (PM-13)."""
+    anchors: Anchors
 
 
 class MemoryVersion(Contract):
@@ -132,6 +160,9 @@ class MemoryVersion(Contract):
     proposer: Author | None
     proposed_at: datetime | None
     reason: str | None
+    basis: Basis
+    """What the text of this version rests on (PM-13)."""
+    anchors: Anchors
 
 
 class MemoryEntryHistory(Contract):
@@ -166,6 +197,8 @@ class ProposalRequest(_Request):
     revision: _Number | None = None
     text: str | None = None
     reason: str
+    basis: ProposedBasis = "interpreted"
+    anchors: list[AnchorInput] = Field(default_factory=list[AnchorInput], max_length=MAX_ANCHORS)
 
     @model_validator(mode="after")
     def _complete(self) -> Self:
@@ -213,12 +246,66 @@ class UserChange(_Request):
         return self
 
 
+_BASES: Final[dict[str, str]] = {
+    "user": "user",
+    "user_quoted": "user, quoted",
+    "observed": "observed",
+    "interpreted": "interpreted",
+    "not recorded": "not recorded",
+}
+"""How an item's basis is shown (CM-9's labels, and ``not recorded``)."""
+PREFIX_CHARS: Final = 80
+"""The most characters of the prefix before an item's text (PM-13)."""
+
+
+def age(recorded: datetime, now: datetime) -> str:
+    """How long ago ``recorded`` was at ``now``: ``just now``, minutes, hours or days, and
+    its date in UTC past 30 days (PM-13)."""
+    seconds = (now - recorded).total_seconds()
+    if seconds < 60:
+        return "just now"
+    if seconds < 3600:
+        return f"{int(seconds // 60)} min ago"
+    if seconds < 86400:
+        return f"{int(seconds // 3600)} h ago"
+    if seconds <= 30 * 86400:
+        return f"{int(seconds // 86400)} d ago"
+    return recorded.astimezone(UTC).date().isoformat()
+
+
+def prefix(entry: MemoryEntry, now: datetime | None = None) -> str:
+    """The prefix before an item's text, at most ``PREFIX_CHARS`` characters, such as
+    ``[2 h ago] [observed] [mem-3@2 · project]`` (PM-13): when it was recorded (its age at
+    ``now``, or its date when ``now`` is None, which keeps a system message the same for
+    the same memory version), its basis, with ``accepted`` added for an agent's proposal
+    the user accepted, and its ID, revision and scope."""
+    when = (
+        entry.recorded_at.astimezone(UTC).date().isoformat()
+        if now is None
+        else age(entry.recorded_at, now)
+    )
+    basis = _BASES[entry.basis]
+    if entry.accepted and entry.basis not in ("user", "not recorded"):
+        basis += ", accepted"
+    return f"[{when}] [{basis}] [{entry.entry_id}@{entry.revision} \u00b7 {entry.scope}]"
+
+
+def anchor_names(entry: MemoryEntry) -> list[str]:
+    """The names of an item's anchors, as the ledger names them (PM-13)."""
+    from .ledger.provenance import label  # no cycle
+
+    return [label(dict(anchor)) for anchor in entry.anchors]
+
+
 def entry_block(entry: MemoryEntry, marker: str) -> str:
     """An entry as a system message gives it, between markers that carry ``marker``, a
-    code no entry contains (PM-6)."""
+    code no entry contains (PM-6): its prefix with the date, its text, and its anchors."""
+    anchors = anchor_names(entry)
     return (
         f'<entry-{marker} id="{entry.entry_id}" revision="{entry.revision}">\n'
-        f"{entry.text}\n</entry-{marker}>"
+        f"{prefix(entry)} {entry.text}\n"
+        + (f"Anchors: {', '.join(anchors)}\n" if anchors else "")
+        + f"</entry-{marker}>"
     )
 
 
@@ -266,9 +353,45 @@ def _parse[T: _Request](model: type[T], value: object) -> T:
 
 
 def _fingerprint(value: Contract) -> str:
+    """The digest of a request's non-default fields, so that a field added with a default
+    leaves the identity of an operation made before it."""
     return hashlib.sha256(
-        json.dumps(value.model_dump(mode="json", exclude_none=True), sort_keys=True).encode()
+        json.dumps(
+            value.model_dump(mode="json", exclude_none=True, exclude_defaults=True),
+            sort_keys=True,
+        ).encode()
     ).hexdigest()
+
+
+def _checked(
+    db: sqlite3.Connection,
+    project: str,
+    request: ProposalRequest,
+    text: str | None,
+    author: Author,
+    blocks: dict[tuple[str, int, str], str],
+) -> list[Json]:
+    """The proposal's anchors as they are kept, each checked to exist where its author may
+    look and its basis borne out, by the ledger's own check (CM-9, PM-13): ``user_quoted``
+    needs a quote of the user's words, ``observed`` an observation that holds every number
+    of the text; refused with ``provenance_required``."""
+    from .ledger import preparation, queries  # no cycle
+
+    def find(reference: str) -> tuple[str, int]:
+        row = queries.find(db, project, reference)
+        return row.entry_id, row.head
+
+    def block(name: str, revision: int, block: str) -> str:
+        return blocks[(name, revision, block)]
+
+    scope = preparation.anchor_scope(db, project, author)
+    anchors = anchoring.resolve(db, project, request.anchors, block, find, scope)
+    anchoring.check(
+        db, project, request.basis, anchors, [], [text] if text else [], "this proposal"
+    )
+    # Kept as the IDs they name: the quote was checked against its message, which stays
+    # in the archive, and a version holds no more than 10 short names (PM-13).
+    return [{k: v for k, v in anchor.items() if k != "quote"} for anchor in anchors]
 
 
 def _time(value: str) -> datetime:
@@ -276,16 +399,20 @@ def _time(value: str) -> datetime:
 
 
 _LIVE: Final = (
-    "SELECT e.entry_id,e.head,v.text,v.created,e.position FROM memory_entries e "
+    "SELECT e.entry_id,e.head,v.text,v.created,e.position,t.basis,t.anchors,t.proposal,"
+    "t.created FROM memory_entries e "
     "JOIN memory_versions v ON v.project=e.project AND v.entry_id=e.entry_id "
     "AND v.version=(SELECT max(w.version) FROM memory_versions w "
     "WHERE w.project=e.project AND w.entry_id=e.entry_id) "
+    "JOIN memory_versions t ON t.project=e.project AND t.entry_id=e.entry_id "
+    "AND t.revision=v.revision AND t.change IN ('added','edited') "
     "WHERE e.project=? AND e.removed=0"
 )
-"""The accepted entries, each at its latest version."""
+"""The accepted entries, each at its latest version; a move keeps the revision, so the
+text's basis, anchors and time are those of the version (``t``) that wrote that revision."""
 _PROPOSAL: Final = (
-    "SELECT proposal_id,action,entry_id,base,text,reason,proposer,created,state,decided "
-    "FROM memory_proposals WHERE project=?"
+    "SELECT proposal_id,action,entry_id,base,text,reason,proposer,created,state,decided,"
+    "basis,anchors FROM memory_proposals WHERE project=?"
 )
 
 
@@ -293,7 +420,7 @@ class ProjectMemory:
     """The projects' memories, on the documents' control store."""
 
     def __init__(self, documents: DocumentStore, *, clock: Callable[[], datetime] = _now) -> None:
-        self.control, self.clock = documents.control, clock
+        self.documents, self.control, self.clock = documents, documents.control, clock
         self.events = EventLog(documents.control, "memory", documents.producer)
 
     # Reads.
@@ -340,10 +467,13 @@ class ProjectMemory:
                 raise DocumentError(NOT_FOUND, f"the memory has no version {version}")
             # Each entry at its last version up to then; a removal leaves it out.
             rows = db.execute(
-                "SELECT v.entry_id,v.revision,v.text,v.created FROM memory_versions v "
+                "SELECT v.entry_id,v.revision,v.text,v.created,v.position,t.basis,t.anchors,"
+                "t.proposal,t.created FROM memory_versions v "
                 "JOIN (SELECT entry_id,max(version) AS version FROM memory_versions "
                 "WHERE project=? AND version<=? GROUP BY entry_id) m "
                 "ON m.entry_id=v.entry_id AND m.version=v.version "
+                "JOIN memory_versions t ON t.project=v.project AND t.entry_id=v.entry_id "
+                "AND t.revision=v.revision AND t.change IN ('added','edited') "
                 "WHERE v.project=? AND v.text IS NOT NULL ORDER BY v.position,v.entry_id",
                 (project, version, project),
             ).fetchall()
@@ -377,7 +507,7 @@ class ProjectMemory:
             _, removed = _row(db, project, entry)
             rows = db.execute(
                 "SELECT v.revision,v.version,v.change,v.text,v.author,v.created,v.proposal,"
-                "p.proposer,p.created,p.reason FROM memory_versions v LEFT JOIN "
+                "p.proposer,p.created,p.reason,v.basis,v.anchors FROM memory_versions v LEFT JOIN "
                 "memory_proposals p ON p.project=v.project AND p.proposal_id=v.proposal "
                 "WHERE v.project=? AND v.entry_id=? AND v.version<? "
                 "ORDER BY v.version DESC LIMIT 51",
@@ -395,6 +525,8 @@ class ProjectMemory:
                 proposer=Author.model_validate_json(row[7]) if row[7] is not None else None,
                 proposed_at=_time(row[8]) if row[8] is not None else None,
                 reason=row[9],
+                basis=row[10],
+                anchors=_anchors(row[11]),
             )
             for row in rows[:50]
         )
@@ -421,6 +553,7 @@ class ProjectMemory:
         )
         reason = _clean(request.reason, "the reason", MAX_REASON)
         fingerprint = _fingerprint(request)
+        blocks = self._blocks(project, request.anchors)
         with self.control.write() as tx:
             db = tx.sql
             replay = RECEIPTS.find(db, project, author.run_id, operation, fingerprint)
@@ -453,14 +586,15 @@ class ProjectMemory:
                 raise DocumentError(CONFLICT, "the project's memory keeps no more proposals")
             if request.entry is not None and request.revision is not None:
                 _current(db, project, request.entry, request.revision)
+            anchors = _checked(db, project, request, text, author, blocks)
             number = counters[2] + 1
             proposal = f"prop-{number}"
             at = self.clock()
             db.execute("UPDATE memory_heads SET proposals=? WHERE project=?", (number, project))
             db.execute(
                 "INSERT INTO memory_proposals(project,proposal_id,action,entry_id,base,text,"
-                "reason,proposer,run_id,session,created,state) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,'waiting')",
+                "reason,proposer,run_id,session,created,state,basis,anchors) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,'waiting',?,?)",
                 (
                     project,
                     proposal,
@@ -473,6 +607,8 @@ class ProjectMemory:
                     author.run_id,
                     author.session_id,
                     at.astimezone(UTC).isoformat(),
+                    request.basis,
+                    anchoring.encoded(anchors),
                 ),
             )
             self.events.append(
@@ -489,6 +625,34 @@ class ProjectMemory:
             )
             row = db.execute(_PROPOSAL + " AND proposal_id=?", (project, proposal)).fetchone()
             return self._proposal(db, project, row), False
+
+    def _blocks(self, project: str, anchors: list[AnchorInput]) -> dict[tuple[str, int, str], str]:
+        """The documents that a proposal's document anchors name, by ID, each checked to
+        have the block at its revision; read before the write, as the ledger reads them."""
+        found: dict[tuple[str, int, str], str] = {}
+        for anchor in anchors:
+            if anchor.document is None or anchor.revision is None or anchor.block is None:
+                continue
+            key = (anchor.document, anchor.revision, anchor.block)
+            if key in found:
+                continue
+            try:
+                with self.control.read() as tx:
+                    document = self.documents.find(tx.sql, project, anchor.document).document_id
+                if (
+                    self.documents.mapped(project, document, anchor.revision).index(anchor.block)
+                    is None
+                ):
+                    raise DocumentError(
+                        NOT_FOUND,
+                        f"{anchor.document} has no block {anchor.block} at r{anchor.revision}",
+                    )
+            except DocumentError as error:
+                raise anchoring.refused(
+                    f"an anchor is not in this project: {error.message}"
+                ) from None
+            found[key] = document
+        return found
 
     def change(self, project: str, value: object, author: Author) -> MemoryChange:
         """The user's change; a retried operation returns the first result, ``replayed``
@@ -559,6 +723,8 @@ class ProjectMemory:
             state=row[8],
             decided_at=_time(row[9]) if row[9] is not None else None,
             current=entry,
+            basis=row[10],
+            anchors=_anchors(row[11]),
         )
 
 
@@ -588,9 +754,14 @@ class _Change:
         text: str | None,
         position: int,
         proposal: str | None,
+        source: tuple[str, str] = _USER_SOURCE,
     ) -> None:
+        """Append a version, with the basis and anchors (as JSON) its text rests on: the
+        user's own change is ``user``; one made by an accepted proposal keeps the
+        proposal's (PM-13)."""
         self.db.execute(
-            "INSERT INTO memory_versions VALUES(?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO memory_versions(project,entry_id,revision,version,change,text,"
+            "position,author,proposal,created,basis,anchors) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 self.project,
                 entry,
@@ -602,6 +773,7 @@ class _Change:
                 self.author.model_dump_json(exclude_none=True),
                 proposal,
                 self.at.astimezone(UTC).isoformat(),
+                *source,
             ),
         )
         payload: Json = {"entry": entry, "revision": revision, "version": self.version}
@@ -615,7 +787,9 @@ class _Change:
             self.at,
         )
 
-    def add(self, text: str, proposal: str | None) -> MemoryChange:
+    def add(
+        self, text: str, proposal: str | None, source: tuple[str, str] = _USER_SOURCE
+    ) -> MemoryChange:
         live = self.db.execute(
             "SELECT count(*) FROM memory_entries WHERE project=? AND removed=0", (self.project,)
         ).fetchone()[0]
@@ -630,19 +804,23 @@ class _Change:
         self.db.execute(
             "INSERT INTO memory_entries VALUES(?,?,1,?,0)", (self.project, entry, position)
         )
-        self.append(entry, 1, "added", text, position, proposal)
+        self.append(entry, 1, "added", text, position, proposal, source)
         return MemoryChange(version=self.version, entry_id=entry, revision=1)
 
-    def edit(self, head: _Head, text: str, proposal: str | None) -> MemoryChange:
+    def edit(
+        self, head: _Head, text: str, proposal: str | None, source: tuple[str, str] = _USER_SOURCE
+    ) -> MemoryChange:
         self.bump()
         self._next(head)
-        self.append(head.entry, head.revision + 1, "edited", text, head.position, proposal)
+        self.append(head.entry, head.revision + 1, "edited", text, head.position, proposal, source)
         return MemoryChange(version=self.version, entry_id=head.entry, revision=head.revision + 1)
 
-    def remove(self, head: _Head, proposal: str | None) -> MemoryChange:
+    def remove(
+        self, head: _Head, proposal: str | None, source: tuple[str, str] = _USER_SOURCE
+    ) -> MemoryChange:
         self.bump()
         self._next(head, removed=True)
-        self.append(head.entry, head.revision + 1, "removed", None, head.position, proposal)
+        self.append(head.entry, head.revision + 1, "removed", None, head.position, proposal, source)
         return MemoryChange(version=self.version, entry_id=head.entry, revision=head.revision + 1)
 
     def move(self, head: _Head, direction: Literal["up", "down"]) -> MemoryChange:
@@ -673,13 +851,14 @@ class _Change:
         self, proposal: str, decision: Literal["accept", "decline"], expected: int | None
     ) -> MemoryChange:
         row = self.db.execute(
-            "SELECT action,entry_id,text,state,session FROM memory_proposals "
+            "SELECT action,entry_id,text,state,session,basis,anchors FROM memory_proposals "
             "WHERE project=? AND proposal_id=?",
             (self.project, proposal),
         ).fetchone()
         if row is None:
             raise DocumentError(NOT_FOUND, f"there is no proposal {proposal}")
-        action, entry, text, state, session = row
+        action, entry, text, state, session, basis, anchors = row
+        source = (basis, anchors)
         if state != "waiting":
             raise DocumentError(CONFLICT, f"{proposal} was {state} already")
         result = MemoryChange(version=_version(self.db, self.project), proposal_id=proposal)
@@ -687,7 +866,7 @@ class _Change:
             if action == "add":
                 if expected is not None:
                     raise DocumentError(INVALID_REQUEST, "accepting an addition names no revision")
-                result = self.add(text, proposal)
+                result = self.add(text, proposal, source)
             else:
                 if expected is None:
                     raise DocumentError(
@@ -695,9 +874,9 @@ class _Change:
                     )
                 head = _current(self.db, self.project, entry, expected)
                 result = (
-                    self.edit(head, text, proposal)
+                    self.edit(head, text, proposal, source)
                     if action == "change"
-                    else self.remove(head, proposal)
+                    else self.remove(head, proposal, source)
                 )
             result = result.model_copy(update={"proposal_id": proposal})
         self.db.execute(
@@ -740,8 +919,23 @@ class _Head:
     position: int
 
 
+def _anchors(value: str) -> Anchors:
+    return tuple(json.loads(value))
+
+
 def _entry(row: tuple[Any, ...]) -> MemoryEntry:
-    return MemoryEntry(entry_id=row[0], revision=row[1], text=row[2], changed_at=_time(row[3]))
+    """An entry from a row of ``_LIVE``'s columns: the basis, anchors and time are those of
+    the version that wrote its text."""
+    return MemoryEntry(
+        entry_id=row[0],
+        revision=row[1],
+        text=row[2],
+        changed_at=_time(row[3]),
+        basis=row[5],
+        accepted=row[7] is not None,
+        recorded_at=_time(row[8]),
+        anchors=_anchors(row[6]),
+    )
 
 
 def _live(db: sqlite3.Connection, project: str) -> list[MemoryEntry]:

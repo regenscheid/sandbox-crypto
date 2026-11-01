@@ -19,9 +19,9 @@ from sandbox_science.orchestrator.consistency.runner import ReviewerRunner
 from sandbox_science.orchestrator.consistency.store import ReviewStore
 from sandbox_science.orchestrator.documents import DocumentError
 from sandbox_science.orchestrator.ledger import gate
-from sandbox_science.orchestrator.model import ScriptedModel
 
 from .ledger_support import AnchoredLedger as Ledger
+from .scripted import ScriptedModel
 from .test_consistency import MAIN, dispatch
 from .test_consistency import store as store
 from .test_review_quotes import EPRINT_TOOL, STAMP, call, passages, quoting

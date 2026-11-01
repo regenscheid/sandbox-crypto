@@ -12,6 +12,7 @@ import pytest
 
 from sandbox_science.orchestrator.consistency.controller import ReviewController, Reviews
 from sandbox_science.orchestrator.consistency.models import ReviewConfig
+from sandbox_science.orchestrator.context.agent import AgentContext
 from sandbox_science.orchestrator.loop import Transcript
 from sandbox_science.orchestrator.model import ModelError, ModelTurn
 
@@ -82,7 +83,9 @@ async def test_conversational_final_waits_for_requested_review_and_offers_correc
     reviews, _, _ = store
     model = DelayedReviewer(finding=finding)
     controller, hook = await start(reviews, model)
-    closing = asyncio.create_task(hook.closing(Transcript(messages=[]), "I am waiting for review."))
+    closing = asyncio.create_task(
+        hook.closing(Transcript(context=AgentContext(messages=[])), "I am waiting for review.")
+    )
     try:
         with pytest.raises(TimeoutError):
             await asyncio.wait_for(asyncio.shield(closing), timeout=0.05)
@@ -110,7 +113,9 @@ async def test_failed_requested_review_stays_pending_without_dispatch_at_closing
     controller, hook = await start(reviews, model)
     try:
         model.release.set()
-        result = await hook.closing(Transcript(messages=[]), "I am waiting for review.")
+        result = await hook.closing(
+            Transcript(context=AgentContext(messages=[])), "I am waiting for review."
+        )
         assert result.action == "accept"
         summary = hook.summary()
         assert isinstance(summary, dict)
@@ -130,7 +135,8 @@ async def test_disabled_terminal_hold_does_not_wait_for_requested_review(store):
     controller, hook = await start(reviews, model, hold=False)
     try:
         result = await asyncio.wait_for(
-            hook.closing(Transcript(messages=[]), "I am waiting for review."), timeout=1
+            hook.closing(Transcript(context=AgentContext(messages=[])), "I am waiting for review."),
+            timeout=1,
         )
         assert result.action == "accept"
         summary = hook.summary()
@@ -149,7 +155,8 @@ async def test_new_user_input_interrupts_requested_terminal_review_wait(store):
     try:
         messages.put_nowait("Please use the corrected premise.")
         result = await asyncio.wait_for(
-            hook.closing(Transcript(messages=[]), "I am waiting for review."), timeout=1
+            hook.closing(Transcript(context=AgentContext(messages=[])), "I am waiting for review."),
+            timeout=1,
         )
         assert result.action == "stop"
         assert result.stopped == "user_message"

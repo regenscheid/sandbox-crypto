@@ -53,6 +53,10 @@ class ManagerTimeouts:
     """The first wait before retrying a daemon recovery; it doubles each time."""
     recovery_retry_max: float = 30.0
     """The longest wait between daemon recovery retries."""
+    startup_recovery: float = 300.0
+    """At startup, how long the worker keeps trying to reach the daemon of a sandbox with
+    unfinished executions before it refuses to start: long enough for the sandbox's VM to
+    boot, which the gateway starts at the same time (a crypto-base VM can take minutes)."""
 
     def __post_init__(self) -> None:
         for name, value in vars(self).items():

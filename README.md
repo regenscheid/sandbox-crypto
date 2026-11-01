@@ -26,7 +26,7 @@ The initial research workspace includes living documents with direct user edits 
 
 The first engineering step is a written behavior specification of the CScience features worth keeping, plus a minimal new harness whose tools execute only through the worker API. The harness is built from MIT-compatible components ([licensing](docs/LICENSING.md)); OpenScience Desktop (MIT) is the first code-reuse candidate. The GUI is new as well, kept deliberately small at first.
 
-Evaluate NVIDIA OpenShell as the execution backend behind an adapter. Its documented Docker/Podman and Kubernetes drivers fit the intended placements, but adoption requires actual lifecycle, persistence, and isolation checks. The evaluation baseline is [v0.1.3](https://github.com/NVIDIA/OpenShell/releases/tag/v0.1.3). OpenShell does not supply the research workflow or automatic scientific review. A trusted monitor should correlate supported request/response inspection with task, tool, and package activity.
+Evaluate NVIDIA OpenShell as the execution backend behind an adapter. Its documented Docker/Podman and Kubernetes drivers fit the intended placements, but adoption requires actual lifecycle, persistence, and isolation checks. The pinned release is [v0.1.5](https://github.com/NVIDIA/OpenShell/releases/tag/v0.1.5); the evaluation baseline was v0.1.3. OpenShell does not supply the research workflow or automatic scientific review. A trusted monitor should correlate supported request/response inspection with task, tool, and package activity.
 
 ## Read first
 
@@ -57,10 +57,12 @@ Evaluate NVIDIA OpenShell as the execution backend behind an adapter. Its docume
 | [Decisions](docs/DECISIONS.md) | Confirmed requirements, recommendations, and open choices |
 | [Threat model](docs/THREAT-MODEL.md) | Assets, threat sources, trust zones, isolation tiers and data classes (D43) |
 | [Policy file](docs/POLICY.md) | Permissive-by-default YAML project policy, precedence, escalation timeout ([example](examples/policy.yaml)) |
-| [MCP connectors](docs/MCP-CONNECTORS.md) | OAuth (primary), bearer and custom-header auth for MCP servers; connector auth service and the MCP proxy that all MCP traffic goes through |
+| [MCP connectors](docs/MCP-CONNECTORS.md) | OAuth (primary), bearer and custom-header auth for MCP servers; the agent runtime's own client, decided by OpenShell's native rules and the policy middleware (the MCP proxy retired 2026-10-26); connector auth service |
 | [Licensing](docs/LICENSING.md) | MIT goal, dependency tiers, runtime-installed GPL tools, components to avoid |
-| [Base profile images](docs/IMAGES.md) | The `minimal` and `crypto-base` images, and the `orchestrator` and `mcp-proxy` images of the harness and the MCP proxy: contract, pinned sources, building and tests |
+| [Base profile images](docs/IMAGES.md) | The `minimal` and `crypto-base` images, and the `orchestrator` image of the harness: contract, pinned sources, building and tests |
 | [Deployment examples](examples/deployment-profiles.json) | Illustrative placements; not executable manifests |
+| [Kubernetes work](docs/KUBERNETES.md) | Mixed-architecture placement, object-store/PVC lifecycle and remaining cluster acceptance gates |
+| [S3 artifact backing](docs/ARTIFACT-S3.md) | Optional verified artifact retention and explicit local archive/eviction |
 | [Run request](examples/run-request.json) | Illustrative batch contract; not an OpenShell request |
 
 The earlier project was located at [regenscheid/open-science-crypto](https://github.com/regenscheid/open-science-crypto). Its execution contracts, lifecycle work, and persistent-environment proposal are relevant references; its end-to-end agent execution remains unproven. The existing [crypto-analysis-skills](https://github.com/regenscheid/crypto-analysis-skills) pack stays external. Its workflows inform platform capabilities and compatibility tests; its content is not embedded here.

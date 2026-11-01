@@ -7,8 +7,8 @@ takes the same lock before it cleans up after a launcher that is gone. The recor
 ``launcher.json``, says which process the launcher is and which parts it started, so
 ``down`` can stop it and ``status`` can show it.
 
-A process is known by its ID, its start time and the boot it started in (Linux's
-``boot_id``), never by its ID or command line alone: an ID comes round again, after a
+A process is known by its ID, its start time and the boot it started in, never by
+its ID or command line alone: an ID comes round again, after a
 reboot or in time, and two state directories run the same commands. A part also leads
 its own session. ``down`` or ``up`` stops what a killed launcher left only when all of
 that still holds. A part's children do not get its death signal, so they can outlive
@@ -22,16 +22,13 @@ import fcntl
 import json
 import os
 from dataclasses import asdict, dataclass
-from pathlib import Path
 from typing import Any, cast
 
 from .config import LauncherError
+from .processes import boot_id as boot_id
+from .processes import command_has, members, start_time
 from .state import Layout, write_private
-from .supervise import end_session, members, start_time
-
-
-def boot_id() -> str:
-    return Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
+from .supervise import end_session
 
 
 @dataclass(frozen=True)
@@ -39,7 +36,7 @@ class RecordedPart:
     name: str
     pid: int
     started: int
-    """Its start time, in clock ticks since boot (``/proc/<pid>/stat``)."""
+    """Its platform-specific creation identity."""
     command: str
     """The first of its arguments, which its command line names."""
     address: str | None
@@ -147,10 +144,9 @@ def alive(part: RecordedPart, record: Record) -> bool:
     try:
         if os.getsid(part.pid) != part.pid:
             return False
-        arguments = Path(f"/proc/{part.pid}/cmdline").read_bytes().split(b"\0")
     except OSError:
         return False
-    return part.command.encode() in arguments
+    return command_has(part.pid, part.command)
 
 
 def lingering(part: RecordedPart, record: Record) -> list[int]:

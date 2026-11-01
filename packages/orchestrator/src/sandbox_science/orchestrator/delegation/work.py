@@ -40,7 +40,18 @@ NOTE_CHARS: Final = 1000
 LIMITS: Final = {"context_limit": "context"}
 """What ran out, by how the run stopped; a turn or budget limit is ``time``, and a
 failure, a cancel or an interruption ``tools``."""
-_TIME: Final = frozenset({"turn_limit", "run_budget", "budget", "gateway_budget", "cost_limit"})
+_TIME: Final = frozenset(
+    {
+        "turn_limit",
+        "run_budget",
+        "budget",
+        "gateway_budget",
+        "cost_limit",
+        "resource_report",
+        "resource_pause",
+        "resource_time",
+    }
+)
 OUTCOME: Final = "outcome"
 """The key of the outcome's record, which the others are part of."""
 
@@ -59,7 +70,9 @@ def work_record(
     if not records:
         return None
     mutation: Json = {
-        "operation_id": f"work-{delegation.delegation_id}",
+        # A reopened task's later result is work of its own (PD-46).
+        "operation_id": f"work-{delegation.delegation_id}"
+        + (f"-{delegation.results}" if delegation.results > 1 else ""),
         "reason": f"The outcome of delegation {delegation.delegation_id}, as it ended.",
         "work": records,
     }

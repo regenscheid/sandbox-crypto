@@ -86,11 +86,11 @@ def private_json(path: Path, value: object) -> None:
 stop_units = recovery.stop_units
 
 
-def live_model(key_file: Path) -> dict:
+def live_model(key_file: Path, gateway_url: str) -> dict:
     """The key is an opaque absolute path consumed only by the normal launcher."""
     assert key_file.is_absolute()
     value = {
-        "url": "https://litellm-api.npages.org/v1",
+        "url": gateway_url,
         "name": SOL,
         "delegated": SOL,
         "reviewer": LUNA,
@@ -150,14 +150,14 @@ class Lab(recovery.Lab):
             "prepared prompt changed"
         )
 
-    def authorize(self, key_file: Path, allowance: float, note: str):
+    def authorize(self, key_file: Path, gateway_url: str, allowance: float, note: str):
         """Record the owner's separate allowance; do not consume the referenced key."""
         assert self.quality["mode"] == "prepared"
         assert allowance == 150, "the owner authorized USD 150 aggregate new test spend"
         assert note.strip(), "record the owner's explicit authorization text"
         assert key_file.is_absolute()
         config = recovery.load_config(self.config).model_dump(mode="json", exclude_none=True)
-        config["model"] = live_model(key_file)
+        config["model"] = live_model(key_file, gateway_url)
         recovery.private(self.config, toml.dumps(config))
         recovery.load_config(self.config)
         self.quality.update(
@@ -771,6 +771,10 @@ def main():
     parser.add_argument("lab", nargs="?", type=Path)
     parser.add_argument("--static", type=Path, default=recovery.REPO / "web/workspace/dist")
     parser.add_argument("--key-file", type=Path)
+    parser.add_argument(
+        "--gateway-url",
+        help="OpenAI-compatible model endpoint, stored in the private lab configuration",
+    )
     parser.add_argument("--allowance", type=float)
     parser.add_argument("--authorization")
     parser.add_argument("--appendix", type=int)
@@ -781,7 +785,9 @@ def main():
 
         assert all(prompt(stage).strip() for stage in PROMPTS)
         # This nonexistent file proves config validation never reads the key.
-        live_model(Path("/nonexistent-quality-selftest/no-key"))
+        live_model(
+            Path("/nonexistent-quality-selftest/no-key"), "https://gateway.example.invalid/v1"
+        )
         stopped = []
 
         def fake_stop(argv, **_):
@@ -804,11 +810,16 @@ def main():
             parser.error("lab root required")
         lab = Lab(args.lab)
         if args.action == "authorize":
-            if args.key_file is None or args.allowance is None or args.authorization is None:
+            if (
+                args.key_file is None
+                or args.gateway_url is None
+                or args.allowance is None
+                or args.authorization is None
+            ):
                 parser.error(
-                    "authorization needs key FILE PATH, allowance and owner authorization text"
+                    "authorization needs key FILE PATH, gateway URL, allowance and owner authorization text"
                 )
-            lab.authorize(args.key_file, args.allowance, args.authorization)
+            lab.authorize(args.key_file, args.gateway_url, args.allowance, args.authorization)
         elif args.action in PROMPTS:
             lab.message(args.action)
         elif args.action == "pressure":

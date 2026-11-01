@@ -320,5 +320,13 @@ export function outcomeOf(text: string): Delegation | null {
     read_entry: typeof outcome.read_entry === 'boolean' ? outcome.read_entry : null,
     read_proofs: typeof outcome.read_proofs === 'boolean' ? outcome.read_proofs : null,
     files: null,
+    environment_id: null,
+    environment: null,
+    results: ended === null ? 0 : 1,
+    review: null,
+    reviewed_at: null,
+    reviewed_by: null,
+    review_reason: null,
+    review_note: null,
   };
 }

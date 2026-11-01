@@ -16,7 +16,7 @@
   figure checks, each chart shows its result (FG-23).
 -->
 <script lang="ts">
-  import { flushSync, getContext, mount, unmount } from 'svelte';
+  import { flushSync, getContext, mount, unmount, untrack } from 'svelte';
   import FigureChart from '../views/FigureChart.svelte';
   import FigureRef from '../views/FigureRef.svelte';
   import { placeCharts, placeReferences, type Pin } from './figureRefs';
@@ -92,20 +92,29 @@
     });
   });
 
+  // What the figures are drawn from, by content: a poll gives equal pins and checks as new
+  // arrays, and a new rendering object for the same text, which must not draw them again.
+  const html = $derived(rendered.html);
+  const pinsKey = $derived(JSON.stringify(pins));
+  const checksKey = $derived(JSON.stringify(checks));
+
   // Each path image the text shows, drawn in its place once the rendering is in the page.
   $effect(() => {
-    void rendered.html;
+    void html;
+    void pinsKey;
+    void checksKey;
     const target = element;
     if (!target || projectId === null) return;
-    const references = pins.length ? placeReferences(target, pins) : [];
+    const [pinned, checked, moved] = untrack(() => [pins, checks, repin] as const);
+    const references = pinned.length ? placeReferences(target, pinned) : [];
     const shown = references.map((placed) =>
       mount(FigureRef, {
         target: placed.target,
-        props: { projectId, pin: placed.pin, alt: placed.alt, drawn: placed.drawn, repin },
+        props: { projectId, pin: placed.pin, alt: placed.alt, drawn: placed.drawn, repin: moved },
       }),
     );
     // A chart fence is drawn where it is written, from the data its text pins (FG-15).
-    for (const placed of placeCharts(target, pins, references.length, checks))
+    for (const placed of placeCharts(target, pinned, references.length, checked))
       shown.push(
         mount(FigureChart, { target: placed.target, props: { projectId, chart: placed } }),
       );

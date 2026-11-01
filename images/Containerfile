@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: MIT
 #
-# Recipes for the two standard base profiles (D46) and the images of two platform services;
-# docs/IMAGES.md is the contract they follow.
+# Recipes for the two standard base profiles (D46) and the image of a platform service;
+# docs/IMAGES.md is the contract they follow. The MCP proxy's image went with the proxy
+# (D98, 2026-10-26).
 #   minimal       the thin, permissive image the project could publish
-#   crypto-base   the pinned cryptography environment; it contains GPL tools and is never published
+#   crypto-base   the pinned cryptography environment; it contains GPL tools and stays private
 #   orchestrator  the harness, for the orchestrator's own sandbox; permissive like minimal
-#   mcp-proxy     the MCP proxy, for its own sandbox, with a launcher as its command; permissive
+#   trusted-app / trusted-worker  unpublished cluster services; build_trusted.sh only
 # Build with images/build.sh (context: images/, target: the profile). Every download is pinned:
 # the Ubuntu image by digest, apt packages by archive snapshot, micromamba by SHA-256, Conda
 # packages by the lockfiles' SHA-256, Python wheels by hash and source trees by commit. The
@@ -21,6 +22,12 @@ ARG G6K_COMMIT=c71e084dd003e1ffbfe8c91a7211b0ce9da22245
 ARG G6K_MARCH_AMD64=x86-64-v3
 ARG G6K_MARCH_ARM64=armv8.2-a
 ARG LATTICE_ESTIMATOR_COMMIT=53da5982597709ba0fdf94ea37a84d822310fd84
+ARG NODE_VERSION=24.22.0
+ARG NODE_SHA256_AMD64=cc2f601cee82d9a5a233302fe307abc600727035fd7d2c3a3571755989e95008
+ARG NODE_SHA256_ARM64=fef00bb4d36e1c50104a9775a10359beee98f162b4104dd12472c75065c6a143
+ARG OPENSHELL_VERSION=0.1.5
+ARG OPENSHELL_SHA256_AMD64=ca1ad6e6fbb4a6cd407e95763391b8ecff02912e7d9c467e7ca22696fe80af69
+ARG OPENSHELL_SHA256_ARM64=30c949b4ac07a9c8245c1248eb82e4eb241615134fcabf3c9bf30dec7d00addf
 
 # micromamba's release binary for the target architecture, checked against its published SHA-256.
 FROM scratch AS micromamba-amd64
@@ -54,8 +61,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 # What every profile shares: the sandbox account, micromamba and an empty Conda prefix.
 FROM ${UBUNTU_IMAGE} AS base
 ARG UBUNTU_SNAPSHOT
+ARG TARGETARCH
 ARG DEBIAN_FRONTEND=noninteractive
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+# Noble's ARM64 source names ports.ubuntu.com, whose snapshot route currently returns 401.
+# Point it directly at the dated signed archive, without a second snapshot lookup.
+RUN if [ "${TARGETARCH}" = arm64 ]; then \
+        sed -i "s|http://ports.ubuntu.com/ubuntu-ports|https://snapshot.ubuntu.com/ubuntu/${UBUNTU_SNAPSHOT}|g" \
+            /etc/apt/sources.list.d/ubuntu.sources && \
+        sed -i '/^URIs: https:\/\/snapshot.ubuntu.com\/ubuntu\//a Snapshot: no' \
+            /etc/apt/sources.list.d/ubuntu.sources; \
+    fi
 RUN --mount=type=bind,from=bootstrap-ca,source=/etc/ssl/certs/ca-certificates.crt,target=/run/bootstrap-ca.crt \
     apt-get -o Acquire::https::CaInfo=/run/bootstrap-ca.crt -o APT::Snapshot="${UBUNTU_SNAPSHOT}" update && \
     apt-get -o Acquire::https::CaInfo=/run/bootstrap-ca.crt -o APT::Snapshot="${UBUNTU_SNAPSHOT}" \
@@ -83,15 +99,55 @@ ENV HOME=/sandbox \
     GIT_CONFIG_SYSTEM=/etc/gitconfig
 WORKDIR /sandbox
 
+# The research environment, the base, stays in the image at /opt/sandbox-science-base, owned by
+# root and read-only, outside the workspace OpenShell copies into every new environment (B11).
+# The workspace prefix becomes a small writable layer over it, which runtime installs go into,
+# written once the base is complete (common/prefix_layout.py layer). /opt/sandbox-science stays
+# the stable path of the interpreter, kernelspecs and launchers: a link to the workspace prefix,
+# which in a workspace seeded from an earlier image is that image's whole prefix.
+FROM base AS research-base
+RUN rmdir /opt/sandbox-science && \
+    ln -s /sandbox/.sandbox-science-prefix /opt/sandbox-science && \
+    install -d -o 0 -g 0 -m 0755 /opt/sandbox-science-base
+ENV PATH=/opt/sandbox-science/bin:/opt/sandbox-science-base/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    JUPYTER_PATH=/opt/sandbox-science-base/share/jupyter
+
+# Compile for the image's target platform, independently of the worker host.
+# Only the library reaches research images; the compiler stays in this stage.
+FROM base AS scheduler-shim
+ARG UBUNTU_SNAPSHOT
+RUN apt-get -o APT::Snapshot="${UBUNTU_SNAPSHOT}" update && \
+    apt-get -o APT::Snapshot="${UBUNTU_SNAPSHOT}" install -y --no-install-recommends gcc libc6-dev
+RUN --mount=type=bind,from=binding-inventory,source=shim/sched_self.c,target=/tmp/sched_self.c \
+    revision=$(sha256sum /tmp/sched_self.c | cut -d ' ' -f 1) && \
+    install -d "/output/$revision" && \
+    cc -shared -fPIC -O2 "-DSANDBOX_SCIENCE_SCHED_SOURCE_SHA256=\"$revision\"" \
+        -o "/output/$revision/libsandbox-science-sched.so" /tmp/sched_self.c
+
 # ---------------------------------------------------------------------------------------------
-FROM base AS minimal
-USER 1000:1000
-# micromamba keeps the extracted packages of a lockfile install (hard links into the environment)
-# under pkgs/, which `clean -a` leaves; a copy of the prefix would duplicate them.
+FROM research-base AS minimal
+COPY --from=scheduler-shim /output/ /usr/local/lib/sandbox-science/shim/
+# The base, installed as root and writable by nobody else, so that it stays read-only (a few
+# packages ship group-writable files). micromamba keeps the extracted packages
+# of a lockfile install (hard links into the environment) under pkgs/, which `clean -a` leaves.
+# The trimming runs in the same step, so that no layer keeps what it removes
+# (common/prefix_layout.py). Nothing is frozen: the profile has no heavy trees.
 RUN --mount=type=bind,source=minimal/conda-lock.yml,target=/tmp/conda-lock.yml \
-    micromamba install -y -n base -f /tmp/conda-lock.yml && \
-    micromamba clean -a -y && \
-    find /opt/sandbox-science/pkgs -mindepth 1 -delete
+    --mount=type=bind,source=common/prefix_layout.py,target=/tmp/prefix_layout.py \
+    micromamba install -y -r /opt/sandbox-science-base -p /opt/sandbox-science-base \
+        -f /tmp/conda-lock.yml && \
+    MAMBA_ROOT_PREFIX=/opt/sandbox-science-base micromamba clean -a -y && \
+    find /opt/sandbox-science-base/pkgs -mindepth 1 -delete && \
+    chmod -R go-w /opt/sandbox-science-base && \
+    /opt/sandbox-science-base/bin/python -I -B /tmp/prefix_layout.py trim /opt/sandbox-science-base
+# The workspace's layer over the base, its marker naming the image's revision, and the base's
+# Python launchers pointed at it.
+ARG REVISION=unknown
+RUN --mount=type=bind,source=common/prefix_layout.py,target=/tmp/prefix_layout.py \
+    /opt/sandbox-science-base/bin/python -I -B /tmp/prefix_layout.py layer \
+        /opt/sandbox-science-base /sandbox/.sandbox-science-prefix --revision "${REVISION}" && \
+    chown -R -h 1000:1000 /sandbox/.sandbox-science-prefix
+USER 1000:1000
 RUN --mount=type=bind,source=common/image_report.py,target=/tmp/image_report.py \
     python -B /tmp/image_report.py kernels python3
 
@@ -103,10 +159,13 @@ ARG VERSION=unknown
 ARG SOURCE_URL=https://github.com/regenscheid/sandbox-crypto
 ARG LICENSES=NOASSERTION
 USER root
-# The build ran with HOME=/sandbox; the image leaves it empty.
+# Remove build home files while retaining the layer seeded into the workspace.
 RUN --mount=type=bind,source=minimal/conda-lock.yml,target=/tmp/conda-lock.yml \
     --mount=type=bind,source=common/image_report.py,target=/tmp/image_report.py \
-    find /sandbox -mindepth 1 -delete && \
+    --mount=type=bind,source=common/prefix_layout.py,target=/tmp/prefix_layout.py \
+    find /sandbox -mindepth 1 -maxdepth 1 ! -name .sandbox-science-prefix -exec rm -rf -- {} + && \
+    python -I -B /tmp/prefix_layout.py check /opt/sandbox-science-base /opt/sandbox-science-frozen \
+        --layer /sandbox/.sandbox-science-prefix && \
     python -B /tmp/image_report.py record \
         --profile minimal --policy permissive --revision "${REVISION}" --source-url "${SOURCE_URL}" \
         --base-image "${UBUNTU_IMAGE}" --ubuntu-snapshot "${UBUNTU_SNAPSHOT}" \
@@ -125,7 +184,8 @@ LABEL org.opencontainers.image.title="Sandbox Science minimal" \
       io.github.regenscheid.sandbox-science.profile="minimal"
 
 # ---------------------------------------------------------------------------------------------
-FROM base AS crypto-base
+FROM research-base AS crypto-base
+COPY --from=scheduler-shim /output/ /usr/local/lib/sandbox-science/shim/
 ARG UBUNTU_SNAPSHOT
 ARG DEBIAN_FRONTEND=noninteractive
 RUN --mount=type=bind,source=crypto-base/apt-packages.txt,target=/tmp/apt-packages.txt \
@@ -133,28 +193,51 @@ RUN --mount=type=bind,source=crypto-base/apt-packages.txt,target=/tmp/apt-packag
     grep -v -e '^#' -e '^$' /tmp/apt-packages.txt | \
         xargs apt-get -o APT::Snapshot="${UBUNTU_SNAPSHOT}" install -y --no-install-recommends && \
     rm -rf /var/lib/apt/lists/*
-USER 1000:1000
+# The base, installed as root and writable by nobody else, trimmed, and its frozen trees (GAP,
+# Giac, Maxima's and ECL's, the compiler toolchain) moved to /opt/sandbox-science-frozen with a
+# link at each place, where workspaces seeded from earlier images link to them too
+# (common/prefix_layout.py, docs/IMAGES.md). One step, so that no layer keeps what it removes or
+# moves.
 RUN --mount=type=bind,source=crypto-base/conda-lock.yml,target=/tmp/conda-lock.yml \
-    micromamba install -y -n base -f /tmp/conda-lock.yml && \
-    micromamba clean -a -y && \
-    find /opt/sandbox-science/pkgs -mindepth 1 -delete
-# G6K has no conda-forge package; build it with the environment's compilers for a named CPU level.
+    --mount=type=bind,source=common/prefix_layout.py,target=/tmp/prefix_layout.py \
+    micromamba install -y -r /opt/sandbox-science-base -p /opt/sandbox-science-base \
+        -f /tmp/conda-lock.yml && \
+    MAMBA_ROOT_PREFIX=/opt/sandbox-science-base micromamba clean -a -y && \
+    find /opt/sandbox-science-base/pkgs -mindepth 1 -delete && \
+    chmod -R go-w /opt/sandbox-science-base && \
+    /opt/sandbox-science-base/bin/python -I -B /tmp/prefix_layout.py trim /opt/sandbox-science-base && \
+    /opt/sandbox-science-base/bin/python -I -B /tmp/prefix_layout.py freeze \
+        /opt/sandbox-science-base /opt/sandbox-science-frozen
+# G6K has no conda-forge package; build it with the environment's compilers for a named CPU level,
+# into the base, as root like the rest of it.
 ARG TARGETARCH
 ARG G6K_MARCH_AMD64
 ARG G6K_MARCH_ARM64
 RUN --mount=type=bind,from=g6k-src,target=/tmp/g6k-src \
     --mount=type=bind,source=crypto-base/build-g6k.sh,target=/tmp/build-g6k.sh \
+    --mount=type=bind,source=crypto-base/patch-g6k-arm64.py,target=/tmp/patch-g6k-arm64.py \
     cp -r /tmp/g6k-src /tmp/g6k && \
+    G6K_TARGET_ARCH="${TARGETARCH}" PIP_ROOT_USER_ACTION=ignore \
     G6K_MARCH=$([ "${TARGETARCH}" = arm64 ] && echo "${G6K_MARCH_ARM64}" || echo "${G6K_MARCH_AMD64}") \
-        micromamba run -n base bash /tmp/build-g6k.sh /tmp/g6k && \
+        MAMBA_ROOT_PREFIX=/opt/sandbox-science-base micromamba run -p /opt/sandbox-science-base \
+            bash /tmp/build-g6k.sh /tmp/g6k && \
     rm -rf /tmp/g6k
 RUN --mount=type=bind,from=lattice-estimator-src,target=/tmp/lattice-estimator-src \
     cp -r /tmp/lattice-estimator-src /tmp/lattice-estimator && \
-    python -m pip install --no-deps --no-build-isolation --no-index --no-cache-dir /tmp/lattice-estimator && \
+    /opt/sandbox-science-base/bin/python -m pip install --root-user-action=ignore --no-deps \
+        --no-build-isolation --no-index --no-cache-dir /tmp/lattice-estimator && \
     rm -rf /tmp/lattice-estimator
 RUN --mount=type=bind,source=crypto-base/requirements.txt,target=/tmp/requirements.txt \
-    python -m pip install --no-deps --only-binary=:all: --require-hashes --no-cache-dir \
-        -r /tmp/requirements.txt
+    /opt/sandbox-science-base/bin/python -m pip install --root-user-action=ignore --no-deps \
+        --only-binary=:all: --require-hashes --no-cache-dir -r /tmp/requirements.txt
+# The workspace's layer over the complete base, its marker naming the image's revision, and the
+# base's Python launchers pointed at it.
+ARG REVISION=unknown
+RUN --mount=type=bind,source=common/prefix_layout.py,target=/tmp/prefix_layout.py \
+    /opt/sandbox-science-base/bin/python -I -B /tmp/prefix_layout.py layer \
+        /opt/sandbox-science-base /sandbox/.sandbox-science-prefix --revision "${REVISION}" && \
+    chown -R -h 1000:1000 /sandbox/.sandbox-science-prefix
+USER 1000:1000
 RUN --mount=type=bind,source=common/image_report.py,target=/tmp/image_report.py \
     python -B /tmp/image_report.py kernels python3 sagemath
 
@@ -169,7 +252,10 @@ ARG LICENSES=NOASSERTION
 USER root
 RUN --mount=type=bind,source=crypto-base/conda-lock.yml,target=/tmp/conda-lock.yml \
     --mount=type=bind,source=common/image_report.py,target=/tmp/image_report.py \
-    find /sandbox -mindepth 1 -delete && \
+    --mount=type=bind,source=common/prefix_layout.py,target=/tmp/prefix_layout.py \
+    find /sandbox -mindepth 1 -maxdepth 1 ! -name .sandbox-science-prefix -exec rm -rf -- {} + && \
+    python -I -B /tmp/prefix_layout.py check /opt/sandbox-science-base /opt/sandbox-science-frozen \
+        --layer /sandbox/.sandbox-science-prefix && \
     g6k_march=$([ "${TARGETARCH}" = arm64 ] && echo "${G6K_MARCH_ARM64}" || echo "${G6K_MARCH_AMD64}") && \
     python -B /tmp/image_report.py record \
         --profile crypto-base --policy report --revision "${REVISION}" --source-url "${SOURCE_URL}" \
@@ -182,8 +268,7 @@ RUN --mount=type=bind,from=binding-inventory,source=binding_inventory.py,target=
     python -I -B /tmp/binding_inventory.py /usr/share/sandbox-science/binding-inventory.json
 USER 1000:1000
 LABEL org.opencontainers.image.title="Sandbox Science crypto-base" \
-      org.opencontainers.image.description="Base profile: SageMath, fpylll, PARI, FLINT, G6K, lattice-estimator, TeX and PDF tools. Contains GPL software; never publish this image" \
-      org.opencontainers.image.source="${SOURCE_URL}" \
+      org.opencontainers.image.description="Base profile: SageMath, fpylll, PARI, FLINT, G6K, lattice-estimator, TeX and PDF tools. Contains GPL software; private registry only" \
       org.opencontainers.image.revision="${REVISION}" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.licenses="${LICENSES}" \
@@ -191,7 +276,7 @@ LABEL org.opencontainers.image.title="Sandbox Science crypto-base" \
       io.github.regenscheid.sandbox-science.profile="crypto-base"
 
 # ---------------------------------------------------------------------------------------------
-# The services' wheels (the harness, the MCP proxy and the workspace packages they import):
+# The services' wheels (the harness and the workspace packages it imports):
 # build.sh builds them from the checkout and passes the directory as the build context `wheels`,
 # which replaces this stage. Without it the build stops here, rather than looking for an image
 # named `wheels`.
@@ -209,7 +294,7 @@ RUN --mount=type=bind,source=orchestrator/conda-lock.yml,target=/tmp/conda-lock.
 # these two and uses no index; then the dependencies must check out and the command must run.
 RUN --mount=type=bind,from=wheels,target=/tmp/wheels \
     python -m pip install --no-deps --no-index --no-cache-dir --find-links /tmp/wheels \
-        sandbox-science-contracts sandbox-science-orchestrator && \
+        sandbox-science-contracts sandbox-science-policy sandbox-science-orchestrator && \
     python -m pip check && \
     sandbox-science-harness --help >/dev/null
 
@@ -240,48 +325,195 @@ LABEL org.opencontainers.image.title="Sandbox Science orchestrator" \
       io.github.regenscheid.sandbox-science.profile="orchestrator"
 
 # ---------------------------------------------------------------------------------------------
-FROM base AS mcp-proxy
-USER 1000:1000
-RUN --mount=type=bind,source=mcp-proxy/conda-lock.yml,target=/tmp/conda-lock.yml \
-    micromamba install -y -n base -f /tmp/conda-lock.yml && \
-    micromamba clean -a -y && \
-    find /opt/sandbox-science/pkgs -mindepth 1 -delete
-# The proxy and the workspace packages it imports. The lockfile holds everything else they need,
-# so pip installs only these four and uses no index; then the dependencies must check out and
-# the command must run.
-RUN --mount=type=bind,from=wheels,target=/tmp/wheels \
-    python -m pip install --no-deps --no-index --no-cache-dir --find-links /tmp/wheels \
-        sandbox-science-contracts sandbox-science-policy sandbox-science-event-store \
-        sandbox-science-mcp-proxy && \
-    python -m pip check && \
-    sandbox-science-mcp-proxy --help >/dev/null
-# The sandbox's command: it waits for the settings, runs the proxy and starts it again when it
-# exits.
-COPY --chmod=0755 mcp-proxy/mcp-proxy-run /opt/sandbox-science/bin/mcp-proxy-run
+# Unpublished trusted service targets: build_trusted.sh only loads these locally.
+FROM base AS trusted-inputs
+RUN echo "trusted targets require build_trusted.sh's locked inputs context" >&2 && exit 1
 
+FROM base AS workspace-web
+RUN echo "trusted-app requires build_trusted.sh's workspace web context" >&2 && exit 1
+
+FROM base AS repository-tools
+RUN echo "trusted targets require build_trusted.sh's license checker context" >&2 && exit 1
+
+FROM base AS repository-license
+RUN echo "trusted-app requires build_trusted.sh's repository license context" >&2 && exit 1
+
+FROM scratch AS trusted-node-amd64
+ARG NODE_VERSION
+ARG NODE_SHA256_AMD64
+ADD --checksum=sha256:${NODE_SHA256_AMD64} \
+    https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz /node.tar.xz
+
+FROM scratch AS trusted-node-arm64
+ARG NODE_VERSION
+ARG NODE_SHA256_ARM64
+ADD --checksum=sha256:${NODE_SHA256_ARM64} \
+    https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-arm64.tar.xz /node.tar.xz
+
+FROM trusted-node-${TARGETARCH} AS trusted-node
+
+FROM scratch AS trusted-openshell-amd64
+ARG OPENSHELL_VERSION
+ARG OPENSHELL_SHA256_AMD64
+ADD --checksum=sha256:${OPENSHELL_SHA256_AMD64} \
+    https://github.com/NVIDIA/OpenShell/releases/download/v${OPENSHELL_VERSION}/openshell-x86_64-unknown-linux-musl.tar.gz /openshell.tar.gz
+
+FROM scratch AS trusted-openshell-arm64
+ARG OPENSHELL_VERSION
+ARG OPENSHELL_SHA256_ARM64
+ADD --checksum=sha256:${OPENSHELL_SHA256_ARM64} \
+    https://github.com/NVIDIA/OpenShell/releases/download/v${OPENSHELL_VERSION}/openshell-aarch64-unknown-linux-musl.tar.gz /openshell.tar.gz
+
+FROM trusted-openshell-${TARGETARCH} AS trusted-openshell
+
+FROM base AS trusted-python
+USER 1000:1000
+RUN --mount=type=bind,source=orchestrator/conda-lock.yml,target=/tmp/conda-lock.yml \
+    micromamba install -y -n base -f /tmp/conda-lock.yml && \
+    micromamba clean -a -y && find /opt/sandbox-science/pkgs -mindepth 1 -delete
+
+FROM trusted-python AS trusted-node-unpack
+USER root
+RUN --mount=type=bind,from=trusted-node,source=/node.tar.xz,target=/tmp/node.tar.xz \
+    --mount=type=bind,source=trusted/unpack_node.py,target=/run/ss-build/unpack_node.py \
+    python -B /run/ss-build/unpack_node.py /tmp/node.tar.xz /node
+
+FROM trusted-python AS trusted-openshell-unpack
+USER root
+RUN --mount=type=bind,from=trusted-openshell,source=/openshell.tar.gz,target=/tmp/openshell.tar.gz \
+    mkdir /openshell && tar -xzf /tmp/openshell.tar.gz -C /openshell && \
+    test -x /openshell/openshell
+ADD --checksum=sha256:d07c0367e2861e7fe70fa1b679f879f4fa2f9138ade4457d44ecf8b2e135bb45 \
+    https://raw.githubusercontent.com/NVIDIA/OpenShell/bdb956f2cd65a635f1294fccf1d138d263bf650f/LICENSE /openshell/LICENSE
+
+FROM trusted-python AS trusted-web-build
+USER root
+COPY --from=trusted-node-unpack /node /node
+ENV PATH=/node/bin:${PATH}
+WORKDIR /build/web/workspace
+COPY --from=repository-license LICENSE /build/LICENSE
+COPY --from=workspace-web package.json package-lock.json .npmrc index.html svelte.config.js ./
+COPY --from=workspace-web tsconfig*.json vite*.config.ts ./
+COPY --from=workspace-web src ./src
+COPY --from=workspace-web server ./server
+COPY --from=workspace-web licenses ./licenses
+COPY --from=workspace-web stubs ./stubs
+RUN --mount=type=bind,from=repository-tools,source=check_licenses.py,target=/tmp/check_licenses.py \
+    python /tmp/check_licenses.py --npm package-lock.json && npm ci --ignore-scripts && \
+    python /tmp/check_licenses.py --npm package-lock.json --installed && \
+    npm run build && npm run build:math
+
+FROM trusted-python AS trusted-app
+USER root
+ARG UBUNTU_SNAPSHOT
+# The runtime manager's OpenShell CLI uploads the runtime's credentials over SSH.
+RUN --mount=type=bind,source=common/apt_install.sh,target=/run/ss-build/apt_install.sh \
+    bash /run/ss-build/apt_install.sh "${UBUNTU_SNAPSHOT}" openssh-client && \
+    rm -rf /var/lib/apt/lists/*
+USER 1000:1000
+RUN --mount=type=bind,from=trusted-inputs,source=requirements.txt,target=/run/ss-build/requirements.txt \
+    --mount=type=bind,from=wheels,target=/tmp/wheels \
+    python -m pip install --no-deps --only-binary=:all: --require-hashes --no-cache-dir \
+        -r /run/ss-build/requirements.txt && \
+    python -m pip install --no-deps --no-index --no-cache-dir --find-links /tmp/wheels \
+        sandbox-science-contracts sandbox-science-policy sandbox-science-launcher \
+        sandbox-science-orchestrator sandbox-science-workspace && \
+    python -m pip check && sandbox-science-control --help && sandbox-science-workspace --help && \
+    python -c 'import sandbox_science.launcher, sandbox_science.policy'
+USER root
+COPY --chmod=0755 services/copy_credentials.py /usr/local/libexec/sandbox-science/copy-credentials.py
+COPY --chmod=0755 services/initialize_state.py /usr/local/libexec/sandbox-science/initialize-state.py
+COPY --from=trusted-node-unpack /node/bin/node /usr/local/bin/node
+COPY --from=trusted-node-unpack /node/LICENSE /usr/share/licenses/node/LICENSE
+# tar keeps the release archive's uid (1001), which the runtime manager's CLI check refuses:
+# the Pod runs as uid 1000 and accepts only root's or its own.
+COPY --chown=0:0 --chmod=0755 --from=trusted-openshell-unpack /openshell/openshell /usr/local/bin/openshell
+COPY --from=trusted-openshell-unpack /openshell/LICENSE /usr/share/licenses/openshell/LICENSE
+COPY --from=trusted-web-build /build/web/workspace/dist /usr/share/sandbox-science/workspace
+COPY --from=trusted-web-build /build/web/workspace/dist-math /usr/share/sandbox-science/math
 ARG UBUNTU_IMAGE
 ARG UBUNTU_SNAPSHOT
 ARG MICROMAMBA_VERSION
+ARG NODE_VERSION
+ARG OPENSHELL_VERSION
 ARG REVISION=unknown
 ARG VERSION=unknown
 ARG SOURCE_URL=https://github.com/regenscheid/sandbox-crypto
 ARG LICENSES=NOASSERTION
-USER root
-RUN --mount=type=bind,source=mcp-proxy/conda-lock.yml,target=/tmp/conda-lock.yml \
-    --mount=type=bind,source=common/image_report.py,target=/tmp/image_report.py \
-    find /sandbox -mindepth 1 -delete && \
-    python -B /tmp/image_report.py record \
-        --profile mcp-proxy --policy permissive --revision "${REVISION}" --source-url "${SOURCE_URL}" \
-        --base-image "${UBUNTU_IMAGE}" --ubuntu-snapshot "${UBUNTU_SNAPSHOT}" \
-        --micromamba "${MICROMAMBA_VERSION}" --lockfile /tmp/conda-lock.yml \
+RUN --mount=type=bind,source=orchestrator/conda-lock.yml,target=/run/ss-build/conda-lock.yml \
+    --mount=type=bind,from=trusted-inputs,source=requirements.txt,target=/run/ss-build/requirements.txt \
+    --mount=type=bind,source=common/image_report.py,target=/run/ss-build/image_report.py \
+    --mount=type=bind,from=repository-tools,source=check_licenses.py,target=/run/ss-build/check_licenses.py \
+    --mount=type=bind,source=trusted/record.py,target=/run/ss-build/record.py \
+    find /sandbox -mindepth 1 -delete && node --version && openshell --version && \
+    python -B /run/ss-build/record.py --profile trusted-app --revision "${REVISION}" \
+        --source-url "${SOURCE_URL}" --base-image "${UBUNTU_IMAGE}" \
+        --ubuntu-snapshot "${UBUNTU_SNAPSHOT}" --micromamba "${MICROMAMBA_VERSION}" \
+        --source "nodejs|${NODE_VERSION}|MIT|https://nodejs.org/|upstream binary" \
+        --source "openshell|${OPENSHELL_VERSION}|Apache-2.0|https://github.com/NVIDIA/OpenShell|upstream binary" \
         --expect-licenses "${LICENSES}"
 USER 1000:1000
-LABEL org.opencontainers.image.title="Sandbox Science MCP proxy" \
-      org.opencontainers.image.description="The MCP proxy (sandbox-science-mcp-proxy) with Python, aiohttp, pydantic and PyYAML, for the proxy's own sandbox; its command, mcp-proxy-run, keeps the proxy running" \
+WORKDIR /sandbox
+LABEL org.opencontainers.image.title="Sandbox Science trusted application" \
       org.opencontainers.image.source="${SOURCE_URL}" \
       org.opencontainers.image.revision="${REVISION}" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.licenses="${LICENSES}" \
       org.opencontainers.image.base.name="${UBUNTU_IMAGE}" \
-      io.github.regenscheid.sandbox-science.profile="mcp-proxy"
-CMD ["/opt/sandbox-science/bin/mcp-proxy-run"]
+      io.github.regenscheid.sandbox-science.profile="trusted-app"
+CMD ["sandbox-science-control", "--help"]
+
+FROM trusted-python AS trusted-worker
+USER root
+ARG UBUNTU_SNAPSHOT
+RUN --mount=type=bind,source=common/apt_install.sh,target=/run/ss-build/apt_install.sh \
+    bash /run/ss-build/apt_install.sh "${UBUNTU_SNAPSHOT}" git openssh-client && \
+    rm -rf /var/lib/apt/lists/*
+USER 1000:1000
+RUN --mount=type=bind,from=trusted-inputs,source=requirements.txt,target=/run/ss-build/requirements.txt \
+    --mount=type=bind,from=wheels,target=/tmp/wheels \
+    python -m pip install --no-deps --only-binary=:all: --require-hashes --no-cache-dir \
+        -r /run/ss-build/requirements.txt && \
+    python -m pip install --no-deps --no-index --no-cache-dir --find-links /tmp/wheels \
+        sandbox-science-contracts sandbox-science-policy sandbox-science-event-store \
+        sandbox-science-worker sandbox-science-policy-middleware sandbox-science-package-cache \
+        sandbox-science-launcher && \
+    python -m pip check && sandbox-science-worker --help && \
+    sandbox-science-policy-middleware --help && sandbox-science-package-cache --help && \
+    sandbox-science-unit --help
+USER root
+COPY --chmod=0755 services/copy_credentials.py /usr/local/libexec/sandbox-science/copy-credentials.py
+COPY --chmod=0755 services/initialize_state.py /usr/local/libexec/sandbox-science/initialize-state.py
+# tar keeps the release archive's uid (1001), which the runtime manager's CLI check refuses:
+# the Pod runs as uid 1000 and accepts only root's or its own.
+COPY --chown=0:0 --chmod=0755 --from=trusted-openshell-unpack /openshell/openshell /usr/local/bin/openshell
+COPY --from=trusted-openshell-unpack /openshell/LICENSE /usr/share/licenses/openshell/LICENSE
+ARG UBUNTU_IMAGE
+ARG UBUNTU_SNAPSHOT
+ARG MICROMAMBA_VERSION
+ARG OPENSHELL_VERSION
+ARG REVISION=unknown
+ARG VERSION=unknown
+ARG SOURCE_URL=https://github.com/regenscheid/sandbox-crypto
+ARG LICENSES=NOASSERTION
+RUN --mount=type=bind,source=orchestrator/conda-lock.yml,target=/run/ss-build/conda-lock.yml \
+    --mount=type=bind,from=trusted-inputs,source=requirements.txt,target=/run/ss-build/requirements.txt \
+    --mount=type=bind,source=common/image_report.py,target=/run/ss-build/image_report.py \
+    --mount=type=bind,from=repository-tools,source=check_licenses.py,target=/run/ss-build/check_licenses.py \
+    --mount=type=bind,source=trusted/record.py,target=/run/ss-build/record.py \
+    find /sandbox -mindepth 1 -delete && openshell --version && ssh -V && \
+    python -B /run/ss-build/record.py --profile trusted-worker --revision "${REVISION}" \
+        --source-url "${SOURCE_URL}" --base-image "${UBUNTU_IMAGE}" \
+        --ubuntu-snapshot "${UBUNTU_SNAPSHOT}" --micromamba "${MICROMAMBA_VERSION}" \
+        --source "openshell|${OPENSHELL_VERSION}|Apache-2.0|https://github.com/NVIDIA/OpenShell|upstream binary" \
+        --expect-licenses "${LICENSES}"
+USER 1000:1000
+WORKDIR /sandbox
+LABEL org.opencontainers.image.title="Sandbox Science trusted worker pool" \
+      org.opencontainers.image.source="${SOURCE_URL}" \
+      org.opencontainers.image.revision="${REVISION}" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.licenses="${LICENSES}" \
+      org.opencontainers.image.base.name="${UBUNTU_IMAGE}" \
+      io.github.regenscheid.sandbox-science.profile="trusted-worker"
+CMD ["sandbox-science-worker", "--help"]

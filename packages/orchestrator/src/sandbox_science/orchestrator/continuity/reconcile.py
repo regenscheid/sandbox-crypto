@@ -8,11 +8,12 @@ import json
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ExecutionContext
 from sandbox_science.contracts.worker import TERMINAL_STATES, ExecutionState
 from sandbox_science.orchestrator.aio import threaded
+from sandbox_science.orchestrator.context.history import Archive, Entry
+from sandbox_science.orchestrator.context.history.operations import ToolJournal, ToolRecord
 from sandbox_science.orchestrator.control import ControlError, ControlStore
 from sandbox_science.orchestrator.control.errors import CONFLICT
-from sandbox_science.orchestrator.history import Archive, Entry
-from sandbox_science.orchestrator.history.operations import ToolJournal, ToolRecord
 from sandbox_science.orchestrator.jobstate import JobState
+from sandbox_science.orchestrator.purpose import purpose_of, without
 from sandbox_science.orchestrator.question_tool import result
 from sandbox_science.orchestrator.questions import Questions
 from sandbox_science.orchestrator.worker_client import WorkerClient
@@ -121,7 +122,10 @@ class Reconciler:
             raise ControlError(
                 CONFLICT, f"unknown_operation: {tool} requires explicit reconciliation"
             )
-        record = {"tool": tool, "arguments": intent["arguments"], **record}
+        written = str(intent["arguments"])
+        record = {"tool": tool, "arguments": without(written), **record}
+        if (purpose := purpose_of(written)) is not None:
+            record["purpose"] = purpose
         parent = await threaded(self.parent, work, run)
         await threaded(
             Archive(self.control).append,
@@ -134,6 +138,7 @@ class Reconciler:
                 content=text,
                 source=tool,
                 call_id=str(intent["call_id"]),
+                purpose=purpose,
             ),
             parent=parent,
             tool_record=ToolRecord(record, operation),

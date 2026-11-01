@@ -3,9 +3,12 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
+import os
 import stat
+import sys
 import threading
 import tomllib
 from pathlib import Path
@@ -13,9 +16,16 @@ from typing import Any
 
 import pytest
 
-from sandbox_science.launcher import orchestrator, parts, skills
+from sandbox_science.contracts.openshell_version import OPENSHELL_VERSION
+from sandbox_science.launcher import openshell_version, orchestrator, parts, skills
 from sandbox_science.launcher.config import LauncherError, load_config
-from sandbox_science.launcher.state import Layout, ensure_token, write_private
+from sandbox_science.launcher.state import (
+    Layout,
+    check_private,
+    ensure_token,
+    private_dir,
+    write_private,
+)
 
 
 def mode(path: Path) -> int:
@@ -66,6 +76,9 @@ def test_prepare_makes_private_tokens_once_and_the_workers_settings(make_config:
         for name in ("harness", "workspace", "launcher")
     }
     assert all(client["projects"] == ["crypto"] for client in settings["clients"])
+    assert {client["name"] for client in settings["clients"] if client["artifact_retention"]} == {
+        "harness"
+    }
     openshell = settings["openshell"]
     assert openshell["isolation_tier"] == 3
     assert Path(openshell["cli"]).is_absolute()
@@ -144,21 +157,69 @@ def test_command_lines_name_files_never_secrets(make_config: Any, commands: Path
         parts.project_argvs(config, layout, "sha256:" + "b" * 64, {"crypto": "crypto-base"})
 
 
-def test_messages_reviewer_omits_the_default_effort(make_config: Any, commands: Path) -> None:
-    config = load_config(
-        make_config(
-            {
-                "bin_dir": str(commands),
-                "model": {"reviewer": "claude", "api": {"claude": "messages"}},
-            }
+def test_the_reviewer_defaults_to_medium_effort_on_every_api(
+    make_config: Any, commands: Path
+) -> None:
+    """Every API takes an effort, so the reviewer's default does not depend on the
+    adapter, which the run service may choose (CM-41)."""
+    for api in ({"claude": "messages"}, {}):
+        config = load_config(
+            make_config({"bin_dir": str(commands), "model": {"reviewer": "claude", "api": api}})
         )
-    )
+        layout = Layout(config.state_dir)
+        harness = parts.harness_argv(config, layout)
+        workspace = parts.workspace_argv(config, layout)
+        assert "reviewer=medium" in harness
+        assert "reviewer=medium" in workspace
+        assert workspace[workspace.index("--reviewer-effort") + 1] == "medium"
+
+
+def test_a_role_s_effort_on_messages_reaches_the_run_service_and_the_workspace(
+    make_config: Any, commands: Path
+) -> None:
+    """``[model] messages_reasoning_effort``: a role's effort where an alias is called
+    through Messages, which the run service applies once it has chosen the API. The
+    launcher sets none by default."""
+    model = {"messages_reasoning_effort": {"main": "high", "watcher": "low"}}
+    config = load_config(make_config({"bin_dir": str(commands), "model": model}))
     layout = Layout(config.state_dir)
     harness = parts.harness_argv(config, layout)
+    given = [
+        harness[i + 1] for i, flag in enumerate(harness) if flag == "--messages-reasoning-effort"
+    ]
+    assert given == ["main=high", "watcher=low"]
     workspace = parts.workspace_argv(config, layout)
-    assert "reviewer=medium" not in harness
-    assert "reviewer=medium" not in workspace
-    assert "--reviewer-effort" not in workspace
+    agents = [
+        workspace[i + 1] for i, flag in enumerate(workspace) if flag == "--agent-messages-effort"
+    ]
+    assert agents == ["main=high"]
+    plain = load_config(make_config({"bin_dir": str(commands)}))
+    assert "--messages-reasoning-effort" not in parts.harness_argv(plain, Layout(plain.state_dir))
+    with pytest.raises(LauncherError, match="reasoning_effort"):
+        load_config(make_config({"model": {"messages_reasoning_effort": {"embedding": "high"}}}))
+
+
+def test_only_the_named_apis_reach_the_run_service_and_the_workspace(
+    make_config: Any, commands: Path
+) -> None:
+    """CM-41: an alias ``api`` leaves out is the run service's choice, with
+    ``default_api`` for the aliases the gateway does not list as Anthropic's."""
+    model = {"reviewer": "claude", "api": {"gpt": "responses"}, "default_api": "responses"}
+    config = load_config(make_config({"bin_dir": str(commands), "model": model}))
+    layout = Layout(config.state_dir)
+    harness = parts.harness_argv(config, layout)
+    assert [harness[i + 1] for i, flag in enumerate(harness) if flag == "--api"] == [
+        "gpt=responses"
+    ]
+    assert harness[harness.index("--default-api") + 1] == "responses"
+    workspace = parts.workspace_argv(config, layout)
+    assert "--agent-api" not in workspace
+    assert "--reviewer-api" not in workspace
+    plain = load_config(make_config({"bin_dir": str(commands)}))
+    plain_argv = parts.harness_argv(plain, Layout(plain.state_dir))
+    assert plain_argv[plain_argv.index("--default-api") + 1] == "chat"
+    with pytest.raises(LauncherError, match="default_api"):
+        load_config(make_config({"model": {"default_api": "anthropic"}}))
 
 
 def test_the_skills_embedding_model_reaches_imports_and_runs_by_the_key_path(
@@ -261,6 +322,56 @@ def test_check_names_everything_missing_and_never_reads_the_key(
     config.model.api_key_file.chmod(0o600)
 
 
+def _openshell(config: Any, script: str) -> None:
+    cli = Path(config.openshell.cli)
+    cli.write_text(f"#!/bin/sh\n{script}\n")
+    cli.chmod(0o755)
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "echo openshell 0.1.3",
+        "echo openshell 0.1.50",
+        f"echo openshell {OPENSHELL_VERSION}-pre.1",
+        "echo",
+        f"echo openshell {OPENSHELL_VERSION}; exit 1",
+        "sleep 0.1; exit 0",
+    ],
+)
+def test_check_refuses_an_openshell_cli_of_another_release(
+    make_config: Any, commands: Path, script: str
+) -> None:
+    config = load_config(make_config({"bin_dir": str(commands)}))
+    _openshell(config, script)
+    with pytest.raises(LauncherError) as error:
+        parts.check(config)
+    assert f"needs OpenShell {OPENSHELL_VERSION}" in str(error.value)
+    assert config.openshell.cli in str(error.value)
+
+
+def test_check_accepts_the_pinned_openshell_cli_and_names_a_missing_one(
+    make_config: Any, commands: Path
+) -> None:
+    config = load_config(make_config({"bin_dir": str(commands)}))
+    for said in (f"openshell {OPENSHELL_VERSION}", f"openshell v{OPENSHELL_VERSION}"):
+        _openshell(config, f"echo {said}")
+        parts.check(config)
+    Path(config.openshell.cli).unlink()
+    with pytest.raises(LauncherError, match="no OpenShell CLI"):
+        parts.check(config)
+
+
+def test_an_openshell_cli_that_does_not_answer_is_refused(
+    make_config: Any, commands: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(openshell_version, "TIMEOUT", 0.2)
+    config = load_config(make_config({"bin_dir": str(commands)}))
+    _openshell(config, "sleep 5")
+    with pytest.raises(LauncherError, match="did not answer"):
+        parts.check(config)
+
+
 def test_a_state_directory_open_to_others_is_refused_not_changed(
     make_config: Any, tmp_path: Path
 ) -> None:
@@ -272,6 +383,21 @@ def test_a_state_directory_open_to_others_is_refused_not_changed(
         parts.prepare(config)
     assert mode(shared) == 0o755
     assert list(shared.iterdir()) == []
+
+
+def test_a_state_directory_with_only_the_volume_setgid_bit_is_accepted(tmp_path: Path) -> None:
+    # A Kubernetes volume with an fsGroup gives its directories mode 2700 at each mount.
+    volume = tmp_path / "volume"
+    volume.mkdir(mode=0o700)
+    volume.chmod(0o2700)
+    assert private_dir(volume) == volume
+    check_private(volume)
+    assert stat.S_IMODE(volume.stat().st_mode) == 0o2700
+    volume.chmod(0o2770)
+    with pytest.raises(LauncherError, match=r"is open to other users .mode 2770"):
+        private_dir(volume)
+    with pytest.raises(LauncherError, match=r"is open to other users .mode 2770"):
+        check_private(volume)
 
 
 def test_a_model_key_file_open_to_others_is_refused_without_reading_it(
@@ -307,61 +433,95 @@ def test_writers_of_one_file_never_share_a_temporary_file(tmp_path: Path) -> Non
     assert [path.name for path in tmp_path.iterdir()] == ["shared.json"]
 
 
-def test_the_mcp_proxy_gets_its_files_and_the_run_service_its_flags(
-    make_config: Any, commands: Path
+def _path_of(descriptor: int) -> str:
+    """The path an open descriptor names: Linux's ``/proc``, macOS's ``F_GETPATH``."""
+    if sys.platform == "darwin":
+        named = fcntl.fcntl(descriptor, fcntl.F_GETPATH, bytes(1024))
+        return named.split(b"\0", 1)[0].decode()
+    return os.readlink(f"/proc/self/fd/{descriptor}")
+
+
+def test_a_private_write_is_synced_before_its_rename_and_its_directory_after(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    proxy = {
-        "image": "sandbox-science/mcp-proxy:abc1234",
-        "providers": ["p"],
-        "servers": ["s", "t"],
-        "about": {"s/e-print-mcp": "IACR ePrint papers", "s": "the policy's server s"},
-        "index": ["s/e-print-mcp"],
+    tmp_path = tmp_path.resolve()  # macOS's temporary directory is behind a symlink
+    target = tmp_path / "sandbox.json"
+    synced: list[tuple[str, str | None]] = []
+    real = os.fsync
+
+    def fsync(descriptor: int) -> None:
+        where = _path_of(descriptor)
+        content = target.read_text() if target.exists() else None
+        synced.append((where, content))
+        real(descriptor)
+
+    monkeypatch.setattr(os, "fsync", fsync)
+    write_private(target, '{"name": "ss-orch-0123456789", "id": null}\n')
+    assert len(synced) == 2
+    (file, before), (directory, after) = synced
+    assert Path(file).parent == tmp_path
+    assert Path(file).name.startswith(".sandbox.json.")  # the temporary file, before rename
+    assert before is None
+    assert directory == str(tmp_path)  # then the directory, once the rename happened
+    assert after == '{"name": "ss-orch-0123456789", "id": null}\n'
+
+
+def test_the_workspace_gets_the_direct_paths_services_and_its_check(
+    make_config: Any, commands: Path, tmp_path: Path
+) -> None:
+    """With [mcp_direct] (D98), the workspace shows the configured servers and asks the
+    control service, with a token of its own, for the user's availability check; no MCP
+    proxy part is needed, made or started (it retired on 2026-10-26)."""
+
+    from .test_direct_mcp import direct_files
+
+    direct_files(tmp_path)
+    direct = {
+        "servers": {"crypto-research-mcp": {}},
+        "about": {
+            "crypto-research-mcp/e-print-mcp": "IACR ePrint papers",
+            "crypto-research-mcp": "the portal",
+        },
+        "index": ["crypto-research-mcp/e-print-mcp"],
     }
-    config = load_config(make_config({"bin_dir": str(commands), "mcp_proxy": proxy}))
-    parts.check(config)
+    config = load_config(make_config({"bin_dir": str(commands), "mcp_direct": direct}))
+    parts.check(config)  # no sandbox-science-mcp-proxy command is looked for
     layout = parts.prepare(config)
-    upload = layout.mcp / "upload"
-    assert mode(layout.mcp) == mode(upload) == 0o700
-    for name in ("pool-ceiling.yaml", "policy.yaml", "proxy.toml"):
-        assert mode(upload / name) == 0o600
-    assert (upload / "policy.yaml").read_text() == config.worker.policy.read_text()
-    assert mode(layout.token("mcp-orchestrator")) == 0o600
-    harness = parts.harness_argv(config, layout)
-    assert harness[harness.index("--mcp-proxy") :] == [
-        "--mcp-proxy", "http://127.0.0.1:18080",
-        "--mcp-token-file", str(layout.token("mcp-orchestrator")),
-        "--mcp-project", "crypto", "--mcp-server", "s", "--mcp-server", "t",
-        "--mcp-about", "s/e-print-mcp=IACR ePrint papers", "--mcp-about", "s=the policy's server s",
-        "--mcp-index", "s/e-print-mcp",
-    ]  # fmt: skip
+    assert not layout.mcp.exists()  # nothing of the retired proxy's is made
     workspace = parts.workspace_argv(config, layout)
     assert workspace[workspace.index("--mcp-project") :] == [
-        "--mcp-project",
-        "crypto",
-        "--mcp-proxy",
-        "http://127.0.0.1:18080",
-        "--mcp-proxy-token-file",
-        str(layout.token("mcp-orchestrator")),
-        "--mcp-service",
-        "s=the policy's server s",
-        "--mcp-service",
-        "t=",
-    ]
+        "--mcp-project", "crypto",
+        "--mcp-service", "crypto-research-mcp=the portal",
+        "--mcp-check", "http://127.0.0.1:8202",
+        "--mcp-check-token-file", str(layout.token("workspace-control")),
+    ]  # fmt: skip
     assert "IACR ePrint papers" not in workspace  # behind-service purpose is not top-level
+    assert not {"--mcp-proxy", "--mcp-token-file"} & set(parts.harness_argv(config, layout))
+    directory, _ = orchestrator.prepare(config, layout)
+    host = json.loads((directory / "control.json").read_text())
+    digest = Path(host["check_token_sha256_file"])
+    assert mode(digest) == mode(layout.token("workspace-control")) == 0o600
+    token = layout.token("workspace-control").read_text().strip()
+    assert digest.read_text().strip() == hashlib.sha256(token.encode()).hexdigest()
+    assert "proxy" not in host
     for wrong in (
         {"about": {"Not_A_Server": "x"}},
         {"about": {"e-print-mcp": "IACR ePrint"}},  # not behind a configured server
-        {"about": {"s/e-print-mcp": ""}},
-        {"about": {"s/e-print-mcp": "   "}},
-        {"about": {"s/e-print-mcp": "x" * 201}},
+        {"about": {"crypto-research-mcp/e-print-mcp": ""}},
+        {"about": {"crypto-research-mcp/e-print-mcp": "   "}},
+        {"about": {"crypto-research-mcp/e-print-mcp": "x" * 201}},
         {"index": []},
         {"index": ["other/e-print-mcp"]},
     ):
         with pytest.raises(LauncherError):
-            load_config(make_config({"mcp_proxy": {**proxy, **wrong}}))
-    (commands / "sandbox-science-mcp-proxy").unlink()
-    with pytest.raises(LauncherError, match="no sandbox-science-mcp-proxy in"):
-        parts.check(config)
+            load_config(make_config({"mcp_direct": {**direct, **wrong}}))
+
+
+def test_without_mcp_the_workspace_shows_no_services(make_config: Any, commands: Path) -> None:
+    config = load_config(make_config({"bin_dir": str(commands)}))
+    layout = parts.prepare(config)
+    workspace = parts.workspace_argv(config, layout)
+    assert not {"--mcp-project", "--mcp-service", "--mcp-check"} & set(workspace)
 
 
 def test_the_run_service_takes_the_review_limits_the_config_sets(
@@ -399,8 +559,8 @@ def test_the_run_service_calls_claude_aliases_through_messages_with_the_replay_s
     make_config: Any, commands: Path
 ) -> None:
     """CM-38, CM-39: an alias ``api`` names ``messages`` goes to the run service so,
-    with the thinking replay setting when there is one, off by default. A setting with
-    no Claude alias to use it is refused."""
+    with the thinking replay setting when there is one, off by default. The setting
+    needs no alias named: the run service may choose ``messages`` itself (CM-41)."""
     replay = {"image": "sha256:" + "a" * 64, "version": "1.107.0", "verified": "2026-11-02",
               "run": "cm-f30-1"}  # fmt: skip
     model = {"api": {"sandbox-orchestrator": "messages"}, "thinking_replay": replay}
@@ -411,9 +571,10 @@ def test_the_run_service_calls_claude_aliases_through_messages_with_the_replay_s
     assert json.loads(harness[harness.index("--thinking-replay") + 1]) == replay
     plain = load_config(make_config({"bin_dir": str(commands)}))
     assert "--thinking-replay" not in parts.harness_argv(plain, Layout(plain.state_dir))
-    for unused in ({}, {"x": "responses"}):
-        with pytest.raises(LauncherError, match="thinking_replay"):
-            load_config(make_config({"model": {"api": unused, "thinking_replay": replay}}))
+    unnamed = load_config(
+        make_config({"bin_dir": str(commands), "model": {"thinking_replay": replay}})
+    )
+    assert "--thinking-replay" in parts.harness_argv(unnamed, Layout(unnamed.state_dir))
 
 
 def test_the_run_service_is_told_which_aliases_accept_images(

@@ -2,9 +2,26 @@
 
 Date: 2026-10-10. This is the design proposal, kept as written except where the repository has since settled a point. The parts built so far run all-local on babbage (phase 1) and are described in the as-built pages: [worker](WORKER.md), [workspace](WORKSPACE.md), [policy middleware](POLICY-MIDDLEWARE.md), [package cache](PACKAGE-CACHE.md), [event store](EVENT-STORE.md), [living documents](LIVING-DOCUMENTS.md) and [consistency review](CONSISTENCY-REVIEW.md). No Kubernetes or remote deployment has been tested.
 
+## Settled architecture (2026-10-23)
+
+Confirmed by the owner; mostly not built. The [decisions](DECISIONS.md) hold the detail, the [threat model](THREAT-MODEL.md#reads-and-effects) the security rule, and the [architecture audit](../.agents/docs/agent-reports/architecture-audit-2026-10-23.md) the state it starts from.
+
+- **Threat model (D95):** protect the owner's systems, third parties and the research record; workflow confidentiality is out of scope. Reads are free and recorded, effects are gated.
+- **Lockdown modes (D95):** per project, network `open-reads` or `allowlist` and MCP `declared` or `locked`, compiled into OpenShell rules and the middleware.
+- **Effect classes (D96):** `read`, `write`, `communicate`, `browse`, `admin`, `unclassified`, from tool names, argument rules and, for unmentioned tools, MCP hints; browser automation off unless an admin enables it; admin-reviewed, model-drafted classifications with a drift test.
+- **Approvals and grants (D97):** admin ceilings per class and server; persistent, revocable user grants per class, server and project; cards built from a call's significant arguments.
+- **Research-code egress (D97, amended 2026-10-24):** packages through the cache; git and downloads from listed source hosts, by host, since OpenShell cannot attribute them by binary; everything else escalates.
+- **MCP enforcement (D98):** the agent runtime's own client, through OpenShell native `protocol: mcp` rules and the supervisor middleware; the MCP proxy retired on 2026-10-26, and research code has no MCP access.
+- **Delegated agents (D99):** fenced for outward effects only; their effect requests are cards in the session chat that the parent can withdraw.
+- **Recovery (D100):** automatic bounded retries for transient failures; one Resume restarts the whole tree; only Stop, budget refusal, policy denial, an irreconcilable effect or a real context limit keeps a run stopped.
+- **Deployment unit (D101):** worker, policy middleware and package cache run as one supervised unit with one configuration file; control and workspace stay separate for now.
+- **Budgets (D102):** LiteLLM is the only cost enforcement; project and run budgets track; soft caps and loop heuristics trigger check-ins with the parent.
+- **Telemetry (D103):** logs and OpenShell events into Loki through Alloy from the first cluster deployment; dashboards, alerts and detect-and-hold rules follow.
+- **First cluster deployment (D92, D43):** Kata at tier 3 on amd64 with OpenShell 0.1.5, Garage artifacts and Longhorn snapshots, counted as deployed after three live proofs; job sandboxes (D93) and a second instance (D94) come later ([first deployment](KUBERNETES.md#first-deployment-scope-and-proofs)).
+
 ## Component boundary
 
-**Implemented locally, 2026-10-17 (D47):** the normal launcher runs the agent-facing orchestrator in a restricted OpenShell sandbox separate from research workloads. Parent and child model loops, prompt assembly and model adapters share this orchestration sandbox. A trusted host control service owns durable state, scoped worker/tool capabilities and the environment leases; the worker controller, gateway and enforcement services stay outside both sandboxes. Fixed authenticated capabilities carry bounded requests and results, with no generic SQL, host filesystem or method-dispatch API. The UI and durable state survive orchestrator replacement; interrupted trees require explicit Resume. See [orchestrator confinement](specs/orchestrator-confinement.md) and [research continuity](specs/research-continuity.md).
+**Implemented locally, 2026-10-17 (D47):** the normal launcher runs the agent-facing orchestrator in a restricted OpenShell sandbox separate from research workloads. Parent and child model loops, prompt assembly and model adapters share this orchestration sandbox. A trusted host control service owns durable state, scoped worker/tool capabilities and the environment leases; the worker controller, gateway and enforcement services stay outside both sandboxes. Fixed authenticated capabilities carry bounded requests and results, with no generic SQL, host filesystem or method-dispatch API. The UI and durable state survive orchestrator replacement; as built, interrupted trees require explicit Resume (automatic transient recovery and one full-tree Resume are decided in D100). See [orchestrator confinement](specs/orchestrator-confinement.md) and [research continuity](specs/research-continuity.md).
 
 ```mermaid
 flowchart LR
@@ -25,6 +42,8 @@ flowchart LR
   O --> V
 ```
 
+**MCP enforcement (D98, decided 2026-10-23; the proxy retired 2026-10-26):** the agent's MCP calls are made by the agent runtime's own client, from its sandbox, and decided by OpenShell's native `protocol: mcp` rules and the supervisor middleware, with the tool index, gates and approval waits on the control side ([MCP connectors](MCP-CONNECTORS.md#the-direct-path)). The MCP proxy, a service in a sandbox of its own that carried every MCP call before, is retired, and research code has no MCP access. Where this page names the proxy, read that history.
+
 The GUI, orchestrator/harness, and compute pools have independent packaging and endpoint configuration. The harness initially remains with orchestration. Splitting the model loop into another service is not required to achieve execution isolation.
 
 Logical modules share project/resource identity, immutable artifacts and revisions, typed anchors, durable event delivery, scoped permission decisions, and execution/environment adapters. Document, ledger, review and permission modules can initially live in the control application with its supported store. Share these mechanisms without merging scientific result status, review resolution and monitor verdicts. The [planning consistency review](../.agents/planning-consistency-review-2026-10-10.md) (historical) explains the reuse choices; the [implementation plan](IMPLEMENTATION-PLAN.md) defines ownership and ordered work.
@@ -37,7 +56,7 @@ Generated scientific code, shell commands, parsers, compilers, package operation
 
 ## Reimplemented harness
 
-The harness is new code (D11). CScience is the behavior reference; no Claude Science code, prompts, schemas or assets are used (D03, D56). Build it from MIT-compatible components (D55): a model-access library or gateway, the project's own small MCP client for the MCP proxy, and own code for skills, plans, delegation, review scheduling and findings. OpenScience Desktop upstream (MIT) and OpenCode (MIT) are reuse candidates. The Claude Agent SDK is not, because it drives the proprietary Claude Code CLI.
+The harness is new code (D11). CScience is the behavior reference; no Claude Science code, prompts, schemas or assets are used (D03, D56). Build it from MIT-compatible components (D55): a model-access library or gateway, the project's own small MCP client (the agent runtime's direct client, D98), and own code for skills, plans, delegation, review scheduling and findings. OpenScience Desktop upstream (MIT) and OpenCode (MIT) are reuse candidates. The Claude Agent SDK is not, because it drives the proprietary Claude Code CLI.
 
 Because the harness is written against the worker API from the start, it has **no local execution path**. Shell, kernel, package-manager, parser, renderer and execution-bearing MCP tools are worker API calls. This removes the main risk of the adaptation approach, which was a forgotten code path still running beside the orchestrator.
 
@@ -46,6 +65,26 @@ Tool semantics follow the behavior specifications: working-directory defaults, c
 Implement work-organizing skills, main/delegated/reviewer model settings and automatic review scheduling to their specs. Skills consume the same scoped tools. The default consistency reviewer has no execution privileges; a separate verification role may request fresh reproduction workers. The orchestrator keeps exact evidence versions, findings, author responses and confirmation states. [Source study](SOURCE-STUDY.md) records the observed triggers and context as behavior evidence.
 
 The orchestrator never mounts worker workspaces directly. It reads results through the worker API and artifact repository, and treats them as untrusted input: no symlink following, size and type limits, and no in-process parsing or rendering of rich formats.
+
+### The loop's composition points
+
+The tool loop (`orchestrator/loop.py`) is composed of turn hooks (`hooks.py`) and wraps (`wraps.py`). A hook is one subsystem's part in a run; hooks run in a fixed order, which is the order their notices reach the model, and the loop alone applies the delivery rules. A wrap goes around one call and is given its next step, so it can act before and after it, try it again or answer in its place. The points, with the nearest middleware point of LangChain's Deep Agents for comparison:
+
+| Point | When | Deep Agents |
+| --- | --- | --- |
+| `lease`, `notices("start")` | for the whole run; once before the first turn | `before_agent` |
+| `turn_limit`, `halt`, `last_call`, `notices("turn")`, `consumption` | before each model call | `before_model` |
+| `wrap_model_call` | around each attempt at a model call, retries and the report round's included | `wrap_model_call` |
+| `model_returned` | after each successful model call | `after_model` |
+| `wrap_tool_call` | around each tool call that runs, once its intent is saved | `wrap_tool_call` |
+| `gate`, `gate_call` | inside the toolbox, before a tool runs: a refusal becomes its error | part of `wrap_tool_call` |
+| `notices("tool")`, `observe_tool` | after each tool call, on its result | none |
+| `closing`, `accept` | at a closing answer: accept, continue, respond, retry or stop | `after_model` with a jump |
+| `finishing`, `summary`, `acknowledge` | after the loop ends; after the run's record is saved | `after_agent` |
+
+The loop's own wraps hold its run's transcript and come outermost. Around a model call: `OverflowRetry`, which folds the conversation after a context error and tries again while a fold makes room (CM-43 to CM-45), then `ModelRefusals`, which ends the call without a reply on a context error or the gateway's budget refusal, the latter halting the run. Around a tool call: `Runaway`, the runaway guard (RS-6f), which so sees each outcome before notices ride on it. The hooks' wraps come inside these, the first hook outermost. Retries of a failed HTTP request stay in the model client (`GatewayModel`), a tool's own failures become its outcome in `Toolbox.call`, which first checks the call's `purpose_note` and passes the call on without it, so no gate or handler sees it ([tools spec](specs/tools.md#purpose-of-each-call)), and retrying a failed run is automatic recovery's (D100).
+
+Wraps run where the loop runs. In a confined attempt the runtime's hooks are proxies over a channel that carries no wrap, so the host refuses a hook that overrides one rather than skip it. Still inline in the loop: the turn ceiling, the report round with its `not_run` results, the halt and out-of-room stops, closing decisions, and notice attachment ([backlog](../.agents/BACKLOG.md#loop-composition-2026-10-24)).
 
 ## Worker lifetimes and API
 
@@ -87,13 +126,17 @@ Every request identifies project, session, environment revision, execution/attem
 
 All eight local/remote combinations of GUI server, orchestrator/harness, and workers remain intended. No deployment profile may rely on another peer's `localhost` or absolute filesystem paths. Worker-initiated transport is a project design to implement; OpenShell does not automatically provide connectivity through private NAT boundaries.
 
-Concrete targets (D63): babbage (amd64, Ryzen 395, 128 GB, Ubuntu 26.04) first, using the OpenShell MicroVM driver with KVM for tier 3 isolation; then the user's mixed Kubernetes test cluster (Raspberry Pi 5 arm64 and amd64 nodes); later the M3 Max Mac (arm64). Images are multi-arch. Placement uses capability probes and node affinity, so Sage-heavy or memory-heavy work avoids small arm64 nodes. The first deployments must support hosted Kubernetes and local containers. Local candidates include Docker, Podman, other policy-capable container runtimes, and local Kubernetes on macOS/Docker Desktop or babbage (Ubuntu 26.04). A shared Kubernetes deployment may simplify packaging, but local Kubernetes is not required. Select the local backend after demonstrating execution/network isolation, monitoring and persistence on the actual target. Docker Desktop documents an integrated local Kubernetes cluster; this does not establish OpenShell compatibility on the actual machine. [Docker Desktop Kubernetes](https://docs.docker.com/desktop/use-desktop/kubernetes/)
+Concrete targets (D63): babbage (amd64, Ryzen 395, 128 GB, Ubuntu 26.04) first, using the OpenShell MicroVM driver with KVM for tier 3 isolation; then heterogeneous Linux ARM64/AMD64 Kubernetes clusters; later the M3 Max Mac (arm64). Image recipes target both architectures; native AMD64/ARM64 image builds have passed, while real Kubernetes deployment remains unqualified. Placement uses resource requests and trusted node selectors, so heavy work targets sufficient capacity independently of architecture. The first deployments must support hosted Kubernetes and local containers. Local candidates include Docker, Podman, other policy-capable container runtimes, and local Kubernetes on macOS/Docker Desktop or babbage (Ubuntu 26.04). A shared Kubernetes deployment may simplify packaging, but local Kubernetes is not required. Select the local backend after demonstrating execution/network isolation, monitoring and persistence on the actual target. Docker Desktop documents an integrated local Kubernetes cluster; this does not establish OpenShell compatibility on the actual machine. [Docker Desktop Kubernetes](https://docs.docker.com/desktop/use-desktop/kubernetes/)
+
+The [Kubernetes delivery work](KUBERNETES.md) describes placement, S3-backed artifacts and PVC retention gates.
+
+The [Apple Silicon qualification path](MAC-ARM64.md) starts with native ARM64 image builds, then portable host supervision and real OpenShell MicroVM acceptance. It also lists the shared-cluster gates; neither target has passed deployment acceptance yet.
 
 Use OpenShell's selected compute driver and lifecycle on each pool; do not add a competing per-sandbox Kubernetes scheduler around it. Current documentation lists Docker, Podman, Kubernetes, and MicroVM drivers, with one driver per gateway. Its Kubernetes driver requires the Agent Sandbox controller. Validate backend requirements, image architectures, storage and confinement on each actual target before claiming local/hosted parity. [Runtime documentation](https://docs.nvidia.com/openshell/latest/how-it-works/sandboxes/runtimes)
 
 The worker API expresses execution, filesystem and network policy independently of backend configuration. Map that policy to each runtime's actual controls and expose unsupported requirements. A local backend must enforce the required boundary and trusted monitor actions; accepted configuration or a running container alone is insufficient. No fallback may run research code beside the orchestrator or silently weaken policy. Engine/cluster administration remains with trusted services.
 
-Record the isolation tier of every execution ([threat model](THREAT-MODEL.md), D43). Docker Desktop and Colima on macOS run all containers in one Linux VM. Unless workers use gVisor (`runsc`) or a VM separate from the orchestrator, gateway and monitor, an all-local Docker deployment shares one kernel between untrusted research code and every trusted service, and is tier 1. Hosted Kubernetes should run workers under a sandboxed RuntimeClass (Kata or gVisor) on a node pool separate from control services.
+Record the isolation tier of every execution ([threat model](THREAT-MODEL.md), D43). Docker Desktop and Colima on macOS run all containers in one Linux VM. Unless workers use gVisor (`runsc`) or a VM separate from the orchestrator, gateway and monitor, an all-local Docker deployment shares one kernel between untrusted research code and every trusted service, and is tier 1. Hosted Kubernetes should run workers under a sandboxed RuntimeClass on a node pool separate from control services. Settled 2026-10-22 (D43): Kata, since OpenShell 0.1.x cannot run under gVisor ([Kubernetes isolation](KUBERNETES.md#sandbox-isolation)).
 
 For a future direct Kubernetes backend, batch runs map conceptually to Jobs and persistent workers to managed long-running pods with appropriate storage. StatefulSets are useful when stable identity/storage is needed, but are not automatically required for every kernel. Kubernetes storage persistence does not preserve process memory. Control retries explicitly so the cluster and application do not silently duplicate research actions. [Jobs](https://kubernetes.io/docs/concepts/workloads/controllers/job/), [StatefulSets](https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/)
 
@@ -137,7 +180,7 @@ The confirmed monitor response model is policy-based blocking, permission escala
 
 Keep model/provider keys, worker enrollment authority, gateway administration, and engine/cluster credentials on their appropriate trusted services. Workloads receive only explicit data and endpoint-scoped access needed for the task. Credentials reach workers as OpenShell provider placeholders that resolve only at bound endpoints (D57), and external services are mostly MCP endpoints with per-project tool allowlists (D58); see [monitoring](MONITORING.md#credentials-and-mcp-access). Reusable project grants should let ordinary research proceed without repeated command approvals.
 
-The agent runtime is **semi-trusted** (D47): it reads untrusted papers and web content and acts on model output. Its OpenShell sandbox permits only the configured model gateway and scoped state transport. Trusted handlers validate tool requests and reach workers and the policy-governed MCP proxy; no engine, cluster or worker administrative credential enters the runtime. Durable state stays in the trusted control service. The current launcher uploads the model gateway key into the sandbox by its configured file path; provider-injected placeholders are a future credential-hardening option. Connector fetches remain subject to their worker/proxy egress policies.
+The agent runtime is **semi-trusted** (D47): it reads untrusted papers and web content and acts on model output. Its OpenShell sandbox permits only the configured model gateway and scoped state transport. Trusted handlers validate tool requests and reach workers; the runtime's own MCP client reaches declared servers only through OpenShell's native rules and the policy middleware, with the providers' placeholders; no engine, cluster or worker administrative credential enters the runtime. Durable state stays in the trusted control service. The current launcher uploads the model gateway key into the sandbox by its configured file path; provider-injected placeholders are a future credential-hardening option. Connector fetches remain subject to their worker/proxy egress policies.
 
 Each pool has a locally configured **policy ceiling** (D49): maximum egress destinations, mounts, resources and data classes. Remote control can narrow it but never raise it. Enrolling a local pool, or raising its ceiling, requires local user action. This bounds what a compromised hosted orchestrator can do on the user's machine in the hosted-control/local-compute profile.
 

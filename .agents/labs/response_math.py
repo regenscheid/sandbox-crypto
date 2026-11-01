@@ -14,7 +14,6 @@ from sandbox_science.orchestrator.consistency.findings import Findings
 from sandbox_science.orchestrator.consistency.response_bodies import ResponseBodies
 from sandbox_science.orchestrator.consistency.store import ReviewStore
 from sandbox_science.orchestrator.documents import (
-    USER,
     Author,
     DocumentError,
     DocumentStore,
@@ -31,6 +30,7 @@ MAIN = Author(
     kind="agent", session_id=SESSION, run_id="original-main", role="main", model="fixture"
 )
 CORRECTOR = MAIN.model_copy(update={"run_id": "correcting-main"})
+EVIDENCE = "---\nmacros:\n  '\\foo': 'x'\n---\n\nScientific evidence remains independent.\n"
 BAD = r"$\definitelyUnknownCommand{x}$"
 CASES = ("pending", "accepted", "removed", "unavailable", "unaddressed", "empty-macros")
 
@@ -103,23 +103,28 @@ def confirmation(store: ReviewStore) -> str:
         after = page["next_after"]
 
 
-def confirm(store: ReviewStore, review: str, source: dict) -> dict:
+def confirm(store: ReviewStore, review: str, source: dict, document: str) -> dict:
+    """The reviewer's re-check of the fixed parent: resolved, with an anchor in the
+    document's new revision (CR-42)."""
     item = next(
         item
         for item in store.manifest(PROJECT, SESSION, review)["evidence"]
-        if item["kind"] == "finding" and item["locator"].get("finding") == source["finding"]
+        if item["kind"] == "document"
+        and item["locator"].get("document") == document
+        and item["locator"].get("revision") == 2
     )
-    return Findings(store).confirm(
+    block = store.documents.mapped(PROJECT, document, 2).block_ids[1]
+    return Findings(store).decide(
         PROJECT,
         SESSION,
         review,
         "browser-fixture",
         {
             "finding": source["finding"],
-            "expected": source["response_revision"],
-            "decision": "confirm",
-            "explanation": "Synthetic current-body scientific confirmation.",
-            "anchors": [{"evidence": item["evidence"]}],
+            "expected": Findings(store).get(PROJECT, SESSION, source["finding"])["revision"],
+            "decision": "resolved",
+            "explanation": "Synthetic current-body scientific re-check.",
+            "anchors": [{"evidence": item["evidence"], "block": block}],
             "operation_id": f"fixture-confirm-{review}",
         },
     )
@@ -168,9 +173,11 @@ async def create(args: argparse.Namespace) -> None:
             PROJECT,
             name="evidence",
             title="Synthetic finding evidence",
-            text="---\nmacros:\n  '\\foo': 'x'\n---\n\nScientific evidence remains independent.\n",
-            author=USER,
+            text=EVIDENCE,
+            author=MAIN,
+            session_id=SESSION,
         ).document_id
+        store.ingest_documents(PROJECT, SESSION)
         for name in CASES:
             store.observe(
                 PROJECT,
@@ -190,10 +197,12 @@ async def create(args: argparse.Namespace) -> None:
         )
         if review is None:
             raise ValueError("Fixture review was not dispatched")
-        evidence = {
-            item["locator"].get("case"): item["evidence"]
-            for item in store.manifest(PROJECT, SESSION, review)["evidence"]
-        }
+        items = store.manifest(PROJECT, SESSION, review)["evidence"]
+        evidence = {item["locator"].get("case"): item["evidence"] for item in items}
+        # The fixed parent is anchored to a block of the evidence document, so that its
+        # fix can name the document's later revision and its re-check can answer there.
+        source_item = next(i for i in items if i["kind"] == "document")
+        source_block = documents.mapped(PROJECT, doc, 1).block_ids[1]
         api, cases = Findings(store), {}
         for name in CASES:
             parent = api.create(
@@ -205,22 +214,44 @@ async def create(args: argparse.Namespace) -> None:
                     "severity": "fail",
                     "category": "contradicting_value",
                     "statement": f"Synthetic {name} parent. Reviewer $\\unknown{{excluded}}$.",
-                    "anchors": [{"evidence": evidence[name]}],
+                    "anchors": [
+                        {"evidence": source_item["evidence"], "block": source_block}
+                        if name == "accepted"
+                        else {"evidence": evidence[name]}
+                    ],
                     "operation_id": f"fixture-parent-{name}",
                 },
             )
             cases[name] = {"finding": parent["finding_id"]}
         store.finish(PROJECT, SESSION, review, "browser-fixture", "findings", "Synthetic parents.")
+        corrected = documents.patch(
+            PROJECT,
+            doc,
+            base=1,
+            author=MAIN,
+            reason="Synthetic evidence correction",
+            operation_id="fixture-evidence-correction",
+            operations=[
+                {
+                    "op": "replace_text",
+                    "block": source_block,
+                    "quote": "remains independent",
+                    "with": "remains independent after correction",
+                }
+            ],
+        )
+        if corrected.outcome != "applied" or corrected.revision != 2:
+            raise ValueError("Fixture evidence correction did not apply")
         for name, source in cases.items():
             payload = {
                 "finding": source["finding"],
                 "expected": 1,
-                "action": "fix" if name == "accepted" else "rebut",
+                "action": "fix" if name == "accepted" else "dismiss",
                 "explanation": r"$\foo$" if name == "empty-macros" else BAD,
                 "operation_id": f"fixture-response-{name}",
             }
             if name == "accepted":
-                payload["revisions"] = [(doc, 1)]
+                payload["revisions"] = [(doc, 2)]
             result = api.respond(PROJECT, SESSION, payload, MAIN)
             source["response_revision"] = result["revision"]
             source["original_parent"] = api.get(PROJECT, SESSION, source["finding"])
@@ -229,7 +260,7 @@ async def create(args: argparse.Namespace) -> None:
         edit(store, cases["accepted"], "$x^2$")
         await drain(store, checker)
         try:
-            confirm(store, old, cases["accepted"])
+            confirm(store, old, cases["accepted"], doc)
         except DocumentError as exc:
             if "explanation changed" not in str(exc):
                 raise
@@ -264,9 +295,9 @@ async def create(args: argparse.Namespace) -> None:
             raise ValueError("Expected exactly six original explanation math sources")
         for name, status in (
             ("pending", "open"),
-            ("accepted", "confirmed fixed"),
-            ("removed", "confirmed fixed"),
-            ("unaddressed", "unaddressed"),
+            ("accepted", "fixed"),
+            ("removed", "fixed"),
+            ("unaddressed", "open"),
             ("unavailable", "open"),
             ("empty-macros", "open"),
         ):
@@ -275,7 +306,12 @@ async def create(args: argparse.Namespace) -> None:
                 raise ValueError(f"Fixture failed to establish {name}={status}")
         for name, source in snapshot["cases"].items():
             before, after = source["original_parent"], source["parent"]
-            if (before["status"], before["revision"]) != (after["status"], after["revision"]):
+            # Only the reviewer's re-check attempt that could not decide may be recorded on
+            # the parent (CR-42); the math correction itself changes nothing in it.
+            later = [h for h in after["history"] if h["revision"] > before["revision"]]
+            if before["status"] != after["status"] or any(
+                h["answer"] != "inconclusive" for h in later
+            ):
                 raise ValueError(f"Math correction changed scientific parent {name}")
         if snapshot["other_session"]:
             raise ValueError("Finding sources crossed the session boundary")
@@ -298,8 +334,8 @@ async def change(args: argparse.Namespace) -> None:
             await drain(store, renderer(args))
         elif args.action == "confirm":
             review = confirmation(store)
-            result = confirm(store, review, metadata["cases"]["accepted"])
-            if result["status"] != "confirmed fixed":
+            result = confirm(store, review, metadata["cases"]["accepted"], metadata["document"])
+            if result["status"] != "fixed":
                 raise ValueError("Fresh scientific confirmation did not succeed")
             store.finish(
                 PROJECT,

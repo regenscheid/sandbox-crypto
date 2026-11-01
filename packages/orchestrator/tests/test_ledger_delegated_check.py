@@ -18,8 +18,10 @@ from typing import Any
 import pytest
 
 from sandbox_science.contracts import WriteFileRequest
+from sandbox_science.orchestrator.context.agent import AgentContext
+from sandbox_science.orchestrator.context.history import body
 from sandbox_science.orchestrator.delegation.outcome import Outcome, Proof, Target, proof_reads
-from sandbox_science.orchestrator.delegation.prompt import brief_text, check_task
+from sandbox_science.orchestrator.delegation.prompt import brief_text, check_task, write_area_text
 from sandbox_science.orchestrator.delegation.records import (
     Delegation,
     DelegationRecords,
@@ -28,11 +30,9 @@ from sandbox_science.orchestrator.delegation.records import (
 from sandbox_science.orchestrator.delegation.specs import CheckBrief
 from sandbox_science.orchestrator.documents import USER, DocumentError
 from sandbox_science.orchestrator.documents.models import Author
-from sandbox_science.orchestrator.history import body
 from sandbox_science.orchestrator.ledger import gate
 from sandbox_science.orchestrator.ledger.models import EvidenceLink, GateClause
 from sandbox_science.orchestrator.loop import Transcript
-from sandbox_science.orchestrator.model import ToolCall
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.tools import Toolbox
 from sandbox_science.orchestrator.worker_client import WorkerClient
@@ -42,6 +42,7 @@ from .loop_harness import PROJECT, TOKEN, Harness, Reply, call
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
+from .scripted import ToolCall
 from .test_delegation import RESULT, results, started, wait
 from .test_delegation import delegating as delegating
 from .test_ledger import DELEGATED, MAIN, NEW, change
@@ -480,7 +481,7 @@ WHOLE: list[dict[str, Any]] = [
 
 async def observed(records: list[dict[str, Any]]) -> Outcome:
     outcome = Outcome(Target("entry-9", "C-9", 1, proof_reads(PROOFS)))
-    run = Transcript(messages=[])
+    run = Transcript(context=AgentContext(messages=[]))
     for record in records:
         await outcome.observe_tool(run, record)
     return outcome
@@ -583,7 +584,7 @@ async def test_a_proof_file_larger_than_one_read_shows_is_read_in_ranges(harness
     link = evidence(1, target="artifact", target_id="artifact-1", revision=1, sha256=SHA)
     link = link.model_copy(update={"sha256": hashlib.sha256(data).hexdigest()})
     outcome = Outcome(Target("entry-9", "C-9", 1, proof_reads([link])))
-    run = Transcript(messages=[])
+    run = Transcript(context=AgentContext(messages=[]))
     entry = {"entry": "entry-9", "revision": 1, "complete": True, "evidence": [link.evidence_id]}
     await outcome.observe_tool(run, {"ledger": "ledger_read", "read": entry})
     context = harness.context()
@@ -705,7 +706,9 @@ async def test_a_main_run_checks_its_proof_by_delegation(delegating: Harness) ->
     brief = body(str(first[1]["content"]))
     assert brief.startswith("Task: Check whether ledger entry C-1 holds at revision 2, ")
     assert "- derivation (proof): entry C-2 r1 (ledger_read)" in brief
-    assert brief.endswith("The requester's note, not evidence: Mind the lemma.")
+    note, area = brief.rsplit("\n\n", 1)
+    assert note.endswith("The requester's note, not evidence: Mind the lemma.")
+    assert area == write_area_text(f"work/{started(root)[0]}")
     recorded = json.loads(results(root)[2])
     assert "error" not in recorded, recorded
     found = gate_clause(delegating)

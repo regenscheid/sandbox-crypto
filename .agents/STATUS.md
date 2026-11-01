@@ -1,26 +1,65 @@
 # Status
 
-Updated 2026-10-19. Development is local `dev` in `/home/andy/.cache/pt/dev-local`; the completion implementation is integrated through signed `5a238f10`. The primary checkout is separate. Signed local integration, disposable acceptance and deployment into personal services are distinct.
+Updated 2026-10-25. For the owner; one screen. Details: [BACKLOG](BACKLOG.md), [PLAN-CHANGES](PLAN-CHANGES.md), [decisions](../docs/DECISIONS.md).
 
 ## Phase and focus
 
-The owner authorized **$150 aggregate new model-testing spend** for the six-item [completion campaign](docs/agent-reports/completion-campaign-2026-10-18.md), superseding the earlier $75 proposal. This does not restart SNOVA or approve additional research token grants. All six implementation areas are integrated and their campaign acceptance is complete. The wider backlog is not complete.
+- `k8s-sync` is the integration branch. It is `k8s` plus `origin/dev` (`3918ccd0`), then the settled architecture (D95-D103, D92 amended) built on top. It is pushed to `origin/k8s-sync`; no PR is open and nothing is merged into `dev`.
+- `dev` is unchanged except PR #520. `main` is unchanged.
+- The nightly runs the workflow file on `main`, so the sharded flake-measuring jobs reach it only when merged there. Nightly CI is not yet green.
+- A test instance runs on the cluster (2026-10-24): OpenShell 0.1.5, Agent Sandbox v1.0.3, Kata, the bundle and a capped model key. The personal instance and SNOVA are untouched.
 
-- **Recovery:** opt-in launcher supervision restarts owned worker/control/workspace processes and replaces only the recorded agent VM. Durable bounded retry state survives launcher loss; exhausted optional components leave a degraded instance. Automatic root Resume reconciles supported original effects and honors Stop, ownership and budgets. Unknown worker/MCP effects are not blindly replayed. Three owned live probes passed worker restart, agent-VM replacement and host-process-loss recovery while a genuine Sage job retained its original operation. The real-model tree then completed after control/runtime replacement; this is not physical-host reboot qualification or arbitrary interpreter restoration.
-- **Resources:** durable parent check-ins support continue, redirect, report, pause and policy-bounded turn/time/retained-artifact extensions. Cumulative grants survive Resume, including nested ancestor accounting. Root self-renewal is opt-in, bounded by policy and newer persisted evidence; it never extends tokens. Explicitly approved paused root/child turn, time and storage allowances can enter automatic root Resume. Token approval is separate: each next 10,000,000 tokens requires explicit USER approval. New delegated defaults remain 20,000,000 tokens and 300 turns; existing explicit settings remain intact. Retained storage is logical artifact revision bytes, not VM disk capacity.
-- **Context and diagnostics:** live and saved attempts have a bounded recent timeline, provider cache counters and a separate auxiliary-call snapshot. Visible dispatch composition is captured with its admitted intent, immutable prompt/source provenance and bounded UTF-8 text reads. Oversized diagnostic omissions do not prevent model execution. Original-history indexing includes retained retrieval echoes, exact substring verification and explicit incomplete coverage; same-work continuations remain separate from children/siblings. Incremental blob reads bound large-body work. Pending-index metadata scans still grow with scoped history. Fold retries/fallbacks retain bounded diagnostic receipts without treating estimates as measured context occupancy.
-- **Workspace:** Skills, safe MCP structural schemas and applicable policy, explicit dated availability checks, Memory accepted/proposal/detail/history views, Overview and session Plan/Agents/Activity refinements are integrated. Page viewing does not execute MCP tools or probe upstream services. Drafts retain revisions and warn when browser storage cannot preserve them across reloads. Authenticated synthetic browser checks passed MCP available → unavailable → restored with **zero tool calls**, Memory draft navigation/save, captured-context chunk paging and original-history partial → complete indexing across continuations. These are browser/runtime checks, not real-model scientific acceptance.
-- **Agent profiles:** Project settings independently select trusted deployment aliases and reasoning effort for the orchestrator, delegated agents and consistency reviewer. A new tree freezes these choices; its children and ordinary Resume retain them. The reviewer defaults to Luna/medium in the qualified lab, while research roles use Sol/max. The browser cannot supply endpoints, adapters or credentials.
+## Built and verified (offline tests only)
 
-## Verification boundaries
+- The full suite passes offline: Python, web, math and figure checks, static and license checks.
+- Effect classes, per-server classifications, argument rules, lockdown modes and the drift test (D95, D96).
+- Grants of a class, a host or a package source, with cards for every request kind (D97).
+- Reads-free defaults: GET/HEAD on any port, upload-pack anywhere, reviewed read-only POST list (D95).
+- A child's fence covers outward effects only; children get the read-class connector tools (D99).
+- Automatic retries and one Resume for the whole tree; idle suspension off by default (D100).
+- Worker, policy middleware and package cache as one unit (D101).
+- Budgets only track; soft caps are check-ins; one local cost enforcement (D102).
+- One logging setup for every service, Pod labels and log-collection steps (D103).
+- Persistent kernels are the default for computation; one OpenShell version constant.
+- The operator checklist and the backup and restore runbook are written.
+- B9, legibility of agent work in the records (2026-10-25): every tool call names its purpose, kept in the archive and shown in result headers and fold skeletons; task briefs may list deliverables that the result accounts for, and children return tool lessons; review findings have five statuses with reviewer re-checks on later revisions, author dismissals and staleness, migrated in place; memory recall shows each note's basis, date and anchors. The workspace rendering of all this is B10.
+- B10, legibility of agent work in the workspace (2026-10-25): the conversation shows each tool call's purpose with a result gloss, background work in one line, agent messages and children's outcomes as rows, named agents with a breadcrumb on a child's transcript, reviewer findings as compact cards with the five statuses, and the artifacts of each step with an Artifacts panel. Since then: the full finding card, one block per finished delegation, composer completion and each kernel's current cell are built; a per-message model choice is not.
+- B3's defects found live, fixed offline (2026-10-25): the runtime manager waits for the gateway and reports what failed; an image license check runs locally and in CI; the worker reconciles unknown-outcome environments on confirmed absence. Not yet run on the cluster.
+- B4 to B6's offline parts (2026-10-25): scheduled cache trimming at 70% use, an offline replica-release Job and runbook, lockfile-protected cache eviction; MCP canaries and first Loki alert rules; job-sandbox details and "release now" in the jobs GUI. The classification review view (A3) is built. Nothing of this has run on the cluster.
+- A10's offline part (2026-10-25): each run records its tool mix, an offline `tool-mix` command measures recorded runs, one platform note per run steers shell-run Python to the kernel, and a lost kernel's result names what to recompute. SNOVA measured (93% of code executions bypassed the kernels) and lost-kernel recovery qualified live on OpenShell 0.1.5 the same day.
 
-- Frozen web suite: **2,239 passed**; Svelte/TypeScript, Prettier, production and math builds pass.
-- Frozen Python suite at `5a238f10`: **14,524 passed, 50 skipped** in 695.18 seconds with two known malformed-fixture serializer warnings. Ruff, format and strict Pyright are clean. The isolated image is `sandbox-science/orchestrator:5a238f10`, digest `sha256:e748cdd5cc5aacea44a6de6cc96e7bf5b19c942881a9cad3a04c689a26054996`; its container/Landlock checks passed 17 cases.
-- The live Sol/max root and child recovered through one orchestrator Resume, ran concurrently, exchanged updated instructions and a final handback, and finished `completed/answered` without a replacement child or repeated reference calculation. The parent consumed the child's full history, updated the plan, ledger and eleven-revision living document, and settled two Luna/medium evidence-strength findings as `confirmed fixed`.
-- Real folds applied across child and resumed-root attempts. Two oversize records needed exactly one bounded repair call; the other applied narratives passed on their first attempt. Saved diagnostics retain the reason and sizes. Final numeric GF(16) and GF(32) grades passed every oracle check.
-- Campaign model spend was **$24.56566378 observed**, $0 reserved and no unpriced usage, within the $150 authorization. Five historical reviewer intents remain visibly unsettled rather than treated as zero. The terminal reviewer found no inconsistency in the checked GF(32) claims but remained correctly `inconclusive` because it did not independently reproduce them.
-- Evidence is preserved at `/var/tmp/ss-recovery-evidence-a4addfda`: 52 allowlisted files match their SHA-256 manifest. The private lab root, seven owned sandbox identities, all six owned units, 18 observed processes, owned ports and one driver directory were removed or verified absent. The unrelated SNOVA budget guard remained active.
+## Verified live on the cluster (test instance, 2026-10-24)
 
-Earlier [OpenShell recovery/endurance acceptance](docs/agent-reports/openshell-recovery-acceptance-2026-10-18.md) completed a separate 3,600-second Sage job with 249,063,436 verified batches and full owned teardown. That historical synthetic-model lab does not substitute for the current campaign's final receipts or scientific quality. Four local subprocess-death tests also cover final-record commit, mailbox ACK, work completion and child ledger/settlement handback.
+- Egress only through OpenShell: git from GitHub, pip through the cache, unlisted hosts and pypi.org denied and recorded, raw sockets to public, LAN and in-cluster addresses refused. MCP is not configured yet.
+- Kata in effect with tier 3 recorded. Plain runc is not usable: OpenShell refuses to start there (D43).
+- The manager cycle: bootstrap, reconnection to the same sandbox after its Pods are killed, explicit replace, control history intact.
+- The Secret generator, the bundle and the OpenShell values, after the fixes the run found.
 
-No current implementation is claimed pushed or deployed into the personal or preserved SNOVA services. SNOVA remains preserved; its owner-stopped monitor must not be recreated implicitly. The campaign did not perform a physical host reboot, qualify arbitrary interpreter-state restoration or turn the bounded consistency review into an independent scientific reproduction. Broader scientific continuity, cache-layout comparisons and other open work remain in [BACKLOG.md](BACKLOG.md).
+## Built but not verified live
+
+- On the cluster: Longhorn backups to Garage, Garage artifacts, log collection, job sandboxes, MCP.
+- The direct MCP path (agent to server through OpenShell and the middleware, D98): a prototype that passes offline only.
+- Ports admitted on demand, and the workspace answering network and package requests, against a real gateway.
+- Soft-cap check-ins and loop detection with a real model.
+- The unit on babbage and the compiled lockdown policy.
+
+## Decided but not built
+
+- Run the babbage lab for the direct MCP path, then your decision to retire the MCP proxy or keep it (D98, A2).
+- Proxy-side drift findings (A3, after the A2 decision); the classification review view itself is built (2026-10-25).
+- Cards for the direct MCP path's requests (A4).
+- The web usage view and a real-model check of the check-ins (A8).
+- Measure shell against kernel use and steer agents to the kernel (A10).
+- First deployment and its three proofs (B3); durability extras, load balancer and Authentik (B4); dashboards, alerts and canaries (B5); job sandboxes (B6, D93).
+- A second instance for another trust group (D94).
+
+## Operator-side prerequisites
+
+1. Talos 1.13.12 with Kata on the amd64 nodes: done and verified.
+2. Cluster preparation: done for the test instance (namespaces, storage classes, RuntimeClass, Agent Sandbox, OpenShell); the [checklist](../docs/KUBERNETES-PREP.md) now carries what the run found. Still open: a Garage bucket and keys for artifacts and backups (backups go to the existing NFS target for now).
+3. Images: the trusted images in use are `trusted-app` and `trusted-worker` at `30c78ad5`; the profile images `orchestrator:3cf3bd51`, `minimal:d3b1f1cf` and `crypto-base:d3b1f1cf` are from run 40081031769. Digests are in the private deployment record.
+
+## Boundaries that stand
+
+- Images stay private on ghcr. No push of `dev` or `main` by agents.
+- SNOVA and its archive stay preserved; its stopped monitor is not recreated.

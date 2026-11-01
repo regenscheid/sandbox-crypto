@@ -1,28 +1,51 @@
 <!-- SPDX-License-Identifier: MIT -->
 <script lang="ts">
-  import { onMount, untrack } from 'svelte';
+  import { onMount, untrack, type Snippet } from 'svelte';
   import { formatTime } from '../lib/format';
-  import { KERNEL_POLL, readKernels, type KernelObservation } from '../lib/kernels';
+  import {
+    KERNEL_POLL,
+    readKernels,
+    type KernelInfo,
+    type KernelObservation,
+  } from '../lib/kernels';
   import { initialPoll, Poller, type PollState } from '../lib/poller';
   let {
     projectId,
     sessionId,
     environmentId,
+    child = false,
+    heading = 'Session kernels',
     initialState = initialPoll(),
+    onobserve,
+    detail,
   }: {
     projectId: string;
     sessionId: string;
     environmentId: string;
+    /** One of the session's child environments (CE-8): its kernels, by its own route. */
+    child?: boolean;
+    heading?: string;
     initialState?: PollState<KernelObservation>;
+    /** Told of each observation as the panel reads it, so a page can join it with its own. */
+    onobserve?: (state: PollState<KernelObservation>) => void;
+    /** More about one kernel, shown with it (the Compute tab shows its current cell). */
+    detail?: Snippet<[KernelInfo]>;
   } = $props();
   let viewState = $state<PollState<KernelObservation>>(untrack(() => initialState));
+  // Read through `$derived`, so only another environment restarts the observations: the
+  // session view makes its kernel scope anew at each poll, and the panel blanked.
+  const environment = $derived(environmentId);
+  $effect(() => {
+    const state = viewState;
+    untrack(() => onobserve?.(state));
+  });
   let mounted = $state(false);
   onMount(() => {
     mounted = true;
   });
   $effect(() => {
     if (!mounted) return;
-    const scope = { projectId, sessionId, environmentId };
+    const scope = { projectId, sessionId, environmentId: environment, child };
     viewState = initialPoll();
     const poller = new Poller(
       (signal) => readKernels(scope, signal),
@@ -35,10 +58,11 @@
   });
 </script>
 
-<section aria-label="Session kernels">
-  <h2>Session kernels</h2>
+<section aria-label={heading}>
+  {#if child}<h4>{heading}</h4>{:else}<h2>{heading}</h2>{/if}
   <p class="muted">
-    Passive observations for this session. Revisions do not prove which modules are loaded.
+    Passive observations for this {child ? 'child environment' : 'session'}. Revisions do not prove
+    which modules are loaded.
   </p>
   {#if viewState.phase === 'loading'}
     <p role="status">Observing existing kernels…</p>
@@ -47,7 +71,11 @@
   {:else if viewState.phase === 'signed_out'}
     <p role="status">Kernel observations stopped for sign-out. Reload after signing in.</p>
   {:else if viewState.phase === 'missing'}
-    <p role="status">This session is absent or closed. Kernel observations stopped.</p>
+    <p role="status">
+      {child
+        ? 'This child environment is not ready or no longer exists.'
+        : 'This session is absent or closed.'} Kernel observations stopped.
+    </p>
   {:else if viewState.phase === 'unsupported'}
     <p role="status">
       Kernel observations unavailable: the worker is unconfigured or does not support passive
@@ -92,6 +120,7 @@
             {#if kernel.revision_status === 'unknown'}<p>
                 The kernel's revision relationship is unknown.
               </p>{/if}
+            {@render detail?.(kernel)}
           </li>
         {/each}
       </ul>

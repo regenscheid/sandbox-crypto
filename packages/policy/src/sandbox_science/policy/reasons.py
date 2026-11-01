@@ -29,6 +29,24 @@ AUDIT_UNAVAILABLE: Final = "audit_unavailable"
 """An alert or permission request the decision needs could not be recorded."""
 POLICY_UNAVAILABLE: Final = "policy_unavailable"
 """The bound policy revision cannot be loaded."""
+ARGUMENTS_TOO_LARGE: Final = "arguments_too_large"
+"""An MCP request's parameters exceed ``mcp.limits.max_argument_bytes``."""
+CREDENTIAL_IN_BODY: Final = "credential_in_body"
+"""An MCP request's body carries something that reads as an OpenShell credential placeholder."""
+SESSION_HELD: Final = "session_held"
+"""A detection rule holds the session's outward calls (D103) until the user clears the hold
+in the workspace; sandbox compute goes on. The code names the hold, as
+``session_held_r12``."""
+REQUEST_CODES: Final = frozenset({APPROVAL_REQUIRED, APPROVAL_DENIED, ESCALATION_TIMED_OUT})
+"""The codes of refusals that concern a permission request."""
+
+
+def with_request(code: str, seq: int) -> str:
+    """A reason code that also names the permission request it concerns, as
+    ``approval_required_r12``: OpenShell returns a middleware's reason code to the sandbox,
+    and nothing else the middleware says, so the code is the only place for the number."""
+    return f"{code}_r{seq}"
+
 
 LAYER_CODES: Final[Mapping[Layer, str]] = {
     "classification": REQUEST_UNCLASSIFIABLE,

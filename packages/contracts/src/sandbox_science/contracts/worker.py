@@ -17,7 +17,7 @@ from pydantic import AfterValidator, AwareDatetime, Field, StringConstraints, mo
 from .context import ExecutionContext
 from .model import Contract, Counter, Identifier, Sha256
 
-PROTOCOL_VERSION: Final = 10
+PROTOCOL_VERSION: Final = 18
 """The worker API's version. Releases are lockstep (docs/COMPATIBILITY.md): it changes with
 any change to what the worker or its clients send, and each side refuses another version."""
 PROTOCOL_HEADER: Final = "X-Worker-Protocol"
@@ -122,6 +122,14 @@ def _check_command(script: str | None, argv: tuple[str, ...] | None) -> None:
             _no_nul(argument, "argv")
 
 
+IsolationTier = Annotated[int, Field(ge=0, le=3)]
+"""0 (none) to 3 (a microVM per sandbox), as docs/THREAT-MODEL.md defines them (D43)."""
+MAX_JOB_INPUTS: Final = 64
+"""Session workspace files or directories one job sandbox's request copies in (JS-5)."""
+JobProfileName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")]
+"""A job profile the worker's settings define, such as ``large`` (D93, JS-8)."""
+
+
 class ShellRequest(Contract):
     """A shell call: a ``script`` for ``bash -c``, or an ``argv`` run without a shell."""
 
@@ -162,9 +170,25 @@ class JobRequest(Contract):
     output_limit_bytes: OutputLimit = DEFAULT_OUTPUT_LIMIT
     bindings: Bindings = Field(default_factory=dict[str, str])
     binding_inventory: Sha256 | None = None
+    profile: JobProfileName | None = None
+    """A job profile granted to the project: the job runs in a new sandbox of its own, of
+    that size, made from the session environment's image and policy (D93). ``None``, the
+    default, runs it in the session environment, as before protocol 13."""
+    inputs: tuple[RelativePath, ...] = Field(default=(), max_length=MAX_JOB_INPUTS)
+    """Session workspace files or directories copied to the same paths in the job's
+    sandbox before it runs; only with ``profile``."""
+    min_isolation_tier: IsolationTier | None = None
+    """The harness's own minimum tier, never the agent's: a job sandbox below it, or below
+    the session environment's, fails before its command; only with ``profile``."""
 
     @model_validator(mode="after")
     def _one_command(self) -> Self:
+        if self.profile is None and (self.inputs or self.min_isolation_tier is not None):
+            raise ValueError("inputs and min_isolation_tier need a job profile")
+        if len(set(self.inputs)) != len(self.inputs):
+            raise ValueError("inputs name each path once")
+        if any(path == "." or path == ".jobs" or path.startswith(".jobs/") for path in self.inputs):
+            raise ValueError("inputs name files of the session workspace, not it or .jobs")
         if not self.purpose.strip() or not self.expected_progress.strip():
             raise ValueError("purpose and expected_progress must not be blank")
         _no_nul(self.purpose, "purpose")
@@ -199,11 +223,13 @@ class CellRequest(Contract):
         return self
 
 
-Feature = Literal["pdf", "admission", "provisioning", "jobs"]
+Feature = Literal["pdf", "admission", "provisioning", "jobs", "job_sandboxes", "child_environments"]
 """Capabilities beyond kernels that an environment can offer. ``pdf`` needs pdf_oxide (D59);
 ``admission`` means the worker admits hosts ahead of use (D69, ``AdmissionRequest``);
 ``provisioning`` that it installs capabilities and packages on request (``ProvisionRequest``,
-Conda provisioning)."""
+Conda provisioning); ``job_sandboxes`` that a job may name one of the capabilities'
+``job_profiles`` (D93); ``child_environments`` that a delegation may run in an
+environment of its own, made from this one (docs/specs/child-environments.md, CE-1)."""
 FEATURES: Final[tuple[Feature, ...]] = ("pdf", "jobs")
 """The features an executor may report; the worker adds ``admission`` itself."""
 PdfOperation = Literal["info", "pages", "search", "render", "draw"]
@@ -386,8 +412,6 @@ class KernelObservation(KernelListing):
     observed_at: AwareDatetime
 
 
-IsolationTier = Annotated[int, Field(ge=0, le=3)]
-"""0 (none) to 3 (a microVM per sandbox), as docs/THREAT-MODEL.md defines them (D43)."""
 ProbeText = Annotated[str, StringConstraints(max_length=256)]
 KernelSharing = Literal["separate", "shared", "unknown"]
 SentinelState = Literal["hidden", "visible", "unknown"]
@@ -500,6 +524,61 @@ class Result(Contract):
     as admitting a host that a connection was refused for (D69)."""
 
 
+JobSandboxPhase = Literal["creating", "preparing", "running", "collecting", "released", "retained"]
+"""Where a job's own sandbox is (JS-4): placed, then packages and inputs, the command, the
+copy back; then deleted, or stopped and kept until a deadline after a failure (JS-25)."""
+CollectionStatus = Literal["pending", "complete", "incomplete"]
+MAX_MANIFEST_FILES: Final = 1000
+"""Files a job's collection copies back at most (JS-17), and inputs its manifest lists."""
+DEFAULT_COLLECT_MAX_BYTES: Final = 4 * 1024**3
+"""Bytes a job's collection copies back by default (owner, 2026-10-22)."""
+DEFAULT_STAGE_MAX_BYTES: Final = 2 * 1024**3
+"""Bytes of inputs a job sandbox copies in by default (JS-13)."""
+JobFailureReason = Literal[
+    "capacity_unavailable",
+    "isolation_insufficient",
+    "package_replay_failed",
+    "environment_mismatch",
+    "staging_failed",
+    "sandbox_lost",
+    "sandbox_unavailable",
+    "worker_restarted",
+]
+"""Why a job sandbox ended its job short of its command's own outcome."""
+
+
+class JobSandbox(Contract):
+    """A job's own sandbox, as the job's record shows it (JS-2, JS-27)."""
+
+    environment_id: Identifier
+    """The job environment: no agent tool can name it (JS-1)."""
+    profile: JobProfileName
+    phase: JobSandboxPhase
+    cpu_millicores: Annotated[int, Field(ge=1)]
+    memory_mib: Annotated[int, Field(ge=1)]
+    """What the profile reserves (its Kubernetes limits)."""
+    retained_until: datetime | None = None
+    collection: CollectionStatus = "pending"
+    manifest_sha256: Sha256 | None = None
+    """The digest of its immutable result manifest, once the job has ended."""
+
+
+class JobSandboxRelease(Contract):
+    """The user's request to release a retained job sandbox now (JS-24): the job whose
+    sandbox it is is the route's; ``context`` is the session that owns the job."""
+
+    context: ExecutionContext
+    operation_id: Identifier
+    """The receipt: the same request again answers the first result."""
+
+
+class JobSandboxReleased(Contract):
+    """A job sandbox the worker deleted by its identity (JS-25), at the user's request."""
+
+    execution_id: Identifier
+    phase: Literal["released"] = "released"
+
+
 class JobDetails(Contract):
     """Durable job metadata, including its whole-output files in the session workspace."""
 
@@ -509,6 +588,68 @@ class JobDetails(Contract):
     timeout_seconds: Annotated[float, Field(gt=0, le=604800, allow_inf_nan=False)]
     stdout_path: RelativePath
     stderr_path: RelativePath
+    profile: JobProfileName | None = None
+    """The job profile its sandbox has; ``None`` for a job in the session environment."""
+    sandbox: JobSandbox | None = None
+
+
+class ManifestFile(Contract):
+    """A file a job sandbox's manifest names: an input or a collected file."""
+
+    path: RelativePath
+    """Its session workspace path: for a collected file, under ``.jobs/<ID>/files/``."""
+    size: Annotated[int, Field(ge=0)]
+    sha256: Sha256
+
+
+class UncollectedFile(Contract):
+    path: Annotated[str, StringConstraints(max_length=MAX_PATH_BYTES)]
+    """As the job sandbox named it."""
+    reason: Annotated[str, StringConstraints(max_length=300)]
+
+
+class ReplayedPackages(Contract):
+    """The session's package changes the job sandbox installed before its command (D93)."""
+
+    conda: tuple[Annotated[str, StringConstraints(max_length=256)], ...] = Field(
+        default=(), max_length=2000
+    )
+    pip: tuple[Annotated[str, StringConstraints(max_length=256)], ...] = Field(
+        default=(), max_length=2000
+    )
+    operations: tuple[Identifier, ...] = Field(default=(), max_length=256)
+    """The provisioning operations that installed them, in order."""
+    session_revision: Annotated[int, Field(ge=0)] | None = None
+    session_lockfile: Sha256 | None = None
+    job_lockfile: Sha256 | None = None
+    """The job environment's lockfile after the replay, when it had one."""
+
+
+class JobResultManifest(Contract):
+    """What a job sandbox ran and returned (JS-16): stored once, with the job's end, and
+    never rewritten. ``.jobs/<ID>/manifest.json`` in the session is an untrusted copy."""
+
+    job_id: Identifier
+    attempt_id: Identifier
+    profile: JobProfileName
+    driver_config_sha256: Sha256
+    image: Annotated[str, StringConstraints(max_length=1024)]
+    environment_id: Identifier
+    sandbox_id: Annotated[str, StringConstraints(max_length=256)] | None = None
+    isolation_tier: IsolationTier | None = None
+    isolation_evidence: IsolationEvidence | None = None
+    submitted_at: datetime
+    started_at: datetime | None = None
+    ended_at: datetime
+    outcome: ExecutionState
+    reason: JobFailureReason | None = None
+    exit_code: int | None = None
+    signal: int | None = None
+    packages: ReplayedPackages = Field(default_factory=ReplayedPackages)
+    inputs: tuple[ManifestFile, ...] = Field(default=(), max_length=MAX_MANIFEST_FILES)
+    collected: tuple[ManifestFile, ...] = Field(default=(), max_length=MAX_MANIFEST_FILES + 2)
+    not_collected: tuple[UncollectedFile, ...] = Field(default=(), max_length=MAX_MANIFEST_FILES)
+    collection: CollectionStatus
 
 
 class Execution(Contract):
@@ -553,6 +694,9 @@ class JobStatus(Contract):
     stderr: StreamOutput | None = None
     cpu_seconds: Annotated[float, Field(ge=0, allow_inf_nan=False)] | None = None
     memory_bytes: Annotated[int, Field(ge=0)] | None = None
+    manifest: JobResultManifest | None = None
+    """A job sandbox's result manifest, once it has ended; its digest is the execution's
+    ``job.sandbox.manifest_sha256``."""
 
 
 class KernelRestartRequest(Contract):
@@ -649,6 +793,150 @@ class WriteFileRequest(Contract):
 class WriteFileResult(Contract):
     sha256: Sha256
     size: Annotated[int, Field(ge=0)]
+
+
+MAX_EDIT_BYTES: Final = MAX_READ_BYTES
+"""The largest file ``edit_file`` changes, before and after the edit: the read limit."""
+MAX_EDIT_STRING: Final = 1024 * 1024
+"""Characters of ``old_string`` and of ``new_string``, each."""
+
+
+class EditFileRequest(Contract):
+    """Replace ``old_string`` with ``new_string`` in a UTF-8 text file, atomically.
+
+    ``old_string`` must occur exactly once unless ``replace_all``. The file must exist;
+    in the shared area the edit needs ``expected_sha256``, the hash ``read_file`` showed.
+    """
+
+    context: ExecutionContext
+    path: RelativePath
+    old_string: Annotated[str, Field(min_length=1, max_length=MAX_EDIT_STRING)]
+    new_string: Annotated[str, Field(max_length=MAX_EDIT_STRING)]
+    replace_all: bool = False
+    expected_sha256: Sha256 | None = None
+
+    @model_validator(mode="after")
+    def changes_something(self) -> Self:
+        if self.old_string == self.new_string:
+            raise ValueError("old_string and new_string are the same")
+        return self
+
+
+class EditFileResult(Contract):
+    sha256: Sha256
+    size: Annotated[int, Field(ge=0)]
+    replacements: Annotated[int, Field(ge=1)]
+
+
+MAX_SEARCH_PATTERN: Final = 1000
+"""Characters of a glob or a grep pattern."""
+MAX_GLOB_RESULTS: Final = 200
+MAX_GREP_RESULTS: Final = 500
+DEFAULT_GREP_RESULTS: Final = 100
+MAX_GREP_CONTEXT: Final = 10
+MAX_GREP_LINE_CHARS: Final = 400
+"""Characters of one line ``grep`` shows in ``content`` mode; a longer one is cut."""
+MAX_SKIPPED_NAMES: Final = 16
+
+
+def validate_glob(value: str) -> str:
+    """Check a path pattern: relative, without empty, ``.`` or ``..`` segments.
+
+    ``*`` and ``?`` match within one segment, ``[…]`` one character of a set, and a
+    segment ``**`` any number of directories. Raises ValueError.
+    """
+    if not value or "\x00" in value or len(value) > MAX_SEARCH_PATTERN:
+        raise ValueError("invalid pattern")
+    if value.startswith("/"):
+        raise ValueError(f"pattern {value!r} must be relative to the path")
+    for segment in value.split("/"):
+        if segment in ("", ".", ".."):
+            raise ValueError(f"pattern {value!r} has an empty, '.' or '..' segment")
+    return value
+
+
+GlobPattern = Annotated[str, AfterValidator(validate_glob)]
+SearchPattern = Annotated[str, StringConstraints(min_length=1, max_length=MAX_SEARCH_PATTERN)]
+SearchStop = Literal["results", "entries", "depth", "bytes", "time", "reply"]
+"""Why a search stopped early: its result limit, the entries or directory levels it walks,
+the bytes it reads, its time, or the size of its reply."""
+
+
+class GlobRequest(Contract):
+    """The paths below ``path`` that match ``pattern``, newest first."""
+
+    context: ExecutionContext
+    pattern: GlobPattern
+    path: RelativePath = "."
+    limit: Annotated[int, Field(ge=1, le=MAX_GLOB_RESULTS)] = MAX_GLOB_RESULTS
+
+
+class GlobEntry(Contract):
+    """A match, by its path relative to the session workspace (``shared/…`` in the
+    shared area); a symlink is reported as a link and not followed."""
+
+    path: str
+    type: Literal["file", "directory", "symlink", "other"]
+    size: Annotated[int, Field(ge=0)]
+    modified_at: datetime
+
+
+class GlobListing(Contract):
+    path: str
+    pattern: str
+    entries: tuple[GlobEntry, ...] = Field(max_length=MAX_GLOB_RESULTS)
+    truncated: bool = False
+    """More entries matched than are listed, or the walk stopped early (``stopped``)."""
+    stopped: SearchStop | None = None
+    scanned: Annotated[int, Field(ge=0)]
+    skipped: tuple[str, ...] = Field(default=(), max_length=MAX_SKIPPED_NAMES)
+    """Directories the walk did not enter: the research prefix and the executor's state."""
+
+
+GrepMode = Literal["files", "count", "content"]
+
+
+class GrepRequest(Contract):
+    """Search the text files below ``path``, or the file it names, for a Python regular
+    expression. Binary files, symlinks and the directories ``GlobListing.skipped`` names
+    are left out; ``glob`` narrows the files, by name or, with a ``/``, by path."""
+
+    context: ExecutionContext
+    pattern: SearchPattern
+    path: RelativePath = "."
+    glob: GlobPattern | None = None
+    mode: GrepMode = "files"
+    case_insensitive: bool = False
+    context_lines: Annotated[int, Field(ge=0, le=MAX_GREP_CONTEXT)] = 0
+    max_results: Annotated[int, Field(ge=1, le=MAX_GREP_RESULTS)] = DEFAULT_GREP_RESULTS
+
+
+class GrepCount(Contract):
+    path: str
+    count: Annotated[int, Field(ge=1)]
+
+
+class GrepResult(Contract):
+    """``files`` lists the files that match, ``count`` each one's matching lines, and
+    ``content`` the lines, as ``path:line: text``, with context lines as
+    ``path-line- text`` and ``--`` between groups."""
+
+    path: str
+    pattern: str
+    mode: GrepMode
+    files: tuple[str, ...] = Field(default=(), max_length=MAX_GREP_RESULTS)
+    counts: tuple[GrepCount, ...] = Field(default=(), max_length=MAX_GREP_RESULTS)
+    lines: tuple[str, ...] = Field(
+        default=(), max_length=MAX_GREP_RESULTS * (2 * MAX_GREP_CONTEXT + 2)
+    )
+    truncated: bool = False
+    stopped: SearchStop | None = None
+    scanned_files: Annotated[int, Field(ge=0)]
+    scanned_bytes: Annotated[int, Field(ge=0)]
+    skipped_binary: Annotated[int, Field(ge=0)] = 0
+    skipped_large: Annotated[int, Field(ge=0)] = 0
+    skipped_unreadable: Annotated[int, Field(ge=0)] = 0
+    skipped: tuple[str, ...] = Field(default=(), max_length=MAX_SKIPPED_NAMES)
 
 
 MAX_STAGED_FILES: Final = 4096
@@ -771,11 +1059,25 @@ class PublishRequest(Contract):
     media_type: MediaType | None = None
 
 
+class JobProfileOffer(Contract):
+    """A job profile the environment's project may run a job sandbox with (JS-5)."""
+
+    name: JobProfileName
+    description: Annotated[str, StringConstraints(min_length=1, max_length=200)]
+    cpu_millicores: Annotated[int, Field(ge=1)]
+    memory_mib: Annotated[int, Field(ge=1)]
+    wall_time_max_seconds: Annotated[float, Field(gt=0, le=604800, allow_inf_nan=False)]
+
+
 class Capabilities(Contract):
     protocol: int
     languages: tuple[Language, ...]
     location: Location
     features: tuple[Feature, ...] = ()
+    kernel_reason: Annotated[str, StringConstraints(max_length=300)] | None = None
+    """Why the environment offers no Python kernel, when it does not and its executor said why."""
+    job_profiles: tuple[JobProfileOffer, ...] = Field(default=(), max_length=32)
+    """With the ``job_sandboxes`` feature: the profiles granted to the project (D93)."""
 
 
 class WorkerErrorResponse(Contract):

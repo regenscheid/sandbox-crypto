@@ -1,9 +1,12 @@
 # SPDX-License-Identifier: MIT
 """The middleware's records in the event store, and failing closed when the store fails."""
 
+import hashlib
+import json
 import sqlite3
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -26,6 +29,10 @@ network:
   rules:
     - {name: watched, operation: http, match: {hosts: [watched.example.org]}, action: alert}
     - {name: writes, operation: http, match: {hosts: ["*"], methods: [POST]}, action: escalate}
+    - name: git-push
+      operation: git
+      match: {hosts: [git.example.org], git_service: receive-pack}
+      action: escalate
 monitors:
   - {name: chatty, when: {egress_bytes_per_hour_over: 100}, action: alert}
 """
@@ -104,7 +111,19 @@ def test_escalations_alerts_and_monitor_findings_are_stored(
             "query_bytes": len(PRIVATE_QUERY),
         },
         "escalation": {"timeout_seconds": 1800, "on_timeout": "deny"},
-        # What an answer to this permission request covers (D76).
+        # What the request's card shows and its grants compare (D97): research code
+        # asked, a write is granted once at most, and the body is summarized by its size.
+        "caller_kind": "code",
+        "max_grant": "once",
+        "summary": {
+            "method": "POST",
+            "host": "example.org",
+            "port": 443,
+            "path": "/v1/items",
+            "size": len(PRIVATE_BODY),
+        },
+        # What an answer to this permission request covers (D76), with the body's
+        # digest, so that an answer to one body is not one to another (M1).
         "target": {
             "kind": "http",
             "sandbox_id": "sbx-0001",
@@ -113,6 +132,7 @@ def test_escalations_alerts_and_monitor_findings_are_stored(
             "host": "example.org",
             "port": 443,
             "path": "/v1/items",
+            "body": hashlib.sha256(PRIVATE_BODY).hexdigest(),
         },
     }
     assert records[1][2]["rule"] == "watched"
@@ -137,6 +157,44 @@ def test_query_strings_and_bodies_never_reach_the_disk(
     for file in files:
         data = file.read_bytes()
         assert b"test-secret" not in data, file.name
+
+
+def test_a_json_bodys_top_level_fields_are_summarized_truncated(
+    recording: PolicyMiddleware, facts: FactsFactory, events: EventStore
+) -> None:
+    body = json.dumps({"title": "x" * 500, "draft": True, "tags": ["a", "b"], "n": 3}).encode()
+    recording.evaluate_http(
+        facts(
+            method="POST",
+            path="/v1/items",
+            body=body,
+            headers=(("content-type", "application/json"),),
+        )
+    )
+    summary: dict[str, Any] = cast(dict[str, Any], stored(events)[0][2]["summary"])
+    assert summary["content_type"] == "application/json"
+    assert summary["size"] == len(body)
+    fields = summary["fields"]
+    assert set(fields) == {"title", "draft", "tags", "n"}
+    assert len(fields["title"]) == 160
+    assert fields["title"].endswith("…")
+    assert (fields["draft"], fields["tags"], fields["n"]) == ("true", "[2 items]", "3")
+
+
+def test_a_git_requests_card_names_its_service(
+    recording: PolicyMiddleware, facts: FactsFactory, events: EventStore
+) -> None:
+    # A push's first request differs from a fetch's only in its query, which is not kept.
+    verdict = recording.evaluate_http(
+        facts(
+            host="git.example.org", path="/lab/none.git/info/refs", query="service=git-receive-pack"
+        )
+    )
+    assert verdict.reason_code == reasons.APPROVAL_REQUIRED
+    recording.evaluate_http(facts(method="POST", path="/v1/items"))
+    git, plain = (cast(dict[str, Any], record[2]["summary"]) for record in stored(events))
+    assert (git["path"], git["git_service"]) == ("/lab/none.git/info/refs", "receive-pack")
+    assert "git_service" not in plain
 
 
 def test_an_alert_that_cannot_be_stored_is_denied(

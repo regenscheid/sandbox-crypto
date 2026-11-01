@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Never
 
 import pytest
 
@@ -24,10 +25,10 @@ async def test_queued_provisioning_cannot_adopt_new_session_epoch(make_world: Fa
     released = asyncio.Event()
 
     class Queued(Provisioner):
-        async def _operate(self, op):
+        async def _operate(self, op) -> Never:
             waiting.set()
             await released.wait()
-            await self._execute(
+            await self.stages.execute(
                 op,
                 ("forbidden-installer",),
                 label="probe-epoch",
@@ -35,6 +36,7 @@ async def test_queued_provisioning_cannot_adopt_new_session_epoch(make_world: Fa
                 timeout=1,
                 limit=1024,
             )
+            raise AssertionError("stale owner dispatched provisioning step")
 
     world = await make_world(kind=Queued)
     first = RecoveryFence(project_id="p1", session_id="s1", epoch=1)

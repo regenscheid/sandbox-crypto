@@ -20,8 +20,8 @@ from typing import Any, cast
 import pytest
 
 from sandbox_science.orchestrator import cli
+from sandbox_science.orchestrator.context.history import body
 from sandbox_science.orchestrator.documents import USER
-from sandbox_science.orchestrator.history import body
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord
 from sandbox_science.orchestrator.prompts import PromptPins
 from sandbox_science.orchestrator.skills import Entry, SkillStore, from_git, snapshot

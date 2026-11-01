@@ -27,8 +27,8 @@ A research question can remain open across many process lifetimes. Reaching a li
 | Memory | `loop.py:Transcript.rebuild` changes the model view but retains the original messages and tool records. `tools.py:_run` puts the worker's execution record in a tool record even when the model reads only sampled output. |
 | Final persistence | `harness.py:save` validates the complete run record and serializes it for storage. Merely spilling historical messages during a run would not bound this final step. |
 | Worker recovery | The executor can survive worker/bridge disconnection. Recovery must inspect the actual execution and kernel state; an orchestrator restart and the loss of a VM are different events. |
-| Idle suspension | The personal configuration sets `suspend_after = 3600`. `worker/suspend.py` considers worker activity and kernel CPU, without an orchestrator work lease. A long research interval without worker use can therefore stop the VM and lose kernel memory. |
-| Cache layout | `history/view.py:settle` already places the state block before the fold region and raw tail. Every rebuild archives a new state block; its rendered header contains that new archive ID. The Responses adapter supplies a session cache key, which alone does not establish reuse. |
+| Idle suspension | The personal configuration set `suspend_after = 3600` (off by default since D100). `worker/suspend.py` considers worker activity and kernel CPU, without an orchestrator work lease. A long research interval without worker use can therefore stop the VM and lose kernel memory. |
+| Cache layout | `context/history/view.py:settle` already places the state block before the fold region and raw tail. Every rebuild archives a new state block; its rendered header contains that new archive ID. The Responses adapter supplies a session cache key, which alone does not establish reuse. |
 | Skill binding restrictions | `skills/allow.py` holds manually maintained variable names and families. Staging also asks the worker which candidate command names exist; this is a namespace-collision check, not generation of the blocklist from all installed tools. |
 
 These describe the baseline used to design the increments below, not the current branch's behavior.
@@ -38,7 +38,7 @@ These describe the baseline used to design the increments below, not the current
 ### Work and attempts
 
 - RC-1. A durable work identity belongs to its project and session and, for delegated work, to its parent work identity. A run is an execution attempt at that work. Resuming creates a recorded continuation attempt; it does not overwrite an interrupted attempt or make its outcome successful. Reuse existing plan, delegation and ledger identities where possible. The implementation must settle the minimal schema before its migration.
-- RC-2. An attempt records its work identity, predecessor, parent work, role, brief, model configuration, skill pins, policy identity, archive position, known operations, outstanding children, and outcome deliveries. Recovery uses the recorded role and inputs. A newer policy or unavailable dependency is checked and reported; recovery never silently widens authority or changes an independent check into a research task.
+- RC-2. An attempt records its work identity, predecessor, parent work, role, brief, model configuration, skill pins, policy identity, archive position, known operations, outstanding children, and outcome deliveries. Recovery uses the recorded role and inputs. A newer policy or unavailable dependency is checked and reported; recovery never silently widens authority or changes an independent check into a research task. When the project's policy changed since the work began, the user's own Resume continues under the current policy and records that it did; an automatic Resume is refused with that reason ("the project's policy changed since this work began").
 - RC-3. Only one attempt may actively own a work item. Restart and two simultaneous Resume requests claim ownership atomically. The previous attempt is fenced from new effects once its ownership is lost. Existing session ownership and worker operation identities remain in force.
 
 ### Parent and child lifetimes
@@ -50,7 +50,7 @@ These describe the baseline used to design the increments below, not the current
 
 ### Recovery
 
-- RC-8. Recovery is available for main, child and grandchild work through one orchestrator-level Resume action. The orchestrator discovers and reconciles the selected work tree recursively; the user need not restart individual agents. It reconstructs ownership and the dependency tree before dispatching new work. Children that completed during an interruption are read and acknowledged, not started again. A parent is not declared ready to finish until outstanding results and deliveries have been reconciled. The orchestrator presents one aggregate recovery result with any blocked branches and their reasons; optional branch selection is an advanced control, not a prerequisite. This entry point does not decide whether recovery should also run automatically after a crash.
+- RC-8. Recovery is available for main, child and grandchild work through one orchestrator-level Resume action. The orchestrator discovers and reconciles the selected work tree recursively; the user need not restart individual agents. It reconstructs ownership and the dependency tree before dispatching new work. Children that completed during an interruption are read and acknowledged, not started again. A parent is not declared ready to finish until outstanding results and deliveries have been reconciled. The orchestrator presents one aggregate recovery result with any blocked branches and their reasons; optional branch selection is an advanced control, not a prerequisite. Transient failures also queue it automatically, within bounds (D100, [tree Resume](tree-resume.md)).
 - RC-9. Recovery checks every pending operation by its recorded identity before deciding what to do next. If the worker still runs it, reattach or wait. If it completed, retrieve that result. If its outcome is unknown, keep it unresolved and report the uncertainty. Do not repeat an operation with possible effects merely because its response was lost. Any retry uses that operation's existing idempotency contract; where there is none, automatic replay is unavailable.
   An interrupted delegation wait or status read is recorded as an interrupted observation,
   without inventing a child result or dispatching work. The resumed parent can inspect
@@ -58,7 +58,7 @@ These describe the baseline used to design the increments below, not the current
 - RC-10. Persist operation identity and intent before dispatch, and persist results before acknowledging their delivery. Cover the crash windows between those steps explicitly. Reconciliation of model calls does not promise to recover an unavailable response or avoid upstream charges; ambiguous charges remain visible and the current budget is checked before another call.
 - RC-11. Saved files and research records survive independently of process memory. Reattach to a surviving kernel only after verifying its identity and generation. A lost kernel is reported as lost; restore only from an available, recorded checkpoint or recompute explicitly identified work. No promise of live process migration is made. Child-kernel cleanup must account for resumable work rather than using the end of an attempt as the only lifetime boundary.
 - RC-12. Restore pending questions, answers, tool results and child outcomes with their identities and delivery positions. An answer already received is not requested again, and a result already incorporated is not counted twice. The current message queue's Resume behavior alone is not sufficient evidence that this requirement holds.
-- RC-13. Resume respects current policy, available model capabilities, and current spending limits. The original and continuation attempts retain their own configuration and usage records. A deliberate model or skill change is recorded; it is not presented as an exact continuation under the old configuration. Resuming never resets accrued cost or grants a fresh spending allowance by itself.
+- RC-13. Resume respects current policy, available model capabilities, and current spending limits. Before it claims the session's environment, Resume brings the environment to the project's current policy, as a new run's admission does: an environment left on another revision is not a reason to refuse. The original and continuation attempts retain their own configuration and usage records. A deliberate model or skill change is recorded; it is not presented as an exact continuation under the old configuration. Resuming never resets accrued cost or grants a fresh spending allowance by itself.
 
 ### Bounded memory and preserved evidence
 
@@ -93,7 +93,7 @@ The [OpenShell review](../../.agents/docs/agent-reports/openshell-foundations-re
 ### Orchestrator boundary
 
 - RC-27. **Separate confinement (D47).** The normal launcher runs the agent-facing orchestrator in its own restricted OpenShell sandbox, separate from generated-code workloads. The trusted worker controller and OpenShell gateway, supervisor and credential services remain outside both. Parent and child model loops may share the orchestration service. Research execution continues through the worker API; neither orchestrator failure nor sandbox startup failure enables a host-execution fallback. This is the accepted target architecture, not current launcher behavior.
-- RC-28. **Scoped authority (D47).** Permit only the model gateway, policy-governed MCP proxy, scoped worker API and required scoped state service. Keep the orchestrator's software read-only and writable state explicitly scoped. Give it no engine/cluster/OpenShell administrative credentials, management sockets or broad host mounts. The worker independently validates project ownership, permitted policy revisions, operations and limits; an orchestrator request cannot widen its authority. Reuse the existing image and policy compiler, checking their current dependencies and production callers rather than treating the old lab as current acceptance.
+- RC-28. **Scoped authority (D47).** Permit only the model gateway, the policy-governed MCP endpoints of `[mcp_direct]` (D98; the MCP proxy before 2026-10-26), scoped worker API and required scoped state service. Keep the orchestrator's software read-only and writable state explicitly scoped. Give it no engine/cluster/OpenShell administrative credentials, management sockets or broad host mounts. The worker independently validates project ownership, permitted policy revisions, operations and limits; an orchestrator request cannot widen its authority. Reuse the existing image and policy compiler, checking their current dependencies and production callers rather than treating the old lab as current acceptance.
 - RC-29. **Durable state and launcher integration (D47/D87).** Settle the storage and access contract before moving the run service: the current launcher lets the UI and orchestrator share a control store. Task ownership, checkpoints, evidence references and delivery positions must survive orchestrator process and sandbox replacement, remain accessible to the UI through a scoped boundary, and be recoverable by the replacement orchestrator. Use existing service/storage seams where possible; do not expose the host's whole state directory to solve the shared-store dependency. Define sandbox readiness, service access, shutdown and replacement behavior. Orchestrator replacement does not by itself delete workload environments; one Resume reconciles the existing task tree and worker executions.
 
 ## First implementation increment: durable tool journal
@@ -446,6 +446,10 @@ discarding kernel state during model-only work. They do not start a stopped VM,
 override explicit deletion or promise recovery of lost kernels.
 
 The worker checks project ownership and the current policy before a grant or renewal.
+A renewal refused because the environment moved to the project's new policy revision
+follows it: the claim takes the project's current revision, the run records that, and the
+root goes on, since the worker enforces the environment's current policy on every effect.
+A policy refusal the project's policy does not explain still stops the root.
 A renewal pins the original sandbox ID and cannot protect a replacement silently.
 The root stops when renewal fails; a crash leaves at most the unexpired claim.
 Release is scoped to the original holder/session and does not release another root's
@@ -496,7 +500,7 @@ records interruption, migration, mixed-source accounting and daily-window checks
 
 ## Open decisions
 
-1. **Automatic recovery:** the initial implementation requires explicit Resume after an unexpected restart or orchestrator replacement. Automatic paid research restart is outside this increment. Explicit Stop stays stopped.
+1. **Automatic recovery:** decided by D100 and built: transient failures are retried automatically with increasing backoff, a bounded attempt count and a no-progress stop, each decision persisted ([tree Resume](tree-resume.md)). A plain process restart or orchestrator replacement still needs the user's one Resume unless infrastructure recovery is enabled. Explicit Stop, a LiteLLM budget refusal, a policy denial, an irreconcilable effect and a context limit folding cannot relieve stay stopped. Idle suspension is off by default.
 2. **Scientific and cache acceptance:** offline prefix comparisons and bounded deterministic scale fixtures do not establish model-family cache savings or the quality of extended research. Those require separately budgeted real-model runs.
 
 The parent's responsibility, orchestrator-led recovery at every level and separate orchestrator sandbox are confirmed requirements. The implementation sections and their reports define what has been exercised locally.
@@ -527,8 +531,13 @@ recovery before any branch or model dispatch. It does not create a replacement
 for a missing environment. The request reserves immutable continuation names for every unfinished branch, and
 offers at most four ready branches to the configured runtime. Descendants settle
 before their parent is offered. Completed and explicitly stopped work is skipped;
-uncertain tool effects, missing kernel generations, changed policy or known changed
-prompt pins, and exhausted configured budgets produce visible blocked reasons.
+irreconcilable tool effects, changed policy for an automatic Resume and exhausted
+configured budgets produce visible blocked reasons. Known changed prompt, tool or skill
+pins under an automatic Resume, as after a platform update, stop the branch before its
+first model call with `pins_changed`: not a failure, and its delegation ends
+`interrupted`; automatic recovery leaves it for the user's Resume, which continues it
+with the new pins and records the change. A lost kernel does not block either: its loss
+is recorded and the agent recomputes (D100).
 Missing historical starting-input pins are logged as a provenance gap; the new
 attempt saves its own trusted pins and may continue. Unknown model charges remain
 visible estimates but do not alone block Resume. Resume
@@ -547,7 +556,8 @@ readiness; the checkpoint/replay increment closes the save-to-handback crash win
 The confined runtime drives branch selection through `resume_next` and
 `resume_branch`. Host control code owns scoped bookkeeping and persistence, while
 the development local-service loop uses the same methods directly. A process
-restart alone never queues Resume.
+restart alone never queues Resume; a transient failure, including a bridge loss the
+service records, does (D100).
 
 ### Dispatch recovery prerequisites (schema 64)
 

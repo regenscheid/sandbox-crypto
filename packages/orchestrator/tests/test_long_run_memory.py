@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -20,11 +21,16 @@ def test_ten_times_longer_loop_stays_bounded_across_consumers(tmp_path: Path) ->
     fixture = Path(__file__).parent / "fixtures" / "long_run_memory.py"
     reports = []
     for count in (40, 400):
+        # glibc gives threads arenas of their own, up to eight a core, and on Python 3.12
+        # their fragmentation alone grew RSS by 140 MiB in the longer loop where two
+        # arenas grow it by 35 MiB (babbage, 2026-10-22): the gate measures this code's
+        # memory, not the allocator's spread across threads.
         completed = subprocess.run(
             [sys.executable, str(fixture), str(tmp_path / str(count)), str(count)],
             text=True,
             capture_output=True,
             timeout=240,
+            env={**os.environ, "MALLOC_ARENA_MAX": "2"},
         )
         assert completed.returncode == 0, completed.stderr
         report = json.loads(completed.stdout)
