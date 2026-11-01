@@ -1,5 +1,9 @@
 # Plan changes
 
+## 2026-11-01
+
+- CI divides the test tiers into shards by test module (`tiers.py run --shard I/N`): three each for the fast and slow tiers on pull requests, four for the serial suite on each Python, and five for the nightly slow-tier repeat, which now runs each slow test twice instead of ten times ([conventions](CONVENTIONS.md#testing)).
+
 ## 2026-10-23
 
 - The consistency reviewer checks cryptographic claims (owner): rubric `sandbox-consistency-9` adds seven categories, warn in prose and fail in a saved artifact, and the scientific-writing skill asks the author for the same ([consistency review](../docs/CONSISTENCY-REVIEW.md); D56 amended).
