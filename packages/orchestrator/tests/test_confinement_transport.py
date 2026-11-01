@@ -236,17 +236,21 @@ async def test_near_response_cap_assistant_append_sends_native_once() -> None:
         await right.close()
 
 
-def test_handshake_request_and_reply_accept_three_and_reject_older() -> None:
+def test_handshake_request_and_reply_accept_four_and_reject_older() -> None:
     hello = {"image_revision": "a" * 40}
     ready = {"generation": "runtime-test", "projects": ["p"], "control_schema": 1}
-    assert Hello.model_validate({**hello, "protocol": 3}).protocol == 3
-    assert Ready.model_validate({**ready, "protocol": 3}).protocol == 3
+    assert Hello.model_validate({**hello, "protocol": 4}).protocol == 4
+    assert Ready.model_validate({**ready, "protocol": 4}).protocol == 4
     with pytest.raises(ValidationError, match="literal_error"):
         Hello.model_validate({**hello, "protocol": 1})
     with pytest.raises(ValidationError, match="literal_error"):
         Hello.model_validate({**hello, "protocol": 2})
     with pytest.raises(ValidationError, match="literal_error"):
+        Hello.model_validate({**hello, "protocol": 3})
+    with pytest.raises(ValidationError, match="literal_error"):
         Ready.model_validate({**ready, "protocol": 1})
+    with pytest.raises(ValidationError, match="literal_error"):
+        Ready.model_validate({**ready, "protocol": 3})
 
 
 async def test_internal_diagnostic_keeps_stack_without_payload_or_exception_text(

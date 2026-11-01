@@ -242,7 +242,9 @@ async def test_failed_preflight_retry_still_compares_nearest_same_work_pins(
             system="Changed system",
             hooks=(RecordInputs(store, CONTEXT, name, request, {}, predecessor=predecessor),),
         )
-        assert result.failure == "harness"
+        # Under an automatic Resume a change of pins stops the run before any model call,
+        # for the user's Resume, and saves nothing (D100).
+        assert (result.stopped, result.failure) == ("pins_changed", None)
         with pytest.raises(ControlError, match="no saved starting inputs"):
             store.get("p", "s", name)
     ancestor = store.previous("p", "s", retry)

@@ -6,12 +6,15 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import random
 import sqlite3
 from dataclasses import dataclass
 from typing import Any, Final, Literal, cast
 
 from sandbox_science.contracts import (
     SYSTEM_CLOCK,
+    Clock,
+    ErrorKind,
     Execution,
     ExecutionContext,
     ExecutionState,
@@ -19,13 +22,30 @@ from sandbox_science.contracts import (
     KernelObservation,
     new_id,
 )
-from sandbox_science.contracts.worker import CellRequest
+from sandbox_science.contracts.worker import KERNEL_OBSERVATION_BUSY, CellRequest
 from sandbox_science.orchestrator.aio import threaded
 from sandbox_science.orchestrator.control import ControlError, ControlStore
 from sandbox_science.orchestrator.control.errors import CONFLICT
-from sandbox_science.orchestrator.worker_client import WorkerClient
+from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 
 from .records import Ownership, check_owner
+
+BUSY_RETRIES: Final = 8
+"""How many times a busy kernel observation is asked again before its answer stands."""
+BUSY_SECONDS: Final = 0.25
+"""The first wait after a busy answer; each later wait doubles, up to ``BUSY_MAX_SECONDS``."""
+BUSY_MAX_SECONDS: Final = 4.0
+
+
+def observation_busy(error: BaseException) -> bool:
+    """Whether ``error`` is the worker's answer that it is already observing the
+    environment's kernels (or as many environments as it observes at once): a capacity
+    answer, not a lost worker."""
+    return (
+        isinstance(error, WorkerAPIError)
+        and error.kind is ErrorKind.UNAVAILABLE
+        and error.message == KERNEL_OBSERVATION_BUSY
+    )
 
 
 def _pure_python_assignments(code: str) -> bool:
@@ -78,8 +98,37 @@ def _unjournaled_cell(db: sqlite3.Connection, project: str, session: str) -> boo
 
 
 class KernelJournal:
-    def __init__(self, control: ControlStore, owner: Ownership, scope: str | None) -> None:
+    def __init__(
+        self,
+        control: ControlStore,
+        owner: Ownership,
+        scope: str | None,
+        *,
+        clock: Clock = SYSTEM_CLOCK,
+        busy_retries: int = BUSY_RETRIES,
+        busy_seconds: float = BUSY_SECONDS,
+        busy_max_seconds: float = BUSY_MAX_SECONDS,
+    ) -> None:
         self.control, self.owner, self.scope = control, owner, scope
+        self.clock = clock
+        self.busy_retries, self.busy_seconds = busy_retries, busy_seconds
+        self.busy_max_seconds = busy_max_seconds
+
+    async def _observe(self, client: WorkerClient, context: ExecutionContext) -> KernelObservation:
+        """The environment's kernels. The worker observes one environment's kernels at a
+        time and answers another observation busy meanwhile, as when sibling continuations
+        in one shared environment start together: ask again after a short, growing,
+        jittered wait, a bounded number of times, and let the last busy answer stand."""
+        delay = self.busy_seconds
+        for remaining in range(self.busy_retries, -1, -1):
+            try:
+                return await client.observe_kernels(context)
+            except WorkerAPIError as error:
+                if remaining == 0 or not observation_busy(error):
+                    raise
+            await self.clock.sleep(delay * random.uniform(0.5, 1.0))  # noqa: S311
+            delay = min(delay * 2, self.busy_max_seconds)
+        raise AssertionError("unreachable")  # the last attempt returns or raises
 
     async def record(self, observation: KernelObservation) -> None:
         await threaded(self._record, observation)
@@ -217,7 +266,7 @@ class KernelJournal:
             run = detail.get("run")
             if language not in ("python", "sage") or run != self.scope:
                 raise ControlError(CONFLICT, "lost_kernel: reconstruction scope is uncertain")
-            observed = await client.observe_kernels(context)
+            observed = await self._observe(client, context)
             live = any(k.language == language and k.run == self.scope for k in observed.kernels)
             if live and not accept_loss:
                 raise ControlError(
@@ -240,7 +289,7 @@ class KernelJournal:
         expected = await threaded(self._expected)
         if not expected:
             return
-        observation = await client.observe_kernels(context)
+        observation = await self._observe(client, context)
         actual = {
             (k.language, k.kernel_id, k.generation)
             for k in observation.kernels
@@ -352,7 +401,7 @@ class KernelJournal:
                     "replayed_from": cell["operation"],
                 }
             )
-        rebuilt = await client.observe_kernels(context)
+        rebuilt = await self._observe(client, context)
         if not any(
             (k.language, k.kernel_id, k.generation)
             == (language, replacement.kernel_id, replacement.generation)

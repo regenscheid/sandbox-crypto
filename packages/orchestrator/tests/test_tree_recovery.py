@@ -1034,3 +1034,82 @@ async def test_automatic_resume_recovers_the_tree_past_a_condition_it_can_handle
     finally:
         documents.close()
         state.projects.close()
+
+
+async def test_an_automatic_resume_under_changed_pins_waits_for_the_users_resume(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+):
+    """D100: after a platform update changed the prompts or tools, an automatic Resume
+    does not fail a branch whose pins changed. It stops before any model call
+    (``pins_changed``), its delegation ends interrupted, the Resume record names the
+    reason, automatic recovery leaves it alone, and the user's Resume continues it."""
+    from sandbox_science.orchestrator.continuity.auto_recovery import AutoRecovery, mark_transient
+    from sandbox_science.orchestrator.loop import run_task
+    from sandbox_science.orchestrator.run_inputs import PINS_CHANGED, RecordInputs, RunInputs
+
+    from .test_tool_journal import toolbox
+
+    state, documents, works = prepare_tree(tmp_path)
+    control = state.projects.control
+    blueprint = Blueprints(control).get("p", "s", CHILD)
+
+    async def never(_):
+        pytest.fail("unexpected tool dispatch")
+
+    # The child's first attempt ran with the platform's earlier prompt.
+    await run_task(
+        ScriptedModel([ModelTurn("Earlier")]),
+        toolbox(never),
+        "Continue research",
+        run_id="earlier",
+        system="The earlier platform's prompt",
+        role="delegated",
+        hooks=(RecordInputs(RunInputs(control), blueprint.context, CHILD, blueprint.request, {}),),
+    )
+    mark_transient(control, "p", "s", RUN, "bridge_loss")  # the runtime was replaced
+    request = AutoRecovery(control).queue("p", "s", RUN)
+    assert request is not None
+    assert works.resume_source("p", "s", request) == "automatic"
+    child_model = ScriptedModel([ModelTurn('{"status":"complete","summary":"Done"}')] * 8)
+    harness = Harness(
+        cast(WorkerClient, RecoveryWorker()),
+        main("Recovered root"),
+        delegated=Role(child_model, "scripted"),
+        stores=state,
+        settings=Settings(min_isolation_tier=None),
+    )
+    sink = Sink()
+    try:
+        assert await drive(Recovery(harness, "p", "s", request), sink, asyncio.Event())
+        child = works.get("p", "s", CHILD)
+        assert (child.state, child.reason) == ("paused", PINS_CHANGED)
+        attempt = child.current
+        assert attempt != CHILD
+        saved = state.projects.run("p", "s", attempt)
+        assert (saved.stopped, saved.failure) == (PINS_CHANGED, None)
+        assert not any(m["role"] == "assistant" for m in saved.messages)  # no model call
+        with pytest.raises(ControlError, match="no saved starting inputs"):
+            RunInputs(control).get("p", "s", attempt)
+        delegation = DelegationRecords(control).listed("p", "s")[0]
+        continued = next(d for d in delegation if d.run == attempt)
+        assert (continued.ended, continued.stopped) == ("interrupted", PINS_CHANGED)
+        assert not continued.errors
+        assert not [r for r in caplog.records if "failed during" in r.getMessage()]
+        with control.read() as tx:
+            status, reason = tx.sql.execute(
+                "SELECT status,reason FROM research_resumes WHERE request=?", (request,)
+            ).fetchone()
+        assert status != "finished"
+        assert PINS_CHANGED in reason
+        assert AutoRecovery(control).queue("p", "s", RUN) is None  # it waits for the user
+        # The user's Resume continues it with the new prompt, and says so.
+        users = works.request("p", "s")
+        assert users is not None
+        assert works.resume_source("p", "s", users) == "operator"
+        assert not await drive(Recovery(harness, "p", "s", users), sink, asyncio.Event())
+        assert works.get("p", "s", CHILD).state == "completed"
+        assert works.get("p", "s", RUN).state == "completed"
+        assert any("the user's Resume accepted the change" in note for note in sink.notes)
+    finally:
+        documents.close()
+        state.projects.close()

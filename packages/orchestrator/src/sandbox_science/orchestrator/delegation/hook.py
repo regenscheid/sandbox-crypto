@@ -153,6 +153,8 @@ class Child:
     task: str
     """Its first message: the brief."""
     max_turns: int
+    """Its soft turn cap, which its blueprint keeps and at which it checks in; its run's
+    hard limit is the project's ``turn_ceiling``, which its resource hook sets (D102)."""
     tokens: int
     """The tokens its calls may use."""
     target: Target | None
@@ -242,7 +244,9 @@ def observed(end: ChildEnd) -> Ended:
             return "returned"
         case "cancelled":
             return "cancelled"
-        case "interrupted":
+        case "interrupted" | "pins_changed":
+            # A continuation an automatic Resume could not start under changed pins waits
+            # for the user's Resume, as an interrupted run does (D100).
             return "interrupted"
         case (
             "turn_limit"

@@ -9,6 +9,7 @@ import aiohttp
 import pytest
 
 from sandbox_science.contracts import ErrorKind
+from sandbox_science.contracts.worker import KERNEL_OBSERVATION_BUSY
 from sandbox_science.orchestrator.confinement.transport import TransportError
 from sandbox_science.orchestrator.continuity.transient import (
     Prior,
@@ -54,6 +55,8 @@ from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerPro
         (ModelError("confined model runtime unavailable"), "bridge_loss"),
         (UnknownEffectError("worker_unknown_effect", "the shell operation..."), "worker_loss"),
         (WorkerAPIError(ErrorKind.UNAVAILABLE, "cannot reach the worker"), "worker_loss"),
+        # The worker is there and busy observing that environment's kernels.
+        (WorkerAPIError(ErrorKind.UNAVAILABLE, KERNEL_OBSERVATION_BUSY), "worker_busy"),
         (TransportError("unavailable", "control connection closed"), "bridge_loss"),
         (TransportError("unavailable", "worker_unknown_effect: the shell..."), "worker_loss"),
         (aiohttp.ServerDisconnectedError(), "network"),

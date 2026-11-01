@@ -58,12 +58,12 @@ _MAX_BINARY_B64 = 4 * -(-MAX_BINARY_BYTES // 3)
 
 
 class Hello(Contract):
-    protocol: Literal[3] = CONTROL_PROTOCOL
+    protocol: Literal[4] = CONTROL_PROTOCOL
     image_revision: str = Field(min_length=1, max_length=128)
 
 
 class Ready(Contract):
-    protocol: Literal[3] = CONTROL_PROTOCOL
+    protocol: Literal[4] = CONTROL_PROTOCOL
     generation: Identifier
     projects: tuple[Identifier, ...] = Field(min_length=1, max_length=128)
     control_schema: Counter
@@ -191,6 +191,9 @@ class HookGiven(Contract):
     name: str = Field(min_length=1, max_length=128)
     veto: bool = False
     planning: bool = False
+    turn_limit: bool = False
+    """Whether the hook sets the attempt's turn limit, which the runtime then asks it before
+    each model call (``turn_limit``)."""
 
 
 class ToolboxGiven(Contract):

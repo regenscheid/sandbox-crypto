@@ -531,9 +531,13 @@ recovery before any branch or model dispatch. It does not create a replacement
 for a missing environment. The request reserves immutable continuation names for every unfinished branch, and
 offers at most four ready branches to the configured runtime. Descendants settle
 before their parent is offered. Completed and explicitly stopped work is skipped;
-irreconcilable tool effects, changed policy for an automatic Resume, known changed
-prompt pins, and exhausted configured budgets produce visible blocked reasons. A lost
-kernel does not: its loss is recorded and the agent recomputes (D100).
+irreconcilable tool effects, changed policy for an automatic Resume and exhausted
+configured budgets produce visible blocked reasons. Known changed prompt, tool or skill
+pins under an automatic Resume, as after a platform update, stop the branch before its
+first model call with `pins_changed`: not a failure, and its delegation ends
+`interrupted`; automatic recovery leaves it for the user's Resume, which continues it
+with the new pins and records the change. A lost kernel does not block either: its loss
+is recorded and the agent recomputes (D100).
 Missing historical starting-input pins are logged as a provenance gap; the new
 attempt saves its own trusted pins and may continue. Unknown model charges remain
 visible estimates but do not alone block Resume. Resume

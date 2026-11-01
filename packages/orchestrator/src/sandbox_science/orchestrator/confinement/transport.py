@@ -27,7 +27,7 @@ from sandbox_science.orchestrator.effects import UnknownEffectError
 
 _log = logging.getLogger(__name__)
 
-CONTROL_PROTOCOL: Final = 3
+CONTROL_PROTOCOL: Final = 4
 CONTROL_HEADER: Final = "X-Sandbox-Control-Protocol"
 MAX_FRAME_BYTES: Final = 24 * 1024 * 1024
 MAX_PENDING: Final = 128
@@ -53,6 +53,9 @@ class Capability(StrEnum):
     HOOK_ENTER = "hook_enter"
     HOOK_EXIT = "hook_exit"
     NOTICES = "notices"
+    TURN_LIMIT = "turn_limit"
+    """Runtime to host: a hook's authoritative turn limit for the attempt, which the host
+    then holds the runtime's loop state to (a child's ``turn_ceiling``, D102)."""
     HALT = "halt"
     LAST_CALL = "last_call"
     MODEL_RETURNED = "model_returned"

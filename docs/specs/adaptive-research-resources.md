@@ -31,7 +31,9 @@ cumulative across its attempts and each a project delegation setting:
 A root's initial caps are pinned when first observed, so later default changes do not
 move them; a child's come from its immutable blueprint. `research_seconds` and
 `soft_cost` may be turned off (`--no-research-time-limit`, `--no-soft-cost`). A child's
-only turn limit is `turn_ceiling`, cumulative across attempts. A root's turn limit is its
+only turn limit is `turn_ceiling`, cumulative across attempts, in the confined runtime as in
+an unconfined run; at it the child does not check in on turns, since no extension can pass
+it, but makes its report round and stops `turn_limit`. A root's turn limit is its
 run's `max_turns` (2,000 by default; `serve --max-turns N` and `run --max-turns N` mean
 "ask at N", not "stop at N"), a soft cap like the others, with one difference: at it the
 root does not extend itself but pauses and asks the user ([the root](#check-ins)). The
