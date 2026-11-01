@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: MIT
-"""Native shim selection through the OpenShell backend's public connection API."""
+"""Native shim selection through the OpenShell backend's public connection API: the
+scheduler shim, preloaded in every process, and the signal shim, which the executor
+preloads in a delegated run's (DA-20)."""
 
 from __future__ import annotations
 
@@ -12,14 +14,21 @@ from typing import Any
 
 import pytest
 
-from sandbox_science.worker import backends
-from sandbox_science.worker.backends import SCHED_SHIM_NAME, SCHED_SHIM_SOURCE, OpenShellBackend
+from sandbox_science.worker import backends, executor
+from sandbox_science.worker.backends import (
+    SCHED_SHIM_NAME,
+    SCHED_SHIM_SOURCE,
+    SIGNAL_SHIM,
+    OpenShellBackend,
+)
 from sandbox_science.worker.channel import ExecutorChannel
 from sandbox_science.worker.errors import WorkerError
 from sandbox_science.worker.settings import OpenShellBackendSettings
 
 REVISION = hashlib.sha256(SCHED_SHIM_SOURCE.read_bytes()).hexdigest()
 IMAGE_SHIM = f"/usr/local/lib/sandbox-science/shim/{REVISION}/{SCHED_SHIM_NAME}"
+SIGNAL_REVISION = SIGNAL_SHIM.revision
+IMAGE_SIGNAL = f"/usr/local/lib/sandbox-science/shim/{SIGNAL_REVISION}/{SIGNAL_SHIM.name}"
 
 
 def elf(machine: str) -> bytes:
@@ -35,6 +44,7 @@ class Peer:
         self.root = root
         self.machine = "arm64"
         self.shim: str | None = IMAGE_SHIM
+        self.signal: str | None = IMAGE_SIGNAL
         self.probe_error: bytes | None = None
         self.compiled = elf("arm64")
         self.compiler_status = 0
@@ -50,11 +60,16 @@ class Peer:
         if "-c" in argv:
             if self.probe_error is not None:
                 return 1, self.probe_error
-            if argv[-1]:
-                self.shim = (
-                    f"/sandbox/.sandbox-science/shim/{REVISION}-{self.machine}/{SCHED_SHIM_NAME}"
-                )
-            return 0, json.dumps({"machine": self.machine, "shim": self.shim}).encode()
+            at = argv.index("-c")
+            revision, staged, name = argv[at + 2], argv[at + 5], argv[at + 6]
+            installed = f"/sandbox/.sandbox-science/shim/{revision}-{self.machine}/{name}"
+            if name == SCHED_SHIM_NAME:
+                self.shim = installed if staged else self.shim
+                found = self.shim
+            else:
+                self.signal = installed if staged else self.signal
+                found = self.signal
+            return 0, json.dumps({"machine": self.machine, "shim": found}).encode()
         if "ssh-config" in argv:
             return 0, b"Host test-sandbox\n  HostName test.invalid\n"
         return 0, b""
@@ -89,9 +104,11 @@ def host(monkeypatch: pytest.MonkeyPatch, system: str, machine: str) -> None:
     monkeypatch.setattr(platform, "machine", lambda: machine)
 
 
-async def connect(peer: Peer) -> ExecutorChannel:
+async def connect(peer: Peer, signal_shim: bool = True) -> ExecutorChannel:
     backend = OpenShellBackend(
-        OpenShellBackendSettings(isolation_tier=2, sandboxes={"env": "test"}, cc="test-cc"),
+        OpenShellBackendSettings(
+            isolation_tier=2, sandboxes={"env": "test"}, cc="test-cc", signal_shim=signal_shim
+        ),
         peer.root,
     )
 
@@ -186,3 +203,50 @@ async def test_probe_cannot_select_an_unexpected_preload_path(peer: Peer, path: 
     with pytest.raises(WorkerError, match="unexpected scheduler shim path"):
         await connect(peer)
     assert not peer.uploads
+
+
+async def test_the_image_signal_shim_is_named_to_the_executor(
+    peer: Peer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The executor learns the validated signal shim's path; it preloads it only in a
+    delegated run's processes, so it is not in the executor's own LD_PRELOAD."""
+    host(monkeypatch, "darwin", "arm64")
+    channel = await connect(peer)
+    try:
+        assert (
+            f"LD_PRELOAD={IMAGE_SHIM} {executor.SIGNAL_SHIM_VARIABLE}={IMAGE_SIGNAL} "
+            in peer.argv[-1]
+        )
+    finally:
+        await channel.shutdown()
+
+
+async def test_a_missing_signal_shim_is_built_like_the_scheduler_shim(
+    peer: Peer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host(monkeypatch, "linux", "aarch64")
+    peer.signal = None
+    channel = await connect(peer)
+    await channel.shutdown()
+    compiler = next(command for command in peer.commands if command[0] == "test-cc")
+    assert f'-DSANDBOX_SCIENCE_SIGNAL_SOURCE_SHA256="{SIGNAL_REVISION}"' in compiler
+    assert str(SIGNAL_SHIM.source) in compiler
+    installed = f"/shim/{SIGNAL_REVISION}-arm64/{SIGNAL_SHIM.name}"
+    assert f"{executor.SIGNAL_SHIM_VARIABLE}=/sandbox/.sandbox-science{installed}" in peer.argv[-1]
+
+
+async def test_a_missing_cross_platform_signal_shim_fails_with_its_name(
+    peer: Peer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host(monkeypatch, "darwin", "arm64")
+    peer.signal = None
+    with pytest.raises(WorkerError, match="signal shim for source"):
+        await connect(peer)
+    assert not peer.uploads
+
+
+async def test_the_signal_shim_can_be_turned_off(peer: Peer) -> None:
+    peer.signal = "/unexpected/never-probed.so"
+    channel = await connect(peer, signal_shim=False)
+    await channel.shutdown()
+    assert executor.SIGNAL_SHIM_VARIABLE not in peer.argv[-1]

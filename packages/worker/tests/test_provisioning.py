@@ -51,7 +51,7 @@ from sandbox_science.contracts import (
 from sandbox_science.contracts.revisions import MAX_REVISION_PAGE_BYTES
 from sandbox_science.testing import eventually
 from sandbox_science.worker import executor as executor_module
-from sandbox_science.worker import provisioning
+from sandbox_science.worker import provisioning, sandbox_confine
 from sandbox_science.worker import revisions as revisions_module
 from sandbox_science.worker.app import create_app
 from sandbox_science.worker.artifacts import Blobs
@@ -2334,3 +2334,37 @@ async def test_cp12_lost_legacy_birth_is_not_inferred_from_next_cell(worker: Wor
     ended = await worker.call("cp12-legacy-next", kind="cell", code="print(value)")
     assert ended["result"]["stdout"]["text"] == "1729\n"
     assert ended["result"]["kernel"]["revision_status"] == "unknown"
+
+
+@pytest.mark.skipif(
+    sandbox_confine.abi()[1] is not None, reason="needs Landlock ABI 6 to hold a run"
+)
+@pytest.mark.parametrize(
+    "command", [("pip", "install", "x"), ("python", "-m", "pip", "install", "x")]
+)
+def test_a_delegated_runs_package_command_points_at_provision(
+    sandbox: Sandbox, tmp_path: Path, command: tuple[str, ...]
+) -> None:
+    """DA-20: a held run's processes cannot change the installed packages, so their
+    package command is refused; the refusal names the ``provision`` tool. A process that
+    is not a delegated run's (no ``RUN_WORK``) gets the bare refusal."""
+    area = tmp_path / "area"
+    area.mkdir()
+    held = sandbox_confine.command(sys.executable, sandbox_confine.__file__, [str(area)])
+    argv = [*held, *command]
+    refused = subprocess.run(
+        argv,
+        env={**sandbox.env, "RUN_WORK": str(area)},
+        cwd=area,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert refused.returncode == 126, refused.stderr
+    assert "Permission denied" in refused.stderr
+    assert "install them with the provision tool" in refused.stderr
+    bare = sandbox.run(*argv, cwd=area)
+    assert bare.returncode != 0
+    assert "provision tool" not in bare.stderr
+    assert not sandbox.records()

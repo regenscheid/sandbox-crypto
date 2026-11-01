@@ -111,6 +111,9 @@ launch and surviving-kernel cell (SK-16, RC-24); 4 holds a request's ``write_are
 (DA-20) and reports ``confinement`` in ``hello``. Older executors must be recycled."""
 CONFINE_SCRIPT = Path(__file__).with_name("sandbox_confine.py")
 """The wrapper a delegated run's commands and kernels start through (DA-20)."""
+SIGNAL_SHIM_VARIABLE = "SANDBOX_SCIENCE_SIGNAL_SHIM"
+"""Names the signal shim the worker validated, which a delegated run's processes preload
+so that their ``kill`` reaches their own processes (DA-20; ``shim/signal_self.c``)."""
 _WRITE_AREA_RE = re.compile(r"work/[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 RUN_SCRATCH = ("tmp", "ipython", "matplotlib", "cache", "sage")
 """The run's scratch directories outside the session, its only writable place beside its
@@ -374,7 +377,10 @@ class Confinement:
     directory: Path
     scratch: Path
     connect: tuple[int, ...] = ()
-    """The TCP ports its processes may connect to: the sandbox's egress proxy's."""
+    """The TCP ports its processes may connect to: the egress proxy's, where the
+    sandbox names one (``proxy_ports``)."""
+    preload: tuple[str, ...] = ()
+    """The libraries its processes preload: the sandbox's own, then the signal shim."""
 
     def prefix(self) -> list[str]:
         return sandbox_confine.command(
@@ -396,6 +402,7 @@ class Confinement:
             "XDG_CACHE_HOME": str(self.scratch / "cache"),
             "DOT_SAGE": str(self.scratch / "sage"),
             "JOBLIB_TEMP_FOLDER": temporary,
+            **({"LD_PRELOAD": " ".join(self.preload)} if self.preload else {}),
         }
 
 
@@ -410,8 +417,11 @@ PROXY_VARIABLES = (
 
 
 def proxy_ports(env: Mapping[str, str]) -> tuple[int, ...]:
-    """The ports of the egress proxies ``env`` names, which OpenShell sets for every
-    sandbox process; a held run connects over TCP to these alone (DA-20)."""
+    """The ports of the egress proxies ``env`` names; where a held run's TCP rules hold,
+    it connects over TCP to these alone (DA-20). OpenShell 0.1.5 names none: it makes
+    each sandbox process's sockets itself, outside those rules, and applies its network
+    policy there. With no proxy named and the rules holding (the ``local`` backend), a
+    held run has no TCP."""
     ports: set[int] = set()
     for name in PROXY_VARIABLES:
         value = env.get(name, "")
@@ -423,6 +433,27 @@ def proxy_ports(env: Mapping[str, str]) -> tuple[int, ...]:
         if value and port:
             ports.add(port)
     return tuple(sorted(ports))
+
+
+def signal_shim() -> str | None:
+    """The signal shim the worker named, if it is an absolute path to a file here."""
+    path = os.environ.get(SIGNAL_SHIM_VARIABLE, "")
+    return path if os.path.isabs(path) and os.path.isfile(path) else None
+
+
+def _probe_report(output: str) -> tuple[str | None, bool | None]:
+    """Why confinement is unavailable, from the probe's report, or ``None``; and whether
+    TCP is held."""
+    try:
+        report: object = json.loads(output.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return "the probe gave no report", None
+    if not isinstance(report, dict):
+        return "the probe gave no report", None
+    tcp = cast(dict[str, object], report).get("tcp")
+    if not isinstance(tcp, bool):
+        return "the probe gave no report", None
+    return None, tcp
 
 
 def confined_manager(base: type[Any], prefix: Sequence[str]) -> type[Any]:
@@ -798,6 +829,8 @@ class Executor:
         """Variables from ``configure``, added to every command's and kernel's environment."""
         self.confinement_state: tuple[int, str | None] | None = None
         """The Landlock ABI here, and why a run cannot be held to its write area (DA-20)."""
+        self.confinement_tcp: bool | None = None
+        """Whether a held run's TCP rules hold here, as the probe found (DA-20)."""
         # Package commands (docs/specs/conda-provisioning.md, CP-4, CP-11, CP-12).
         self.packages = provisioning.State(root / ".executor" / "provisioning")
         self.places = provisioning.Places.here()
@@ -1812,23 +1845,30 @@ class Executor:
         if self.confinement_state is None:
             version, reason = sandbox_confine.abi()
             if reason is None:
-                # The ruleset and the seccomp filter in full, in a process of their own:
-                # what a sandbox's own filter allows shows only by trying.
+                # The ruleset and the seccomp filter in full, in a process of their own,
+                # which then tries to signal this one: what a sandbox's own filter and
+                # supervisor allow shows only by trying.
                 probe = [sys.executable, "-I", "-S", str(CONFINE_SCRIPT), "--probe"]
                 with sandbox_processes.starting_children():
                     done = subprocess.run(probe, capture_output=True, text=True, check=False)  # noqa: S603 - our own file
                 if done.returncode != 0:
                     reason = f"the probe failed: {done.stderr.strip()[:300]}"
+                else:
+                    reason, self.confinement_tcp = _probe_report(done.stdout)
             self.confinement_state = (version, reason)
         return self.confinement_state
 
     def confinement_report(self) -> Message:
         """What ``hello`` says of confinement: the worker refuses a run's executions on an
-        executor that says nothing, or says why it cannot."""
+        executor that says nothing, or says why it cannot. ``tcp_held`` and
+        ``own_signals`` only inform."""
         version, reason = self.confinement_status()
         report: Message = {"protocol": sandbox_confine.PROTOCOL, "landlock_abi": version}
         if reason is not None:
             report["unavailable"] = reason
+        else:
+            report["tcp_held"] = bool(self.confinement_tcp)
+            report["own_signals"] = signal_shim() is not None
         return report
 
     def confinement(self, session: str, request: Message) -> Confinement | None:
@@ -1856,11 +1896,14 @@ class Executor:
         scratch = [".executor", "runs", key]
         for name in RUN_SCRATCH:
             os.close(self.files.open_base([*scratch, name]))
+        preload = [entry for entry in re.split(r"[ :]", os.environ.get("LD_PRELOAD", "")) if entry]
+        shim = signal_shim()
         return Confinement(
             area,
             self.files.session_dir(session).joinpath(*names),
             self.root.joinpath(*scratch),
             proxy_ports({**os.environ, **self.configured}),
+            tuple([*preload, shim] if shim is not None else preload),
         )
 
     def held_kernel(self, request: Message) -> Kernel:

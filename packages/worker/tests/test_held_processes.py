@@ -13,6 +13,7 @@ import base64
 import contextlib
 import json
 import os
+import secrets
 import subprocess
 import sys
 from collections.abc import AsyncIterator
@@ -160,6 +161,69 @@ async def test_a_childs_job_is_held_too(worker: Harness) -> None:
     _unchanged(worker)
 
 
+SIGNALS = """
+set -u
+sleep 30 & own=$!
+kill -TERM $own; wait $own; echo "own $?"
+for target in $KERNEL $EXECUTOR; do
+  kill -0 $target 2>/dev/null && echo "ESCAPE $target"
+  kill -TERM $target 2>/dev/null && echo "ESCAPE TERM $target"
+  kill -CONT $target 2>/dev/null && echo "ESCAPE CONT $target"
+done
+kill -0 -- -$KERNEL_GROUP 2>/dev/null && echo "ESCAPE group"
+timeout 1 sleep 10; echo "timeout $?"
+python3 - <<'PY'
+import concurrent.futures, multiprocessing, subprocess
+def square(x):
+    return x * x
+if __name__ == "__main__":
+    with multiprocessing.Pool(2) as pool:
+        print("pool", sum(pool.map(square, range(10))))
+    pool = multiprocessing.Pool(2)
+    pool.terminate()
+    pool.join()
+    print("pool terminated")
+    with concurrent.futures.ProcessPoolExecutor(2) as executor:
+        print("futures", sum(executor.map(square, range(10))))
+    child = subprocess.Popen(["sleep", "30"])
+    child.kill()
+    print("kill", child.wait())
+PY
+echo done
+"""
+
+
+async def test_a_childs_shell_signals_its_own_processes_and_nothing_else(
+    worker: Harness,
+) -> None:
+    """DA-20's signal rule with the signal shim: the shell's ``kill``, ``timeout``, a
+    multiprocessing pool and its terminate, a process pool and ``Popen.kill`` reach the
+    child's own processes; ``kill`` of the parent's kernel, the executor or the kernel's
+    process group is refused, and the parent's kernel keeps running."""
+    parent = await worker.run(
+        "parent", _in(), kind="cell", code="import os; (os.getpid(), os.getppid())"
+    )
+    kernel, executor_pid = json.loads(
+        parent["result"]["outputs"][0]["data"]["text/plain"].replace("(", "[").replace(")", "]")
+    )
+    script = (
+        f"KERNEL={kernel} EXECUTOR={executor_pid} KERNEL_GROUP={os.getpgid(kernel)}\n" + SIGNALS
+    )
+    child = await worker.run("child-signals", _in(AREA), kind="shell", script=script)
+    assert child["state"] == "succeeded", child
+    assert child["result"]["stdout"]["text"].splitlines() == [
+        "own 143",
+        "timeout 124",
+        "pool 285",
+        "pool terminated",
+        "futures 285",
+        "kill -9",
+        "done",
+    ], child["result"]
+    again = await worker.run("parent-again", _in(), kind="cell", code="os.getpid()")
+    assert again["result"]["outputs"][0]["data"]["text/plain"] == str(kernel)
+
+
 CELL = """
 import json, os, socket
 from pathlib import Path
@@ -184,11 +248,25 @@ for line in Path("/proc/net/unix").read_text().splitlines()[1:]:
                 found["connected"].append(name)
             except OSError:
                 pass
-try:
-    os.kill(PARENT, 0)
+import ctypes, signal, subprocess
+value = ctypes.c_void_p(0)
+libc = ctypes.CDLL(None, use_errno=True)
+libc.sigqueue.argtypes = (ctypes.c_int, ctypes.c_int, ctypes.c_void_p)
+for attempt in (
+    lambda: os.kill(PARENT, 0),
+    lambda: os.kill(PARENT, signal.SIGTERM),
+    lambda: os.killpg(os.getpgid(PARENT), 0),
+):
+    try:
+        attempt()
+        found["signalled"] = True
+    except OSError:
+        pass
+if libc.sigqueue(PARENT, signal.SIGTERM, value) == 0:
     found["signalled"] = True
-except OSError:
-    pass
+own = subprocess.Popen(["sleep", "30"])
+own.terminate()
+found["own"] = own.wait()
 print(json.dumps(found))
 """
 
@@ -214,6 +292,7 @@ async def test_a_childs_kernel_is_held_and_cannot_reach_the_parents(worker: Harn
             "wrote": [],
             "connected": [],
             "signalled": False,
+            "own": -15,  # its own process, through the signal shim
         }
         assert (worker.workspace / AREA / "cell.txt").read_text() == "mine"
         if attempt == "first":
@@ -223,8 +302,8 @@ async def test_a_childs_kernel_is_held_and_cannot_reach_the_parents(worker: Harn
                 )
             )
     _unchanged(worker)
-    again = await worker.run("parent-again", _in(), kind="cell", code="1 + 1")
-    assert again["result"]["outputs"][0]["data"]["text/plain"] == "2"  # untouched
+    again = await worker.run("parent-again", _in(), kind="cell", code="os.getpid()")
+    assert again["result"]["outputs"][0]["data"]["text/plain"] == str(pid)  # untouched
 
 
 async def test_a_childs_cell_needs_its_own_kernel_with_its_own_area(worker: Harness) -> None:
@@ -250,9 +329,18 @@ async def test_an_executor_that_cannot_hold_a_run_runs_none_of_its_code(
     await worker.run("connect", _in(), kind="shell", script="true")
     channel = worker.view.channel()
     report: dict[str, Any] = channel.hello["confinement"]
-    assert report["protocol"] == 1
+    assert report["protocol"] == 2
     assert report["landlock_abi"] >= sandbox_confine.REQUIRED_ABI
-    for hello in ({**report, "unavailable": "Landlock ABI 5"}, None):
+    # The probe found TCP held on this host's kernel, and the local backend built the
+    # signal shim: both only inform.
+    assert (report["tcp_held"], report["own_signals"]) == (True, True)
+    for hello in (
+        {**report, "unavailable": "Landlock ABI 5"},
+        # Protocol 1 left the signal calls a supervisor carries out open, and its probe
+        # never checked that a signal stays in.
+        {"protocol": 1, "landlock_abi": report["landlock_abi"]},
+        None,
+    ):
         if hello is None:
             monkeypatch.delitem(channel.hello, "confinement")
         else:
@@ -264,7 +352,7 @@ async def test_an_executor_that_cannot_hold_a_run_runs_none_of_its_code(
             ("cell", {"code": f"open({str(marker)!r}, 'w')", "run": "r1"}),
         ):
             refused = await worker.run(
-                f"refused-{kind}-{hello is None}", _in(AREA), kind=kind, **extra
+                f"refused-{kind}-{secrets.token_hex(4)}", _in(AREA), kind=kind, **extra
             )
             assert refused["state"] == "failed", refused
             assert refused["result"]["error"]["kind"] == "unsupported", refused
@@ -450,6 +538,11 @@ def _run_filter(program: list[tuple[int, int, int, int]], data: bytes) -> int:
 
 
 ARCHES = {"x86_64": (0xC000003E, 302, 72, 41, 53), "aarch64": (0xC00000B7, 261, 25, 198, 199)}
+SIGNAL_CALLS = {
+    # kill, rt_sigqueueinfo, ioctl, tkill, tgkill, rt_tgsigqueueinfo
+    "x86_64": (62, 129, 16, 200, 234, 297),
+    "aarch64": (129, 138, 29, 130, 131, 240),
+}
 
 
 @pytest.mark.parametrize("machine", sorted(ARCHES))
@@ -483,6 +576,66 @@ def test_the_seccomp_filter_answers_each_call_as_the_spec_says(machine: str) -> 
     assert answer(1) == allow
     with pytest.raises(sandbox_confine.ConfinementError):
         sandbox_confine.seccomp_program("riscv64", 1)
+
+
+@pytest.mark.parametrize("machine", sorted(ARCHES))
+def test_the_seccomp_filter_refuses_the_signal_calls_a_supervisor_carries_out(
+    machine: str,
+) -> None:
+    """``kill`` and ``rt_sigqueueinfo`` are ``EPERM`` whatever they name (a process,
+    the caller's own, its group, a group, every process), as are an owner or a signal
+    for a descriptor; the thread-directed calls, which Landlock checks, pass."""
+    arch = ARCHES[machine][0]
+    fcntl = ARCHES[machine][2]
+    kill, sigqueueinfo, ioctl, tkill, tgkill, tgsigqueueinfo = SIGNAL_CALLS[machine]
+    program = sandbox_confine.seccomp_program(machine, 4321)
+
+    def answer(nr: int, *args: int) -> int:
+        words = [arg % (1 << 64) for arg in (*args, *([0] * (6 - len(args))))]
+        data = nr.to_bytes(4, "little") + arch.to_bytes(4, "little") + bytes(8)
+        return _run_filter(program, data + b"".join(w.to_bytes(8, "little") for w in words))
+
+    allow, refused = 0x7FFF0000, 0x50001
+    for pid in (999, 4321, 0, -999, -1):
+        for sig in (0, 15, 18):
+            assert answer(kill, pid, sig) == refused, (pid, sig)
+            assert answer(sigqueueinfo, pid, sig, 0x1000) == refused, (pid, sig)
+    for command in (8, 10, 15):  # F_SETOWN, F_SETSIG, F_SETOWN_EX
+        assert answer(fcntl, 3, command, 999) == refused
+        assert answer(fcntl, 3, command, 0) == refused
+    assert answer(fcntl, 3, 9) == answer(fcntl, 3, 16) == allow  # F_GETOWN, F_GETOWN_EX
+    assert answer(fcntl, 3, 4, 0o4000) == allow  # F_SETFL
+    for request in (0x8901, 0x8902):  # FIOSETOWN, SIOCSPGRP
+        assert answer(ioctl, 3, request, 0x1000) == refused
+    assert answer(ioctl, 3, 0x5401) == answer(ioctl, 3, 0x8903) == allow  # TCGETS, FIOGETOWN
+    assert answer(tkill, 999, 15) == answer(tgkill, 999, 999, 15) == allow
+    assert answer(tgsigqueueinfo, 999, 999, 18, 0x1000) == allow
+
+
+def test_the_probe_fails_when_a_signal_leaves_the_ruleset(tmp_path: Path) -> None:
+    """``--probe`` holds on this host, reporting TCP held; the same checks in a process
+    that is not held find each way to signal its parent, and refuse."""
+    probe = [sys.executable, "-I", "-S", sandbox_confine.__file__, "--probe"]
+    done = subprocess.run(probe, capture_output=True, text=True, check=False, cwd=tmp_path)
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout) == {"tcp": True}
+    unheld = (
+        "import sys\n"
+        f"sys.path.insert(0, {str(Path(sandbox_confine.__file__).parent)!r})\n"
+        "import sandbox_confine\n"
+        "sandbox_confine.restrict = lambda *args, **kwargs: None\n"
+        "sys.exit(sandbox_confine.probe())\n"
+    )
+    done = subprocess.run(
+        [sys.executable, "-I", "-S", "-c", unheld],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=tmp_path,
+    )
+    assert done.returncode == sandbox_confine.FAILED
+    assert done.stderr.startswith("a signal reached a process outside the ruleset: kill(")
+    assert not done.stdout
 
 
 def test_a_shared_files_stamp_cannot_be_set_back(tmp_path: Path) -> None:

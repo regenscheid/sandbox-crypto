@@ -180,7 +180,7 @@ class Site:
             'state_dir = "state"\npool_id = "test"\n\n'
             f'[openshell]\ncli = "{root / "openshell"}"\npython = "{sys.executable}"\n'
             f'project_root = "{box}/project"\nexecutor_dir = "{box}/.sandbox-science"\n'
-            "isolation_tier = 3\nsched_shim = false\n"
+            "isolation_tier = 3\nsched_shim = false\nsignal_shim = false\n"
             f"env = {_inline(env)}\n\n"
             '[openshell.environments]\npolicy_store = "middleware"\n'
             f'targets = "{TARGETS}"\nceiling = "pool-ceiling.yaml"\n'

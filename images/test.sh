@@ -67,7 +67,7 @@ cp "$here/checks/check_image.py" "$here/checks/landlock.py" "$checks/"
 for name in binding_inventory executor executor_lifecycle executor_admission provisioning pdfhelper daemon request_frames capture sandbox_confine sandbox_files sandbox_processes sandbox_search sandbox_setup workspace_prefix; do
   cp "$worker/$name.py" "$checks/"
 done
-cp "$worker/shim/sched_self.c" "$checks/"
+cp "$worker/shim/sched_self.c" "$worker/shim/signal_self.c" "$checks/"
 chmod -R a+rX "$checks"
 
 check_args=(--profile "$profile" --worker-files /checks)

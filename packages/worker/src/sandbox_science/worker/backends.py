@@ -73,35 +73,76 @@ SANDBOX_FILES: tuple[Path, ...] = (
 executor's directory. They use only the standard library and each other (the executor
 loads its siblings by path), plus jupyter_client and pdf_oxide where those are installed;
 test_sandbox_payload.py checks both."""
-SCHED_SHIM_SOURCE = Path(__file__).with_name("shim") / "sched_self.c"
-SCHED_SHIM_NAME = "libsandbox-science-sched.so"
-SCHED_SHIM_IMAGE_DIR = "/usr/local/lib/sandbox-science/shim"
+
+
+@dataclasses.dataclass(frozen=True)
+class Shim:
+    """A native library the worker preloads in sandboxes: built from ``source`` with the
+    source's SHA-256 as ``macro``, which its function ``symbol`` returns, and defining
+    ``function``. Research images ship it under ``SHIM_IMAGE_DIR/<revision>/name``."""
+
+    label: str
+    source: Path
+    name: str
+    macro: str
+    symbol: str
+    function: str
+
+    @property
+    def revision(self) -> str:
+        return hashlib.sha256(self.source.read_bytes()).hexdigest()
+
+
+SHIM_DIR = Path(__file__).with_name("shim")
+SHIM_IMAGE_DIR = "/usr/local/lib/sandbox-science/shim"
+SCHED_SHIM = Shim(
+    "scheduler",
+    SHIM_DIR / "sched_self.c",
+    "libsandbox-science-sched.so",
+    "SANDBOX_SCIENCE_SCHED_SOURCE_SHA256",
+    "sandbox_science_sched_source_sha256",
+    "pthread_setschedparam",
+)
+"""Lets libzmq start under OpenShell's seccomp filter; preloaded in every process."""
+SIGNAL_SHIM = Shim(
+    "signal",
+    SHIM_DIR / "signal_self.c",
+    "libsandbox-science-signal.so",
+    "SANDBOX_SCIENCE_SIGNAL_SOURCE_SHA256",
+    "sandbox_science_signal_source_sha256",
+    "kill",
+)
+"""Gives a delegated run's processes ``kill`` within the run (DA-20); the executor
+preloads it in those alone, from the path ``executor.SIGNAL_SHIM_VARIABLE`` names."""
+SCHED_SHIM_SOURCE = SCHED_SHIM.source
+SCHED_SHIM_NAME = SCHED_SHIM.name
+SCHED_SHIM_IMAGE_DIR = SHIM_IMAGE_DIR
+_ELF_MACHINES = {"amd64": 62, "arm64": 183}
 # Runs with the sandbox's Python, never the worker's: both the ELF machine and
 # the embedded source revision must match before this library is preloaded.
 _SHIM_PROBE = r"""
 import ctypes,json,os,platform,sys
 from pathlib import Path
-revision,image_dir,executor_dir,staged=sys.argv[1:]
+revision,image_dir,executor_dir,staged,name,symbol,function,label=sys.argv[1:]
 machine={"x86_64":"amd64","aarch64":"arm64"}.get(platform.machine())
 if sys.platform != "linux" or machine is None:
-    raise RuntimeError("scheduler shim requires Linux amd64 or arm64")
-name="libsandbox-science-sched.so"
+    raise RuntimeError(label+" shim requires Linux amd64 or arm64")
 image=Path(image_dir)/revision/name
 uploaded=Path(executor_dir)/"shim"/(revision+"-"+machine)/name
 def validate(path):
     with path.open("rb") as stream:
         header=stream.read(20)
     expected={"amd64":62,"arm64":183}[machine]
-    if (header[:7] != b"\x7fELF\x02\x01\x01"
+    if (header[:7] != b"ELF"
             or int.from_bytes(header[16:18],"little") != 3
             or int.from_bytes(header[18:20],"little") != expected):
-        raise RuntimeError("scheduler shim is not a matching Linux ELF library: "+str(path))
+        raise RuntimeError(label+" shim is not a matching Linux ELF library: "+str(path))
     library=ctypes.CDLL(str(path))
-    source=library.sandbox_science_sched_source_sha256
+    source=getattr(library,symbol)
     source.restype=ctypes.c_char_p
     if source() != revision.encode():
-        raise RuntimeError("scheduler shim source revision does not match: "+str(path))
-    getattr(library,"pthread_setschedparam")
+        raise RuntimeError(label+" shim source revision does not match: "+str(path))
+    getattr(library,function)
 if staged:
     try:
         validate(Path(staged))
@@ -119,6 +160,50 @@ for path in (image,uploaded):
         break
 print(json.dumps({"machine":machine,"shim":selected}))
 """
+
+
+def _is_elf(path: Path, machine: str) -> bool:
+    """Whether ``path`` starts as a 64-bit little-endian Linux shared library for ``machine``."""
+    with path.open("rb") as stream:
+        header = stream.read(20)
+    return (
+        header[:7] == b"\x7fELF\x02\x01\x01"
+        and int.from_bytes(header[16:18], "little") == 3
+        and int.from_bytes(header[18:20], "little") == _ELF_MACHINES[machine]
+    )
+
+
+async def build_shim(cc: str, shim: Shim, target: Path, machine: str) -> None:
+    """Build ``shim`` with the host's compiler at ``target`` (named for its revision and
+    machine), unless it is there already; a library that is not a Linux ELF library for
+    ``machine`` is removed and refused."""
+    if target.exists():
+        candidate = target
+    else:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        candidate = target.with_suffix(f".{secrets.token_hex(6)}.tmp")
+        code, output = await _command(
+            cc, "-shared", "-fPIC", "-O2", f'-D{shim.macro}="{shim.revision}"',
+            "-o", str(candidate), str(shim.source),
+        )  # fmt: skip
+        if code != 0:
+            candidate.unlink(missing_ok=True)
+            raise WorkerError(
+                ErrorKind.UNAVAILABLE,
+                f"cannot build the {shim.label} shim; install a Linux C compiler or rebuild "
+                "the research image with its native shim: "
+                + output.decode("utf-8", "replace")[-300:],
+            )
+    if not _is_elf(candidate, machine):
+        if candidate != target:
+            candidate.unlink(missing_ok=True)
+        raise WorkerError(
+            ErrorKind.UNAVAILABLE, f"host compiler produced no matching Linux ELF {shim.label} shim"
+        )
+    if candidate != target:
+        candidate.replace(target)
+
+
 COMMAND_TIMEOUT = 120.0
 """Seconds a helper command (the OpenShell CLI, the compiler) may take."""
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
@@ -199,9 +284,30 @@ class LocalBackend:
         self.executor_args = tuple(executor_args)
         self.root = state_dir / "environments"
         self.state_dir = state_dir
+        self._signal_shim: str | None = None
+        self._shim_lock = asyncio.Lock()
 
     async def prepare(self, environment_id: str) -> None:
         return None
+
+    async def _shim(self) -> str | None:
+        """The signal shim, built once with the host's compiler on Linux amd64 or arm64;
+        ``None``, with a warning, where it cannot be (held runs then cannot signal their
+        own processes, which changes no guarantee)."""
+        machine = {"x86_64": "amd64", "aarch64": "arm64"}.get(platform.machine())
+        if not self.settings.signal_shim or sys.platform != "linux" or machine is None:
+            return None
+        async with self._shim_lock:
+            if self._signal_shim is None:
+                shim = SIGNAL_SHIM
+                target = self.state_dir / "shim" / f"{shim.revision}-{machine}" / shim.name
+                try:
+                    await build_shim(self.settings.cc, shim, target, machine)
+                except (WorkerError, OSError) as exc:
+                    _log.warning("no signal shim for delegated runs: %s", exc)
+                    return None
+                self._signal_shim = str(target)
+            return self._signal_shim
 
     async def open(
         self, environment_id: str, on_event: EventHandler, on_closed: ClosedHandler
@@ -226,7 +332,11 @@ class LocalBackend:
                 *self.executor_args,
             ]
             token = daemon_token(self.state_dir, environment_id)
-        channel = ExecutorChannel(argv, on_event, on_closed, env=_child_env(), daemon_token=token)
+        env = _child_env()
+        shim = await self._shim()
+        if shim is not None:
+            env[executor.SIGNAL_SHIM_VARIABLE] = shim
+        channel = ExecutorChannel(argv, on_event, on_closed, env=env, daemon_token=token)
         await channel.start()
         return channel
 
@@ -304,10 +414,9 @@ class OpenShellBackend:
                 ErrorKind.UNAVAILABLE, f"openshell {args[0]} {args[1]} failed: {text}"
             )
 
-    async def _shim(self, sandbox: str) -> str:
+    async def _shim(self, sandbox: str, shim: Shim) -> str:
         """Prefer the image's native shim; build only for a matching Linux host."""
-        source = SCHED_SHIM_SOURCE.read_bytes()
-        revision = hashlib.sha256(source).hexdigest()
+        revision = shim.revision
         executor_dir = str(PurePosixPath(self.settings.executor_dir))
 
         async def probe(staged: str = "") -> tuple[str, str | None]:
@@ -315,13 +424,14 @@ class OpenShellBackend:
                 self.settings.cli,
                 "sandbox", "exec", "-n", sandbox, "--no-tty", "--no-login-shell", "--",
                 self.settings.python, "-I", "-c", _SHIM_PROBE,
-                revision, SCHED_SHIM_IMAGE_DIR, executor_dir, staged,
+                revision, SHIM_IMAGE_DIR, executor_dir, staged,
+                shim.name, shim.symbol, shim.function, shim.label,
                 env=self._env(),
             )  # fmt: skip
             if code != 0:
                 raise WorkerError(
                     ErrorKind.UNAVAILABLE,
-                    "cannot validate the sandbox scheduler shim: "
+                    f"cannot validate the sandbox {shim.label} shim: "
                     + output.decode("utf-8", "replace")[-500:],
                 )
             try:
@@ -337,13 +447,15 @@ class OpenShellBackend:
                 ):
                     raise ValueError("invalid machine or path")
             except (ValueError, TypeError) as exc:
-                raise WorkerError(ErrorKind.UNAVAILABLE, "invalid scheduler shim probe") from exc
+                raise WorkerError(
+                    ErrorKind.UNAVAILABLE, f"invalid {shim.label} shim probe"
+                ) from exc
             expected = {
-                f"{SCHED_SHIM_IMAGE_DIR}/{revision}/{SCHED_SHIM_NAME}",
-                f"{executor_dir}/shim/{revision}-{machine}/{SCHED_SHIM_NAME}",
+                f"{SHIM_IMAGE_DIR}/{revision}/{shim.name}",
+                f"{executor_dir}/shim/{revision}-{machine}/{shim.name}",
             }
             if path is not None and path not in expected:
-                raise WorkerError(ErrorKind.UNAVAILABLE, "unexpected scheduler shim path")
+                raise WorkerError(ErrorKind.UNAVAILABLE, f"unexpected {shim.label} shim path")
             return str(machine), path
 
         machine, path = await probe()
@@ -353,44 +465,13 @@ class OpenShellBackend:
         if sys.platform != "linux" or host != machine:
             raise WorkerError(
                 ErrorKind.UNAVAILABLE,
-                f"sandbox lacks the native {machine} scheduler shim for source {revision}; "
+                f"sandbox lacks the native {machine} {shim.label} shim for source {revision}; "
                 "rebuild its research image with the current shim. Host compilation requires "
                 "a Linux worker of the same architecture",
             )
-        target = self.state_dir / "shim" / f"{revision}-{machine}" / SCHED_SHIM_NAME
+        target = self.state_dir / "shim" / f"{revision}-{machine}" / shim.name
         async with self._shim_lock:
-            candidate = target
-            if not target.exists():
-                target.parent.mkdir(parents=True, exist_ok=True)
-                partial = target.with_suffix(".tmp")
-                code, output = await _command(
-                    self.settings.cc, "-shared", "-fPIC", "-O2",
-                    f'-DSANDBOX_SCIENCE_SCHED_SOURCE_SHA256="{revision}"',
-                    "-o", str(partial), str(SCHED_SHIM_SOURCE),
-                )  # fmt: skip
-                if code != 0:
-                    partial.unlink(missing_ok=True)
-                    raise WorkerError(
-                        ErrorKind.UNAVAILABLE,
-                        "cannot build the scheduler shim; install a Linux C compiler or rebuild "
-                        "the research image with its native shim: "
-                        + output.decode("utf-8", "replace")[-300:],
-                    )
-                candidate = partial
-            with candidate.open("rb") as stream:
-                header = stream.read(20)
-            if (
-                header[:7] != b"\x7fELF\x02\x01\x01"
-                or int.from_bytes(header[16:18], "little") != 3
-                or int.from_bytes(header[18:20], "little") != {"amd64": 62, "arm64": 183}[machine]
-            ):
-                if candidate != target:
-                    candidate.unlink(missing_ok=True)
-                raise WorkerError(
-                    ErrorKind.UNAVAILABLE, "host compiler produced no matching Linux ELF shim"
-                )
-            if candidate != target:
-                candidate.replace(target)
+            await build_shim(self.settings.cc, shim, target, machine)
             directory = f"{executor_dir}/shim/{revision}-{machine}"
             staged = f"{directory}/incoming-{secrets.token_hex(12)}.so"
             await self._run(
@@ -400,7 +481,9 @@ class OpenShellBackend:
             await self._run("sandbox", "upload", "--no-git-ignore", sandbox, str(target), staged)
             _, path = await probe(staged)
             if path is None:
-                raise WorkerError(ErrorKind.UNAVAILABLE, "scheduler shim installation is missing")
+                raise WorkerError(
+                    ErrorKind.UNAVAILABLE, f"{shim.label} shim installation is missing"
+                )
             return path
 
     async def prepare(self, environment_id: str) -> None:
@@ -451,7 +534,8 @@ class OpenShellBackend:
             "sandbox", "exec", "-n", sandbox, "--no-tty", "--no-login-shell", "--",
             "mkdir", "-p", settings.executor_dir, settings.project_root,
         )  # fmt: skip
-        shim = await self._shim(sandbox) if settings.sched_shim else None
+        shim = await self._shim(sandbox, SCHED_SHIM) if settings.sched_shim else None
+        signals = await self._shim(sandbox, SIGNAL_SHIM) if settings.signal_shim else None
         for path in SANDBOX_FILES:
             await self._run(
                 "sandbox", "upload", "--no-git-ignore", sandbox, str(path),
@@ -468,8 +552,11 @@ class OpenShellBackend:
         ]
         if required:
             remote.append("--require-workspace-prefix")
-        if shim is not None:
-            remote = ["env", f"LD_PRELOAD={shim}", *remote]
+        preload = [] if shim is None else [f"LD_PRELOAD={shim}"]
+        if signals is not None:
+            preload.append(f"{executor.SIGNAL_SHIM_VARIABLE}={signals}")
+        if preload:
+            remote = ["env", *preload, *remote]
         code, config = await _command(
             settings.cli, "sandbox", "ssh-config", sandbox, env=self._env()
         )

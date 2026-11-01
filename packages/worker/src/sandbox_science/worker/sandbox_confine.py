@@ -8,11 +8,19 @@ with the command, so the command and everything it starts can write only below t
 directories named, and never lift the rule. Reads are left to the sandbox's ruleset.
 The same ruleset scopes abstract Unix sockets and signals (Landlock ABI 6): the process
 cannot connect to a socket made outside it, such as another run's kernel, nor signal a
-process outside it. It refuses TCP except connections to the ports named (the sandbox's
-egress proxy), and ioctls on devices but the terminals. A seccomp filter beside it
-refuses what Landlock does not cover: changing another process's limits, priority,
-scheduling or I/O priority, and leases; and it turns file locks into no-ops, which an
-unwritable file's read-only descriptor could otherwise hold against the platform.
+process outside it. It refuses TCP except connections to the ports named (an egress
+proxy's), and ioctls on devices but the terminals. A seccomp filter beside it refuses
+what Landlock does not cover: changing another process's limits, priority, scheduling
+or I/O priority, and leases; it turns file locks into no-ops, which an unwritable file's
+read-only descriptor could otherwise hold against the platform; and it refuses the
+signal calls a sandbox's supervisor may carry out for the process outside its Landlock
+domain (``kill``, ``rt_sigqueueinfo``, and making another process a descriptor's owner),
+so every signal it sends goes through a call Landlock checks. The signal shim
+(``shim/signal_self.c``) gives its programs ``kill`` back through those calls.
+
+``--probe`` applies all of it in a process of its own and then tries each way to signal
+the process that started it, failing if one goes through, and reports whether TCP is
+held there, for the executor's ``hello``.
 
 It uses only the standard library, since it runs inside a sandbox beside the executor,
 and fails closed: if the ruleset cannot be made in full it exits with ``FAILED`` and never
@@ -22,14 +30,18 @@ runs the command. Linux only; elsewhere ``abi`` reports why it is unavailable.
 from __future__ import annotations
 
 import ctypes
+import json
 import os
+import signal
+import socket
 import stat
 import sys
 from collections.abc import Sequence
 from typing import Final
 
-PROTOCOL: Final = 1
-"""What the executor's ``hello`` reports as ``confinement.protocol``."""
+PROTOCOL: Final = 2
+"""What the executor's ``hello`` reports as ``confinement.protocol``: 2 refuses the
+signal calls a supervisor may carry out, and its probe checks that no signal leaves."""
 REQUIRED_ABI: Final = 6
 """Landlock's ABI 6 (Linux 6.12) scopes abstract Unix sockets and signals. Without the
 scope a confined process could drive another run's kernel, which is not confined."""
@@ -110,10 +122,14 @@ _ARCHES: Final = {
     # machine: (AUDIT_ARCH, {name: number}); x86_64's x32 numbers are refused below.
     "x86_64": (0xC000003E, {"prlimit64": 302, "setpriority": 141, "sched_setaffinity": 203,
         "sched_setscheduler": 144, "sched_setparam": 142, "sched_setattr": 314,
-        "ioprio_set": 251, "flock": 73, "fcntl": 72, "socket": 41, "socketpair": 53}),
+        "ioprio_set": 251, "flock": 73, "fcntl": 72, "socket": 41, "socketpair": 53,
+        "kill": 62, "rt_sigqueueinfo": 129, "ioctl": 16, "tkill": 200, "tgkill": 234,
+        "rt_tgsigqueueinfo": 297}),
     "aarch64": (0xC00000B7, {"prlimit64": 261, "setpriority": 140, "sched_setaffinity": 122,
         "sched_setscheduler": 119, "sched_setparam": 118, "sched_setattr": 274,
-        "ioprio_set": 30, "flock": 32, "fcntl": 25, "socket": 198, "socketpair": 199}),
+        "ioprio_set": 30, "flock": 32, "fcntl": 25, "socket": 198, "socketpair": 199,
+        "kill": 129, "rt_sigqueueinfo": 138, "ioctl": 29, "tkill": 130, "tgkill": 131,
+        "rt_tgsigqueueinfo": 240}),
 }  # fmt: skip
 _TARGET: Final = {
     # A call that acts on a process: the argument naming it, the argument that must say
@@ -138,6 +154,17 @@ _EAFNOSUPPORT: Final = 97
 _EPROTONOSUPPORT: Final = 93
 _LOCKS: Final = (6, 7, 37, 38)  # F_SETLK, F_SETLKW, F_OFD_SETLK, F_OFD_SETLKW
 _SETLEASE: Final = 1024
+_SETOWN: Final = (8, 10, 15)  # F_SETOWN, F_SETSIG, F_SETOWN_EX
+_IOCTL_SETOWN: Final = (0x8901, 0x8902)  # FIOSETOWN, SIOCSPGRP
+_SUPERVISED_SIGNALS: Final = ("kill", "rt_sigqueueinfo")
+"""Signal calls OpenShell 0.1.5's supervisor carries out itself, for a target it allows,
+outside the caller's Landlock domain (a seccomp user notification answered by its own
+``pidfd_send_signal``). ``EPERM`` from this filter takes precedence over the
+notification, so the supervisor never sees them; the thread-directed calls it lets the
+kernel continue (``tkill``, ``tgkill``, ``rt_tgsigqueueinfo``) stay, checked by Landlock."""
+_PIDFD_SEND_SIGNAL: Final = 424  # the same on both
+_PIDFD_OPEN: Final = 434
+_SI_QUEUE: Final = -1
 
 
 class _RulesetAttr(ctypes.Structure):
@@ -190,10 +217,11 @@ class _SockFprog(ctypes.Structure):
 def seccomp_program(machine: str, self_pid: int) -> list[tuple[int, int, int, int]]:
     """The filter: a call in ``_TARGET`` passes only for the calling process (0) or
     ``self_pid``, else ``EPERM`` or, for scheduling, success doing nothing; ``flock``
-    and fcntl's locks succeed doing nothing; a lease is ``EPERM``; io_uring is
+    and fcntl's locks succeed doing nothing; a lease and a descriptor's owner or signal
+    (``F_SETOWN``, ``F_SETSIG``, ``F_SETOWN_EX``, ``FIOSETOWN``, ``SIOCSPGRP``) are
+    ``EPERM``; so are ``kill`` and ``rt_sigqueueinfo``, whatever they name; io_uring is
     ``ENOSYS``; a socket passes ``_socket_rule``; another architecture's call ends the
-    process. Everything else passes, to OpenShell's filter
-    below."""
+    process. Everything else passes, to OpenShell's filter below."""
     if machine not in _ARCHES:
         raise ConfinementError(f"no seccomp filter for {machine}")
     arch, numbers = _ARCHES[machine]
@@ -207,11 +235,15 @@ def seccomp_program(machine: str, self_pid: int) -> list[tuple[int, int, int, in
             body = [(_LD, 0, 0, 16 + 8 * which[0]), (_JEQ, 1, 0, which[1]), *refuse, *body]
         rules.append([(_JEQ, 0, len(body), numbers[name]), *body])
     rules.append([(_JEQ, 0, 1, numbers["flock"]), (_RET, 0, 0, _ERRNO)])
-    fcntl = [(_LD, 0, 0, 24)]
-    for command in _LOCKS:
-        fcntl.append((_JEQ, len(_LOCKS) - len(fcntl) + 3, 0, command))
-    fcntl += [(_JEQ, 1, 0, _SETLEASE), *done, *refuse, (_RET, 0, 0, _ERRNO)]
+    fcntl = _fcntl_rule()
     rules.append([(_JEQ, 0, len(fcntl), numbers["fcntl"]), *fcntl])
+    for name in _SUPERVISED_SIGNALS:
+        rules.append([(_JEQ, 0, 1, numbers[name]), *refuse])
+    ioctl = [(_LD, 0, 0, 24)]
+    for request in _IOCTL_SETOWN:
+        ioctl.append((_JEQ, len(_IOCTL_SETOWN) - len(ioctl) + 1, 0, request))
+    ioctl += [*done, *refuse]
+    rules.append([(_JEQ, 0, len(ioctl), numbers["ioctl"]), *ioctl])
     for number in _IO_URING:
         # Its socket and connect operations would pass the socket rule below unseen.
         rules.append([(_JEQ, 0, 1, number), (_RET, 0, 0, _ERRNO | _ENOSYS)])
@@ -225,6 +257,21 @@ def seccomp_program(machine: str, self_pid: int) -> list[tuple[int, int, int, in
         # Each rule ends in a return; past its body, the number is reloaded for the next.
         program += [*rule, (_LD, 0, 0, 0)]
     return [*program, *done]
+
+
+def _fcntl_rule() -> list[tuple[int, int, int, int]]:
+    """fcntl's command: a lock succeeds doing nothing; a lease, an owner or a signal for
+    the descriptor is ``EPERM`` (the kernel would check an owner's signal against the
+    domain of whoever set it, and a supervisor that sets it on the caller's behalf is
+    outside); anything else passes."""
+    refused = (_SETLEASE, *_SETOWN)
+    rule = [(_LD, 0, 0, 24)]
+    allow_at = 1 + len(_LOCKS) + len(refused)
+    for command in _LOCKS:  # to the no-op, two past the refusal
+        rule.append((_JEQ, allow_at + 2 - len(rule) - 1, 0, command))
+    for command in refused:  # to the refusal, one past the allow
+        rule.append((_JEQ, allow_at + 1 - len(rule) - 1, 0, command))
+    return [*rule, (_RET, 0, 0, _ALLOW), (_RET, 0, 0, _ERRNO | _EPERM), (_RET, 0, 0, _ERRNO)]
 
 
 def _socket_rule() -> list[tuple[int, int, int, int]]:
@@ -385,16 +432,123 @@ def command(
     return [*prefix, "--"]
 
 
+class _SigInfo(ctypes.Structure):
+    # siginfo_t on these 64-bit machines: signo, errno, code, padding, then the sender's
+    # pid and uid; 128 bytes in all.
+    _fields_ = [
+        ("signo", ctypes.c_int),
+        ("errno", ctypes.c_int),
+        ("code", ctypes.c_int),
+        ("pad", ctypes.c_int),
+        ("pid", ctypes.c_int),
+        ("uid", ctypes.c_uint),
+        ("rest", ctypes.c_byte * 104),
+    ]
+
+
+def escapes(target: int) -> list[str]:
+    """The ways this process signalled ``target``, a process outside its ruleset, or
+    made it a descriptor's owner: each call that succeeded, by name. Held, there are none.
+
+    The signals are 0, which delivers nothing, and ``SIGCONT``, which a running process
+    ignores and which OpenShell's supervisor handles apart from the others; process
+    groups and every process get 0 alone."""
+    libc = _libc()
+    numbers = _ARCHES.get(os.uname().machine, (0, {}))[1]
+    if not numbers:
+        return [f"no signal calls known for {os.uname().machine}"]
+    found: list[str] = []
+
+    def attempt(name: str, number: int, *args: object) -> None:
+        words = [ctypes.c_long(arg) if isinstance(arg, int) else arg for arg in args]
+        if int(libc.syscall(ctypes.c_long(number), *words)) >= 0:
+            found.append(name)
+
+    def info(sig: int) -> _SigInfo:
+        return _SigInfo(sig, 0, _SI_QUEUE, 0, os.getpid(), os.getuid())
+
+    group = os.getpgid(target)
+    for sig in (0, int(signal.SIGCONT)):
+        attempt(f"kill({target}, {sig})", numbers["kill"], target, sig)
+        attempt(f"tkill({target}, {sig})", numbers["tkill"], target, sig)
+        attempt(f"tgkill({target}, {sig})", numbers["tgkill"], target, target, sig)
+        queued = info(sig)
+        attempt(
+            f"rt_sigqueueinfo({target}, {sig})",
+            numbers["rt_sigqueueinfo"], target, sig, ctypes.byref(queued),
+        )  # fmt: skip
+        attempt(
+            f"rt_tgsigqueueinfo({target}, {sig})",
+            numbers["rt_tgsigqueueinfo"], target, target, sig, ctypes.byref(queued),
+        )  # fmt: skip
+        pidfd = int(libc.syscall(ctypes.c_long(_PIDFD_OPEN), ctypes.c_long(target), 0))
+        if pidfd >= 0:
+            try:
+                attempt(
+                    f"pidfd_send_signal({target}, {sig})", _PIDFD_SEND_SIGNAL, pidfd, sig, None, 0
+                )
+            finally:
+                os.close(pidfd)
+    for pid in (0, -group, -1):
+        attempt(f"kill({pid}, 0)", numbers["kill"], pid, 0)
+    # A socket, since FIOSETOWN and SIOCSPGRP are sockets' ioctls; fcntl's take any file.
+    left, right = socket.socketpair()
+    with left, right:
+        owner = ctypes.c_int(target)
+        descriptor = left.fileno()
+        attempt("F_SETOWN", numbers["fcntl"], descriptor, _SETOWN[0], target)
+        attempt(
+            "F_SETOWN_EX",
+            numbers["fcntl"], descriptor, _SETOWN[2], ctypes.byref((ctypes.c_int * 2)(1, target)),
+        )  # fmt: skip
+        attempt("FIOSETOWN", numbers["ioctl"], descriptor, _IOCTL_SETOWN[0], ctypes.byref(owner))
+    return found
+
+
+def tcp_held() -> bool:
+    """Whether this process's TCP rules hold: binding a loopback port is refused. A
+    sandbox that makes sockets for its processes (OpenShell 0.1.5 does) binds it outside
+    the ruleset."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind(("127.0.0.1", 0))
+    except OSError:
+        return True
+    return False
+
+
+def probe() -> int:
+    """Apply the ruleset and the filter with nothing writable, then check that they hold:
+    no signal reaches the process that started this one (the executor), which is outside
+    them. Prints ``{"tcp": …}`` and exits 0 if all of that holds, else ``FAILED`` with why."""
+    parent = os.getppid()
+    try:
+        restrict([])
+    except (OSError, ConfinementError) as exc:
+        print(exc, file=sys.stderr)
+        return FAILED
+    if parent <= 1:
+        print("no process outside the probe to check its signals against", file=sys.stderr)
+        return FAILED
+    try:
+        found = escapes(parent)
+    except OSError as exc:
+        print(f"cannot check the signal scope: {exc}", file=sys.stderr)
+        return FAILED
+    if found:
+        print(
+            "a signal reached a process outside the ruleset: " + ", ".join(found)[:240],
+            file=sys.stderr,
+        )
+        return FAILED
+    print(json.dumps({"tcp": tcp_held()}))
+    return 0
+
+
 def main(argv: Sequence[str]) -> int:
-    """``--probe`` applies a ruleset and the filter with nothing writable, and exits 0
-    if all of it took, for the executor's ``hello``."""
+    """``--probe`` checks that the ruleset and the filter apply and hold (``probe``)."""
     if list(argv) == ["--probe"]:
-        try:
-            restrict([])
-        except (OSError, ConfinementError) as exc:
-            print(exc, file=sys.stderr)
-            return FAILED
-        return 0
+        return probe()
     writable: list[str] = []
     connect: list[int] = []
     rest = list(argv)

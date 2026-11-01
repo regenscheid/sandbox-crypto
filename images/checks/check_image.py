@@ -37,6 +37,7 @@ import queue
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -79,6 +80,7 @@ WORKER_FILES = (
 )
 """The worker's files that run inside a sandbox (packages/worker/src/sandbox_science/worker)."""
 PROJECT = Path("/sandbox/project")
+SHIM_DIR = "/usr/local/lib/sandbox-science/shim"
 SESSION = "image-check"
 WORKSPACE = PROJECT / "sessions" / SESSION
 LANGUAGES = {"minimal": ["python"], "crypto-base": ["python", "sage"]}
@@ -191,13 +193,16 @@ def harness_run_args(worker: str, directory: Path, transcript: Path) -> list[str
 class Executor:
     """The worker's executor over stdin and stdout, one request at a time."""
 
-    def __init__(self, script: Path, root: Path, log: Path) -> None:
+    def __init__(
+        self, script: Path, root: Path, log: Path, env: dict[str, str] | None = None
+    ) -> None:
         self.log = log
         self.process = subprocess.Popen(  # noqa: S603 - as the OpenShell backend starts it
             [sys.executable, "-I", str(script), "--stdio", "--root", str(root)],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=log.open("wb"),
+            env=env,
         )
         self.messages: queue.Queue[Message] = queue.Queue()
         self.ids = itertools.count(1)
@@ -338,9 +343,7 @@ class Checks:
 
     def scheduler_shim(self) -> str:
         revision = hashlib.sha256((self.worker_files / "sched_self.c").read_bytes()).hexdigest()
-        path = (
-            Path("/usr/local/lib/sandbox-science/shim") / revision / "libsandbox-science-sched.so"
-        )
+        path = Path(SHIM_DIR) / revision / "libsandbox-science-sched.so"
         shim = ctypes.CDLL(str(path))
         source = shim.sandbox_science_sched_source_sha256
         source.restype = ctypes.c_char_p
@@ -372,6 +375,24 @@ class Checks:
             "scheduler shim admitted another thread",
         )
         return f"native scheduler shim, source {revision}"
+
+    def signal_shim_path(self) -> Path:
+        revision = hashlib.sha256((self.worker_files / "signal_self.c").read_bytes()).hexdigest()
+        return Path(SHIM_DIR) / revision / "libsandbox-science-signal.so"
+
+    def signal_shim(self) -> str:
+        """The library a delegated run's processes preload for ``kill`` (DA-20): its
+        source revision, and a signal through it to a child of this process."""
+        path = self.signal_shim_path()
+        revision = path.parent.name
+        shim = ctypes.CDLL(str(path), use_errno=True)
+        source = shim.sandbox_science_signal_source_sha256
+        source.restype = ctypes.c_char_p
+        expect(source() == revision.encode(), "signal shim source revision differs")
+        child = subprocess.Popen(["sleep", "30"])  # noqa: S607 - the image's own sleep
+        expect(shim.kill(child.pid, signal.SIGTERM) == 0, "signal shim's kill failed")
+        expect(child.wait(10) == -signal.SIGTERM, "the child did not get SIGTERM")
+        return f"native signal shim, source {revision}"
 
     def identity(self) -> str:
         entry = pwd.getpwuid(os.getuid())
@@ -483,7 +504,8 @@ class Checks:
         for name in WORKER_FILES:
             shutil.copyfile(self.worker_files / name, EXECUTOR_DIR / name)
         script = EXECUTOR_DIR / "executor.py"
-        self.client = Executor(script, PROJECT, Path("/tmp/executor.log"))  # noqa: S108
+        env = {**os.environ, "SANDBOX_SCIENCE_SIGNAL_SHIM": str(self.signal_shim_path())}
+        self.client = Executor(script, PROJECT, Path("/tmp/executor.log"), env)  # noqa: S108
         reply = self.client.open()
         languages, features = reply.get("languages"), reply.get("features")
         expect(languages == LANGUAGES[self.profile], f"languages {languages}")
@@ -557,11 +579,18 @@ class Checks:
         script = (
             'pwd; echo ok > notes.md; echo t > "$TMPDIR/t"; '
             f"(echo no > {data}) 2>/dev/null || echo refused-input; "
-            f"touch {LAYER}/held 2>/dev/null || echo refused-prefix"
+            f"touch {LAYER}/held 2>/dev/null || echo refused-prefix; "
+            "sleep 30 & kill $!; wait $!; echo own-$?; "
+            "timeout 1 sleep 10; echo timeout-$?; "
+            "kill -0 $PPID 2>/dev/null || echo refused-signal"
         )
         result = self.ex().run("shell", 120, script=script, **held)
         out = str(result.get("stdout", {}).get("text", "")).split()
-        expect(out == [str(WORKSPACE / area), "refused-input", "refused-prefix"], f"shell {out}")
+        expected = [
+            str(WORKSPACE / area), "refused-input", "refused-prefix", "own-143", "timeout-124",
+            "refused-signal",
+        ]  # fmt: skip
+        expect(out == expected, f"shell {out}")
         code = (
             "import multiprocessing as mp, os\n"
             "with mp.Pool(2) as pool:\n"
@@ -574,7 +603,10 @@ class Checks:
         result = self.ex().run("cell", 120, code=code, language="python", run="held", **held)
         lines = str(result.get("stdout", {}).get("text", "")).splitlines()
         expect(lines == [f"[1, 2] {WORKSPACE / area}", "refused 13"], f"python {lines}")
-        detail = "shell and a Python pool held: area written, input and prefix refused"
+        detail = (
+            "shell and a Python pool held: area written, input and prefix refused, "
+            "own processes signalled, the executor not"
+        )
         if self.crypto:
             code = "print(gp('2 + 2'), singular('3 * 7'), libgap.SymmetricGroup(5).Size())"
             result = self.ex().run("cell", 300, code=code, language="sage", run="held", **held)
@@ -959,7 +991,8 @@ def planned(profile: str, *, landlock: bool, network: bool) -> list[str]:
         # The harness's image: no executor or kernels, and nothing installed at runtime.
         harness = ["harness-cli", "harness-imports", "no-kernels", "harness-state", "harness-run"]
         return names + harness
-    names += ["scheduler-shim", "executor", "python-kernel", "tools-on-path", "multiprocessing"]
+    names += ["scheduler-shim", "signal-shim", "executor", "python-kernel", "tools-on-path"]
+    names.append("multiprocessing")
     names.append("held-run")
     if profile == "crypto-base":
         names += ["sage-kernel", "sage-interfaces", "frozen-trees", "fpylll", "g6k"]

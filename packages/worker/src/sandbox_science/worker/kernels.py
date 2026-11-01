@@ -69,10 +69,11 @@ def require_run_kernels(channel: ExecutorChannel) -> None:
 def require_confinement(channel: ExecutorChannel) -> None:
     """Refuse a delegated run's execution (one naming a write area) on an executor that
     cannot hold its processes to the area (DA-20): one from before confinement, which
-    would ignore the field, or one that says why it cannot. Its code never runs
-    unconfined."""
+    would ignore the field, one whose confinement predates protocol 2 (which leaves
+    the signal calls a sandbox's supervisor carries out open, and never checks that its
+    rules hold), or one that says why it cannot. Its code never runs unconfined."""
     report = channel.hello.get("confinement")
-    if not isinstance(report, dict) or cast(dict[str, Any], report).get("protocol") != 1:
+    if not isinstance(report, dict) or cast(dict[str, Any], report).get("protocol") != 2:
         raise WorkerError(
             ErrorKind.UNSUPPORTED,
             "this environment's executor predates holding a delegated run to its write area; "
