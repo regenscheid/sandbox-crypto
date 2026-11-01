@@ -235,14 +235,32 @@ async def test_a_missing_signal_shim_is_built_like_the_scheduler_shim(
     assert f"{executor.SIGNAL_SHIM_VARIABLE}=/sandbox/.sandbox-science{installed}" in peer.argv[-1]
 
 
-async def test_a_missing_cross_platform_signal_shim_fails_with_its_name(
-    peer: Peer, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("problem", ["missing", "invalid"])
+async def test_without_a_usable_signal_shim_the_environment_still_opens(
+    peer: Peer, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, problem: str
 ) -> None:
+    """Unlike the scheduler shim, the signal shim changes no guarantee: where the image
+    lacks it and the host cannot build it, or it fails validation, the executor starts
+    without it (held runs report ``own_signals: false``) and the worker warns."""
     host(monkeypatch, "darwin", "arm64")
-    peer.signal = None
-    with pytest.raises(WorkerError, match="signal shim for source"):
-        await connect(peer)
-    assert not peer.uploads
+    original = peer.command
+
+    async def command(*argv: str, env: dict[str, str] | None = None) -> tuple[int, bytes]:
+        if problem == "invalid" and "-c" in argv and SIGNAL_SHIM.name in argv:
+            return 1, b"signal shim source revision does not match"
+        return await original(*argv, env=env)
+
+    monkeypatch.setattr(backends, "_command", command)
+    if problem == "missing":
+        peer.signal = None
+    channel = await connect(peer)
+    try:
+        assert executor.SIGNAL_SHIM_VARIABLE not in peer.argv[-1]
+        assert f"LD_PRELOAD={IMAGE_SHIM}" in peer.argv[-1]
+        assert not peer.uploads or not any(c[-2].endswith(".so") for c in peer.uploads)
+        assert "no signal shim for delegated runs" in caplog.text
+    finally:
+        await channel.shutdown()
 
 
 async def test_the_signal_shim_can_be_turned_off(peer: Peer) -> None:

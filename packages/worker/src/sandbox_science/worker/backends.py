@@ -133,7 +133,7 @@ def validate(path):
     with path.open("rb") as stream:
         header=stream.read(20)
     expected={"amd64":62,"arm64":183}[machine]
-    if (header[:7] != b"ELF"
+    if (header[:7] != b"\x7fELF\x02\x01\x01"
             or int.from_bytes(header[16:18],"little") != 3
             or int.from_bytes(header[18:20],"little") != expected):
         raise RuntimeError(label+" shim is not a matching Linux ELF library: "+str(path))
@@ -486,6 +486,16 @@ class OpenShellBackend:
                 )
             return path
 
+    async def _signal_shim(self, sandbox: str) -> str | None:
+        """The signal shim, or ``None``, with a warning, where it can be neither found nor
+        built: a delegated run's processes then cannot signal their own (``own_signals:
+        false`` in ``hello``), which changes no guarantee, so the environment still opens."""
+        try:
+            return await self._shim(sandbox, SIGNAL_SHIM)
+        except WorkerError as exc:
+            _log.warning("no signal shim for delegated runs in %s: %s", sandbox, exc)
+            return None
+
     async def prepare(self, environment_id: str) -> None:
         if self._prepare is not None:
             await self._prepare(environment_id)
@@ -535,7 +545,7 @@ class OpenShellBackend:
             "mkdir", "-p", settings.executor_dir, settings.project_root,
         )  # fmt: skip
         shim = await self._shim(sandbox, SCHED_SHIM) if settings.sched_shim else None
-        signals = await self._shim(sandbox, SIGNAL_SHIM) if settings.signal_shim else None
+        signals = await self._signal_shim(sandbox) if settings.signal_shim else None
         for path in SANDBOX_FILES:
             await self._run(
                 "sandbox", "upload", "--no-git-ignore", sandbox, str(path),
