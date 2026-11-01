@@ -3,10 +3,12 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
 import stat
+import sys
 import threading
 import tomllib
 from pathlib import Path
@@ -431,15 +433,24 @@ def test_writers_of_one_file_never_share_a_temporary_file(tmp_path: Path) -> Non
     assert [path.name for path in tmp_path.iterdir()] == ["shared.json"]
 
 
+def _path_of(descriptor: int) -> str:
+    """The path an open descriptor names: Linux's ``/proc``, macOS's ``F_GETPATH``."""
+    if sys.platform == "darwin":
+        named = fcntl.fcntl(descriptor, fcntl.F_GETPATH, bytes(1024))
+        return named.split(b"\0", 1)[0].decode()
+    return os.readlink(f"/proc/self/fd/{descriptor}")
+
+
 def test_a_private_write_is_synced_before_its_rename_and_its_directory_after(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    tmp_path = tmp_path.resolve()  # macOS's temporary directory is behind a symlink
     target = tmp_path / "sandbox.json"
     synced: list[tuple[str, str | None]] = []
     real = os.fsync
 
     def fsync(descriptor: int) -> None:
-        where = os.readlink(f"/proc/self/fd/{descriptor}")
+        where = _path_of(descriptor)
         content = target.read_text() if target.exists() else None
         synced.append((where, content))
         real(descriptor)
