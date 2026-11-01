@@ -1,13 +1,17 @@
 # SPDX-License-Identifier: MIT
 """The test tiers CI runs, and a check that every test belongs to exactly one of them.
 
-    uv run python scripts/tiers.py run fast -n auto   # pytest on one tier
-    uv run python scripts/tiers.py check              # every test in exactly one tier
+    uv run python scripts/tiers.py run fast -n auto              # pytest on one tier
+    uv run python scripts/tiers.py run fast --shard 2/3 -n auto  # a third of it
+    uv run python scripts/tiers.py check                         # every test in exactly one tier
 
-A tier is a marker expression. Pull requests run ``fast`` and ``slow``, each in a job
-of its own; pushes to main and the nightly run also run the whole suite serially, with
-no marker filter, on every supported Python. ``check`` also fails when a ``test_*.py``
-file (tracked, or new and not ignored) yields no test at all, so a file outside
+A tier is a marker expression. Pull requests run ``fast`` and ``slow``, each divided
+into shards that run as jobs of their own; pushes to main and the nightly run also run
+the whole suite, with no marker filter, on every supported Python. ``--shard I/N``
+keeps the I-th of N parts of what the tier and the other arguments select, divided by
+module so a module's fixtures stay together (``sandbox_science.testing.shards``); the
+N shards together are the selection. ``check`` also fails when a ``test_*.py`` file
+(tracked, or new and not ignored) yields no test at all, so a file outside
 ``testpaths`` is not silently left out.
 """
 
@@ -26,6 +30,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 TIERS = {"fast": "not slow", "slow": "slow"}
 """Each tier's ``-m`` expression; together they must select every test exactly once."""
+SHARDS = "sandbox_science.testing.shards"
+"""The pytest plugin that keeps one shard of a selection (``--shard I/N``)."""
 
 
 class _Recorder:
@@ -109,18 +115,45 @@ def check() -> int:
     return 0
 
 
+def _shard(text: str) -> str:
+    """``--shard``'s value, checked as the plugin will read it."""
+    from sandbox_science.testing.shards import parse_shard
+
+    try:
+        index, total = parse_shard(text)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(str(error)) from error
+    return f"{index}/{total}"
+
+
+def pytest_command(tier: str, shard: str | None, rest: list[str]) -> list[str]:
+    """The pytest command line ``run`` executes for a tier, and a shard of it if given."""
+    command = [sys.executable, "-m", "pytest", "-m", TIERS[tier]]
+    if shard is not None:
+        command += ["-p", SHARDS, f"--shard={shard}"]
+    return [*command, *rest]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="The test tiers CI runs.")
     commands = parser.add_subparsers(dest="command", required=True)
-    run = commands.add_parser("run", help="run pytest on one tier; other arguments go to pytest")
+    run = commands.add_parser(
+        "run", help="run pytest on one tier; other arguments go to pytest", allow_abbrev=False
+    )
     run.add_argument("tier", choices=sorted(TIERS))
+    run.add_argument(
+        "--shard",
+        type=_shard,
+        metavar="I/N",
+        help="only the I-th of N shards of the tier, divided by test module",
+    )
     commands.add_parser("check", help="check that every test is in exactly one tier")
     collect = commands.add_parser("_collect")
     collect.add_argument("output", type=Path)
     collect.add_argument("--expression")
     arguments, rest = parser.parse_known_args(argv)
     if arguments.command == "run":
-        command = [sys.executable, "-m", "pytest", "-m", TIERS[arguments.tier], *rest]
+        command = pytest_command(arguments.tier, arguments.shard, rest)
         os.chdir(ROOT)
         os.execv(sys.executable, command)  # noqa: S606
     if rest:
