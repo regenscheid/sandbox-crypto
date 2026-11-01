@@ -1,6 +1,6 @@
 # OpenShell: calls the supervisor carries out skip the caller's own Landlock ruleset
 
-**Status.** Kept here, not filed upstream: filing is the user's call. Observed on babbage in the [DA-20 lab](../docs/agent-reports/babbage-da20-lab-2026-11-01.md) (2026-11-01), in a VM sandbox (guest kernel 6.12), and read in the v0.1.5 source (`crates/openshell-sandbox/src/linux/process_signal.rs`, `child_seccomp.rs`, `seccomp_notify.rs`).
+**Status.** Kept here, not filed upstream (the owner chose not to file it yet, 2026-11-01). Observed on babbage in the [DA-20 lab](../docs/agent-reports/babbage-da20-lab-2026-11-01.md) (2026-11-01), in a VM sandbox (guest kernel 6.12), and read in the v0.1.5 source (`crates/openshell-sandbox/src/linux/process_signal.rs`, `child_seccomp.rs`, `seccomp_notify.rs`).
 
 **Affects.** OpenShell v0.1.5, VM driver. The mechanism is in the sandbox supervisor, so other drivers very likely behave alike; not checked.
 
