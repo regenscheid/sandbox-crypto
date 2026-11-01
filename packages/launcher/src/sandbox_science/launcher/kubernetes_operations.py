@@ -23,7 +23,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
+from typing import Final, cast
 
 from sandbox_science.contracts.workspace_checkpoint import (
     CheckpointInventory,
@@ -31,6 +31,7 @@ from sandbox_science.contracts.workspace_checkpoint import (
     InventoryCheckpoint,
     InventoryEnvironment,
     RestorePlan,
+    disposable,
 )
 
 from .kubernetes_bundle import PRIVATE
@@ -1044,7 +1045,8 @@ class VolumeRow:
     last_started: datetime | None = None
     uncovered: str | None = None
     """Why no verified checkpoint covers it: none, or the newest predates its last start.
-    Only ``--without-checkpoint`` for this volume lets it go then."""
+    Only ``--without-checkpoint`` for this volume lets it go then. None for a deleted job
+    sandbox's or child environment's volume, which needs no checkpoint (``disposable``)."""
     jobs: tuple[JobRef, ...] = ()
     """Finished checkpoint Jobs whose Pods still name its claim: deleted before it."""
 
@@ -1266,7 +1268,9 @@ def survey(
             default=None,
         )
         uncovered = None
-        if newest is None:
+        if sandbox is not None and disposable(environments, sandbox):
+            pass  # a deleted job sandbox's or child environment's: it needs none
+        elif newest is None:
             uncovered = "no verified checkpoint"
         elif started is not None and started > newest:
             uncovered = (
@@ -1389,6 +1393,14 @@ def _retire_refusals(
     return reasons
 
 
+_KINDS: Final = {
+    "session": "environment",
+    "job": "job sandbox environment",
+    "child": "child environment",
+}
+"""How a volume's owner is named by its environment's kind."""
+
+
 def _age(created: datetime | None, now: datetime) -> str:
     if created is None:
         return "?"
@@ -1404,7 +1416,7 @@ def report(found: Survey) -> list[str]:
             ", ".join(
                 f"project {e.project_id}"
                 + (f" session {e.session_id}" if e.session_id else "")
-                + f" environment {e.environment_id} ({e.state})"
+                + f" {_KINDS[e.kind]} {e.environment_id} ({e.state})"
                 for e in row.environments
             )
             or "owner unknown"
@@ -1413,6 +1425,8 @@ def report(found: Survey) -> list[str]:
             f"{row.kept_checkpoints} verified checkpoint(s), newest"
             f" {_age(row.newest_checkpoint, found.now)} old"
             if row.kept_checkpoints
+            else "no checkpoint needed (disposable)"
+            if row.sandbox is not None and disposable(row.environments, row.sandbox)
             else "no verified checkpoint"
         )
         checkpoint += (

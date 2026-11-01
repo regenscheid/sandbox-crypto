@@ -8,6 +8,7 @@ which carry ``exclusive_offline_mount_declared`` instead, stay readable and seri
 their original bytes.
 """
 
+from collections.abc import Iterable
 from typing import Annotated, Any, Final, Literal
 
 from pydantic import (
@@ -187,6 +188,20 @@ class InventoryEnvironment(StrictContract):
     last_started_at: AwareDatetime | None = None
     """When the worker last started its sandbox, if it recorded it: any work after a
     checkpoint needs a start, so a later one means the checkpoint is out of date."""
+
+
+def disposable(environments: Iterable[InventoryEnvironment], sandbox: str) -> bool:
+    """Whether the volume of ``sandbox`` is a deleted job sandbox's or child environment's,
+    which needs no checkpoint to be deleted: a job sandbox is disposable (JS-26), its
+    durable outputs collected, and a child environment is released only after a complete
+    hand-back, as nothing will use it, or past its retention (CE-4). Every environment
+    the worker records with that sandbox must be one, deleted, with no hand-back left;
+    a sandbox it records none for is not."""
+    found = [info for info in environments if info.sandbox == sandbox]
+    return bool(found) and all(
+        info.kind in ("job", "child") and info.state == "deleted" and info.hand_back is None
+        for info in found
+    )
 
 
 class InventoryCheckpoint(StrictContract):

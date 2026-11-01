@@ -45,6 +45,7 @@ from sandbox_science.contracts.workspace_checkpoint import (
     CheckpointReceipt,
     InventoryCheckpoint,
     InventoryEnvironment,
+    disposable,
 )
 
 from . import checkpoint_remote
@@ -336,7 +337,11 @@ def volume_refusals(
             reasons.append(f"environment {info.environment_id}'s hand-back is {info.hand_back}")
     if any(hold.sandbox == sandbox for hold in found.holds):
         reasons.append("a checkpoint holds it")
-    if not without_checkpoint and (missing := checkpoint_cover(found, sandbox)) is not None:
+    if (
+        not without_checkpoint
+        and not disposable(found.environments, sandbox)
+        and (missing := checkpoint_cover(found, sandbox)) is not None
+    ):
         reasons.append(f"{missing} (pass --without-checkpoint for this volume to delete anyway)")
     return reasons
 

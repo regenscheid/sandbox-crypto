@@ -208,7 +208,17 @@ profiles should carry. No mounting of one sandbox's disk in another. No automati
   before its command, and is released at once. At startup and hourly, a live job
   reattaches, an unfinished collection restarts, an overdue retention releases, and a
   record whose execution is gone is reported and kept. A sandbox without a record is
-  never deleted.
+  never deleted. Its workspace volume is OpenShell's: under 0.1.5 every sandbox's
+  workspace claim takes the gateway's one storage class and size
+  (`workspace_storage_class`, `workspace_default_storage_size`), and nothing in a
+  sandbox's request can choose another class, a size or an ephemeral workspace (its
+  driver configuration names only pod placement, containers and claims that already
+  exist). The claim is deleted with the sandbox, so with a class that retains volumes,
+  as the research class must for session workspaces, each job sandbox (and each child
+  environment) leaves a Released volume of the gateway's size. The operator's
+  `cleanup` names these by the job or child environment that owned them and, once the
+  worker records that environment deleted with no hand-back left, lets them go
+  without a checkpoint ([cleanup](../KUBERNETES-BUNDLE.md#cleanup)).
 
 ## Contracts, configuration and code
 

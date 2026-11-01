@@ -263,6 +263,11 @@ Pinned Helm values `server.workspaceDefaultStorageSize` and
 creation default, not a live resize of existing PVCs. The [v0.1.3 driver config (fields still present in v0.1.5)](https://github.com/NVIDIA/OpenShell/blob/e1f3c82caa3ed3b65de22889ae7ef32a774878ef/crates/openshell-driver-kubernetes/src/config.rs#L255)
 and [chart mapping](https://github.com/NVIDIA/OpenShell/blob/e1f3c82caa3ed3b65de22889ae7ef32a774878ef/deploy/helm/openshell/templates/_helpers.tpl#L543)
 are the exact capacity/class seams; no agent volume or claim authority is added.
+They are the gateway's, for every sandbox: v0.1.5 has no per-sandbox class or size and
+no ephemeral workspace (a sandbox's driver configuration names only placement,
+containers and existing claims), so job sandboxes and child environments get the
+research class too, and with a class that retains volumes each leaves a Released
+volume that `cleanup` names and deletes ([job sandboxes](specs/job-sandboxes.md), JS-26).
 
 The seed init container mounts the claim at `/mnt/openshell-workspace`, leaving
 image `/sandbox` visible as the source. The [pinned seed algorithm (v0.1.3 source; not re-read for v0.1.5)](https://github.com/NVIDIA/OpenShell/blob/e1f3c82caa3ed3b65de22889ae7ef32a774878ef/crates/openshell-sandbox/src/main.rs#L1669)

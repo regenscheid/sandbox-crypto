@@ -1162,7 +1162,13 @@ As seen on the first cluster (2026-10-28):
 - **workspace volumes left behind by deleted sandboxes**: Released PVs whose claim was in the
   sandbox namespace, and claims whose owning `Sandbox` is gone, each with size, age, phase,
   owner (project, session and environment, from the worker's records, deleted ones
-  included) and how many verified checkpoints it has;
+  included) and how many verified checkpoints it has. A job sandbox's or child
+  environment's volume names its owner by kind ("job sandbox environment …", "child
+  environment …"): OpenShell 0.1.5 gives every sandbox's workspace the gateway's one
+  storage class, so with a class that retains volumes each one leaves its volume
+  behind. Once the worker records that environment deleted with no hand-back left,
+  the volume is disposable and needs no checkpoint (no `--without-checkpoint`; the
+  worker's journal checks the same);
 - **checkpoints beyond the kept count**: kept checkpoints of a workspace older than its
   latest `keep`, and deletions that began and did not finish;
 - **retirable checkpoints**: the latest `keep` checkpoints of an environment the worker

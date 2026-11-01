@@ -471,6 +471,12 @@ def test_volume_deletion_refusals_and_journal(tmp_path, garage, retained, stoppe
     db.close()
     with pytest.raises(RecordError, match="hand-back is retained"):
         record(retained, "intent", "pv-4", "ss-child", "op", without_checkpoint=True, detail={})
+    # A deleted job sandbox's volume, or a released child environment's, needs no
+    # checkpoint: both are disposable (JS-26, CE-4).
+    save_environment(retained, "job", "ss-job", EnvironmentState.DELETED, kind="job")
+    save_environment(retained, "kid", "ss-kid", EnvironmentState.DELETED, kind="child")
+    record(retained, "intent", "pv-5", "ss-job", "op", without_checkpoint=False, detail={})
+    record(retained, "intent", "pv-6", "ss-kid", "op", without_checkpoint=False, detail={})
     # A hold refuses too.
     planned(retained)
     found = checkpoint_jobs.inventory(retained)
@@ -479,6 +485,8 @@ def test_volume_deletion_refusals_and_journal(tmp_path, garage, retained, stoppe
     journal = CheckpointRecords(retained.state_dir).deletions()
     assert [(d.subject, d.phase, d.actor, d.detail["sandbox"]) for d in journal] == [
         ("pv-2", "intent", "op", "ss-gone"),
+        ("pv-5", "intent", "op", "ss-job"),
+        ("pv-6", "intent", "op", "ss-kid"),
         ("pv-2", "done", "op", "ss-gone"),
     ]
 
