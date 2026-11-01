@@ -78,3 +78,30 @@ def test_close_needs_the_worker_and_open_does_not(
              "--session", "main", *rest],
         )  # fmt: skip
     assert message in capsys.readouterr().err
+
+
+def test_close_waits_for_a_running_research_tree(
+    state: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``session close`` acts with the session's current authority, which is a live
+    run's while its research tree runs: it refuses then, naming the work, instead of
+    stopping that run's kernels and child environments under it."""
+    from sandbox_science.orchestrator.continuity.records import WorkRecords
+    from sandbox_science.orchestrator.projects import ProjectStore
+
+    common = ["--state-dir", str(state), "--project", "p1", "--session", "main"]
+    assert cli.main(["session", "open", *common]) == 0
+    run = "20261031T120000000000Z-run-live"
+    store = ProjectStore(state)
+    try:
+        owner = WorkRecords(store.control).admit("p1", "main", run)
+        assert WorkRecords(store.control).get("p1", "main", owner.work).state == "running"
+    finally:
+        store.close()
+    token = tmp_path / "token"
+    token.write_text("test-secret-token\n")
+    capsys.readouterr()
+    closing = ["session", "close", *common, "--worker", "http://127.0.0.1:9", *("--token-file",
+               str(token))]  # fmt: skip
+    assert cli.main(closing) == 1
+    assert f"research work {run} is running (run {run}); stop it" in capsys.readouterr().err

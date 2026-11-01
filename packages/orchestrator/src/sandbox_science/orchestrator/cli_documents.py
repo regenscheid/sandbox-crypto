@@ -277,7 +277,19 @@ async def _session_action(args: argparse.Namespace, store: ProjectStore) -> int:
 
     # The close acts with the session's current authority, as its runs do: the worker's
     # recovery fence refuses a close without it once a run has started there.
-    owner = WorkRecords(store.control).session_owner(args.project, args.session)
+    works = WorkRecords(store.control)
+    owner = works.session_owner(args.project, args.session)
+    if owner is not None:
+        root = works.get(args.project, args.session, owner.work)
+        if root.state in ("running", "waiting"):
+            # Its authority is the live tree's: a close now would stop that run's kernels
+            # and child environments under it.
+            print(
+                f"error: session {args.session}'s research work {root.work} is {root.state}"
+                f" (run {root.current}); stop it, or let it finish, before closing the session",
+                file=sys.stderr,
+            )
+            return 1
     context = ExecutionContext(
         project_id=args.project,
         session_id=args.session,
