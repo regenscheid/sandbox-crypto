@@ -338,27 +338,36 @@ async def test_cpu_used_by_a_kernel_thread_counts_as_activity(worker: Harness) -
         (worker.workspace / "stop-spinning").touch()
 
 
-async def test_an_idle_executor_is_released_and_its_kernels_reported_lost(worker: Harness) -> None:
-    manager = worker.manager
-    await worker.run("op-r1", kind="cell", code="x = 1")
-    # Used after this time: kept.
-    assert not await manager.release_if_idle("env1", time.monotonic() - 60)
-    busy = await worker.submit("op-r2", kind="cell", code="import time\ntime.sleep(60)")
-    await worker.wait_running(busy["execution_id"])
-    # Running: kept, whatever the time.
-    assert not await manager.release_if_idle("env1", time.monotonic() + 60)
-    status, _ = await worker.post(
-        f"/v1/executions/{busy['execution_id']}/cancel", {"context": CONTEXT}
-    )
-    assert status == 200
-    await worker.finish(busy["execution_id"])
-    assert await manager.release_if_idle("env1", time.monotonic())
-    assert "env1" not in worker.view.connected()
-    assert await manager.release_if_idle("env1", time.monotonic())  # nothing left to stop
-    after = await worker.run("op-r3", kind="cell", code="x")
-    assert after["kernel_state_lost"] is True
-    assert after["result"]["state_lost"] is True
-    assert after["result"]["error"]["name"] == "NameError"
+async def test_an_idle_executor_is_released_and_its_kernels_reported_lost(tmp_path: Path) -> None:
+    # The manager stamps each use with its clock, and the test reads that same clock, a fake
+    # one that moves only when the test says so: whether a use is "after" the idle time is then
+    # decided by the test's own advances, never by how long the executor or the machine took.
+    clock = FakeClock()
+    async with await Harness.start(tmp_path, clock=clock) as worker:
+        manager = worker.manager
+        await worker.run("op-r1", kind="cell", code="x = 1")
+        # Used after this time: kept.
+        assert not await manager.release_if_idle("env1", clock.monotonic() - 60)
+        busy = await worker.submit("op-r2", kind="cell", code="import time\ntime.sleep(60)")
+        await worker.wait_running(busy["execution_id"])
+        # Running: kept, whatever the time.
+        clock.advance(60)
+        assert not await manager.release_if_idle("env1", clock.monotonic())
+        status, _ = await worker.post(
+            f"/v1/executions/{busy['execution_id']}/cancel", {"context": CONTEXT}
+        )
+        assert status == 200
+        await worker.finish(busy["execution_id"])
+        # Its end was the last use, at the clock's present: not idle since then, idle since after.
+        assert not await manager.release_if_idle("env1", clock.monotonic() - 1)
+        clock.advance(1)
+        assert await manager.release_if_idle("env1", clock.monotonic())
+        assert "env1" not in worker.view.connected()
+        assert await manager.release_if_idle("env1", clock.monotonic())  # nothing left to stop
+        after = await worker.run("op-r3", kind="cell", code="x")
+        assert after["kernel_state_lost"] is True
+        assert after["result"]["state_lost"] is True
+        assert after["result"]["error"]["name"] == "NameError"
 
 
 @pytest.mark.parametrize("route", ["/v1/kernels/status", "/v1/kernels/observe"])
