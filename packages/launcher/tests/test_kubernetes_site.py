@@ -271,11 +271,10 @@ def test_each_settings_file_loads_through_the_model_its_service_starts_with(tmp_
         "reviewer": "low",
         "watcher": "low",
     }
-    assert control.apis == {
-        "test-main": "responses",
-        "test-reviewer": "responses",
-        "test-watcher": "chat",
-    }
+    # The catalog names no API: the run service chooses those from the gateway, with
+    # responses as the default (CM-41).
+    assert control.apis == {"test-watcher": "chat"}
+    assert control.default_api == "responses"
 
     worker = load_worker(secrets / "worker/worker.toml")
     assert worker.listen == "0.0.0.0:8100"

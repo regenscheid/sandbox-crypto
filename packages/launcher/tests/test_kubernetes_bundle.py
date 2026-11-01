@@ -558,28 +558,30 @@ def test_workspace_role_catalog_defaults_and_explicit_efforts_reach_cli():
         if item["name"] == "workspace"
     )
     command = workspace["command"]
-    assert command.count("--agent-model") == command.count("--agent-api") == 3
+    # The catalog names no API: the run service chooses each from the gateway (CM-41).
+    assert command.count("--agent-model") == 3
+    assert command.count("--agent-api") == 0
     assert "main=research-main" in command
     assert "delegated=research-delegated" in command
     assert "reviewer=research-reviewer" in command
     assert "main=max" in command
     assert "delegated=high" in command
     assert "reviewer=medium" in command
-    assert "research-main=responses" in command
     assert "--api-key-file" not in command
     assert "--model-url" not in command
 
 
-def test_shared_alias_has_one_adapter_and_messages_have_no_effort():
+def test_shared_alias_has_one_adapter_and_messages_take_the_same_efforts():
     data = values()
     data["models"] = {
         "main": {"alias": "research-shared", "api": "messages"},
-        "delegated": {"alias": "research-shared", "api": "messages"},
+        "delegated": {"alias": "research-shared", "api": "messages", "effort": "high"},
     }
     arguments = configured(data).models.workspace_arguments()
     assert arguments.count("--agent-api") == 1
     assert "research-shared=messages" in arguments
-    assert "--agent-effort" not in arguments
+    assert "main=max" in arguments
+    assert "delegated=high" in arguments
     assert not any(argument.startswith("reviewer=") for argument in arguments)
 
 
@@ -605,8 +607,8 @@ def test_catalog_alias_must_roundtrip_through_workspace_cli_arguments(alias):
             "delegated": {"alias": "research-delegated"},
         },
         {
-            "main": {"alias": "research-main", "api": "messages", "effort": "max"},
-            "delegated": {"alias": "research-delegated"},
+            "main": {"alias": "research-shared", "api": "messages"},
+            "delegated": {"alias": "research-shared"},
         },
         {
             "main": {"alias": "research-shared", "api": "chat"},

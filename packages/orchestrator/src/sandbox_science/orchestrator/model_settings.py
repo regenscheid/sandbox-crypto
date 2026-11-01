@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: MIT
 """USER project settings for the three agent model roles.
 
-The deployment supplies the trusted alias catalog and each alias's adapter. A project
-may choose an alias from that catalog and an effort value; it cannot supply an API,
-gateway address or credential. A fresh research tree snapshots the effective profiles,
-so changing these settings never mutates an admitted tree.
+The deployment supplies the trusted alias catalog and the adapters it names. A project
+may choose an alias from that catalog and an effort value, which every adapter takes; it
+cannot supply an API, gateway address or credential. A fresh research tree snapshots the
+effective profiles, so changing these settings never mutates an admitted tree.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from .control import Receipts
 from .documents import DocumentStore
 from .documents.errors import CONFLICT, INTERNAL, INVALID_REQUEST, POLICY_DENIED, DocumentError
 from .documents.models import Author
-from .model_profiles import Effort, ModelProfile
+from .model_profiles import ApiKind, Effort, ModelProfile
 
 AgentModelRole = Literal["main", "delegated", "reviewer"]
 AGENT_MODEL_ROLES: Final[tuple[AgentModelRole, ...]] = ("main", "delegated", "reviewer")
@@ -48,8 +48,12 @@ class AgentModelSelection(Contract):
 
 class ModelOption(Contract):
     alias: str = Field(min_length=1, max_length=200)
-    api: Literal["chat", "responses", "messages"]
-    effort_supported: bool
+    api: ApiKind | None
+    """The adapter the deployment names for the alias, or ``None`` when the run service
+    chooses it from the gateway's model information (docs/specs/context-management.md,
+    CM-41)."""
+    effort_supported: bool = True
+    """Whether a requested effort applies: every adapter takes one."""
 
 
 class ModelSettings(Contract):
@@ -91,7 +95,7 @@ class ProjectModels:
         self,
         project: str,
         defaults: Mapping[AgentModelRole, ModelProfile],
-        available: Mapping[str, Literal["chat", "responses", "messages"]],
+        available: Mapping[str, ApiKind | None],
     ) -> ModelSettings:
         _scope(project)
         revision, stored = self.selections(project)
@@ -104,7 +108,7 @@ class ProjectModels:
         author: Author,
         *,
         defaults: Mapping[AgentModelRole, ModelProfile],
-        available: Mapping[str, Literal["chat", "responses", "messages"]],
+        available: Mapping[str, ApiKind | None],
     ) -> tuple[ModelSettings, bool]:
         _scope(project)
         if author.kind != "user":
@@ -116,14 +120,9 @@ class ProjectModels:
         if set(change.roles) != set(defaults):
             raise DocumentError(INVALID_REQUEST, "model settings must name every configured role")
         for role, selection in change.roles.items():
-            api = available.get(selection.alias)
-            if api is None:
+            if selection.alias not in available:
                 raise DocumentError(
                     INVALID_REQUEST, f"{role} model is outside the deployment catalog"
-                )
-            if api == "messages" and selection.reasoning_effort is not None:
-                raise DocumentError(
-                    INVALID_REQUEST, f"{role} model's Messages adapter does not accept effort"
                 )
         fingerprint = hashlib.sha256(
             json.dumps(change.model_dump(mode="json"), sort_keys=True).encode()
@@ -171,7 +170,7 @@ def _view(
     revision: int,
     stored: Mapping[AgentModelRole, AgentModelSelection],
     defaults: Mapping[AgentModelRole, ModelProfile],
-    available: Mapping[str, Literal["chat", "responses", "messages"]],
+    available: Mapping[str, ApiKind | None],
 ) -> ModelSettings:
     base: dict[AgentModelRole, AgentModelSelection] = {
         role: AgentModelSelection(alias=profile.alias, reasoning_effort=profile.reasoning_effort)
@@ -183,8 +182,7 @@ def _view(
         roles=dict(stored) if stored else base,
         defaults=base,
         available=tuple(
-            ModelOption(alias=alias, api=api, effort_supported=api != "messages")
-            for alias, api in sorted(available.items())
+            ModelOption(alias=alias, api=api) for alias, api in sorted(available.items())
         ),
     )
 

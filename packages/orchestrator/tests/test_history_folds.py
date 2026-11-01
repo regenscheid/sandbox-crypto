@@ -176,7 +176,9 @@ async def test_a_claude_models_window_is_shared_with_its_answer(harness: Harness
             "litellm_provider": "anthropic",
         }
     }
-    record = await harness.run("run-1", [Reply("Hi.")])
+    # On chat completions, which sets no answer length, the model's whole output comes
+    # off; the gateway lists it as Anthropic's, so the API is named (CM-41).
+    record = await harness.run("run-1", [Reply("Hi.")], options=["--api", "main=chat"])
     assert folds(record)["geometry"]["ceiling"] == 136_000
 
 

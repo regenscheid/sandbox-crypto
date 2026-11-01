@@ -459,6 +459,9 @@ class Gateway:
     """Each ``/messages`` request's ``anthropic-beta`` header."""
     served: dict[str, str] | None = None
     """The provider model behind each alias, as ``GET /model/info`` says."""
+    providers: dict[str, str] | None = None
+    """The provider of each ``served`` alias, as ``GET /model/info``'s
+    ``litellm_provider`` says; without it, none is said."""
 
     async def message(self, request: web.Request) -> web.Response:
         """The main alias's script through Anthropic's Messages API, as LiteLLM serves
@@ -525,7 +528,13 @@ class Gateway:
             for alias, calls in (self.capable or {}).items()
         ]
         data += [
-            {"model_name": alias, "litellm_params": {"model": model}, "model_info": {}}
+            {
+                "model_name": alias,
+                "litellm_params": {"model": model},
+                "model_info": {"litellm_provider": (self.providers or {})[alias]}
+                if alias in (self.providers or {})
+                else {},
+            }
             for alias, model in (self.served or {}).items()
         ]
         data += [

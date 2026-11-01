@@ -4,13 +4,14 @@
 from __future__ import annotations
 
 import copy
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from typing import Self, cast
 
 from pydantic import JsonValue, TypeAdapter
 
 from sandbox_science.orchestrator.model import (
+    DEFAULT_API,
     ContextLimitError,
     GatewayBudgetError,
     GatewayModel,
@@ -58,7 +59,7 @@ class CallbackModel(GatewayModel):
         *,
         scope: Callable[[], str] | None = None,
         kind: ModelKind = "fold",
-        profile: ModelProfile | None = None,
+        profile: ModelProfile | Callable[[], ModelProfile] | None = None,
         role: ModelRole = "fold",
         max_output: int | None = None,
         max_response_bytes: int = MAX_MODEL_RESPONSE_BYTES,
@@ -67,7 +68,13 @@ class CallbackModel(GatewayModel):
         self.channel, self.model = channel, alias
         self.scope, self.kind = scope, kind
         self._model_role = role
-        self._requested_profile = profile or requested(alias=alias)
+        # A catalog's profile is read when it is needed, so that the adapters the runtime
+        # chose in its handshake apply to the callers made before it (CM-41).
+        self._profile_source = None if isinstance(profile, ModelProfile) else profile
+        if isinstance(profile, ModelProfile):
+            self._requested_profile = profile
+        else:
+            self._requested_profile = None if profile is not None else requested(alias=alias)
         self._owns_session = False
         self._former_profile = False
         self._max_tokens = max_output
@@ -148,12 +155,23 @@ class CallbackGateway(ModelGateway):
         scope: Callable[[], str] | None = None,
         *,
         apis: dict[str, str] | None = None,
+        default_api: str = DEFAULT_API,
         reasoning_effort: dict[ModelRole, str] | None = None,
     ) -> None:
         self.channel, self.scope = channel, scope
-        self.apis, self.reasoning_effort = apis or {}, reasoning_effort or {}
+        self.apis, self.reasoning_effort = dict(apis or {}), reasoning_effort or {}
+        self.default_api, self.named = default_api, frozenset(self.apis)
 
-    def model(self, alias: str, *, role: ModelRole = "delegated") -> CallbackModel:
+    def adopt(self, chosen: Mapping[str, str] | None) -> None:
+        """The adapters the runtime chose from the gateway's model information, for the
+        aliases the deployment names none for (CM-41); ``None`` keeps the default."""
+        for alias, kind in (chosen or {}).items():
+            if alias not in self.named:
+                self.apis[alias] = kind
+
+    def model(
+        self, alias: str, *, role: ModelRole = "delegated", api: str | None = None
+    ) -> CallbackModel:
         kind = cast(
             ModelKind,
             {
@@ -172,10 +190,10 @@ class CallbackGateway(ModelGateway):
             scope=self.scope,
             kind=kind,
             role=role,
-            profile=requested(
-                alias=alias,
-                api=self.apis.get(alias, "chat"),
-                reasoning_effort=self.reasoning_effort.get(role),
+            profile=(
+                (lambda: self.profile(alias, role=role))
+                if api is None
+                else self.profile(alias, role=role).model_copy(update={"api": api})
             ),
         )
 
@@ -214,7 +232,12 @@ class RuntimeModels:
         if request.model not in self.aliases:
             raise TransportError("denied", "model alias is outside this runtime's configuration")
         model = (
-            self.gateway.model(request.model, role=request.role)
+            self.gateway.model(
+                request.model,
+                role=request.role,
+                # The adapter the attempt pinned, so a continuation keeps it (CM-41).
+                api=request.profile.api if request.profile is not None else None,
+            )
             .for_role(request.role, request.profile)
             .limited(max_output=request.max_output, max_response_bytes=request.max_response_bytes)
         )

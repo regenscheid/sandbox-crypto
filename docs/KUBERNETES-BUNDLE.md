@@ -94,14 +94,21 @@ upload, so its `scratch_mib` must also fit its memory limit. It accepts no
 ## Configure the workspace model catalog
 
 `models.main` and `models.delegated` are required. Each selects a nonsecret `alias`,
-`api` (`responses`, `chat` or `messages`) and optional `effort`; the optional
-`models.reviewer` selects the reviewer role. These become the workspace CLI's
+an optional `api` (`responses`, `chat` or `messages`) and an optional `effort`; the
+optional `models.reviewer` selects the reviewer role. These become the workspace CLI's
 `--agent-model`, `--agent-api` and `--agent-effort` options, enabling the project
-model settings GUI instead of leaving it unavailable. The default API is Responses.
-Non-Messages research roles default to `max` effort; a configured non-Messages
-reviewer defaults to `medium`. Set its alias to the site's approved cheaper reviewer
-model. Messages accepts no requested effort, including an explicit effort in TOML.
-One shared alias must have the same API in every role, though effort is per role.
+model settings GUI instead of leaving it unavailable. A role without `api` gets the run
+service's choice: the agent runtime asks the gateway's model information when it starts,
+and calls an alias whose provider the gateway lists as `anthropic` through `messages`
+(Claude's Messages API), any other through `responses`
+([context management](specs/context-management.md), CM-41). The renderer sets the site's
+`model.default_api` to `responses` for this unless the site file sets it. Research roles
+default to `max` effort and a configured reviewer to `medium`, on every API, since every
+API takes an effort (Messages as `output_config.effort`; on Claude Opus 5.5 `max` is
+the costliest level, and Anthropic advises `high` for agentic work). Set the reviewer's
+alias to the site's approved cheaper reviewer model. One shared alias must have the same
+API in every role, or none in every role, though effort is per role, and the site file's
+`model.api` may not name a catalog alias.
 
 The example names generic research/reviewer aliases, not real gateway routes. This
 catalog contains no model endpoint, API key or credential and makes no LLM calls.

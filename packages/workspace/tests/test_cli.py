@@ -23,6 +23,7 @@ from sandbox_science.orchestrator.control import migrations
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.workspace import app, cli
 from sandbox_science.workspace.forward_auth import ForwardAuthSettings, Verifier
+from sandbox_science.workspace.project_settings import MODEL_CONFIGURATION, ModelConfiguration
 from sandbox_science.workspace.proxy import Exposure, PublicOrigin
 
 COMMAND = Path(sys.executable).parent / "sandbox-science-workspace"
@@ -156,13 +157,16 @@ def test_an_mcp_service_leaves_the_preview_origin_localhost(
     assert given == ["localhost"]
 
 
-def test_messages_agent_reviewer_starts_without_an_effort_default(
+def test_every_agent_alias_takes_an_effort_whatever_its_api(
     state_dir: Path, static_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    served: list[bool] = []
+    """Every adapter takes an effort (docs/specs/context-management.md, CM-41): a Messages
+    alias accepts one, the reviewer defaults to medium on every API, and an alias with no
+    API named is the run service's choice, shown as none."""
+    served: list[ModelConfiguration] = []
 
-    async def serve(*_: object) -> None:
-        served.append(True)
+    async def serve(given: web.Application, *_: object, **__: object) -> None:
+        served.append(given[MODEL_CONFIGURATION])
 
     monkeypatch.setattr(cli, "serve", serve)
     args = [
@@ -172,16 +176,22 @@ def test_messages_agent_reviewer_starts_without_an_effort_default(
         "--static",
         str(static_dir),
         "--agent-model",
-        "main=sol",
+        "main=claude",
         "--agent-model",
         "delegated=sol",
         "--agent-model",
         "reviewer=claude",
         "--agent-api",
         "claude=messages",
+        "--agent-effort",
+        "main=high",
     ]
     assert cli.main(args) == 0
-    assert served == [True]
+    (configured,) = served
+    assert configured.available == {"claude": "messages", "sol": None}
+    assert configured.defaults["main"].reasoning_effort == "high"
+    assert configured.defaults["reviewer"].reasoning_effort == "medium"
+    assert configured.defaults["delegated"].reasoning_effort is None
 
 
 def test_another_address_needs_allow_remote(tmp_path: Path, static_dir: Path) -> None:

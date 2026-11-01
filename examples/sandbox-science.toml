@@ -24,11 +24,13 @@ name = "sandbox-orchestrator"
 reviewer = "sandbox-orchestrator"
 watcher = "sandbox-orchestrator"
 delegated = "sandbox-orchestrator"
-# The gateway API each alias is called through: "chat" (/chat/completions, every alias's
-# by default) or "responses" (/v1/responses, GPT's Responses API with its reasoning sent
-# back), or "messages" (/v1/messages, Claude's Messages API with its progress
-# notes). Leave it out until the labs confirm the others.
+# The gateway API each alias is called through: "chat" (/chat/completions), "responses"
+# (/v1/responses, GPT's Responses API with its reasoning sent back) or "messages"
+# (/v1/messages, Claude's Messages API with its progress notes). An alias left out takes
+# "messages" when the gateway lists its provider as anthropic, else default_api ("chat"
+# unless set).
 # api = { sandbox-orchestrator = "responses" }
+# default_api = "chat"
 # Uploaded by path into the confined runtime; keep it mode 600.
 api_key_file = "~/.config/sandbox-science/secrets/litellm-harness.key"
 # Claude's thinking sent back, once the CM-F30 run passes against the deployed gateway

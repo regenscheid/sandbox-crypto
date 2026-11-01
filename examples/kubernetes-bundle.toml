@@ -9,6 +9,9 @@ namespace = "research"
 # app = "YOUR_REGISTRY/trusted-app@sha256:YOUR_VERIFIED_DIGEST"
 # worker = "YOUR_REGISTRY/trusted-worker@sha256:YOUR_VERIFIED_DIGEST"
 
+# Each role's api is optional: left out, the agent runtime calls an alias the gateway lists
+# as Anthropic's through "messages", any other through "responses". Efforts default to
+# max for the research roles and medium for the reviewer, on every API.
 [models.main]
 alias = "research-main"
 api = "responses"

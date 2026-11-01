@@ -49,6 +49,7 @@ import aiohttp
 
 from . import images
 from .model import (
+    MESSAGES_EFFORTS,
     AssistantMessage,
     GatewayModel,
     Message,
@@ -95,6 +96,32 @@ _OLDER: Final = re.compile(
     r"claude-3|claude-(?:opus|sonnet|haiku)-4(?:-[015])?(?:-\d{8})?(?![-.]?\d)"
 )
 """The Claude models before the 4.6 family, which take no adaptive thinking."""
+_EFFORTS: Final[tuple[tuple[re.Pattern[str], frozenset[str]], ...]] = (
+    (
+        re.compile(
+            r"claude-3|claude-(?:opus-4(?:-1)?|sonnet-4(?:-5)?|haiku-4-5)(?:-\d{8})?(?![-.]?\d)"
+        ),
+        frozenset(),
+    ),
+    (
+        re.compile(r"claude-opus-4-5(?:-\d{8})?(?![-.]?\d)"),
+        frozenset({"low", "medium", "high"}),
+    ),
+    (
+        re.compile(r"claude-(?:opus|sonnet)-4-6(?:-\d{8})?(?![-.]?\d)"),
+        frozenset({"low", "medium", "high", "max"}),
+    ),
+    (
+        re.compile(
+            r"claude-(?:opus-(?:4-[78]|5(?:-5)?)|sonnet-5(?:-5)?|haiku-5-5|fable-5(?:-1)?"
+            r"|mythos-5(?:-1)?)(?:-\d{8})?(?![-.]?\d)"
+        ),
+        frozenset(MESSAGES_EFFORTS),
+    ),
+)
+"""The efforts each Claude model takes as ``output_config.effort``, by Anthropic's
+documentation (docs/specs/context-management.md, requested reasoning effort): none
+before Opus 4.5, ``xhigh`` from Opus 4.7. A model on no line is sent the effort as asked."""
 _VERSION_DOT: Final = re.compile(r"(?<=\d)\.(?=\d)")
 _UNBOUND: Final = ("bound to a different conversation", "signature` in `thinking` block")
 """How Anthropic refuses thinking sent back whose history changed, or that it cannot
@@ -208,6 +235,18 @@ def _hyphenated(model: str) -> str:
     return _VERSION_DOT.sub("-", model.lower())
 
 
+def _efforts(models: Sequence[str]) -> frozenset[str] | None:
+    """The efforts every model behind an alias takes, of those the adapter knows; ``None``
+    when it knows none of them."""
+    known: frozenset[str] | None = None
+    for model in models:
+        name = _hyphenated(model)
+        found = next((levels for line, levels in _EFFORTS if line.search(name)), None)
+        if found is not None:
+            known = found if known is None else known & found
+    return known
+
+
 def _decide(models: Sequence[str], listed: re.Pattern[str]) -> tuple[bool, str]:
     """Whether every model behind an alias is on a CM-38 list, and why."""
     if not models:
@@ -225,6 +264,8 @@ class _Served:
     updates: bool
     tool_changes: bool
     adaptive: bool = True
+    efforts: frozenset[str] | None = None
+    """The efforts the model takes, or ``None`` when the adapter does not know."""
 
 
 @dataclass(frozen=True)
@@ -276,6 +317,14 @@ class MessagesModel(GatewayModel):
 
     async def complete(self, messages: Sequence[Message], tools: Sequence[ToolSpec]) -> ModelTurn:
         served = await self._serving()
+        effort = self.validate_profile().reasoning_effort
+        if effort is not None and served.efforts is not None and effort not in served.efforts:
+            # Refused before the request, as the API would refuse it (no silent downgrade).
+            takes = ", ".join(e for e in MESSAGES_EFFORTS if e in served.efforts) or "none"
+            raise ModelError(
+                f"{self.model}'s model takes the effort {takes}, not {effort!r}: change the "
+                "role's reasoning effort"
+            )
         why_not = self._why_not(messages)
         off: str | None = None
         try:
@@ -352,7 +401,7 @@ class MessagesModel(GatewayModel):
         updates, why_updates = _decide(models, _UPDATES)
         changes, why_changes = _decide(models, _TOOL_CHANGES)
         adaptive = not models or not all(_OLDER.search(_hyphenated(model)) for model in models)
-        served = _Served(updates, changes, adaptive)
+        served = _Served(updates, changes, adaptive, _efforts(models))
         # The features are inferred from a string the operator typed at the gateway, so
         # say what was chosen, once for the alias (and again if the gateway names another
         # model); a name that matched nothing is a warning, since it turns the features

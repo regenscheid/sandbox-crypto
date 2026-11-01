@@ -126,6 +126,7 @@ from .model import (
     Message,
     ModelError,
     ModelGateway,
+    adapter_of,
     cached_for,
 )
 from .model_profiles import PROFILES, ModelProfile, ModelRole, profiles
@@ -659,7 +660,10 @@ class Harness:
         self.delegated = delegated or (
             Role(
                 main.model.cached_as("unassigned").for_role(
-                    "delegated", gateway.profile(main.alias, role="delegated") if gateway else None
+                    "delegated",
+                    functools.partial(gateway.profile, main.alias, role="delegated")
+                    if gateway
+                    else None,
                 ),
                 main.alias,
             )
@@ -737,7 +741,7 @@ class Harness:
             result["delegated"] = ModelProfile.model_validate(
                 {
                     "alias": request.alias,
-                    "api": self.gateway.apis.get(request.alias, "chat"),
+                    "api": self.gateway.api(request.alias),
                     "reasoning_effort": result["delegated"].reasoning_effort
                     if "delegated" in result
                     else None,
@@ -795,11 +799,12 @@ class Harness:
         selected = (request.model_profiles or {}).get(name)
         alias = request.alias if request.parent is not None and request.alias is not None else None
         alias = alias or (selected.alias if selected is not None else configured.alias)
-        if alias == configured.alias:
+        if alias == configured.alias and _same_adapter(configured, selected):
             return configured
         if self.gateway is None:
             raise ModelError(f"no model gateway serves {alias!r}")
-        return Role(self.gateway.model(alias, role=name), alias)
+        api = selected.api if selected is not None and selected.alias == alias else None
+        return Role(self.gateway.model(alias, role=name, api=api), alias)
 
     def reviewer_role(self, request: RunRequest) -> Role | None:
         """The consistency reviewer pinned for this tree, with reviewer response bounds."""
@@ -808,14 +813,14 @@ class Harness:
             return None
         selected = (request.model_profiles or {}).get("reviewer")
         alias = selected.alias if selected is not None else configured.alias
-        if alias == configured.alias:
+        if alias == configured.alias and _same_adapter(configured, selected):
             return configured
         if self.gateway is None:
             raise ModelError(f"no model gateway serves reviewer {alias!r}")
         return Role(
-            self.gateway.model(alias, role="reviewer").limited(
-                max_output=4096, max_response_bytes=REVIEWER_MAX_RESPONSE_BYTES
-            ),
+            self.gateway.model(
+                alias, role="reviewer", api=selected.api if selected is not None else None
+            ).limited(max_output=4096, max_response_bytes=REVIEWER_MAX_RESPONSE_BYTES),
             alias,
         )
 
@@ -2252,6 +2257,14 @@ class Harness:
         if alias not in accepts:
             return False, "not_described"
         return accepts[alias], "gateway" if accepts[alias] else "gateway_says_no"
+
+
+def _same_adapter(role: Role, selected: ModelProfile | None) -> bool:
+    """Whether ``role``'s model calls through the adapter its pinned profile names, so a
+    continuation keeps the adapter it started with (CM-41); a model that makes no gateway
+    call itself, as a confined one, takes the profile's."""
+    found = adapter_of(role.model)
+    return selected is None or found is None or found == selected.api
 
 
 def _refit(toolbox: Toolbox, discovery: SkillDiscovery | None, view: View) -> None:

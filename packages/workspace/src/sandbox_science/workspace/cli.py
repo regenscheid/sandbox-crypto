@@ -609,22 +609,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     unknown_apis = set(api_items).difference(role_items.values())
     if unknown_apis:
         parser.error("agent API aliases must be in the agent model catalog")
-    if "reviewer" in role_items and api_items.get(role_items["reviewer"], "chat") != "messages":
+    if "reviewer" in role_items:
         effort_items.setdefault("reviewer", "medium")
-    for role, alias in role_items.items():
-        if api_items.get(alias, "chat") == "messages" and role in effort_items:
-            parser.error(f"{role} uses Messages, which does not accept agent effort")
     model_configuration = (
         ModelConfiguration(
+            # The adapter shown is the one the deployment names; the run service chooses
+            # the others, and pins its own choice in each attempt (CM-41).
             defaults={
-                role: requested(
-                    alias,
-                    api_items.get(alias, "chat"),
-                    effort_items.get(role),
-                )
+                role: requested(alias, api_items.get(alias, "chat"), effort_items.get(role))
                 for role, alias in role_items.items()
             },
-            available={alias: api_items.get(alias, "chat") for alias in set(role_items.values())},
+            available={alias: api_items.get(alias) for alias in set(role_items.values())},
         )
         if role_items
         else None

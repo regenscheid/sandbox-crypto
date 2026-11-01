@@ -1943,7 +1943,7 @@ export interface ModelLine {
 
 export interface ModelOption {
   alias: string;
-  api: "chat" | "responses" | "messages";
+  api: "chat" | "responses" | "messages" | null;
   effort_supported: boolean;
 }
 

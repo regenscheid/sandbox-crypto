@@ -35,7 +35,7 @@ from .config import (
 )
 from .kubernetes_config import BundleConfig, BundleError, Model, Name, PinnedImage
 from .kubernetes_config import load as load_bundle
-from .kubernetes_models import ModelCatalog
+from .kubernetes_models import DEFAULT_API, ModelCatalog
 
 ARCH = "kubernetes.io/arch"
 Kata = Annotated[str, StringConstraints(pattern=r"^kata(?:-[a-z0-9]+)*$")]
@@ -303,19 +303,15 @@ class Site(Model):
 
 
 def _efforts(catalog: ModelCatalog) -> tuple[dict[str, str], dict[str, str]]:
-    """The catalog's aliases' APIs and its roles' efforts, defaulted as the workspace's
+    """The APIs the catalog names and its roles' efforts, defaulted as the workspace's
     options default them (``ModelCatalog.workspace_arguments``), so control and the GUI
     agree."""
-    apis: dict[str, str] = {}
     efforts: dict[str, str] = {}
     for role in _CATALOG_ROLES:
         profile = getattr(catalog, role)
-        if profile is None:
-            continue
-        apis[profile.alias] = profile.api
-        if profile.api != "messages":
-            efforts[role] = profile.effort or ("medium" if role == "reviewer" else "max")
-    return apis, efforts
+        if profile is not None:
+            efforts[role] = profile.requested_effort(role)
+    return catalog.apis(), efforts
 
 
 def _model(raw: object, catalog: ModelCatalog) -> dict[str, object]:
@@ -331,7 +327,12 @@ def _model(raw: object, catalog: ModelCatalog) -> dict[str, object]:
     extra_efforts = model.get("reasoning_effort", {})
     if not isinstance(extra_apis, dict) or not isinstance(extra_efforts, dict):
         raise BundleError("model.api and model.reasoning_effort are tables")
-    if apis.keys() & extra_apis.keys() or efforts.keys() & extra_efforts.keys():
+    catalog_aliases = {
+        profile.alias
+        for profile in (catalog.main, catalog.delegated, catalog.reviewer)
+        if profile is not None
+    }
+    if catalog_aliases & extra_apis.keys() or efforts.keys() & extra_efforts.keys():
         raise BundleError("the bundle's catalog sets its own aliases' APIs and roles' efforts")
     model["name"] = catalog.main.alias
     model["delegated"] = catalog.delegated.alias
@@ -339,6 +340,8 @@ def _model(raw: object, catalog: ModelCatalog) -> dict[str, object]:
         model["reviewer"] = catalog.reviewer.alias
     model["api"] = {**apis, **extra_apis}
     model["reasoning_effort"] = {**efforts, **extra_efforts}
+    # The run service chooses the API of an alias the catalog names none for (CM-41).
+    model.setdefault("default_api", DEFAULT_API)
     return model
 
 

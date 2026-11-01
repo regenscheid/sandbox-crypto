@@ -64,7 +64,7 @@ async def test_same_alias_different_roles_and_omitted_defaults(fake: Fake) -> No
         await gateway.close()
 
 
-async def test_chat_effort_and_messages_fail_without_dispatch(fake: Fake) -> None:
+async def test_chat_effort_and_an_unknown_messages_effort_fail_without_dispatch(fake: Fake) -> None:
     gateway = ModelGateway(fake.url, KEY, reasoning_effort={"reviewer": "max"})
     try:
         fake.then('{"choices":[{"message":{"content":"done"},"finish_reason":"stop"}]}')
@@ -72,10 +72,11 @@ async def test_chat_effort_and_messages_fail_without_dispatch(fake: Fake) -> Non
         assert fake.bodies[-1]["reasoning_effort"] == "max"
         assert "reasoning" not in fake.bodies[-1]
         model = MessagesModel(fake.url, "gpt", KEY).for_role(
-            "main", ModelProfile(alias="gpt", api="messages", reasoning_effort="max")
+            "main", ModelProfile(alias="gpt", api="messages", reasoning_effort="ultra")
         )
         try:
-            with pytest.raises(ModelError, match="unsupported"):
+            # Messages takes low to max; another effort is refused before any call.
+            with pytest.raises(ModelError, match="not 'ultra'"):
                 await model.complete([], [])
         finally:
             await model.close()

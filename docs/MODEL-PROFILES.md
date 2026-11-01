@@ -14,8 +14,9 @@ skills_metadata = "low"
 ```
 
 When `reviewer` is omitted, the launcher and native run service request `medium` for
-the consistency reviewer. Main and delegated roles retain provider defaults when
-omitted. An explicit deployment value still wins.
+the consistency reviewer, whatever its API, since every API takes an effort (Claude Opus
+5.5's own default is `medium` too). Main and delegated roles retain provider defaults
+when omitted. An explicit deployment value still wins.
 
 These are requested values, not a declaration that a gateway or model supports every
 example value. Names are bounded lowercase wire values; the configured value is sent
@@ -25,9 +26,16 @@ explicit setting. Embeddings do not have a reasoning-effort role.
 
 The native harness takes repeated `--reasoning-effort ROLE=VALUE` arguments. The
 launcher sends the same settings to the confined runtime. Responses uses
-`reasoning.effort`; chat uses `reasoning_effort`. Messages rejects explicit effort
-until an adapter-specific mapping has been implemented and qualified. The separate
-workspace math-repair caller uses the reviewer's configured API and requested effort.
+`reasoning.effort`; chat uses `reasoning_effort`; Messages uses `output_config.effort`,
+with the levels `low`, `medium`, `high`, `xhigh` and `max`. On Messages another value is
+refused before the call, and so is a level the model behind the alias does not take,
+when the gateway names that model: Claude Opus 4.5 takes `low` to `high`, Opus 4.6 and
+Sonnet 4.6 all but `xhigh`, and Sonnet 4.5, Haiku 4.5 and older Claude models none (use
+`chat` for such an alias if it has a reviewer's default effort). A model the adapter
+does not recognize is sent the level as asked. Claude Opus 5.5 takes no other thinking
+control: without an effort it runs at its default, `medium`; Anthropic advises `high` or
+more for agentic work. The separate workspace math-repair caller uses the reviewer's
+configured API (`chat` unless `[model] api` names one) and requested effort.
 
 New work pins alias, adapter and requested effort for every enabled caller. Saved run
 records and input blueprints retain those profiles; paid intents atomically append a
@@ -40,7 +48,8 @@ may change effort for the new attempt without rewriting its original blueprint.
 The workspace's **Project settings → Agent models and reasoning effort** editor lets
 the user choose the main/orchestrator, delegated-agent and consistency-reviewer alias
 and effort independently. Model choices are limited to the deployment's trusted agent
-catalog (the aliases configured for those three roles). The browser cannot choose an
+catalog (the aliases configured for those three roles), and every one of them takes an
+effort, whichever adapter the run service chooses for it. The browser cannot choose an
 adapter, endpoint or credential. A save applies to the next root research tree. That
 tree's children and reviews inherit its immutable profile snapshot, and ordinary
 Resume keeps it; an edit never changes a running tree. The separate math-repair caller

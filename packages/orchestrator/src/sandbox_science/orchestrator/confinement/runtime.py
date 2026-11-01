@@ -8,6 +8,7 @@ import asyncio
 import contextlib
 from functools import partial
 from pathlib import Path
+from typing import cast
 
 import aiohttp
 from pydantic import Field, JsonValue, TypeAdapter, field_validator, model_validator
@@ -17,8 +18,8 @@ from sandbox_science.contracts.logs import configure_logging
 from sandbox_science.contracts.model import Contract, Identifier
 from sandbox_science.orchestrator.control.migrations import VERSION
 from sandbox_science.orchestrator.messages import ThinkingReplay
-from sandbox_science.orchestrator.model import ModelGateway
-from sandbox_science.orchestrator.model_profiles import Effort, ModelRole
+from sandbox_science.orchestrator.model import DEFAULT_API, ModelGateway
+from sandbox_science.orchestrator.model_profiles import ApiKind, Effort, ModelRole
 from sandbox_science.orchestrator.skills.embeddings import Embedder
 
 from .canaries import DirectSettings, RuntimeListings
@@ -49,7 +50,10 @@ class RuntimeSettings(Contract):
     model_key_file: Path
     models: tuple[ModelAlias, ...] = Field(min_length=1, max_length=128)
     reasoning_effort: dict[ModelRole, Effort] = Field(default_factory=dict[ModelRole, Effort])
-    apis: dict[str, str] = Field(default_factory=dict[str, str])
+    apis: dict[str, ApiKind] = Field(default_factory=dict[str, ApiKind])
+    default_api: ApiKind = DEFAULT_API
+    """The adapter of an alias ``apis`` leaves out that the gateway does not list as
+    Anthropic's (CM-41)."""
     options: dict[str, dict[str, JsonValue]] = Field(
         default_factory=dict[str, dict[str, JsonValue]]
     )
@@ -98,6 +102,7 @@ async def serve(settings: RuntimeSettings, *, clock: Clock = SYSTEM_CLOCK) -> No
         settings.model_url,
         private_credential(settings.model_key_file),
         apis=settings.apis,
+        default_api=settings.default_api,
         reasoning_effort=settings.reasoning_effort,
         options={
             **settings.options,
@@ -117,6 +122,9 @@ async def serve(settings: RuntimeSettings, *, clock: Clock = SYSTEM_CLOCK) -> No
         None, frozenset(settings.mcp.servers) if settings.mcp is not None else frozenset()
     )
     try:
+        # Each alias's adapter, chosen once from the gateway's model information; control
+        # adopts the choice in the handshake (CM-41).
+        apis = cast(dict[str, ApiKind], await gateway.choose_apis(settings.models))
         # The endpoint and egress are fixed by trusted launcher configuration;
         # no caller or agent tool supplies a connection URL.
         async with session.ws_connect(
@@ -189,7 +197,9 @@ async def serve(settings: RuntimeSettings, *, clock: Clock = SYSTEM_CLOCK) -> No
                 ready = typed(
                     Ready,
                     await channel.request(
-                        Capability.HANDSHAKE, payload(Hello(image_revision=revision)), timeout=30
+                        Capability.HANDSHAKE,
+                        payload(Hello(image_revision=revision, apis=apis)),
+                        timeout=30,
                     ),
                 )
                 if ready.control_schema != VERSION or ready.generation != settings.generation:

@@ -40,6 +40,7 @@ from sandbox_science.orchestrator.messages import (
     MessagesModel,
     ThinkingReplay,
     _decide,
+    _efforts,
 )
 from sandbox_science.orchestrator.model import (
     AssistantMessage,
@@ -53,6 +54,7 @@ from sandbox_science.orchestrator.model import (
     ToolSpec,
     gateway_model,
 )
+from sandbox_science.orchestrator.model_profiles import ModelProfile
 from sandbox_science.orchestrator.pairing import ABORTED
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.responses import ResponsesModel
@@ -157,7 +159,8 @@ class Fake:
         self.info_calls += 1
         if self.info_status != 200:
             return web.Response(status=self.info_status, text="no")
-        data = [{"model_name": alias, "litellm_params": {"model": model}, "model_info": {}}
+        data = [{"model_name": alias, "litellm_params": {"model": model},
+                 "model_info": {"litellm_provider": model.partition("/")[0]}}
                 for alias, model in self.models.items()]  # fmt: skip
         return web.json_response({"data": data})
 
@@ -708,6 +711,90 @@ async def test_claude_models_before_adaptive_thinking_are_sent_none(fake: Fake) 
     assert "thinking" not in fake.bodies[-1]
 
 
+def effortful(fake: Fake, alias: str, effort: str | None) -> MessagesModel:
+    return claude(fake, alias).for_role(
+        "main", ModelProfile(alias=alias, api="messages", reasoning_effort=effort)
+    )
+
+
+async def test_a_role_s_effort_goes_as_output_config(fake: Fake) -> None:
+    """Requested reasoning effort on Messages: ``output_config.effort``, the only thinking
+    control Claude Opus 5.5 takes; without one, none is sent and the model's default
+    holds. Thinking replay stays off (CM-39)."""
+    for effort in ("high", "max", None):
+        model = effortful(fake, "claude", effort)
+        try:
+            await converse(model, [Reply(text="Hello.")], fake)
+        finally:
+            await model.close()
+        body = fake.bodies[-1]
+        if effort is None:
+            assert "output_config" not in body
+        else:
+            assert body["output_config"] == {"effort": effort}
+        assert "reasoning" not in body
+        assert "reasoning_effort" not in body
+        assert body["thinking"] == {"type": "adaptive", "display": "updates"}
+        assert "block_binding" not in body["thinking"]
+
+
+@pytest.mark.parametrize(
+    ("served", "effort", "takes"),
+    [
+        ("anthropic/claude-haiku-4-5", "low", "none"),
+        ("anthropic/claude-sonnet-4-5-20250929", "medium", "none"),
+        ("anthropic/claude-3-7-sonnet-20250219", "high", "none"),
+        ("anthropic/claude-opus-4-5", "max", "low, medium, high"),
+        ("anthropic/claude-opus-4.6", "xhigh", "low, medium, high, max"),
+    ],
+)
+async def test_an_effort_the_model_does_not_take_is_refused_before_the_request(
+    fake: Fake, served: str, effort: str, takes: str
+) -> None:
+    fake.models["probe"] = served
+    model = effortful(fake, "probe", effort)
+    try:
+        with pytest.raises(ModelError, match=f"takes the effort {takes}, not '{effort}'"):
+            await model.complete([{"role": "user", "content": TASK}], TOOLS)
+    finally:
+        await model.close()
+    assert fake.bodies == []
+
+
+@pytest.mark.parametrize(
+    ("served", "effort"),
+    [
+        ("anthropic/claude-opus-4-5", "high"),
+        ("anthropic/claude-sonnet-4-6", "max"),
+        ("anthropic/claude-opus-4-7", "xhigh"),
+        ("anthropic/claude-haiku-5-5", "low"),
+        ("anthropic/claude-fable-5-1", "max"),
+        ("anthropic/claude-sonnet-5.5", "xhigh"),
+        ("anthropic/claude-unreleased-9", "max"),
+    ],
+)
+async def test_an_effort_the_model_takes_or_may_take_is_sent(
+    fake: Fake, served: str, effort: str
+) -> None:
+    """A level the model takes goes as asked, and so does any level for a model the
+    adapter does not recognize, for the API to accept or refuse."""
+    fake.models["probe"] = served
+    model = effortful(fake, "probe", effort)
+    try:
+        await converse(model, [Reply(text="Hello.")], fake)
+    finally:
+        await model.close()
+    assert fake.bodies[-1]["output_config"] == {"effort": effort}
+
+
+async def test_one_deployment_that_takes_fewer_efforts_limits_the_alias() -> None:
+    assert _efforts(["anthropic/claude-opus-5-5", "anthropic/claude-opus-4-6"]) == frozenset(
+        {"low", "medium", "high", "max"}
+    )
+    assert _efforts(["anthropic/claude-unknown-1"]) is None
+    assert _efforts(["anthropic/claude-unknown-1", "anthropic/claude-haiku-4-5"]) == frozenset()
+
+
 async def test_a_setting_over_thirty_days_old_leaves_replay_off(fake: Fake) -> None:
     old = replace(SETTING, verified=TODAY - timedelta(days=31))
     model = claude(fake, replay=old)
@@ -1193,22 +1280,19 @@ def test_the_settings_are_checked(
     assert said in capsys.readouterr().err
 
 
-def test_the_replay_setting_needs_a_claude_alias(
+def test_the_default_api_is_one_of_the_adapters(
     capsys: pytest.CaptureFixture[str], tmp_path: Any
 ) -> None:
+    """The replay setting needs no alias named ``messages``: the run service may choose
+    it (CM-41). ``--default-api`` names an adapter."""
     key = tmp_path / "key"
     key.write_text(KEY)
     base = ["run", "--worker", "http://127.0.0.1:1", "--token-file", "t", "--project", "p",
             "--session", "s", "--environment", "env-1", "--model-url", "http://127.0.0.1:2",
             "--api-key-file", str(key)]  # fmt: skip
-    setting = json.dumps({"image": "i", "version": VERSION, "verified": "2026-10-01", "run": "r"})
-    for options, said in (
-        (["--thinking-replay", setting], "--thinking-replay needs an alias with --api"),
-        (["--api", "x=responses", "--thinking-replay", setting], "needs an alias with --api"),
-    ):
-        with pytest.raises(SystemExit):
-            cli.main([*base, *options, "task"])
-        assert said in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        cli.main([*base, "--default-api", "anthropic", "task"])
+    assert "--default-api" in capsys.readouterr().err
 
 
 async def test_working_projection_preserves_signed_thinking_and_calibration(fake: Fake):

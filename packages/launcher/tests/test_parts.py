@@ -155,21 +155,44 @@ def test_command_lines_name_files_never_secrets(make_config: Any, commands: Path
         parts.project_argvs(config, layout, "sha256:" + "b" * 64, {"crypto": "crypto-base"})
 
 
-def test_messages_reviewer_omits_the_default_effort(make_config: Any, commands: Path) -> None:
-    config = load_config(
-        make_config(
-            {
-                "bin_dir": str(commands),
-                "model": {"reviewer": "claude", "api": {"claude": "messages"}},
-            }
+def test_the_reviewer_defaults_to_medium_effort_on_every_api(
+    make_config: Any, commands: Path
+) -> None:
+    """Every API takes an effort, so the reviewer's default does not depend on the
+    adapter, which the run service may choose (CM-41)."""
+    for api in ({"claude": "messages"}, {}):
+        config = load_config(
+            make_config({"bin_dir": str(commands), "model": {"reviewer": "claude", "api": api}})
         )
-    )
+        layout = Layout(config.state_dir)
+        harness = parts.harness_argv(config, layout)
+        workspace = parts.workspace_argv(config, layout)
+        assert "reviewer=medium" in harness
+        assert "reviewer=medium" in workspace
+        assert workspace[workspace.index("--reviewer-effort") + 1] == "medium"
+
+
+def test_only_the_named_apis_reach_the_run_service_and_the_workspace(
+    make_config: Any, commands: Path
+) -> None:
+    """CM-41: an alias ``api`` leaves out is the run service's choice, with
+    ``default_api`` for the aliases the gateway does not list as Anthropic's."""
+    model = {"reviewer": "claude", "api": {"gpt": "responses"}, "default_api": "responses"}
+    config = load_config(make_config({"bin_dir": str(commands), "model": model}))
     layout = Layout(config.state_dir)
     harness = parts.harness_argv(config, layout)
+    assert [harness[i + 1] for i, flag in enumerate(harness) if flag == "--api"] == [
+        "gpt=responses"
+    ]
+    assert harness[harness.index("--default-api") + 1] == "responses"
     workspace = parts.workspace_argv(config, layout)
-    assert "reviewer=medium" not in harness
-    assert "reviewer=medium" not in workspace
-    assert "--reviewer-effort" not in workspace
+    assert "--agent-api" not in workspace
+    assert "--reviewer-api" not in workspace
+    plain = load_config(make_config({"bin_dir": str(commands)}))
+    plain_argv = parts.harness_argv(plain, Layout(plain.state_dir))
+    assert plain_argv[plain_argv.index("--default-api") + 1] == "chat"
+    with pytest.raises(LauncherError, match="default_api"):
+        load_config(make_config({"model": {"default_api": "anthropic"}}))
 
 
 def test_the_skills_embedding_model_reaches_imports_and_runs_by_the_key_path(
@@ -500,8 +523,8 @@ def test_the_run_service_calls_claude_aliases_through_messages_with_the_replay_s
     make_config: Any, commands: Path
 ) -> None:
     """CM-38, CM-39: an alias ``api`` names ``messages`` goes to the run service so,
-    with the thinking replay setting when there is one, off by default. A setting with
-    no Claude alias to use it is refused."""
+    with the thinking replay setting when there is one, off by default. The setting
+    needs no alias named: the run service may choose ``messages`` itself (CM-41)."""
     replay = {"image": "sha256:" + "a" * 64, "version": "1.107.0", "verified": "2026-11-02",
               "run": "cm-f30-1"}  # fmt: skip
     model = {"api": {"sandbox-orchestrator": "messages"}, "thinking_replay": replay}
@@ -512,9 +535,10 @@ def test_the_run_service_calls_claude_aliases_through_messages_with_the_replay_s
     assert json.loads(harness[harness.index("--thinking-replay") + 1]) == replay
     plain = load_config(make_config({"bin_dir": str(commands)}))
     assert "--thinking-replay" not in parts.harness_argv(plain, Layout(plain.state_dir))
-    for unused in ({}, {"x": "responses"}):
-        with pytest.raises(LauncherError, match="thinking_replay"):
-            load_config(make_config({"model": {"api": unused, "thinking_replay": replay}}))
+    unnamed = load_config(
+        make_config({"bin_dir": str(commands), "model": {"thinking_replay": replay}})
+    )
+    assert "--thinking-replay" in parts.harness_argv(unnamed, Layout(unnamed.state_dir))
 
 
 def test_the_run_service_is_told_which_aliases_accept_images(
