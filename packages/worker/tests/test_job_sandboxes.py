@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import time
 import tomllib
 from collections import Counter
 from collections.abc import AsyncIterator, Callable
@@ -904,6 +905,39 @@ async def test_an_unplaced_sandbox_fails_after_its_schedule_timeout(tmp_path: Pa
         record = pool.store.job_sandboxes.get(ended.execution_id)
         assert record is not None
         assert record.phase == "released"
+    finally:
+        await pool.close()
+
+
+@pytest.mark.parametrize("ignores_its_deadline", [False, True])
+async def test_the_schedule_timeout_bounds_the_create_command(
+    tmp_path: Path, ignores_its_deadline: bool
+) -> None:
+    """OpenShell 0.1.5's ``sandbox create`` waits for provisioning, ``--detach`` or not,
+    up to its own 300 s: the command is given the profile's schedule timeout as that
+    deadline (``OPENSHELL_PROVISION_TIMEOUT``), and ended at it when it waits on, so a
+    job no node can place ends ``capacity_unavailable`` after the schedule timeout, and
+    its sandbox is deleted by identity."""
+    pool = Pool(tmp_path, job_profiles={"medium": profile(schedule_timeout=1.5)})
+    try:
+        await pool.session()
+        pool.fake.update(
+            phase_on_create="Provisioning",  # pending: no node has room
+            create_waits=True,
+            **({"create_waits_for": 60} if ignores_its_deadline else {}),
+        )
+        started = time.monotonic()
+        ended = await pool.run(pool.request())
+        assert time.monotonic() - started < 30
+        assert ended.state is ExecutionState.FAILED
+        assert ended.result is not None
+        assert ended.result.error is not None
+        assert ended.result.error.message.startswith("capacity_unavailable")
+        assert "not placed within 1.5 s" in ended.result.error.message
+        assert pool.fake.read()["provision_timeouts"] == ["2"]
+        environment = pool.job_environment(ended.execution_id)
+        assert pool.environments.get(environment).state is EnvironmentState.DELETED
+        assert len(pool.fake.read()["sandboxes"]) == 1  # the session's only
     finally:
         await pool.close()
 

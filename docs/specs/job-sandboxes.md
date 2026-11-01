@@ -168,8 +168,9 @@ profiles should carry. No mounting of one sandbox's disk in another. No automati
 
 - JS-23. **Waiting for room.** Full worker counts are refused at once (JS-10). When no
   node has room, the pod stays pending and the job `queued` in `creating` up to the
-  profile's `schedule_timeout`; then it ends `failed` (`capacity_unavailable`), the
-  sandbox is deleted by identity, and nothing retries. Whether OpenShell reports the
+  profile's `schedule_timeout`, which bounds the create command's own wait too; then it
+  ends `failed` (`capacity_unavailable`), the sandbox is deleted by identity, and
+  nothing retries. Whether OpenShell reports the
   scheduler's reason is a qualification item; until then the GUI says "not placed yet".
 - JS-24. **The GUI** session page shows each job's profile, phase, reserved CPU and
   memory, tier and retention deadline, with "release now" beside "cancel". A worker CLI
