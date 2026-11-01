@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Annotated, Self
+from typing import Annotated, Literal, Self
 from urllib.parse import urlsplit
 
 from pydantic import (
@@ -117,6 +117,7 @@ class ControlModels(BaseModel):
     metadata: Alias | None = None
     embedding: Alias | None = None
     apis: dict[str, str] = Field(default_factory=dict[str, str], max_length=128)
+    default_api: Literal["chat", "responses", "messages"] = "chat"
     reasoning_effort: dict[str, str] = Field(default_factory=dict[str, str], max_length=16)
     image_revision: str = Field(pattern=r"^[0-9a-f]{40}$")
 
@@ -243,6 +244,7 @@ class RuntimeManagerSettings(Contract):
             model_url=self.model_url,
             models=models.aliases(),
             apis=models.apis,
+            default_api=models.default_api,
             reasoning_effort=models.reasoning_effort,
             embedding=models.embedding,
             thinking_replay=self.thinking_replay.model_dump(mode="json")

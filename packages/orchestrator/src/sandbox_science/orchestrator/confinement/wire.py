@@ -33,7 +33,7 @@ from sandbox_science.orchestrator.model import (
     ToolCall,
     ToolSpec,
 )
-from sandbox_science.orchestrator.model_profiles import ModelProfile, ModelRole
+from sandbox_science.orchestrator.model_profiles import ApiKind, ModelProfile, ModelRole
 from sandbox_science.orchestrator.pricing import CostSource
 from sandbox_science.orchestrator.projects import FailurePhase, ModelUsage, RunName
 from sandbox_science.orchestrator.prompts import PromptPins, Section
@@ -58,12 +58,15 @@ _MAX_BINARY_B64 = 4 * -(-MAX_BINARY_BYTES // 3)
 
 
 class Hello(Contract):
-    protocol: Literal[5] = CONTROL_PROTOCOL
+    protocol: Literal[6] = CONTROL_PROTOCOL
     image_revision: str = Field(min_length=1, max_length=128)
+    apis: dict[ModelAlias, ApiKind] | None = Field(default=None, max_length=256)
+    """The adapter the runtime chose for each of its aliases from the gateway's model
+    information (CM-41); ``None`` when the gateway could not be asked."""
 
 
 class Ready(Contract):
-    protocol: Literal[5] = CONTROL_PROTOCOL
+    protocol: Literal[6] = CONTROL_PROTOCOL
     generation: Identifier
     projects: tuple[Identifier, ...] = Field(min_length=1, max_length=128)
     control_schema: Counter

@@ -202,7 +202,7 @@ async def test_runtime_auxiliary_identity_reaches_legacy_metadata_writer(
     class Gateway:
         requested_profile = ModelProfile(alias="fixture")
 
-        def model(self, alias, *, role=None):
+        def model(self, alias, *, role=None, api=None):
             return self
 
         def for_role(self, role, profile):

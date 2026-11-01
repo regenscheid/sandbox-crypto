@@ -16,11 +16,13 @@ ModelRole = Literal[
     "main", "delegated", "reviewer", "watcher", "fold", "overview", "skills_metadata"
 ]
 Effort = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_-]{0,31}$")]
+ApiKind = Literal["chat", "responses", "messages"]
+"""The adapters an alias may be called through (CM-41)."""
 
 
 class ModelProfile(Contract):
     alias: str = Field(min_length=1, max_length=200)
-    api: Literal["chat", "responses", "messages"] = "chat"
+    api: ApiKind = "chat"
     reasoning_effort: Effort | None = None
 
 

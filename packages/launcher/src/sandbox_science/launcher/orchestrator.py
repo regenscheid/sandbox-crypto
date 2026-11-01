@@ -116,6 +116,7 @@ def control_models(model: ModelConfig, skills: SkillsConfig, revision: str) -> d
     return {
         "main": model.name,
         "apis": model.api,
+        "default_api": model.default_api,
         "reasoning_effort": model.effective_efforts(),
         "reviewer": model.reviewer,
         "watcher": model.watcher,
@@ -273,6 +274,7 @@ def prepare(
         model_url=reachable(model.url),
         models=aliases,
         apis=model.api,
+        default_api=model.default_api,
         reasoning_effort=model.effective_efforts(),
         embedding=config.skills.embedding_model,
         thinking_replay=model.thinking_replay.model_dump(mode="json")

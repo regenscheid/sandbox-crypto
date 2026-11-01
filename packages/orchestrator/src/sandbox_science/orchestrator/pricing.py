@@ -29,6 +29,11 @@ priced wholly at the highest tier it passes. A rate that tier does not give is n
 taken lower than the list allows: an input or output rate is the highest the deployment
 gives for that kind, a cached-input rate the tier's input rate, and a cache-write rate is
 none, so a call that wrote the cache stays unpriced.
+
+LiteLLM lists only the 5-minute cache-write price. On ``chat`` it may cache a Claude
+prompt for an hour itself (``ephemeral_1h_input_tokens``, at about twice the input
+price; Messages lab, 2026-10-31), which a price from this list would understate. The
+gateway's own cost, taken first, covers it.
 """
 
 from __future__ import annotations

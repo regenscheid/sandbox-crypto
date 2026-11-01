@@ -285,13 +285,14 @@ def harness_argv(config: LauncherConfig, layout: Layout) -> list[str]:
     if model.watcher_interval is not None:
         watcher += ["--watcher-interval", f"{model.watcher_interval:g}"]
     delegated = ["--delegated-model", model.delegated] if model.delegated else []
-    # Each alias's gateway API (CM-41); an alias left out takes chat completions.
+    # Each alias's gateway API (CM-41); the run service chooses one for an alias left out.
     efforts = [
         option
         for role, effort in model.effective_efforts().items()
         for option in ("--reasoning-effort", f"{role}={effort}")
     ]
     apis = [option for alias, kind in model.api.items() for option in ("--api", f"{alias}={kind}")]
+    apis += ["--default-api", model.default_api]
     # The aliases the deployment declares accept images (figures, FG-33).
     apis += [option for alias in model.images for option in ("--images", alias)]
     # Claude's thinking replay setting (CM-39).
@@ -360,7 +361,8 @@ def workspace_argv(config: LauncherConfig, layout: Layout) -> list[str]:
     agent_models += [
         option
         for alias in dict.fromkeys(role_aliases.values())
-        for option in ("--agent-api", f"{alias}={model.api.get(alias, 'chat')}")
+        if alias in model.api
+        for option in ("--agent-api", f"{alias}={model.api[alias]}")
     ]
     # The skills page shows what the pass runs are given derived.
     derived = config.skills.metadata_model

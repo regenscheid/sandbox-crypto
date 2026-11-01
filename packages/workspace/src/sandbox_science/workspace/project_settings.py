@@ -7,14 +7,13 @@ shared. Changing the model settings changes spend and model choice, an admin-onl
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
 
 from aiohttp import web
 
 from sandbox_science.orchestrator.documents import DocumentStore
 from sandbox_science.orchestrator.documents.project_macros import ProjectMacros
 from sandbox_science.orchestrator.file_settings import DEFAULT_IGNORE, ProjectFiles
-from sandbox_science.orchestrator.model_profiles import ModelProfile
+from sandbox_science.orchestrator.model_profiles import ApiKind, ModelProfile
 from sandbox_science.orchestrator.model_settings import AgentModelRole, ProjectModels
 
 from .context import json_body
@@ -25,7 +24,9 @@ from .requests import document_answer
 @dataclass(frozen=True)
 class ModelConfiguration:
     defaults: dict[AgentModelRole, ModelProfile]
-    available: dict[str, Literal["chat", "responses", "messages"]]
+    available: dict[str, ApiKind | None]
+    """Each catalog alias's adapter as the deployment names it, or ``None`` when the run
+    service chooses it from the gateway (CM-41)."""
 
 
 MODEL_CONFIGURATION = web.AppKey("model-configuration", ModelConfiguration)

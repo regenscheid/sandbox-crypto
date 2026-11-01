@@ -91,6 +91,7 @@ from .mathcheck import MathChecker
 from .messages import ThinkingReplay
 from .model import (
     API_KINDS,
+    DEFAULT_API,
     MAX_RESPONSE_BYTES,
     ChatModel,
     GatewayModel,
@@ -132,7 +133,7 @@ def _gateway(
 ) -> ChatModel:
     """The client for ``alias``, through the adapter ``--api`` names for it (CM-41)."""
     key = read_secret(args.api_key_file)
-    api = _apis(args).get(alias, "chat")
+    api = _apis(args).get(alias, _default_api(args))
     return gateway_model(
         args.model_url,
         alias,
@@ -145,9 +146,10 @@ def _gateway(
 
 
 def _efforts(args: argparse.Namespace) -> dict[ModelRole, str]:
+    """The requested effort of each role; a reviewer's is ``medium`` unless set, whatever
+    its adapter, since every adapter takes one."""
     result = dict(getattr(args, "reasoning_effort", None) or [])
-    reviewer = getattr(args, "reviewer_model", None)
-    if reviewer is not None and _apis(args).get(reviewer, "chat") != "messages":
+    if getattr(args, "reviewer_model", None) is not None:
         result.setdefault("reviewer", "medium")
     return result
 
@@ -176,8 +178,33 @@ def _thinking_replay(value: str) -> ThinkingReplay:
 
 
 def _apis(args: argparse.Namespace) -> dict[str, str]:
-    """The adapter ``--api`` names for each alias; any other alias's is ``chat``."""
+    """Each alias's adapter: as ``_choose_apis`` chose them when the service started, or
+    before that, as ``--api`` names them; any other alias's is ``--default-api``'s."""
+    chosen = cast(dict[str, str] | None, getattr(args, "chosen_api", None))
+    if chosen is not None:
+        return dict(chosen)
     return dict(cast(list[tuple[str, str]], getattr(args, "api", None) or []))
+
+
+def _default_api(args: argparse.Namespace) -> str:
+    return cast(str, getattr(args, "default_api", None) or DEFAULT_API)
+
+
+async def _choose_apis(args: argparse.Namespace) -> None:
+    """Choose each alias's adapter once, as the service starts, from ``--api`` and the
+    gateway's model information (CM-41), before any model is made."""
+    if getattr(args, "model_url", None) is None or getattr(args, "chosen_api", None):
+        return
+    gateway = ModelGateway(
+        args.model_url,
+        read_secret(args.api_key_file),
+        apis=_apis(args),
+        default_api=_default_api(args),
+    )
+    try:
+        args.chosen_api = await gateway.choose_apis()
+    finally:
+        await gateway.close()
 
 
 def api_setting(value: str) -> tuple[str, str]:
@@ -231,6 +258,7 @@ async def _held_run(
     args: argparse.Namespace, projects: ProjectStore | None, held: AsyncExitStack
 ) -> int:
     sink = _Printer()
+    await _choose_apis(args)
     alias = "scripted" if args.script is not None else args.model
     main = _role(args.script, "--script", alias, lambda: _gateway(args, args.model))
     request = RunRequest(
@@ -352,6 +380,7 @@ def _harness(
             args.model_url,
             read_secret(args.api_key_file),
             apis=_apis(args),
+            default_api=_default_api(args),
             options=_options(args),
             reasoning_effort=_efforts(args),
         )
@@ -407,6 +436,7 @@ def _harness(
 
 async def _serve(args: argparse.Namespace) -> int:
     """Run the sessions' main agent for the GUI until stopped (RS-1)."""
+    await _choose_apis(args)
     alias = "scripted" if args.script is not None else args.model
     main = _role(args.script, "--script", alias, lambda: _gateway(args, args.model))
     interruption = Interruption()
@@ -468,9 +498,17 @@ def _agent_arguments(command: argparse.ArgumentParser) -> None:
         default=[],
         metavar="ALIAS=KIND",
         help="the gateway API a model alias is called through, in any role: chat "
-        "(/chat/completions, every alias's by default), responses (/v1/responses, GPT's "
-        "Responses API, its reasoning sent back) or messages (/v1/messages, Claude's "
-        "Messages API, with its progress notes); repeat for more aliases",
+        "(/chat/completions), responses (/v1/responses, GPT's Responses API, its "
+        "reasoning sent back) or messages (/v1/messages, Claude's Messages API, with its "
+        "progress notes); repeat for more aliases. An alias left out takes messages when "
+        "the gateway lists its provider as anthropic, else --default-api",
+    )
+    command.add_argument(
+        "--default-api",
+        choices=API_KINDS,
+        default=DEFAULT_API,
+        help="the gateway API of an alias --api leaves out that the gateway does not list "
+        "as Anthropic's (default: %(default)s)",
     )
     command.add_argument(
         "--thinking-replay",
@@ -681,8 +719,6 @@ def _check_agent(parser: argparse.ArgumentParser, args: argparse.Namespace) -> N
         parser.error("--api needs --model-url")
     if len({alias for alias, _ in args.api}) < len(set(args.api)):
         parser.error("--api names two adapters for one alias")
-    if args.thinking_replay is not None and "messages" not in _apis(args).values():
-        parser.error("--thinking-replay needs an alias with --api ALIAS=messages")
     if getattr(args, "skills_embedding_model", None) is not None and args.model_url is None:
         parser.error("--skills-embedding-model needs --model-url")
     if args.max_input_chars is not None and args.max_input_chars < 1:

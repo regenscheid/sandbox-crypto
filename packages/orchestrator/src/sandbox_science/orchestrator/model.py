@@ -16,7 +16,7 @@ import hashlib
 import json
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, ClassVar, Final, Protocol, Self, cast
 
@@ -358,14 +358,21 @@ class GatewayModel(ABC):
         self._cache_key: str | None = None
         self._model_role: ModelRole = "main"
         self._requested_profile: ModelProfile | None = None
+        self._profile_source: Callable[[], ModelProfile] | None = None
         self._former_profile = False
 
-    def for_role(self, role: ModelRole, profile: ModelProfile | None = None) -> Self:
-        """An immutable caller profile; copies share the owning connection."""
+    def for_role(
+        self, role: ModelRole, profile: ModelProfile | Callable[[], ModelProfile] | None = None
+    ) -> Self:
+        """An immutable caller profile; copies share the owning connection. A callable is
+        read whenever the profile is, so a confined control service's callers follow the
+        adapters its runtime reports in the handshake (CM-41)."""
         other = copy.copy(self)
         other._model_role = role
-        if profile is not None:
-            other._requested_profile = profile
+        if isinstance(profile, ModelProfile):
+            other._requested_profile, other._profile_source = profile, None
+        elif profile is not None:
+            other._requested_profile, other._profile_source = None, profile
         return other
 
     def for_former(self) -> Self:
@@ -374,12 +381,19 @@ class GatewayModel(ABC):
         other._former_profile = True
         return other
 
+    def _configured_profile(self) -> ModelProfile | None:
+        """The profile this caller was configured with, when no run pins one."""
+        if self._requested_profile is None and self._profile_source is not None:
+            return self._profile_source()
+        return self._requested_profile
+
     @property
     def requested_profile(self) -> ModelProfile:
         pinned = PROFILES.get()
-        profile = pinned.get(self._model_role) if pinned is not None else self._requested_profile
+        configured = self._configured_profile()
+        profile = pinned.get(self._model_role) if pinned is not None else configured
         if self._former_profile and profile is not None:
-            own = self._requested_profile or requested(
+            own = configured or requested(
                 alias=self.model, api="chat" if self.FORMAT == CHAT_COMPLETIONS else self.FORMAT
             )
             return own.model_copy(update={"reasoning_effort": profile.reasoning_effort})
@@ -394,8 +408,12 @@ class GatewayModel(ABC):
         api = "chat" if format == CHAT_COMPLETIONS else format
         if profile.alias != self.model or profile.api != api:
             raise ModelError("pinned model alias/API differs from the configured caller")
-        if profile.reasoning_effort is not None and api == "messages":
-            raise ModelError("reasoning effort is unsupported by the Messages adapter")
+        effort = profile.reasoning_effort
+        if effort is not None and api == "messages" and effort not in MESSAGES_EFFORTS:
+            raise ModelError(
+                f"the Messages adapter takes the effort {', '.join(MESSAGES_EFFORTS)}, "
+                f"not {effort!r}"
+            )
         return profile
 
     def limited(
@@ -488,14 +506,13 @@ class GatewayModel(ABC):
         text, with its cost header if it has one."""
         profile = self.validate_profile()
         api = profile.api
-        if profile.reasoning_effort is not None:
+        if (effort := profile.reasoning_effort) is not None:
             if api == "messages":
-                raise ModelError("reasoning effort is unsupported by the Messages adapter")
-            body["reasoning" if api == "responses" else "reasoning_effort"] = (
-                {"effort": profile.reasoning_effort}
-                if api == "responses"
-                else profile.reasoning_effort
-            )
+                body["output_config"] = {**body.get("output_config", {}), "effort": effort}
+            elif api == "responses":
+                body["reasoning"] = {"effort": effort}
+            else:
+                body["reasoning_effort"] = effort
         prefix = prefix_digest({name: body[name] for name in self.PREFIX if name in body})
         wait = self._backoff
         retried: list[str] = []
@@ -655,9 +672,25 @@ def cached_for(model: ChatModel, project: str, session: str) -> ChatModel:
 
 
 API_KINDS: Final = ("chat", "responses", "messages")
-"""The adapters an alias may be called through, as the deployment names them (CM-41):
-``chat`` completions, every alias's unless the deployment says otherwise, GPT's
+"""The adapters an alias may be called through (CM-41): ``chat`` completions, GPT's
 ``responses`` (CM-40) and Claude's ``messages`` (CM-38)."""
+DEFAULT_API: Final = "chat"
+"""The adapter of an alias the deployment names none for and the gateway does not list as
+Anthropic's, unless the deployment sets another default (CM-41)."""
+ANTHROPIC: Final = "anthropic"
+"""The provider, in the gateway's model information, whose aliases take ``messages``."""
+MESSAGES_EFFORTS: Final = ("low", "medium", "high", "xhigh", "max")
+"""The efforts the Messages API takes, as ``output_config.effort``; a model may take fewer
+(the Messages adapter knows which)."""
+
+
+def adapter_of(model: object) -> str | None:
+    """The adapter kind (``API_KINDS``) a model calls through, or ``None`` for one that
+    makes no gateway call itself, such as a scripted or confined model."""
+    format = getattr(type(model), "FORMAT", None) if isinstance(model, GatewayModel) else None
+    if not isinstance(format, str):
+        return None
+    return "chat" if format == CHAT_COMPLETIONS else format
 
 
 def gateway_model(
@@ -729,6 +762,7 @@ class ModelGateway:
         *,
         timeout: float = 30,
         apis: Mapping[str, str] | None = None,
+        default_api: str = DEFAULT_API,
         options: Mapping[str, Mapping[str, Any]] | None = None,
         reasoning_effort: Mapping[ModelRole, str] | None = None,
     ) -> None:
@@ -737,8 +771,12 @@ class ModelGateway:
         self._timeout = aiohttp.ClientTimeout(total=timeout)
         self._session: aiohttp.ClientSession | None = None
         self.apis = dict(apis or {})
-        """The adapter of each alias the deployment names one for (``API_KINDS``); any
-        other alias's is ``chat``."""
+        """The adapter of each alias the deployment names one for (``API_KINDS``), and,
+        once ``choose_apis`` has run, of each alias the gateway describes; any other
+        alias's is ``default_api``."""
+        self.default_api = default_api
+        self.named = frozenset(self.apis)
+        """The aliases the deployment names an adapter for, which ``choose_apis`` keeps."""
         self.reasoning_effort = dict(reasoning_effort or {})
         self.options = dict(options or {})
         """Each adapter's own options, by its kind, such as Claude's thinking replay."""
@@ -750,17 +788,69 @@ class ModelGateway:
             self._session = aiohttp.ClientSession()
         return self._session
 
+    def api(self, alias: str) -> str:
+        """The adapter ``alias`` is called through (CM-41)."""
+        return self.apis.get(alias, self.default_api)
+
     def profile(self, alias: str, *, role: ModelRole = "delegated") -> ModelProfile:
         """Resolve deployment settings without opening an HTTP connection."""
         return requested(
             alias=alias,
-            api=self.apis.get(alias, "chat"),
+            api=self.api(alias),
             reasoning_effort=self.reasoning_effort.get(role),
         )
 
-    def model(self, alias: str, *, role: ModelRole = "delegated") -> GatewayModel:
-        """A model that calls ``alias``, through its adapter and the gateway's session."""
-        api = self.apis.get(alias, "chat")
+    async def choose_apis(self, aliases: Iterable[str] | None = None) -> dict[str, str]:
+        """Each alias's adapter, chosen once as the run service starts (CM-41): the one
+        the deployment names (``named``), else ``messages`` when the gateway's model
+        information lists every deployment of the alias with the provider ``anthropic``,
+        else ``default_api``. It covers ``aliases`` when given, else every alias the
+        gateway describes or the deployment names, and is kept in ``apis``; each choice
+        is logged, with its reason. A gateway that cannot be asked leaves the aliases the
+        deployment does not name on ``default_api``, with a warning."""
+        named = self.named
+        described = await self._described()
+        providers: dict[str, set[str | None]] = {}
+        for name, info in described or ():
+            found = info.get("litellm_provider")
+            providers.setdefault(name, set()).add(found if isinstance(found, str) else None)
+        if described is None:
+            _log.warning(
+                "the gateway's model information is unavailable: aliases the deployment "
+                "names no API for use %s",
+                self.default_api,
+            )
+        wanted = sorted(set(providers) | named if aliases is None else set(aliases))
+        chosen: dict[str, str] = {}
+        for alias in wanted:
+            listed = providers.get(alias, set())
+            if alias in named:
+                kind, why = self.apis[alias], "named by the deployment"
+            elif listed == {ANTHROPIC}:
+                kind, why = "messages", "the gateway lists its provider as anthropic"
+            else:
+                kind = self.default_api
+                why = (
+                    "the deployment's default; the gateway lists its provider as "
+                    + ", ".join(sorted(str(item) for item in listed))
+                    if listed
+                    else "the deployment's default; the gateway does not describe it"
+                )
+            chosen[alias] = kind
+            _log.info("model API for %s: %s (%s)", alias, kind, why)
+        self.apis.update(chosen)
+        return chosen
+
+    def model(
+        self, alias: str, *, role: ModelRole = "delegated", api: str | None = None
+    ) -> GatewayModel:
+        """A model that calls ``alias``, through the gateway's session and an adapter:
+        ``api``, else the one the run's pinned profile for ``role`` names when it pins
+        ``alias`` (a continuation keeps the adapter it started with), else ``alias``'s."""
+        pinned = (PROFILES.get() or {}).get(role)
+        if api is None and pinned is not None and pinned.alias == alias:
+            api = pinned.api
+        api = api or self.api(alias)
         return gateway_model(
             self.base_url,
             alias,
@@ -771,7 +861,7 @@ class ModelGateway:
             prices=self.prices,
         ).for_role(
             role,
-            self.profile(alias, role=role),
+            self.profile(alias, role=role).model_copy(update={"api": api}),
         )
 
     async def aliases(self) -> frozenset[str] | None:

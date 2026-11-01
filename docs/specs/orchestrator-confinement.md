@@ -267,7 +267,13 @@ protocol 5 adds a `progress` frame: while either side handles a request, it tell
 peer every 30 s that it is still working on it. A request whose handler may wait on work
 of unbounded length is made with patience instead of a timeout: it waits for as long as
 those frames keep coming, and its outcome is unknown only after 300 s without one, as
-when the connection dies without closing. Older control/runtime peers are refused.
+when the connection dies without closing. Private control protocol 6 adds the
+runtime's model adapters to its handshake (`Hello.apis`): the runtime, which alone reaches
+the model gateway, chooses the adapter of each of its aliases the deployment names none
+for from the gateway's model information before it connects, and control adopts that
+choice before any caller's profile is read ([context management](context-management.md),
+CM-41). A model call's adapter is the one its attempt pinned, so a runtime builds the
+adapter the request's profile names. Older control/runtime peers are refused.
 
 How long each request may wait:
 

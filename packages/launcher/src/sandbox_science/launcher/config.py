@@ -209,15 +209,20 @@ class ModelConfig(_Strict):
     (docs/specs/context-management.md, CM-41): ``chat`` (``/chat/completions``),
     ``responses`` (``/v1/responses``, GPT's Responses API, with its reasoning sent back,
     CM-40) or ``messages`` (``/v1/messages``, Claude's Messages API with its progress
-    notes, CM-38). An alias it leaves out takes ``chat``, as every alias does by default,
-    until the labs confirm the others."""
+    notes, CM-38). An alias it leaves out takes ``messages`` when the gateway lists its
+    provider as ``anthropic``, else ``default_api``; the run service chooses as it
+    starts, since only it reaches the gateway."""
+    default_api: ApiKind = "chat"
+    """The API of an alias ``api`` leaves out that the gateway does not list as
+    Anthropic's."""
     reasoning_effort: dict[str, str] = Field(default_factory=dict[str, str], max_length=7)
     """Requested effort by caller role. Omitted roles retain provider defaults; the
-    launcher's effective profile defaults a non-Messages reviewer to ``medium``."""
+    launcher's effective profile defaults a configured reviewer to ``medium``, whatever
+    its API, since every API takes an effort."""
 
     def effective_efforts(self) -> dict[str, str]:
         result = dict(self.reasoning_effort)
-        if self.reviewer and self.api.get(self.reviewer, "chat") != "messages":
+        if self.reviewer:
             result.setdefault("reviewer", "medium")
         return result
 
@@ -238,7 +243,7 @@ class ModelConfig(_Strict):
     run is offered it when the gateway says its model accepts images."""
     thinking_replay: ThinkingReplayConfig | None = None
     """Claude's thinking sent back on the gateway image a CM-F30 run verified (CM-39),
-    for the aliases ``api`` names ``messages``; off by default, until a LiteLLM release
+    for the aliases called through ``messages``; off by default, until a LiteLLM release
     with its thinking fixes passes it."""
     daily_cost_limit: float | None = Field(default=None, ge=0, le=1_000_000_000)
     """What each project's runs may cost over a rolling 24 hours, as the gateway reports
@@ -265,12 +270,6 @@ class ModelConfig(_Strict):
             "the model gateway's URL is https, or http on a loopback IP address such as "
             "127.0.0.1: the key would go to it in the clear"
         )
-
-    @model_validator(mode="after")
-    def _replay(self) -> Self:
-        if self.thinking_replay is not None and "messages" not in self.api.values():
-            raise ValueError('thinking_replay is for the aliases api names "messages"; none is')
-        return self
 
 
 class SessionConfig(_Strict):

@@ -13,6 +13,7 @@ import stat
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import asdict
+from functools import partial
 from pathlib import Path
 
 from aiohttp import WSCloseCode, web
@@ -38,7 +39,8 @@ from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.mathcheck import MathChecker
 from sandbox_science.orchestrator.mcp_canaries import INTERVAL, CanaryRunner, CanaryStore
 from sandbox_science.orchestrator.mcp_direct import WorkerRequestCheck
-from sandbox_science.orchestrator.model_profiles import Effort, ModelRole
+from sandbox_science.orchestrator.model import DEFAULT_API
+from sandbox_science.orchestrator.model_profiles import ApiKind, Effort, ModelRole
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.service import RunService
@@ -134,6 +136,9 @@ class ControlSettings(Contract):
     generation_file: Path | None = None
     projects: tuple[Identifier, ...] = Field(min_length=1, max_length=128)
     apis: dict[str, str] = Field(default_factory=dict)
+    default_api: ApiKind = DEFAULT_API
+    """The adapter of an alias ``apis`` leaves out, unless the runtime reports that the
+    gateway lists it as Anthropic's (CM-41)."""
     reasoning_effort: dict[ModelRole, Effort] = Field(default_factory=dict[ModelRole, Effort])
     main: ModelAlias
     reviewer: ModelAlias | None = None
@@ -308,6 +313,9 @@ def create_app(settings: ControlSettings) -> web.Application:
                         if hello or request.image_revision != settings.image_revision:
                             raise TransportError("conflict", "runtime image or handshake mismatch")
                         await worker.readiness()
+                        # The adapters the runtime chose from the gateway (CM-41), before
+                        # any caller's profile is read.
+                        gateway.adopt(request.apis)
                         hello = True
                         lifecycle.handshaken = True
                         runtime_seen.set()
@@ -414,7 +422,11 @@ def create_app(settings: ControlSettings) -> web.Application:
                 )
                 scope = loops.model_capability
                 gateway = CallbackGateway(
-                    channel, scope, apis=settings.apis, reasoning_effort=settings.reasoning_effort
+                    channel,
+                    scope,
+                    apis=settings.apis,
+                    default_api=settings.default_api,
+                    reasoning_effort=settings.reasoning_effort,
                 )
                 stores = Stores(
                     projects,
@@ -450,9 +462,9 @@ def create_app(settings: ControlSettings) -> web.Application:
                             scope=scope,
                             kind="skills",
                             role="skills_metadata",
-                            profile=gateway.model(
-                                settings.metadata, role="skills_metadata"
-                            ).requested_profile,
+                            profile=partial(
+                                gateway.profile, settings.metadata, role="skills_metadata"
+                            ),
                             max_output=ANSWER_TOKENS,
                         ),
                         settings.metadata,
@@ -495,9 +507,7 @@ def create_app(settings: ControlSettings) -> web.Application:
                             scope=scope,
                             kind="watcher",
                             role="watcher",
-                            profile=gateway.model(
-                                settings.watcher, role="watcher"
-                            ).requested_profile,
+                            profile=partial(gateway.profile, settings.watcher, role="watcher"),
                             max_output=300,
                             max_response_bytes=16384,
                         ),
@@ -512,9 +522,7 @@ def create_app(settings: ControlSettings) -> web.Application:
                             scope=scope,
                             kind="reviewer",
                             role="reviewer",
-                            profile=gateway.model(
-                                settings.reviewer, role="reviewer"
-                            ).requested_profile,
+                            profile=partial(gateway.profile, settings.reviewer, role="reviewer"),
                             max_output=REVIEWER_MAX_OUTPUT,
                             max_response_bytes=REVIEWER_MAX_RESPONSE_BYTES,
                         ),

@@ -20,10 +20,11 @@ DEFAULTS: dict[AgentModelRole, ModelProfile] = {
     "delegated": ModelProfile(alias="sol", api="responses", reasoning_effort="max"),
     "reviewer": ModelProfile(alias="luna", api="responses", reasoning_effort="medium"),
 }
-CATALOG: dict[str, Literal["chat", "responses", "messages"]] = {
+CATALOG: dict[str, Literal["chat", "responses", "messages"] | None] = {
     "sol": "responses",
     "luna": "responses",
     "claude": "messages",
+    "chosen": None,
 }
 
 
@@ -82,12 +83,18 @@ def test_only_catalog_aliases_and_supported_effort_are_saved(models: ProjectMode
             defaults=DEFAULTS,
             available=CATALOG,
         )
-    messages = {**base, "reviewer": {"alias": "claude", "reasoning_effort": "medium"}}
-    with pytest.raises(DocumentError, match="does not accept effort"):
-        models.change(
+    # Every adapter takes an effort (CM-41): a Messages alias, or one whose adapter the
+    # run service chooses, is saved with one, and offered as taking one.
+    for expected, alias in enumerate(("claude", "chosen")):
+        roles = {**base, "reviewer": {"alias": alias, "reasoning_effort": "high"}}
+        saved, _ = models.change(
             "p1",
-            {"expected": 0, "roles": messages, "operation_id": "x"},
+            {"expected": expected, "roles": roles, "operation_id": f"x-{alias}"},
             USER,
             defaults=DEFAULTS,
             available=CATALOG,
         )
+        assert saved.roles["reviewer"].reasoning_effort == "high"
+    shown = models.get("p1", DEFAULTS, CATALOG)
+    assert all(option.effort_supported for option in shown.available)
+    assert {option.alias: option.api for option in shown.available}["chosen"] is None
