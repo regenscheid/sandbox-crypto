@@ -110,10 +110,10 @@ _ARCHES: Final = {
     # machine: (AUDIT_ARCH, {name: number}); x86_64's x32 numbers are refused below.
     "x86_64": (0xC000003E, {"prlimit64": 302, "setpriority": 141, "sched_setaffinity": 203,
         "sched_setscheduler": 144, "sched_setparam": 142, "sched_setattr": 314,
-        "ioprio_set": 251, "flock": 73, "fcntl": 72}),
+        "ioprio_set": 251, "flock": 73, "fcntl": 72, "socket": 41, "socketpair": 53}),
     "aarch64": (0xC00000B7, {"prlimit64": 261, "setpriority": 140, "sched_setaffinity": 122,
         "sched_setscheduler": 119, "sched_setparam": 118, "sched_setattr": 274,
-        "ioprio_set": 30, "flock": 32, "fcntl": 25}),
+        "ioprio_set": 30, "flock": 32, "fcntl": 25, "socket": 198, "socketpair": 199}),
 }  # fmt: skip
 _TARGET: Final = {
     # A call that acts on a process: the argument naming it, the argument that must say
@@ -128,6 +128,14 @@ _TARGET: Final = {
     "setpriority": (1, (0, 0), _EPERM),
     "ioprio_set": (1, (0, 1), _EPERM),
 }
+_IO_URING: Final = (425, 426, 427)  # setup, enter, register: the same on both
+_FAMILIES: Final = (1, 16)  # AF_UNIX, AF_NETLINK: any type and protocol
+_INET: Final = (2, 10)  # AF_INET, AF_INET6: stream or datagram, and these protocols
+_PROTOCOLS: Final = (0, 6, 17, 1, 58)  # default, TCP, UDP, ICMP, ICMPv6
+_AND: Final = 0x54  # BPF_ALU | BPF_AND | BPF_K
+_ENOSYS: Final = 38
+_EAFNOSUPPORT: Final = 97
+_EPROTONOSUPPORT: Final = 93
 _LOCKS: Final = (6, 7, 37, 38)  # F_SETLK, F_SETLKW, F_OFD_SETLK, F_OFD_SETLKW
 _SETLEASE: Final = 1024
 
@@ -182,8 +190,9 @@ class _SockFprog(ctypes.Structure):
 def seccomp_program(machine: str, self_pid: int) -> list[tuple[int, int, int, int]]:
     """The filter: a call in ``_TARGET`` passes only for the calling process (0) or
     ``self_pid``, else ``EPERM`` or, for scheduling, success doing nothing; ``flock``
-    and fcntl's locks succeed doing nothing; a lease is ``EPERM``; another
-    architecture's call ends the process. Everything else passes, to OpenShell's filter
+    and fcntl's locks succeed doing nothing; a lease is ``EPERM``; io_uring is
+    ``ENOSYS``; a socket passes ``_socket_rule``; another architecture's call ends the
+    process. Everything else passes, to OpenShell's filter
     below."""
     if machine not in _ARCHES:
         raise ConfinementError(f"no seccomp filter for {machine}")
@@ -203,6 +212,12 @@ def seccomp_program(machine: str, self_pid: int) -> list[tuple[int, int, int, in
         fcntl.append((_JEQ, len(_LOCKS) - len(fcntl) + 3, 0, command))
     fcntl += [(_JEQ, 1, 0, _SETLEASE), *done, *refuse, (_RET, 0, 0, _ERRNO)]
     rules.append([(_JEQ, 0, len(fcntl), numbers["fcntl"]), *fcntl])
+    for number in _IO_URING:
+        # Its socket and connect operations would pass the socket rule below unseen.
+        rules.append([(_JEQ, 0, 1, number), (_RET, 0, 0, _ERRNO | _ENOSYS)])
+    sockets = _socket_rule()
+    for name in ("socket", "socketpair"):
+        rules.append([(_JEQ, 0, len(sockets), numbers[name]), *sockets])
     program = [(_LD, 0, 0, 4), (_JEQ, 1, 0, arch), (_RET, 0, 0, _KILL), (_LD, 0, 0, 0)]
     if machine == "x86_64":
         program += [(_JGE, 0, 1, 0x40000000), (_RET, 0, 0, _KILL)]
@@ -210,6 +225,30 @@ def seccomp_program(machine: str, self_pid: int) -> list[tuple[int, int, int, in
         # Each rule ends in a return; past its body, the number is reloaded for the next.
         program += [*rule, (_LD, 0, 0, 0)]
     return [*program, *done]
+
+
+def _socket_rule() -> list[tuple[int, int, int, int]]:
+    """A socket's family, type and protocol: Unix and netlink sockets pass; an Internet
+    socket passes only as a stream or datagram of TCP, UDP or ICMP, which Landlock's TCP
+    rules and the sandbox's network policy see. MPTCP, SCTP and the other families
+    (AF_SMC carries TCP too) would pass Landlock's TCP rules unseen."""
+    rule = [(_LD, 0, 0, 16)]
+    # Indexes: 0 load; families; inet families; refuse; type load, and, 2 types,
+    # refuse; protocol load; protocols; refuse; allow.
+    allow_at = 9 + len(_FAMILIES) + len(_INET) + len(_PROTOCOLS)
+    types_at = 1 + len(_FAMILIES) + len(_INET) + 1
+    for family in _FAMILIES:
+        rule.append((_JEQ, allow_at - len(rule) - 1, 0, family))
+    for family in _INET:
+        rule.append((_JEQ, types_at - len(rule) - 1, 0, family))
+    rule += [(_RET, 0, 0, _ERRNO | _EAFNOSUPPORT), (_LD, 0, 0, 24), (_AND, 0, 0, 0xF)]
+    protocols_at = len(rule) + 3
+    for kind in (1, 2):  # SOCK_STREAM, SOCK_DGRAM
+        rule.append((_JEQ, protocols_at - len(rule) - 1, 0, kind))
+    rule += [(_RET, 0, 0, _ERRNO | _EPROTONOSUPPORT), (_LD, 0, 0, 32)]
+    for protocol in _PROTOCOLS:
+        rule.append((_JEQ, allow_at - len(rule) - 1, 0, protocol))
+    return [*rule, (_RET, 0, 0, _ERRNO | _EPROTONOSUPPORT), (_RET, 0, 0, _ALLOW)]
 
 
 def _seccomp(libc: ctypes.CDLL) -> None:

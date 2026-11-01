@@ -1783,6 +1783,9 @@ class Executor:
         cwd = self.files.directory(session, ".")
         if confinement is not None:
             env.update(confinement.variables())
+            # A kernel's own IPython directory: its history database is not shared with
+            # the run's other kernel, since a held run's locks do nothing (DA-20).
+            env["IPYTHONDIR"] = str(confinement.scratch / "ipython" / language)
             cwd = confinement.directory
         return Kernel(
             session,

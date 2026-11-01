@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import os
 import subprocess
@@ -429,11 +430,57 @@ def test_the_proxy_ports_come_from_the_sandboxs_variables() -> None:
     assert executor.proxy_ports({"ALL_PROXY": "socks5://[::1]:not-a-port"}) == ()
 
 
-def test_the_seccomp_filter_is_built_for_both_architectures() -> None:
-    for machine in ("x86_64", "aarch64"):
-        program = sandbox_confine.seccomp_program(machine, 1234)
-        assert program[-1] == (0x06, 0, 0, 0x7FFF0000)  # anything else passes
-        assert all(0 <= jt < 256 and 0 <= jf < 256 for _, jt, jf, _ in program)
+def _run_filter(program: list[tuple[int, int, int, int]], data: bytes) -> int:
+    """Evaluate the classic BPF subset the filter uses on one ``seccomp_data``."""
+    accumulator, pc = 0, 0
+    while True:
+        code, jt, jf, k = program[pc]
+        pc += 1
+        if code == 0x20:
+            accumulator = int.from_bytes(data[k : k + 4], "little")
+        elif code == 0x54:
+            accumulator &= k
+        elif code in (0x15, 0x35):
+            taken = accumulator == k if code == 0x15 else accumulator >= k
+            pc += jt if taken else jf
+        elif code == 0x06:
+            return k
+        else:
+            raise AssertionError(f"unknown instruction {code:#x}")
+
+
+ARCHES = {"x86_64": (0xC000003E, 302, 72, 41, 53), "aarch64": (0xC00000B7, 261, 25, 198, 199)}
+
+
+@pytest.mark.parametrize("machine", sorted(ARCHES))
+def test_the_seccomp_filter_answers_each_call_as_the_spec_says(machine: str) -> None:
+    arch, prlimit, fcntl, socket_nr, socketpair = ARCHES[machine]
+    program = sandbox_confine.seccomp_program(machine, 4321)
+
+    def answer(nr: int, *args: int, audit: int = arch) -> int:
+        words = [*args, *([0] * (6 - len(args)))]
+        data = nr.to_bytes(4, "little") + audit.to_bytes(4, "little") + bytes(8)
+        return _run_filter(program, data + b"".join(w.to_bytes(8, "little") for w in words))
+
+    allow, kill, errno = 0x7FFF0000, 0x80000000, lambda e: 0x50000 | e
+    assert answer(prlimit, 0) == answer(prlimit, 4321) == allow
+    assert answer(prlimit, 999) == answer(prlimit, (1 << 32) | 999) == errno(1)
+    assert answer(fcntl, 3, 6) == answer(fcntl, 3, 38) == errno(0)  # locks: no-ops
+    assert answer(fcntl, 3, 1024) == errno(1)  # F_SETLEASE
+    assert answer(fcntl, 3, 3) == allow  # F_GETFL
+    for nr in (socket_nr, socketpair):
+        assert answer(nr, 1, 1, 0) == answer(nr, 16, 3, 0) == allow  # Unix, netlink
+        assert answer(nr, 2, 1, 0) == answer(nr, 10, 1 | 0o2000000, 6) == allow  # TCP
+        assert answer(nr, 2, 2, 17) == answer(nr, 10, 2, 58) == allow  # UDP, ping
+        assert answer(nr, 2, 1, 262) == answer(nr, 10, 1, 132) == errno(93)  # MPTCP, SCTP
+        assert answer(nr, 2, 5, 0) == errno(93)  # SOCK_SEQPACKET would be SCTP
+        assert answer(nr, 43, 1, 0) == answer(nr, 17, 3, 0) == errno(97)  # AF_SMC, packet
+    for nr in (425, 426, 427):
+        assert answer(nr) == errno(38)  # io_uring
+    assert answer(0, audit=0x40000003) == kill  # i386 on x86_64, or anything foreign
+    if machine == "x86_64":
+        assert answer(0x40000000 | 41, 2, 1, 262) == kill  # x32
+    assert answer(1) == allow
     with pytest.raises(sandbox_confine.ConfinementError):
         sandbox_confine.seccomp_program("riscv64", 1)
 
@@ -466,3 +513,70 @@ async def test_joblib_keeps_its_pickles_off_shared_memory(worker: Harness) -> No
     assert parent["result"]["stdout"]["text"] == f"{root}/.executor/joblib\n"
     assert child["result"]["stdout"]["text"].startswith(f"{root}/.executor/runs/")
     assert child["result"]["stdout"]["text"].endswith("/tmp\n")
+
+
+OTHER_SOCKETS = """
+import ctypes, json, os, socket
+libc = ctypes.CDLL(None, use_errno=True)
+found = {}
+def attempt(name, family, kind, protocol, host):
+    try:
+        with socket.socket(family, kind, protocol) as client:
+            client.settimeout(3)
+            client.connect((host, PORT))
+            client.sendall(name.encode())
+        found[name] = "connected"
+    except OSError as error:
+        found[name] = error.errno
+attempt("tcp", socket.AF_INET, socket.SOCK_STREAM, 0, "127.0.0.1")
+attempt("mptcp", socket.AF_INET, socket.SOCK_STREAM, 262, "127.0.0.1")
+attempt("mptcp6", socket.AF_INET6, socket.SOCK_STREAM, 262, "::ffff:127.0.0.1")
+attempt("sctp", socket.AF_INET, socket.SOCK_STREAM, 132, "127.0.0.1")
+smc = libc.socket(43, socket.SOCK_STREAM, 0)
+found["smc"] = ctypes.get_errno() if smc < 0 else "created"
+params = ctypes.create_string_buffer(120)
+ring = libc.syscall(ctypes.c_long(425), ctypes.c_uint(4), params)
+found["io_uring"] = ctypes.get_errno() if ring < 0 else "created"
+print(json.dumps(found))
+"""
+
+
+async def test_no_other_protocol_or_io_uring_reaches_a_tcp_server(worker: Harness) -> None:
+    """After the second review: MPTCP (IPv4 and IPv6), SCTP and AF_SMC sockets and
+    io_uring, which Landlock's TCP rules do not see, are refused, so a child reaches no
+    TCP server of another run, and the server receives nothing."""
+    import socket as sockets
+    import threading
+
+    received: list[bytes] = []
+    with sockets.socket() as server:
+        server.bind(("127.0.0.1", 0))
+        server.listen()
+        server.settimeout(10)
+        port = server.getsockname()[1]
+
+        def accept() -> None:
+            with contextlib.suppress(OSError):
+                while True:
+                    connection, _ = server.accept()
+                    with connection:
+                        received.append(connection.recv(64))
+
+        listener = threading.Thread(target=accept, daemon=True)
+        listener.start()
+        code = f"PORT = {port}\n" + OTHER_SOCKETS
+        child = await worker.run(
+            "sockets", _in(AREA), kind="shell", script=f"python3 - <<'PY'\n{code}\nPY"
+        )
+    assert child["state"] == "succeeded", child["result"]
+    found = json.loads(child["result"]["stdout"]["text"])
+    assert found == {"tcp": 13, "mptcp": 93, "mptcp6": 93, "sctp": 93, "smc": 97, "io_uring": 38}
+    assert received == []
+
+
+async def test_each_held_kernel_keeps_its_own_ipython_directory(worker: Harness) -> None:
+    """A held run's locks do nothing, so its kernels do not share IPython's history."""
+    cell = await worker.run(
+        "ipython", _in(AREA), kind="cell", code="import os; os.environ['IPYTHONDIR']", run="r1"
+    )
+    assert cell["result"]["outputs"][0]["data"]["text/plain"].endswith("/ipython/python'")
