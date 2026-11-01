@@ -58,7 +58,7 @@ from .connector_calls import failure
 from .listings import WorkerListings, report
 from .models import CallbackModel
 from .requests import confirm
-from .transport import Capability, Channel, TransportError
+from .transport import PATIENCE_SECONDS, Capability, Channel, TransportError
 from .wire import (
     AppendReply,
     Attempt,
@@ -936,7 +936,10 @@ class HostLoops:
                     payload(
                         CancelRequest(attempt=identity, explicit=stop is not None and stop.is_set())
                     ),
-                    timeout=1800,
+                    # The runtime's cancelled loop exits its hooks' leases, as a parent's
+                    # waits for its children to save their outcomes.
+                    timeout=None,
+                    patience=PATIENCE_SECONDS,
                 )
             )
             raise
