@@ -969,7 +969,7 @@ def test_the_session_close_command_makes_findings_stale(
     documents.close()
 
     class Worker:
-        def __init__(self, *_: object) -> None: ...
+        def __init__(self, *_: object, **__: object) -> None: ...
 
         async def __aenter__(self) -> Worker:
             return self

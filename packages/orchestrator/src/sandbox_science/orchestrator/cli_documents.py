@@ -286,7 +286,9 @@ async def _session_action(args: argparse.Namespace, store: ProjectStore) -> int:
         if owner is None
         else ExecutionAuthority(work=owner.work, run=owner.run, epoch=owner.epoch),
     )
-    async with WorkerClient(args.worker, read_secret(args.token_file)) as client:
+    async with WorkerClient(
+        args.worker, read_secret(args.token_file), ca_file=args.worker_ca_file
+    ) as client:
         # Returned tasks that await review are accepted first, their environments handed
         # back and released as an acceptance releases them (PD-46, CE-4); what is left
         # goes with the session's.
@@ -711,6 +713,9 @@ def add_parsers(commands: Any) -> None:
     )
     sessions.add_argument("--worker", help="close: the worker that runs its kernels")
     sessions.add_argument("--token-file", type=Path)
+    sessions.add_argument(
+        "--worker-ca-file", type=Path, help="close: the worker's private CA; requires HTTPS"
+    )
     document = commands.add_parser("document", help="living documents, as the user")
     actions = document.add_subparsers(dest="action", required=True)
     common = argparse.ArgumentParser(add_help=False)

@@ -977,6 +977,37 @@ class ChildEnvironments:
             return self._update(environment_id, phase="retained", retained_until=now)
         return self._update(environment_id, phase="released")
 
+    async def release_retained(self, environment_id: str) -> ChildEnvironment:
+        """An operator's release of a retained child environment now, before its deadline:
+        the request is recorded (step ``release``, ``operator``), then its sandbox is
+        deleted by its recorded identity, as the sweep would. One already released answers
+        its record; one still in use (creating to collecting) is refused, since its
+        delegation ends it. A deletion the gateway did not confirm leaves it retained,
+        due at once, and raises."""
+        async with self._lock(environment_id):
+            record = self._record(environment_id)
+            if record.phase == "released":
+                return self.view(record)
+            if record.phase != "retained":
+                raise WorkerError(
+                    ErrorKind.CONFLICT,
+                    f"child environment {environment_id} is {record.phase}; only a retained"
+                    " one is released here (its delegation, or the session's close, ends one"
+                    " in use)",
+                )
+            self.records.record_step(
+                environment_id, "release", json.dumps("operator"), self.clock.now()
+            )
+            _log.info("child environment %s is released by an operator", environment_id)
+            released = await self._release(environment_id)
+            if released.phase != "released":
+                raise WorkerError(
+                    ErrorKind.UNAVAILABLE,
+                    f"the deletion of child environment {environment_id}'s sandbox was not"
+                    " confirmed; it stays retained, due at once, for the worker's sweep",
+                )
+            return self.view(released)
+
     async def _retain(self, environment_id: str, why: str) -> ChildRecord:
         """Stop the child environment and keep it until the retention deadline, releasing
         its project's oldest retained ones beyond its limit."""

@@ -878,6 +878,8 @@ def main(argv: list[str] | None = None) -> int:
         case _:
             if args.action == "close" and (args.worker is None or args.token_file is None):
                 parser.error("session close needs --worker and --token-file")
+            if args.worker_ca_file is not None and not str(args.worker).startswith("https://"):
+                parser.error("--worker-ca-file needs an https:// --worker")
             if args.action == "open" and args.worker is not None:
                 parser.error("session open needs no worker: the first run creates its environment")
             action = session(args)

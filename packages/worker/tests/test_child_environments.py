@@ -65,8 +65,10 @@ from sandbox_science.testing import eventually
 from sandbox_science.worker.app import create_app
 from sandbox_science.worker.artifacts import Blobs
 from sandbox_science.worker.backends import LocalBackend
+from sandbox_science.worker.build import build_worker
 from sandbox_science.worker.child_environments import ChildEnvironments
 from sandbox_science.worker.child_records import ACTIVE, ChildRecord
+from sandbox_science.worker.cli import main
 from sandbox_science.worker.environments import Environments
 from sandbox_science.worker.errors import WorkerError
 from sandbox_science.worker.files import RangeWritten
@@ -78,6 +80,7 @@ from sandbox_science.worker.settings import (
     EnvironmentSettings,
     LocalBackendSettings,
     OpenShellBackendSettings,
+    Settings,
 )
 from sandbox_science.worker.store import Store
 
@@ -1382,6 +1385,112 @@ async def test_an_operator_client_acts_without_research_authority(pool: Pool) ->
         ended = await pool.children.end(made.environment_id, pool.end("abandoned"))
     assert ended.phase == "released"
     assert not OPERATOR.get()
+
+
+# The operator's commands, with the worker stopped.
+
+
+def test_an_operator_releases_a_retained_child_environment(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``child-environments list`` shows the rows; ``release`` records the operator's
+    release on the row, deletes the sandbox by its recorded identity and leaves the
+    deletion hooks to the running worker; one in use is refused, and the pool's settings
+    need no child profiles for either."""
+    pool = Pool(tmp_path)
+
+    async def prepare() -> tuple[str, str]:
+        await pool.session()
+        kept = await pool.ready()
+        await pool.children.end(kept.environment_id, pool.end())  # no hand-back: retained
+        busy = await pool.ready("dlg-" + "b" * 24)
+        await pool.children.close()
+        return kept.environment_id, busy.environment_id
+
+    try:
+        retained_id, busy_id = asyncio.run(prepare())
+        sandbox = pool.environments.get(retained_id).sandbox
+        settings = tmp_path / "worker.toml"
+        settings.write_text(
+            f'token_file = "worker.token"\nstate_dir = "{tmp_path / "worker"}"\n\n'
+            f'[openshell]\nisolation_tier = 3\ncli = "{pool.fake.cli}"\n'
+            f'env = {{FAKE_OPENSHELL_STATE = "{pool.fake.path}", PATH = "{os.environ["PATH"]}"}}'
+            "\n\n[openshell.environments]\n"
+            f'policy_store = "{tmp_path / "middleware"}"\ntargets = "{TARGETS}"\n'
+            f'ceiling = "{tmp_path / "pool-ceiling.yaml"}"\nprofiles = {{minimal = "{IMAGE}"}}\n'
+        )
+        command = ["child-environments", "list", "--settings", str(settings)]
+        assert main([*command, "--phase", "retained"]) == 0
+        (line,) = capsys.readouterr().out.splitlines()
+        assert line.startswith(f"{retained_id} retained project p1 session s1 delegation ")
+        assert "retained until " in line
+        assert main(command) == 0
+        assert len(capsys.readouterr().out.splitlines()) == 2
+        release = ["child-environments", "release", "--settings", str(settings)]
+        assert main([*release, busy_id]) == 1
+        assert "is ready; only a retained one is released" in capsys.readouterr().err
+        assert main([*release, retained_id]) == 0
+        assert capsys.readouterr().out.startswith(f"released: child environment {retained_id}")
+        row = pool.store.child_environments.get(retained_id)
+        assert row is not None
+        assert row.phase == "released"
+        steps = pool.store.child_environments.steps(retained_id)
+        assert json.loads(steps["release"]) == "operator"
+        assert sandbox not in pool.fake.read()["sandboxes"]
+        info = pool.environments.records.get(retained_id)
+        assert info is not None
+        assert info.state is EnvironmentState.DELETED
+        assert (retained_id, sandbox) in pool.environments.records.hooks_pending()
+        assert main([*release, retained_id]) == 0  # released already: its record
+        pool.environments.records.hooks_done(retained_id, sandbox)
+        assert pool.environments.records.hooks_pending() == []
+    finally:
+        pool.environments.close()
+        pool.store.close()
+
+
+async def test_the_sweep_runs_while_rows_are_left_without_profiles(tmp_path: Path) -> None:
+    """A pool whose child profiles were removed still builds its child environments, so
+    the sweep releases a retained one at its deadline; admission refuses."""
+    pool = Pool(tmp_path, child_retention=0)
+    try:
+        await pool.session()
+        made = await pool.ready()
+        await pool.children.end(made.environment_id, pool.end())
+        assert pool.children.get(made.environment_id, CONTEXT).phase == "retained"
+        await pool.children.close()
+    finally:
+        pool.environments.close()
+        pool.store.close()
+    ceiling = tmp_path / "pool-ceiling.yaml"
+    settings = Settings.model_validate(
+        {
+            "token_file": "worker.token",
+            "state_dir": tmp_path / "worker",
+            "openshell": {
+                "isolation_tier": 3,
+                "cli": str(pool.fake.cli),
+                "env": {"FAKE_OPENSHELL_STATE": str(pool.fake.path), "PATH": os.environ["PATH"]},
+                "environments": {
+                    "policy_store": tmp_path / "middleware",
+                    "targets": TARGETS,
+                    "ceiling": ceiling,
+                    "profiles": {"minimal": IMAGE},
+                },
+            },
+        }
+    )
+    parts = build_worker(settings, TOKEN)
+    try:
+        assert parts.children is not None
+        await parts.children.start()
+        found = parts.store.child_environments.get(made.environment_id)
+        assert found is not None
+        assert found.phase == "released"
+        with pytest.raises(WorkerError, match="no child profiles"):
+            await parts.children.admit(pool.request("dlg-" + "c" * 24))
+    finally:
+        await parts.close()
 
 
 def _manager(pool: Pool) -> ExecutionManager:

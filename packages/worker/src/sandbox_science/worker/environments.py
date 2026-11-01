@@ -404,6 +404,13 @@ class EnvironmentRecords:
             " environment_id TEXT NOT NULL, sandbox TEXT NOT NULL, reason TEXT NOT NULL,"
             " PRIMARY KEY (environment_id, sandbox))"
         )
+        # Environments an offline operator command deleted, whose deletion hooks the next
+        # running worker owes (as a rollback's ``hooks_pending``).
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS deferred_hooks ("
+            " environment_id TEXT NOT NULL, sandbox TEXT NOT NULL, reason TEXT NOT NULL,"
+            " deferred_at TEXT NOT NULL, PRIMARY KEY (environment_id, sandbox))"
+        )
         self._lock = threading.Lock()
 
     def observe(self, info: EnvironmentInfo, seen: Observation) -> tuple[Observation, ...]:
@@ -497,20 +504,35 @@ class EnvironmentRecords:
         ]
 
     def hooks_pending(self) -> list[tuple[str, str]]:
-        """Creations rolled back with the worker stopped, whose deletion hooks the next
-        running worker owes: (environment ID, sandbox name)."""
+        """Creations rolled back, and environments deleted, with the worker stopped, whose
+        deletion hooks the next running worker owes: (environment ID, sandbox name)."""
         with self._lock:
             rows = self._db.execute(
-                "SELECT environment_id, sandbox FROM creation_reconciliations"
-                " WHERE hooks_pending = 1 ORDER BY reconciled_at"
+                "SELECT environment_id, sandbox, reconciled_at FROM creation_reconciliations"
+                " WHERE hooks_pending = 1 UNION SELECT environment_id, sandbox, deferred_at"
+                " FROM deferred_hooks ORDER BY 3"
             ).fetchall()
-        return [(str(environment_id), str(sandbox)) for environment_id, sandbox in rows]
+        return list(dict.fromkeys((str(row[0]), str(row[1])) for row in rows))
+
+    def defer_hooks(self, environment_id: str, sandbox: str, reason: str, at: datetime) -> None:
+        """Record that an offline command deleted the environment's sandbox without its
+        deletion hooks, which the running worker registers: it runs them as it starts."""
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO deferred_hooks VALUES (?,?,?,?)"
+                " ON CONFLICT (environment_id, sandbox) DO NOTHING",
+                (environment_id, sandbox, reason, at.isoformat()),
+            )
 
     def hooks_done(self, environment_id: str, sandbox: str) -> None:
         with self._lock:
             self._db.execute(
                 "UPDATE creation_reconciliations SET hooks_pending = 0"
                 " WHERE environment_id=? AND sandbox=?",
+                (environment_id, sandbox),
+            )
+            self._db.execute(
+                "DELETE FROM deferred_hooks WHERE environment_id=? AND sandbox=?",
                 (environment_id, sandbox),
             )
 

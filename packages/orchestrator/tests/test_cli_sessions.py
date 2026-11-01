@@ -12,6 +12,7 @@ import pytest
 from sandbox_science.orchestrator import cli
 
 POLICY = "sha256:" + "a" * 64
+CA = ("--worker-ca-file", "ca.crt")
 
 
 @pytest.fixture
@@ -61,6 +62,10 @@ def test_a_session_keeps_its_environment_and_needs_a_project(
     [
         (["close"], "session close needs --worker and --token-file"),
         (["open", "--worker", "http://127.0.0.1:8100"], "session open needs no worker"),
+        (
+            ["close", "--worker", "http://127.0.0.1:8100", *("--token-file", "t"), *CA],
+            "--worker-ca-file needs an https:// --worker",
+        ),
     ],
 )
 def test_close_needs_the_worker_and_open_does_not(
