@@ -25,7 +25,7 @@ from sandbox_science.orchestrator.model_profiles import ModelProfile, ModelRole,
 from sandbox_science.orchestrator.projects import ModelUsage
 
 from .paid import begin, observe, usage
-from .transport import Capability, Channel, TransportError
+from .transport import PATIENCE_SECONDS, Capability, Channel, TransportError
 from .wire import (
     MAX_MODEL_RESPONSE_BYTES,
     ModelInfo,
@@ -115,7 +115,13 @@ class CallbackModel(GatewayModel):
         try:
             reply = typed(
                 ModelReply,
-                await self.channel.request(Capability.MODEL, payload(request), timeout=1800),
+                await self.channel.request(
+                    # The runtime's client retries a slow gateway, past 30 minutes in all.
+                    Capability.MODEL,
+                    payload(request),
+                    timeout=None,
+                    patience=PATIENCE_SECONDS,
+                ),
             )
         except TransportError as error:
             raise ModelError("confined model runtime unavailable") from error

@@ -28,11 +28,19 @@ from sandbox_science.orchestrator.effects import UnknownEffectError
 
 _log = logging.getLogger(__name__)
 
-CONTROL_PROTOCOL: Final = 4
+CONTROL_PROTOCOL: Final = 5
 CONTROL_HEADER: Final = "X-Sandbox-Control-Protocol"
 MAX_FRAME_BYTES: Final = 24 * 1024 * 1024
 MAX_PENDING: Final = 128
 MAX_RECEIVED: Final = 128
+HEARTBEAT_SECONDS: Final = 30.0
+"""While a request's handler runs, how often its channel tells the peer that it is still
+working on it (``progress``)."""
+PATIENCE_SECONDS: Final = 300.0
+"""How long a request made with patience goes without its reply or a ``progress`` frame
+before its outcome is unknown: ten heartbeats. Such a request has no other limit, so a
+handler that waits on long work (a child that runs for hours, a long tool, a model call
+the gateway retries) never fails it while the peer is alive."""
 
 
 class Capability(StrEnum):
@@ -109,7 +117,14 @@ class Reply(Contract):
     message: str = Field(default="", max_length=512)
 
 
-Frame = Annotated[Request | Reply, Field(discriminator="kind")]
+class Progress(Contract):
+    """The peer is still working on request ``id`` (``HEARTBEAT_SECONDS``)."""
+
+    kind: Literal["progress"] = "progress"
+    id: Counter
+
+
+Frame = Annotated[Request | Reply | Progress, Field(discriminator="kind")]
 _FRAME = TypeAdapter(Frame)
 Handler = Callable[[Capability, JsonValue], Awaitable[JsonValue]]
 Sender = Callable[[str], Awaitable[None]]
@@ -131,12 +146,22 @@ class Channel:
     there would deadlock. ``close`` wakes local waiters and joins admitted handlers.
     """
 
-    def __init__(self, send: Sender, handler: Handler, *, clock: Clock = SYSTEM_CLOCK) -> None:
+    def __init__(
+        self,
+        send: Sender,
+        handler: Handler,
+        *,
+        clock: Clock = SYSTEM_CLOCK,
+        heartbeat: float = HEARTBEAT_SECONDS,
+    ) -> None:
         self._send, self._handler = send, handler
         self.clock = clock
-        """The time a request's timeout is measured in."""
+        """The time a request's timeout, its patience and the heartbeat are measured in."""
+        self.heartbeat = heartbeat
         self._next = 0
         self._pending: dict[int, asyncio.Future[JsonValue]] = {}
+        self._alive: dict[int, asyncio.Event] = {}
+        """Set by a ``progress`` frame for each pending request made with patience."""
         self._received: set[int] = set()
         self._handling: set[asyncio.Task[None]] = set()
         self._closed = False
@@ -148,9 +173,21 @@ class Channel:
         return self._closed
 
     async def request(
-        self, capability: Capability, payload: JsonValue, *, timeout: float | None = 60
+        self,
+        capability: Capability,
+        payload: JsonValue,
+        *,
+        timeout: float | None = 60,
+        patience: float | None = None,
     ) -> JsonValue:
-        """Send one bounded call. Timeout is ambiguous for a mutating capability."""
+        """Send one bounded call. Timeout is ambiguous for a mutating capability.
+
+        With ``patience`` the call has no ``timeout`` of its own: it waits for as long as
+        the peer keeps saying, at least every ``patience`` seconds, that it is still working
+        on it, which a live peer does for every request it handles. Use it for a call whose
+        handler may wait on work of unbounded length."""
+        if patience is not None and timeout is not None:
+            raise ValueError("a call with patience has no timeout of its own")
         if self._closed:
             raise TransportError("unavailable", "control connection closed")
         if len(self._pending) >= MAX_PENDING:
@@ -159,8 +196,12 @@ class Channel:
         identity = self._next
         future = asyncio.get_running_loop().create_future()
         self._pending[identity] = future
+        if patience is not None:
+            self._alive[identity] = asyncio.Event()
         try:
             await self._write(Request(id=identity, capability=capability, payload=payload))
+            if patience is not None:
+                return await self._patiently(identity, future, patience)
             if timeout is None:
                 return await asyncio.shield(future)
             expiry = asyncio.ensure_future(self.clock.sleep(timeout))
@@ -173,6 +214,7 @@ class Channel:
             return future.result()
         finally:
             self._pending.pop(identity, None)
+            self._alive.pop(identity, None)
             # An error arriving concurrently with cancellation must not leave an
             # unobserved Future exception. No handler is detached or cancelled here.
             if future.done() and not future.cancelled():
@@ -180,7 +222,37 @@ class Channel:
             elif not future.done():
                 future.cancel()
 
-    async def _write(self, frame: Request | Reply) -> None:
+    async def _patiently(
+        self, identity: int, future: asyncio.Future[JsonValue], patience: float
+    ) -> JsonValue:
+        alive = self._alive[identity]
+        while True:
+            expiry = asyncio.ensure_future(self.clock.sleep(patience))
+            beat = asyncio.ensure_future(alive.wait())
+            try:
+                await asyncio.wait((future, expiry, beat), return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                expiry.cancel()
+                beat.cancel()
+            if future.done():
+                return future.result()
+            if not alive.is_set():
+                raise TransportError("unavailable", "control request outcome is unknown")
+            alive.clear()
+
+    async def _beat(self, identity: int) -> None:
+        """Tell the peer, every ``heartbeat`` seconds, that request ``identity`` is still
+        being worked on, until its handler ends."""
+        while True:
+            await self.clock.sleep(self.heartbeat)
+            if self._closed:
+                return
+            try:
+                await self._write(Progress(id=identity))
+            except (ConnectionError, RuntimeError, TransportError):
+                return
+
+    async def _write(self, frame: Request | Reply | Progress) -> None:
         text = frame.model_dump_json()
         if len(text.encode()) > MAX_FRAME_BYTES:
             raise TransportError("invalid_request", "control frame exceeds its byte bound")
@@ -193,6 +265,11 @@ class Channel:
         if len(text.encode()) > MAX_FRAME_BYTES:
             raise TransportError("invalid_request", "control frame exceeds its byte bound")
         frame = _FRAME.validate_json(text)
+        if isinstance(frame, Progress):
+            alive = self._alive.get(frame.id)
+            if alive is not None:
+                alive.set()  # a request without patience, or an ended one, ignores it
+            return
         if isinstance(frame, Reply):
             pending = self._pending.get(frame.id)
             if pending is None or pending.done():
@@ -221,6 +298,13 @@ class Channel:
         task.add_done_callback(self._handling.discard)
 
     async def _handle(self, frame: Request) -> None:
+        beating = asyncio.ensure_future(self._beat(frame.id))
+        try:
+            await self._respond(frame)
+        finally:
+            beating.cancel()
+
+    async def _respond(self, frame: Request) -> None:
         try:
             result = await self._handler(frame.capability, frame.payload)
             reply = Reply(id=frame.id, payload=result)

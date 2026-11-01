@@ -262,8 +262,25 @@ Private control protocol 3 additionally carries attempt-pinned requested model p
 for role-specific reasoning effort. Private control protocol 4 carries a hook's turn
 limit (`turn_limit`, asked only of a hook that sets one): a child's runtime loop runs to
 its `turn_ceiling`, not to its soft turn cap, and the host holds the runtime's loop state
-to the limit the hook last gave, so a runtime cannot raise its own. Older control/runtime
-peers are refused.
+to the limit the hook last gave, so a runtime cannot raise its own. Private control
+protocol 5 adds a `progress` frame: while either side handles a request, it tells the
+peer every 30 s that it is still working on it. A request whose handler may wait on work
+of unbounded length is made with patience instead of a timeout: it waits for as long as
+those frames keep coming, and its outcome is unknown only after 300 s without one, as
+when the connection dies without closing. Older control/runtime peers are refused.
+
+How long each request may wait:
+
+| Request | Direction | Limit |
+| --- | --- | --- |
+| A hook's calls (`hook_enter`, `hook_exit`, `notices`, `turn_limit`, `last_call`, `consumption`, `model_returned`, `gate`, `observe_tool`, `closing`, `accept`, `finishing`), `tool`, `fold_before`, `fold_overflow` | runtime to host | patience: a parent's `finishing` and lease exit wait for its children, a tool may run or wait for hours, a gate or call may be held for the user |
+| `halt` | runtime to host | 2,400 s: a check-in's 1,800 s wait for its parent, then the automatic decision ([adaptive resources](adaptive-research-resources.md#check-ins)) |
+| `model` | host to runtime | patience: the runtime's client retries a slow gateway, 600 s a try |
+| `cancel` | host to runtime | patience: the cancelled loop exits its hooks' leases |
+| `run`, `resume_branch`, `list_mcp_tools` | either | none: they last as long as the run, and end with the connection |
+| `mcp_request` | host to runtime | 1,800 s: a call's own 330 s bound and its binary results |
+| `embedding` | host to runtime | 120 s; a failure is an embedding error, not a failed run |
+| `log_init`, `log_tool`, `log_append`, `tool_done`, `model_intent`, `model_observed`, `confirm_request`, `handshake`, `queue`, `admit`, `resume_next`, `publish_mcp_binary`, `report_mcp_listing` | either | 30 to 300 s: bounded store writes, reads and checks |
 
 Unexpected capability failures retain a local diagnostic with capability name, exception
 class and stack locations, never request payloads, exception text or local variables.

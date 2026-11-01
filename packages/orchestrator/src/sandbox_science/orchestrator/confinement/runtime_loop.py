@@ -34,6 +34,7 @@ from sandbox_science.orchestrator.skills.tool import SkillTool
 from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome
 
 from .paid import PaidModel
+from .transport import PATIENCE_SECONDS as PATIENCE
 from .transport import Capability, Channel, TransportError
 from .wire import (
     MAX_MODEL_RESPONSE_BYTES,
@@ -102,16 +103,21 @@ class RemoteHook(TurnHook):
         kind: Capability,
         run: RunView | None = None,
         *,
-        timeout: float = 1800,
+        timeout: float | None = None,
         **fields: Any,
     ) -> JsonValue:
+        """Ask the host's hook. Without ``timeout`` the call waits for as long as the host
+        is working on it (``PATIENCE_SECONDS``): a hook may wait on work of any length, as
+        a parent's ``finishing`` waits for its children."""
         request = HookRequest(
             attempt=self.attempt,
             slot=self.slot,
             state=state(cast(Transcript, run)) if run is not None else None,
             **fields,
         )
-        return await self.channel.request(kind, payload(request), timeout=timeout)
+        if timeout is not None:
+            return await self.channel.request(kind, payload(request), timeout=timeout)
+        return await self.channel.request(kind, payload(request), timeout=None, patience=PATIENCE)
 
     @asynccontextmanager
     async def lease(self) -> AsyncGenerator[None]:
@@ -215,7 +221,10 @@ class RemoteToolbox(Toolbox):
                 payload(
                     ToolRequest(attempt=self.attempt, call=call, operation=operation, model=model)
                 ),
-                timeout=1800,
+                # A tool may wait for hours: a long cell, a wait on children or jobs, a
+                # call held for the user's approval.
+                timeout=None,
+                patience=PATIENCE,
             ),
         )
         self._given, self.revision = result.toolbox, result.toolbox.revision
@@ -293,7 +302,8 @@ class RemoteFolds(Folds):
             await self.channel.request(
                 kind,
                 payload(FoldRequest(attempt=self.attempt, state=self.current_state())),
-                timeout=1800,
+                timeout=None,
+                patience=PATIENCE,
             ),
         )
         point.context.restore(
