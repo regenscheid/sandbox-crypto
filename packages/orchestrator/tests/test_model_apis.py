@@ -11,6 +11,7 @@ import logging
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from functools import partial
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -26,7 +27,9 @@ from sandbox_science.orchestrator.confinement.models import (
 )
 from sandbox_science.orchestrator.confinement.transport import Capability, Channel
 from sandbox_science.orchestrator.confinement.wire import ModelRequest, payload
-from sandbox_science.orchestrator.harness import Harness, Role, RunRequest
+from sandbox_science.orchestrator.documents import USER, DocumentStore, store_path
+from sandbox_science.orchestrator.harness import Harness, Role, RunRequest, Stores
+from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.messages import MessagesModel
 from sandbox_science.orchestrator.model import (
     ModelGateway,
@@ -34,7 +37,10 @@ from sandbox_science.orchestrator.model import (
     adapter_of,
 )
 from sandbox_science.orchestrator.model_profiles import ModelProfile, ModelRole, profiles
+from sandbox_science.orchestrator.model_settings import AgentModelRole, ProjectModels
+from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.responses import ResponsesModel
+from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
 from .loop_harness import Harness as LoopHarness
@@ -280,3 +286,98 @@ async def test_a_run_on_an_anthropic_alias_goes_through_messages_by_default(
     record = await harness.run("run-2", [Scripted("Plain.")])
     assert len(found.claude) == 2  # chat completions, the default
     assert record.final_text == "Plain."
+
+
+async def test_a_role_s_default_on_messages_follows_the_chosen_api(info: dict[str, Any]) -> None:
+    """The Kubernetes bundle's research roles default to max, and to high on Messages:
+    the run service applies the second when it chooses Messages for the alias."""
+    gateway = ModelGateway(
+        info["url"],
+        KEY,
+        reasoning_effort={"main": "max", "reviewer": "medium"},
+        messages_effort={"main": "high"},
+        default_api="responses",
+    )
+    try:
+        await gateway.choose_apis()
+        assert gateway.profile("claude", role="main").reasoning_effort == "high"
+        assert gateway.profile("gpt", role="main").reasoning_effort == "max"
+        assert gateway.profile("claude", role="reviewer").reasoning_effort == "medium"
+        assert gateway.profile("claude", role="main", api="chat").reasoning_effort == "max"
+        # A pinned profile keeps the effort it started with.
+        with profiles(
+            {"main": ModelProfile(alias="claude", api="messages", reasoning_effort="max")}
+        ):
+            assert gateway.model("claude", role="main").requested_profile.reasoning_effort == "max"
+    finally:
+        await gateway.close()
+
+
+async def test_a_saved_deployment_default_is_resolved_by_the_run_service(
+    info: dict[str, Any], tmp_path: Path
+) -> None:
+    """A project's saved choice of the deployment's default effort takes the default on
+    the alias's API, as the run service chose it; an explicit choice is kept."""
+    projects = ProjectStore(tmp_path)
+    projects.create("p", "minimal", "sha256:" + "a" * 64)
+    documents = DocumentStore(store_path(tmp_path), producer="harness")
+    gateway = ModelGateway(
+        info["url"],
+        KEY,
+        reasoning_effort={"main": "max", "delegated": "max"},
+        messages_effort={"main": "high", "delegated": "high"},
+        default_api="responses",
+    )
+    try:
+        await gateway.choose_apis()
+        harness = Harness(
+            cast(WorkerClient, object()),
+            Role(gateway.model("claude", role="main"), "claude"),
+            delegated=Role(gateway.model("gpt", role="delegated"), "gpt"),
+            gateway=gateway,
+            stores=Stores(projects, documents, JobState(tmp_path), RunState(projects.control)),
+        )
+        defaults: dict[AgentModelRole, ModelProfile] = {
+            "main": gateway.profile("claude", role="main"),
+            "delegated": gateway.profile("gpt", role="delegated"),
+        }
+        roles = {
+            "main": {"alias": "claude", "deployment_default": True},
+            "delegated": {"alias": "claude", "deployment_default": True},
+        }
+        ProjectModels(documents).change(
+            "p",
+            {"expected": 0, "roles": roles, "operation_id": "settings-1"},
+            USER,
+            defaults=defaults,
+            available={"claude": None, "gpt": None},
+            messages_defaults={"main": "high", "delegated": "high"},
+        )
+        pinned = harness.model_profiles(RunRequest("p", "s", "research"))
+        assert (pinned["main"].api, pinned["main"].reasoning_effort) == ("messages", "high")
+        assert pinned["delegated"].reasoning_effort == "high"
+        roles["main"] = {"alias": "gpt", "deployment_default": True}
+        roles["delegated"] = {"alias": "claude", "reasoning_effort": "low"}
+        ProjectModels(documents).change(
+            "p",
+            {"expected": 1, "roles": roles, "operation_id": "settings-2"},
+            USER,
+            defaults=defaults,
+            available={"claude": None, "gpt": None},
+        )
+        pinned = harness.model_profiles(RunRequest("p", "s", "research"))
+        assert (pinned["main"].api, pinned["main"].reasoning_effort) == ("responses", "max")
+        assert pinned["delegated"].reasoning_effort == "low"
+    finally:
+        documents.close()
+        await gateway.close()
+
+
+async def test_the_command_line_sends_the_messages_default_on_a_chosen_alias(
+    harness: LoopHarness,
+) -> None:
+    harness.gateway.served = {"main": "anthropic/claude-opus-5-5"}
+    harness.gateway.providers = {"main": "anthropic"}
+    options = ["--reasoning-effort", "main=max", "--messages-reasoning-effort", "main=high"]
+    await harness.run("run-1", [Scripted("Done.")], options=options)
+    assert harness.gateway.claude[0]["output_config"] == {"effort": "high"}

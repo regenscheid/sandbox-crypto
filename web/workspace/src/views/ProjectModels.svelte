@@ -45,6 +45,28 @@
     }
   }
 
+  /** The effort choice that keeps the deployment's default, which depends on the API the
+   * run service chooses for the alias (Messages or another). */
+  const DEPLOYMENT = '@deployment';
+
+  function onMessages(role: AgentModelRole): string | null {
+    return settings?.default_efforts?.[role]?.messages ?? null;
+  }
+
+  function deploymentLabel(role: AgentModelRole): string {
+    const usual = settings?.default_efforts?.[role]?.effort ?? 'provider default';
+    const messages = onMessages(role);
+    return messages === null
+      ? `Deployment default (${usual})`
+      : `Deployment default (${messages} on Messages, else ${usual})`;
+  }
+
+  function chooseEffort(role: AgentModelRole, value: string) {
+    const selected = roles[role]!;
+    selected.deployment_default = value === DEPLOYMENT;
+    selected.reasoning_effort = value === DEPLOYMENT ? null : value || null;
+  }
+
   function useDefaults() {
     if (settings) roles = structuredClone(settings.defaults);
   }
@@ -105,21 +127,21 @@
             <label>
               Reasoning effort
               <select
-                value={roles[role]!.reasoning_effort ?? ''}
+                value={roles[role]!.deployment_default
+                  ? DEPLOYMENT
+                  : (roles[role]!.reasoning_effort ?? '')}
                 disabled={saving.busy || option(roles[role]!.alias)?.effort_supported === false}
-                onchange={(event) => {
-                  roles[role]!.reasoning_effort = event.currentTarget.value || null;
-                }}
+                onchange={(event) => chooseEffort(role, event.currentTarget.value)}
               >
                 <option value="">Provider default</option>
+                {#if onMessages(role) !== null || roles[role]!.deployment_default}
+                  <option value={DEPLOYMENT}>{deploymentLabel(role)}</option>
+                {/if}
                 {#each settings.known_efforts as effort (effort)}
                   <option value={effort}>{effort}</option>
                 {/each}
               </select>
             </label>
-            {#if option(roles[role]!.alias)?.effort_supported === false}
-              <p class="muted">This model's Messages adapter does not accept an effort setting.</p>
-            {/if}
           </fieldset>
         {/each}
       </div>

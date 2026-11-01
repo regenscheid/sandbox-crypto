@@ -102,11 +102,16 @@ service's choice: the agent runtime asks the gateway's model information when it
 and calls an alias whose provider the gateway lists as `anthropic` through `messages`
 (Claude's Messages API), any other through `responses`
 ([context management](specs/context-management.md), CM-41). The renderer sets the site's
-`model.default_api` to `responses` for this unless the site file sets it. Research roles
-default to `max` effort and a configured reviewer to `medium`, on every API, since every
-API takes an effort (Messages as `output_config.effort`; on Claude Opus 5.5 `max` is
-the costliest level, and Anthropic advises `high` for agentic work). Set the reviewer's
-alias to the site's approved cheaper reviewer model. One shared alias must have the same
+`model.default_api` to `responses` for this unless the site file sets it. A research
+role without an `effort` defaults to `high` on the Messages API (Anthropic's advice for
+agentic work; `max` is Claude Opus 5.5's costliest level) and to `max` on the others; a
+configured reviewer defaults to `medium` on every API. For a role whose API the run
+service chooses, the renderer gives both (`model.reasoning_effort` and
+`model.messages_reasoning_effort`, and the workspace's `--agent-effort` and
+`--agent-messages-effort`), and the run service applies the one for the API it chose;
+the workspace shows it as the deployment default, with both values. An explicit
+`effort` applies on every API. Set the reviewer's alias to the site's approved cheaper
+reviewer model. One shared alias must have the same
 API in every role, or none in every role, though effort is per role, and the site file's
 `model.api` may not name a catalog alias.
 

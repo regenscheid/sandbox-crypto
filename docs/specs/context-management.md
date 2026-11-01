@@ -883,11 +883,17 @@ Sonnet 4.5, Haiku 4.5 and the Claude models before them take none. The later mod
 take all five, and a model the adapter does not recognize is sent the level as asked, for
 the API to accept or refuse. Thinking replay stays a separate setting (CM-39).
 
-The defaults do not depend on the adapter, since every adapter takes an effort: a
-configured reviewer defaults to `medium` (Claude Opus 5.5's own default), and the other
-roles to the provider's default, except in the Kubernetes bundle, whose main and
-delegated roles default to `max`. A deployment that wants Claude's research roles at
-`high`, as Anthropic advises for agentic work, sets it.
+Every adapter takes an effort. A configured reviewer defaults to `medium` on every
+adapter (Claude Opus 5.5's own default), and the launcher's other roles to the provider's
+default. The Kubernetes bundle's main and delegated roles default to `max`, and to `high`
+on Messages (amended 2026-10-31): Anthropic advises `high` for agentic work, and `max` is
+Claude Opus 5.5's costliest level. A role's own effort wins on every adapter. Where the
+run service chooses a role's adapter (CM-41), only it can apply the Messages default:
+the deployment gives it as a second map (`messages_reasoning_effort`, by role), which
+the run service uses for an alias it calls through Messages. A project's saved settings
+may keep that default (`deployment_default`) instead of naming an effort; the run
+service then resolves it on the alias's adapter, and the workspace shows it as the
+deployment's default with both values.
 
 Each durable work attempt pins alias, adapter and requested effort for its configured
 callers. Calls retain the requested profile alongside their paid intent before dispatch.

@@ -15,6 +15,8 @@ from pydantic import (
 )
 
 Effort = Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_-]{0,31}$")]
+MESSAGES_RESEARCH_EFFORT: Final = "high"
+"""A research role's default effort on Messages."""
 DEFAULT_API: Final = "responses"
 """The API of a role whose alias the catalog names none for and the gateway does not list
 as Anthropic's: the run service chooses ``messages`` for those it does (CM-41)."""
@@ -43,9 +45,22 @@ class RoleModel(BaseModel):
         return value
 
     def requested_effort(self, role: str) -> str:
-        """The role's effort, defaulted the same on every API, since every API takes
-        one: ``medium`` for the reviewer, ``max`` for the research roles."""
-        return self.effort or ("medium" if role == "reviewer" else "max")
+        """The role's effort: its own, else ``medium`` for the reviewer, and for a research
+        role ``high`` on Messages (Anthropic's advice for agentic work; ``max`` is Claude
+        Opus 5.5's costliest level) and ``max`` on the other APIs. A role whose API the run
+        service chooses gets ``max`` here and ``messages_effort``'s on Messages."""
+        if self.effort:
+            return self.effort
+        if role == "reviewer":
+            return "medium"
+        return MESSAGES_RESEARCH_EFFORT if self.api == "messages" else "max"
+
+    def messages_effort(self, role: str) -> str | None:
+        """The role's default on Messages, where it differs from ``requested_effort``'s
+        and the run service chooses the API, so only it can apply it (CM-41)."""
+        if self.effort or role == "reviewer" or self.api is not None:
+            return None
+        return MESSAGES_RESEARCH_EFFORT
 
 
 class ModelCatalog(BaseModel):
@@ -86,6 +101,8 @@ class ModelCatalog(BaseModel):
                 continue
             result += ["--agent-model", f"{role}={profile.alias}"]
             result += ["--agent-effort", f"{role}={profile.requested_effort(role)}"]
+            if (on_messages := profile.messages_effort(role)) is not None:
+                result += ["--agent-messages-effort", f"{role}={on_messages}"]
         for alias, api in self.apis().items():
             result += ["--agent-api", f"{alias}={api}"]
         return result

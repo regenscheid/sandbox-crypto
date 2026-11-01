@@ -102,8 +102,15 @@ async def test_workspace_cli_cold_volume_starts_without_connected_runtime(tmp_pa
                 assert response.status == 200
                 settings = await response.json()
                 assert settings["roles"]["main"]["alias"] == "test/research-main:v1.0"
-                assert settings["roles"]["main"]["reasoning_effort"] == "max"
-                assert settings["roles"]["delegated"]["reasoning_effort"] == "max"
+                # The run service chooses the research roles' API, and their default
+                # effort with it: high on Messages, else max (CM-41).
+                for role in ("main", "delegated"):
+                    assert settings["roles"][role]["reasoning_effort"] is None
+                    assert settings["roles"][role]["deployment_default"] is True
+                    assert settings["default_efforts"][role] == {
+                        "effort": "max",
+                        "messages": "high",
+                    }
                 assert settings["roles"]["reviewer"]["reasoning_effort"] == "medium"
         assert any((volume / "control").iterdir())
     finally:

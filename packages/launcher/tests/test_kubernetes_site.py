@@ -275,6 +275,9 @@ def test_each_settings_file_loads_through_the_model_its_service_starts_with(tmp_
     # responses as the default (CM-41).
     assert control.apis == {"test-watcher": "chat"}
     assert control.default_api == "responses"
+    # The research roles' default on Messages, which the run service applies when it
+    # chooses Messages for their aliases.
+    assert control.messages_reasoning_effort == {"main": "high", "delegated": "high"}
 
     worker = load_worker(secrets / "worker/worker.toml")
     assert worker.listen == "0.0.0.0:8100"

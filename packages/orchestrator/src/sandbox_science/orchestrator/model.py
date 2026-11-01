@@ -25,7 +25,7 @@ import aiohttp
 from sandbox_science.contracts.clock import SYSTEM_CLOCK, Clock
 
 from . import images
-from .model_profiles import PROFILES, ModelProfile, ModelRole, requested
+from .model_profiles import PROFILES, ModelProfile, ModelRole, default_effort, requested
 from .pricing import GATEWAY, MODEL_INFO, CostSource, PriceList, Tokens, chat_tokens
 from .pricing import cost as priced_cost
 from .tokens import total_input
@@ -765,6 +765,7 @@ class ModelGateway:
         default_api: str = DEFAULT_API,
         options: Mapping[str, Mapping[str, Any]] | None = None,
         reasoning_effort: Mapping[ModelRole, str] | None = None,
+        messages_effort: Mapping[ModelRole, str] | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self._api_key = api_key
@@ -778,6 +779,9 @@ class ModelGateway:
         self.named = frozenset(self.apis)
         """The aliases the deployment names an adapter for, which ``choose_apis`` keeps."""
         self.reasoning_effort = dict(reasoning_effort or {})
+        self.messages_effort = dict(messages_effort or {})
+        """A role's default effort for an alias called through Messages, where it differs
+        from ``reasoning_effort``'s."""
         self.options = dict(options or {})
         """Each adapter's own options, by its kind, such as Claude's thinking replay."""
         self.prices = PriceList(self.base_url, api_key, timeout=timeout)
@@ -792,12 +796,16 @@ class ModelGateway:
         """The adapter ``alias`` is called through (CM-41)."""
         return self.apis.get(alias, self.default_api)
 
-    def profile(self, alias: str, *, role: ModelRole = "delegated") -> ModelProfile:
-        """Resolve deployment settings without opening an HTTP connection."""
+    def profile(
+        self, alias: str, *, role: ModelRole = "delegated", api: str | None = None
+    ) -> ModelProfile:
+        """Resolve deployment settings without opening an HTTP connection: ``alias``'s
+        adapter, or ``api``, and the role's effort on it."""
+        api = api or self.api(alias)
         return requested(
             alias=alias,
-            api=self.api(alias),
-            reasoning_effort=self.reasoning_effort.get(role),
+            api=api,
+            reasoning_effort=default_effort(role, api, self.reasoning_effort, self.messages_effort),
         )
 
     async def choose_apis(self, aliases: Iterable[str] | None = None) -> dict[str, str]:
@@ -861,7 +869,7 @@ class ModelGateway:
             prices=self.prices,
         ).for_role(
             role,
-            self.profile(alias, role=role).model_copy(update={"api": api}),
+            self.profile(alias, role=role, api=api),
         )
 
     async def aliases(self) -> frozenset[str] | None:

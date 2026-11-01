@@ -291,6 +291,11 @@ def harness_argv(config: LauncherConfig, layout: Layout) -> list[str]:
         for role, effort in model.effective_efforts().items()
         for option in ("--reasoning-effort", f"{role}={effort}")
     ]
+    efforts += [
+        option
+        for role, effort in model.messages_reasoning_effort.items()
+        for option in ("--messages-reasoning-effort", f"{role}={effort}")
+    ]
     apis = [option for alias, kind in model.api.items() for option in ("--api", f"{alias}={kind}")]
     apis += ["--default-api", model.default_api]
     # The aliases the deployment declares accept images (figures, FG-33).
@@ -357,6 +362,12 @@ def workspace_argv(config: LauncherConfig, layout: Layout) -> list[str]:
         for role, effort in model.effective_efforts().items()
         if role in role_aliases
         for option in ("--agent-effort", f"{role}={effort}")
+    ]
+    agent_models += [
+        option
+        for role, effort in model.messages_reasoning_effort.items()
+        if role in role_aliases
+        for option in ("--agent-messages-effort", f"{role}={effort}")
     ]
     agent_models += [
         option
