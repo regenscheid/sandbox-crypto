@@ -2327,13 +2327,14 @@ class Environments:
         waits for the sandbox to be provisioned, even with ``--detach``, until its own
         idle deadline (``OPENSHELL_PROVISION_TIMEOUT``, 300 s by default, renewed by
         each progress event): the command is given the schedule timeout as that deadline
-        and is ended at it, and either end is ``ScheduleTimeoutError``. A sandbox it
-        recorded is then deleted by identity, as after any failed creation."""
+        and is ended at it, and either end is ``ScheduleTimeoutError``. The profile's
+        timeout replaces the pool's ``create_timeout`` here, longer or shorter. A sandbox
+        it recorded is then deleted by identity, as after any failed creation."""
         loop = asyncio.get_running_loop()
         try:
             await self.cli.run(
                 *args,
-                timeout=min(self.settings.create_timeout, timeout),
+                timeout=max(0.0, deadline - loop.time()),
                 env={"OPENSHELL_PROVISION_TIMEOUT": str(max(1, math.ceil(timeout)))},
             )
         except GatewayRefusalError:

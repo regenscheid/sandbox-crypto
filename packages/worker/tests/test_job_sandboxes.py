@@ -909,6 +909,30 @@ async def test_an_unplaced_sandbox_fails_after_its_schedule_timeout(tmp_path: Pa
         await pool.close()
 
 
+async def test_a_schedule_timeout_past_the_create_timeout_still_bounds_the_create(
+    tmp_path: Path,
+) -> None:
+    """The pool's ``create_timeout`` (600 s by default) below a profile's
+    ``schedule_timeout`` (1,800 s by default) does not end the creation first as
+    ``sandbox_unavailable``: the schedule timeout bounds it, and the job ends
+    ``capacity_unavailable`` at it."""
+    pool = Pool(
+        tmp_path, create_timeout=1.0, job_profiles={"medium": profile(schedule_timeout=3.0)}
+    )
+    try:
+        await pool.session()
+        pool.fake.update(phase_on_create="Provisioning", create_waits=True, create_waits_for=60)
+        started = time.monotonic()
+        ended = await pool.run(pool.request())
+        assert time.monotonic() - started >= 3.0
+        assert ended.result is not None
+        assert ended.result.error is not None
+        assert ended.result.error.message.startswith("capacity_unavailable")
+        assert "not placed within 3 s" in ended.result.error.message
+    finally:
+        await pool.close()
+
+
 @pytest.mark.parametrize("ignores_its_deadline", [False, True])
 async def test_the_schedule_timeout_bounds_the_create_command(
     tmp_path: Path, ignores_its_deadline: bool
