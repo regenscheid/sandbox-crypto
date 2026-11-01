@@ -16,6 +16,7 @@ from sandbox_science.orchestrator.aio import owned
 from sandbox_science.orchestrator.context.folding import FoldPoint, Folds
 from sandbox_science.orchestrator.context.history.memory import RunMemory
 from sandbox_science.orchestrator.hooks import (
+    HALT_TIMEOUT_SECONDS,
     Appended,
     Closing,
     Effect,
@@ -96,14 +97,21 @@ class RemoteHook(TurnHook):
         self.name, self.veto = given.name, given.veto
         self.limits_turns = given.turn_limit
 
-    async def ask(self, kind: Capability, run: RunView | None = None, **fields: Any) -> JsonValue:
+    async def ask(
+        self,
+        kind: Capability,
+        run: RunView | None = None,
+        *,
+        timeout: float = 1800,
+        **fields: Any,
+    ) -> JsonValue:
         request = HookRequest(
             attempt=self.attempt,
             slot=self.slot,
             state=state(cast(Transcript, run)) if run is not None else None,
             **fields,
         )
-        return await self.channel.request(kind, payload(request), timeout=1800)
+        return await self.channel.request(kind, payload(request), timeout=timeout)
 
     @asynccontextmanager
     async def lease(self) -> AsyncGenerator[None]:
@@ -126,7 +134,11 @@ class RemoteHook(TurnHook):
         )
 
     async def halt(self, run: RunView) -> str | None:
-        return TypeAdapter(str | None).validate_python(await self.ask(Capability.HALT, run))
+        # A check-in waits here for its parent's decision, and the automatic one after
+        # ``DECISION_WAIT_SECONDS``: this waits longer, so that decision answers first.
+        return TypeAdapter(str | None).validate_python(
+            await self.ask(Capability.HALT, run, timeout=HALT_TIMEOUT_SECONDS)
+        )
 
     async def last_call(self, run: RunView) -> str | None:
         return TypeAdapter(str | None).validate_python(await self.ask(Capability.LAST_CALL, run))
