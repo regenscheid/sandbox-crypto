@@ -46,7 +46,7 @@ from .findings import Findings
 from .ledger import ingest_ledger
 from .models import DISMISSAL_CHARACTERS, FINDING_STATUSES, EvidenceAnchor, ReviewType
 from .notices import FindingNotices
-from .quotes import EPRINT_TOOL, PDF_TOOLS, eprint_record, mark_of, pdf_record
+from .quotes import EPRINT_TOOLS, PDF_TOOLS, eprint_record, mark_of, pdf_record
 from .rubric import CLASSIFIER_VERSION
 from .runner import ReviewerRunner, schema
 from .store import MAX_ITEM_BYTES, Json, ReviewStore, clipped, dump
@@ -242,7 +242,7 @@ def source_of(
     record: Json | None = None
     if name in PDF_TOOLS and isinstance(call.get("pdf"), dict):
         record = pdf_record(name, given, cast(Json, call["pdf"]))
-    elif name == EPRINT_TOOL and call.get("connector") in servers and "error" not in call:
+    elif name in EPRINT_TOOLS and call.get("connector") in servers and "error" not in call:
         # The result's text after its archive header (CM-4a), as the server wrote it.
         record = eprint_record(name, given, body(str(messages[-1].get("content", ""))))
     if record is None:

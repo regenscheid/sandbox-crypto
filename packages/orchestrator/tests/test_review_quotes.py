@@ -420,3 +420,117 @@ def test_a_result_without_its_call_in_the_run_is_no_source() -> None:
     result = pages("a" * 64, "p.pdf", {1: "Some line of text here."})
     alone = [{"role": "tool", "tool_call_id": "call-9", "content": "x"}]
     assert source_of(alone, {"pdf": result}) is None
+
+
+# The e-print tools as the server answers since 2026-10-31: a search of one paper's text,
+# a read by page, and the catalog record, the only one that prints the date stamp.
+SEARCH_TOOL = "e-print-mcp_search_eprint_fulltext"
+RECORD_TOOL = "e-print-mcp_get_eprint"
+PAGE_TWO = f"Curve coefficients. We show {TWIST}, as Table 2 lists."
+ACROSS = "The prime is chosen for speed."
+
+
+def searched(paper: str, query: str, *found: tuple[int, str]) -> str:
+    """search_eprint_fulltext's answer: the passages, each under its physical page."""
+    head = f"[{paper}] A paper\n\n"
+    if not found:
+        return head + f"No body passage matching {query!r}. The body text is available."
+    blocks = "\n\n".join(f"Physical page {page}\n\n{text}\n" for page, text in found)
+    return head + f"{len(found)} passage(s) matching {query!r}:\n\n{blocks}"
+
+
+def read_pages(paper: str, first: int, of: int, *texts: str) -> str:
+    """eprint_fulltext's answer: pages under their headings, then the next pages."""
+    last = first + len(texts) - 1
+    body = "\n\n".join(f"## Page {first + i}\n\n{text}" for i, text in enumerate(texts))
+    after = (
+        "End of paper."
+        if last >= of
+        else f'Next: eprint_fulltext(paper_id="{paper}", start_page={last + 1}, page_count=1).'
+    )
+    return f"[{paper}] A paper\nPhysical pages {first}-{last} of {of}.\n\n{body}\n\n{after}"
+
+
+def catalog(paper: str, stamp: str = STAMP) -> str:
+    """get_eprint's answer: the record, with its Date line, and the abstract."""
+    return (
+        f"[{paper}] A paper\nAuthors: A. Author\nDate: {stamp}\n"
+        f"Category: Public-key cryptography\n\nThe abstract says {TWIST}."
+    )
+
+
+def test_the_split_tools_answers_are_read_into_records() -> None:
+    from sandbox_science.orchestrator.consistency.quotes import eprint_record
+
+    search = eprint_record(
+        SEARCH_TOOL, {"paper_id": "2024/123", "query": "twist"},
+        searched("2024/123", "twist", (2, PAGE_TWO), (5, "the twist again\n\nmore")),
+    )  # fmt: skip
+    assert search is not None
+    assert search["eprint"] == {
+        "paper": "2024/123", "dated": None, "pages": [2, 5],
+        "passages": [PAGE_TWO, "the twist again more"],
+    }  # fmt: skip
+    missed = eprint_record(SEARCH_TOOL, {}, searched("2024/123", "nothing"))
+    assert missed is not None
+    assert missed["eprint"]["passages"] == []
+    read = eprint_record(
+        EPRINT_TOOL, {"paper_id": "2024/123", "start_page": 2},
+        read_pages("2024/123", 2, 9, PAGE_TWO, f"Date: 2026-01-01\n{ACROSS}"),
+    )  # fmt: skip
+    assert read is not None
+    # A page's line like a Date line is the paper's text, never the record's date stamp.
+    assert read["eprint"]["dated"] is None
+    assert read["eprint"]["pages"] == [2, 3]
+    assert read["eprint"]["passages"][1] == f"Date: 2026-01-01 {ACROSS}"
+    assert not any("Next:" in p for p in read["eprint"]["passages"])
+    record = eprint_record(RECORD_TOOL, {"paper_id": "2024/123"}, catalog("2024/123"))
+    assert record is not None
+    assert record["eprint"] == {"paper": "2024/123", "dated": STAMP, "passages": []}
+    assert eprint_record(RECORD_TOOL, {}, "[2024/123] A paper\nno date") is None
+    # The answer before 2026-10-31, as records and archives of then hold it.
+    old = eprint_record(EPRINT_TOOL, {"query": "twist"}, passages("2024/123", "twist", TWIST))
+    assert old is not None
+    assert (old["eprint"]["dated"], old["eprint"]["passages"]) == (STAMP, [TWIST])
+
+
+def test_a_quote_of_a_passage_or_a_page_is_dated_by_get_eprint(store: Any) -> None:
+    """Since 2026-10-31 neither text tool prints the date stamp: a quote of their text is
+    found when get_eprint gave the paper its stamp in the session; the echoed phrase, a
+    header and the pointer to the next pages are no passage, and another stamp fails."""
+    reviews, _, _ = store
+    ledger = Ledger(reviews.documents)
+    paper(ledger)
+    call(reviews, 1, SEARCH_TOOL, {"paper_id": "2024/123", "query": "twist of the curve"},
+         searched("2024/123", "twist of the curve", (2, PAGE_TWO)), SERVER)  # fmt: skip
+    call(reviews, 2, EPRINT_TOOL, {"paper_id": "2024/123", "start_page": 3, "page_count": 1},
+         read_pages("2024/123", 3, 9, f"Prime shapes. {ACROSS} It fits 64-bit words."),
+         SERVER)  # fmt: skip
+    call(reviews, 3, RECORD_TOOL, {"paper_id": "2024/123"}, catalog("2024/123"), SERVER)
+    passage = {"source": "eprint", "dated": STAMP, "text": f"We show {TWIST}"}
+    page = {"source": "eprint", "dated": STAMP, "text": f"{ACROSS} It fits 64-bit words"}
+    echoed = {
+        "source": "eprint",
+        "dated": STAMP,
+        "text": "passage(s) matching 'twist of the curve'",
+    }
+    pointer = {"source": "eprint", "dated": STAMP,
+               "text": 'Next: eprint_fulltext(paper_id="2024/123"'}  # fmt: skip
+    abstract = {"source": "eprint", "dated": STAMP, "text": f"The abstract says {TWIST}"}
+    other = {**passage, "dated": "2026-01-01T00:00:00Z"}
+    assert recorded(ledger, reviews, passage, page, echoed, pointer, abstract, other) == [
+        "q1", "q2",
+    ]  # fmt: skip
+
+
+def test_a_split_tools_quote_without_get_eprint_has_no_source(store: Any) -> None:
+    """A date stamp the session's get_eprint records never gave the paper dates
+    nothing: the text tools print none, so the quote's stamp would be the agent's word."""
+    reviews, _, _ = store
+    ledger = Ledger(reviews.documents)
+    paper(ledger)
+    call(reviews, 1, SEARCH_TOOL, {"paper_id": "2024/123", "query": "twist of the curve"},
+         searched("2024/123", "twist of the curve", (2, PAGE_TWO)), SERVER)  # fmt: skip
+    call(reviews, 2, RECORD_TOOL, {"paper_id": "2024/999"}, catalog("2024/999"), SERVER)
+    assert recorded(ledger, reviews, {"source": "eprint", "dated": STAMP,
+                                      "text": f"We show {TWIST}"}) == []  # fmt: skip
