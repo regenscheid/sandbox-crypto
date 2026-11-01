@@ -38,8 +38,10 @@ import secrets
 import signal
 import socket
 import stat
+import subprocess
 import sys
 import time
+import urllib.parse
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -73,6 +75,7 @@ if TYPE_CHECKING:
         executor_admission,
         executor_lifecycle,
         provisioning,
+        sandbox_confine,
         sandbox_files,
         sandbox_processes,
         sandbox_search,
@@ -89,6 +92,7 @@ else:
     executor_lifecycle = _sibling("executor_lifecycle")
     executor_admission = _sibling("executor_admission")
     provisioning = _sibling("provisioning")
+    sandbox_confine = _sibling("sandbox_confine")
     sandbox_files = _sibling("sandbox_files")
     sandbox_processes = _sibling("sandbox_processes")
     sandbox_search = _sibling("sandbox_search")
@@ -101,9 +105,16 @@ else:
 
 _owned = executor_lifecycle.owned
 
-PROTOCOL = 3
+PROTOCOL = 4
 """The executor's protocol: 3 checks generated restrictions at every binding-bearing
-launch and surviving-kernel cell. Older executors must be recycled (SK-16, RC-24)."""
+launch and surviving-kernel cell (SK-16, RC-24); 4 holds a request's ``write_area`` to it
+(DA-20) and reports ``confinement`` in ``hello``. Older executors must be recycled."""
+CONFINE_SCRIPT = Path(__file__).with_name("sandbox_confine.py")
+"""The wrapper a delegated run's commands and kernels start through (DA-20)."""
+_WRITE_AREA_RE = re.compile(r"work/[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+RUN_SCRATCH = ("tmp", "ipython", "matplotlib", "cache", "sage")
+"""The run's scratch directories outside the session, its only writable place beside its
+write area: temporary files, and the state IPython, Matplotlib, caches and Sage keep."""
 MAX_LINE = 16 * 1024 * 1024
 """The longest line the executor sends; the worker drops longer ones."""
 MAX_REQUEST = 4 * ((100 * 1024 * 1024 + 2) // 3) + 64 * 1024
@@ -353,6 +364,82 @@ def _not_retired(kernel: Kernel) -> None:
         raise ToolError("conflict", f"run {kernel.run} has ended, and its kernels with it")
 
 
+@dataclass(frozen=True)
+class Confinement:
+    """How a delegated run's processes are held to its write area (DA-20): started
+    through ``sandbox_confine.py``, they write only in ``directory`` (the session's
+    ``area``) and ``scratch``, with these variables."""
+
+    area: str
+    directory: Path
+    scratch: Path
+    connect: tuple[int, ...] = ()
+    """The TCP ports its processes may connect to: the sandbox's egress proxy's."""
+
+    def prefix(self) -> list[str]:
+        return sandbox_confine.command(
+            sys.executable,
+            str(CONFINE_SCRIPT),
+            [str(self.directory), str(self.scratch)],
+            self.connect,
+        )
+
+    def variables(self) -> dict[str, str]:
+        temporary = str(self.scratch / "tmp")
+        return {
+            "RUN_WORK": str(self.directory),
+            "TMPDIR": temporary,
+            "TMP": temporary,
+            "TEMP": temporary,
+            "IPYTHONDIR": str(self.scratch / "ipython"),
+            "MPLCONFIGDIR": str(self.scratch / "matplotlib"),
+            "XDG_CACHE_HOME": str(self.scratch / "cache"),
+            "DOT_SAGE": str(self.scratch / "sage"),
+            "JOBLIB_TEMP_FOLDER": temporary,
+        }
+
+
+PROXY_VARIABLES = (
+    "ALL_PROXY",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "all_proxy",
+    "http_proxy",
+    "https_proxy",
+)
+
+
+def proxy_ports(env: Mapping[str, str]) -> tuple[int, ...]:
+    """The ports of the egress proxies ``env`` names, which OpenShell sets for every
+    sandbox process; a held run connects over TCP to these alone (DA-20)."""
+    ports: set[int] = set()
+    for name in PROXY_VARIABLES:
+        value = env.get(name, "")
+        try:
+            found = urllib.parse.urlsplit(value if "://" in value else f"http://{value}")
+            port = found.port or {"http": 80, "https": 443}.get(found.scheme)
+        except ValueError:
+            continue
+        if value and port:
+            ports.add(port)
+    return tuple(sorted(ports))
+
+
+def confined_manager(base: type[Any], prefix: Sequence[str]) -> type[Any]:
+    """A kernel manager class whose kernels start through ``prefix`` (DA-20), restarts
+    included: jupyter_client builds each start's command with ``format_kernel_cmd``."""
+
+    class ConfinedKernelManager(base):
+        def format_kernel_cmd(self, extra_arguments: list[str] | None = None) -> list[str]:
+            build = cast(
+                Callable[[list[str] | None], list[str]],
+                super().format_kernel_cmd,  # pyright: ignore[reportUnknownMemberType]
+            )
+            return [*prefix, *build(extra_arguments)]
+
+    return ConfinedKernelManager
+
+
 @dataclass
 class Kernel:
     """A session's kernel for one language, or a run's own (``run``); its generation
@@ -389,6 +476,8 @@ class Kernel:
     """The skill bindings its next start takes: the last cell's, the whole set (SK-16)."""
     started_bindings: dict[str, str] = field(default_factory=dict[str, str], kw_only=True)
     """The skill bindings it started with, which it keeps until it starts again."""
+    confinement: Confinement | None = field(default=None, kw_only=True)
+    """A delegated run's kernel is held to its write area for its whole life (DA-20)."""
 
     @property
     def kernel_id(self) -> str:
@@ -433,7 +522,10 @@ class Kernel:
         except ImportError as exc:
             raise ToolError("unsupported", "jupyter_client is not installed here") from exc
         owner = self.env.get("SANDBOX_SCIENCE_DAEMON_MARK", "") + f"kernel-{secrets.token_hex(8)}"
-        manager: Any = AsyncKernelManager(
+        manager_class: type[Any] = AsyncKernelManager
+        if self.confinement is not None:
+            manager_class = confined_manager(AsyncKernelManager, self.confinement.prefix())
+        manager: Any = manager_class(
             kernel_name=KERNEL_NAMES[self.language], transport="ipc", ip=kernel_address()
         )
         client: Any = None
@@ -704,6 +796,8 @@ class Executor:
         )
         self.configured: dict[str, str] = {}
         """Variables from ``configure``, added to every command's and kernel's environment."""
+        self.confinement_state: tuple[int, str | None] | None = None
+        """The Landlock ABI here, and why a run cannot be held to its write area (DA-20)."""
         # Package commands (docs/specs/conda-provisioning.md, CP-4, CP-11, CP-12).
         self.packages = provisioning.State(root / ".executor" / "provisioning")
         self.places = provisioning.Places.here()
@@ -1011,6 +1105,9 @@ class Executor:
         env["SANDBOX_SCIENCE_DAEMON_MARK"] = self.owner_prefix
         env["SESSION_WORKSPACE"] = str(self.files.session_dir(session))
         env["PROJECT_SHARED"] = str(self.root / SHARED)
+        # Not /dev/shm, which a held run can write: joblib's workers unpickle what is
+        # there (DA-20). A held run's own is in its scratch directory.
+        env.setdefault("JOBLIB_TEMP_FOLDER", str(self.root / ".executor" / "joblib"))
         return env
 
     # Package commands: attempts wait while one changes the environment, and each change
@@ -1172,6 +1269,7 @@ class Executor:
             ranged_write=RANGED_WRITE,
             run_kernels=1,
             conditional_kernel_restart=1,
+            confinement=self.confinement_report(),
             environment=await self.baseline(),
             package_epoch=self.admission.epoch,
             **({"layer_rebase": self.rebased} if self.rebased is not None else {}),
@@ -1369,12 +1467,16 @@ class Executor:
         """Run the PDF helper as its own process, like a shell call's argv, in the session."""
         if "pdf" not in available_features():
             raise ToolError("unsupported", "pdf_oxide is not installed in this environment")
-        await self.op_shell({**request, "argv": pdf_argv(request), "cwd": "."})
+        # The helper is the platform's, not the run's code: it is not held (DA-20).
+        await self.op_shell({**request, "argv": pdf_argv(request), "cwd": ".", "write_area": None})
 
     async def op_shell(self, request: Message) -> None:
         session = self.session(request)
+        confinement = self.confinement(session, request)
         try:
             cwd = self.files.directory(session, request.get("cwd", "."))
+            if confinement is not None and request.get("cwd", ".") in (None, "."):
+                cwd = confinement.directory  # a delegated run works in its area (DA-20)
         except ToolError as error:
             if error.kind != "not_found":
                 raise
@@ -1394,6 +1496,9 @@ class Executor:
         if is_job and re.fullmatch(r"exe-[0-9a-f]{24}", execution) is None:
             raise ToolError("invalid_request", "invalid job execution id")
         env = self.environment(session)
+        if confinement is not None:
+            env.update(confinement.variables())
+            argv = [*confinement.prefix(), *argv]
         bindings, dropped = self.bindings(request, env)
         running = self.accept(request, "job" if is_job else "shell")
         running.session = session
@@ -1671,18 +1776,104 @@ class Executor:
         holder = (self.packages.holding() or {}).get("pid")
         return left, isinstance(holder, int) and any(info.pid == holder for info in left)
 
-    def make_kernel(self, session: str, language: str, run: str | None) -> Kernel:
+    def make_kernel(
+        self, session: str, language: str, run: str | None, confinement: Confinement | None
+    ) -> Kernel:
+        env = self.environment(session)
+        cwd = self.files.directory(session, ".")
+        if confinement is not None:
+            env.update(confinement.variables())
+            # A kernel's own IPython directory: its history database is not shared with
+            # the run's other kernel, since a held run's locks do nothing (DA-20).
+            env["IPYTHONDIR"] = str(confinement.scratch / "ipython" / language)
+            cwd = confinement.directory
         return Kernel(
             session,
             language,
-            self.files.directory(session, "."),
-            self.environment(session),
+            cwd,
+            env,
             last_used=self.clock.monotonic(),
             run=run,
+            confinement=confinement,
         )
 
-    def kernel(self, session: str, language: str, run: str | None = None) -> Kernel:
-        return self.lifecycle.kernel(session, language, run)
+    def kernel(
+        self,
+        session: str,
+        language: str,
+        run: str | None = None,
+        confinement: Confinement | None = None,
+    ) -> Kernel:
+        return self.lifecycle.kernel(session, language, run, confinement)
+
+    def confinement_status(self) -> tuple[int, str | None]:
+        """The Landlock ABI here, and why a delegated run's processes cannot be held to
+        its write area, or ``None`` when they can (DA-20); probed once."""
+        if self.confinement_state is None:
+            version, reason = sandbox_confine.abi()
+            if reason is None:
+                # The ruleset and the seccomp filter in full, in a process of their own:
+                # what a sandbox's own filter allows shows only by trying.
+                probe = [sys.executable, "-I", "-S", str(CONFINE_SCRIPT), "--probe"]
+                with sandbox_processes.starting_children():
+                    done = subprocess.run(probe, capture_output=True, text=True, check=False)  # noqa: S603 - our own file
+                if done.returncode != 0:
+                    reason = f"the probe failed: {done.stderr.strip()[:300]}"
+            self.confinement_state = (version, reason)
+        return self.confinement_state
+
+    def confinement_report(self) -> Message:
+        """What ``hello`` says of confinement: the worker refuses a run's executions on an
+        executor that says nothing, or says why it cannot."""
+        version, reason = self.confinement_status()
+        report: Message = {"protocol": sandbox_confine.PROTOCOL, "landlock_abi": version}
+        if reason is not None:
+            report["unavailable"] = reason
+        return report
+
+    def confinement(self, session: str, request: Message) -> Confinement | None:
+        """How a request's processes are held to its ``write_area`` (DA-20), or ``None``
+        when it names none: a main run's, and the platform's own. The area and the run's
+        scratch directories are made here, through no symbolic link, since the run's
+        processes cannot make them. Refused where Landlock cannot hold them: a delegated
+        run's code never runs unconfined."""
+        area = request.get("write_area")
+        if area is None:
+            return None
+        if not isinstance(area, str) or not _WRITE_AREA_RE.fullmatch(area):
+            raise ToolError("invalid_request", f"invalid write area {area!r}")
+        _, reason = self.confinement_status()
+        if reason is not None:
+            raise ToolError(
+                "unsupported",
+                "this environment cannot hold a delegated run's processes to its write area "
+                f"({reason}), so it runs none of them",
+            )
+        names = area.split("/")
+        base = self.files.open_base(["sessions", session])
+        os.close(sandbox_files.walk(base, names, area, create=True))
+        key = hashlib.sha256(f"{session}\0{area}".encode()).hexdigest()[:24]
+        scratch = [".executor", "runs", key]
+        for name in RUN_SCRATCH:
+            os.close(self.files.open_base([*scratch, name]))
+        return Confinement(
+            area,
+            self.files.session_dir(session).joinpath(*names),
+            self.root.joinpath(*scratch),
+            proxy_ports({**os.environ, **self.configured}),
+        )
+
+    def held_kernel(self, request: Message) -> Kernel:
+        """The kernel a cell or restart names, held to the request's write area: a
+        delegated run's cells run in its own kernel, never the session's."""
+        session = self.session(request)
+        run = self.run_name(request)
+        confinement = self.confinement(session, request)
+        if confinement is not None and run is None:
+            raise ToolError(
+                "invalid_request", "a delegated run's cells run in its own kernel; name its run"
+            )
+        return self.kernel(session, str(request.get("language", "python")), run, confinement)
 
     def run_name(self, request: Message) -> str | None:
         """The run a request names for its own kernel; ``None`` for the session's."""
@@ -1694,10 +1885,7 @@ class Executor:
         return run
 
     async def op_cell(self, request: Message) -> None:
-        session = self.session(request)
-        kernel = self.kernel(
-            session, str(request.get("language", "python")), self.run_name(request)
-        )
+        kernel = self.held_kernel(request)
         code = request.get("code")
         if not isinstance(code, str):
             raise ToolError("invalid_request", "code must be a string")
@@ -1928,10 +2116,7 @@ class Executor:
             await self.restart_request(request)
 
     async def restart_request(self, request: Message) -> None:
-        session = self.session(request)
-        kernel = self.kernel(
-            session, str(request.get("language", "python")), self.run_name(request)
-        )
+        kernel = self.held_kernel(request)
         restart = Running("restart", "restart", admitted=self.clock.monotonic())
         restart.kernel = kernel
         guard = request.get("_admission_guard")

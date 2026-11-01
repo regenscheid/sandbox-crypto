@@ -572,8 +572,9 @@ class Toolbox:
         (PD-34, LG-13, as the coordinator tightened them on 2026-10-15). A delegated run's
         ``write_area`` (``work/<delegation_id>``) goes with its ``write_file`` and
         ``edit_file`` requests, and the worker writes them only there and in ``shared/``
-        (DA-19); the platform's own writes for the run, such as saved output, do not carry
-        it."""
+        (DA-19), and with its shell, cell and kernel restart requests, whose processes
+        the executor holds to it (DA-20); the platform's own requests for the run, such as
+        saved output, do not carry it."""
         if delegated and questions is not None:
             raise ValueError("a delegated run cannot ask the user")
         if capabilities is None:
@@ -1058,7 +1059,7 @@ class Toolbox:
         request = ShellRequest.model_validate(
             {
                 "operation_id": operation,
-                "context": self.context,
+                "context": self._writer(),
                 **_known(args, "script", "cwd", "timeout_seconds"),
                 "bindings": self._bindings(args),
                 "binding_inventory": self._binding_inventory(),
@@ -1230,7 +1231,7 @@ class Toolbox:
         request = CellRequest.model_validate(
             {
                 "operation_id": operation,
-                "context": self.context,
+                "context": self._writer(),
                 "language": language,
                 "run": self.kernel_run,
                 **_known(args, "code", "timeout_seconds"),
@@ -1283,7 +1284,7 @@ class Toolbox:
         language = args.get("language", self.languages[0] if self.languages else "python")
         if language not in self.languages:
             return _failure(ErrorKind.UNSUPPORTED, f"no {language!r} kernel in this environment")
-        kernel = await self.client.restart_kernel(self.context, language, self.kernel_run)
+        kernel = await self.client.restart_kernel(self._writer(), language, self.kernel_run)
         return ToolOutcome(
             dump(
                 {
@@ -1419,8 +1420,10 @@ class Toolbox:
         )
 
     def _writer(self) -> ExecutionContext:
-        """The context of the agent's own writes: the run's, naming its write area when
-        it is delegated (DA-19)."""
+        """The context of the agent's own writes and code: the run's, naming its write
+        area when it is delegated, which holds its file tools (DA-19) and its shell, cells
+        and kernel restarts (DA-20) to it. The platform's requests for the run, such as
+        saved output and the PDF helper, take ``context``."""
         if self.write_area is None:
             return self.context
         return self.context.model_copy(update={"write_area": self.write_area})

@@ -31,6 +31,7 @@ LOADS: dict[str, frozenset[str]] = {
             "executor_lifecycle",
             "executor_admission",
             "provisioning",
+            "sandbox_confine",
             "sandbox_files",
             "sandbox_processes",
             "sandbox_search",

@@ -11,8 +11,8 @@ from typing import TYPE_CHECKING
 
 from pydantic import TypeAdapter
 
-from sandbox_science.contracts import ErrorKind, new_id
-from sandbox_science.contracts.context import ExecutionAuthority
+from sandbox_science.contracts import ErrorKind, new_id, write_area
+from sandbox_science.contracts.context import ExecutionAuthority, WriteArea
 from sandbox_science.contracts.environments import EnvironmentState
 from sandbox_science.contracts.recovery import RecoveryFence
 from sandbox_science.orchestrator.aio import threaded
@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     from sandbox_science.contracts import ExecutionContext
     from sandbox_science.orchestrator.harness import Harness, RunSink
 
+_WRITE_AREA: TypeAdapter[str] = TypeAdapter(WriteArea)
 
 POLICY_CHANGED = (
     "the project's policy changed since this work began; Resume to continue under the "
@@ -493,9 +494,19 @@ class Recovery:
         )
         # Every Resume goes on past a kernel that cannot be rebuilt exactly: the loss is
         # recorded with who accepted it, and the agent recomputes from its history (D100).
+        kernel_context = authorized_context
+        if work.parent is not None:
+            # A delegated work's kernel is held to its write area (DA-20), rebuilt or
+            # restarted here as when its own cells start it.
+            first = blueprint.request.get("delegation")
+            if not isinstance(first, str):
+                raise ControlError(CONFLICT, "delegated recovery inputs lack original delegation")
+            kernel_context = authorized_context.model_copy(
+                update={"write_area": _WRITE_AREA.validate_python(write_area(first))}
+            )
         await KernelJournal(control, owner, work.kernel).reconcile(
             self.harness.client,
-            authorized_context,
+            kernel_context,
             accept_loss=True,
             accepted_by="user" if source == "operator" else "automatic",
         )

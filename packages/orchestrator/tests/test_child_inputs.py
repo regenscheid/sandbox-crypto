@@ -178,9 +178,14 @@ def test_the_write_area_line_is_true_of_each_placement() -> None:
     assert shared == (
         "Your write area: work/dlg-1/. write_file and edit_file write only there and in "
         "shared/ (with create_only or expected_sha256); you read every file of the "
-        "session, and your parent reads your write area, by the paths you wrote."
+        "session, and your parent reads your write area, by the paths you wrote. "
+        "Your shell commands, jobs and Python and Sage cells start in your write area "
+        "($RUN_WORK) and can write only there and in $TMPDIR: not inputs/, shared/, other "
+        "files or the installed packages (install packages with provision when you have "
+        "it). They read the session's files at $SESSION_WORKSPACE."
     )
     own = write_area_text("work/dlg-1", own_environment=True)
+    assert "They read your environment's files at $SESSION_WORKSPACE." in own
     assert own.startswith("Your write area: work/dlg-1/, in your own environment.")
     assert "every file of the session" not in own
     assert "not the session's other files" in own

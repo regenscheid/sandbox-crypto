@@ -2209,7 +2209,8 @@ class Harness:
             else caps.task(bundles)
         )
         # A delegated run's file tools write in its write area and in shared/ (DA-19),
-        # wherever it runs: in the session's environment or its own (CE-6).
+        # and its processes only in the area (DA-20), wherever it runs: in the session's
+        # environment or its own (CE-6).
         area = None
         if delegated:
             if admitted.request.delegation is None:
@@ -2223,6 +2224,7 @@ class Harness:
                 run_name(admitted.started_at, admitted.run_id),
                 admitted.request.delegation,
             )
+            jobs.write_area = area  # its jobs' processes are held to it too (DA-20)
         return Toolbox(
             self.client,
             context,

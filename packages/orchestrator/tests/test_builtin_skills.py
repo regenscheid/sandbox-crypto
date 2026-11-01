@@ -25,6 +25,7 @@ from markdown_it.token import Token
 
 from sandbox_science.orchestrator.consistency.controller import AUTHOR_SPECS
 from sandbox_science.orchestrator.consistency.quotes import EPRINT_TOOLS, PDF_TOOLS
+from sandbox_science.orchestrator.delegation.prompt import processes_text
 from sandbox_science.orchestrator.delegation.tracks import SPECS as TRACK_SPECS
 from sandbox_science.orchestrator.loop import SYSTEM_PROMPT
 from sandbox_science.orchestrator.plan_tools import NAMES as PLAN_NAMES
@@ -56,6 +57,9 @@ get it (skills/builtin.py). A new skill is added there."""
 
 ALLOWED: Final = {
     "$PROJECT_SHARED": SHARED_IN_CODE,
+    "$RUN_WORK": processes_text(False),
+    "$TMPDIR": processes_text(False),
+    "$SESSION_WORKSPACE": processes_text(False),
     "approval_required": SYSTEM_PROMPT,
     "policy_denied": SYSTEM_PROMPT,
 }

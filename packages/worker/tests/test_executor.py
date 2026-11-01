@@ -485,7 +485,9 @@ async def test_a_sync_write_sets_the_mode_and_reports_the_stamp(tmp_path: Path) 
     )
     written = tmp_path / "shared" / "bin" / "run.sh"
     info = os.stat(written)
-    assert reply["stamp"] == [info.st_mtime_ns, info.st_size, info.st_ino]
+    # The stamp's time is the later of the modification and status-change times (DA-20).
+    changed = max(info.st_mtime_ns, info.st_ctime_ns)
+    assert reply["stamp"] == [changed, info.st_size, info.st_ino]
     assert info.st_mode & 0o777 == 0o755
 
 

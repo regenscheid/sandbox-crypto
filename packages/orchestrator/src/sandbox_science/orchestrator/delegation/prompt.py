@@ -200,25 +200,37 @@ REOPENED_TASK: Final = (
 (PD-46): the platform's words; the parent's message comes as an agent message."""
 
 
+def processes_text(own_environment: bool) -> str:
+    """What a brief says of a child's processes (DA-20), after the file tools' rule."""
+    where = "your environment's files" if own_environment else "the session's files"
+    return (
+        "Your shell commands, jobs and Python and Sage cells start in your write area "
+        "($RUN_WORK) and can write only there and in $TMPDIR: not inputs/, shared/, other "
+        "files or the installed packages (install packages with provision when you have "
+        f"it). They read {where} at $SESSION_WORKSPACE."
+    )
+
+
 def write_area_text(area: str, *, own_environment: bool = False) -> str:
-    """The platform's line of a brief that names the child's write area (DA-19). A child in
-    the session's environment reads every file of the session and its parent reads the
-    area where it is. A child in an environment of its own (CE-1) has only what was
-    copied into it, which the brief's next line names (CE-7), so the line does not say it
-    reads the session's files, and says the area's files come back to the same paths in
-    the session when the task ends (CE-6)."""
+    """The platform's line of a brief that names the child's write area (DA-19), and holds
+    its processes to it (DA-20). A child in the session's environment reads every file of
+    the session and its parent reads the area where it is. A child in an environment of
+    its own (CE-1) has only what was copied into it, which the brief's next line names
+    (CE-7), so the line does not say it reads the session's files, and says the area's
+    files come back to the same paths in the session when the task ends (CE-6)."""
     if own_environment:
         return (
             f"Your write area: {area}/, in your own environment. write_file and edit_file "
             "write only there and in shared/ (with create_only or expected_sha256); you "
             "read your own environment's files, not the session's other files; when your "
             "task ends, the files of your write area are copied to the same paths in the "
-            "session for your parent to read."
+            f"session for your parent to read. {processes_text(True)}"
         )
     return (
         f"Your write area: {area}/. write_file and edit_file write only there and in "
         "shared/ (with create_only or expected_sha256); you read every file of the "
-        "session, and your parent reads your write area, by the paths you wrote."
+        "session, and your parent reads your write area, by the paths you wrote. "
+        f"{processes_text(False)}"
     )
 
 
