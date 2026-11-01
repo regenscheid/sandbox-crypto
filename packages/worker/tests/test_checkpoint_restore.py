@@ -844,7 +844,7 @@ def test_the_app_refuses_deleting_an_environment_a_restore_writes_into(
 ):
     import asyncio
 
-    from sandbox_science.worker.app import _restore_guard
+    from sandbox_science.worker.app import restore_guard
     from sandbox_science.worker.errors import WorkerError
 
     identity, _ = kept_checkpoint(tmp_path, retained)
@@ -856,7 +856,7 @@ def test_the_app_refuses_deleting_an_environment_a_restore_writes_into(
         def get(self, environment_id: str) -> Any:
             return type("Info", (), {"sandbox": TARGET_SANDBOX})()
 
-    guard = _restore_guard(cast(Any, Known()))
+    guard = restore_guard(cast(Any, Known()))
 
     async def check(environment_id: str) -> None:
         await guard(environment_id)

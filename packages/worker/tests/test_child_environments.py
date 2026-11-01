@@ -1467,22 +1467,28 @@ async def test_an_operator_client_acts_without_research_authority(pool: Pool) ->
 def test_an_operator_releases_a_retained_child_environment(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """``child-environments list`` shows the rows; ``release`` records the operator's
-    release on the row, deletes the sandbox by its recorded identity and leaves the
-    deletion hooks to the running worker; one in use is refused, and the pool's settings
-    need no child profiles for either."""
-    pool = Pool(tmp_path)
+    """``child-environments list`` shows the rows; ``release`` runs the deletion's guards
+    first (a package gate not ready refuses, changing nothing), records the deletion
+    hooks the running worker owes, then the operator's release on the row, and deletes
+    the sandbox by its recorded identity. A ready one is released only with
+    ``--superseded`` once the session's epoch is newer than every authority it was used
+    with. The pool's settings need no child profiles for any of it."""
+    pool = Pool(tmp_path, child_retention_per_project=3)
+    pool.store.recovery_fences.install(RecoveryFence(project_id="p1", session_id="s1", epoch=1))
+    first = ChildEnvironmentEnd(context=owned(1), reason="delegation_ended")
 
-    async def prepare() -> tuple[str, str]:
+    async def prepare() -> tuple[str, str, str]:
         await pool.session()
-        kept = await pool.ready()
-        await pool.children.end(kept.environment_id, pool.end())  # no hand-back: retained
-        busy = await pool.ready("dlg-" + "b" * 24)
+        kept = await pool.ready(context=owned(1))
+        await pool.children.end(kept.environment_id, first)  # no hand-back: retained
+        gated = await pool.ready("dlg-" + "c" * 24, context=owned(1))
+        await pool.children.end(gated.environment_id, first)
+        busy = await pool.ready("dlg-" + "b" * 24, context=owned(1))
         await pool.children.close()
-        return kept.environment_id, busy.environment_id
+        return kept.environment_id, gated.environment_id, busy.environment_id
 
     try:
-        retained_id, busy_id = asyncio.run(prepare())
+        retained_id, gated_id, busy_id = asyncio.run(prepare())
         sandbox = pool.environments.get(retained_id).sandbox
         settings = tmp_path / "worker.toml"
         settings.write_text(
@@ -1495,14 +1501,30 @@ def test_an_operator_releases_a_retained_child_environment(
         )
         command = ["child-environments", "list", "--settings", str(settings)]
         assert main([*command, "--phase", "retained"]) == 0
-        (line,) = capsys.readouterr().out.splitlines()
-        assert line.startswith(f"{retained_id} retained project p1 session s1 delegation ")
-        assert "retained until " in line
+        lines = capsys.readouterr().out.splitlines()
+        assert len(lines) == 2
+        assert lines[0].startswith(f"{retained_id} retained project p1 session s1 delegation ")
+        assert "retained until " in lines[0]
         assert main(command) == 0
-        assert len(capsys.readouterr().out.splitlines()) == 2
+        assert len(capsys.readouterr().out.splitlines()) == 3
         release = ["child-environments", "release", "--settings", str(settings)]
+        # One in use is refused; a ready one whose run is current, even with --superseded.
         assert main([*release, busy_id]) == 1
         assert "is ready; only a retained one is released" in capsys.readouterr().err
+        assert main([*release, "--superseded", busy_id]) == 1
+        assert "its run is not superseded (used in epoch 1" in capsys.readouterr().err
+        # A package gate not ready refuses before anything is recorded or deleted.
+        gated_sandbox = pool.environments.get(gated_id).sandbox
+        pool.store.set_package_status(gated_id, "needs_recovery", "interrupted-installer", 0)
+        assert main([*release, gated_id]) == 1
+        assert "package state is needs_recovery" in capsys.readouterr().err
+        gated_row = pool.store.child_environments.get(gated_id)
+        assert gated_row is not None
+        assert gated_row.phase == "retained"
+        assert "release" not in pool.store.child_environments.steps(gated_id)
+        assert gated_sandbox in pool.fake.read()["sandboxes"]
+        assert pool.environments.records.hooks_pending() == []
+        # A retained one goes.
         assert main([*release, retained_id]) == 0
         assert capsys.readouterr().out.startswith(f"released: child environment {retained_id}")
         row = pool.store.child_environments.get(retained_id)
@@ -1514,13 +1536,43 @@ def test_an_operator_releases_a_retained_child_environment(
         info = pool.environments.records.get(retained_id)
         assert info is not None
         assert info.state is EnvironmentState.DELETED
-        assert (retained_id, sandbox) in pool.environments.records.hooks_pending()
-        assert main([*release, retained_id]) == 0  # released already: its record
+        assert pool.environments.records.hooks_pending() == [(retained_id, sandbox)]
+        # Released already: its record, and no second deferral.
+        assert main([*release, retained_id]) == 0
+        assert pool.environments.records.hooks_pending() == [(retained_id, sandbox)]
         pool.environments.records.hooks_done(retained_id, sandbox)
-        assert pool.environments.records.hooks_pending() == []
+        # A newer run with no Resume continuing in it: the ready one may go.
+        pool.store.recovery_fences.install(RecoveryFence(project_id="p1", session_id="s1", epoch=2))
+        assert main([*release, "--superseded", busy_id]) == 0
+        busy_row = pool.store.child_environments.get(busy_id)
+        assert busy_row is not None
+        assert busy_row.phase == "released"
+        assert [e for e, _ in pool.environments.records.hooks_pending()] == [busy_id]
     finally:
         pool.environments.close()
         pool.store.close()
+
+
+async def test_a_ready_one_a_resume_continues_in_is_not_superseded(pool: Pool) -> None:
+    """A Resume continues in its child environment while it is ready (CE-12), with the
+    newer epoch's authority: that environment is in use, and the operator's
+    ``--superseded`` release refuses it although it was admitted in the older epoch."""
+    fences = pool.store.recovery_fences
+    fences.install(RecoveryFence(project_id="p1", session_id="s1", epoch=1))
+    made = await pool.ready(context=owned(1))
+    fences.install(RecoveryFence(project_id="p1", session_id="s1", epoch=2))
+    resumed = owned(2).model_copy(update={"environment_id": made.environment_id})
+    record = {"execution_id": "e-1", "context": resumed.model_dump(mode="json")}
+    with sqlite3.connect(pool.tmp / "worker" / "worker.sqlite3") as db:
+        db.execute(
+            "INSERT INTO executions(execution_id,operation_id,request_digest,environment_id,"
+            "session_id,terminal,record) VALUES ('e-1','o-1','d',?,'s1',0,?)",
+            (made.environment_id, json.dumps(record)),
+        )
+    assert pool.store.newest_authority_epoch(made.environment_id) == 2
+    with pytest.raises(WorkerError, match=r"not superseded \(used in epoch 2"):
+        await pool.children.release_now(made.environment_id, superseded=True)
+    assert pool.children.get(made.environment_id, CONTEXT).phase == "ready"
 
 
 async def test_the_sweep_runs_while_rows_are_left_without_profiles(tmp_path: Path) -> None:

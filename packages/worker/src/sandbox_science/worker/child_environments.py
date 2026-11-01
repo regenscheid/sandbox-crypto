@@ -54,7 +54,7 @@ import logging
 import posixpath
 import re
 import statistics
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final
 
@@ -991,24 +991,44 @@ class ChildEnvironments:
             return self._update(environment_id, phase="retained", retained_until=now)
         return self._update(environment_id, phase="released")
 
-    async def release_retained(self, environment_id: str) -> ChildEnvironment:
-        """An operator's release of a retained child environment now, before its deadline:
-        the request is recorded (step ``release``, ``operator``), then its sandbox is
-        deleted by its recorded identity, as the sweep would. One already released answers
-        its record; one still in use (creating to collecting) is refused, since its
-        delegation ends it. A deletion the gateway did not confirm leaves it retained,
-        due at once, and raises."""
+    async def release_now(
+        self,
+        environment_id: str,
+        *,
+        superseded: bool = False,
+        defer: Callable[[str, str], None] | None = None,
+    ) -> ChildEnvironment:
+        """An operator's release of a child environment now (the worker stopped): a
+        retained one before its deadline, or, with ``superseded``, a ready one whose run
+        was superseded with no Resume continuing in it, which would otherwise live until
+        its wall time. It runs the deletion's guards first (``required_deleting``: a
+        restore writing into it, a package gate not ready), so a refusal changes nothing;
+        then ``defer`` records the deletion hooks the running worker owes, the release is
+        recorded (step ``release``, ``operator``) and its sandbox deleted by its recorded
+        identity. One already released answers its record; any other is refused. A
+        deletion the gateway did not confirm leaves it retained, due at once, and raises."""
         async with self._lock(environment_id):
             record = self._record(environment_id)
             if record.phase == "released":
                 return self.view(record)
-            if record.phase != "retained":
+            if record.phase == "ready" and superseded:
+                self._superseded(record)
+            elif record.phase != "retained":
                 raise WorkerError(
                     ErrorKind.CONFLICT,
                     f"child environment {environment_id} is {record.phase}; only a retained"
-                    " one is released here (its delegation, or the session's close, ends one"
-                    " in use)",
+                    " one is released here, or a ready one with --superseded (its delegation,"
+                    " or the session's close, ends one in use)",
                 )
+            for guard in self.environments.required_deleting:
+                await guard(environment_id)
+            info = self.environments.records.get(environment_id)
+            if (
+                defer is not None
+                and info is not None
+                and info.state is not EnvironmentState.DELETED
+            ):
+                defer(environment_id, info.sandbox)
             self.records.record_step(
                 environment_id, "release", json.dumps("operator"), self.clock.now()
             )
@@ -1021,6 +1041,25 @@ class ChildEnvironments:
                     " confirmed; it stays retained, due at once, for the worker's sweep",
                 )
             return self.view(released)
+
+    def _superseded(self, record: ChildRecord) -> None:
+        """Refuse unless the ready child environment's run was superseded: the session's
+        recovery epoch is newer than every authority it was used with, its admission's
+        and its executions' (a Resume continuing in it runs there with the newer one)."""
+        environment_id = record.environment_id
+        current = self.store.recovery_fences.epoch(record.project_id, record.session_id)
+        planned = _Planned.model_validate_json(self.records.steps(environment_id)["inputs"])
+        used = max(
+            planned.authority.epoch if planned.authority is not None else 0,
+            self.store.newest_authority_epoch(environment_id) or 0,
+        )
+        if current is None or used >= current:
+            raise WorkerError(
+                ErrorKind.CONFLICT,
+                f"child environment {environment_id} is ready and its run is not superseded"
+                f" (used in epoch {used}; the session's is {current}): its delegation, a"
+                " Resume or the session's close ends it",
+            )
 
     async def _retain(self, environment_id: str, why: str) -> ChildRecord:
         """Stop the child environment and keep it until the retention deadline, releasing

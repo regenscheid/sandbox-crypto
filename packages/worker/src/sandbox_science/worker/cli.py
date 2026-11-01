@@ -9,7 +9,7 @@ sandbox-science-worker policy add --settings worker.toml [--project p1] policy.y
 sandbox-science-worker environments list --settings worker.toml [--state creating]
 sandbox-science-worker environments reconcile --settings worker.toml [--no-wait] ENVIRONMENT_ID
 sandbox-science-worker child-environments list --settings worker.toml [--phase retained]
-sandbox-science-worker child-environments release --settings worker.toml ENVIRONMENT_ID
+sandbox-science-worker child-environments release --settings worker.toml [--superseded] ENV_ID
 sandbox-science-worker checkpoint plan|verify|inventory|... (checkpoint_jobs_cli)
 ```
 
@@ -36,7 +36,7 @@ from typing import cast, get_args
 from aiohttp import web
 from pydantic import TypeAdapter, ValidationError
 
-from sandbox_science.contracts import SYSTEM_CLOCK, Identifier
+from sandbox_science.contracts import SYSTEM_CLOCK, ErrorKind, Identifier
 from sandbox_science.contracts.child_environments import ChildPhase
 from sandbox_science.contracts.logs import configure_logging
 from sandbox_science.policy.openshell import CompileError, compile_sandbox
@@ -44,6 +44,7 @@ from sandbox_science.policy.store import StoreError
 
 from . import checkpoint_cli, checkpoint_jobs_cli
 from .admission import DraftWatcher
+from .app import restore_guard
 from .artifact_retention import MAX_RELEASE_PAGE
 from .artifacts import Blobs
 from .build import build_environments, build_worker
@@ -324,27 +325,46 @@ def list_child_environments(settings: Settings, phase: str | None) -> int:
     return 0
 
 
-def release_child_environment(settings: Settings, environment_id: str) -> int:
-    """Release a retained child environment now, the worker stopped: the release is
-    recorded on its row, and its sandbox deleted by its recorded identity; the running
-    worker runs the deletion hooks as it next starts."""
+def release_child_environment(
+    settings: Settings, environment_id: str, *, superseded: bool = False
+) -> int:
+    """Release a child environment now, the worker stopped: a retained one, or with
+    ``superseded`` a ready one whose run was superseded. The deletion's guards run as the
+    running worker's would (a restore writing into it, a package gate not ready); the
+    deletion hooks the running worker owes are recorded before the sandbox is deleted,
+    and the release on its row; the sandbox goes by its recorded identity."""
     opened = _offline_environments(settings, "release a child environment")
     if isinstance(opened, int):
         return opened
     lock, environments = opened
     store = Store(settings.state_dir / "worker.sqlite3")
     try:
+
+        async def gate_ready(target: str) -> None:
+            gate = store.package_gate(target)
+            if gate.mode != "ready":
+                raise WorkerError(
+                    ErrorKind.CONFLICT,
+                    f"environment {target}'s package state is {gate.mode}; start the worker,"
+                    " which recovers it, before releasing it",
+                )
+
+        environments.required_deleting.append(restore_guard(environments))
+        environments.required_deleting.append(gate_ready)
         children = ChildEnvironments(environments, store)
+
+        def defer(target: str, sandbox: str) -> None:
+            environments.records.defer_hooks(
+                target, sandbox, "child_released", environments.clock.now()
+            )
+
         try:
-            released = asyncio.run(children.release_retained(environment_id))
+            released = asyncio.run(
+                children.release_now(environment_id, superseded=superseded, defer=defer)
+            )
         except WorkerError as error:
             print(f"error: {environment_id}: {error.message}", file=sys.stderr)
             return 1
-        info = environments.records.get(environment_id)
-        if info is not None:
-            environments.records.defer_hooks(
-                environment_id, info.sandbox, "child_released", environments.clock.now()
-            )
     finally:
         store.close()
         environments.close()
@@ -527,6 +547,11 @@ def main(argv: list[str] | None = None) -> int:
         "release", help="release a retained child environment now, deleting its sandbox"
     )
     children_release.add_argument("--settings", type=Path, required=True)
+    children_release.add_argument(
+        "--superseded",
+        action="store_true",
+        help="release a ready one whose run was superseded and that no Resume continues in",
+    )
     children_release.add_argument("environment_id")
     retention_parser = commands.add_parser(
         "artifact-retention", help="offline capture replica release; dry-run by default"
@@ -583,7 +608,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "child-environments" and args.children_command == "list":
             return list_child_environments(settings, args.phase)
         if args.command == "child-environments":
-            return release_child_environment(settings, args.environment_id)
+            return release_child_environment(
+                settings, args.environment_id, superseded=args.superseded
+            )
         if args.command == "environments" and args.environments_command == "list":
             return list_environments(settings, args.state)
         if args.command == "environments":

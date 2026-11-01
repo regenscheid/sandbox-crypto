@@ -517,6 +517,16 @@ class Store:
         ).fetchone()
         return found is not None
 
+    def newest_authority_epoch(self, environment_id: str) -> int | None:
+        """The newest recovery epoch of the authority any execution in the environment
+        carried; None when none carried one."""
+        found = self._db.execute(
+            "SELECT MAX(json_extract(record, '$.context.authority.epoch')) FROM executions"
+            " WHERE environment_id = ?",
+            (environment_id,),
+        ).fetchone()
+        return None if found is None or found[0] is None else int(found[0])
+
     def child_seeding_rows(self, project_id: str) -> list[tuple[ChildRecord, str | None]]:
         """``ChildRecords.created_seconds`` on a read-only connection of its own, for a
         caller off the event loop (CE-13's count). Blocking."""
