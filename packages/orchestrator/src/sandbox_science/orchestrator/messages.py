@@ -82,16 +82,20 @@ REPLAY_DAYS: Final = 30
 """How long a check of the gateway lets thinking replay stay on (CM-39)."""
 MIN_THINKING: Final = 256
 """The least replayed thinking, in tokens, whose loss a call's input can show."""
-_UPDATES: Final = re.compile(r"claude-(?:fable-5(?:-1)?|mythos-5-1|opus-5-5|sonnet-5-5)(?![-.]?\d)")
-"""The models whose documentation offers ``display: "updates"`` (CM-38)."""
-_TOOL_CHANGES: Final = re.compile(
-    r"claude-(?:opus-(?:5|5-5|4-8)|fable-5(?:-1)?|mythos-5(?:-1)?|sonnet-5-5)(?![-.]?\d)"
+_UPDATES: Final = re.compile(
+    r"claude-(?:fable-5(?:-1)?|mythos-5-1|opus-5-5|sonnet-5-5)(?:-\d{8})?(?![-.]?\d)"
 )
-"""The models that take mid-conversation tool changes."""
+"""The models whose documentation offers ``display: "updates"`` (CM-38), in the hyphenated
+spelling ``_hyphenated`` gives every name, with an optional snapshot date."""
+_TOOL_CHANGES: Final = re.compile(
+    r"claude-(?:opus-(?:5|5-5|4-8)|fable-5(?:-1)?|mythos-5(?:-1)?|sonnet-5-5)(?:-\d{8})?(?![-.]?\d)"
+)
+"""The models that take mid-conversation tool changes (CM-38)."""
 _OLDER: Final = re.compile(
     r"claude-3|claude-(?:opus|sonnet|haiku)-4(?:-[015])?(?:-\d{8})?(?![-.]?\d)"
 )
 """The Claude models before the 4.6 family, which take no adaptive thinking."""
+_VERSION_DOT: Final = re.compile(r"(?<=\d)\.(?=\d)")
 _UNBOUND: Final = ("bound to a different conversation", "signature` in `thinking` block")
 """How Anthropic refuses thinking sent back whose history changed, or that it cannot
 read: its documented recovery is the request again without thinking."""
@@ -186,6 +190,32 @@ class _Read:
 
     blocks: tuple[Json, ...]
     kept: Kept | None
+
+
+_FEATURES_LOGGED: Final[set[tuple[str, str, tuple[str, ...]]]] = set()
+"""The (gateway, alias, provider models) whose chosen features are logged already, so the
+line comes once for the alias, not for each model object a run makes."""
+
+
+def _quiet(*_: object) -> None:
+    return None
+
+
+def _hyphenated(model: str) -> str:
+    """A provider model name with its version's dot as a hyphen, so that Anthropic's
+    ``claude-opus-5-5`` and the ``claude-opus-5.5`` its documentation prose and some
+    gateways use name the same model."""
+    return _VERSION_DOT.sub("-", model.lower())
+
+
+def _decide(models: Sequence[str], listed: re.Pattern[str]) -> tuple[bool, str]:
+    """Whether every model behind an alias is on a CM-38 list, and why."""
+    if not models:
+        return False, "the gateway does not say which model"
+    unlisted = [model for model in models if not listed.search(_hyphenated(model))]
+    if unlisted:
+        return False, f"{', '.join(unlisted)} is not on the CM-38 list"
+    return True, "on the CM-38 list"
 
 
 @dataclass(frozen=True)
@@ -319,12 +349,29 @@ class MessagesModel(GatewayModel):
         models = await self._models()
         if models is None:
             return _Served(False, False)
-        if not models:
-            _log.warning("the gateway does not say which model %s is", self.model)
-        served = _Served(
-            bool(models) and all(_UPDATES.search(model) for model in models),
-            bool(models) and all(_TOOL_CHANGES.search(model) for model in models),
-            not models or not all(_OLDER.search(model) for model in models),
+        updates, why_updates = _decide(models, _UPDATES)
+        changes, why_changes = _decide(models, _TOOL_CHANGES)
+        adaptive = not models or not all(_OLDER.search(_hyphenated(model)) for model in models)
+        served = _Served(updates, changes, adaptive)
+        # The features are inferred from a string the operator typed at the gateway, so
+        # say what was chosen, once for the alias (and again if the gateway names another
+        # model); a name that matched nothing is a warning, since it turns the features
+        # off without any other sign.
+        report = _log.warning if adaptive and not (updates or changes) else _log.info
+        seen = (self.base_url, self.model, tuple(models))
+        if seen in _FEATURES_LOGGED:
+            report = _quiet
+        _FEATURES_LOGGED.add(seen)
+        report(
+            "Messages adapter for %s: gateway model %s; progress notes (display updates) "
+            "%s (%s); mid-run tool changes %s (%s); adaptive thinking %s",
+            self.model,
+            ", ".join(models) or "not given",
+            "on" if updates else "off",
+            why_updates,
+            "on" if changes else "off",
+            why_changes,
+            "on" if adaptive else "off (a model before the 4.6 family)",
         )
         self._served = served
         return served

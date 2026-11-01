@@ -14,6 +14,7 @@ sleep on a clock that only records the waits.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
@@ -28,6 +29,8 @@ from sandbox_science.orchestrator import cli
 from sandbox_science.orchestrator.context.history import Archive, entry_of
 from sandbox_science.orchestrator.hooks import Appended
 from sandbox_science.orchestrator.messages import (
+    _TOOL_CHANGES,
+    _UPDATES,
     BINDING_BETA,
     MAX_TOKENS,
     MESSAGES,
@@ -36,6 +39,7 @@ from sandbox_science.orchestrator.messages import (
     UPDATES_BETA,
     MessagesModel,
     ThinkingReplay,
+    _decide,
 )
 from sandbox_science.orchestrator.model import (
     AssistantMessage,
@@ -311,7 +315,8 @@ class Fake:
         cached = total * 3 // 4
         return {
             "id": f"msg_{self.numbered:04d}", "type": "message", "role": "assistant",
-            "model": self.models[body["model"]].split("/")[-1], "content": blocks,
+            "model": self.models.get(body["model"], "claude-unlisted").split("/")[-1],
+            "content": blocks,
             "stop_reason": "tool_use" if reply.calls else "end_turn", "stop_sequence": None,
             "usage": {"input_tokens": total - cached - total // 8,
                       "cache_read_input_tokens": cached,
@@ -401,6 +406,97 @@ async def test_requests_ask_for_progress_notes_on_the_models_that_have_them(fake
         assert body["messages"] == [{"role": "user", "content": [
             {"type": "text", "text": TASK, "cache_control": {"type": "ephemeral"}}]}]  # fmt: skip
     assert fake.info_calls == 2  # once for each model
+
+
+@pytest.mark.parametrize(
+    ("provider_model", "updates", "changes"),
+    [
+        ("anthropic/claude-opus-5-5", True, True),
+        ("anthropic/claude-opus-5.5", True, True),  # the dotted spelling is the same model
+        ("claude-opus-5.5", True, True),
+        ("anthropic/claude-opus-5-5-20260801", True, True),  # a dated snapshot
+        ("claude-sonnet-5.5", True, True),
+        ("claude-fable-5.1", True, True),
+        ("claude-fable-5", True, True),
+        ("claude-mythos-5.1", True, True),
+        ("claude-mythos-5", False, True),  # on the tool-change list only
+        ("claude-opus-5", False, True),
+        ("claude-opus-4.8", False, True),
+        ("claude-opus-4-8", False, True),
+        ("claude-opus-5.6", False, False),  # not a model of the list
+        ("claude-opus-5-55", False, False),
+        ("claude-sonnet-5", False, False),
+        ("claude-haiku-4.5", False, False),
+        ("some-other-model", False, False),
+    ],
+)
+async def test_the_features_follow_the_model_whichever_way_the_gateway_spells_it(
+    fake: Fake, provider_model: str, updates: bool, changes: bool
+) -> None:
+    """CM-38: the list of models is matched on both spellings of a version."""
+    fake.models = {"claude": provider_model}
+    model = claude(fake)
+    try:
+        await converse(model, [Reply(text="Hello.")], fake)
+        served = await model._serving()
+    finally:
+        await model.close()
+    assert (served.updates, served.tool_changes) == (updates, changes)
+    if "haiku" not in provider_model:  # before the 4.6 family: no adaptive thinking at all
+        assert fake.bodies[-1]["thinking"]["display"] == ("updates" if updates else "summarized")
+    else:
+        assert "thinking" not in fake.bodies[-1]
+
+
+async def test_one_unlisted_deployment_turns_the_features_off() -> None:
+    models = ["anthropic/claude-opus-5.5", "azure/claude-opus-5"]
+    assert _decide(models, _UPDATES) == (False, "azure/claude-opus-5 is not on the CM-38 list")
+    assert _decide(models, _TOOL_CHANGES) == (True, "on the CM-38 list")
+    assert _decide([], _TOOL_CHANGES) == (False, "the gateway does not say which model")
+
+
+async def test_the_chosen_features_are_logged_once_for_the_alias(
+    fake: Fake, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The alias, the model the gateway named, each feature on or off and why: at INFO
+    for a model that is listed, at WARNING for one that matches nothing."""
+    fake.models = {"claude": "anthropic/claude-opus-5.5", "odd": "anthropic/claude-opus-5.6"}
+    caplog.set_level(logging.INFO, logger="sandbox_science.orchestrator.messages")
+    for alias in ("claude", "claude", "odd"):
+        model = claude(fake, alias)
+        try:
+            await converse(model, [Reply(text="Hello."), Reply(text="Again.")], fake)
+        finally:
+            await model.close()
+    chosen = [r for r in caplog.records if r.getMessage().startswith("Messages adapter for")]
+    assert len(chosen) == 2  # once for each alias, not for each model object or call
+    listed, odd = chosen
+    assert listed.levelno == logging.INFO
+    assert listed.getMessage() == (
+        "Messages adapter for claude: gateway model anthropic/claude-opus-5.5; progress "
+        "notes (display updates) on (on the CM-38 list); mid-run tool changes on (on the "
+        "CM-38 list); adaptive thinking on"
+    )
+    assert odd.levelno == logging.WARNING
+    assert "anthropic/claude-opus-5.6 is not on the CM-38 list" in odd.getMessage()
+    assert "progress notes (display updates) off" in odd.getMessage()
+
+
+async def test_a_gateway_that_names_no_model_is_logged_as_such(
+    fake: Fake, caplog: pytest.LogCaptureFixture
+) -> None:
+    fake.models = {}
+    model = claude(fake)
+    try:
+        await converse(model, [Reply(text="Hello.")], fake)
+    finally:
+        await model.close()
+    messages = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any(
+        "gateway model not given; progress notes (display updates) off (the gateway does "
+        "not say which model)" in message
+        for message in messages
+    )
 
 
 async def test_a_call_that_may_not_call_the_tools_says_so(fake: Fake) -> None:

@@ -151,6 +151,91 @@ def test_an_alias_any_deployment_of_which_is_unpriced_has_no_prices(fields: Json
     assert prices_of({"data": "not a list"}, "gpt") is None
 
 
+# What the live gateway listed for an Opus alias it had no prices for (lab, 2026-10-31).
+ZERO = {
+    "key": "claude-opus-5", "input_cost_per_token": 0, "output_cost_per_token": 0,
+    "cache_read_input_token_cost": None, "cache_creation_input_token_cost": None,
+}  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        ZERO,
+        {"input_cost_per_token": 0.0, "output_cost_per_token": 0.0},
+        {**ZERO, "cache_read_input_token_cost": 2e-07, "cache_creation_input_token_cost": 5e-06},
+    ],
+)
+def test_a_price_of_zero_for_input_and_output_is_no_price(fields: Json) -> None:
+    """LiteLLM lists a model it has no price for with 0 and 0: not a free model."""
+    assert (
+        prices_of({"data": [deployment("claude", "claude-opus-5.5", **fields)]}, "claude") is None
+    )
+    # Any deployment of the alias being so listed leaves the alias unpriced.
+    info = {"data": [
+        deployment("claude", "a", **PRICED), deployment("claude", "b", **fields),
+    ]}  # fmt: skip
+    assert prices_of(info, "claude") is None
+    # A zero on one side only is a price (an embedding model has no output).
+    only_input = {"input_cost_per_token": 1e-07, "output_cost_per_token": 0}
+    assert prices_of({"data": [deployment("e", "x", **only_input)]}, "e") == (Prices(1e-07, 0.0),)
+
+
+@pytest.mark.parametrize(
+    "usage",
+    [
+        {
+            "input_tokens": 10_000,
+            "output_tokens": 1_000,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+        },
+        # The call that writes the cache was once unpriced, the others free.
+        {
+            "input_tokens": 10_000,
+            "output_tokens": 1_000,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 500,
+        },
+    ],
+)
+@pytest.mark.parametrize("headers", [{}, {"x-litellm-response-cost": "0"}])
+async def test_every_call_of_an_alias_listed_at_zero_is_unpriced_the_same_way(
+    fake: Fake, usage: Json, headers: dict[str, str], caplog: pytest.LogCaptureFixture
+) -> None:
+    fake.info = [deployment("claude", "claude-opus-5.5", **ZERO)]
+    reply = json.dumps({
+        "id": "msg_1", "type": "message", "role": "assistant", "model": "claude-opus-5-5",
+        "content": [{"type": "text", "text": "ok"}], "stop_reason": "end_turn", "usage": usage,
+    })  # fmt: skip
+    fake.then(reply, headers=headers)
+    fake.then(reply, headers=headers)
+    gateway = ModelGateway(fake.url, KEY, apis={"claude": "messages"})
+    model = gateway.model("claude")
+    try:
+        first = await model.complete(ASK, [])
+        second = await model.complete(ASK, [])
+    finally:
+        await gateway.close()
+    for turn in (first, second):
+        assert (turn.cost, turn.cost_source) == (None, None)  # unknown, never 0
+        assert turn.input_tokens
+        assert turn.output_tokens
+    warned = [r for r in caplog.records if "input and output prices of 0" in r.getMessage()]
+    assert len(warned) == 1  # once for the alias, not for each call
+
+
+async def test_a_cost_the_gateway_reports_for_such_an_alias_is_still_kept(fake: Fake) -> None:
+    fake.info = [deployment("gpt", "openai/gpt-test", **ZERO)]
+    fake.then(response(), headers={"x-litellm-response-cost": "0.0125"})
+    model = ResponsesModel(fake.url, "gpt", KEY, clock=Waits())
+    try:
+        turn = await model.complete(ASK, [])
+    finally:
+        await model.close()
+    assert (turn.cost, turn.cost_source) == (0.0125, "gateway")
+
+
 def test_each_apis_usage_is_priced_as_its_tokens() -> None:
     """Chat completions and OpenAI's responses count the cached tokens in their input;
     Claude's messages count them apart."""
