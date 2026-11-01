@@ -38,8 +38,10 @@ import secrets
 import signal
 import socket
 import stat
+import subprocess
 import sys
 import time
+import urllib.parse
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -371,10 +373,15 @@ class Confinement:
     area: str
     directory: Path
     scratch: Path
+    connect: tuple[int, ...] = ()
+    """The TCP ports its processes may connect to: the sandbox's egress proxy's."""
 
     def prefix(self) -> list[str]:
         return sandbox_confine.command(
-            sys.executable, str(CONFINE_SCRIPT), [str(self.directory), str(self.scratch)]
+            sys.executable,
+            str(CONFINE_SCRIPT),
+            [str(self.directory), str(self.scratch)],
+            self.connect,
         )
 
     def variables(self) -> dict[str, str]:
@@ -388,7 +395,34 @@ class Confinement:
             "MPLCONFIGDIR": str(self.scratch / "matplotlib"),
             "XDG_CACHE_HOME": str(self.scratch / "cache"),
             "DOT_SAGE": str(self.scratch / "sage"),
+            "JOBLIB_TEMP_FOLDER": temporary,
         }
+
+
+PROXY_VARIABLES = (
+    "ALL_PROXY",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "all_proxy",
+    "http_proxy",
+    "https_proxy",
+)
+
+
+def proxy_ports(env: Mapping[str, str]) -> tuple[int, ...]:
+    """The ports of the egress proxies ``env`` names, which OpenShell sets for every
+    sandbox process; a held run connects over TCP to these alone (DA-20)."""
+    ports: set[int] = set()
+    for name in PROXY_VARIABLES:
+        value = env.get(name, "")
+        try:
+            found = urllib.parse.urlsplit(value if "://" in value else f"http://{value}")
+            port = found.port or {"http": 80, "https": 443}.get(found.scheme)
+        except ValueError:
+            continue
+        if value and port:
+            ports.add(port)
+    return tuple(sorted(ports))
 
 
 def confined_manager(base: type[Any], prefix: Sequence[str]) -> type[Any]:
@@ -1071,6 +1105,9 @@ class Executor:
         env["SANDBOX_SCIENCE_DAEMON_MARK"] = self.owner_prefix
         env["SESSION_WORKSPACE"] = str(self.files.session_dir(session))
         env["PROJECT_SHARED"] = str(self.root / SHARED)
+        # Not /dev/shm, which a held run can write: joblib's workers unpickle what is
+        # there (DA-20). A held run's own is in its scratch directory.
+        env.setdefault("JOBLIB_TEMP_FOLDER", str(self.root / ".executor" / "joblib"))
         return env
 
     # Package commands: attempts wait while one changes the environment, and each change
@@ -1770,7 +1807,16 @@ class Executor:
         """The Landlock ABI here, and why a delegated run's processes cannot be held to
         its write area, or ``None`` when they can (DA-20); probed once."""
         if self.confinement_state is None:
-            self.confinement_state = sandbox_confine.abi()
+            version, reason = sandbox_confine.abi()
+            if reason is None:
+                # The ruleset and the seccomp filter in full, in a process of their own:
+                # what a sandbox's own filter allows shows only by trying.
+                probe = [sys.executable, "-I", "-S", str(CONFINE_SCRIPT), "--probe"]
+                with sandbox_processes.starting_children():
+                    done = subprocess.run(probe, capture_output=True, text=True, check=False)  # noqa: S603 - our own file
+                if done.returncode != 0:
+                    reason = f"the probe failed: {done.stderr.strip()[:300]}"
+            self.confinement_state = (version, reason)
         return self.confinement_state
 
     def confinement_report(self) -> Message:
@@ -1808,7 +1854,10 @@ class Executor:
         for name in RUN_SCRATCH:
             os.close(self.files.open_base([*scratch, name]))
         return Confinement(
-            area, self.files.session_dir(session).joinpath(*names), self.root.joinpath(*scratch)
+            area,
+            self.files.session_dir(session).joinpath(*names),
+            self.root.joinpath(*scratch),
+            proxy_ports({**os.environ, **self.configured}),
         )
 
     def held_kernel(self, request: Message) -> Kernel:

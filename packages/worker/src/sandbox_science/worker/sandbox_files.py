@@ -351,6 +351,14 @@ SYNC_MARK = ".sandbox-science-sync"
 """Beside sessions/ and shared/: the worker's mark of this environment's sync (D79)."""
 
 
+def changed_ns(info: os.stat_result) -> int:
+    """When a file last changed, for the shared files' stamps: the later of its
+    modification and its status change. A process can set the first back (a held run's
+    on any file it can read, DA-20); the kernel sets the second, so a stamp cannot be made
+    to match an earlier one."""
+    return max(info.st_mtime_ns, info.st_ctime_ns)
+
+
 def scan_shared(directory: int) -> tuple[dict[str, list[int]], bool, bool, list[str]]:
     """The regular files below ``shared/`` (``directory``, which is consumed), for its sync.
 
@@ -401,7 +409,7 @@ def scan_shared(directory: int) -> tuple[dict[str, list[int]], bool, bool, list[
                         truncated = True
                         return files, truncated, partial, odd[:10]
                     executable = 1 if info.st_mode & 0o111 else 0
-                    files[path] = [info.st_mtime_ns, info.st_size, info.st_ino, executable]
+                    files[path] = [changed_ns(info), info.st_size, info.st_ino, executable]
             finally:
                 os.close(current)
     finally:
@@ -525,12 +533,17 @@ def write_file(
                 with contextlib.suppress(OSError):
                     os.unlink(temporary, dir_fd=parent)
             raise
+        # The stamp as the file now stands: its rename into place changed its status time.
+        with contextlib.suppress(OSError):
+            placed = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            if placed.st_ino == written.st_ino:
+                written = placed
     finally:
         os.close(parent)
     return {
         "sha256": hashlib.sha256(content).hexdigest(),
         "size": len(content),
-        "stamp": [written.st_mtime_ns, written.st_size, written.st_ino],
+        "stamp": [changed_ns(written), written.st_size, written.st_ino],
     }
 
 
@@ -676,7 +689,7 @@ def move_file(source: int, name: str, destination: int, target: str, path: str) 
         else:
             raise ToolError("conflict", f"the new name for {path!r} is taken") from None
     moved = os.stat(target, dir_fd=destination, follow_symlinks=False)
-    return [moved.st_mtime_ns, moved.st_size, moved.st_ino]
+    return [changed_ns(moved), moved.st_size, moved.st_ino]
 
 
 def write_part(parts: int, upload: str, offset: int, content: bytes) -> tuple[int | None, bool]:
@@ -904,14 +917,14 @@ def stamped_sha256(parent: int, name: str, stamp: Sequence[int]) -> str | None:
     flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
     with os.fdopen(os.open(name, flags, dir_fd=parent), "rb") as handle:
         before = os.fstat(handle.fileno())
-        scanned = (before.st_mtime_ns, before.st_size, before.st_ino)
+        scanned = (changed_ns(before), before.st_size, before.st_ino)
         if not stat.S_ISREG(before.st_mode) or scanned != tuple(stamp[:3]):
             return None
         digest = hashlib.sha256()
         while block := handle.read(1024 * 1024):
             digest.update(block)
         after = os.fstat(handle.fileno())
-    if (after.st_mtime_ns, after.st_size) != scanned[:2]:
+    if (changed_ns(after), after.st_size) != scanned[:2]:
         return None  # changed while it was read
     return digest.hexdigest()
 

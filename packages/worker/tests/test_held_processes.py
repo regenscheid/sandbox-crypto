@@ -8,8 +8,10 @@ run unconfined, on an executor that cannot hold them."""
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
+import os
 import subprocess
 import sys
 from collections.abc import AsyncIterator
@@ -20,7 +22,7 @@ import pytest
 import pytest_asyncio
 
 from sandbox_science.contracts import ExecutionContext, KernelRestartRequest
-from sandbox_science.worker import sandbox_confine
+from sandbox_science.worker import executor, sandbox_confine
 from sandbox_science.worker.errors import WorkerError
 
 from .harness import Harness
@@ -203,7 +205,7 @@ async def test_a_childs_kernel_is_held_and_cannot_reach_the_parents(worker: Harn
         child = await worker.run(
             f"child-cell-{attempt}", _in(AREA), kind="cell", code=code, run="r-child"
         )
-        assert child["state"] == "succeeded", child
+        assert child["state"] == "succeeded", child["result"]["error"]
         found = json.loads(child["result"]["stdout"]["text"])
         assert found.pop("tried") >= 5  # the parent's kernel's channels
         assert found == {
@@ -300,3 +302,167 @@ def test_the_wrapper_fails_closed(tmp_path: Path) -> None:
     assert not marker.exists()
     usage = subprocess.run([sys.executable, script, "--"], capture_output=True, check=False)
     assert usage.returncode == sandbox_confine.FAILED
+
+
+REACH = """
+import ctypes, fcntl, json, os, resource, socket
+found = {}
+def attempt(name, call):
+    try:
+        call()
+        found[name] = "done"
+    except OSError as error:
+        found[name] = error.errno
+libc = ctypes.CDLL(None, use_errno=True)
+def checked(result):
+    if result != 0:
+        raise OSError(ctypes.get_errno(), "")
+for pid in (KERNEL, EXECUTOR):
+    attempt(f"prlimit {pid}", lambda: resource.prlimit(pid, resource.RLIMIT_NOFILE, (3, 3)))
+    attempt(f"nice {pid}", lambda: os.setpriority(os.PRIO_PROCESS, pid, 19))
+    attempt(f"ioprio {pid}", lambda: checked(libc.syscall(IOPRIO_SET, 1, pid, (3 << 13))))
+    attempt(f"ptrace {pid}", lambda: checked(libc.ptrace(16, pid, 0, 0)))
+attempt("nice user", lambda: os.setpriority(os.PRIO_USER, 0, 19))
+os.sched_setaffinity(KERNEL, {0})  # succeeds doing nothing
+lock = os.open(LOCK, os.O_RDONLY)
+fcntl.flock(lock, fcntl.LOCK_EX)  # succeeds doing nothing
+fcntl.lockf(lock, fcntl.LOCK_SH)
+attempt("lease", lambda: fcntl.fcntl(lock, fcntl.F_SETLEASE, fcntl.F_RDLCK))
+attempt("bind", lambda: socket.socket().bind(("127.0.0.1", 0)))
+attempt("connect", lambda: socket.create_connection(("127.0.0.1", PORT), timeout=5))
+urandom = os.open("/dev/urandom", os.O_RDONLY)
+attempt("ioctl", lambda: fcntl.ioctl(urandom, 0x80045200, bytearray(4)))  # RNDGETENTCNT
+open("found.json", "w").write(json.dumps(found) + "\\n")
+"""
+
+
+async def test_a_child_cannot_limit_lock_or_reach_the_parents_processes(
+    daemon_worker: Harness,
+) -> None:
+    """DA-F10, after the review: a child's code cannot set another process's limits,
+    priority, I/O priority or scheduling, ptrace it, hold a lock or lease against the
+    platform, bind or connect over TCP other than to the proxy, or ioctl a device other
+    than a terminal; the parent's kernel and the executor keep working."""
+    import resource
+    import socket as sockets
+
+    worker = daemon_worker
+    parent = await worker.run(
+        "parent", _in(), kind="cell", code="import os; (os.getpid(), os.getppid())"
+    )
+    kernel, executor = json.loads(
+        parent["result"]["outputs"][0]["data"]["text/plain"].replace("(", "[").replace(")", "]")
+    )
+    lock = worker.workspace.parent.parent / ".executor/provisioning/lock"
+    assert lock.exists()
+    with sockets.socket() as server:
+        server.bind(("127.0.0.1", 0))
+        server.listen()
+        port = server.getsockname()[1]
+        number = {"x86_64": 251, "aarch64": 30}[os.uname().machine]
+        code = (
+            f"KERNEL, EXECUTOR, LOCK, PORT, IOPRIO_SET = {kernel}, {executor}, "
+            f"{str(lock)!r}, {port}, {number}\n" + REACH
+        )
+        job = worker.submit(
+            "child", _in(AREA), kind="job", purpose="p", expected_progress="e",
+            script=f"python3 - <<'PY'\n{code}\nimport time; time.sleep(30)\nPY",
+        )  # fmt: skip
+        started = await job
+        await worker.wait_running(started["execution_id"])
+        report = worker.workspace / AREA / "found.json"
+        for _ in range(300):
+            if report.exists() and report.read_text().endswith("\n"):
+                break
+            await asyncio.sleep(0.05)
+        found: dict[str, Any] = json.loads(report.read_text())
+    refused = {key: value for key, value in found.items() if value != "done"}
+    assert refused == found, found  # every attempt refused
+    assert set(found) >= {f"prlimit {kernel}", f"prlimit {executor}", "lease", "connect"}
+    # The lock the child took is free: the parent's shell runs at once, a package command
+    # could take its turn, and the parent's kernel and the executor keep their limits.
+    after = await worker.run(
+        "parent-shell", _in(), kind="shell", script="echo ran", timeout_seconds=5
+    )
+    assert after["result"]["stdout"]["text"] == "ran\n"
+    burn = "import time\nt = time.process_time()\nwhile time.process_time() - t < 1.5: pass\n'ok'"
+    survived = await worker.run("parent-burn", _in(), kind="cell", code=burn)
+    assert survived["result"]["outputs"][0]["data"]["text/plain"] == "'ok'"
+    assert resource.prlimit(executor, resource.RLIMIT_NOFILE)[0] > 3
+    assert os.sched_getaffinity(kernel) != {0} or os.cpu_count() == 1
+    await worker.cancel(started["execution_id"])
+
+
+def test_the_wrapper_connects_to_the_proxy_port_only(tmp_path: Path) -> None:
+    """``--connect`` opens one TCP port, the egress proxy's, and only for connecting."""
+    import socket as sockets
+
+    with sockets.socket() as allowed, sockets.socket() as other:
+        for server in (allowed, other):
+            server.bind(("127.0.0.1", 0))
+            server.listen()
+        ports = [server.getsockname()[1] for server in (allowed, other)]
+        code = (
+            "import socket\n"
+            f"for port in {ports}:\n"
+            "    try:\n"
+            "        socket.create_connection(('127.0.0.1', port), timeout=5).close()\n"
+            "        print('connected', port)\n"
+            "    except OSError as error:\n"
+            "        print('refused', error.errno)\n"
+        )
+        argv = [
+            *sandbox_confine.command(
+                sys.executable, sandbox_confine.__file__, [str(tmp_path)], [ports[0]]
+            ),
+            sys.executable,
+            "-c",
+            code,
+        ]
+        done = subprocess.run(argv, capture_output=True, text=True, check=False)
+    assert done.stdout.split("\n")[:2] == [f"connected {ports[0]}", "refused 13"], done
+
+
+def test_the_proxy_ports_come_from_the_sandboxs_variables() -> None:
+    env = {"HTTPS_PROXY": "http://10.200.0.1:3128", "http_proxy": "proxy.local", "NO_PROXY": "x"}
+    assert executor.proxy_ports(env) == (80, 3128)
+    assert executor.proxy_ports({"ALL_PROXY": "socks5://[::1]:not-a-port"}) == ()
+
+
+def test_the_seccomp_filter_is_built_for_both_architectures() -> None:
+    for machine in ("x86_64", "aarch64"):
+        program = sandbox_confine.seccomp_program(machine, 1234)
+        assert program[-1] == (0x06, 0, 0, 0x7FFF0000)  # anything else passes
+        assert all(0 <= jt < 256 and 0 <= jf < 256 for _, jt, jf, _ in program)
+    with pytest.raises(sandbox_confine.ConfinementError):
+        sandbox_confine.seccomp_program("riscv64", 1)
+
+
+def test_a_shared_files_stamp_cannot_be_set_back(tmp_path: Path) -> None:
+    """A held run can reset the modification time of a shared file it can read, but not
+    its change time: the sync's stamp still moves, and the file is hashed again."""
+    from sandbox_science.worker import sandbox_files
+
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "a.txt").write_text("one\n")
+    before = sandbox_files.scan_shared(os.open(shared, os.O_RDONLY | os.O_DIRECTORY))[0]
+    stat = (shared / "a.txt").stat()
+    while (shared / "a.txt").stat().st_ctime_ns == stat.st_ctime_ns:  # a clock tick on
+        (shared / "a.txt").write_text("two\n")  # same size, in place
+        os.utime(shared / "a.txt", ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    after = sandbox_files.scan_shared(os.open(shared, os.O_RDONLY | os.O_DIRECTORY))[0]
+    assert after["shared/a.txt"][1:] == before["shared/a.txt"][1:]
+    assert after["shared/a.txt"][0] != before["shared/a.txt"][0]
+
+
+async def test_joblib_keeps_its_pickles_off_shared_memory(worker: Harness) -> None:
+    """A held run can write /dev/shm; joblib's memory-mapped pickles, which its workers
+    load, are not there for the parent, and are in the child's own scratch for it."""
+    script = 'echo "$JOBLIB_TEMP_FOLDER"'
+    parent = await worker.run("parent", _in(), kind="shell", script=script)
+    child = await worker.run("child", _in(AREA), kind="shell", script=script)
+    root = worker.workspace.parent.parent
+    assert parent["result"]["stdout"]["text"] == f"{root}/.executor/joblib\n"
+    assert child["result"]["stdout"]["text"].startswith(f"{root}/.executor/runs/")
+    assert child["result"]["stdout"]["text"].endswith("/tmp\n")
