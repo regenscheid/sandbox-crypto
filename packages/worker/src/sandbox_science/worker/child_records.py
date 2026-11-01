@@ -205,6 +205,10 @@ class ChildRecords:
             raise WorkerError(ErrorKind.INTERNAL, f"the row of {environment_id} went")
         return record
 
+    def exist(self) -> bool:
+        """Whether the worker keeps any child environment's row, of any phase."""
+        return self.db.execute("SELECT 1 FROM child_environments LIMIT 1").fetchone() is not None
+
     def get(self, environment_id: str) -> ChildRecord | None:
         row = self.db.execute(_SELECT + " WHERE environment_id=?", (environment_id,)).fetchone()
         return None if row is None else _record(row)

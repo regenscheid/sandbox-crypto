@@ -21,7 +21,7 @@ import sqlite3
 import sys
 import time
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
@@ -181,6 +181,17 @@ if command == ["sandbox", "create"]:
                        **({"labels": labels} if labels else {})}
     if state.get("fail_create_after"):
         fail("synthetic creation response lost")
+    if state.get("create_waits") and sandboxes[name]["phase"] != "Ready":
+        # As OpenShell 0.1.5's command does, --detach or not: it waits for the sandbox
+        # to be provisioned until its own idle deadline, OPENSHELL_PROVISION_TIMEOUT.
+        limit = os.environ.get("OPENSHELL_PROVISION_TIMEOUT")
+        state.setdefault("provision_timeouts", []).append(limit)
+        save()
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        waited = int(limit or 300)
+        time.sleep(state.get("create_waits_for", waited))
+        print(f"Error:   x sandbox provisioning timed out after {waited}s", file=sys.stderr)
+        sys.exit(1)
     out = "created"
 elif command == ["sandbox", "get"]:
     if state.get("fail_get"):
@@ -1792,10 +1803,12 @@ async def test_a_failed_suspension_leaves_the_others_to_go_on(paused: Setup) -> 
     suspender.started = long_ago
     real = paused.environments.cli.run
 
-    async def flaky(*args: str, timeout: float = 120.0) -> str:
+    async def flaky(
+        *args: str, timeout: float = 120.0, env: Mapping[str, str] | None = None
+    ) -> str:
         if args[:2] == ("sandbox", "stop") and args[2] == paused.environments.get("env-a").sandbox:
             raise WorkerError(ErrorKind.UNAVAILABLE, "openshell sandbox stop failed")
-        return await real(*args, timeout=timeout)
+        return await real(*args, timeout=timeout, env=env)
 
     paused.environments.cli.run = flaky
     assert await suspender.check() == ["env-b"]
@@ -3072,10 +3085,10 @@ async def test_admission_does_not_wait_for_a_change_under_way(setup: Setup) -> N
     real = setup.environments.cli.run
     release = asyncio.Event()
 
-    async def slow(*args: str, timeout: float = 120.0) -> str:
+    async def slow(*args: str, timeout: float = 120.0, env: Mapping[str, str] | None = None) -> str:
         if args[:2] == ("policy", "set"):
             await release.wait()
-        return await real(*args, timeout=timeout)
+        return await real(*args, timeout=timeout, env=env)
 
     setup.environments.cli.run = slow
     revision = setup.add(variant(setup.tmp, "v2.yaml", extra_rule=True))
@@ -3259,9 +3272,11 @@ async def test_a_client_has_at_most_its_limit_of_environments(
     cli, serial = setup.environments.cli, asyncio.Lock()
     run = cli.run
 
-    async def run_serially(*args: str, timeout: float = 120.0) -> str:
+    async def run_serially(
+        *args: str, timeout: float = 120.0, env: Mapping[str, str] | None = None
+    ) -> str:
         async with serial:  # every CLI call, sandbox() included, goes through run()
-            return await run(*args, timeout=timeout)
+            return await run(*args, timeout=timeout, env=env)
 
     cli.run = run_serially
     try:

@@ -909,6 +909,43 @@ def test_the_sites_worker_section_renders_job_profiles(tmp_path):
     assert plain.openshell.environments.job_profiles == {}
 
 
+def test_the_sites_worker_section_renders_child_profiles(tmp_path):
+    """Child environment sizes come from the site file as job sizes do, with the tier
+    their Kata placement gives; the worker loads what is rendered with its own checks."""
+    values = site_values(tmp_path)
+    size = {
+        "description": "4 cores, 8 GiB memory",
+        "node_selector": {"test.example/compute-tier": "high"},
+        "requests": {"cpu_millicores": 4000, "memory_mib": 8192, "ephemeral_storage_mib": 8192},
+        "limits": {"cpu_millicores": 4000, "memory_mib": 8192, "ephemeral_storage_mib": 8192},
+        "schedule_timeout": 900,
+    }
+    values["worker"] = {
+        "child_profiles": {"standard": size, "large": {**size, "isolation_tier": 2}},
+        "default_child_profile": "standard",
+        "max_child_environments": 3,
+        "child_retention": 86400,
+    }
+    path = site_file(tmp_path, values)
+    output = tmp_path / "out"
+    write(output, plan(*load(path)))
+    worker = load_worker(output / "secrets/worker/worker.toml")
+    assert worker.openshell is not None
+    environments = worker.openshell.environments
+    assert environments is not None
+    standard = environments.child_profiles["standard"]
+    assert (standard.runtime_class_name, standard.isolation_tier) == ("kata", 3)
+    assert standard.node_selector["kubernetes.io/arch"] == "amd64"
+    assert standard.schedule_timeout == 900
+    assert environments.child_profiles["large"].isolation_tier == 2
+    assert environments.child_default == "standard"
+    assert (environments.max_child_environments, environments.child_retention) == (3, 86400)
+    assert environments.child_retention_per_project == 2  # the worker's default
+    # A default that names no child profile is refused before anything is written.
+    values["worker"] = {"child_profiles": {"standard": size}, "default_child_profile": "x"}
+    _refused(tmp_path, values, "at: worker")
+
+
 @pytest.mark.parametrize(
     "size",
     [

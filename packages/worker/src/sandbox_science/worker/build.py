@@ -227,7 +227,12 @@ def _build(settings: Settings, token: str, clock: Clock, lock: StateLock) -> Wor
         environments.required_deleting.append(manager.end_job_sandboxes)
         environments.given_up.append(manager.environment_given_up)
     children = None
-    if environments is not None and environments.settings.child_profiles:
+    # Kept while the pool has child profiles, and while any child environment's row is
+    # left after they were removed, so its sweep still releases retained ones and prunes
+    # released rows; admission then refuses (no child profiles).
+    if environments is not None and (
+        environments.settings.child_profiles or store.child_environments.exist()
+    ):
         children = ChildEnvironments(environments, store, clock=clock)
         children.port = ManagerPort(manager, provisioner)
     desk = (

@@ -54,7 +54,7 @@ import logging
 import posixpath
 import re
 import statistics
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final
 
@@ -86,6 +86,7 @@ from sandbox_science.contracts.child_environments import (
     hand_back_path,
     hand_back_reserved,
 )
+from sandbox_science.contracts.context import ExecutionAuthority
 from sandbox_science.contracts.monitor import ChildSeeding, SecondsSummary
 from sandbox_science.contracts.worker import (
     DEFAULT_COLLECT_MAX_BYTES,
@@ -103,6 +104,7 @@ from .environments import Environments, ScheduleTimeoutError
 from .errors import WorkerError
 from .job_sandboxes import EnvironmentPort, JobFailureError, TooLargeError, replay
 from .ranged_copy import copy_file, upload_id
+from .recovery_fence import OPERATOR, authority_refused
 from .settings import ChildProfile, EnvironmentSettings
 
 if TYPE_CHECKING:
@@ -150,6 +152,10 @@ class _Planned(BaseModel):
     min_isolation_tier: int | None = None
     retained: tuple[RetainedInput, ...] = ()
     """The inputs from control's retained content to copy once ready (CE-7)."""
+    authority: ExecutionAuthority | None = None
+    """The admitting run's research authority, which preparation keeps: its replay and
+    copies in the session's and the child's environments pass the recovery fence with
+    it, as every deferred step of the worker's keeps its original authority."""
 
 
 class _Copied(BaseModel):
@@ -287,6 +293,7 @@ class ChildEnvironments:
         """Admit a child environment and start making it; the existing one for the same
         delegation. Refuses with the reason, creating nothing (CE-9)."""
         context = request.context
+        self._admits(context)
         existing = self.records.for_delegation(context.project_id, request.delegation_id)
         if existing is not None:
             return self._same(existing, context), False
@@ -379,7 +386,12 @@ class ChildEnvironments:
                 updated_at=now,
             )
             self.records.insert(record)
-            stored = planned.model_copy(update={"min_isolation_tier": request.min_isolation_tier})
+            stored = planned.model_copy(
+                update={
+                    "min_isolation_tier": request.min_isolation_tier,
+                    "authority": context.authority,
+                }
+            )
             self.records.record_step(record.environment_id, "inputs", stored.model_dump_json(), now)
         self._spawn(record.environment_id)
         return self.view(record), True
@@ -554,13 +566,14 @@ class ChildEnvironments:
         seconds = max(0.0, (now - creating).total_seconds())
         self.records.record_step(environment_id, "created", json.dumps(seconds), now)
         self._update(environment_id, phase="preparing")
+        planned = _Planned.model_validate_json(self.records.steps(environment_id)["inputs"])
         session = ExecutionContext(
             project_id=record.project_id,
             session_id=record.session_id,
             environment_id=record.session_environment,
+            authority=planned.authority,
         )
         child = session.model_copy(update={"environment_id": environment_id})
-        planned = _Planned.model_validate_json(self.records.steps(environment_id)["inputs"])
         remaining = (record.ready_by - self.clock.now()).total_seconds()
         try:
             async with asyncio.timeout(max(0.0, remaining)):
@@ -644,6 +657,7 @@ class ChildEnvironments:
         a ready child environment (CE-7): in place, after the bytes received so far, the
         last part's write checking the whole file's SHA-256 and size as admission
         planned them. A part not sent where those bytes end is not written."""
+        self._admits(part.context)
         async with self._lock(environment_id):
             record = self._owned(environment_id, part.context)
             if record.phase != "ready":
@@ -707,11 +721,14 @@ class ChildEnvironments:
     async def hand_back(self, environment_id: str, request: HandBackRequest) -> ChildHandBack:
         """Copy the named files into the session's ``work/<delegation_id>/``; the stored
         manifest when it was made already. A hand-back cut short goes on."""
+        self._admits(request.context)
         async with self._lock(environment_id):
             record = self._owned(environment_id, request.context)
             text = request.model_dump_json()
             recorded = self.records.steps(environment_id).get("request")
-            if recorded is not None and recorded != text:
+            if recorded is not None and _unowned(
+                HandBackRequest.model_validate_json(recorded)
+            ) != _unowned(request):
                 raise WorkerError(
                     ErrorKind.CONFLICT, "another hand-back of this child environment is recorded"
                 )
@@ -865,6 +882,10 @@ class ChildEnvironments:
             left = leave(too_large(error))
             return left.model_copy(update={"size": error.size})
         except WorkerError as error:
+            if authority_refused(error):
+                # The caller's authority was superseded: no outcome of this file. The copy
+                # is left as it is, for a caller with the current authority to go on.
+                raise
             # Given up after one retry of a transient failure: its parts go too.
             await self._discard(session, upload, target)
             return leave(f"it was not copied: {error.message}")
@@ -890,6 +911,8 @@ class ChildEnvironments:
                 )
             )
         except WorkerError as error:
+            if authority_refused(error):
+                raise  # the hand-back is not made: a current caller makes it
             _log.warning("the hand-back manifest's copy was not written: %s", error.message)
 
     # The end (CE-4, JS-25).
@@ -897,13 +920,18 @@ class ChildEnvironments:
     async def end(self, environment_id: str, request: ChildEnvironmentEnd) -> ChildEnvironment:
         """Release the child environment, or keep it stopped after an incomplete hand-back.
         Ending one that has ended already answers its record."""
+        self._admits(request.context)
         self._owned(environment_id, request.context)
         await self._stop_preparing(environment_id)
         async with self._lock(environment_id):
             record = self._owned(environment_id, request.context)
-            return self.view(await self._end(record, request.reason))
+            return self.view(await self._end(record, request.reason, request.context))
 
-    async def _end(self, record: ChildRecord, reason: ChildEndReason) -> ChildRecord:
+    async def _end(
+        self, record: ChildRecord, reason: ChildEndReason, context: ExecutionContext | None = None
+    ) -> ChildRecord:
+        """End it for ``reason``; a hand-back cut short is finished first, with the
+        authority of ``context``, the caller's, or else the one it was asked with."""
         environment_id = record.environment_id
         if record.phase in ("released", "retained"):
             return record
@@ -914,10 +942,17 @@ class ChildEnvironments:
             )
         closing = "release" in self.records.steps(environment_id)
         manifest = self.records.hand_back(environment_id)
+        superseded = False
         if record.phase == "collecting" and manifest is None and "request" in steps:
-            manifest = await self._collect(
-                record, HandBackRequest.model_validate_json(steps["request"])
-            )
+            asked = HandBackRequest.model_validate_json(steps["request"])
+            if context is not None:
+                asked = asked.model_copy(update={"context": context})
+            if self._current(asked.context):
+                manifest = await self._collect(record, asked)
+            else:
+                # The sweep, with the authority of a run since superseded: nothing more is
+                # copied for it, and the files stay in the retained child environment.
+                superseded = True
         if record.phase in ("creating", "preparing"):
             if record.failure is None:
                 self._update(
@@ -928,7 +963,9 @@ class ChildEnvironments:
         if closing or (manifest is not None and manifest.complete):
             return await self._release(environment_id)
         why = (
-            "no hand-back was made before its delegation ended"
+            "its hand-back was cut short, and the run that asked for it was superseded"
+            if superseded
+            else "no hand-back was made before its delegation ended"
             if manifest is None
             else f"its hand-back left {len(manifest.not_collected)} files behind"
             + largest_left(self.records.steps(environment_id))
@@ -954,6 +991,76 @@ class ChildEnvironments:
             return self._update(environment_id, phase="retained", retained_until=now)
         return self._update(environment_id, phase="released")
 
+    async def release_now(
+        self,
+        environment_id: str,
+        *,
+        superseded: bool = False,
+        defer: Callable[[str, str], None] | None = None,
+    ) -> ChildEnvironment:
+        """An operator's release of a child environment now (the worker stopped): a
+        retained one before its deadline, or, with ``superseded``, a ready one whose run
+        was superseded with no Resume continuing in it, which would otherwise live until
+        its wall time. It runs the deletion's guards first (``required_deleting``: a
+        restore writing into it, a package gate not ready), so a refusal changes nothing;
+        then ``defer`` records the deletion hooks the running worker owes, the release is
+        recorded (step ``release``, ``operator``) and its sandbox deleted by its recorded
+        identity. One already released answers its record; any other is refused. A
+        deletion the gateway did not confirm leaves it retained, due at once, and raises."""
+        async with self._lock(environment_id):
+            record = self._record(environment_id)
+            if record.phase == "released":
+                return self.view(record)
+            if record.phase == "ready" and superseded:
+                self._superseded(record)
+            elif record.phase != "retained":
+                raise WorkerError(
+                    ErrorKind.CONFLICT,
+                    f"child environment {environment_id} is {record.phase}; only a retained"
+                    " one is released here, or a ready one with --superseded (its delegation,"
+                    " or the session's close, ends one in use)",
+                )
+            for guard in self.environments.required_deleting:
+                await guard(environment_id)
+            info = self.environments.records.get(environment_id)
+            if (
+                defer is not None
+                and info is not None
+                and info.state is not EnvironmentState.DELETED
+            ):
+                defer(environment_id, info.sandbox)
+            self.records.record_step(
+                environment_id, "release", json.dumps("operator"), self.clock.now()
+            )
+            _log.info("child environment %s is released by an operator", environment_id)
+            released = await self._release(environment_id)
+            if released.phase != "released":
+                raise WorkerError(
+                    ErrorKind.UNAVAILABLE,
+                    f"the deletion of child environment {environment_id}'s sandbox was not"
+                    " confirmed; it stays retained, due at once, for the worker's sweep",
+                )
+            return self.view(released)
+
+    def _superseded(self, record: ChildRecord) -> None:
+        """Refuse unless the ready child environment's run was superseded: the session's
+        recovery epoch is newer than every authority it was used with, its admission's
+        and its executions' (a Resume continuing in it runs there with the newer one)."""
+        environment_id = record.environment_id
+        current = self.store.recovery_fences.epoch(record.project_id, record.session_id)
+        planned = _Planned.model_validate_json(self.records.steps(environment_id)["inputs"])
+        used = max(
+            planned.authority.epoch if planned.authority is not None else 0,
+            self.store.newest_authority_epoch(environment_id) or 0,
+        )
+        if current is None or used >= current:
+            raise WorkerError(
+                ErrorKind.CONFLICT,
+                f"child environment {environment_id} is ready and its run is not superseded"
+                f" (used in epoch {used}; the session's is {current}): its delegation, a"
+                " Resume or the session's close ends it",
+            )
+
     async def _retain(self, environment_id: str, why: str) -> ChildRecord:
         """Stop the child environment and keep it until the retention deadline, releasing
         its project's oldest retained ones beyond its limit."""
@@ -977,6 +1084,7 @@ class ChildEnvironments:
         surplus = max(0, len(retained) - self.settings.child_retention_per_project)
         for row in retained[:surplus]:
             if row.environment_id == environment_id:
+                self._expire(environment_id, "retention_per_project")
                 kept = await self._release(environment_id)
                 continue
             # Never waits for another child environment's lock while holding this one's:
@@ -986,6 +1094,7 @@ class ChildEnvironments:
                 continue
             async with other:
                 if self._record(row.environment_id).phase == "retained":
+                    self._expire(row.environment_id, "retention_per_project")
                     await self._release(row.environment_id)
         return kept
 
@@ -1000,7 +1109,7 @@ class ChildEnvironments:
                 continue
             await self._stop_preparing(row.environment_id)
             async with self._lock(row.environment_id):
-                await self._end(self._record(row.environment_id), "session_closed")
+                await self._end(self._record(row.environment_id), "session_closed", context)
             ended.append(row.environment_id)
         return ended
 
@@ -1015,6 +1124,8 @@ class ChildEnvironments:
                 current = self._record(row.environment_id)
                 if current.phase == "retained":
                     due = current.retained_until is not None and current.retained_until <= now
+                    if due:
+                        self._expire(row.environment_id, "retention")
                     if due and (await self._release(row.environment_id)).phase == "released":
                         released.append(row.environment_id)
                 elif now >= current.expires_at + timedelta(seconds=WALL_TIME_GRACE):
@@ -1183,6 +1294,26 @@ class ChildEnvironments:
             raise WorkerError(ErrorKind.NOT_FOUND, f"no child environment {environment_id!r}")
         return record
 
+    def _expire(self, environment_id: str, why: str) -> None:
+        """Record that a retained child environment's retention ended (step ``expired``):
+        what its incomplete hand-back left goes with it by design, so cleanup may delete
+        its volume without a checkpoint (``disposable``)."""
+        self.records.record_step(environment_id, "expired", json.dumps(why), self.clock.now())
+
+    def _current(self, context: ExecutionContext) -> bool:
+        """Whether ``context``'s authority is the session's current one, or the session is
+        not fenced, without raising."""
+        epoch = self.store.recovery_fences.epoch(context.project_id, context.session_id)
+        authority = context.authority
+        return epoch is None or (authority is not None and authority.epoch == epoch)
+
+    def _admits(self, context: ExecutionContext) -> None:
+        """Refuse a call without the session's current research authority once a run has
+        fenced the session, as every effect in its environments is (the recovery fence):
+        the orchestrator acts for the run whose delegation it is, an operator client for
+        itself."""
+        self.store.recovery_fences.check(context, operator=OPERATOR.get())
+
     def _owned(self, environment_id: str, context: ExecutionContext) -> ChildRecord:
         """The row, when the context is its session's; another's is ``not_found``."""
         record = self.records.get(environment_id)
@@ -1215,6 +1346,14 @@ def _summary(seconds: list[float]) -> SecondsSummary | None:
         median=statistics.median(seconds),
         longest=max(seconds),
         total=sum(seconds),
+    )
+
+
+def _unowned(request: HandBackRequest) -> HandBackRequest:
+    """A hand-back request without its caller's authority: the same hand-back, whichever
+    run of the session asks for it."""
+    return request.model_copy(
+        update={"context": request.context.model_copy(update={"authority": None})}
     )
 
 

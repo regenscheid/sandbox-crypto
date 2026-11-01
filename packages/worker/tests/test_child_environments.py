@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import json
 import logging
@@ -33,11 +34,17 @@ from sandbox_science.contracts import (
     EnvironmentState,
     ErrorKind,
     ExecutionContext,
+    FileContent,
     FileListing,
     IsolationEvidence,
     ListFilesRequest,
     Location,
+    ProvisionOperation,
+    ProvisionRequest,
+    ReadFileRequest,
     SessionCloseRequest,
+    WriteFileRequest,
+    WriteFileResult,
 )
 from sandbox_science.contracts.child_environments import (
     ChildEnvironment,
@@ -50,23 +57,30 @@ from sandbox_science.contracts.child_environments import (
     RetainedInput,
     is_child_environment,
 )
+from sandbox_science.contracts.context import ExecutionAuthority
+from sandbox_science.contracts.recovery import RecoveryFence
 from sandbox_science.contracts.worker import PROTOCOL_VERSION
 from sandbox_science.policy import effective_resources, load_ceiling, load_policy
 from sandbox_science.testing import eventually
 from sandbox_science.worker.app import create_app
 from sandbox_science.worker.artifacts import Blobs
 from sandbox_science.worker.backends import LocalBackend
+from sandbox_science.worker.build import build_worker
 from sandbox_science.worker.child_environments import ChildEnvironments
 from sandbox_science.worker.child_records import ACTIVE, ChildRecord
+from sandbox_science.worker.cli import main
 from sandbox_science.worker.environments import Environments
 from sandbox_science.worker.errors import WorkerError
+from sandbox_science.worker.files import RangeWritten
 from sandbox_science.worker.manager import ExecutionManager
 from sandbox_science.worker.monitor import MonitorDesk
+from sandbox_science.worker.recovery_fence import OPERATOR, RecoveryFences, operator_scope
 from sandbox_science.worker.settings import (
     ChildProfile,
     EnvironmentSettings,
     LocalBackendSettings,
     OpenShellBackendSettings,
+    Settings,
 )
 from sandbox_science.worker.store import Store
 
@@ -93,11 +107,53 @@ def child_profile(**changes: Any) -> ChildProfile:
 
 class SizedPort(FakePort):
     """A ``FakePort`` whose listings carry each file's size, and whose probe gives its
-    evidence, as the worker's do; ``unprobed`` environments report none."""
+    evidence, as the worker's do; ``unprobed`` environments report none. With ``fences``,
+    every call that names a context passes the worker's recovery fence first, as the
+    execution manager's do."""
 
     def __init__(self) -> None:
         super().__init__()
         self.unprobed: set[str] = set()
+        self.fences: RecoveryFences | None = None
+
+    def _fenced(self, context: ExecutionContext) -> None:
+        if self.fences is not None:
+            self.fences.check(context, operator=OPERATOR.get())
+
+    async def read_file(self, request: ReadFileRequest) -> FileContent:
+        self._fenced(request.context)
+        return await super().read_file(request)
+
+    async def write_file(self, request: WriteFileRequest) -> WriteFileResult:
+        self._fenced(request.context)
+        return await super().write_file(request)
+
+    async def read_part(
+        self, context: ExecutionContext, path: str, offset: int, length: int
+    ) -> tuple[bytes, int]:
+        self._fenced(context)
+        return await super().read_part(context, path, offset, length)
+
+    async def write_range(
+        self,
+        context: ExecutionContext,
+        path: str,
+        upload: str,
+        offset: int,
+        content: bytes,
+        *,
+        sha256: str | None = None,
+        size: int | None = None,
+        discard: bool = False,
+    ) -> RangeWritten:
+        self._fenced(context)
+        return await super().write_range(
+            context, path, upload, offset, content, sha256=sha256, size=size, discard=discard
+        )
+
+    async def provision(self, request: ProvisionRequest) -> ProvisionOperation:
+        self._fenced(request.context)
+        return await super().provision(request)
 
     async def location(self, environment_id: str) -> Location:
         found = await super().location(environment_id)
@@ -107,6 +163,7 @@ class SizedPort(FakePort):
         return found.model_copy(update={"isolation_evidence": evidence})
 
     async def list_files(self, request: ListFilesRequest) -> FileListing:
+        self._fenced(request.context)
         listing = await super().list_files(request)
         environment = request.context.environment_id
         prefix = "" if request.path == "." else request.path + "/"
@@ -156,6 +213,7 @@ class Pool:
         self.environments.release = release
         self.store = Store(tmp_path / "worker" / "worker.sqlite3")
         self.port = SizedPort()
+        self.port.fences = self.store.recovery_fences
         self.children = self._children()
         self.policy = self.add(granting(tmp_path))
 
@@ -1211,6 +1269,357 @@ async def test_a_session_close_after_the_hand_back_finds_nothing(pool: Pool) -> 
     await pool.children.hand_back(made.environment_id, pool.back(()))
     assert (await pool.children.end(made.environment_id, pool.end())).phase == "released"
     assert await pool.children.close_session(CONTEXT) == []
+
+
+# The recovery fence (docs/specs/worker-recovery-authority.md): a session a run has
+# fenced admits only calls with its current epoch's authority.
+
+
+def owned(epoch: int) -> ExecutionContext:
+    """The session's context with the research authority of a run of ``epoch``."""
+    authority = ExecutionAuthority(work="w-root", run=f"r-{epoch}", epoch=epoch)
+    return CONTEXT.model_copy(update={"authority": authority})
+
+
+async def test_a_fenced_sessions_calls_with_its_authority_are_admitted(pool: Pool) -> None:
+    """A session whose runs have fenced it (a second run: epoch 2): the delegation's
+    admission with inputs, their copies, a retained input's parts, the hand-back, the
+    end and the session's close all carry the current run's authority and are admitted;
+    the same calls without it, or with the first run's, are refused."""
+    pool.store.recovery_fences.install(RecoveryFence(project_id="p1", session_id="s1", epoch=2))
+    current, stale = owned(2), owned(1)
+    report = b"# Report\n"
+    request = pool.request(
+        inputs=("data/input.txt",), retained=(retained("results/report.md", report),)
+    )
+    for refused in (request, request.model_copy(update={"context": stale})):
+        with pytest.raises(WorkerError, match="missing or superseded research authority"):
+            await pool.children.admit(refused)
+    assert pool.store.child_environments.listed() == []
+    made, created = await pool.children.admit(request.model_copy(update={"context": current}))
+    assert created
+    made = await pool.settled(made.environment_id)
+    assert (made.phase, [f.path for f in made.inputs]) == ("ready", ["inputs/data/input.txt"])
+    child = made.environment_id
+    data = base64.b64encode(report).decode()
+    for context in (CONTEXT, stale):
+        with pytest.raises(WorkerError, match="superseded"):
+            await pool.children.stage_input(
+                child, InputPart(context=context, index=0, offset=0, content_b64=data)
+            )
+    staged = await pool.children.stage_input(
+        child, InputPart(context=current, index=0, offset=0, content_b64=data)
+    )
+    assert staged.staged is not None
+    pool.port.files[child, "out/notes.md"] = b"notes\n"
+    for context in (CONTEXT, stale):
+        with pytest.raises(WorkerError, match="superseded"):
+            await pool.children.hand_back(child, pool.back(("out/notes.md",), context=context))
+        with pytest.raises(WorkerError, match="superseded"):
+            await pool.children.end(
+                child, ChildEnvironmentEnd(context=context, reason="delegation_ended")
+            )
+    back = await pool.children.hand_back(child, pool.back(("out/notes.md",), context=current))
+    assert back.complete
+    assert pool.port.files[SESSION, f"work/{DELEGATION}/out/notes.md"] == b"notes\n"
+    ended = await pool.children.end(
+        child, ChildEnvironmentEnd(context=current, reason="delegation_ended")
+    )
+    assert ended.phase == "released"
+    # Another delegation's, ended by the session's close with its current authority.
+    other, _ = await pool.children.admit(pool.request("dlg-" + "b" * 24, context=current))
+    await pool.settled(other.environment_id)
+    assert await pool.children.close_session(current) == [other.environment_id]
+    assert pool.children.get(other.environment_id, CONTEXT).phase == "released"
+
+
+async def test_a_later_run_finishes_a_hand_back_an_earlier_one_asked_for(pool: Pool) -> None:
+    """The hand-back is the same whichever run of the session asks: a later run (a newer
+    epoch) asking again is no other hand-back, and ending it copies with its authority."""
+    fences = pool.store.recovery_fences
+    fences.install(RecoveryFence(project_id="p1", session_id="s1", epoch=1))
+    made, _ = await pool.children.admit(pool.request(context=owned(1)))
+    child = (await pool.settled(made.environment_id)).environment_id
+    pool.port.files[child, "a.txt"] = b"a"
+    pool.port.gates["a.txt"] = gate = asyncio.Event()
+    first = asyncio.ensure_future(
+        pool.children.hand_back(child, pool.back(("a.txt",), context=owned(1)))
+    )
+    await eventually(lambda: bool(pool.port.gated), timeout=10)
+    first.cancel()  # the first run's process stopped while it copied
+    with contextlib.suppress(asyncio.CancelledError):
+        await first
+    assert pool.children.get(child, CONTEXT).phase == "collecting"
+    fences.install(RecoveryFence(project_id="p1", session_id="s1", epoch=2))
+    gate.set()
+    back = await pool.children.hand_back(child, pool.back(("a.txt",), context=owned(2)))
+    assert back.complete
+    ended = await pool.children.end(
+        child, ChildEnvironmentEnd(context=owned(2), reason="delegation_ended")
+    )
+    assert ended.phase == "released"
+
+
+async def test_a_superseded_hand_back_stops_and_a_current_one_finishes_it(pool: Pool) -> None:
+    """A newer epoch installed while a hand-back copies: the fence's refusal of the next
+    file is no outcome of that file and no manifest. The hand-back stops, refused, and
+    stays ``collecting`` with nothing recorded for the refused file; the current run's
+    hand-back finishes it, complete, and its end releases the environment."""
+    fences = pool.store.recovery_fences
+    fences.install(RecoveryFence(project_id="p1", session_id="s1", epoch=1))
+    made, _ = await pool.children.admit(pool.request(context=owned(1)))
+    child = (await pool.settled(made.environment_id)).environment_id
+    pool.port.files[child, "a.txt"] = b"a"
+    pool.port.files[child, "b.txt"] = b"b"
+    pool.port.gates["a.txt"] = gate = asyncio.Event()
+    first = asyncio.ensure_future(
+        pool.children.hand_back(child, pool.back(("a.txt", "b.txt"), context=owned(1)))
+    )
+    await eventually(lambda: bool(pool.port.gated), timeout=10)
+    fences.install(RecoveryFence(project_id="p1", session_id="s1", epoch=2))
+    gate.set()
+    with pytest.raises(WorkerError, match="superseded") as refused:
+        await first
+    assert refused.value.kind is ErrorKind.POLICY_DENIED
+    found = pool.children.get(child, CONTEXT)
+    assert (found.phase, found.hand_back) == ("collecting", None)
+    steps = pool.store.child_environments.steps(child)
+    assert "copy-0" in steps  # a.txt's copy was admitted before the newer epoch
+    assert "copy-1" not in steps
+    later = await pool.children.hand_back(child, pool.back(("a.txt", "b.txt"), context=owned(2)))
+    assert later.complete
+    assert [f.path for f in later.collected] == [
+        f"work/{DELEGATION}/{n}" for n in ("a.txt", "b.txt")
+    ]
+    ended = await pool.children.end(
+        child, ChildEnvironmentEnd(context=owned(2), reason="delegation_ended")
+    )
+    assert ended.phase == "released"
+
+
+async def test_the_sweep_does_not_finish_a_superseded_hand_back(tmp_path: Path) -> None:
+    """Past its wall time, a hand-back cut short whose run was superseded is not finished
+    by the sweep with that run's authority: nothing more is copied, and the environment
+    is retained, saying why."""
+    pool = Pool(tmp_path, child_profiles={"standard": child_profile(wall_time_max=0.1)})
+    try:
+        await pool.session()
+        fences = pool.store.recovery_fences
+        fences.install(RecoveryFence(project_id="p1", session_id="s1", epoch=1))
+        made, _ = await pool.children.admit(pool.request(context=owned(1)))
+        child = (await pool.settled(made.environment_id)).environment_id
+        pool.port.files[child, "a.txt"] = b"a"
+        pool.port.gates["a.txt"] = asyncio.Event()  # never opened: the run stops here
+        first = asyncio.ensure_future(
+            pool.children.hand_back(child, pool.back(("a.txt",), context=owned(1)))
+        )
+        await eventually(lambda: bool(pool.port.gated), timeout=10)
+        first.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await first
+        fences.install(RecoveryFence(project_id="p1", session_id="s1", epoch=2))
+        from sandbox_science.worker import child_environments
+
+        child_environments.WALL_TIME_GRACE = 0.0
+        try:
+            await asyncio.sleep(0.2)
+            await pool.children.sweep()
+        finally:
+            child_environments.WALL_TIME_GRACE = 3600.0
+        found = pool.children.get(child, CONTEXT)
+        assert (found.phase, found.hand_back) == ("retained", None)
+        assert "superseded" in (found.message or "")
+        assert (SESSION, f"work/{DELEGATION}/a.txt") not in pool.port.files
+    finally:
+        await pool.close()
+
+
+async def test_preparation_keeps_the_admitting_runs_authority(pool: Pool) -> None:
+    """Preparation goes on after admission answered: its copies in both environments
+    carry the admitting run's authority, and a newer epoch installed meanwhile refuses
+    them, so the child environment fails instead of acting for a superseded run."""
+    fences = pool.store.recovery_fences
+    fences.install(RecoveryFence(project_id="p1", session_id="s1", epoch=3))
+    pool.port.located.clear()  # preparation waits at the probe
+    made, _ = await pool.children.admit(pool.request(inputs=("data",), context=owned(3)))
+    fences.install(RecoveryFence(project_id="p1", session_id="s1", epoch=4))
+    pool.port.located.set()
+    found = await pool.settled(made.environment_id)
+    assert found.phase == "released"
+    assert found.failure is not None
+    assert "superseded" in (found.message or "")
+
+
+async def test_an_operator_client_acts_without_research_authority(pool: Pool) -> None:
+    """The worker's explicit operator permission is the only way past the fence without
+    the current authority (an operator's maintenance, the workspace's user actions)."""
+    pool.store.recovery_fences.install(RecoveryFence(project_id="p1", session_id="s1", epoch=2))
+    with operator_scope(True):
+        made = await pool.ready()
+        ended = await pool.children.end(made.environment_id, pool.end("abandoned"))
+    assert ended.phase == "released"
+    assert not OPERATOR.get()
+
+
+# The operator's commands, with the worker stopped.
+
+
+def test_an_operator_releases_a_retained_child_environment(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``child-environments list`` shows the rows; ``release`` runs the deletion's guards
+    first (a package gate not ready refuses, changing nothing), records the deletion
+    hooks the running worker owes, then the operator's release on the row, and deletes
+    the sandbox by its recorded identity. A ready one is released only with
+    ``--superseded`` once the session's epoch is newer than every authority it was used
+    with. The pool's settings need no child profiles for any of it."""
+    pool = Pool(tmp_path, child_retention_per_project=3)
+    pool.store.recovery_fences.install(RecoveryFence(project_id="p1", session_id="s1", epoch=1))
+    first = ChildEnvironmentEnd(context=owned(1), reason="delegation_ended")
+
+    async def prepare() -> tuple[str, str, str]:
+        await pool.session()
+        kept = await pool.ready(context=owned(1))
+        await pool.children.end(kept.environment_id, first)  # no hand-back: retained
+        gated = await pool.ready("dlg-" + "c" * 24, context=owned(1))
+        await pool.children.end(gated.environment_id, first)
+        busy = await pool.ready("dlg-" + "b" * 24, context=owned(1))
+        await pool.children.close()
+        return kept.environment_id, gated.environment_id, busy.environment_id
+
+    try:
+        retained_id, gated_id, busy_id = asyncio.run(prepare())
+        sandbox = pool.environments.get(retained_id).sandbox
+        settings = tmp_path / "worker.toml"
+        settings.write_text(
+            f'token_file = "worker.token"\nstate_dir = "{tmp_path / "worker"}"\n\n'
+            f'[openshell]\nisolation_tier = 3\ncli = "{pool.fake.cli}"\n'
+            f'env = {{FAKE_OPENSHELL_STATE = "{pool.fake.path}", PATH = "{os.environ["PATH"]}"}}'
+            "\n\n[openshell.environments]\n"
+            f'policy_store = "{tmp_path / "middleware"}"\ntargets = "{TARGETS}"\n'
+            f'ceiling = "{tmp_path / "pool-ceiling.yaml"}"\nprofiles = {{minimal = "{IMAGE}"}}\n'
+        )
+        command = ["child-environments", "list", "--settings", str(settings)]
+        assert main([*command, "--phase", "retained"]) == 0
+        lines = capsys.readouterr().out.splitlines()
+        assert len(lines) == 2
+        assert lines[0].startswith(f"{retained_id} retained project p1 session s1 delegation ")
+        assert "retained until " in lines[0]
+        assert main(command) == 0
+        assert len(capsys.readouterr().out.splitlines()) == 3
+        release = ["child-environments", "release", "--settings", str(settings)]
+        # One in use is refused; a ready one whose run is current, even with --superseded.
+        assert main([*release, busy_id]) == 1
+        assert "is ready; only a retained one is released" in capsys.readouterr().err
+        assert main([*release, "--superseded", busy_id]) == 1
+        assert "its run is not superseded (used in epoch 1" in capsys.readouterr().err
+        # A package gate not ready refuses before anything is recorded or deleted.
+        gated_sandbox = pool.environments.get(gated_id).sandbox
+        pool.store.set_package_status(gated_id, "needs_recovery", "interrupted-installer", 0)
+        assert main([*release, gated_id]) == 1
+        assert "package state is needs_recovery" in capsys.readouterr().err
+        gated_row = pool.store.child_environments.get(gated_id)
+        assert gated_row is not None
+        assert gated_row.phase == "retained"
+        assert "release" not in pool.store.child_environments.steps(gated_id)
+        assert gated_sandbox in pool.fake.read()["sandboxes"]
+        assert pool.environments.records.hooks_pending() == []
+        # A retained one goes.
+        assert main([*release, retained_id]) == 0
+        assert capsys.readouterr().out.startswith(f"released: child environment {retained_id}")
+        row = pool.store.child_environments.get(retained_id)
+        assert row is not None
+        assert row.phase == "released"
+        steps = pool.store.child_environments.steps(retained_id)
+        assert json.loads(steps["release"]) == "operator"
+        assert sandbox not in pool.fake.read()["sandboxes"]
+        info = pool.environments.records.get(retained_id)
+        assert info is not None
+        assert info.state is EnvironmentState.DELETED
+        assert pool.environments.records.hooks_pending() == [(retained_id, sandbox)]
+        # Released already: its record, and no second deferral.
+        assert main([*release, retained_id]) == 0
+        assert pool.environments.records.hooks_pending() == [(retained_id, sandbox)]
+        pool.environments.records.hooks_done(retained_id, sandbox)
+        # A newer run with no Resume continuing in it: the ready one may go.
+        pool.store.recovery_fences.install(RecoveryFence(project_id="p1", session_id="s1", epoch=2))
+        assert main([*release, "--superseded", busy_id]) == 0
+        busy_row = pool.store.child_environments.get(busy_id)
+        assert busy_row is not None
+        assert busy_row.phase == "released"
+        assert [e for e, _ in pool.environments.records.hooks_pending()] == [busy_id]
+    finally:
+        pool.environments.close()
+        pool.store.close()
+
+
+async def test_a_ready_one_a_resume_continues_in_is_not_superseded(pool: Pool) -> None:
+    """A Resume continues in its child environment while it is ready (CE-12), with the
+    newer epoch's authority: that environment is in use, and the operator's
+    ``--superseded`` release refuses it although it was admitted in the older epoch."""
+    fences = pool.store.recovery_fences
+    fences.install(RecoveryFence(project_id="p1", session_id="s1", epoch=1))
+    made = await pool.ready(context=owned(1))
+    fences.install(RecoveryFence(project_id="p1", session_id="s1", epoch=2))
+    resumed = owned(2).model_copy(update={"environment_id": made.environment_id})
+    record = {"execution_id": "e-1", "context": resumed.model_dump(mode="json")}
+    with sqlite3.connect(pool.tmp / "worker" / "worker.sqlite3") as db:
+        db.execute(
+            "INSERT INTO executions(execution_id,operation_id,request_digest,environment_id,"
+            "session_id,terminal,record) VALUES ('e-1','o-1','d',?,'s1',0,?)",
+            (made.environment_id, json.dumps(record)),
+        )
+    assert pool.store.newest_authority_epoch(made.environment_id) == 2
+    with pytest.raises(WorkerError, match=r"not superseded \(used in epoch 2"):
+        await pool.children.release_now(made.environment_id, superseded=True)
+    assert pool.children.get(made.environment_id, CONTEXT).phase == "ready"
+
+
+async def test_the_sweep_runs_while_rows_are_left_without_profiles(tmp_path: Path) -> None:
+    """A pool whose child profiles were removed still builds its child environments, so
+    the sweep releases a retained one at its deadline; admission refuses."""
+    pool = Pool(tmp_path, child_retention=0)
+    try:
+        await pool.session()
+        made = await pool.ready()
+        await pool.children.end(made.environment_id, pool.end())
+        assert pool.children.get(made.environment_id, CONTEXT).phase == "retained"
+        await pool.children.close()
+    finally:
+        pool.environments.close()
+        pool.store.close()
+    ceiling = tmp_path / "pool-ceiling.yaml"
+    settings = Settings.model_validate(
+        {
+            "token_file": "worker.token",
+            "state_dir": tmp_path / "worker",
+            "openshell": {
+                "isolation_tier": 3,
+                "cli": str(pool.fake.cli),
+                "env": {"FAKE_OPENSHELL_STATE": str(pool.fake.path), "PATH": os.environ["PATH"]},
+                "environments": {
+                    "policy_store": tmp_path / "middleware",
+                    "targets": TARGETS,
+                    "ceiling": ceiling,
+                    "profiles": {"minimal": IMAGE},
+                },
+            },
+        }
+    )
+    parts = build_worker(settings, TOKEN)
+    try:
+        assert parts.children is not None
+        await parts.children.start()
+        found = parts.store.child_environments.get(made.environment_id)
+        assert found is not None
+        assert found.phase == "released"
+        # Its retention ended: cleanup may delete its volume without a checkpoint.
+        steps = parts.store.child_environments.steps(made.environment_id)
+        assert json.loads(steps["expired"]) == "retention"
+        with pytest.raises(WorkerError, match="no child profiles"):
+            await parts.children.admit(pool.request("dlg-" + "c" * 24))
+    finally:
+        await parts.close()
 
 
 def _manager(pool: Pool) -> ExecutionManager:

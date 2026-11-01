@@ -63,6 +63,17 @@ limits = { cpu_millicores = 2000, memory_mib = 4096, ephemeral_storage_mib = 204
 # node_selector = { "example.org/kata-capable" = "true" }
 # requests = { cpu_millicores = 6000, memory_mib = 16384, ephemeral_storage_mib = 16384 }
 # limits = { cpu_millicores = 6000, memory_mib = 16384, ephemeral_storage_mib = 16384 }
+#
+# Child environment sizes (delegated runs' own environments, docs/specs/child-environments.md),
+# rendered into worker.toml's openshell.environments.child_profiles; a project's policy grants
+# them (resources.child_profiles, resources.child_environments_max). The same keys as a job
+# size, plus isolation_tier (3 unless set). default_child_profile, max_child_environments,
+# child_retention and child_retention_per_project go in [worker].
+# [worker.child_profiles.standard]
+# description = "4 cores, 8 GiB memory"
+# node_selector = { "example.org/kata-capable" = "true" }
+# requests = { cpu_millicores = 2000, memory_mib = 4096, ephemeral_storage_mib = 8192 }
+# limits = { cpu_millicores = 4000, memory_mib = 8192, ephemeral_storage_mib = 8192 }
 
 # Research base profiles: image by digest and Kata placement (examples/kubernetes/worker-placement.toml).
 [profiles.minimal]

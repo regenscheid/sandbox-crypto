@@ -168,8 +168,9 @@ profiles should carry. No mounting of one sandbox's disk in another. No automati
 
 - JS-23. **Waiting for room.** Full worker counts are refused at once (JS-10). When no
   node has room, the pod stays pending and the job `queued` in `creating` up to the
-  profile's `schedule_timeout`; then it ends `failed` (`capacity_unavailable`), the
-  sandbox is deleted by identity, and nothing retries. Whether OpenShell reports the
+  profile's `schedule_timeout`, which bounds the create command's own wait too; then it
+  ends `failed` (`capacity_unavailable`), the sandbox is deleted by identity, and
+  nothing retries. Whether OpenShell reports the
   scheduler's reason is a qualification item; until then the GUI says "not placed yet".
 - JS-24. **The GUI** session page shows each job's profile, phase, reserved CPU and
   memory, tier and retention deadline, with "release now" beside "cancel". A worker CLI
@@ -207,7 +208,22 @@ profiles should carry. No mounting of one sandbox's disk in another. No automati
   before its command, and is released at once. At startup and hourly, a live job
   reattaches, an unfinished collection restarts, an overdue retention releases, and a
   record whose execution is gone is reported and kept. A sandbox without a record is
-  never deleted.
+  never deleted. Its workspace volume is OpenShell's: under 0.1.5 every sandbox's
+  workspace claim takes the gateway's one storage class and size
+  (`workspace_storage_class`, `workspace_default_storage_size`), and nothing in a
+  sandbox's request can choose another class, a size or an ephemeral workspace (its
+  driver configuration names only pod placement, containers and claims that already
+  exist). The claim is deleted with the sandbox, so with a class that retains volumes,
+  as the research class must for session workspaces, each job sandbox (and each child
+  environment) leaves a Released volume of the gateway's size. The operator's
+  `cleanup` names these by the job or child environment that owned them, and lets one
+  go without a checkpoint only when the worker records that environment deleted and its
+  end left nothing in the volume alone: a job whose collection was complete or whose
+  command never ran, a child environment whose hand-back was complete, that was never
+  ready, or whose retention ended. Any other end (a lost sandbox, a session close or
+  an operator's release before a complete hand-back), or one the worker no longer
+  keeps (a released child environment's row is pruned after `child_retention`), still
+  needs `--without-checkpoint` ([cleanup](../KUBERNETES-BUNDLE.md#cleanup)).
 
 ## Contracts, configuration and code
 

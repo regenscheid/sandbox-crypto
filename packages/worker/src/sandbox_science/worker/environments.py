@@ -37,11 +37,12 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 import re
 import secrets
 import sqlite3
 import threading
-from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -193,6 +194,17 @@ class ScheduleTimeoutError(WorkerError):
     """A job sandbox found no node with room within its profile's schedule timeout (JS-23)."""
 
 
+_PROVISION_TIMEOUT: Final = "sandbox provisioning timed out"
+"""How OpenShell 0.1.5's ``sandbox create`` reports its own provisioning deadline."""
+
+
+def _not_placed(timeout: float) -> ScheduleTimeoutError:
+    return ScheduleTimeoutError(
+        ErrorKind.UNAVAILABLE,
+        f"the sandbox was not placed within {timeout:g} s; no node had room",
+    )
+
+
 Release = Callable[[str], Awaitable[None]]
 ReleaseIdle = Callable[[str, float], Awaitable[bool]]
 
@@ -248,8 +260,11 @@ class OpenShellCli:
         self.cli = settings.cli
         self.env = env
 
-    async def run(self, *args: str, timeout: float = 120.0) -> str:
-        """Run a command and return its output; raise ``unavailable`` if it fails."""
+    async def run(
+        self, *args: str, timeout: float = 120.0, env: Mapping[str, str] | None = None
+    ) -> str:
+        """Run a command and return its output; raise ``unavailable`` if it fails. ``env``
+        adds to the CLI's environment for this command only."""
         check_dispatch()
         try:
             process = await asyncio.create_subprocess_exec(
@@ -258,7 +273,7 @@ class OpenShellCli:
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=self.env,
+                env=self.env if env is None else {**self.env, **env},
             )
         except OSError as exc:
             raise WorkerError(ErrorKind.UNAVAILABLE, f"cannot run {self.cli}: {exc}") from exc
@@ -404,6 +419,13 @@ class EnvironmentRecords:
             " environment_id TEXT NOT NULL, sandbox TEXT NOT NULL, reason TEXT NOT NULL,"
             " PRIMARY KEY (environment_id, sandbox))"
         )
+        # Environments an offline operator command deleted, whose deletion hooks the next
+        # running worker owes (as a rollback's ``hooks_pending``).
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS deferred_hooks ("
+            " environment_id TEXT NOT NULL, sandbox TEXT NOT NULL, reason TEXT NOT NULL,"
+            " deferred_at TEXT NOT NULL, PRIMARY KEY (environment_id, sandbox))"
+        )
         self._lock = threading.Lock()
 
     def observe(self, info: EnvironmentInfo, seen: Observation) -> tuple[Observation, ...]:
@@ -497,20 +519,35 @@ class EnvironmentRecords:
         ]
 
     def hooks_pending(self) -> list[tuple[str, str]]:
-        """Creations rolled back with the worker stopped, whose deletion hooks the next
-        running worker owes: (environment ID, sandbox name)."""
+        """Creations rolled back, and environments deleted, with the worker stopped, whose
+        deletion hooks the next running worker owes: (environment ID, sandbox name)."""
         with self._lock:
             rows = self._db.execute(
-                "SELECT environment_id, sandbox FROM creation_reconciliations"
-                " WHERE hooks_pending = 1 ORDER BY reconciled_at"
+                "SELECT environment_id, sandbox, reconciled_at FROM creation_reconciliations"
+                " WHERE hooks_pending = 1 UNION SELECT environment_id, sandbox, deferred_at"
+                " FROM deferred_hooks ORDER BY 3"
             ).fetchall()
-        return [(str(environment_id), str(sandbox)) for environment_id, sandbox in rows]
+        return list(dict.fromkeys((str(row[0]), str(row[1])) for row in rows))
+
+    def defer_hooks(self, environment_id: str, sandbox: str, reason: str, at: datetime) -> None:
+        """Record that an offline command deleted the environment's sandbox without its
+        deletion hooks, which the running worker registers: it runs them as it starts."""
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO deferred_hooks VALUES (?,?,?,?)"
+                " ON CONFLICT (environment_id, sandbox) DO NOTHING",
+                (environment_id, sandbox, reason, at.isoformat()),
+            )
 
     def hooks_done(self, environment_id: str, sandbox: str) -> None:
         with self._lock:
             self._db.execute(
                 "UPDATE creation_reconciliations SET hooks_pending = 0"
                 " WHERE environment_id=? AND sandbox=?",
+                (environment_id, sandbox),
+            )
+            self._db.execute(
+                "DELETE FROM deferred_hooks WHERE environment_id=? AND sandbox=?",
                 (environment_id, sandbox),
             )
 
@@ -2242,8 +2279,13 @@ class Environments:
     async def _create_sandbox(
         self, info: EnvironmentInfo, compiled: Compiled, *, timeout: float | None = None
     ) -> str:
+        """Create the sandbox and wait until it is ready; its ID. With ``timeout`` (a job
+        or child profile's ``schedule_timeout``), the whole wait, the create command's
+        included, ends there with ``ScheduleTimeoutError``."""
         name, image = info.sandbox, info.image
         refused: str | None = None
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + (timeout or 0.0)
         try:
             path = self._write(name, compiled.policy_digest, compiled.policy.to_yaml())
             args = ["sandbox", "create", "--name", name, "--from", image, "--policy", str(path)]
@@ -2259,7 +2301,10 @@ class Environments:
                 args += ["--label", "=".join(JOB_SANDBOX_LABEL)]
             args += ["--no-auto-providers", "--detach", "--", *_SANDBOX_COMMAND]
             try:
-                await self.cli.run(*args, timeout=self.settings.create_timeout)
+                if timeout is None:
+                    await self.cli.run(*args, timeout=self.settings.create_timeout)
+                else:
+                    await self._create_within(args, timeout, deadline)
             except GatewayRefusalError as refusal:
                 refused = refusal.message
                 raise
@@ -2271,12 +2316,33 @@ class Environments:
         if timeout is None:
             return await self._wait_ready(name, creating=info.environment_id)
         try:
-            return await self._wait_ready(name, timeout, creating=info.environment_id)
+            return await self._wait_ready(
+                name, max(0.0, deadline - loop.time()), creating=info.environment_id
+            )
         except NotReadyError as exc:
-            raise ScheduleTimeoutError(
-                ErrorKind.UNAVAILABLE,
-                f"the sandbox was not placed within {timeout:g} s; no node had room",
-            ) from exc
+            raise _not_placed(timeout) from exc
+
+    async def _create_within(self, args: Sequence[str], timeout: float, deadline: float) -> None:
+        """Run ``sandbox create`` within a schedule timeout. OpenShell 0.1.5's command
+        waits for the sandbox to be provisioned, even with ``--detach``, until its own
+        idle deadline (``OPENSHELL_PROVISION_TIMEOUT``, 300 s by default, renewed by
+        each progress event): the command is given the schedule timeout as that deadline
+        and is ended at it, and either end is ``ScheduleTimeoutError``. The profile's
+        timeout replaces the pool's ``create_timeout`` here, longer or shorter. A sandbox
+        it recorded is then deleted by identity, as after any failed creation."""
+        loop = asyncio.get_running_loop()
+        try:
+            await self.cli.run(
+                *args,
+                timeout=max(0.0, deadline - loop.time()),
+                env={"OPENSHELL_PROVISION_TIMEOUT": str(max(1, math.ceil(timeout)))},
+            )
+        except GatewayRefusalError:
+            raise
+        except WorkerError as error:
+            if _PROVISION_TIMEOUT in error.message or loop.time() >= deadline:
+                raise _not_placed(timeout) from error
+            raise
 
     async def _wait_ready(
         self, name: str, timeout: float | None = None, *, creating: str | None = None

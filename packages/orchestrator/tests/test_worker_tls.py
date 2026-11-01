@@ -120,3 +120,26 @@ def test_worker_rejects_nonprivate_projected_server_keys(tmp_path, kind):
         key = projected
     with pytest.raises(ValueError, match="private regular"):
         ServerTLS(certificate=certificate, private_key=key).context()
+
+
+async def test_session_close_reaches_an_https_worker_through_its_ca(server, tmp_path, capsys):
+    """``session close --worker-ca-file``: the harness's command trusts the worker's
+    private CA, as the other commands that talk to the worker do; without it the
+    worker's certificate is refused."""
+    from sandbox_science.orchestrator import cli
+
+    url, certificate = server
+    state = str(tmp_path / "harness")
+    token = tmp_path / "worker.token"
+    policy = "sha256:" + "a" * 64
+    common = ["--state-dir", state, "--project", "p1"]
+    creating = ["project", "create", *common, "--profile", "minimal", "--policy", policy]
+    assert await asyncio.to_thread(cli.main, creating) == 0
+    assert await asyncio.to_thread(cli.main, ["session", "open", *common, "--session", "s1"]) == 0
+    closing = ["session", "close", *common, "--session", "s1", "--worker", url,
+               "--token-file", str(token)]  # fmt: skip
+    capsys.readouterr()
+    assert await asyncio.to_thread(cli.main, closing) == 1
+    assert "CERTIFICATE_VERIFY_FAILED" in capsys.readouterr().err
+    assert await asyncio.to_thread(cli.main, [*closing, "--worker-ca-file", str(certificate)]) == 0
+    assert "closed session s1" in capsys.readouterr().out

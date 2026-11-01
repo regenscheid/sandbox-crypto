@@ -26,8 +26,9 @@ import sqlite3
 import ssl
 from collections.abc import Callable
 from contextlib import closing
+from dataclasses import dataclass
 from datetime import timedelta
-from typing import Literal
+from typing import Literal, cast, get_args
 from urllib.parse import quote
 
 from sandbox_science.contracts import (
@@ -44,7 +45,10 @@ from sandbox_science.contracts.workspace_checkpoint import (
     CheckpointPlan,
     CheckpointReceipt,
     InventoryCheckpoint,
+    InventoryEnd,
     InventoryEnvironment,
+    InventoryPhase,
+    disposable,
 )
 
 from . import checkpoint_remote
@@ -240,19 +244,89 @@ def verify(
         records.close()
 
 
-def _children(settings: Settings) -> dict[str, Literal["pending", "retained"]]:
+@dataclass(frozen=True, slots=True)
+class _Owned:
+    """What the worker's own rows say of a job sandbox or child environment."""
+
+    phase: InventoryPhase
+    ended: InventoryEnd | None
+    hand_back: Literal["pending", "retained"] | None = None
+
+
+def _owned_rows(settings: Settings) -> dict[str, _Owned]:
+    """Each job sandbox's and child environment's phase and end, by environment ID, from
+    the rows the worker keeps (a released child environment's row is pruned after its
+    retention: its end is then unknown)."""
     path = settings.state_dir / "worker.sqlite3"
     if not path.is_file():
         return {}
+    found: dict[str, _Owned] = {}
     with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as db:
         try:
-            rows = db.execute(
-                "SELECT environment_id, phase FROM child_environments"
-                " WHERE phase IN ('collecting', 'retained')"
+            children = db.execute(
+                "SELECT c.environment_id, c.phase, c.ready_at, h.manifest,"
+                " EXISTS (SELECT 1 FROM child_progress p WHERE p.environment_id ="
+                " c.environment_id AND p.step = 'expired')"
+                " FROM child_environments c LEFT JOIN child_hand_backs h"
+                " ON h.environment_id = c.environment_id"
             ).fetchall()
         except sqlite3.OperationalError:
-            return {}  # a store from before child environments has none
-    return {str(e): "pending" if p == "collecting" else "retained" for e, p in rows}
+            children = []  # a store from before child environments has none
+        for environment_id, phase, ready_at, manifest, expired in children:
+            found[str(environment_id)] = _Owned(
+                phase=_inventory_phase(phase),
+                ended=_child_end(str(phase), ready_at, manifest, bool(expired)),
+                hand_back="pending"
+                if phase == "collecting"
+                else "retained"
+                if phase == "retained"
+                else None,
+            )
+        try:
+            jobs = db.execute(
+                "SELECT j.environment_id, j.phase, j.collection,"
+                " EXISTS (SELECT 1 FROM job_progress p WHERE p.execution_id ="
+                " j.execution_id AND p.step = 'prepared')"
+                " FROM job_sandboxes j"
+            ).fetchall()
+        except sqlite3.OperationalError:
+            jobs = []  # a store from before job sandboxes has none
+        for environment_id, phase, collection, prepared in jobs:
+            ended: InventoryEnd | None = None
+            if phase == "released":
+                ended = (
+                    "complete"
+                    if collection == "complete"
+                    else "incomplete"
+                    if prepared
+                    else "never_ran"  # its command is submitted only once prepared
+                )
+            found[str(environment_id)] = _Owned(phase=_inventory_phase(phase), ended=ended)
+    return found
+
+
+def _inventory_phase(value: object) -> InventoryPhase:
+    for phase in get_args(InventoryPhase):
+        if value == phase:
+            return cast(InventoryPhase, phase)
+    raise RecordError("a job sandbox or child environment row has an unknown phase")
+
+
+def _child_end(
+    phase: str, ready_at: object, manifest: object, expired: bool
+) -> InventoryEnd | None:
+    if phase != "released":
+        return None
+    if ready_at is None:
+        return "never_ran"
+    if manifest is not None:
+        try:
+            complete = json.loads(str(manifest)).get("complete") is True
+        except (ValueError, AttributeError):
+            complete = False
+        if complete:
+            return "complete"
+    return "retention_ended" if expired else "incomplete"
 
 
 def inventory(
@@ -261,7 +335,7 @@ def inventory(
     path = settings.state_dir / "environments.sqlite3"
     if not path.is_file():
         raise RecordError("no environment records in the state directory")
-    children = _children(settings)
+    owned = _owned_rows(settings)
     records = CheckpointRecords(settings.state_dir)
     try:
         starts = records.last_starts()
@@ -285,7 +359,9 @@ def inventory(
                     state=info.state.value,
                     sandbox=info.sandbox,
                     sandbox_id=info.sandbox_id,
-                    hand_back=children.get(info.environment_id),
+                    hand_back=own.hand_back if (own := owned.get(info.environment_id)) else None,
+                    phase=own.phase if own else None,
+                    ended=own.ended if own else None,
                     last_started_at=starts.get(info.environment_id),
                 )
             )
@@ -336,7 +412,11 @@ def volume_refusals(
             reasons.append(f"environment {info.environment_id}'s hand-back is {info.hand_back}")
     if any(hold.sandbox == sandbox for hold in found.holds):
         reasons.append("a checkpoint holds it")
-    if not without_checkpoint and (missing := checkpoint_cover(found, sandbox)) is not None:
+    if (
+        not without_checkpoint
+        and not disposable(found.environments, sandbox)
+        and (missing := checkpoint_cover(found, sandbox)) is not None
+    ):
         reasons.append(f"{missing} (pass --without-checkpoint for this volume to delete anyway)")
     return reasons
 

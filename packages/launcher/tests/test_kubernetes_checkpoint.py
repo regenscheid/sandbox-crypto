@@ -613,12 +613,13 @@ def environment(
     environment_id: str,
     sandbox: str,
     state: Literal["creating", "ready", "stopped", "deleted"],
+    kind: Literal["session", "job", "child"] = "session",
     **fields: Any,
 ) -> InventoryEnvironment:
     return InventoryEnvironment(
         environment_id=environment_id,
         project_id="crypto",
-        kind="session",
+        kind=kind,
         state=state,
         sandbox=sandbox,
         **fields,
@@ -732,6 +733,90 @@ def test_cleanup_lists_candidates_with_owner_size_age_and_checkpoint():
     assert "project crypto session main environment e-gone (deleted)" in text
     assert "3 verified checkpoint(s), newest 7d old; last started 9d ago; candidate" in text
     assert "no verified checkpoint" in text
+
+
+def test_job_and_child_volumes_are_named_and_need_no_checkpoint():
+    """The workspace volumes job sandboxes and child environments leave behind (their
+    storage class retains them) are named by their owner's kind. One needs no checkpoint
+    to go only when its environment is deleted and its end left nothing there alone (a
+    complete collection or hand-back, nothing run, a child's retention ended); any other
+    end, or one the worker no longer knows, may hold the only copy of work."""
+    pvs = [
+        pv("pv-job", "workspace-default--ss-job", "Released"),
+        pv("pv-kid", "workspace-default--ss-kid", "Released"),
+        pv("pv-keptkid", "workspace-default--ss-keptkid", "Released"),
+        pv("pv-lostkid", "workspace-default--ss-lostkid", "Released"),
+        pv("pv-oldjob", "workspace-default--ss-oldjob", "Released"),
+    ]
+    found = survey(
+        pvs,
+        [],
+        [],
+        [],
+        CheckpointInventory(
+            generated_at=NOW,
+            keep=2,
+            environments=(
+                environment(
+                    "crypto-job-0a",
+                    "ss-job",
+                    "deleted",
+                    "job",
+                    session_id="main",
+                    phase="released",
+                    ended="complete",
+                ),
+                environment(
+                    "crypto-child-0b",
+                    "ss-kid",
+                    "deleted",
+                    "child",
+                    session_id="main",
+                    phase="released",
+                    ended="retention_ended",
+                ),
+                environment(
+                    "crypto-child-0c",
+                    "ss-keptkid",
+                    "stopped",
+                    "child",
+                    hand_back="retained",
+                    phase="retained",
+                ),
+                environment(
+                    "crypto-child-0d",
+                    "ss-lostkid",
+                    "deleted",
+                    "child",
+                    phase="released",
+                    ended="incomplete",
+                ),
+                environment("crypto-job-0e", "ss-oldjob", "deleted", "job"),  # row pruned
+            ),
+            checkpoints=(),
+            holds=(),
+        ),
+        SANDBOXES,
+        NOW,
+    )
+    rows = {row.volume: row for row in found.volumes}
+    assert (rows["pv-job"].refusals, rows["pv-job"].uncovered) == ((), None)
+    assert (rows["pv-kid"].refusals, rows["pv-kid"].uncovered) == ((), None)
+    assert rows["pv-keptkid"].refusals
+    for kept_for_work in ("pv-keptkid", "pv-lostkid", "pv-oldjob"):
+        assert rows[kept_for_work].uncovered == "no verified checkpoint"
+    with pytest.raises(OperationError, match="--without-checkpoint pv-lostkid"):
+        operator(Kubectl({})).delete(
+            found, ["pv-lostkid"], [], without_checkpoint=[], keeper_kept=None
+        )
+    text = "\n".join(report(found))
+    assert "project crypto session main job sandbox environment crypto-job-0a (deleted)" in text
+    assert "child environment crypto-child-0b (deleted); no checkpoint needed (disposable)" in text
+    steps = operator(Kubectl({})).delete(
+        found, ["pv-job", "pv-kid"], [], without_checkpoint=[], keeper_kept=None
+    )
+    assert steps
+    assert not any("--without-checkpoint" in step.command for step in steps)
 
 
 @pytest.mark.parametrize(

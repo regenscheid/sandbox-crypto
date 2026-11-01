@@ -131,6 +131,19 @@ class JobSize(Placement):
         }
 
 
+class ChildSize(JobSize):
+    """A size and placement a delegated run's own environment may have (CE-3):
+    ``worker.toml``'s ``openshell.environments.child_profiles.<name>``, a Kata amd64
+    placement as a job size's, with the isolation tier its placement gives."""
+
+    isolation_tier: Annotated[int, Field(ge=2, le=3)] = 3
+    """The tier a Kata placement gives (D43): 3 unless the site says otherwise; the
+    probe in the sandbox can lower it."""
+
+    def settings(self) -> dict[str, JsonValue]:
+        return {**super().settings(), "isolation_tier": self.isolation_tier}
+
+
 class Worker(Model):
     """The worker's own options, ``[worker]`` in the site file."""
 
@@ -151,6 +164,31 @@ class Worker(Model):
     """Seconds a failed job's stopped sandbox is kept; the worker's default when unset."""
     job_retention_per_project: Annotated[int, Field(ge=0, le=16)] | None = None
     """Retained job sandboxes per project; the worker's default when unset."""
+    child_profiles: dict[JobProfileName, ChildSize] = Field(
+        default_factory=dict[str, ChildSize], max_length=32
+    )
+    """Child environment sizes (``[worker.child_profiles.<name>]``), rendered into
+    ``worker.toml``'s ``openshell.environments.child_profiles``; none, the default, offers
+    none. A project's policy grants them (``resources.child_profiles``,
+    ``resources.child_environments_max``)."""
+    default_child_profile: JobProfileName | None = None
+    """The child profile a delegation that names none gets; without it, the only one."""
+    max_child_environments: Annotated[int, Field(ge=0, le=64)] | None = None
+    """Child environments at once across the pool; the worker's default (2) when unset."""
+    child_retention: Annotated[float, Field(ge=0, le=30 * 24 * 3600)] | None = None
+    """Seconds a child environment kept after an incomplete hand-back is retained; the
+    worker's default when unset."""
+    child_retention_per_project: Annotated[int, Field(ge=0, le=16)] | None = None
+    """Retained child environments per project; the worker's default when unset."""
+
+    @model_validator(mode="after")
+    def _default_child(self) -> Self:
+        if (
+            self.default_child_profile is not None
+            and self.default_child_profile not in self.child_profiles
+        ):
+            raise ValueError("default_child_profile names no child profile")
+        return self
 
     def environments(self) -> dict[str, JsonValue]:
         """What this section adds to ``worker.toml``'s ``openshell.environments``."""
@@ -159,10 +197,22 @@ class Worker(Model):
             found["job_profiles"] = {
                 name: size.settings() for name, size in sorted(self.job_profiles.items())
             }
+        if self.child_profiles:
+            found["child_profiles"] = {
+                name: size.settings() for name, size in sorted(self.child_profiles.items())
+            }
         found.update(
             self.model_dump(
                 mode="json",
-                include={"max_job_sandboxes", "job_retention", "job_retention_per_project"},
+                include={
+                    "max_job_sandboxes",
+                    "job_retention",
+                    "job_retention_per_project",
+                    "default_child_profile",
+                    "max_child_environments",
+                    "child_retention",
+                    "child_retention_per_project",
+                },
                 exclude_none=True,
             )
         )

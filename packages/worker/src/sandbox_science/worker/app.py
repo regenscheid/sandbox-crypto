@@ -374,7 +374,7 @@ def create_app(
         app[ENVIRONMENTS] = environments
         environments.deleted.append(manager.forget_revisions)
         environments.required_deleting.append(manager.guard_package_deletion)
-        environments.required_deleting.append(_restore_guard(environments))
+        environments.required_deleting.append(restore_guard(environments))
         environments.confirmed_deleted.append(manager.forget_package_gate)
         environments.reusing.append(manager.guard_package_reuse)
 
@@ -921,7 +921,7 @@ async def runtime_classifications_in_force(request: web.Request) -> web.Response
     return _json(found)
 
 
-def _restore_guard(environments: Environments) -> Callable[[str], Awaitable[None]]:
+def restore_guard(environments: Environments) -> Callable[[str], Awaitable[None]]:
     """Refuse deleting an environment while a restore writes into its sandbox: only the
     restore's own discard may delete it (docs/KUBERNETES-BUNDLE.md#restoring-a-checkpoint).
     Records it cannot read refuse the deletion too."""

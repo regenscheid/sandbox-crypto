@@ -1467,10 +1467,13 @@ class Harness:
         return self.placement_for(context)
 
     def placement_for(self, context: ExecutionContext) -> ChildPlacement:
-        """The child environments made from ``context``'s environment, the session's."""
+        """The child environments made from ``context``'s environment, the session's.
+        Every call it makes carries ``context``'s research authority, the run's on whose
+        behalf it acts, which the worker's recovery fence checks against the session's
+        current epoch (docs/specs/worker-recovery-authority.md)."""
         return ChildPlacement(
             self.client,
-            context.model_copy(update={"authority": None}),
+            context,
             self.settings.min_isolation_tier,
             self.clock,
             self.environment_poll,
