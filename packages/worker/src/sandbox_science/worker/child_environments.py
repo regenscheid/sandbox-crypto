@@ -104,7 +104,7 @@ from .environments import Environments, ScheduleTimeoutError
 from .errors import WorkerError
 from .job_sandboxes import EnvironmentPort, JobFailureError, TooLargeError, replay
 from .ranged_copy import copy_file, upload_id
-from .recovery_fence import OPERATOR
+from .recovery_fence import OPERATOR, authority_refused
 from .settings import ChildProfile, EnvironmentSettings
 
 if TYPE_CHECKING:
@@ -882,6 +882,10 @@ class ChildEnvironments:
             left = leave(too_large(error))
             return left.model_copy(update={"size": error.size})
         except WorkerError as error:
+            if authority_refused(error):
+                # The caller's authority was superseded: no outcome of this file. The copy
+                # is left as it is, for a caller with the current authority to go on.
+                raise
             # Given up after one retry of a transient failure: its parts go too.
             await self._discard(session, upload, target)
             return leave(f"it was not copied: {error.message}")
@@ -907,6 +911,8 @@ class ChildEnvironments:
                 )
             )
         except WorkerError as error:
+            if authority_refused(error):
+                raise  # the hand-back is not made: a current caller makes it
             _log.warning("the hand-back manifest's copy was not written: %s", error.message)
 
     # The end (CE-4, JS-25).
@@ -936,11 +942,17 @@ class ChildEnvironments:
             )
         closing = "release" in self.records.steps(environment_id)
         manifest = self.records.hand_back(environment_id)
+        superseded = False
         if record.phase == "collecting" and manifest is None and "request" in steps:
             asked = HandBackRequest.model_validate_json(steps["request"])
             if context is not None:
                 asked = asked.model_copy(update={"context": context})
-            manifest = await self._collect(record, asked)
+            if self._current(asked.context):
+                manifest = await self._collect(record, asked)
+            else:
+                # The sweep, with the authority of a run since superseded: nothing more is
+                # copied for it, and the files stay in the retained child environment.
+                superseded = True
         if record.phase in ("creating", "preparing"):
             if record.failure is None:
                 self._update(
@@ -951,7 +963,9 @@ class ChildEnvironments:
         if closing or (manifest is not None and manifest.complete):
             return await self._release(environment_id)
         why = (
-            "no hand-back was made before its delegation ended"
+            "its hand-back was cut short, and the run that asked for it was superseded"
+            if superseded
+            else "no hand-back was made before its delegation ended"
             if manifest is None
             else f"its hand-back left {len(manifest.not_collected)} files behind"
             + largest_left(self.records.steps(environment_id))
@@ -1236,6 +1250,13 @@ class ChildEnvironments:
         if record is None:
             raise WorkerError(ErrorKind.NOT_FOUND, f"no child environment {environment_id!r}")
         return record
+
+    def _current(self, context: ExecutionContext) -> bool:
+        """Whether ``context``'s authority is the session's current one, or the session is
+        not fenced, without raising."""
+        epoch = self.store.recovery_fences.epoch(context.project_id, context.session_id)
+        authority = context.authority
+        return epoch is None or (authority is not None and authority.epoch == epoch)
 
     def _admits(self, context: ExecutionContext) -> None:
         """Refuse a call without the session's current research authority once a run has

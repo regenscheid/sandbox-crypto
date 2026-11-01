@@ -1360,6 +1360,80 @@ async def test_a_later_run_finishes_a_hand_back_an_earlier_one_asked_for(pool: P
     assert ended.phase == "released"
 
 
+async def test_a_superseded_hand_back_stops_and_a_current_one_finishes_it(pool: Pool) -> None:
+    """A newer epoch installed while a hand-back copies: the fence's refusal of the next
+    file is no outcome of that file and no manifest. The hand-back stops, refused, and
+    stays ``collecting`` with nothing recorded for the refused file; the current run's
+    hand-back finishes it, complete, and its end releases the environment."""
+    fences = pool.store.recovery_fences
+    fences.install(RecoveryFence(project_id="p1", session_id="s1", epoch=1))
+    made, _ = await pool.children.admit(pool.request(context=owned(1)))
+    child = (await pool.settled(made.environment_id)).environment_id
+    pool.port.files[child, "a.txt"] = b"a"
+    pool.port.files[child, "b.txt"] = b"b"
+    pool.port.gates["a.txt"] = gate = asyncio.Event()
+    first = asyncio.ensure_future(
+        pool.children.hand_back(child, pool.back(("a.txt", "b.txt"), context=owned(1)))
+    )
+    await eventually(lambda: bool(pool.port.gated), timeout=10)
+    fences.install(RecoveryFence(project_id="p1", session_id="s1", epoch=2))
+    gate.set()
+    with pytest.raises(WorkerError, match="superseded") as refused:
+        await first
+    assert refused.value.kind is ErrorKind.POLICY_DENIED
+    found = pool.children.get(child, CONTEXT)
+    assert (found.phase, found.hand_back) == ("collecting", None)
+    steps = pool.store.child_environments.steps(child)
+    assert "copy-0" in steps  # a.txt's copy was admitted before the newer epoch
+    assert "copy-1" not in steps
+    later = await pool.children.hand_back(child, pool.back(("a.txt", "b.txt"), context=owned(2)))
+    assert later.complete
+    assert [f.path for f in later.collected] == [
+        f"work/{DELEGATION}/{n}" for n in ("a.txt", "b.txt")
+    ]
+    ended = await pool.children.end(
+        child, ChildEnvironmentEnd(context=owned(2), reason="delegation_ended")
+    )
+    assert ended.phase == "released"
+
+
+async def test_the_sweep_does_not_finish_a_superseded_hand_back(tmp_path: Path) -> None:
+    """Past its wall time, a hand-back cut short whose run was superseded is not finished
+    by the sweep with that run's authority: nothing more is copied, and the environment
+    is retained, saying why."""
+    pool = Pool(tmp_path, child_profiles={"standard": child_profile(wall_time_max=0.1)})
+    try:
+        await pool.session()
+        fences = pool.store.recovery_fences
+        fences.install(RecoveryFence(project_id="p1", session_id="s1", epoch=1))
+        made, _ = await pool.children.admit(pool.request(context=owned(1)))
+        child = (await pool.settled(made.environment_id)).environment_id
+        pool.port.files[child, "a.txt"] = b"a"
+        pool.port.gates["a.txt"] = asyncio.Event()  # never opened: the run stops here
+        first = asyncio.ensure_future(
+            pool.children.hand_back(child, pool.back(("a.txt",), context=owned(1)))
+        )
+        await eventually(lambda: bool(pool.port.gated), timeout=10)
+        first.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await first
+        fences.install(RecoveryFence(project_id="p1", session_id="s1", epoch=2))
+        from sandbox_science.worker import child_environments
+
+        child_environments.WALL_TIME_GRACE = 0.0
+        try:
+            await asyncio.sleep(0.2)
+            await pool.children.sweep()
+        finally:
+            child_environments.WALL_TIME_GRACE = 3600.0
+        found = pool.children.get(child, CONTEXT)
+        assert (found.phase, found.hand_back) == ("retained", None)
+        assert "superseded" in (found.message or "")
+        assert (SESSION, f"work/{DELEGATION}/a.txt") not in pool.port.files
+    finally:
+        await pool.close()
+
+
 async def test_preparation_keeps_the_admitting_runs_authority(pool: Pool) -> None:
     """Preparation goes on after admission answered: its copies in both environments
     carry the admitting run's authority, and a newer epoch installed meanwhile refuses
