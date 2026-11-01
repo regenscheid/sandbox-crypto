@@ -51,6 +51,7 @@ limits = { cpu_millicores = 2000, memory_mib = 4096, ephemeral_storage_mib = 204
 # Sandbox object or Pod); confirmed on an OpenShell 0.1.5 gateway.
 # [worker]
 # label_environments = false
+# max_environments = 8             # session environments at once per worker client (control's, the workspace's); the worker's default
 # max_job_sandboxes = 2            # job sandboxes at once across the pool (D93)
 #
 # Job sandbox sizes (D93), rendered into worker.toml's openshell.environments.job_profiles;

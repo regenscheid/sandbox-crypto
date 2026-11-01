@@ -356,6 +356,8 @@ def worker_settings(site: Site, bundle: BundleConfig, digests: dict[str, str]) -
                 [bundle.mcp_direct.project]
                 if name == MANAGER_CLIENT and bundle.mcp_direct is not None
                 else projects,
+                # The manager only binds the runtime's sandbox: it makes no environment.
+                None if name == MANAGER_CLIENT else site.worker.max_environments,
             )
             for name in digests
         ],
