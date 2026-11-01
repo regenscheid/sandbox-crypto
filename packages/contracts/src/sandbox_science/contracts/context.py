@@ -43,9 +43,11 @@ class ExecutionContext(Contract):
     """Who requested the execution: ``agent``, ``user``, ``reviewer`` or a delegated role."""
     authority: ExecutionAuthority | None = Field(default=None, exclude_if=lambda v: v is None)
     write_area: WriteArea | None = Field(default=None, exclude_if=lambda v: v is None)
-    """A delegated run's write area (DA-19), set by the platform on its ``write_file`` and
-    ``edit_file`` requests, never by an agent's arguments: the worker writes them only
-    below it and in ``shared/``. ``None`` for every other request and every main run."""
+    """A delegated run's write area (DA-19, DA-20), set by the platform, never by an
+    agent's arguments, on the run's ``write_file`` and ``edit_file`` requests, which the
+    worker writes only below it and in ``shared/``, and on its shell, job, cell and kernel
+    restart requests, whose processes the executor holds to it. ``None`` for the
+    platform's own requests and every main run's."""
 
 
 def write_area(delegation_id: str) -> str:

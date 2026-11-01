@@ -70,6 +70,7 @@ WORKER_FILES = (
     "daemon.py",
     "request_frames.py",
     "capture.py",
+    "sandbox_confine.py",
     "sandbox_files.py",
     "sandbox_processes.py",
     "sandbox_search.py",
@@ -543,6 +544,46 @@ class Checks:
         expect(stdout.startswith("[1, 2, 3] [4, 5]"), f"output {stdout!r}")
         return f"Lock, Pool and ProcessPoolExecutor: {stdout.strip()}"
 
+    def held_run(self) -> str:
+        """A delegated run's shell and cells, held to its write area (DA-20), inside the
+        sandbox's own ruleset: they start in the area and write there and in $TMPDIR, never
+        an input or the prefix; a Python pool still works, and in crypto-base Sage with its
+        pexpect interfaces."""
+        area = "work/dlg-image-check"
+        held = {"write_area": area}
+        data = WORKSPACE / "inputs/data.csv"
+        data.parent.mkdir(parents=True, exist_ok=True)
+        data.write_text("kept\n")
+        script = (
+            'pwd; echo ok > notes.md; echo t > "$TMPDIR/t"; '
+            f"(echo no > {data}) 2>/dev/null || echo refused-input; "
+            f"touch {LAYER}/held 2>/dev/null || echo refused-prefix"
+        )
+        result = self.ex().run("shell", 120, script=script, **held)
+        out = str(result.get("stdout", {}).get("text", "")).split()
+        expect(out == [str(WORKSPACE / area), "refused-input", "refused-prefix"], f"shell {out}")
+        code = (
+            "import multiprocessing as mp, os\n"
+            "with mp.Pool(2) as pool:\n"
+            "    print(pool.map(abs, [-1, -2]), os.getcwd())\n"
+            "try:\n"
+            f"    open({str(data)!r}, 'w')\n"
+            "except OSError as error:\n"
+            "    print('refused', error.errno)\n"
+        )
+        result = self.ex().run("cell", 120, code=code, language="python", run="held", **held)
+        lines = str(result.get("stdout", {}).get("text", "")).splitlines()
+        expect(lines == [f"[1, 2] {WORKSPACE / area}", "refused 13"], f"python {lines}")
+        detail = "shell and a Python pool held: area written, input and prefix refused"
+        if self.crypto:
+            code = "print(gp('2 + 2'), singular('3 * 7'), libgap.SymmetricGroup(5).Size())"
+            result = self.ex().run("cell", 300, code=code, language="sage", run="held", **held)
+            stdout = str(result.get("stdout", {}).get("text", ""))
+            expect(stdout.split() == ["4", "21", "120"], f"sage {stdout!r}")
+            detail += "; Sage's gp and Singular through pexpect"
+        expect(data.read_text() == "kept\n", "the input changed")
+        return detail
+
     # crypto-base.
 
     def sage_kernel(self) -> str:
@@ -919,6 +960,7 @@ def planned(profile: str, *, landlock: bool, network: bool) -> list[str]:
         harness = ["harness-cli", "harness-imports", "no-kernels", "harness-state", "harness-run"]
         return names + harness
     names += ["scheduler-shim", "executor", "python-kernel", "tools-on-path", "multiprocessing"]
+    names.append("held-run")
     if profile == "crypto-base":
         names += ["sage-kernel", "sage-interfaces", "frozen-trees", "fpylll", "g6k"]
         names += ["lattice-estimator"]

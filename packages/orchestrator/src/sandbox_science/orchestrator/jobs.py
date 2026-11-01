@@ -312,6 +312,8 @@ class JobTools:
         ``min_isolation_tier`` is the harness's own, which a job sandbox must meet."""
         self.job_profiles = tuple(job_profiles)
         self.min_isolation_tier = min_isolation_tier
+        self.write_area: str | None = None
+        """A delegated run's write area, which its jobs' processes are held to (DA-20)."""
         self.bindings: Callable[[], dict[str, str]] | None = None
         self.binding_inventory: Callable[[], str | None] | None = None
         """The run's skill bindings, as its jobs carry them (SK-16)."""
@@ -420,10 +422,15 @@ class JobTools:
                 "waking a detached session needs the future harness scheduler",
             )
         bindings = self.bindings() if self.bindings is not None else {}
+        context = self.context
+        if self.write_area is not None and args.get("profile") is None:
+            # In the run's environment, held to its write area (DA-20). A job sandbox
+            # holds only copies of its inputs and is discarded (JS-1), so it is not.
+            context = context.model_copy(update={"write_area": self.write_area})
         request = JobRequest.model_validate(
             {
                 "operation_id": operation,
-                "context": self.context,
+                "context": context,
                 **args,
                 "bindings": bindings,
                 "binding_inventory": self.binding_inventory()

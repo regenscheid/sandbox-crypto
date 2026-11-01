@@ -101,13 +101,65 @@ async def test_a_child_writes_only_in_its_write_area_and_shared(delegating: Harn
 
 
 async def test_a_main_run_writes_anywhere(delegating: Harness) -> None:
-    """The write area binds delegated runs only."""
+    """The write area binds delegated runs only, their file tools and their code."""
     root = await delegating.run(
         "root",
         [
             Reply(calls=[call("write_file", path="sources/a.md", content="x\n")]),
             Reply(calls=[call("edit_file", path="sources/a.md", old_string="x", new_string="y")]),
+            Reply(calls=[call("shell", script="echo z >> sources/a.md && cat sources/a.md")]),
             Reply("Done."),
         ],
     )
     assert errors(root) == []
+    shell = json.loads(results(root)[-1])
+    assert (shell["state"], shell["stdout"]) == ("succeeded", "y\nz\n")
+
+
+CHILD_SHELL = (
+    'pwd; echo "$RUN_WORK"; echo kept > notes.md; '
+    '(echo child > "$SESSION_WORKSPACE/sources/a.md") 2>/dev/null || echo refused'
+)
+CHILD_CELL = (
+    "import os\n"
+    "open('cell.md', 'w').write('kept')\n"
+    "try:\n"
+    "    open(os.environ['SESSION_WORKSPACE'] + '/sources/a.md', 'w')\n"
+    "except PermissionError:\n"
+    "    print('refused', os.getcwd() == os.environ['RUN_WORK'])\n"
+)
+
+
+async def test_a_childs_code_writes_only_in_its_write_area(delegating: Harness) -> None:
+    """DA-F9 end to end: the child's shell and Python cell start in its write area and
+    write there; the parent's file is refused to both, and stays the parent's. The brief
+    says so."""
+    root = await delegating.run(
+        "root",
+        [
+            Reply(calls=[call("write_file", path="sources/a.md", content="parent's\n")]),
+            Reply(calls=[TASK]),
+            wait(),
+            Reply("Done."),
+        ],
+        delegated=[
+            Reply(calls=[call("shell", script=CHILD_SHELL)]),
+            Reply(calls=[call("python", code=CHILD_CELL)]),
+            Reply(json.dumps({**DONE, "summary": "Wrote my notes."})),
+        ],
+    )
+    (delegation_id,) = started(root)
+    area = f"work/{delegation_id}"
+    (child,) = children(delegating, root)
+    brief = str(delegating.gateway.children[0][1]["content"])
+    assert "start in your write area ($RUN_WORK) and can write only there" in brief
+    workspace = delegating.tmp / "worker" / "environments"
+    (session_root,) = workspace.glob(f"*/project/sessions/{SESSION}")
+    shell, cell = (json.loads(text) for text in results(child)[:2])
+    assert shell["state"] == "succeeded", shell
+    assert shell["stdout"].split() == [str(session_root / area)] * 2 + ["refused"]
+    assert cell["state"] == "succeeded", cell
+    assert cell["stdout"] == "refused True\n"
+    assert (session_root / area / "notes.md").read_text() == "kept\n"
+    assert (session_root / area / "cell.md").read_text() == "kept"
+    assert (session_root / "sources" / "a.md").read_text() == "parent's\n"

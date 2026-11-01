@@ -52,7 +52,12 @@ from .errors import ExecutorRefusalError, WorkerError
 from .files import UNSYNCED, Files
 from .identity import execution_digest, same_execution
 from .journal import SOURCE_EVENT, ExecutionJournal
-from .kernels import KernelRegistry, require_run_kernels, require_skill_bindings
+from .kernels import (
+    KernelRegistry,
+    require_confinement,
+    require_run_kernels,
+    require_skill_bindings,
+)
 from .lifecycle import EnvironmentLifecycle
 from .live import REQUEST, Live, time_limit
 from .output_observations import normalize as normalize_observation
@@ -189,6 +194,12 @@ class Dispatcher:
             )
             sandboxes = self.sandboxes()
             if request.profile is not None:
+                if context.write_area is not None:
+                    # A job sandbox holds copies of its inputs only, and the platform's
+                    # writes for it carry no write area (DA-19, DA-20).
+                    raise WorkerError(
+                        ErrorKind.INVALID_REQUEST, "a job sandbox's job names no write area"
+                    )
                 if sandboxes is None:
                     raise WorkerError(
                         ErrorKind.UNSUPPORTED, "this worker offers no job sandboxes (D93)"
@@ -364,6 +375,13 @@ class Dispatcher:
             fields.update(language=request.language, code=request.code)
             if request.run is not None:
                 fields["run"] = request.run
+        # A delegated run's shell, job and cell are held to its write area (DA-20); the
+        # PDF helper is the platform's.
+        area = None if isinstance(request, PdfRequest) else request.context.write_area
+        if area is not None and isinstance(request, CellRequest) and request.run is None:
+            raise WorkerError(
+                ErrorKind.INVALID_REQUEST, "a delegated run's cells run in its own kernel"
+            )
         if not isinstance(request, PdfRequest) and request.bindings:
             fields["bindings"] = dict(request.bindings)  # the skills' (SK-16)
             fields["binding_inventory"] = request.binding_inventory
@@ -372,6 +390,9 @@ class Dispatcher:
             raise WorkerError(ErrorKind.UNAVAILABLE, "the executor went away")
         if "run" in fields:
             require_run_kernels(channel)
+        if area is not None:
+            require_confinement(channel)
+            fields["write_area"] = area
         if "bindings" in fields or isinstance(request, CellRequest):
             require_skill_bindings(channel)
         environment.running.add(execution_id)

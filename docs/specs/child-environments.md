@@ -13,12 +13,11 @@ hand-back's refusal of a file over 100 MiB by its size and the limit (CE-6). Bui
 2026-10-31, against the fake CLI: the worker's ranged write, which copies a hand-back
 file or an input over 100 MiB in parts with the whole file's digest checked at its end
 (CE-6, CE-7); inputs from control's retained content (CE-7); the cost view's count of
-child environments' seeding (CE-13). Open: read-only `inputs/` and
-`work/<id>/` for a child's processes: the worker's file calls set no file mode, and a
-sandbox's agent code runs as the user who owns its files and could change one back, so
-it needs per-run mounts (DA-20's open question 1). A child's file tools write only in its
+child environments' seeding (CE-13). A child's file tools write only in its
 write area and `shared/` (DA-19, built 2026-10-31), here as in the session's
-environment. Cluster lab 2026-11-01 (d760b3f4, first cluster): a child environment was admitted, placed by its profile on another node than the session's, ran the child's kernels (the Compute tab's read listed them) and counted in the Monitor; but every call the orchestrator made for child environments dropped the run's research authority, which the worker's recovery fence refuses in any session a run has fenced: admission with inputs and the hand-back failed ("missing or superseded research authority"), so the environment was retained, not released. The calls now carry the authority of the run they act for and the worker checks it on every child environment route ([worker](../WORKER.md#child-environments), "Research authority"); the end-to-end tests run the worker's fence as the harness's own client meets it, without operator permission. Re-checked on the first cluster on 2026-11-01 (7500b912), in a session that had already run: admission with an input staged it as `inputs/data/primes.csv`, which the brief's input line named; the child (on another node than the session's) wrote in `work/<id>/`; the hand-back copied its files, a 120 MiB one by a ranged write whose digest the parent matched; the environment was released after the hand-back and its volume was disposable; `session close` with `--worker-ca-file` closed the session and was refused while its tree ran. A file the child publishes is not copied back (control retains it; the manifest names its revision), so a brief that asks for a large deliverable of kind `artifact` leaves no ranged write to see. Reviewed 2026-10-26; the review's fixes are built. It designs
+environment; built 2026-11-01, its processes too, under a Landlock ruleset per execution
+(DA-20), so `inputs/` and every path outside the write area and the run's scratch
+directory are read-only to the child's code here as there. Cluster lab 2026-11-01 (d760b3f4, first cluster): a child environment was admitted, placed by its profile on another node than the session's, ran the child's kernels (the Compute tab's read listed them) and counted in the Monitor; but every call the orchestrator made for child environments dropped the run's research authority, which the worker's recovery fence refuses in any session a run has fenced: admission with inputs and the hand-back failed ("missing or superseded research authority"), so the environment was retained, not released. The calls now carry the authority of the run they act for and the worker checks it on every child environment route ([worker](../WORKER.md#child-environments), "Research authority"); the end-to-end tests run the worker's fence as the harness's own client meets it, without operator permission. Re-checked on the first cluster on 2026-11-01 (7500b912), in a session that had already run: admission with an input staged it as `inputs/data/primes.csv`, which the brief's input line named; the child (on another node than the session's) wrote in `work/<id>/`; the hand-back copied its files, a 120 MiB one by a ranged write whose digest the parent matched; the environment was released after the hand-back and its volume was disposable; `session close` with `--worker-ca-file` closed the session and was refused while its tree ran. A file the child publishes is not copied back (control retains it; the manifest names its revision), so a brief that asks for a large deliverable of kind `artifact` leaves no ranged write to see. Reviewed 2026-10-26; the review's fixes are built. It designs
 backlog item B7, raised by the owner on 2026-10-24: for some projects, each subagent's
 research environment runs in a sandbox of its own, possibly on another node, for compute
 and memory; the parent, above all the main agent, owns the durable records, and a
@@ -139,8 +138,8 @@ platform places a child by the project's settings. No change to checks' evidence
   or publishes; a result file or a deliverable it names must be a recorded file.
 - CE-6. **The hand-back.** At the delegation's end, before release, the worker collects
   into the parent's environment, at `work/<delegation_id>/` (DA-19's path, made real
-  here as the hand-back target, read-only to the parent's agent as any recorded input is
-  writable only by its author), each of: the child's `result_files` (RA-38), every file
+  here as the hand-back target; a sibling's file tools and processes cannot write it, by
+  DA-19 and DA-20, while the parent's, which are not held, can), each of: the child's `result_files` (RA-38), every file
   its deliverables of kind `artifact` or `file` name (PD-45), and every recorded file
   whose content the recorder could not retain, under the job collection's bounds (JS-16:
   1,000 files, 100 MiB per write, a 30-minute deadline), with a manifest written once.
@@ -171,7 +170,9 @@ platform places a child by the project's settings. No change to checks' evidence
 - CE-7. **Inputs.** The brief's `inputs` (file grants, DA-17) are copied into the child
   environment at `inputs/` before the run starts, read-only, under the job sandbox's
   staging bound (JS-10's `stage_max_bytes`, 2 GiB), from the parent's environment or
-  from control's retained content; an input past the bound refuses the delegation with
+  from control's retained content (read-only to the child: its file tools write only in
+  its write area and `shared/`, DA-19, and its processes only in its write area and
+  scratch directory, DA-20, built 2026-11-01); an input past the bound refuses the delegation with
   `inputs_too_large` naming the file. `references` (PD-11, B8) are archive records and
   reach the child as today, materialized into its state block. `shared/` (D79) is
   synchronized into a child environment as into any environment.
