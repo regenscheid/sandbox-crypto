@@ -88,6 +88,8 @@ FEATURES = {"minimal": ["jobs"], "crypto-base": ["jobs", "pdf"]}
 """What the executor offers beyond kernels: ``jobs``, background shell jobs, everywhere, and
 ``pdf`` where the PDF helper finds pdf_oxide."""
 MARKER = "Sandbox Science image check"
+CPU_MAX = "/sys/fs/cgroup/cpu.max"
+"""The cgroup v2 CPU limit, which joblib's loky reads to size its pool."""
 
 HARNESS = f"{PREFIX}/bin/sandbox-science-harness"
 HARNESS_PACKAGES = (
@@ -566,6 +568,50 @@ class Checks:
         expect(stdout.startswith("[1, 2, 3] [4, 5]"), f"output {stdout!r}")
         return f"Lock, Pool and ProcessPoolExecutor: {stdout.strip()}"
 
+    def cgroup_cpu(self) -> str:
+        """A kernel reads the sandbox's cgroup CPU limit the way joblib's loky does: where
+        ``/sys/fs/cgroup/cpu.max`` exists it opens it, and Landlock must let it, since loky
+        does not catch the refusal (``KERNEL_INTERFACES_READ_ONLY`` in the policy compiler).
+        The file exists in a cgroup namespace on a cgroup v2 host, which test.sh asks Docker
+        for; without one there is nothing to read, and the check says it proved nothing."""
+        code = (
+            "import os\n"
+            f"path = {CPU_MAX!r}\n"
+            "if os.path.exists(path):\n"
+            "    with open(path) as fh:\n"
+            "        print('read', *fh.read().split())\n"
+            "else:\n"
+            "    print('absent')\n"
+        )
+        stdout, _ = self.ex().cell(code)
+        words = stdout.split()
+        if words == ["absent"]:
+            return f"{CPU_MAX} is absent here (no cgroup v2 namespace): this proves nothing"
+        expect(len(words) == 3 and words[0] == "read", f"output {stdout!r}")
+        return f"{CPU_MAX} reads {words[1]} {words[2]}"
+
+    def joblib_loky(self) -> str:
+        """joblib's ``Parallel`` with its default backend, loky, and loky's ``cpu_count()``,
+        which reads the cgroup's CPU limit. joblib is in neither image, so it is installed
+        into the layer at runtime, as research code would."""
+        self.ex().shell("python -m pip install -q --no-cache-dir joblib >/dev/null", limit=600)
+        code = (
+            "import os, joblib\n"
+            "from joblib import Parallel, delayed\n"
+            "from joblib.externals.loky import cpu_count\n"
+            "count = cpu_count()\n"
+            "out = Parallel(n_jobs=2)(delayed(abs)(-i) for i in range(4))\n"
+            "print(joblib.__version__, count, os.cpu_count(), *out)\n"
+        )
+        stdout, _ = self.ex().cell(code)
+        words = stdout.split()
+        expect(len(words) == 7 and words[3:] == ["0", "1", "2", "3"], f"output {stdout!r}")
+        version, count, total = words[0], int(words[1]), int(words[2])
+        expect(1 <= count <= total, f"loky counts {count} of {total} CPUs")
+        exists = Path(CPU_MAX).exists()
+        where = f"with {CPU_MAX}" if exists else f"without {CPU_MAX}, which proves less"
+        return f"joblib {version}: Parallel through loky, cpu_count() {count} of {total}, {where}"
+
     def held_run(self) -> str:
         """A delegated run's shell and cells, held to its write area (DA-20), inside the
         sandbox's own ruleset: they start in the area and write there and in $TMPDIR, never
@@ -993,13 +1039,14 @@ def planned(profile: str, *, landlock: bool, network: bool) -> list[str]:
         return names + harness
     names += ["scheduler-shim", "signal-shim", "executor", "python-kernel", "tools-on-path"]
     names.append("multiprocessing")
+    names.append("cgroup-cpu")
     names.append("held-run")
     if profile == "crypto-base":
         names += ["sage-kernel", "sage-interfaces", "frozen-trees", "fpylll", "g6k"]
         names += ["lattice-estimator"]
         names += ["latexmk", "pdftotext", "pdf-oxide", "pdf-tools"]
     if network:
-        names += ["runtime-install", "runtime-upgrade"]
+        names += ["runtime-install", "runtime-upgrade", "joblib-loky"]
     return names
 
 

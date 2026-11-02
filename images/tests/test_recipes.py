@@ -26,6 +26,7 @@ import yaml
 from sandbox_science.policy.openshell import (
     BASELINE_READ_ONLY,
     BASELINE_READ_WRITE,
+    KERNEL_INTERFACES_READ_ONLY,
     RESEARCH_IMAGE_READ_ONLY,
     SANDBOX_DEVICES_READ_ONLY,
     SANDBOX_DEVICES_READ_WRITE,
@@ -314,6 +315,12 @@ def test_the_landlock_emulation_adds_the_compilers_devices() -> None:
     assert array("devices_ro") == SANDBOX_DEVICES_READ_ONLY
     assert array("devices_rw") == SANDBOX_DEVICES_READ_WRITE
     assert array("frozen_ro") == RESEARCH_IMAGE_READ_ONLY == (str(layout.FROZEN), str(layout.BASE))
+    assert array("kernel_ro") == KERNEL_INTERFACES_READ_ONLY
+    # Each array reaches the ruleset, and the container has a cgroup namespace of its own,
+    # so the cgroup check reads the container's cpu.max as a Kata or Kubernetes sandbox would.
+    for name in ("baseline_ro", "devices_ro", "frozen_ro", "kernel_ro", "image_ro"):
+        assert f'"${{{name}[@]}}"' in text
+    assert "--cgroupns private" in text
     # compile_orchestrator() adds none to the service's sandbox.
     branch = re.search(
         r"^  orchestrator\)$(.*?)^    ;;$",
@@ -324,6 +331,7 @@ def test_the_landlock_emulation_adds_the_compilers_devices() -> None:
     assert re.search(r"^    devices_ro=\(\)$", branch.group(1), flags=re.MULTILINE)
     assert re.search(r"^    devices_rw=\(\)$", branch.group(1), flags=re.MULTILINE)
     assert re.search(r"^    frozen_ro=\(\)$", branch.group(1), flags=re.MULTILINE)
+    assert re.search(r"^    kernel_ro=\(\)$", branch.group(1), flags=re.MULTILINE)
     assert "$here/$profile/filesystem.yml" in branch.group(1)
     for profile in SERVICE_PROFILES:
         assert (IMAGES / profile / "filesystem.yml").is_file()
