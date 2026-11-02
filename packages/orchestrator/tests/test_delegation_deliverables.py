@@ -382,7 +382,7 @@ async def test_a_reference_must_be_what_the_childs_calls_made() -> None:
     assert seen == [("I-1", frozenset({"w-1"}))]
     for wrong, error in (
         ({**artifact, "revision": 1}, "no revision 1 of table.txt"),
-        ({"id": "d1", "status": "produced", "path": "table.txt"}, "gives path and revision"),
+        ({"id": "d1", "status": "produced", "path": "other.txt"}, "gives path and revision"),
         ({**artifact, "entry": "T-1"}, "not entry"),
     ):
         found = await closed(wrong, {"id": "d2", "status": "produced", "entry": "T-1"})

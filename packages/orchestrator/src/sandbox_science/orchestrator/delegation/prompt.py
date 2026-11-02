@@ -86,7 +86,7 @@ CHECK_PROMPT: Final = (
 )
 CHECK: Final = Section("delegated-check", CHECK_VERSION, CHECK_PROMPT)
 
-TASK_VERSION: Final = "sandbox-delegated-task-17"
+TASK_VERSION: Final = "sandbox-delegated-task-18"
 """The version of ``TASK_PROMPT``'s text."""
 TASK_PROMPT: Final = (
     "You are a delegated research agent. Your tokens, turns, active time and cost have "
@@ -162,13 +162,15 @@ TASK_PROMPT: Final = (
     "found it) and result_files (the paths of the files that are your results, as your "
     "calls wrote or published them; the platform pins each to the revision your calls "
     "made, and refuses one they did not). "
-    "When your brief lists deliverables, your result's deliverables accounts for every "
-    "one, honestly, by its number as id: produced with what you produced (for an "
-    "artifact its path and revision, for a file its path, for an entry its handle as "
-    "entry, for an answer the answer itself), partial with what exists and what is "
-    "missing, or not_produced with its reason, rather than left out; your status is "
-    "complete only when every one was produced. When it lists none, leave deliverables "
-    "out. "
+    "When your brief lists deliverables, your result's deliverables is a list, not an "
+    "object keyed by number, with one object for each deliverable that accounts for it, "
+    "honestly, with its number as id, such as "
+    '{"id": "d1", "status": "produced", "path": "<its path>", "revision": 2}: '
+    "produced with what you produced (for an artifact its path and the revision number "
+    "your calls recorded, for a file its path, for an entry its handle as entry, for an "
+    "answer the answer itself), partial with what exists and what is missing, or "
+    "not_produced with its reason, rather than left out; your status is complete only "
+    "when every one was produced. When it lists none, leave deliverables out. "
     "You may give lessons, at most 5, each one line of at most 200 characters: what you "
     "learned operating the tools that a later run could use, stated as observations, "
     "such as a query form that works, a fetch that stalled and what worked instead, or a "
@@ -340,7 +342,8 @@ def task_text(
         parts.append("Inputs:\n" + "\n".join(f"- {item}" for item in inputs))
     if deliverables:
         parts.append(
-            "Deliverables, each to account for in your result's deliverables by its number:\n"
+            "Deliverables; your result's deliverables is a list with one object for each, "
+            "its number as id:\n"
             + "\n".join(
                 f"- {number} ({kind}): {title}"
                 + (f". What counts: {description}" if description else "")
