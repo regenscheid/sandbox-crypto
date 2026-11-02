@@ -31,6 +31,7 @@ from sandbox_science.policy.openshell import (
     BASELINE_READ_WRITE,
     BASELINE_UNLISTED,
     HARD_LANDLOCK,
+    KERNEL_INTERFACES_READ_ONLY,
     MAX_FILESYSTEM_PATHS,
     RESEARCH_IMAGE_READ_ONLY,
     SANDBOX_DEVICES_READ_ONLY,
@@ -1682,6 +1683,7 @@ def test_a_research_sandbox_may_open_the_devices_research_code_needs() -> None:
         *BASELINE_READ_ONLY,
         *SANDBOX_DEVICES_READ_ONLY,
         *RESEARCH_IMAGE_READ_ONLY,
+        *KERNEL_INTERFACES_READ_ONLY,
     )
 
 
@@ -1719,6 +1721,44 @@ def test_a_research_sandbox_reads_the_images_packages_and_never_writes_them(
     orchestrator = compile_orchestrator(TARGETS.orchestrator).filesystem_policy
     assert orchestrator is not None
     assert image_path not in orchestrator.read_only
+
+
+def test_a_research_sandbox_reads_its_cgroup_and_never_writes_it() -> None:
+    # joblib's loky reads /sys/fs/cgroup/cpu.max to size its pool, and fails when the file
+    # exists, as in a container's cgroup namespace, but Landlock refuses it (Kata, 2026-11-01).
+    assert KERNEL_INTERFACES_READ_ONLY == ("/sys/fs/cgroup",)
+    filesystem = compile_research(EXAMPLE).policy.filesystem_policy
+    assert filesystem is not None
+    assert "/sys/fs/cgroup" in filesystem.read_only
+    assert not any(
+        path == "/sys/fs/cgroup" or "/sys/fs/cgroup".startswith(f"{path}/")
+        for path in filesystem.read_write
+    )
+    # The image's own section cannot make it, a directory above it or a file in it writable;
+    # the root never is.
+    for path in ("/sys/fs/cgroup", "/sys/fs", "/sys", "/sys/fs/cgroup/cpu.max"):
+        with pytest.raises(ValidationError, match="is a kernel interface research code only reads"):
+            SandboxFilesystem(read_write=(path,))
+    with pytest.raises(ValidationError, match="the root cannot be writable"):
+        SandboxFilesystem(read_write=("/",))
+    # A path that only starts with the same characters is neither.
+    assert SandboxFilesystem(read_write=("/sys/fs/cgroup2",)).read_write == ("/sys/fs/cgroup2",)
+    # Listing it read-only as well changes nothing.
+    target = TARGETS.sandbox.model_copy(
+        update={"filesystem": SandboxFilesystem(read_only=("/sys/fs/cgroup",))}
+    )
+    compiled = compile_sandbox(EXAMPLE, target, ceiling=OPEN).policy.filesystem_policy
+    assert compiled is not None
+    assert compiled.read_only.count("/sys/fs/cgroup") == 1
+    assert "/sys/fs/cgroup" not in compiled.read_write
+    # The platform services' sandboxes do not get it.
+    assert TARGETS.orchestrator is not None
+    orchestrator = compile_orchestrator(TARGETS.orchestrator).filesystem_policy
+    mcp = compile_mcp(EXAMPLE).policy.filesystem_policy
+    assert orchestrator is not None
+    assert mcp is not None
+    assert "/sys/fs/cgroup" not in (*orchestrator.read_only, *orchestrator.read_write)
+    assert "/sys/fs/cgroup" not in (*mcp.read_only, *mcp.read_write)
 
 
 @pytest.mark.parametrize("which", ["research", "orchestrator", "agent-mcp"])
@@ -1780,6 +1820,7 @@ def test_the_image_paths_are_added_and_writable_wins() -> None:
         *BASELINE_READ_ONLY,
         "/dev/random",
         *RESEARCH_IMAGE_READ_ONLY,
+        *KERNEL_INTERFACES_READ_ONLY,
         "/opt/conda",
     )
     assert filesystem.read_write == (*BASELINE_READ_WRITE, *SANDBOX_DEVICES_READ_WRITE, "/data")
@@ -1818,6 +1859,7 @@ def test_the_path_limit_counts_the_listed_baseline_once() -> None:
         + len(SANDBOX_DEVICES_READ_ONLY)
         + len(SANDBOX_DEVICES_READ_WRITE)
         + len(RESEARCH_IMAGE_READ_ONLY)
+        + len(KERNEL_INTERFACES_READ_ONLY)
         + BASELINE_UNLISTED
     )
 

@@ -126,6 +126,23 @@ may read them, and none may write them: no filesystem section may name a path, o
 above or below it, writable. OpenShell skips a path an image lacks, such as an earlier
 image's base."""
 
+KERNEL_INTERFACES_READ_ONLY: Final = ("/sys/fs/cgroup",)
+"""Kernel interfaces outside OpenShell's baseline that research code reads: the sandbox's
+cgroup, whose CPU limit (``cpu.max``, or cgroup v1's ``cpu.cfs_quota_us``) joblib's loky and
+other CPU-count code read to size their worker pools. Where the container runtime gives the
+sandbox a cgroup namespace (containers, Kata, Kubernetes) the file exists, and loky fails
+when Landlock refuses it. Every research sandbox may read it, and none may write it: cgroup
+files can be writable by their owner, which would let research code change its own limits.
+No filesystem section may name the path, or a directory above or below it, writable.
+OpenShell skips it where it is absent, as with its VM driver."""
+
+READ_ONLY_EVERYWHERE: Final = {
+    **dict.fromkeys(RESEARCH_IMAGE_READ_ONLY, "holds the research images' packages"),
+    **dict.fromkeys(KERNEL_INTERFACES_READ_ONLY, "is a kernel interface research code only reads"),
+}
+"""The paths the compiler gives research sandboxes read-only, with why no section may make
+them writable."""
+
 BASELINE_READ_ONLY: Final = ("/usr", "/lib", "/etc", "/proc", "/var/log", "/dev/urandom")
 BASELINE_READ_WRITE: Final = ("/tmp", "/dev/null")  # noqa: S108 - a Landlock path, not a temporary file
 """OpenShell's baseline paths for a sandbox with network rules (``PROXY_BASELINE_*`` in its
@@ -469,9 +486,9 @@ SandboxPath = Annotated[str, StringConstraints(pattern=r"^/[!-~]*$"), AfterValid
 def _writable_path(value: str) -> str:
     if value == "/":
         raise ValueError("the root cannot be writable")
-    for frozen in RESEARCH_IMAGE_READ_ONLY:
-        if value == frozen or frozen.startswith(f"{value}/") or value.startswith(f"{frozen}/"):
-            raise ValueError(f"{frozen} holds the research images' packages and stays read-only")
+    for fixed, why in READ_ONLY_EVERYWHERE.items():
+        if value == fixed or fixed.startswith(f"{value}/") or value.startswith(f"{fixed}/"):
+            raise ValueError(f"{fixed} {why} and stays read-only")
     return value
 
 
@@ -1326,9 +1343,15 @@ def compile_sandbox(
 
 def _sandbox_filesystem(extra: SandboxFilesystem) -> FilesystemPolicy:
     """The research sandbox's filesystem section: the baseline, the devices it needs, the
-    research images' frozen trees, read-only, and the image's paths."""
+    research images' frozen trees and base and the kernel interfaces it reads, read-only,
+    and the image's paths."""
     return _filesystem(
-        (*SANDBOX_DEVICES_READ_ONLY, *RESEARCH_IMAGE_READ_ONLY, *extra.read_only),
+        (
+            *SANDBOX_DEVICES_READ_ONLY,
+            *RESEARCH_IMAGE_READ_ONLY,
+            *KERNEL_INTERFACES_READ_ONLY,
+            *extra.read_only,
+        ),
         (*SANDBOX_DEVICES_READ_WRITE, *extra.read_write),
     )
 

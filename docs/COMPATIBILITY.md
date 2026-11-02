@@ -25,6 +25,14 @@ The research images (`minimal`, `crypto-base`) and the worker's in-sandbox files
 - **A newer worker serves older images.** A workspace seeded from an earlier image keeps its whole prefix, without the layer's marker; the worker checks it as before, and reads manifests of version 1 or 2.
 - **A rebuilt image under a retained workspace.** A layer's package fingerprint is its own digest's first half and the base's identity's (its packages' names, versions and builds, not its files' times). The same packages rebuilt change nothing; other packages in the base change only the second half, which the worker records as a new revision, as a change of packages found when an executor starts, instead of a recovery hold. The executor first moves the layer's copies of base records onto the new base, which the layer's half leaves out, and reports what it found in the revision's notes. Any change in the layer's own half that no package command explains still holds.
 
+## Sandbox filesystem sections
+
+OpenShell fixes a sandbox's filesystem and Landlock sections when it creates the sandbox, and refuses a policy revision that changes them. The worker therefore sends every later revision with the sections the sandbox reports (`openshell policy get --base`), whatever the compiler now produces, and nothing it stores or compares covers them: the policy digest is the project policy's, not the compiled document's. A release that changes the compiled filesystem section, such as the research sandboxes' read-only `/sys/fs/cgroup` ([images](IMAGES.md#openshell-filesystem-paths)), reaches only sandboxes OpenShell creates after the upgrade:
+
+- An existing environment is neither flagged nor refused. Its revisions, admitted hosts, suspension and resumption keep the old section, since a stopped sandbox keeps its policy.
+- What the old section lacked stays missing there: in a sandbox created before `/sys/fs/cgroup`, joblib's loky still fails where the sandbox has a cgroup namespace (it does not where the file is absent, as with OpenShell's VM driver).
+- An environment gets the new section only in a new sandbox: delete it (`DELETE /v1/environments/{id}`) and create it again. Save what its workspace holds first, unless the deployment retains workspaces across that.
+
 ## Request identity
 
 A client names each operation with an ID of its own. The worker stores the request's digest with the operation; the same ID sent again with the same request returns the same execution or provisioning operation, and with a different request it is a `conflict` ([tools spec](specs/tools.md#lifecycle-idempotency-and-reconnection)).
