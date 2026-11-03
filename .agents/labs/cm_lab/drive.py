@@ -350,6 +350,48 @@ def clone(snapshot: Path, target: Path, project: str, session: str, environment:
             )
 
 
+def adopt_policy(target: Path, live: Path, project: str) -> None:
+    """The arm's project on the policy revision this instance's worker grants: the live
+    store's. A seed recorded by an earlier round's instance names that instance's revision,
+    which this worker refuses ("no policy revision", lab round 2)."""
+    with sqlite3.connect(live) as db:
+        found = db.execute(
+            "SELECT policy FROM projects WHERE project_id = ?", (project,)
+        ).fetchone()
+    if found is None:
+        raise SystemExit(f"the instance's store has no project {project}: run up first")
+    with sqlite3.connect(target) as db:
+        db.execute("UPDATE projects SET policy = ? WHERE project_id = ?", (found[0], project))
+
+
+def hand_over_epoch(target: Path, worker: Path, project: str, session: str) -> int:
+    """The arm's session's research epoch raised to the worker's recovery fence, before
+    the arm's first run: every arm's session is the seed's (``project``/``session``), and
+    the worker keeps one fence per session, which only rises, so an arm whose store counts
+    its runs from 1 would be refused after another arm's ("recovery epoch cannot
+    decrease", lab round 2). Its first run then takes the next epoch. Arms therefore run
+    one at a time on one worker: two at once would supersede each other's authority."""
+    with sqlite3.connect(f"file:{worker}?mode=ro", uri=True) as db:
+        found = db.execute(
+            "SELECT epoch FROM recovery_fences WHERE project_id = ? AND session_id = ?",
+            (project, session),
+        ).fetchone()
+    fence = int(found[0]) if found else 0
+    with sqlite3.connect(target) as db:
+        row = db.execute(
+            "SELECT epoch FROM research_sessions WHERE project = ? AND session = ?",
+            (project, session),
+        ).fetchone()
+        if fence and (row is None or int(row[0]) < fence):
+            db.execute(
+                "INSERT INTO research_sessions VALUES (?, ?, 'lab-handover', ?) "
+                "ON CONFLICT(project, session) DO UPDATE SET epoch = excluded.epoch",
+                (project, session, fence),
+            )
+            return fence
+    return int(row[0]) if row else 0
+
+
 FREED = 1.6
 """What a fold frees, in chunks: its span, and the old tool output it stubs. Lab round 1
 measured 1.5 to 1.8 (74,000 to 90,000 tokens at C = 250,000, 210,000 at 600,000)."""
@@ -751,9 +793,16 @@ class Lab:
         self.base = run_argv(parts.harness_argv(self.config, self.layout))
         self.project = self.config.projects[0].id
 
-    def client(self) -> WorkerClient:
-        token = self.layout.token("harness-worker").read_text().strip()
+    def client(self, name: str = "harness-worker") -> WorkerClient:
+        token = self.layout.token(name).read_text().strip()
         return WorkerClient(parts.worker_url(self.config), token)
+
+    def user(self) -> WorkerClient:
+        """The workspace's client, an operator's, for the user's own file writes (the
+        sources, an arm's restored workspace, a step's staged files), as the GUI's uploads
+        are made: once a run has installed the session's recovery fence, the worker
+        refuses a write without the run's authority from any other client (lab round 2)."""
+        return self.client("workspace-worker")
 
     def gateway(self) -> ModelGateway:
         """The harness's gateway client, which reads the key from its file; nothing here
@@ -951,8 +1000,13 @@ async def arm(
         meta["delegation"] = True
         meta_path.write_text(json.dumps(meta, indent=1))
     print(f"{name}: seed {meta['seed']} ({meta['seed_tokens']:,}), cap USD {budget:g}")
+    adopt_policy(state / FILE_NAME, lab.layout.control / FILE_NAME, lab.project)
+    epoch = hand_over_epoch(
+        state / FILE_NAME, lab.layout.worker_state / "worker.sqlite3", lab.project, session
+    )
+    print(f"{name}: research epoch {epoch}", flush=True)
     store = ProjectStore(state)
-    async with lab.client() as client:
+    async with lab.client() as client, lab.user() as user:
         context = await _ready(client, store, lab.project, session)
         if not meta["restored"]:
             snapshot = next(s for s in manifest if s["step"] == meta["seed"])["snapshot"]
@@ -960,7 +1014,7 @@ async def arm(
             blobs = {
                 path: (lab.lab / "blobs" / digest).read_bytes() for path, digest in kept.items()
             }
-            await write_files(client, context, blobs)
+            await write_files(user, context, blobs)
             meta["restored"] = True
             meta_path.write_text(json.dumps(meta, indent=1))
         for step in scenario.LIVE:
@@ -969,7 +1023,7 @@ async def arm(
                 continue
             within(lab.lab, budget, sorted((home / "runs").glob("**/*.json")), name)
             later = {path: sources.LATER[path]() for path in step.stage}
-            await write_files(client, context, later)
+            await write_files(user, context, later)
             argv = step_argv(
                 lab.base, state_dir=state, project=lab.project, session=session, alias=alias,
                 ceiling=chosen.ceiling, transcript=transcript, task=step.message,
@@ -981,7 +1035,8 @@ async def arm(
             if not recovered(store, lab.project, session, step.message, transcript):
                 raise SystemExit(f"{name} {step.id} kept no transcript (exit {code}); see its log")
             print(
-                f"{name} {step.id}: exit {code}, view {view_tokens(transcript) if transcript.exists() else 0:,}"
+                f"{name} {step.id}: exit {code}, view {view_tokens(transcript) if transcript.exists() else 0:,}",
+                flush=True,
             )
     store.close()
 
