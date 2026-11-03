@@ -216,7 +216,9 @@ LIVE: Final = (
         "live",
         "One more reading task, which I want delegated so that it does not fill your context: "
         "give it to one task with delegate, and do not read the pages yourself. The task: read "
-        "pages 41 to 190 of sources/D.pdf (the survey's walk tables) and write "
+        "pages 41 to 190 of sources/D.pdf (the survey's walk tables) in view, with pdf_pages, "
+        "two pages a call, so that no result is cut; the tables' layout matters, so it must not "
+        "extract them as text (no pdftotext or code reading the PDF). It writes "
         "shared/fast_walks.md, one line per curve whose walk length was under 0.87 sqrt(n): "
         "its ID, its n in bits, its walk length, its table and page, and whether rho on it "
         "(about 2^(bits/2) operations) is within the survey comparison budget, which it "
@@ -233,7 +235,20 @@ LIVE: Final = (
 )
 STEPS: Final = (*SEED, *LIVE)
 BY_ID: Final = {step.id: step for step in STEPS}
-BY_MESSAGE: Final = {step.message: step for step in STEPS}
+CHILD_READS_IN_VIEW: Final = (
+    "in view, with pdf_pages, two pages a call, so that no result is cut; the tables' layout "
+    "matters, so it must not extract them as text (no pdftotext or code reading the PDF). It "
+    "writes"
+)
+"""What round 2's phase 2 added to L16's brief, so that the child's view holds the pages
+and it folds (CM-37): in phase 1 every child extracted them with code and never folded.
+Two pages a call keep a result under the tool's cut (``output_chars``)."""
+EARLIER_MESSAGES: Final = {
+    LIVE[-1].message.replace(f" {CHILD_READS_IN_VIEW}", " and write"): LIVE[-1],
+}
+"""Messages a step had in an earlier phase, so that its bundles are still scored: L16 as
+round 2's phase 1 sent it."""
+BY_MESSAGE: Final = {step.message: step for step in STEPS} | EARLIER_MESSAGES
 
 # What the scorer looks for, by probe.
 CONSTRAINT_STEP: Final = "S01"
@@ -245,6 +260,7 @@ REASON_WORDS: Final = ("prime field", "n = 1", "extension degree", "nothing to d
 REOPEN_WORDS: Final = ("composite", "extension field")
 ASSUMPTION_STEP, ASSUMPTION_CHANGE = "S01", "L08"
 OLD_BUDGET: Final = ("2^64", "2^{64}", "2**64")
+NEW_BUDGET: Final = ("2^80", "2^{80}", "2**80")
 LITERAL_STEPS: Final = {
     "L09": tuple(literal.name for literal in sources.LITERALS),
     "L14": ("order", "eprint_b"),
@@ -273,7 +289,11 @@ NOT_FOUND_WORDS: Final = (
     "not found", "no record", "couldn't find", "could not find", "can't find", "cannot find",
     "no trace", "never discussed", "no mention", "did not find", "didn't find", "nothing",
     "found no", "no copy", "no reference", "no citation", "could not locate", "did not identify",
+    "never looked at", "no such paper",
 )  # fmt: skip
+NOT_FOUND_PATTERN: Final = r"\bthere (?:is|was) no\b[^.\n]{0,120}\b(?:paper|record|source|such)\b"
+"""An answer that says the paper is not there in its own words: "There is no Okonkwo 2029
+paper in anything we examined" (round 2, phase 1, claude-250's L13)."""
 DONE_NEXT_STEP, CLOSING_STEP = "L14", "L15"
 CHILD_STEP: Final = "L16"
 """The step whose main run delegates the reading task: one child, at the arm's C."""
@@ -292,15 +312,26 @@ DELEGATION: Final = (
 )  # fmt: skip
 """The project's delegation settings for L16, set on each arm's store before its runs:
 main runs may delegate; a task's soft caps (tokens, turns, and the cost check-in, in USD)
-well above what 150 pages take (about 60 calls, 10 million tokens, USD 10), so no
-check-in interrupts the child."""
+well above what 150 pages take in view (about 85 calls, 13 million tokens, USD 12), so
+no check-in interrupts the child."""
 CLOSING_FILE: Final = "report/closing.md"
 WORDS_OF_THE_PAST: Final = (
     "previous", "previously", "old ", "earlier", "before", "was ", "were ", "instead", "no longer",
     "replac", "correct", "superseded", "erroneous", "transcription", "used to", "updated",
-    "revised", "revisit", "reversed", "retired",
+    "revised", "revisit", "reversed", "retired", "assumed", "original", "would have",
+    "raised", "dropped", "lowered", "→", "->",
 )  # fmt: skip
-"""Words that mark a sentence as speaking of an old value, not using it."""
+"""Words that mark a sentence as speaking of an old value, not using it. Round 2's phase 1
+added "assumed", "original", "would have" (the child's "under the assumed 2^56 budget",
+"Under the brief's original 2^56, the counts would have been…"), "raised", "dropped" and
+the arrows of "132 bits → 125 bits". A sentence that states the new value beside the old
+speaks of the change too (``score._about_the_change``)."""
+ASK_USER_ANSWER: Final = "decide"
+"""The scripted user's answer to a run's ``ask_user``: the decision left to the agent, which
+tells it nothing. The scenario's user never answers questions, so without it a run that
+asks waits for ever (round 2, phase 1: three runs asked, at L04 and L05)."""
+ASK_USER_AFTER: Final = 60.0
+"""Seconds a question stays open before the driver answers it."""
 
 
 @dataclass(frozen=True)
@@ -325,6 +356,9 @@ class Arm:
     """Why it is not in this round, if it is not: the driver refuses to run it."""
 
 
+REPEAT_CAP: Final = 45.0
+"""Each phase-2 repeat arm's cap, USD (the coordinator, 2026-11-03): phase 1's arms cost
+22.26 to 27.82; the three caps are phase 2's hard stop, USD 135."""
 ROUND_1: Final = "ran in round 1 (2026-10-16, lab 44); round 2 runs Claude alone"
 OVER_BUDGET: Final = (
     "dropped at the seed's checkpoint: at the calls a run takes, it would not fit the budget"
@@ -352,7 +386,15 @@ ARMS: Final = (
     Arm("claude-250-skeleton", "claude", 250_000, skeleton_only=True, model="claude"),
     Arm("claude-250-compaction", "claude", 250_000, compaction=True, model="claude"),
     Arm("claude-600", "claude", 600_000, model="claude", deferred=NO_ROOM),
-)
+    # Phase 2 (the owner, 2026-11-03): each of phase 1's arms once more, from the same seed
+    # with the same shares, so that each comparison has two sessions an arm; the child
+    # now reads its pages in view (``CHILD_READS_IN_VIEW``).
+    Arm("claude-250-b", "claude", 250_000, model="claude", budget=REPEAT_CAP),
+    Arm("claude-250-skeleton-b", "claude", 250_000, skeleton_only=True, model="claude",
+        budget=REPEAT_CAP),
+    Arm("claude-250-compaction-b", "claude", 250_000, compaction=True, model="claude",
+        budget=REPEAT_CAP),
+)  # fmt: skip
 RESERVED: Final[tuple[str, ...]] = ()
 """Deferred arms whose caps the round's plan holds back: they are expected this round."""
 SEED_BUDGET: Final = 65.0

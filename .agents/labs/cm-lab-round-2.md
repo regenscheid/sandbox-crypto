@@ -71,9 +71,24 @@ As round 1's runbook says, with these changes. `D` stands for `.venv/bin/python 
 3. **Up.** `sandbox-science up --config "$LAB/sandbox-science.toml"`.
 4. **Count.** `$D count --config ... --lab "$CM" --alias arr-claude-opus-4-8`: about 20 `count_tokens` calls, free. It prints each snapshot's count and writes `$CM/counts.json`.
 5. **Preflight.** `$D preflight --config ... --claude arr-claude-opus-4-8 --lab "$CM" --seed-reused --elsewhere <USD spent outside the kit>`. It checks the alias, its route, its window and prices, and `delegated`, writes `$CM/round.json`, and prints the plan; it exits 1 on a problem, such as an arm forecast under its validity bar or caps over the budget. `$D plan --lab "$CM"` prints the same plan offline, at the prices above.
-6. **Arms.** `$D arm --config ... --lab "$CM" --arm claude-250 --alias arr-claude-opus-4-8 --extra=...` (the small shares), then `claude-250-skeleton` and `claude-250-compaction`. They may run at once. The compaction arm needs a run service with the `provider_compaction` mode (this branch or later); its config is the others' (the driver adds the mode to its steps). Each prints its seed and cap, sets the delegation settings on its store, and runs L01 to L16.
+6. **Arms.** `$D arm --config ... --lab "$CM" --arm claude-250 --alias arr-claude-opus-4-8 --extra=...` (the small shares), then `claude-250-skeleton` and `claude-250-compaction`, **one at a time**: every arm is the seed's session (`cm1/seed`), and the worker keeps one recovery fence per session, so two arms at once would supersede each other's authority; the driver raises each arm's epoch to the worker's fence before its first run (phase 1). While a step runs the driver answers any `ask_user` question left open for 60 seconds with `decide` (`scenario.ASK_USER_ANSWER`), logged in the arm's `logs/answers.jsonl`. The compaction arm needs a run service with the `provider_compaction` mode (this branch or later); its config is the others' (the driver adds the mode to its steps). Each prints its seed and cap, sets the delegation settings on its store, and runs L01 to L16.
 7. **Export and score.** `$D export --lab "$CM" --arm <arm>` for each, then `.venv/bin/python -I .agents/labs/cm_score.py "$CM"/arms/*/bundle.json --out "$CM/report"`. `report.md` has the main table, the per-family table, L16's child table and the owner's checklist.
 8. **Report and teardown.** As round 1's runbook says.
+
+## Phase 2 (2026-11-03)
+
+Phase 1 ran the three arms above (its report is outside git, on babbage). Phase 2 repeats each once, from the same seed and shares, as `claude-250-b`, `claude-250-skeleton-b` and `claude-250-compaction-b`, USD 45 each (`scenario.REPEAT_CAP`), so that each comparison has two sessions an arm. The plan counts an arm that ran every live step at what it spent, not its cap. What changed since phase 1:
+
+- **L16's brief:** the child reads its pages in view with `pdf_pages`, two pages a call, and does not extract them as text (`scenario.CHILD_READS_IN_VIEW`). In phase 1 every child extracted them with code and never folded. A page in view is 2,335 of Opus 4.8's tokens, so 150 pages pass the child's trigger at C = 250,000 about five times (`drive.forecast`). Phase 1's L16 message still names its step (`scenario.EARLIER_MESSAGES`).
+- **The forecast and the cost model:** Claude's arms use the main view's growth phase 1 measured (`drive.CLAUDE_GROWTH`, 206,808 tokens over the 16 live steps), its folds' size (`CLAUDE_FREED`, 1.08 chunks) and the child's pages in view. A compaction call is priced as a cache read of the view at its trigger plus its summary's output, as phase 1 measured (USD 0.25 and 0.29).
+- **The scorer:**
+  - the compaction arm's bar is 2 compactions in 2 runs, and it is a row of its own for CM-P8 and CM-P9;
+  - U+2010, U+2011 and U+2013 read as hyphens;
+  - a short value's near miss is one edit away;
+  - a read claim about Source C must name C;
+  - a sentence that states the new value beside the old, or a word such as "assumed" or "original", speaks of the change;
+  - "There is no … paper" counts as not found;
+  - sentences follow hard wraps and bullets, and a written note is read from its call's `content`.
 
 ## Expected cost and time
 

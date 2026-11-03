@@ -42,6 +42,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import contextlib
 import hashlib
 import itertools
 import json
@@ -53,6 +54,7 @@ import subprocess
 import sys
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Final, cast
@@ -72,9 +74,12 @@ from sandbox_science.launcher.config import LauncherConfig, load_config
 from sandbox_science.launcher.state import Layout
 from sandbox_science.orchestrator.context.history.geometry import ceiling as capped
 from sandbox_science.orchestrator.context.history.geometry import geometry
+from sandbox_science.orchestrator.control import ControlStore
+from sandbox_science.orchestrator.control.store import store_path
 from sandbox_science.orchestrator.messages import MAX_TOKENS
 from sandbox_science.orchestrator.model import ModelGateway, ToolSpec
 from sandbox_science.orchestrator.projects import ProjectStore, ensure_environment, environment_id
+from sandbox_science.orchestrator.questions import Answer, Question, Questions
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 
 from . import scenario, sources
@@ -191,6 +196,74 @@ def _run(argv: list[str], log: Path, transcript: Path) -> int:
     transcript.parent.mkdir(parents=True, exist_ok=True)
     with log.open("ab") as out:
         return subprocess.run(argv, stdout=out, stderr=subprocess.STDOUT, check=False).returncode  # noqa: S603
+
+
+# The scripted user's answers.
+
+ANSWER_POLL = 10.0
+"""Seconds between the driver's looks at a running step's open questions."""
+
+
+def due(questions: Sequence[Question], now: datetime, wait: float) -> list[Question]:
+    """The open questions asked at least ``wait`` seconds before ``now``."""
+    return [
+        question
+        for question in questions
+        if question.state == "open" and now - question.asked_at >= timedelta(seconds=wait)
+    ]
+
+
+async def answering(
+    state: Path, project: str, session: str, log: Path, done: asyncio.Event,
+    *, wait: float = scenario.ASK_USER_AFTER, poll: float = ANSWER_POLL,
+) -> int:  # fmt: skip
+    """While a step runs, answer each ``ask_user`` question the session's runs leave open
+    for ``wait`` seconds with the scenario's scripted answer (``scenario.ASK_USER_ANSWER``,
+    the decision left to the agent), the same for every arm, and log each to ``log``, one
+    JSON line. Without it a run that asks waits for ever: the scenario's user never
+    answers (round 2, phase 1). How many it answered."""
+    control = ControlStore(store_path(state))
+    questions = Questions(control)
+    answered = 0
+    try:
+        while True:
+            for question in due(
+                await asyncio.to_thread(questions.open, project, session), datetime.now(UTC), wait
+            ):
+                given = Answer(kind=scenario.ASK_USER_ANSWER)
+                closed = await asyncio.to_thread(
+                    questions.answer, project, session, question.question_id, given
+                )
+                answered += 1
+                log.parent.mkdir(parents=True, exist_ok=True)
+                with log.open("a") as out:
+                    record = {
+                        "at": datetime.now(UTC).isoformat(), "question": question.question_id,
+                        "run": question.run, "asked_at": question.asked_at.isoformat(),
+                        "text": question.text, "answer": scenario.ASK_USER_ANSWER,
+                        "state": closed.state,
+                    }  # fmt: skip
+                    out.write(json.dumps(record) + "\n")
+            if done.is_set():
+                return answered
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(done.wait(), poll)
+    finally:
+        control.close()
+
+
+async def run_answering(
+    argv: list[str], log: Path, transcript: Path, state: Path, project: str, session: str,
+    answers: Path,
+) -> int:  # fmt: skip
+    """``_run``, with ``answering`` beside it for as long as the step runs."""
+    done = asyncio.Event()
+    watcher = asyncio.create_task(answering(state, project, session, answers, done))
+    try:
+        return await asyncio.to_thread(_run, argv, log, transcript)
+    finally:
+        done.set()
+        await watcher
 
 
 def spent(transcripts: Sequence[Path]) -> tuple[float, int]:
@@ -350,6 +423,48 @@ def clone(snapshot: Path, target: Path, project: str, session: str, environment:
             )
 
 
+def adopt_policy(target: Path, live: Path, project: str) -> None:
+    """The arm's project on the policy revision this instance's worker grants: the live
+    store's. A seed recorded by an earlier round's instance names that instance's revision,
+    which this worker refuses ("no policy revision", lab round 2)."""
+    with sqlite3.connect(live) as db:
+        found = db.execute(
+            "SELECT policy FROM projects WHERE project_id = ?", (project,)
+        ).fetchone()
+    if found is None:
+        raise SystemExit(f"the instance's store has no project {project}: run up first")
+    with sqlite3.connect(target) as db:
+        db.execute("UPDATE projects SET policy = ? WHERE project_id = ?", (found[0], project))
+
+
+def hand_over_epoch(target: Path, worker: Path, project: str, session: str) -> int:
+    """The arm's session's research epoch raised to the worker's recovery fence, before
+    the arm's first run: every arm's session is the seed's (``project``/``session``), and
+    the worker keeps one fence per session, which only rises, so an arm whose store counts
+    its runs from 1 would be refused after another arm's ("recovery epoch cannot
+    decrease", lab round 2). Its first run then takes the next epoch. Arms therefore run
+    one at a time on one worker: two at once would supersede each other's authority."""
+    with sqlite3.connect(f"file:{worker}?mode=ro", uri=True) as db:
+        found = db.execute(
+            "SELECT epoch FROM recovery_fences WHERE project_id = ? AND session_id = ?",
+            (project, session),
+        ).fetchone()
+    fence = int(found[0]) if found else 0
+    with sqlite3.connect(target) as db:
+        row = db.execute(
+            "SELECT epoch FROM research_sessions WHERE project = ? AND session = ?",
+            (project, session),
+        ).fetchone()
+        if fence and (row is None or int(row[0]) < fence):
+            db.execute(
+                "INSERT INTO research_sessions VALUES (?, ?, 'lab-handover', ?) "
+                "ON CONFLICT(project, session) DO UPDATE SET epoch = excluded.epoch",
+                (project, session, fence),
+            )
+            return fence
+    return int(row[0]) if row else 0
+
+
 FREED = 1.6
 """What a fold frees, in chunks: its span, and the old tool output it stubs. Lab round 1
 measured 1.5 to 1.8 (74,000 to 90,000 tokens at C = 250,000, 210,000 at 600,000)."""
@@ -357,8 +472,27 @@ SUMMARY = 5_000
 """What a compaction leaves of the conversation, in tokens: its summary (CM-38b). The
 probe of 2026-11-02 summarized 89,000 tokens of synthetic pages in 220; a session's work
 is denser, so this is a generous guess."""
-COMPACTION_OUTPUT = 4_000
-"""A compaction's own output tokens, its summary written, for the cost model."""
+COMPACTION_OUTPUT = 4_600
+"""A compaction call's output tokens, its summary written: 4,217 and 5,066 in round 2's
+phase 1, for the cost model."""
+CLAUDE_FREED = 1.08
+"""What a fold frees on Claude, in chunks: round 2's phase 1 measured 50,270 to 61,101
+tokens at C = 250,000 (mean 54,149, chunk 50,000). Claude reads Source D's pages with
+code, so there is little old PDF output for a fold to stub (GPT's ``FREED``)."""
+CLAUDE_GROWTH: Final = {
+    "L01": 27_610, "L02": 6_525, "L03": 10_944, "L04": 6_178, "L05": 8_108, "L06": 20_025,
+    "L07": 27_095, "L08": 16_918, "L09": 11_448, "L10": 10_466, "L11": 11_211, "L12": 6_089,
+    "L13": 6_154, "L14": 5_193, "L15": 9_999, "L16": 22_845,
+}  # fmt: skip
+"""Each live step's growth of the main view on Opus 4.8, as round 2's phase 1 measured
+it: the view at the run's end, less the view before it, plus what its folds freed; the
+mean of the three arms (the compaction arm's two compacting steps left out). 206,808 in
+all, against the 594,000 that ``growth`` estimates from the pages the steps read: Claude
+extracts Source D's tables with code, where GPT read them in view."""
+CLAUDE_PAGE_TOKENS = 2_335
+"""A page of Source D in view on Opus 4.8, as ``pdf_pages`` shows it (numbered lines):
+3,859 characters, 2,353 tokens by the gateway's ``count_tokens`` for p. 41, and 4,669 for
+pp. 321 and 360 (2026-11-03). L16's child reads its 150 pages so (``CHILD_READS_IN_VIEW``)."""
 
 
 def forecast(
@@ -368,9 +502,10 @@ def forecast(
     prompt: int = 30_000,
     *,
     compaction: bool = False,
+    freed: float = FREED,
 ) -> list[int]:
     """The folds each live step makes, roughly: the view grows by each step's tokens, and
-    a fold frees ``FREED`` chunks whenever it passes the trigger; with ``compaction``, the
+    a fold frees ``freed`` chunks whenever it passes the trigger; with ``compaction``, the
     compactions, each leaving the system message, tools and a ``SUMMARY``."""
     shape = geometry(ceiling, prompt)
     tokens, folds = start, []
@@ -378,7 +513,7 @@ def forecast(
         tokens += added
         made = 0
         while tokens > shape.trigger:
-            tokens = prompt + SUMMARY if compaction else tokens - int(FREED * shape.chunk)
+            tokens = prompt + SUMMARY if compaction else tokens - int(freed * shape.chunk)
             made += 1
         folds.append(made)
     return folds
@@ -395,9 +530,20 @@ def growth(ratio: float = 1.0) -> list[int]:
     ]
 
 
-def child_growth(ratio: float = 1.0) -> int:
-    """The child's reading (L16): its pages and its run's own messages."""
+def child_growth(ratio: float = 1.0, *, page_tokens: int | None = None) -> int:
+    """The child's reading (L16): its pages and its run's own messages; with
+    ``page_tokens``, a page in view as the arm's model counts it, and each of the child's
+    calls' own output."""
+    if page_tokens is not None:
+        pages = page_tokens * scenario.CHILD_GROWTH_PAGES
+        return TOKENS_PER_RUN + pages + CHILD_CALLS * OUTPUT_PER_CALL
     return int(ratio * (TOKENS_PER_RUN + TOKENS_PER_PAGE * scenario.CHILD_GROWTH_PAGES))
+
+
+def child_steps(total: int) -> list[int]:
+    """The child's growth call by call: it reads two pages a call, so that a fold or a
+    compaction comes as its view passes the trigger, not once at the end."""
+    return [total // CHILD_CALLS] * CHILD_CALLS
 
 
 # The arm's model's counts.
@@ -516,9 +662,9 @@ LONG = 272_000
 CALLS_PER_ARM = 170
 """An arm's calls, as lab round 1's seed measured them: about 7.5 a step, 15 to 20 a step
 that reads 20 pages (plans, extraction, ledger), and the folds' enrichment calls."""
-CHILD_CALLS = 60
-"""L16's child's calls: 150 pages read 5 to 10 at a time, its notes, the experiment, its
-messages and result, and its folds' enrichment calls."""
+CHILD_CALLS = 85
+"""L16's child's calls: 150 pages read in view two at a time (75), its notes, the
+experiment, its messages and result, and its folds' enrichment calls."""
 SEED_CALLS = 250
 """The seed's: 195 in its first 16 steps, to 300,000 tokens."""
 OUTPUT_PER_CALL = 400
@@ -676,26 +822,34 @@ def plan_arm(
     ratio = counted.ratio if counted is not None else 1.0
     start = pick_snapshot(manifest, ceiling, counted.views if counted is not None else None)
     compacting = chosen.compaction
-    made = forecast(start["tokens"], ceiling, growth(ratio), prompt, compaction=compacting)
+    # Claude's arms: the growth, the folds and the child's pages as round 2's phase 1
+    # measured them on Opus 4.8; GPT's: round 1's estimates from the pages read.
+    claude = chosen.family == "claude"
+    grown = [CLAUDE_GROWTH[step.id] for step in scenario.LIVE] if claude else growth(ratio)
+    freed = CLAUDE_FREED if claude else FREED
+    made = forecast(start["tokens"], ceiling, grown, prompt, compaction=compacting, freed=freed)
     child_start = prompt + 4_000
+    read = child_growth(ratio, page_tokens=CLAUDE_PAGE_TOKENS if claude else None)
     child_made = forecast(
-        child_start, ceiling, [child_growth(ratio)], prompt, compaction=compacting
+        child_start, ceiling, child_steps(read), prompt, compaction=compacting, freed=freed
     )
     if prices.cache_write is not None:
         main = estimate_written(
-            views(ceiling), prices, added=sum(growth(ratio)),
+            views(ceiling), prices, added=sum(grown),
             rebuilds=len(scenario.LIVE) + sum(made), prompt=prompt,
         )  # fmt: skip
         child = estimate_written(
-            child_views(ceiling, child_start), prices, added=child_growth(ratio),
+            child_views(ceiling, child_start), prices, added=read,
             rebuilds=1 + sum(child_made), prompt=prompt,
         )  # fmt: skip
     else:
         main = estimate(views(ceiling), prices, 0.5)
         child = estimate(child_views(ceiling, child_start), prices, 0.5)
-    if compacting:  # each compaction writes the view at its trigger, priced at 1 hour's rate
-        hour = prices.cache_write_1h or 2 * prices.input
-        each = int(0.75 * ceiling) * hour + COMPACTION_OUTPUT * prices.output
+    if compacting:
+        # A compaction call reads the view at its trigger from the cache and writes its
+        # summary (round 2's phase 1: USD 0.25 and 0.29, 230,863 and 229,436 tokens read,
+        # 4,217 and 5,066 written out); the next call's rewrite is one of the rebuilds.
+        each = int(0.75 * ceiling) * prices.cached + COMPACTION_OUTPUT * prices.output
         main += sum(made) * each
         child += sum(child_made) * each
     cap = chosen.budget or 5 * math.ceil(MARGIN * (main + child) / 5)
@@ -751,9 +905,16 @@ class Lab:
         self.base = run_argv(parts.harness_argv(self.config, self.layout))
         self.project = self.config.projects[0].id
 
-    def client(self) -> WorkerClient:
-        token = self.layout.token("harness-worker").read_text().strip()
+    def client(self, name: str = "harness-worker") -> WorkerClient:
+        token = self.layout.token(name).read_text().strip()
         return WorkerClient(parts.worker_url(self.config), token)
+
+    def user(self) -> WorkerClient:
+        """The workspace's client, an operator's, for the user's own file writes (the
+        sources, an arm's restored workspace, a step's staged files), as the GUI's uploads
+        are made: once a run has installed the session's recovery fence, the worker
+        refuses a write without the run's authority from any other client (lab round 2)."""
+        return self.client("workspace-worker")
 
     def gateway(self) -> ModelGateway:
         """The harness's gateway client, which reads the key from its file; nothing here
@@ -951,8 +1112,13 @@ async def arm(
         meta["delegation"] = True
         meta_path.write_text(json.dumps(meta, indent=1))
     print(f"{name}: seed {meta['seed']} ({meta['seed_tokens']:,}), cap USD {budget:g}")
+    adopt_policy(state / FILE_NAME, lab.layout.control / FILE_NAME, lab.project)
+    epoch = hand_over_epoch(
+        state / FILE_NAME, lab.layout.worker_state / "worker.sqlite3", lab.project, session
+    )
+    print(f"{name}: research epoch {epoch}", flush=True)
     store = ProjectStore(state)
-    async with lab.client() as client:
+    async with lab.client() as client, lab.user() as user:
         context = await _ready(client, store, lab.project, session)
         if not meta["restored"]:
             snapshot = next(s for s in manifest if s["step"] == meta["seed"])["snapshot"]
@@ -960,7 +1126,7 @@ async def arm(
             blobs = {
                 path: (lab.lab / "blobs" / digest).read_bytes() for path, digest in kept.items()
             }
-            await write_files(client, context, blobs)
+            await write_files(user, context, blobs)
             meta["restored"] = True
             meta_path.write_text(json.dumps(meta, indent=1))
         for step in scenario.LIVE:
@@ -969,19 +1135,23 @@ async def arm(
                 continue
             within(lab.lab, budget, sorted((home / "runs").glob("**/*.json")), name)
             later = {path: sources.LATER[path]() for path in step.stage}
-            await write_files(client, context, later)
+            await write_files(user, context, later)
             argv = step_argv(
                 lab.base, state_dir=state, project=lab.project, session=session, alias=alias,
                 ceiling=chosen.ceiling, transcript=transcript, task=step.message,
                 skeleton_only=chosen.skeleton_only, compaction=chosen.compaction,
                 extra=meta["extra"],
             )  # fmt: skip
-            code = _run(argv, home / "logs" / f"{step.id}.log", transcript)
+            code = await run_answering(
+                argv, home / "logs" / f"{step.id}.log", transcript, state, lab.project,
+                session, home / "logs" / "answers.jsonl",
+            )  # fmt: skip
             keep_delegated(store, lab.project, session, home)
             if not recovered(store, lab.project, session, step.message, transcript):
                 raise SystemExit(f"{name} {step.id} kept no transcript (exit {code}); see its log")
             print(
-                f"{name} {step.id}: exit {code}, view {view_tokens(transcript) if transcript.exists() else 0:,}"
+                f"{name} {step.id}: exit {code}, view {view_tokens(transcript) if transcript.exists() else 0:,}",
+                flush=True,
             )
     store.close()
 
@@ -1126,6 +1296,16 @@ def _round_options(parser: argparse.ArgumentParser, *, given: bool = True) -> No
     )
 
 
+def finished(lab: Path, name: str) -> float | None:
+    """What arm ``name`` spent, its children included, once every live step kept its
+    transcript; ``None`` while it has not run them all (round 2's phase 2 plans its repeat
+    arms beside phase 1's, which ran)."""
+    runs = lab / "arms" / name / "runs"
+    if not all((runs / f"{step.id}.json").exists() for step in scenario.LIVE):
+        return None
+    return spent(sorted(runs.glob("*.json")) + sorted((runs / "delegated").glob("*.json")))[0]
+
+
 def plan_round(
     lab: Path,
     aliases: Mapping[str, str | None],
@@ -1176,6 +1356,11 @@ def plan_round(
             continue
         ceiling = (ceilings or {}).get(chosen.name, chosen.ceiling)
         found = plan_arm(chosen, ceiling, manifest, found_prices, counted)
+        done = finished(lab, chosen.name)
+        if done is not None:  # it ran: the round holds what it spent, not its cap
+            planned += done
+            lines.append(f"{chosen.name} ({alias}): ran every live step; spent USD {done:.2f}")
+            continue
         planned += found.cap
         state = "reserved, " + str(chosen.deferred) if chosen.deferred else alias
         lines.append(
@@ -1194,7 +1379,9 @@ def plan_round(
             )
         if found.child_folds < 1:
             problems.append(f"{chosen.name}: the child is not forecast to fold")
-    lines.append(f"caps in all, with what was spent elsewhere: USD {planned:g} of {round_.total:g}")
+    lines.append(
+        f"caps in all, with what was spent elsewhere: USD {planned:.2f} of {round_.total:g}"
+    )
     if planned > round_.total:
         problems.append("the caps add up to more than the round's budget")
     return lines, problems

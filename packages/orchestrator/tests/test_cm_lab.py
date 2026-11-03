@@ -5,6 +5,7 @@ from a synthetic archive exported as the lab exports an arm."""
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import importlib
 import json
@@ -87,8 +88,10 @@ def test_the_sources_plant_every_value_where_the_scenario_says(
 
 def test_the_scenario_plants_before_it_tests() -> None:
     """Every probe is planted in the seed and tested in the live steps; each message is
-    one step's, so a run's task names its step."""
-    assert len(scenario.BY_MESSAGE) == len(scenario.STEPS)
+    one step's, so a run's task names its step; a message a step had in an earlier phase
+    (L16 in round 2's phase 1) names it too."""
+    assert len(scenario.BY_MESSAGE) == len(scenario.STEPS) + len(scenario.EARLIER_MESSAGES)
+    assert {step.id for step in scenario.EARLIER_MESSAGES.values()} == {scenario.CHILD_STEP}
     assert all(step.phase == "seed" for step in scenario.SEED)
     assert all(step.phase == "live" for step in scenario.LIVE)
     planted = (
@@ -389,13 +392,19 @@ def test_the_plan_runs_claude_alone() -> None:
         "claude-250",
         "claude-250-skeleton",
         "claude-250-compaction",
+        "claude-250-b",
+        "claude-250-skeleton-b",
+        "claude-250-compaction-b",
     ]
     assert {(arm.family, arm.model, arm.ceiling) for arm in runnable} == {
         ("claude", "claude", 250_000)
     }
-    assert [arm.skeleton_only for arm in runnable] == [False, True, False]
-    assert [arm.compaction for arm in runnable] == [False, False, True]
-    assert all(arm.budget is None for arm in runnable)  # the cost model's caps
+    assert [arm.skeleton_only for arm in runnable] == [False, True, False] * 2
+    assert [arm.compaction for arm in runnable] == [False, False, True] * 2
+    # Phase 1's caps are the cost model's; phase 2's repeats are USD 45 each, together
+    # its hard stop of USD 135 (the coordinator, 2026-11-03).
+    assert [arm.budget for arm in runnable] == [None] * 3 + [scenario.REPEAT_CAP] * 3
+    assert 3 * scenario.REPEAT_CAP == 135
     with pytest.raises(SystemExit, match="round 1"):
         drive.runnable("gpt-250-a", proposed=True)
     assert drive.runnable("claude-250-compaction", proposed=False).compaction
@@ -449,12 +458,22 @@ def seed_manifest(path: Path) -> list[Json]:
     return manifest
 
 
+def finish(lab: Path, name: str, cost: float) -> None:
+    """Arm ``name``'s transcripts, as if it ran every live step for ``cost`` USD."""
+    runs = lab / "arms" / name / "runs"
+    (runs / "delegated").mkdir(parents=True)
+    for step in scenario.LIVE:
+        usage = [{"cost": cost / len(scenario.LIVE)}]
+        (runs / f"{step.id}.json").write_text(json.dumps({"usage": usage}))
+
+
 def test_the_round_fits_its_budget_with_the_compaction_arm(tmp_path: Path) -> None:
-    """From round 1's seed as Opus 4.8 counts it: each 250,000 arm starts from S08, is
-    forecast valid, its child folds, and its cap holds its estimate with a margin; the
-    compaction arm compacts at least twice in two runs, each compaction reading the view
-    at its trigger into the 1-hour cache; the caps and what was spent outside the kit fit
-    USD 300."""
+    """From round 1's seed as Opus 4.8 counts it, with the growth, folds and pages in view
+    round 2's phase 1 measured: each 250,000 arm starts from S08, is forecast valid, its
+    child folds, and its cap holds its estimate with a margin; the compaction arm compacts
+    at least twice in two runs, each compaction a cache read of the view at its trigger;
+    phase 1's arms count at what they spent once they ran, and with phase 2's repeats and
+    what was spent outside the kit the round fits USD 300."""
     manifest = seed_manifest(tmp_path)
     counted = drive.load_counts(tmp_path, "arr-claude-opus-4-8")
     assert counted is not None
@@ -465,26 +484,37 @@ def test_the_round_fits_its_budget_with_the_compaction_arm(tmp_path: Path) -> No
     assert found.folds >= 4
     assert found.runs_with_folds >= 3
     assert found.child_folds >= 1
-    assert 20 < found.main_cost < 40
-    assert 3 < found.child_cost < 12
+    assert 20 < found.main_cost < 40  # phase 1 measured 25.55 and 25.77
+    assert 3 < found.child_cost < 15
     assert found.cost * drive.MARGIN <= found.cap < found.cost * drive.MARGIN + 5
-    round_ = drive.Round(300, 4.29, seed_reused=True)
-    lines, problems = drive.plan_round(
-        tmp_path, {"claude": "arr-claude-opus-4-8"}, {"arr-claude-opus-4-8": drive.OPUS_4_8},
-        round_,
-    )  # fmt: skip
-    assert problems == []
-    assert sum(line.startswith("claude-250") for line in lines) == 3
+    round_ = drive.Round(300, 5.80, seed_reused=True)
+    plan = ({"claude": "arr-claude-opus-4-8"}, {"arr-claude-opus-4-8": drive.OPUS_4_8}, round_)
+    lines, problems = drive.plan_round(tmp_path, *plan)
+    # Before phase 1 ran, its three caps and phase 2's would not fit together.
+    assert problems == ["the caps add up to more than the round's budget"]
+    assert sum(line.startswith("claude-250") for line in lines) == 6
     assert any(line.startswith("claude-600: not run") for line in lines)
     compacting = drive.plan_arm(
         scenario.ARM_BY_NAME["claude-250-compaction"], 250_000, manifest, drive.OPUS_4_8, counted
     )
     assert (compacting.seed, compacting.folds, compacting.runs_with_folds) == ("S08", 2, 2)
     assert compacting.child_folds >= 1
-    assert compacting.main_cost > found.main_cost  # the compactions' own calls
+    each = 187_500 * 5e-07 + drive.COMPACTION_OUTPUT * 2.5e-05
+    assert each < 0.25  # phase 1: USD 0.25 and 0.29 a compaction call, its next call included
     assert compacting.cost * drive.MARGIN <= compacting.cap < compacting.cost * drive.MARGIN + 5
+    for name, cost in (("claude-250", 27.82), ("claude-250-skeleton", 26.65),
+                       ("claude-250-compaction", 22.26)):  # fmt: skip
+        finish(tmp_path, name, cost)
+    lines, problems = drive.plan_round(tmp_path, *plan)
+    assert problems == []
+    assert "claude-250 (arr-claude-opus-4-8): ran every live step; spent USD 27.82" in lines
+    repeat = drive.plan_arm(
+        scenario.ARM_BY_NAME["claude-250-b"], 250_000, manifest, drive.OPUS_4_8, counted
+    )
+    assert repeat.cap == scenario.REPEAT_CAP
+    assert repeat.cost < repeat.cap
     total = float(lines[-1].split("USD ")[1].split(" of")[0])
-    assert total == pytest.approx(2 * found.cap + compacting.cap + 4.29)
+    assert total == pytest.approx(27.82 + 26.65 + 22.26 + 3 * scenario.REPEAT_CAP + 5.80)
     assert total <= 300
     # A smaller budget, or a seed recorded this round, is a problem the plan names.
     _, short = drive.plan_round(
@@ -499,17 +529,41 @@ def test_the_round_fits_its_budget_with_the_compaction_arm(tmp_path: Path) -> No
     assert any("run count" in problem for problem in uncounted)
 
 
-def test_the_plan_names_an_arm_under_its_validity_bar(tmp_path: Path) -> None:
+def test_the_plan_names_an_arm_under_its_validity_bar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     manifest = seed_manifest(tmp_path)
     counted = drive.load_counts(tmp_path, "arr-claude-opus-4-8")
-    early = drive.Counted(counted.alias, dict(counted.views), counted.tools, counted.prompt, 0.3)
-    (tmp_path / drive.COUNTS).write_text(json.dumps({early.alias: drive.asdict(early)}))
+    monkeypatch.setattr(drive, "CLAUDE_GROWTH", {step.id: 1_000 for step in scenario.LIVE})
     _, problems = drive.plan_round(
-        tmp_path, {"claude": early.alias}, {early.alias: drive.OPUS_4_8},
+        tmp_path, {"claude": counted.alias}, {counted.alias: drive.OPUS_4_8},
         drive.Round(300, 0, seed_reused=True),
     )  # fmt: skip
     assert any("under the validity bar" in problem for problem in problems)
     assert manifest
+
+
+def test_the_child_folds_reading_its_pages_in_view() -> None:
+    """L16's child (round 2): in phase 1 every child extracted its 150 pages with code and
+    never came near its trigger (views of 50,000 to 95,000 tokens). Read in view, two
+    pages a call, a page is 2,335 of Opus 4.8's tokens (count_tokens, 2026-11-03), and the
+    child passes its trigger at C = 250,000 several times; it is told so in its brief."""
+    assert scenario.CHILD_READS_IN_VIEW in scenario.LIVE[-1].message
+    assert "pdf_pages" in scenario.CHILD_READS_IN_VIEW
+    prompt = 39_960
+    shape = drive.geometry(250_000, prompt)
+    read = drive.child_growth(page_tokens=drive.CLAUDE_PAGE_TOKENS)
+    assert prompt + 4_000 + read > 2 * shape.trigger
+    folds = drive.forecast(prompt + 4_000, 250_000, drive.child_steps(read), prompt,
+                           freed=drive.CLAUDE_FREED)  # fmt: skip
+    assert sum(folds) >= 1
+    compactions = drive.forecast(prompt + 4_000, 250_000, drive.child_steps(read), prompt,
+                                 compaction=True)  # fmt: skip
+    assert sum(compactions) >= 1
+    # As phase 1's children read (claude-250's: from 30,064 to 95,371 tokens), none folds.
+    extracted = drive.forecast(30_064, 250_000, [95_371 - 30_064], prompt,
+                               freed=drive.CLAUDE_FREED)  # fmt: skip
+    assert sum(extracted) == 0
 
 
 def test_no_step_starts_past_its_arms_cap_or_the_rounds(tmp_path: Path) -> None:
@@ -1171,3 +1225,239 @@ def test_a_compaction_is_the_compaction_arm_s_fold() -> None:
     assert score._condensed({"kind": "fold"})
     assert not score._condensed({"kind": "assistant", "compaction": None})
     assert "S" in score._text({"content": "answer", "compaction": "S"})
+
+
+# What round 2's phase 1 showed the scores must read rightly (S1 to S8).
+
+
+def condensed(bundle: Json, steps: Sequence[str], *, compaction: bool) -> Json:
+    """``bundle`` with a compaction (or, without ``compaction``, a fold record) in each of
+    ``steps``' runs, and the arm's meta saying which it is."""
+    names = {row["run"]: row for row in bundle["rows"] if row["kind"] == "task"}
+    for name, task_row in names.items():
+        if scenario.BY_MESSAGE[task_row["content"]].id in steps:
+            bundle["rows"].append({
+                "position": len(bundle["rows"]) + 1, "message_id": f"c{len(bundle['rows'])}",
+                "run": name, "role": "assistant", "kind": "fold" if not compaction else "assistant",
+                "content": "summary", "compaction": "summary" if compaction else None,
+            })  # fmt: skip
+    bundle["meta"] = {**bundle["meta"], "compaction": compaction}
+    if compaction:
+        bundle["meta"]["arm"] = "gpt-250-compaction"
+    return bundle
+
+
+def test_the_compaction_arm_is_valid_on_two_compactions_in_two_runs() -> None:
+    """S1: a compaction frees nearly the whole view, so the compaction arm's bar is two in
+    two runs (runbook round 2), where a fold arm's is four in three."""
+    runs = [(step, [], "Done.") for step in ("L01", "L02", "L11")]
+    two = score.validity(
+        score.Session(condensed(bundle_of(runs, []), ("L02", "L11"), compaction=True))
+    )
+    assert (two["valid"], two["folds"], two["runs_with_folds"]) == (True, 2, 2)
+    assert two["needed"] == "at least 2 compactions in 2 runs"
+    one = score.validity(score.Session(condensed(bundle_of(runs, []), ("L02",), compaction=True)))
+    assert one["valid"] is False
+    folds = score.validity(
+        score.Session(condensed(bundle_of(runs, []), ("L02", "L11"), compaction=False))
+    )
+    assert folds["valid"] is False  # a fold arm still needs four in three
+
+
+def test_the_compaction_arm_is_a_row_of_its_own() -> None:
+    """S2: CM-P8 and CM-P9 count the folds' sessions per family and model; the compaction
+    arm is its own row, and the skeleton-only control is in none."""
+    kept = f"The speedup {sources.SPEEDUP} holds for p = 17 only."
+    bare = f"The speedup {sources.SPEEDUP} holds."
+    folds = bundle_of([("L10", [], kept)], [])
+    compacting = condensed(bundle_of([("L10", [], bare)], []), (), compaction=True)
+    control = bundle_of([("L10", [], bare)], [])
+    control["meta"] = {**control["meta"], "arm": "gpt-250-skeleton", "skeleton_only": True}
+    report = score.score([folds, compacting, control])
+    assert set(report["families"]) == {"gpt", "gpt (compaction)"}
+    assert report["families"]["gpt"]["CM-P8"] == {"uses": 1, "kept": 1, "status": "pass"}
+    assert report["families"]["gpt (compaction)"]["CM-P8"]["status"] == "fail"
+    assert set(report["models"]) == {"a", "a (compaction)"}
+    assert "| gpt (compaction) |" in score.markdown(report)
+
+
+def test_a_handle_written_with_a_non_breaking_hyphen_is_cited() -> None:
+    """S3: the compaction arm wrote D-3 with a non-breaking hyphen (U+2011); U+2010 and the
+    en dash (U+2013) read as hyphens too, in handles, references and words."""
+    for dash in ("\u2010", "\u2011", "\u2013"):
+        runs = [("L03", [], f"{DECLINE} (D{dash}3)"), ("L05", [], f"{DECLINE} (D{dash}3)")]
+        assert score.rejection(score.Session(bundle_of(runs, [DECISION])))["cited_handle"]
+    note = "The twist is not adequate under the budget, as recorded in C\u20114 and D\u20116."
+    write = ("write_file", {"path": scenario.CLOSING_FILE, "content": note})
+    found = score.reported(score.Session(bundle_of([("L15", [write], "Done.")], [])))
+    assert found["closing_note"] == {"sentences": 1, "with_reference": 1}
+    assert score._plain("Base\u2011point x") == "base point x"
+
+
+def test_another_quantity_of_the_same_kind_is_no_near_miss() -> None:
+    """S4: round 2's claude-250 L07 gave the twist's rho cost, 2^{61.83}, beside the
+    extrapolated 2^61.37 iterations: a different number, not a mistyped copy. One edit
+    away is a near miss; a long value keeps its eight-character rule."""
+    assert score.near_misses("expected \\(\\sqrt{\\pi r/4}\\approx 2^{61.83}\\)", "L07") == []
+    assert score.near_misses("iterations 2^61.73", "L09") != []  # one digit changed
+    assert score.near_misses("iterations 2^61.73", "L09")[0]["value"] == "rho_iterations"
+    assert score.near_misses("ePrint 2031/0471", "L09") != []  # neighbours swapped
+    assert score.near_misses(f"ePrint {sources.VALUES['eprint_a'][:-1]}8", "L09") != []
+    assert score._edits("2^61.83", "2^61.37") == 2
+    long = sources.VALUES["doi_c"]
+    assert score.near_misses(f"DOI {long[:-1]}5.", "L09") != []
+
+
+def test_a_read_claim_is_about_c_only_when_it_names_c() -> None:
+    """S5: round 2's compaction arm, L09: "name and base-point x read from data/params.json"
+    in an answer that gives C's DOI claims nothing about C."""
+    c = {"path": "sources/C.pdf"}
+    doi = sources.VALUES["doi_c"]
+    other = f"Source C's DOI is {doi}. The name and base-point x were read from data/params.json."
+    claimed = f"I have read Source C, DOI {doi}, and it supports the margin."
+    for answer, status in ((other, "pass"), (claimed, "fail")):
+        session = score.Session(bundle_of([
+            ("S05", [("pdf_pages", {**c, "pages": "1-2"})], "Read pp. 1-2."),
+            ("L09", [], answer),
+        ], []))  # fmt: skip
+        session.by_step.pop("L02", None)
+        found = score.partial_read(session)
+        assert found["status"] == status, (answer, found)
+
+
+def test_a_sentence_about_the_change_is_not_stale() -> None:
+    """S6: round 2's sentences that name the old value while speaking of the change."""
+    olds, news = scenario.OLD_BUDGET, scenario.NEW_BUDGET
+    about = [
+        "- **Attacker budget** — raised from \\(2^{64}\\) to **\\(2^{80}\\)** (A-1, rev 2).",
+        "## Assumption update: attacker budget 2^64 → 2^80",
+        "the rho items for any place that implicitly assumed 2^64.",
+    ]
+    assert all(score._about_the_change(sentence, news) for sentence in about)
+    assert not score._about_the_change("The budget is 2^64 operations.", news)
+    run = score.Run("r", "L09", "", "The attacker can afford 2^64 operations.", "")
+    assert score._stale([run], olds, news) != []
+    child = [
+        "STEP 2: messaged parent after page 115 (125 lines, under the assumed 2^56 budget).",
+        "Under the brief's original 2^56, the counts would have been 130 within.",
+    ]
+    assert all(score._about_the_change(s, scenario.CHILD_NEW_BUDGET) for s in child)
+    table = "| Bit length | 132 bits | **125 bits** |"
+    assert score._about_the_change(table, ("125 bit",))
+
+
+def test_there_is_no_such_paper_is_not_found() -> None:
+    """S7: round 2's claude-250 L13."""
+    answer = "## There is no Okonkwo 2029 paper in anything we examined.\n\nWe never looked at it."
+    found = score.reported(score.Session(bundle_of([("L13", [], answer)], [])))
+    assert found["never_discussed"]["said_not_found"] is True
+    other = score.reported(
+        score.Session(bundle_of([("L13", [], "It said the twist is weak.")], []))
+    )
+    assert other["never_discussed"]["said_not_found"] is False
+
+
+def test_sentences_follow_hard_wraps_and_bullets() -> None:
+    """S8: a note hard-wrapped at 90 columns, with bullets and a table, written by a tool
+    call whose arguments are JSON: each claim is one sentence."""
+    note = (
+        "# Closing note\n\n"
+        "The twist's largest factor is 125 bits after the errata, so the twist is not\n"
+        "adequate under the budget (C-14). The main curve stands (C-4).\n"
+        "- GHS Weil descent stays rejected for a prime field,\n"
+        "  as decided (D-3).\n"
+        "- No measured speedup applies to K7 at all.\n"
+        "| a | b |\n"
+    )
+    assert score._sentences(note) == [
+        "# Closing note",
+        "The twist's largest factor is 125 bits after the errata, so the twist is not "
+        "adequate under the budget (C-14).",
+        "The main curve stands (C-4).",
+        "- GHS Weil descent stays rejected for a prime field, as decided (D-3).",
+        "- No measured speedup applies to K7 at all.",
+        "| a | b |",
+    ]
+    write = ("write_file", {"path": scenario.CLOSING_FILE, "content": note})
+    found = score.reported(score.Session(bundle_of([("L15", [write], "Done.")], [])))
+    assert found["closing_note"] == {"sentences": 3, "with_reference": 2}
+
+
+def test_the_driver_answers_a_question_left_open_with_the_scripted_answer(tmp_path: Path) -> None:
+    """K5 (round 2, phase 1): a run that calls ask_user waits for ever, since the scenario's
+    user never answers. The driver answers each question open for a minute with the
+    decision left to the agent, the same in every arm, and logs it."""
+    from sandbox_science.orchestrator.control import ControlStore
+    from sandbox_science.orchestrator.control.store import store_path
+    from sandbox_science.orchestrator.questions import Questions
+
+    state = tmp_path / "state"
+    store = ProjectStore(state)
+    store.create(PROJECT, "crypto-base", "sha256:" + "c" * 64)
+    store.open_session(PROJECT, SESSION, dedicated=False)
+    control = ControlStore(store_path(state))
+    context = ExecutionContext(project_id=PROJECT, session_id=SESSION, environment_id="e")
+    asked = Questions(control).ask(
+        context, "run-x", "toolu_1", "op-1", "Lift D-1 for this one lookup?",
+        [{"label": "Keep D-1"}, {"label": "Lift it"}],
+    )  # fmt: skip
+    assert drive.due([asked], asked.asked_at + timedelta(seconds=59), 60) == []
+    assert drive.due([asked], asked.asked_at + timedelta(seconds=60), 60) == [asked]
+    assert scenario.ASK_USER_ANSWER == "decide"
+    assert scenario.ASK_USER_AFTER == 60
+    log = tmp_path / "logs" / "answers.jsonl"
+
+    async def once() -> int:
+        done = asyncio.Event()
+        done.set()  # the step has ended: one last look, then stop
+        return await drive.answering(state, PROJECT, SESSION, log, done, wait=0, poll=0.01)
+
+    assert asyncio.run(once()) == 1
+    closed = Questions(control).get(PROJECT, SESSION, asked.question_id)
+    assert closed.state == "answered"
+    assert closed.answer is not None
+    assert closed.answer.kind == "decide"
+    (line,) = log.read_text().splitlines()
+    assert json.loads(line)["question"] == asked.question_id
+    assert asyncio.run(once()) == 0  # nothing left open
+    control.close()
+    store.close()
+
+
+def test_what_the_new_exemptions_cleared_is_listed_for_the_owner() -> None:
+    """The coordinator's notes on S5 and S6 (2026-11-03): a sentence cleared only because
+    it states the new value beside the old is listed, per probe; so is a read claim that
+    does not name C in a run that cites C's pages, and a read of C.pdf by code."""
+    later = (START + timedelta(minutes=5)).isoformat()
+    assumed = {"handle": "A-1", "entry_id": "a", "type": "assumption", "kind": None,
+               "revisions": [{"statement": "At most 2^64.", "created": "2026-01-01T00:00:00+00:00"},
+                             {"statement": "At most 2^80.", "created": later}]}  # fmt: skip
+    both = "The twist needs 2^64 work, well under 2^80."
+    past = "The budget was raised from 2^64 to 2^80."
+    session = score.Session(bundle_of([("L08", [], f"{both} {past}")], [assumed]))
+    found = score.assumption(session)
+    assert found["cleared_by_new_value"] == [{"step": "L08", "sentence": both}]
+    c = {"path": "sources/C.pdf"}
+    code = ("shell", {"script": "pdftotext -f 3 -l 24 sources/C.pdf -"})
+    answer = "Source C's conclusion is on p. 17. I read the twist file again before answering."
+    session = score.Session(bundle_of([
+        ("S05", [("pdf_pages", {**c, "pages": "1-2"})], "Read pp. 1-2."),
+        ("L02", [code], answer),
+    ], []))  # fmt: skip
+    found = score.partial_read(session)
+    assert found["unnamed_read_claims"] == [
+        {"step": "L02", "sentence": "I read the twist file again before answering."}
+    ]
+    assert found["read_by_code"][0]["step"] == "L02"
+    report = {"sessions": {"x": {
+        "CM-P1": {"status": "pass"}, "CM-P2": {"status": "pass", "cleared_by_new_value": [
+            {"step": "L08", "sentence": both}]}, "CM-P3": {"status": "pass"},
+        "CM-P4": {"status": "pass"}, "CM-P6": {**found, "status": "fail"},
+        "CM-P7": {"status": "pass"}, "CM-P9": {"long_repeats": []}, "reported": {},
+        "child": {"CM-P2/P7": {"cleared_by_new_value": ["Under 2^56 it was 130; 2^60 now."]}},
+    }}}  # fmt: skip
+    items = score.checklist(report)
+    assert any(item.startswith("x CM-P2 L08: cleared only because") for item in items)
+    assert any(item.startswith("x L16's child CM-P2/P7: cleared only") for item in items)
+    assert any(item.startswith("x CM-P6 L02: a read claim") for item in items)
+    assert any("read by code in L02" in item for item in items)
