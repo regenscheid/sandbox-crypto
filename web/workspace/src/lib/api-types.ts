@@ -1971,6 +1971,7 @@ export interface ModelUsage {
   gateway_version: string | null;
   thinking_replay: string | null;
   retried: string[];
+  refusals: Refusal[];
 }
 
 /** What the event store's records say for the window. */
@@ -2466,6 +2467,18 @@ export interface QuoteChecks {
   evidence_id: string;
   checks: CitationCheckView[];
   total: number;
+}
+
+/** A call the model declined to answer (Claude's ``stop_reason: "refusal"``, CM-42a): the category and explanation the API gave (its ``stop_details``), the alias it was asked on and the model that declined, and the call's tokens and cost, which the gateway charged as any call's. */
+export interface Refusal {
+  category: string | null;
+  explanation: string | null;
+  alias: string | null;
+  model: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cost: number | null;
+  cost_source: "gateway" | "model_info" | null;
 }
 
 export interface RemovedBlock {

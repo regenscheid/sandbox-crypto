@@ -251,7 +251,7 @@ The host steps keep their order; placement, storage, credentials and trigger cha
   of `control.json` (aliases, APIs, efforts, embedding, image revision), from which the
   manager derives `runtime.json` as `prepare()` does, plus the issued generation. Its
   settings supply `control_url` (Service, 8443), `manager_url` (8444),
-  `control_ca_file`, `model_url`, `thinking_replay` and the runtime image digest and
+  `control_ca_file`, `model_url`, `thinking_replay`, `refusal_fallback` and the runtime image digest and
   revision. It refuses a revision differing from the copy's (control's handshake also
   refuses one differing from control's) and a `control_url` off the control Service.
 

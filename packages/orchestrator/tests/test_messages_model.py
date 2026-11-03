@@ -94,6 +94,9 @@ class Reply:
     body: str | None = None
     """An answer sent as it is, instead."""
     headers: dict[str, str] = field(default_factory=dict[str, str])
+    refusal: tuple[str, str | None] | None = None
+    """The model declines, with this category and explanation (``stop_details``), after
+    whatever text and calls the reply has."""
 
 
 def unthought(content: Sequence[Json]) -> list[Json]:
@@ -316,11 +319,15 @@ class Fake:
         shown = sum(len(json.dumps(b)) for b in blocks if b["type"] not in THINKING) // 4
         output = sum(self.tokens[b["signature"]] for b in blocks if b["type"] in THINKING) + shown
         cached = total * 3 // 4
+        stop: Json = {"stop_reason": "tool_use" if reply.calls else "end_turn"}
+        if reply.refusal is not None:
+            category, explanation = reply.refusal
+            stop = {"stop_reason": "refusal", "stop_details": {
+                "type": "refusal", "category": category, "explanation": explanation}}  # fmt: skip
         return {
             "id": f"msg_{self.numbered:04d}", "type": "message", "role": "assistant",
             "model": self.models.get(body["model"], "claude-unlisted").split("/")[-1],
-            "content": blocks,
-            "stop_reason": "tool_use" if reply.calls else "end_turn", "stop_sequence": None,
+            "content": blocks, **stop, "stop_sequence": None,
             "usage": {"input_tokens": total - cached - total // 8,
                       "cache_read_input_tokens": cached,
                       "cache_creation_input_tokens": total // 8, "output_tokens": output},

@@ -43,6 +43,7 @@ from sandbox_science.orchestrator.model import (
     GatewayModel,
     Message,
     ModelError,
+    ModelRefusedError,
     ModelTurn,
     ToolSpec,
 )
@@ -252,10 +253,16 @@ async def enrich(
             except ModelError as error:
                 if progress is not None:
                     progress.inflight_input_tokens = None  # the existing receipt owns this call
-                calls.append(ModelUsage(cost=error.cost, intent_id=error.intent_id))
+                declined = error.refusals if isinstance(error, ModelRefusedError) else ()
+                calls.append(
+                    ModelUsage(cost=error.cost, intent_id=error.intent_id, refusals=list(declined))
+                )
                 if spent is not None:
                     spent(calls[-1])
-                failed.append(f"the call failed ({type(error).__name__})")
+                # A refusal says what declined and why (CM-42a); other errors their kind.
+                failed.append(
+                    f"the call failed ({str(error)[:300] if declined else type(error).__name__})"
+                )
                 attempts.append({"attempt": attempt + 1, "outcome": "model_error"})
                 continue
             if progress is not None:

@@ -177,9 +177,16 @@ def effort_setting(value: str) -> tuple[ModelRole, str]:
 
 
 def _options(args: argparse.Namespace) -> dict[str, dict[str, object]]:
-    """Each adapter's own options, by its kind: Claude's thinking replay (CM-39)."""
+    """Each adapter's own options, by its kind: Claude's thinking replay (CM-39) and the
+    fallback aliases of declined calls (CM-42a)."""
     replay = getattr(args, "thinking_replay", None)
-    return {"messages": {"replay": replay}} if replay is not None else {}
+    fallbacks = dict(getattr(args, "refusal_fallback", None) or [])
+    messages: dict[str, object] = {}
+    if replay is not None:
+        messages["replay"] = replay
+    if fallbacks:
+        messages["fallbacks"] = fallbacks
+    return {"messages": messages} if messages else {}
 
 
 def _thinking_replay(value: str) -> ThinkingReplay:
@@ -217,6 +224,16 @@ async def _choose_apis(args: argparse.Namespace) -> None:
         args.chosen_api = await gateway.choose_apis()
     finally:
         await gateway.close()
+
+
+def fallback_setting(value: str) -> tuple[str, str]:
+    """A ``--refusal-fallback`` setting, ``ALIAS=FALLBACK``: two different aliases."""
+    alias, equals, fallback = value.partition("=")
+    if not equals or not alias.strip() or not fallback.strip() or alias == fallback:
+        raise argparse.ArgumentTypeError(f"{value!r} is not ALIAS=FALLBACK, two different aliases")
+    if max(len(alias.encode()), len(fallback.encode())) > 200:
+        raise argparse.ArgumentTypeError("an alias is at most 200 bytes")
+    return alias, fallback
 
 
 def api_setting(value: str) -> tuple[str, str]:
@@ -532,6 +549,16 @@ def _agent_arguments(command: argparse.ArgumentParser) -> None:
         '"run": the run\'s ID}; off without it',
     )
     command.add_argument(
+        "--refusal-fallback",
+        action="append",
+        type=fallback_setting,
+        default=[],
+        metavar="ALIAS=FALLBACK",
+        help="the alias a Claude alias's call goes to, once, when its model declines it "
+        "(stop_reason refusal), for the rest of the run; repeat for more aliases. "
+        "Without it a declined call ends the run as model_refused",
+    )
+    command.add_argument(
         "--skills-embedding-model",
         type=embedding_alias,
         help="the gateway's embedding model alias: skills are compared by meaning too",
@@ -746,6 +773,11 @@ def _check_agent(parser: argparse.ArgumentParser, args: argparse.Namespace) -> N
         parser.error("--api needs --model-url")
     if len({alias for alias, _ in args.api}) < len(set(args.api)):
         parser.error("--api names two adapters for one alias")
+    fallbacks = getattr(args, "refusal_fallback", [])
+    if fallbacks and args.model_url is None:
+        parser.error("--refusal-fallback needs --model-url")
+    if len({alias for alias, _ in fallbacks}) < len(set(fallbacks)):
+        parser.error("--refusal-fallback names two fallbacks for one alias")
     if getattr(args, "skills_embedding_model", None) is not None and args.model_url is None:
         parser.error("--skills-embedding-model needs --model-url")
     if args.max_input_chars is not None and args.max_input_chars < 1:

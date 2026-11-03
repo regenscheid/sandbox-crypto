@@ -28,7 +28,7 @@ from sandbox_science.orchestrator.effects import UnknownEffectError
 
 _log = logging.getLogger(__name__)
 
-CONTROL_PROTOCOL: Final = 6
+CONTROL_PROTOCOL: Final = 7
 CONTROL_HEADER: Final = "X-Sandbox-Control-Protocol"
 MAX_FRAME_BYTES: Final = 24 * 1024 * 1024
 MAX_PENDING: Final = 128

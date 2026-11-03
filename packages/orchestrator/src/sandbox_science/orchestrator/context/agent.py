@@ -19,6 +19,7 @@ from sandbox_science.orchestrator.model import (
     AssistantMessage,
     ChatModel,
     Message,
+    ModelRefusedError,
     ModelTurn,
     ToolSpec,
 )
@@ -165,6 +166,24 @@ class AgentContext:
                 gateway_version=reply.gateway_version,
                 thinking_replay=(reply.thinking_replay or "")[:300] or None,
                 retried=list(reply.retried[:16]),
+                refusals=[reply.refused] if reply.refused is not None else [],
+            )
+        )
+
+    def record_refusal(self, error: ModelRefusedError) -> None:
+        """Retain a declined call's usage (CM-42a): the last declined call's model and
+        tokens, the cost of every declined call, and each of them. It ends the run, so no
+        answer follows it."""
+        last = error.refusals[-1]
+        self.usage.append(
+            ModelUsage(
+                intent_id=error.intent_id,
+                model=last.model,
+                input_tokens=last.input_tokens,
+                output_tokens=last.output_tokens,
+                cost=error.cost,
+                cost_source=last.cost_source if error.cost is not None else None,
+                refusals=list(error.refusals),
             )
         )
 

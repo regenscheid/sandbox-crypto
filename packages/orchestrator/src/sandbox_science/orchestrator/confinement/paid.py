@@ -72,6 +72,7 @@ def usage(turn: ModelTurn) -> ModelUsage:
         gateway_version=turn.gateway_version,
         thinking_replay=(turn.thinking_replay or "")[:300] or None,
         retried=list(turn.retried[:16]),
+        refusals=[turn.refused] if turn.refused is not None else [],
     )
 
 

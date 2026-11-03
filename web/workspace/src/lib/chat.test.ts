@@ -515,6 +515,18 @@ describe('the transcript of a run', () => {
     expect(tokensText({ model: null, input_tokens: 5, output_tokens: null })).toBe(
       '5 input and unreported output tokens',
     );
+    // An answer its fallback gave after the alias's model declined (CM-42a).
+    expect(
+      tokensText({
+        model: 'claude-opus-4-8',
+        input_tokens: 50,
+        output_tokens: 20,
+        cost: 0.03,
+        refusals: [{ category: 'cyber', model: 'claude-opus-5-5', alias: 'main' }],
+      }),
+    ).toBe(
+      'claude-opus-4-8: 50 input and 20 output tokens, $0.03 for both calls; claude-opus-5-5 declined the call (cyber), and its fallback answered',
+    );
     expect(stoppedText({ stopped: 'error', failure: 'model' })).toBe(
       'The run failed. Failure: model.',
     );
@@ -581,6 +593,15 @@ describe('the transcript of a run', () => {
     );
     expect(stoppedText({ stopped: 'gateway_budget' })).toBe(
       'The run stopped: the model gateway refused the call because its spending budget is used up. What waits for the session waits until the gateway allows calls again.',
+    );
+    expect(
+      stoppedText({
+        stopped: 'model_refused',
+        reason: 'cyber',
+        detail: 'the model declined: cyber (claude-opus-5-5 on main)',
+      }),
+    ).toBe(
+      'The run stopped: the model declined to answer, and no fallback model answered for it. Send a message to try again, or choose another model. It said: the model declined: cyber (claude-opus-5-5 on main).',
     );
     expect(stoppedText({ stopped: 'run_budget' })).toBe(
       "The run stopped at its own limit: its part of the project's daily cost limit, or a delegated run's tokens.",

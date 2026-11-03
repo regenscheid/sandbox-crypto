@@ -33,10 +33,18 @@ not pass the beta header on, with summaries from then on. A reasoning summary
 (``display: "summarized"``, on the models without ``updates``) is archived with the
 response and never sent as text. Usage is CM-28's: the input is ``input_tokens`` with
 the cache's reads and writes.
+
+A model that declines to answer (``stop_reason: "refusal"``, CM-42a) is never an empty
+answer: the call raises ``ModelRefusedError`` with the API's ``stop_details``, unless the
+deployment names a fallback alias for the alias. Then a refusal before any text or call,
+in a category other than ``NOT_RETRIED``, sends the same request once to the fallback,
+without thinking from the history, and its answer stands in, carrying the refusal; the
+rest of the run (``model.FALLBACKS``) calls the fallback in the alias's place.
 """
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import re
@@ -49,12 +57,16 @@ import aiohttp
 
 from . import images
 from .model import (
+    FALLBACKS,
     MESSAGES_EFFORTS,
+    NOT_RETRIED,
     AssistantMessage,
     GatewayModel,
     Message,
     ModelError,
+    ModelRefusedError,
     ModelTurn,
+    Refusal,
     ToolCall,
     ToolSpec,
     gateway_said,
@@ -62,6 +74,7 @@ from .model import (
     read_limited,
     reported_cost,
 )
+from .model_profiles import ModelProfile
 from .pairing import ABORTED, CALL, OUTPUT, Item, paired
 from .pricing import Tokens, messages_tokens
 
@@ -289,7 +302,8 @@ class _View:
 
 class MessagesModel(GatewayModel):
     """Anthropic's Messages API with tool use, as the LiteLLM proxy serves it; thinking
-    replay on only under ``replay`` (CM-39)."""
+    replay on only under ``replay`` (CM-39); a declined call sent to the alias's fallback
+    in ``fallbacks``, the deployment's map of an alias to its fallback alias (CM-42a)."""
 
     PATH = "/messages"
     FORMAT = MESSAGES
@@ -302,11 +316,18 @@ class MessagesModel(GatewayModel):
         api_key: str,
         *,
         replay: ThinkingReplay | None = None,
+        fallbacks: Mapping[str, str] | None = None,
         **options: Any,
     ) -> None:
         super().__init__(base_url, model, api_key, **options)
         self.replay = replay
+        found = (fallbacks or {}).get(model)
+        self.fallback = found if found != model else None
+        """The alias asked in this one's place when its model declines a call."""
         self._served: _Served | None = None
+        self._fallback_served: _Served | None = None
+        self._primary: MessagesModel | None = None
+        """The model this one stands in for, as its fallback."""
 
     def _tokens(self, usage: Mapping[str, object]) -> Tokens | None:
         return messages_tokens(usage)
@@ -315,7 +336,81 @@ class MessagesModel(GatewayModel):
     def max_output(self) -> int | None:
         return self._max_tokens or MAX_TOKENS
 
+    @property
+    def requested_profile(self) -> ModelProfile:
+        """A fallback's profile is the one of the model it stands in for, with its own
+        alias: the same role and effort."""
+        if self._primary is None:
+            return super().requested_profile
+        return self._primary.requested_profile.model_copy(update={"alias": self.model})
+
     async def complete(self, messages: Sequence[Message], tools: Sequence[ToolSpec]) -> ModelTurn:
+        """The answer, or its fallback's when the model declined (CM-42a)."""
+        scope = FALLBACKS.get()
+        if self.fallback is not None and scope is not None and self.model in scope.taken:
+            # The run fell back from this alias already: it stays on the fallback.
+            return await self._fall_back(messages, tools, None)
+        turn, reading = await self._once(messages, tools)
+        if reading.refusal is None:
+            return turn
+        refusal = _refusal(turn, *reading.refusal)
+        why_not = (
+            "no fallback is set for the alias"
+            if self.fallback is None
+            else f"{refusal.category} is not sent to a fallback"
+            if refusal.category in NOT_RETRIED
+            else "it came after part of an answer"
+            if turn.text or turn.tool_calls
+            else None
+        )
+        if why_not is not None or self.fallback is None:
+            _log.warning("%s; no fallback: %s", _described(refusal), why_not)
+            raise ModelRefusedError((refusal,))
+        _log.warning("%s; asking its fallback %s", _described(refusal), self.fallback)
+        if scope is not None:
+            scope.took(self.model, self.fallback, refusal)
+        return await self._fall_back(messages, tools, refusal)
+
+    async def _fall_back(
+        self, messages: Sequence[Message], tools: Sequence[ToolSpec], refusal: Refusal | None
+    ) -> ModelTurn:
+        """The same request on the fallback alias, without thinking from the history,
+        which the fallback's model cannot read; ``refusal`` is the call it stands in for,
+        none on a later call of a run that fell back already."""
+        stand_in = self._stand_in()
+        try:
+            turn, reading = await stand_in._once(messages, tools)
+        except ModelError as error:
+            if refusal is not None and refusal.cost is not None:
+                error.cost = refusal.cost + (error.cost or 0.0)  # both calls were charged
+            raise
+        finally:
+            self._fallback_served = stand_in._served
+        if reading.refusal is not None:
+            second = _refusal(turn, *reading.refusal)
+            _log.warning("%s; the call ends declined", _described(second))
+            raise ModelRefusedError((refusal, second) if refusal is not None else (second,))
+        if refusal is None:
+            return turn
+        cost = turn.cost
+        if cost is not None and refusal.cost is not None:
+            cost += refusal.cost  # both calls' (CM-42a)
+        return replace(turn, refused=refusal, cost=cost)
+
+    def _stand_in(self) -> MessagesModel:
+        """This model on its fallback alias, sharing its session, which only this one
+        closes, and its role, effort, limits and prices."""
+        if self._session is None:
+            self._session = aiohttp.ClientSession()
+        other = copy.copy(self)
+        other.model, other.fallback, other._owns_session = cast(str, self.fallback), None, False
+        other._primary, other._served, other._fallback_served = self, self._fallback_served, None
+        return other
+
+    async def _once(
+        self, messages: Sequence[Message], tools: Sequence[ToolSpec]
+    ) -> tuple[ModelTurn, _Reading]:
+        """One answer of this alias, and how its response read."""
         served = await self._serving()
         effort = self.validate_profile().reasoning_effort
         if effort is not None and served.efforts is not None and effort not in served.efforts:
@@ -354,7 +449,7 @@ class MessagesModel(GatewayModel):
             prefix=view.prefix,
             adapter_state=Kept(tuple(tool.name for tool in tools), off).state(),
             thinking_replay="on" if why_not is None else f"off: {why_not}",
-        )
+        ), reading
 
     async def _ask(
         self,
@@ -385,6 +480,8 @@ class MessagesModel(GatewayModel):
 
     def _why_not(self, messages: Sequence[Message]) -> str | None:
         """Why this call sends no thinking back, if it does not."""
+        if self._primary is not None:
+            return f"a call on the fallback of {self._primary.model}"
         if self.replay is None:
             return "no thinking replay setting"
         records = (_read(message).kept for message in messages)
@@ -464,6 +561,8 @@ class _Reading:
     def __init__(self, notes: bool) -> None:
         self.notes = notes
         self.dropped = False
+        self.refusal: tuple[str | None, str | None] | None = None
+        """The category and explanation of a refusal (``stop_reason: "refusal"``)."""
 
     def parse(self, text: str, priced: str | None = None) -> ModelTurn:
         try:
@@ -485,6 +584,14 @@ class _Reading:
             )
         usage = _usage(data)
         stop, resolved = data.get("stop_reason"), data.get("model")
+        if stop == "refusal":
+            details = data.get("stop_details")
+            found = cast(Json, details) if isinstance(details, dict) else {}
+            category, explanation = found.get("category"), found.get("explanation")
+            self.refusal = (
+                category[:64] if isinstance(category, str) and category else None,
+                explanation[:2000] if isinstance(explanation, str) and explanation else None,
+            )
         # The answer is its text blocks; its notes go in what the conversation holds.
         answer = _answer(blocks, False)[0]
         notes = [block.get("thinking") for block in blocks if _note(block) is not None]
@@ -501,6 +608,26 @@ class _Reading:
             cache_creation_input_tokens=_tokens(usage.get("cache_creation_input_tokens")),
             cost=reported_cost(priced if priced is not None else usage.get("cost")),
         )
+
+
+def _refusal(turn: ModelTurn, category: str | None, explanation: str | None) -> Refusal:
+    """A declined call, as its turn and its ``stop_details`` say (CM-42a)."""
+    return Refusal(
+        category=category,
+        explanation=explanation,
+        alias=turn.alias,
+        model=turn.model[:200] if turn.model else None,
+        input_tokens=turn.input_tokens,
+        output_tokens=turn.output_tokens,
+        cost=turn.cost,
+        cost_source=turn.cost_source,
+    )
+
+
+def _described(refusal: Refusal) -> str:
+    """A refusal for the log: what declined, on which alias, and why, as the API said."""
+    why = f" ({refusal.explanation[:300]})" if refusal.explanation else ""
+    return f"{refusal.model or 'the model'} on {refusal.alias} declined: {refusal.category}{why}"
 
 
 def _turned_off(
