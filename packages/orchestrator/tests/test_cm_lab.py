@@ -1171,3 +1171,159 @@ def test_a_compaction_is_the_compaction_arm_s_fold() -> None:
     assert score._condensed({"kind": "fold"})
     assert not score._condensed({"kind": "assistant", "compaction": None})
     assert "S" in score._text({"content": "answer", "compaction": "S"})
+
+
+# What round 2's phase 1 showed the scores must read rightly (S1 to S8).
+
+
+def condensed(bundle: Json, steps: Sequence[str], *, compaction: bool) -> Json:
+    """``bundle`` with a compaction (or, without ``compaction``, a fold record) in each of
+    ``steps``' runs, and the arm's meta saying which it is."""
+    names = {row["run"]: row for row in bundle["rows"] if row["kind"] == "task"}
+    for name, task_row in names.items():
+        if scenario.BY_MESSAGE[task_row["content"]].id in steps:
+            bundle["rows"].append({
+                "position": len(bundle["rows"]) + 1, "message_id": f"c{len(bundle['rows'])}",
+                "run": name, "role": "assistant", "kind": "fold" if not compaction else "assistant",
+                "content": "summary", "compaction": "summary" if compaction else None,
+            })  # fmt: skip
+    bundle["meta"] = {**bundle["meta"], "compaction": compaction}
+    if compaction:
+        bundle["meta"]["arm"] = "gpt-250-compaction"
+    return bundle
+
+
+def test_the_compaction_arm_is_valid_on_two_compactions_in_two_runs() -> None:
+    """S1: a compaction frees nearly the whole view, so the compaction arm's bar is two in
+    two runs (runbook round 2), where a fold arm's is four in three."""
+    runs = [(step, [], "Done.") for step in ("L01", "L02", "L11")]
+    two = score.validity(
+        score.Session(condensed(bundle_of(runs, []), ("L02", "L11"), compaction=True))
+    )
+    assert (two["valid"], two["folds"], two["runs_with_folds"]) == (True, 2, 2)
+    assert two["needed"] == "at least 2 compactions in 2 runs"
+    one = score.validity(score.Session(condensed(bundle_of(runs, []), ("L02",), compaction=True)))
+    assert one["valid"] is False
+    folds = score.validity(
+        score.Session(condensed(bundle_of(runs, []), ("L02", "L11"), compaction=False))
+    )
+    assert folds["valid"] is False  # a fold arm still needs four in three
+
+
+def test_the_compaction_arm_is_a_row_of_its_own() -> None:
+    """S2: CM-P8 and CM-P9 count the folds' sessions per family and model; the compaction
+    arm is its own row, and the skeleton-only control is in none."""
+    kept = f"The speedup {sources.SPEEDUP} holds for p = 17 only."
+    bare = f"The speedup {sources.SPEEDUP} holds."
+    folds = bundle_of([("L10", [], kept)], [])
+    compacting = condensed(bundle_of([("L10", [], bare)], []), (), compaction=True)
+    control = bundle_of([("L10", [], bare)], [])
+    control["meta"] = {**control["meta"], "arm": "gpt-250-skeleton", "skeleton_only": True}
+    report = score.score([folds, compacting, control])
+    assert set(report["families"]) == {"gpt", "gpt (compaction)"}
+    assert report["families"]["gpt"]["CM-P8"] == {"uses": 1, "kept": 1, "status": "pass"}
+    assert report["families"]["gpt (compaction)"]["CM-P8"]["status"] == "fail"
+    assert set(report["models"]) == {"a", "a (compaction)"}
+    assert "| gpt (compaction) |" in score.markdown(report)
+
+
+def test_a_handle_written_with_a_non_breaking_hyphen_is_cited() -> None:
+    """S3: the compaction arm wrote D-3 with a non-breaking hyphen (U+2011); U+2010 and the
+    en dash (U+2013) read as hyphens too, in handles, references and words."""
+    for dash in ("\u2010", "\u2011", "\u2013"):
+        runs = [("L03", [], f"{DECLINE} (D{dash}3)"), ("L05", [], f"{DECLINE} (D{dash}3)")]
+        assert score.rejection(score.Session(bundle_of(runs, [DECISION])))["cited_handle"]
+    note = "The twist is not adequate under the budget, as recorded in C\u20114 and D\u20116."
+    write = ("write_file", {"path": scenario.CLOSING_FILE, "content": note})
+    found = score.reported(score.Session(bundle_of([("L15", [write], "Done.")], [])))
+    assert found["closing_note"] == {"sentences": 1, "with_reference": 1}
+    assert score._plain("Base\u2011point x") == "base point x"
+
+
+def test_another_quantity_of_the_same_kind_is_no_near_miss() -> None:
+    """S4: round 2's claude-250 L07 gave the twist's rho cost, 2^{61.83}, beside the
+    extrapolated 2^61.37 iterations: a different number, not a mistyped copy. One edit
+    away is a near miss; a long value keeps its eight-character rule."""
+    assert score.near_misses("expected \\(\\sqrt{\\pi r/4}\\approx 2^{61.83}\\)", "L07") == []
+    assert score.near_misses("iterations 2^61.73", "L09") != []  # one digit changed
+    assert score.near_misses("iterations 2^61.73", "L09")[0]["value"] == "rho_iterations"
+    assert score.near_misses("ePrint 2031/0471", "L09") != []  # neighbours swapped
+    assert score.near_misses(f"ePrint {sources.VALUES['eprint_a'][:-1]}8", "L09") != []
+    assert score._edits("2^61.83", "2^61.37") == 2
+    long = sources.VALUES["doi_c"]
+    assert score.near_misses(f"DOI {long[:-1]}5.", "L09") != []
+
+
+def test_a_read_claim_is_about_c_only_when_it_names_c() -> None:
+    """S5: round 2's compaction arm, L09: "name and base-point x read from data/params.json"
+    in an answer that gives C's DOI claims nothing about C."""
+    c = {"path": "sources/C.pdf"}
+    doi = sources.VALUES["doi_c"]
+    other = f"Source C's DOI is {doi}. The name and base-point x were read from data/params.json."
+    claimed = f"I have read Source C, DOI {doi}, and it supports the margin."
+    for answer, status in ((other, "pass"), (claimed, "fail")):
+        session = score.Session(bundle_of([
+            ("S05", [("pdf_pages", {**c, "pages": "1-2"})], "Read pp. 1-2."),
+            ("L09", [], answer),
+        ], []))  # fmt: skip
+        session.by_step.pop("L02", None)
+        found = score.partial_read(session)
+        assert found["status"] == status, (answer, found)
+
+
+def test_a_sentence_about_the_change_is_not_stale() -> None:
+    """S6: round 2's sentences that name the old value while speaking of the change."""
+    olds, news = scenario.OLD_BUDGET, scenario.NEW_BUDGET
+    about = [
+        "- **Attacker budget** — raised from \\(2^{64}\\) to **\\(2^{80}\\)** (A-1, rev 2).",
+        "## Assumption update: attacker budget 2^64 → 2^80",
+        "the rho items for any place that implicitly assumed 2^64.",
+    ]
+    assert all(score._about_the_change(sentence, news) for sentence in about)
+    assert not score._about_the_change("The budget is 2^64 operations.", news)
+    run = score.Run("r", "L09", "", "The attacker can afford 2^64 operations.", "")
+    assert score._stale([run], olds, news) != []
+    child = [
+        "STEP 2: messaged parent after page 115 (125 lines, under the assumed 2^56 budget).",
+        "Under the brief's original 2^56, the counts would have been 130 within.",
+    ]
+    assert all(score._about_the_change(s, scenario.CHILD_NEW_BUDGET) for s in child)
+    table = "| Bit length | 132 bits | **125 bits** |"
+    assert score._about_the_change(table, ("125 bit",))
+
+
+def test_there_is_no_such_paper_is_not_found() -> None:
+    """S7: round 2's claude-250 L13."""
+    answer = "## There is no Okonkwo 2029 paper in anything we examined.\n\nWe never looked at it."
+    found = score.reported(score.Session(bundle_of([("L13", [], answer)], [])))
+    assert found["never_discussed"]["said_not_found"] is True
+    other = score.reported(
+        score.Session(bundle_of([("L13", [], "It said the twist is weak.")], []))
+    )
+    assert other["never_discussed"]["said_not_found"] is False
+
+
+def test_sentences_follow_hard_wraps_and_bullets() -> None:
+    """S8: a note hard-wrapped at 90 columns, with bullets and a table, written by a tool
+    call whose arguments are JSON: each claim is one sentence."""
+    note = (
+        "# Closing note\n\n"
+        "The twist's largest factor is 125 bits after the errata, so the twist is not\n"
+        "adequate under the budget (C-14). The main curve stands (C-4).\n"
+        "- GHS Weil descent stays rejected for a prime field,\n"
+        "  as decided (D-3).\n"
+        "- No measured speedup applies to K7 at all.\n"
+        "| a | b |\n"
+    )
+    assert score._sentences(note) == [
+        "# Closing note",
+        "The twist's largest factor is 125 bits after the errata, so the twist is not "
+        "adequate under the budget (C-14).",
+        "The main curve stands (C-4).",
+        "- GHS Weil descent stays rejected for a prime field, as decided (D-3).",
+        "- No measured speedup applies to K7 at all.",
+        "| a | b |",
+    ]
+    write = ("write_file", {"path": scenario.CLOSING_FILE, "content": note})
+    found = score.reported(score.Session(bundle_of([("L15", [write], "Done.")], [])))
+    assert found["closing_note"] == {"sentences": 3, "with_reference": 2}
