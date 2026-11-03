@@ -42,6 +42,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import contextlib
 import hashlib
 import itertools
 import json
@@ -53,6 +54,7 @@ import subprocess
 import sys
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Final, cast
@@ -72,9 +74,12 @@ from sandbox_science.launcher.config import LauncherConfig, load_config
 from sandbox_science.launcher.state import Layout
 from sandbox_science.orchestrator.context.history.geometry import ceiling as capped
 from sandbox_science.orchestrator.context.history.geometry import geometry
+from sandbox_science.orchestrator.control import ControlStore
+from sandbox_science.orchestrator.control.store import store_path
 from sandbox_science.orchestrator.messages import MAX_TOKENS
 from sandbox_science.orchestrator.model import ModelGateway, ToolSpec
 from sandbox_science.orchestrator.projects import ProjectStore, ensure_environment, environment_id
+from sandbox_science.orchestrator.questions import Answer, Question, Questions
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 
 from . import scenario, sources
@@ -191,6 +196,74 @@ def _run(argv: list[str], log: Path, transcript: Path) -> int:
     transcript.parent.mkdir(parents=True, exist_ok=True)
     with log.open("ab") as out:
         return subprocess.run(argv, stdout=out, stderr=subprocess.STDOUT, check=False).returncode  # noqa: S603
+
+
+# The scripted user's answers.
+
+ANSWER_POLL = 10.0
+"""Seconds between the driver's looks at a running step's open questions."""
+
+
+def due(questions: Sequence[Question], now: datetime, wait: float) -> list[Question]:
+    """The open questions asked at least ``wait`` seconds before ``now``."""
+    return [
+        question
+        for question in questions
+        if question.state == "open" and now - question.asked_at >= timedelta(seconds=wait)
+    ]
+
+
+async def answering(
+    state: Path, project: str, session: str, log: Path, done: asyncio.Event,
+    *, wait: float = scenario.ASK_USER_AFTER, poll: float = ANSWER_POLL,
+) -> int:  # fmt: skip
+    """While a step runs, answer each ``ask_user`` question the session's runs leave open
+    for ``wait`` seconds with the scenario's scripted answer (``scenario.ASK_USER_ANSWER``,
+    the decision left to the agent), the same for every arm, and log each to ``log``, one
+    JSON line. Without it a run that asks waits for ever: the scenario's user never
+    answers (round 2, phase 1). How many it answered."""
+    control = ControlStore(store_path(state))
+    questions = Questions(control)
+    answered = 0
+    try:
+        while True:
+            for question in due(
+                await asyncio.to_thread(questions.open, project, session), datetime.now(UTC), wait
+            ):
+                given = Answer(kind=scenario.ASK_USER_ANSWER)
+                closed = await asyncio.to_thread(
+                    questions.answer, project, session, question.question_id, given
+                )
+                answered += 1
+                log.parent.mkdir(parents=True, exist_ok=True)
+                with log.open("a") as out:
+                    record = {
+                        "at": datetime.now(UTC).isoformat(), "question": question.question_id,
+                        "run": question.run, "asked_at": question.asked_at.isoformat(),
+                        "text": question.text, "answer": scenario.ASK_USER_ANSWER,
+                        "state": closed.state,
+                    }  # fmt: skip
+                    out.write(json.dumps(record) + "\n")
+            if done.is_set():
+                return answered
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(done.wait(), poll)
+    finally:
+        control.close()
+
+
+async def run_answering(
+    argv: list[str], log: Path, transcript: Path, state: Path, project: str, session: str,
+    answers: Path,
+) -> int:  # fmt: skip
+    """``_run``, with ``answering`` beside it for as long as the step runs."""
+    done = asyncio.Event()
+    watcher = asyncio.create_task(answering(state, project, session, answers, done))
+    try:
+        return await asyncio.to_thread(_run, argv, log, transcript)
+    finally:
+        done.set()
+        await watcher
 
 
 def spent(transcripts: Sequence[Path]) -> tuple[float, int]:
@@ -1030,7 +1103,10 @@ async def arm(
                 skeleton_only=chosen.skeleton_only, compaction=chosen.compaction,
                 extra=meta["extra"],
             )  # fmt: skip
-            code = _run(argv, home / "logs" / f"{step.id}.log", transcript)
+            code = await run_answering(
+                argv, home / "logs" / f"{step.id}.log", transcript, state, lab.project,
+                session, home / "logs" / "answers.jsonl",
+            )  # fmt: skip
             keep_delegated(store, lab.project, session, home)
             if not recovered(store, lab.project, session, step.message, transcript):
                 raise SystemExit(f"{name} {step.id} kept no transcript (exit {code}); see its log")

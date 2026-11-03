@@ -5,6 +5,7 @@ from a synthetic archive exported as the lab exports an arm."""
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import importlib
 import json
@@ -1327,3 +1328,44 @@ def test_sentences_follow_hard_wraps_and_bullets() -> None:
     write = ("write_file", {"path": scenario.CLOSING_FILE, "content": note})
     found = score.reported(score.Session(bundle_of([("L15", [write], "Done.")], [])))
     assert found["closing_note"] == {"sentences": 3, "with_reference": 2}
+
+
+def test_the_driver_answers_a_question_left_open_with_the_scripted_answer(tmp_path: Path) -> None:
+    """K5 (round 2, phase 1): a run that calls ask_user waits for ever, since the scenario's
+    user never answers. The driver answers each question open for a minute with the
+    decision left to the agent, the same in every arm, and logs it."""
+    from sandbox_science.orchestrator.control import ControlStore
+    from sandbox_science.orchestrator.control.store import store_path
+    from sandbox_science.orchestrator.questions import Questions
+
+    state = tmp_path / "state"
+    store = ProjectStore(state)
+    store.create(PROJECT, "crypto-base", "sha256:" + "c" * 64)
+    store.open_session(PROJECT, SESSION, dedicated=False)
+    control = ControlStore(store_path(state))
+    context = ExecutionContext(project_id=PROJECT, session_id=SESSION, environment_id="e")
+    asked = Questions(control).ask(
+        context, "run-x", "toolu_1", "op-1", "Lift D-1 for this one lookup?",
+        [{"label": "Keep D-1"}, {"label": "Lift it"}],
+    )  # fmt: skip
+    assert drive.due([asked], asked.asked_at + timedelta(seconds=59), 60) == []
+    assert drive.due([asked], asked.asked_at + timedelta(seconds=60), 60) == [asked]
+    assert scenario.ASK_USER_ANSWER == "decide"
+    assert scenario.ASK_USER_AFTER == 60
+    log = tmp_path / "logs" / "answers.jsonl"
+
+    async def once() -> int:
+        done = asyncio.Event()
+        done.set()  # the step has ended: one last look, then stop
+        return await drive.answering(state, PROJECT, SESSION, log, done, wait=0, poll=0.01)
+
+    assert asyncio.run(once()) == 1
+    closed = Questions(control).get(PROJECT, SESSION, asked.question_id)
+    assert closed.state == "answered"
+    assert closed.answer is not None
+    assert closed.answer.kind == "decide"
+    (line,) = log.read_text().splitlines()
+    assert json.loads(line)["question"] == asked.question_id
+    assert asyncio.run(once()) == 0  # nothing left open
+    control.close()
+    store.close()

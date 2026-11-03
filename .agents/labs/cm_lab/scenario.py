@@ -311,6 +311,12 @@ added "assumed", "original", "would have" (the child's "under the assumed 2^56 b
 "Under the brief's original 2^56, the counts would have been…"), "raised", "dropped" and
 the arrows of "132 bits → 125 bits". A sentence that states the new value beside the old
 speaks of the change too (``score._about_the_change``)."""
+ASK_USER_ANSWER: Final = "decide"
+"""The scripted user's answer to a run's ``ask_user``: the decision left to the agent, which
+tells it nothing. The scenario's user never answers questions, so without it a run that
+asks waits for ever (round 2, phase 1: three runs asked, at L04 and L05)."""
+ASK_USER_AFTER: Final = 60.0
+"""Seconds a question stays open before the driver answers it."""
 
 
 @dataclass(frozen=True)
