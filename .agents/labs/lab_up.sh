@@ -43,6 +43,7 @@ registration = "sandbox-science-policy"
 listen = "127.0.0.1:50051"
 state_dir = "state"
 ceiling = "pool-ceiling.yaml"
+mcp_listings = true  # direct MCP (D98): the middleware reads the tool listings, or refuses the sandbox
 
 [tls]
 certificate = "tls/middleware.pem"
