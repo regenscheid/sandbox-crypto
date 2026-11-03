@@ -203,6 +203,7 @@ GOLDEN = {
     "sandbox-consolidation-1": ("d67d1fdf2583ba97951b057b2246ce1d458a60806edf9bf7a7545920cf33f20a"),
     "sandbox-image-1": "6aad833a6a22472424296c64943b54adcd0d064aef1db5403c5f5eea2eb95f11",
     "sandbox-notice-report-1": "93112b881cb91462c7b85f862d93cd154a9d5c47684af6815a4eedc9156c9c48",
+    "sandbox-compaction-1": "264481cb4d7bd69c3e27ebfcd5499e761f0aa8b51262d7112ebd188e853ba203",
 }
 
 

@@ -60,7 +60,7 @@ from .context.history import (
     ViewMeter,
     ceiling,
 )
-from .context.history.geometry import DEFAULT_SHARES, Shares
+from .context.history.geometry import DEFAULT_SHARES, TRIGGER, Shares
 from .context.history.limits import WorkingMemoryLimitError
 from .context.history.retention import fits
 from .context.history.snapshot import inline
@@ -120,6 +120,7 @@ from .memory_prompt import for_reviewer, for_run, for_watcher
 from .memory_tools import MemoryTool
 from .messages import MessagesModel
 from .model import (
+    MIN_COMPACTION,
     ChatModel,
     GatewayModel,
     Limits,
@@ -128,6 +129,7 @@ from .model import (
     ModelGateway,
     adapter_of,
     cached_for,
+    run_compaction,
 )
 from .model_profiles import PROFILES, ModelProfile, ModelRole, profiles
 from .model_settings import AgentModelRole, AgentModelSelection, ProjectModels
@@ -162,6 +164,11 @@ Snapshot = tuple[int, tuple[MemoryEntry, ...]]
 """The project memory at a version: the version and its accepted entries in order."""
 
 _log = logging.getLogger(__name__)
+ContextMode = Literal["folds", "skeleton", "provider_compaction"]
+"""How a run's older work is condensed (docs/specs/context-management.md, CM-2a): the
+fold engine with enriched folds, its folds skeleton-only (the control arm of question 4),
+or Anthropic's server-side compaction (CM-38b)."""
+CONTEXT_MODES: Final[tuple[ContextMode, ...]] = ("folds", "skeleton", "provider_compaction")
 FOLDING_CHARS: Final = 1 << 40
 """A folding run's character limit, by default: none that a run reaches; its ceiling
 is in tokens."""
@@ -243,9 +250,15 @@ class Settings:
     shares: Shares = DEFAULT_SHARES
     """The view's shares of C: the user's words', the digest's and the fold region's
     (CM-27); the labs set small ones to force overviews and pointers."""
-    skeleton_only: bool = False
-    """Whether MAIN's folds are skeleton-only, without the enrichment call: the control
-    arm (docs/specs/context-management.md, question 4)."""
+    context_mode: ContextMode = "folds"
+    """How every run's older work is condensed, a delegated run's as its root's (CM-2a):
+    ``folds``; ``skeleton``, folds without the enrichment call, the control arm
+    (docs/specs/context-management.md, question 4); or ``provider_compaction``,
+    Anthropic's server-side compaction in place of folds, for Claude aliases called
+    through the Messages API only (CM-38b)."""
+    compaction_trigger: int | None = None
+    """The provider-compaction mode's trigger in input tokens, at least 50,000; ``None``
+    for the fold trigger the run's ceiling gives, 0.75 C."""
     fold_alias: str | None = None
     image_aliases: frozenset[str] = frozenset()
     """Aliases the deployment declares accept images, whatever the gateway says
@@ -277,6 +290,18 @@ class Settings:
             raise ValueError("run_share is above 0 and at most 1")
         if self.run_share is not None and not self.cost_limits:
             raise ValueError("run_share is a part of the cost limits, which are not kept")
+        if self.context_mode not in CONTEXT_MODES:
+            raise ValueError(f"the context mode is one of {', '.join(CONTEXT_MODES)}")
+        if self.compaction_trigger is not None:
+            if self.context_mode != "provider_compaction":
+                raise ValueError("a compaction trigger is the provider_compaction mode's")
+            if self.compaction_trigger < MIN_COMPACTION:
+                raise ValueError(f"the compaction trigger is at least {MIN_COMPACTION:,} tokens")
+
+    @property
+    def skeleton_only(self) -> bool:
+        """Whether folds are skeleton-only, without the enrichment call."""
+        return self.context_mode == "skeleton"
 
     def reviews(self) -> ReviewConfig:
         """The review settings of a project that has none of its own."""
@@ -998,7 +1023,8 @@ class Harness:
                     if self.prepare_attempt is not None:
                         await stack.enter_async_context(self.prepare_attempt(admitted))
                     memory = await self.memory(admitted)
-                    prepared = await self._prepare_context(admitted)
+                    trigger = await self._compaction(admitted.request)
+                    prepared = await self._prepare_context(admitted, compaction=trigger)
                     folder = prepared.folder if prepared is not None else None
                     view = prepared.view if prepared is not None else None
                     if view is not None:
@@ -1134,6 +1160,9 @@ class Harness:
                         )
                     if delegations is not None:
                         delegations.fence = functools.partial(_fence, tuple(hooks))
+                    # The provider-compaction mode's trigger, for this run's own calls
+                    # (CM-38b); a run that folds sends none.
+                    stack.enter_context(run_compaction(trigger))
                     transcript = await self.loop_runner(
                         self._model(admitted),
                         toolbox,
@@ -1185,8 +1214,33 @@ class Harness:
             limits=self._limits(admitted.request),
         )
 
-    async def _prepare_context(self, admitted: Admitted) -> PreparedContext | None:
-        """Resolve role policy, then prepare the attempt's scoped history together."""
+    async def _compaction(self, request: RunRequest) -> int | None:
+        """The run's provider-compaction trigger in input tokens, in that context mode
+        (CM-38b): the setting's, or the fold trigger the run's ceiling gives, 0.75 C. A
+        run whose model is not called through the Messages API, as a GPT alias's, is
+        refused, as is a trigger under the API's least; ``None`` in the other modes."""
+        if self.settings.context_mode != "provider_compaction":
+            return None
+        role = self.role(request)
+        if not isinstance(role.model, MessagesModel):
+            raise ModelError(
+                f"the provider_compaction context mode is Claude's server-side compaction, "
+                f"for aliases called through the Messages API: {role.alias} is not; run it "
+                "in the folds or skeleton context mode"
+            )
+        trigger = self.settings.compaction_trigger or int(TRIGGER * await self._ceiling(role))
+        if trigger < MIN_COMPACTION:
+            raise ModelError(
+                f"the compaction trigger, {trigger:,} tokens (0.75 of the ceiling), is under "
+                f"the API's least, {MIN_COMPACTION:,}: raise the ceiling or set a trigger"
+            )
+        return trigger
+
+    async def _prepare_context(
+        self, admitted: Admitted, *, compaction: int | None = None
+    ) -> PreparedContext | None:
+        """Resolve role policy, then prepare the attempt's scoped history together;
+        ``compaction``, the provider-compaction mode's trigger (CM-38b)."""
         stores, request, context = self.stores, admitted.request, admitted.context
         if stores is None:
             return None
@@ -1227,6 +1281,7 @@ class Harness:
             learned=self._learned,
             observe_kernels=lambda context: self.client.observe_kernels(context),
             clock=self.clock,
+            compaction=compaction,
         )
 
     async def _ceiling(self, role: Role | None = None) -> int:

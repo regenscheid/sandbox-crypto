@@ -314,6 +314,20 @@ REPORT: Final = Framing(
 """The report round a run takes at a limit: its turn limit, a delegated run's tokens, the
 conversation's length, or the runaway guard (run-service spec, RS-6f)."""
 
+COMPACTION: Final = Framing(
+    "compaction",
+    "sandbox-compaction-1",
+    "Platform instruction, apart from your work: the conversation so far is being replaced "
+    "by your summary of it, which is all of it you will see from now on. Write the summary "
+    "inside <summary></summary> tags: the task and every instruction and constraint the "
+    "user gave, the decisions made, the exact values, identifiers and file paths found, "
+    "what was tried and how it went, and the work left to do. Call no tool while writing "
+    "it: answer with text only.",
+)
+"""The summarization prompt of Anthropic's server-side compaction (the edit's
+``instructions``; docs/specs/context-management.md, CM-38b). Without it, a request with
+tools may get a compaction with no summary, the model having called a tool instead."""
+
 FRAMINGS: Final = (
     REQUESTS,
     JOBS,
@@ -341,4 +355,5 @@ FRAMINGS: Final = (
     CONSOLIDATION,
     IMAGES,
     REPORT,
+    COMPACTION,
 )

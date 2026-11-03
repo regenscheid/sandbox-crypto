@@ -94,7 +94,15 @@ class Run:
 
 
 def _text(row: Json) -> str:
-    return "\n".join([row.get("content") or "", *(row.get("saved") or {}).values()])
+    return "\n".join(
+        [row.get("content") or "", row.get("compaction") or "", *(row.get("saved") or {}).values()]
+    )
+
+
+def _condensed(row: Json) -> bool:
+    """A fold record, or in the compaction arm an answer that holds a compaction, which
+    stands for all the conversation before it (CM-38b)."""
+    return row["kind"] == "fold" or row.get("compaction") is not None
 
 
 def _seed_params(rows: Sequence[Json]) -> str | None:
@@ -164,10 +172,10 @@ class Session:
     def folds(self) -> list[Json]:
         """The main runs' folds; a delegated run's are its own (``child_folds``)."""
         main = {run.name for run in self.runs}
-        return [row for row in self.rows if row["kind"] == "fold" and row["run"] in main]
+        return [row for row in self.rows if _condensed(row) and row["run"] in main]
 
     def child_folds(self, run: Run) -> list[Json]:
-        return [row for row in run.rows if row["kind"] == "fold"]
+        return [row for row in run.rows if _condensed(row)]
 
     def in_view(self, run: Run, value: str) -> bool:
         """Whether ``value`` stood in the run's view as it began: in a message still raw,
@@ -176,8 +184,18 @@ class Session:
         if not run.rows:
             return False
         start = run.rows[0]["position"]
-        folds = [row for row in self.folds() if row["position"] < start and row.get("native")]
-        folded = max((json.loads(row["native"])["last"][0] for row in folds), default=0)
+        folds = [
+            row
+            for row in self.folds()
+            if row["position"] < start and (row.get("native") or row.get("compaction") is not None)
+        ]
+        folded = max(
+            (
+                json.loads(row["native"])["last"][0] if row.get("native") else row["position"] - 1
+                for row in folds
+            ),
+            default=0,
+        )
         raw = [row for row in self.rows if folded < row["position"] < start]
         blocks = [row for row in run.rows if row["kind"] == "state_block"]
         return any(value in _text(row) for row in [*folds, *raw, *blocks])

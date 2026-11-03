@@ -173,7 +173,15 @@ def test_a_step_runs_with_the_services_options_and_the_arms_own() -> None:
     assert argv[argv.index("--context-ceiling") + 1] == "250000"
     assert argv[argv.index("--state-dir") + 1] == "/arm"
     assert "--skeleton-only-folds" in argv
+    assert "--context-mode" not in argv
     assert "--input-limit" not in argv
+    compacting = drive.step_argv(
+        base, state_dir=Path("/arm"), project="cm1", session="seed", alias="claude",
+        ceiling=250_000, transcript=Path("/arm/L01.json"), task="Go.", compaction=True,
+    )  # fmt: skip
+    assert compacting[compacting.index("--context-mode") + 1] == "provider_compaction"
+    assert "--skeleton-only-folds" not in compacting
+    assert compacting[-1] == "Go."
     assert argv[-1] == "Go."
     seeding = drive.step_argv(
         base, state_dir=Path("/lab"), project="cm1", session="seed", alias="arrcodex-gpt-6-sol",
@@ -377,19 +385,23 @@ OPUS_4_8 = {  # the gateway's model information for arr-claude-opus-4-8, 2026-11
 
 def test_the_plan_runs_claude_alone() -> None:
     runnable = [arm for arm in scenario.ARMS if not arm.deferred]
-    assert [arm.name for arm in runnable] == ["claude-250", "claude-250-skeleton"]
+    assert [arm.name for arm in runnable] == [
+        "claude-250",
+        "claude-250-skeleton",
+        "claude-250-compaction",
+    ]
     assert {(arm.family, arm.model, arm.ceiling) for arm in runnable} == {
         ("claude", "claude", 250_000)
     }
-    assert [arm.skeleton_only for arm in runnable] == [False, True]
+    assert [arm.skeleton_only for arm in runnable] == [False, True, False]
+    assert [arm.compaction for arm in runnable] == [False, False, True]
     assert all(arm.budget is None for arm in runnable)  # the cost model's caps
     with pytest.raises(SystemExit, match="round 1"):
         drive.runnable("gpt-250-a", proposed=True)
-    with pytest.raises(SystemExit, match="pending product work"):
-        drive.runnable("claude-250-compaction", proposed=True)
+    assert drive.runnable("claude-250-compaction", proposed=False).compaction
     with pytest.raises(SystemExit, match="budget"):
         drive.runnable("claude-600", proposed=True)
-    assert scenario.RESERVED == ("claude-250-compaction",)
+    assert scenario.RESERVED == ()
     assert scenario.TOTAL_BUDGET == 300
 
 
@@ -437,10 +449,12 @@ def seed_manifest(path: Path) -> list[Json]:
     return manifest
 
 
-def test_the_round_fits_its_budget_with_the_compaction_arm_held(tmp_path: Path) -> None:
+def test_the_round_fits_its_budget_with_the_compaction_arm(tmp_path: Path) -> None:
     """From round 1's seed as Opus 4.8 counts it: each 250,000 arm starts from S08, is
     forecast valid, its child folds, and its cap holds its estimate with a margin; the
-    caps, the compaction arm's reserve and what was spent outside the kit fit USD 300."""
+    compaction arm compacts at least twice in two runs, each compaction reading the view
+    at its trigger into the 1-hour cache; the caps and what was spent outside the kit fit
+    USD 300."""
     manifest = seed_manifest(tmp_path)
     counted = drive.load_counts(tmp_path, "arr-claude-opus-4-8")
     assert counted is not None
@@ -462,8 +476,16 @@ def test_the_round_fits_its_budget_with_the_compaction_arm_held(tmp_path: Path) 
     assert problems == []
     assert sum(line.startswith("claude-250") for line in lines) == 3
     assert any(line.startswith("claude-600: not run") for line in lines)
+    compacting = drive.plan_arm(
+        scenario.ARM_BY_NAME["claude-250-compaction"], 250_000, manifest, drive.OPUS_4_8, counted
+    )
+    assert (compacting.seed, compacting.folds, compacting.runs_with_folds) == ("S08", 2, 2)
+    assert compacting.child_folds >= 1
+    assert compacting.main_cost > found.main_cost  # the compactions' own calls
+    assert compacting.cost * drive.MARGIN <= compacting.cap < compacting.cost * drive.MARGIN + 5
     total = float(lines[-1].split("USD ")[1].split(" of")[0])
-    assert total == 3 * found.cap + 4.29 <= 300
+    assert total == pytest.approx(2 * found.cap + compacting.cap + 4.29)
+    assert total <= 300
     # A smaller budget, or a seed recorded this round, is a problem the plan names.
     _, short = drive.plan_round(
         tmp_path, {"claude": "arr-claude-opus-4-8"}, {"arr-claude-opus-4-8": drive.OPUS_4_8},
@@ -1133,3 +1155,19 @@ def test_an_answer_that_says_what_it_did_not_review_gives_its_extent() -> None:
         ("L02", [("pdf_pages", {**c, "pages": "17"})], answer),
     ], []))  # fmt: skip
     assert score.partial_read(session)["status"] == "pass"
+
+
+def test_a_compaction_is_the_compaction_arm_s_fold() -> None:
+    """CM-38b: an answer that holds a compaction block keeps its summary in the bundle,
+    and the scorer counts it where it counts folds; one without a summary stands for
+    nothing, and other answers are not folds."""
+    native = json.dumps({"content": [{"type": "compaction", "content": "S"}, {"type": "text"}]})
+    assert export._compaction(native.encode()) == "S"
+    assert export._compaction(json.dumps({"content": [{"type": "text"}]}).encode()) is None
+    assert export._compaction(b"not json") is None
+    empty = json.dumps({"content": [{"type": "compaction", "content": None}]})
+    assert export._compaction(empty.encode()) is None
+    assert score._condensed({"kind": "assistant", "compaction": "S"})
+    assert score._condensed({"kind": "fold"})
+    assert not score._condensed({"kind": "assistant", "compaction": None})
+    assert "S" in score._text({"content": "answer", "compaction": "S"})

@@ -34,12 +34,28 @@ not pass the beta header on, with summaries from then on. A reasoning summary
 response and never sent as text. Usage is CM-28's: the input is ``input_tokens`` with
 the cache's reads and writes.
 
+In the ``provider_compaction`` context mode (CM-38b), a run's own calls (the main and
+delegated roles) carry Anthropic's compaction edit (``compact_20260112``, beta
+``compact-2026-01-12``) with the run's trigger (``model.COMPACTION``), on the models that
+take it; another model is refused before the request. A response may then begin with a
+``compaction`` block, the API's summary of everything before it, which the archive keeps
+with the response. A request sends the conversation from the newest answer holding one,
+since the API takes the block for all that came before it, with the system message first
+and the newest state block from before that answer moved after it, so the model still
+sees it. Outside the mode, compaction blocks are never sent: the API refuses them without
+the beta, and the history they summarize is sent whole. A call's tokens are every
+iteration's of its ``usage.iterations``, the compaction's included; the top-level usage
+counts only the answer.
+
 A model that declines to answer (``stop_reason: "refusal"``, CM-42a) is never an empty
 answer: the call raises ``ModelRefusedError`` with the API's ``stop_details``, unless the
 deployment names a fallback alias for the alias. Then a refusal before any text or call,
 in a category other than ``NOT_RETRIED``, sends the same request once to the fallback,
 without thinking from the history, and its answer stands in, carrying the refusal; the
-rest of the run (``model.FALLBACKS``) calls the fallback in the alias's place.
+rest of the run (``model.FALLBACKS``) calls the fallback in the alias's place. In the
+compaction mode the fallback's request is the same, compaction edit and blocks included:
+a fallback whose model does not take compaction is refused, as the alias's own would be,
+never sent the conversation without them.
 """
 
 from __future__ import annotations
@@ -57,6 +73,7 @@ import aiohttp
 
 from . import images
 from .model import (
+    COMPACTION,
     FALLBACKS,
     MESSAGES_EFFORTS,
     NOT_RETRIED,
@@ -75,8 +92,9 @@ from .model import (
     reported_cost,
 )
 from .model_profiles import ModelProfile
+from .notices import COMPACTION as COMPACTION_PROMPT
 from .pairing import ABORTED, CALL, OUTPUT, Item, paired
-from .pricing import Tokens, messages_tokens
+from .pricing import Tokens, iterations, messages_tokens
 
 _log = logging.getLogger(__name__)
 
@@ -89,6 +107,12 @@ NOTE: Final = "[progress note] "
 UPDATES_BETA: Final = "thinking-display-updates-2026-08-18"
 BINDING_BETA: Final = "thinking-binding-controls-2026-08-01"
 TOOLS_BETA: Final = "mid-conversation-tool-changes-2026-07-01"
+COMPACT_BETA: Final = "compact-2026-01-12"
+COMPACT_EDIT: Final = "compact_20260112"
+"""Anthropic's server-side compaction at a token threshold (CM-38b). The newer top-level
+``compaction`` parameter (beta ``compact-2026-09-04``) is not used: LiteLLM 1.102.1
+drops it."""
+COMPACTION_BLOCK: Final = "compaction"
 MAX_TOKENS: Final = 16_000
 """An answer's length when the role sets none: the API needs one, and a request that
 does not stream must end within the client's timeout."""
@@ -105,6 +129,14 @@ _TOOL_CHANGES: Final = re.compile(
     r"claude-(?:opus-(?:5|5-5|4-8)|fable-5(?:-1)?|mythos-5(?:-1)?|sonnet-5-5)(?:-\d{8})?(?![-.]?\d)"
 )
 """The models that take mid-conversation tool changes (CM-38)."""
+_COMPACTING: Final = re.compile(
+    r"claude-(?:fable-5(?:-1)?|mythos-(?:5(?:-1)?|preview)|opus-(?:5(?:-5)?|4-[678])"
+    r"|sonnet-(?:5(?:-5)?|4-6)|haiku-5-5)(?:-\d{8})?(?![-.]?\d)"
+)
+"""The models whose documentation offers server-side compaction at a threshold (CM-38b)."""
+_STATE_BLOCK: Final = re.compile(r"\[msg-[^\]\n]* · state block\]\n")
+"""How a state block begins: the platform's header, which only the platform's messages
+carry (``archive.header``, CM-4a)."""
 _OLDER: Final = re.compile(
     r"claude-3|claude-(?:opus|sonnet|haiku)-4(?:-[015])?(?:-\d{8})?(?![-.]?\d)"
 )
@@ -279,6 +311,9 @@ class _Served:
     adaptive: bool = True
     efforts: frozenset[str] | None = None
     """The efforts the model takes, or ``None`` when the adapter does not know."""
+    compaction: bool = False
+    """Whether the model takes server-side compaction (CM-38b)."""
+    why_not_compaction: str = "the gateway does not say which model"
 
 
 @dataclass(frozen=True)
@@ -420,6 +455,15 @@ class MessagesModel(GatewayModel):
                 f"{self.model}'s model takes the effort {takes}, not {effort!r}: change the "
                 "role's reasoning effort"
             )
+        trigger = self._trigger()
+        if trigger is not None and not served.compaction:
+            # Refused before the request: the conversation is never sent without the
+            # compaction it relies on (CM-38b).
+            raise ModelError(
+                f"{self.model}'s model does not take server-side compaction "
+                f"({served.why_not_compaction}): the provider_compaction context mode needs "
+                "a Claude model that does"
+            )
         why_not = self._why_not(messages)
         off: str | None = None
         try:
@@ -442,7 +486,8 @@ class MessagesModel(GatewayModel):
             else:
                 raise
             turn, view, reading = await self._ask(messages, tools, served, why_not is None)
-        if why_not is None and self.replay is not None:
+        if why_not is None and self.replay is not None and reading.compaction is None:
+            # A compaction shrinks the input: no measure of dropped thinking then.
             off = _turned_off(self.replay, turn, reading, view)
         return replace(
             turn,
@@ -458,9 +503,18 @@ class MessagesModel(GatewayModel):
         served: _Served,
         replay: bool,
     ) -> tuple[ModelTurn, _View, _Reading]:
-        view = _render(messages, tools, served, replay)
+        trigger = self._trigger()
+        view = _render(messages, tools, served, replay, compacting=trigger is not None)
         view.body["model"] = self.model
         view.body["max_tokens"] = self._max_tokens or MAX_TOKENS
+        if trigger is not None:
+            edit: Json = {
+                "type": COMPACT_EDIT,
+                "trigger": {"type": "input_tokens", "value": trigger},
+                # Without it, a request with tools may get no summary (CM-38b).
+                "instructions": COMPACTION_PROMPT.text,
+            }
+            view.body["context_management"] = {"edits": [edit]}
         if self._tool_choice != "auto" and "tools" in view.body:
             # A call that may not call the tools, as a fold's enrichment retry (CM-19).
             view.body["tool_choice"] = {"type": self._tool_choice}
@@ -476,7 +530,14 @@ class MessagesModel(GatewayModel):
             betas.append(BINDING_BETA)
         if any(message.get("role") == "system" for message in body.get("messages", [])):
             betas.append(TOOLS_BETA)
+        if "context_management" in body:
+            betas.append(COMPACT_BETA)
         return {"anthropic-beta": ",".join(betas)} if betas else {}
+
+    def _trigger(self) -> int | None:
+        """The run's compaction trigger, for the run's own calls only: a reviewer's,
+        watcher's or fold writer's conversation is never compacted (CM-38b)."""
+        return COMPACTION.get() if self._model_role in ("main", "delegated") else None
 
     def _why_not(self, messages: Sequence[Message]) -> str | None:
         """Why this call sends no thinking back, if it does not."""
@@ -497,8 +558,9 @@ class MessagesModel(GatewayModel):
             return _Served(False, False)
         updates, why_updates = _decide(models, _UPDATES)
         changes, why_changes = _decide(models, _TOOL_CHANGES)
+        compacts, why_compaction = _decide(models, _COMPACTING)
         adaptive = not models or not all(_OLDER.search(_hyphenated(model)) for model in models)
-        served = _Served(updates, changes, adaptive, _efforts(models))
+        served = _Served(updates, changes, adaptive, _efforts(models), compacts, why_compaction)
         # The features are inferred from a string the operator typed at the gateway, so
         # say what was chosen, once for the alias (and again if the gateway names another
         # model); a name that matched nothing is a warning, since it turns the features
@@ -563,6 +625,8 @@ class _Reading:
         self.dropped = False
         self.refusal: tuple[str | None, str | None] | None = None
         """The category and explanation of a refusal (``stop_reason: "refusal"``)."""
+        self.compaction: Json | None = None
+        """The usage of the compaction the call ran, if it ran one (CM-38b)."""
 
     def parse(self, text: str, priced: str | None = None) -> ModelTurn:
         try:
@@ -582,7 +646,11 @@ class _Reading:
                 isinstance(entry, dict) and cast(Json, entry).get("type") == "thinking_dropped"
                 for entry in cast(list[object], changed)
             )
-        usage = _usage(data)
+        usage = _billed(_usage(data))
+        found = iterations(_usage(data)) or []
+        self.compaction = next(
+            (dict(each) for each in found if each.get("type") == COMPACTION_BLOCK), None
+        )
         stop, resolved = data.get("stop_reason"), data.get("model")
         if stop == "refusal":
             details = data.get("stop_details")
@@ -661,9 +729,14 @@ def _render(
     tools: Sequence[ToolSpec],
     served: _Served,
     replay: bool,
+    *,
+    compacting: bool = False,
 ) -> _View:
-    """The request's body, without its model and length, and what the checks need."""
+    """The request's body, without its model and length, and what the checks need;
+    ``compacting``, in the provider-compaction mode (CM-38b)."""
     conversation = _paired(messages)
+    if compacting:
+        conversation = _from_compaction(conversation)
     carried = images.carried(conversation)
     system: list[Json] = []
     if conversation and conversation[0].get("role") == "system":
@@ -739,7 +812,7 @@ def _render(
             )  # fmt: skip
             sent, stopped = sent or send, stopped or (thought and sent and not send)
             whole = read.blocks if notes is not None else None
-            if content := _assistant(message, whole, bool(notes), send):
+            if content := _assistant(message, whole, bool(notes), send, compacting):
                 add({"role": "assistant", "content": content})
             prior = _prior(message) if send and isinstance(message, AssistantMessage) else None
             after = len(out)
@@ -787,12 +860,24 @@ def _paired(messages: Sequence[Message]) -> list[Message]:
 
 
 def _assistant(
-    message: Message, blocks: Sequence[Json] | None, notes: bool, send: bool
+    message: Message,
+    blocks: Sequence[Json] | None,
+    notes: bool,
+    send: bool,
+    compacting: bool = False,
 ) -> list[Json]:
     """An answer's content: its response's blocks, with or without their thinking, the
     progress notes of those without as text (with ``notes``), or else its text and
-    calls."""
+    calls. Its compaction block goes only to a request that compacts (CM-38b)."""
     if blocks is not None:
+        # A compaction block goes back only with its summary, and only to a request that
+        # compacts: one without a summary (the model called a tool instead of writing it)
+        # would stand for the whole conversation before it.
+        blocks = [
+            block
+            for block in blocks
+            if block.get("type") != COMPACTION_BLOCK or (compacting and _summarized(block))
+        ]
         if send:
             return list(blocks)
         content: list[Json] = []
@@ -817,6 +902,44 @@ def _assistant(
             }
         )
     return content
+
+
+def _from_compaction(conversation: list[Message]) -> list[Message]:
+    """The conversation as a request that compacts sends it (CM-38b): from the newest
+    answer that holds a compaction block and goes back as its response, since the API
+    takes the block for everything before it; the system message first, and the newest
+    state block from before that answer right after it, so the model sees the state
+    block still (its user turn then holds the answer's results first, then the state
+    block). The whole conversation when no answer holds one."""
+    at = next((i for i in range(len(conversation) - 1, 0, -1) if _compacted(conversation[i])), None)
+    if at is None:
+        return conversation
+    head = conversation[:at]
+    system = head[:1] if head[0].get("role") == "system" else []
+    state = [message for message in head if _state_block(message)][-1:]
+    return [*system, conversation[at], *state, *conversation[at + 1 :]]
+
+
+def _compacted(message: Message) -> bool:
+    """Whether an answer holds a compaction block it is still sent with: an answer
+    whose text or calls changed since goes as its text and calls, without it."""
+    if message.get("role") != "assistant":
+        return False
+    blocks = _read(message).blocks
+    return any(
+        block.get("type") == COMPACTION_BLOCK and _summarized(block) for block in blocks
+    ) and (_notes(message, blocks) is not None)
+
+
+def _summarized(block: Json) -> bool:
+    """Whether a compaction block holds a summary: the API returns one whose content is
+    null when the model called a tool instead of summarizing (CM-38b)."""
+    content = block.get("content")
+    return isinstance(content, str) and bool(content.strip())
+
+
+def _state_block(message: Message) -> bool:
+    return message.get("role") == "user" and bool(_STATE_BLOCK.match(_text(message)))
 
 
 def _read(message: Message) -> _Read:
@@ -902,6 +1025,30 @@ def _prior(message: AssistantMessage) -> _Prior | None:
 def _usage(data: Json) -> Json:
     usage = data.get("usage")
     return cast(Json, usage) if isinstance(usage, dict) else {}
+
+
+_COUNTED: Final = (
+    "input_tokens",
+    "output_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+)
+
+
+def _billed(usage: Json) -> Json:
+    """A call's usage as it is charged: with ``iterations``, as when a compaction ran
+    within the call, the sum of every iteration's counts, since the top-level ones are
+    the answer's alone (CM-38b); else the usage as it is."""
+    found = iterations(usage)
+    if found is None:
+        return usage
+    summed: Json = {}
+    for key in _COUNTED:
+        counts = [_tokens(each.get(key)) for each in found]
+        if key in ("input_tokens", "output_tokens") and None in counts:
+            return usage  # an iteration without its counts: the answer's own, then
+        summed[key] = sum(count or 0 for count in counts)
+    return summed
 
 
 def _input(usage: Json) -> int | None:

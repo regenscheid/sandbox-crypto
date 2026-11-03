@@ -78,6 +78,8 @@ TOOLS = [SHELL, READ]
 TODAY = Waits().now().date()
 SETTING = ThinkingReplay("sha256:" + "a" * 64, VERSION, TODAY, "cm-f30-test-run")
 THINKING = {"thinking", "redacted_thinking"}
+COMPACTED = "compaction"
+COMPACT_BETA = "compact-2026-01-12"
 
 
 @dataclass
@@ -97,6 +99,9 @@ class Reply:
     refusal: tuple[str, str | None] | None = None
     """The model declines, with this category and explanation (``stop_details``), after
     whatever text and calls the reply has."""
+    compact: str | None = None
+    """The API compacts the request first, with this summary (CM-38b), or with none, the
+    content null, for ""; the request must carry the compaction edit."""
 
 
 def unthought(content: Sequence[Json]) -> list[Json]:
@@ -236,7 +241,9 @@ class Fake:
         markers = sum("cache_control" in t for t in body.get("tools", []))
         markers += sum("cache_control" in b for b in body.get("system", []))
         messages = body["messages"]
-        if not messages or messages[0]["role"] != "user":
+        opening = messages[0]["content"] if messages else []
+        compacted = isinstance(opening, list) and opening[:1] and opening[0]["type"] == COMPACTED
+        if not messages or (messages[0]["role"] != "user" and not compacted):
             return "messages: the first message must use the user role"
         previous: str | None = None
         for index, message in enumerate(messages):
@@ -247,6 +254,11 @@ class Fake:
             if any(b.get("type") == "text" and not b.get("text") for b in content):
                 return f"messages.{index}: text content blocks must be non-empty"
             kinds = [block["type"] for block in content]
+            if COMPACTED in kinds and COMPACT_BETA not in betas:
+                return (
+                    f"messages.{index}.content.{kinds.index(COMPACTED)}: Input tag 'compaction' "
+                    "found using 'type' does not match any of the expected tags"
+                )
             others = next((i for i, kind in enumerate(kinds) if kind != "tool_result"), len(kinds))
             if "tool_result" in kinds[others:]:
                 return f"messages.{index}: tool_result blocks must come first"
@@ -299,6 +311,11 @@ class Fake:
             before = signature
             blocks.append({"type": "thinking", "thinking": text, "signature": signature})
 
+        if reply.compact is not None:
+            (edit,) = body["context_management"]["edits"]
+            assert edit["type"] == "compact_20260112", edit
+            # "" stands for the API's failed summary: content null (CM-38b).
+            blocks.append({"type": COMPACTED, "content": reply.compact or None})
         think(reply.summary if display == "summarized" else "", reply.thinking)
         notes = list(reply.notes)
         for name, arguments in reply.calls:
@@ -324,13 +341,20 @@ class Fake:
             category, explanation = reply.refusal
             stop = {"stop_reason": "refusal", "stop_details": {
                 "type": "refusal", "category": category, "explanation": explanation}}  # fmt: skip
+        usage: Json = {"input_tokens": total - cached - total // 8,
+                       "cache_read_input_tokens": cached,
+                       "cache_creation_input_tokens": total // 8,
+                       "output_tokens": output}  # fmt: skip
+        if reply.compact is not None:  # the summary, written to the 1-hour cache
+            summarized = {"type": "compaction", "input_tokens": 45, "output_tokens": 300,
+                          "cache_read_input_tokens": 0, "cache_creation_input_tokens": total,
+                          "cache_creation": {"ephemeral_5m_input_tokens": 0,
+                                             "ephemeral_1h_input_tokens": total}}  # fmt: skip
+            usage = {**usage, "iterations": [summarized, {"type": "message", **usage}]}
         return {
             "id": f"msg_{self.numbered:04d}", "type": "message", "role": "assistant",
             "model": self.models.get(body["model"], "claude-unlisted").split("/")[-1],
-            "content": blocks, **stop, "stop_sequence": None,
-            "usage": {"input_tokens": total - cached - total // 8,
-                      "cache_read_input_tokens": cached,
-                      "cache_creation_input_tokens": total // 8, "output_tokens": output},
+            "content": blocks, **stop, "stop_sequence": None, "usage": usage,
         }  # fmt: skip
 
 

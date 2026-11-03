@@ -74,6 +74,8 @@ from .control import ControlError
 from .documents import DocumentError, DocumentStore, store_path
 from .figurecheck import FigureChecker
 from .harness import (
+    CONTEXT_MODES,
+    ContextMode,
     Finished,
     Harness,
     IsolationRefusedError,
@@ -93,6 +95,7 @@ from .model import (
     API_KINDS,
     DEFAULT_API,
     MAX_RESPONSE_BYTES,
+    MIN_COMPACTION,
     ChatModel,
     GatewayModel,
     ModelError,
@@ -203,6 +206,13 @@ def _apis(args: argparse.Namespace) -> dict[str, str]:
     if chosen is not None:
         return dict(chosen)
     return dict(cast(list[tuple[str, str]], getattr(args, "api", None) or []))
+
+
+def _context_mode(args: argparse.Namespace) -> ContextMode:
+    """``--context-mode``, or ``skeleton`` for ``--skeleton-only-folds``."""
+    if getattr(args, "skeleton_only_folds", False):
+        return "skeleton"
+    return cast(ContextMode | None, getattr(args, "context_mode", None)) or "folds"
 
 
 def _default_api(args: argparse.Namespace) -> str:
@@ -446,7 +456,8 @@ def _harness(
                 getattr(args, "region_share", 0.15),
                 getattr(args, "region_cap_share", None),
             ),
-            skeleton_only=getattr(args, "skeleton_only_folds", False),
+            context_mode=_context_mode(args),
+            compaction_trigger=getattr(args, "compaction_trigger", None),
             fold_alias=getattr(args, "fold_alias", None),
             image_aliases=frozenset(getattr(args, "images", None) or ()),
             watcher_calls_per_hour=args.watcher_calls_per_hour,
@@ -627,9 +638,24 @@ def _agent_arguments(command: argparse.ArgumentParser) -> None:
         "the shortening of decisions and the research_state stop",
     )
     command.add_argument(
+        "--context-mode",
+        choices=CONTEXT_MODES,
+        help="how every run's older work is condensed, a delegated run's as its root's: "
+        "folds (the default); skeleton, folds without the enrichment call; or "
+        "provider_compaction, Anthropic's server-side compaction in place of folds, for "
+        "Claude aliases called through the Messages API only",
+    )
+    command.add_argument(
         "--skeleton-only-folds",
         action="store_true",
-        help="fold MAIN's view without the enrichment call: outlines built by code alone",
+        help="fold MAIN's view without the enrichment call: outlines built by code alone "
+        "(--context-mode skeleton)",
+    )
+    command.add_argument(
+        "--compaction-trigger",
+        type=int,
+        help="the provider_compaction mode's trigger in input tokens, at least 50,000 "
+        "(default: 0.75 of the run's ceiling, where folds would start)",
     )
     command.add_argument(
         "--images",
@@ -713,6 +739,13 @@ def _agent_arguments(command: argparse.ArgumentParser) -> None:
 
 def _check_agent(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     """Refuse arguments of ``run`` or ``serve`` that do not go together."""
+    if args.skeleton_only_folds and args.context_mode not in (None, "skeleton"):
+        parser.error(f"--skeleton-only-folds is --context-mode skeleton, not {args.context_mode}")
+    if args.compaction_trigger is not None:
+        if _context_mode(args) != "provider_compaction":
+            parser.error("--compaction-trigger needs --context-mode provider_compaction")
+        if args.compaction_trigger < MIN_COMPACTION:
+            parser.error(f"--compaction-trigger is at least {MIN_COMPACTION:,} tokens")
     if args.watcher_calls_per_hour < 1:
         parser.error("--watcher-calls-per-hour must be positive")
     try:
