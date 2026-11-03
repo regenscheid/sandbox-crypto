@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 """The context-management lab's scorer: ``.venv/bin/python -I .agents/labs/cm_score.py
-BUNDLE...`` (``cm_lab/score.py``; the runbook is ``cm-lab-round-1.md``)."""
+BUNDLE...`` (``cm_lab/score.py``; the runbook is ``cm-lab-round-2.md``)."""
 
 import sys
 from pathlib import Path

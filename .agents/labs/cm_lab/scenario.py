@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
-"""The scripted scenario of the context-management lab's first round
-(docs/specs/context-management.md, "Continuity probes").
+"""The scripted scenario of the context-management lab (docs/specs/context-management.md,
+"Continuity probes"), as round 2 runs it: round 1's, with a delegated reading task.
 
 One research project on a fictional curve, as the user's messages, one run each. The
 seed's steps (``S``) are recorded once with folding off; each arm starts from a copy of
@@ -21,6 +21,16 @@ planted in the seed and tested in the live steps, after it is folded:
 
 Reported, not gating: L13 (a paper never discussed), L14 (done and next), L15 (the
 closing note's references).
+
+L16 (round 2) delegates a long reading task to one child, which folds within its own run
+(CM-37), and tests the probes suited to a child on its folds:
+
+| Probe | Planted | Tested |
+| --- | --- | --- |
+| CM-P3 exact values | the child's first call (the experiment's seed and fingerprint) | its result |
+| CM-P2/P7 a change | the parent's ``message_child`` after page 115: the budget 2^56 becomes 2^60 | its result and its notes' marks |
+| CM-P8 a caveat | the brief (finite test, p = 17 only) | its result |
+| CM-P9 repeated work | each of the child's folds | the ten calls after it |
 """
 
 from __future__ import annotations
@@ -201,6 +211,25 @@ LIVE: Final = (
         "Write the closing note for this phase in report/closing.md, every claim in it with its "
         "ledger reference or source anchor, and give me its gist.",
     ),
+    Step(
+        "L16",
+        "live",
+        "One more reading task, which I want delegated so that it does not fill your context: "
+        "give it to one task with delegate, and do not read the pages yourself. The task: read "
+        "pages 41 to 190 of sources/D.pdf (the survey's walk tables) and write "
+        "shared/fast_walks.md, one line per curve whose walk length was under 0.87 sqrt(n): "
+        "its ID, its n in bits, its walk length, its table and page, and whether rho on it "
+        "(about 2^(bits/2) operations) is within the survey comparison budget, which it "
+        "should assume is 2^56 operations. Before it reads, it should run "
+        "scripts/rho_experiment.py --p 17 and keep the run's seed and fingerprint exactly; "
+        "its result must quote both exactly, and say whether the fast walks bear on the "
+        "measured speedup, keeping the speedup's qualifier (a finite test, p = 17 only). Ask "
+        "it to tell you with message_parent once it has finished page 115. When it does, "
+        'send it this with message_child: "Correction: the survey comparison budget is 2^60 '
+        "operations, not 2^56. Use 2^60 from now on, and revise the marks of the lines you "
+        'already wrote." Then wait for its result, and tell me how many curves it listed and '
+        "how many are within the budget.",
+    ),
 )
 STEPS: Final = (*SEED, *LIVE)
 BY_ID: Final = {step.id: step for step in STEPS}
@@ -246,6 +275,25 @@ NOT_FOUND_WORDS: Final = (
     "found no", "no copy", "no reference", "no citation", "could not locate", "did not identify",
 )  # fmt: skip
 DONE_NEXT_STEP, CLOSING_STEP = "L14", "L15"
+CHILD_STEP: Final = "L16"
+"""The step whose main run delegates the reading task: one child, at the arm's C."""
+CHILD_PAGES: Final = (41, 190)
+CHILD_FILE: Final = "shared/fast_walks.md"
+CHILD_REPORT_PAGE: Final = 115
+CHILD_LITERALS: Final = ("seed", "fingerprint")
+"""The values the child reads at its start and quotes in its result (CM-P3)."""
+CHILD_OLD_BUDGET: Final = ("2^56", "2^{56}", "2**56")
+CHILD_NEW_BUDGET: Final = ("2^60", "2^{60}", "2**60")
+CHILD_OLD_BITS, CHILD_NEW_BITS = 112, 120
+"""The largest n, in bits, within each budget: rho costs about 2^(bits/2)."""
+CHILD_GROWTH_PAGES: Final = CHILD_PAGES[1] - CHILD_PAGES[0] + 1
+DELEGATION: Final = (
+    "--depth", "1", "--task-tokens", "30000000", "--task-turns", "400", "--soft-cost", "40",
+)  # fmt: skip
+"""The project's delegation settings for L16, set on each arm's store before its runs:
+main runs may delegate; a task's soft caps (tokens, turns, and the cost check-in, in USD)
+well above what 150 pages take (about 60 calls, 10 million tokens, USD 10), so no
+check-in interrupts the child."""
 CLOSING_FILE: Final = "report/closing.md"
 WORDS_OF_THE_PAST: Final = (
     "previous", "previously", "old ", "earlier", "before", "was ", "were ", "instead", "no longer",
@@ -265,44 +313,56 @@ class Arm:
     ceiling: int
     skeleton_only: bool = False
     model: Literal["primary", "second", "claude"] = "primary"
-    """Which alias runs it: the plan's primary GPT model, its second, or Claude's."""
-    budget: float = 0.0
+    """Which alias runs it: round 1's primary GPT model, its second, or Claude's."""
+    budget: float | None = None
+    """Its cap; ``None``: the cost model's, from the gateway's prices (``drive.cap``)."""
     proposed: bool = False
     """Beyond the base plan: run only once the plan is confirmed (``arm --proposed``)."""
     deferred: str | None = None
     """Why it is not in this round, if it is not: the driver refuses to run it."""
 
 
-NO_CLAUDE: Final = "the owner's conditions leave Claude out of round 1 (2026-10-16)"
+ROUND_1: Final = "ran in round 1 (2026-10-16, lab 44); round 2 runs Claude alone"
 OVER_BUDGET: Final = (
     "dropped at the seed's checkpoint: at the calls a run takes, it would not fit the budget"
 )
+NO_ROOM: Final = (
+    "not in the budget's margin: at Opus 4.8's prices its cap (USD 115 with its child, "
+    "estimate 76) with the three 250,000 arms' (165, the compaction arm's held in reserve) "
+    "and what was spent outside the kit leaves under USD 15 of the 300 for overruns or a "
+    "rerun, and its forecast is at its validity bar (two folds; round 1's made one)"
+)
+COMPACTION_PENDING: Final = (
+    "pending product work: the run service has no mode that hands folding to Anthropic's "
+    "server-side compaction (beta compact-2026-01-12); its cap is held in reserve"
+)
 
-# Round 1 runs on OpenAI models alone, through the gateway's arrcodex aliases, within
-# USD 500 in all, the seed included (the owner, 2026-10-16). At the seed's checkpoint the
-# runs took about three times the calls planned, and the reported costs price calls past
-# 272,000 tokens at the base rates, below the gateway's listed long-context rates: the
-# plan became option 1 (the coordinator, 2026-10-16), with caps on the reported costs and
-# a hard stop low enough that the listed rates too stay within USD 500.
+# Round 2 runs on Claude alone, arr-claude-opus-4-8 (Opus 5.5 declines the scenario's
+# cryptanalysis steps as "cyber"; Opus 4.8 answers them), within the owner's USD 300 for
+# the whole lab (2026-11-02), from round 1's seed. Round 1's GPT arms stay listed for its
+# bundles and scores.
 ARMS: Final = (
-    Arm("gpt-250-a", "gpt", 250_000, budget=40),
-    Arm("gpt-250-b", "gpt", 250_000, budget=40),
-    Arm("gpt-600", "gpt", 600_000, budget=100),
-    Arm("gpt-250-skeleton", "gpt", 250_000, skeleton_only=True, budget=40),
-    Arm("second-250", "gpt", 250_000, model="second", budget=80, proposed=True),
+    Arm("gpt-250-a", "gpt", 250_000, budget=40, deferred=ROUND_1),
+    Arm("gpt-250-b", "gpt", 250_000, budget=40, deferred=ROUND_1),
+    Arm("gpt-600", "gpt", 600_000, budget=100, deferred=ROUND_1),
+    Arm("gpt-250-skeleton", "gpt", 250_000, skeleton_only=True, budget=40, deferred=ROUND_1),
+    Arm("second-250", "gpt", 250_000, model="second", budget=80, deferred=ROUND_1),
     Arm("gpt-600-b", "gpt", 600_000, deferred=OVER_BUDGET),
     Arm("second-600", "gpt", 600_000, model="second", deferred=OVER_BUDGET),
-    Arm("claude-250-a", "claude", 250_000, model="claude", deferred=NO_CLAUDE),
-    Arm("claude-250-b", "claude", 250_000, model="claude", deferred=NO_CLAUDE),
-    Arm("claude-600", "claude", 600_000, model="claude", deferred=NO_CLAUDE),
-    Arm("claude-250-skeleton", "claude", 250_000, True, model="claude", deferred=NO_CLAUDE),
+    Arm("claude-250", "claude", 250_000, model="claude"),
+    Arm("claude-250-skeleton", "claude", 250_000, skeleton_only=True, model="claude"),
+    Arm("claude-250-compaction", "claude", 250_000, model="claude", deferred=COMPACTION_PENDING),
+    Arm("claude-600", "claude", 600_000, model="claude", deferred=NO_ROOM),
 )
+RESERVED: Final = ("claude-250-compaction",)
+"""Deferred arms whose caps the round's plan holds back: they are expected this round."""
 SEED_BUDGET: Final = 65.0
 SEED_TARGET: Final = 400_000
 """The seed's last view: the 600,000 arm's start, under 0.7 of its C (420,000)."""
-TOTAL_BUDGET: Final = 380.0
-"""The most the whole round may spend as its calls report it, seed included: no step
-starts past it. Below USD 500 by what the listed long-context rates would add."""
+TOTAL_BUDGET: Final = 300.0
+"""The most the whole round may spend as its calls report it, everything included (the
+owner, 2026-11-02): with what was spent outside the kit (``round.json``'s ``elsewhere``),
+no step starts past it."""
 ARM_BY_NAME: Final = {arm.name: arm for arm in ARMS}
 SEED_SHARE: Final = 0.70
 """Each arm starts from the last seed snapshot whose view was at most this share of its

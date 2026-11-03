@@ -42,6 +42,9 @@ def hexdigits(label: str, count: int) -> str:
 # The curve: fictional, and not derived from any real curve (each file says so).
 P_FIELD: Final = digits("cm-lab p", 134) + "7"
 """Odd, as a prime field's p must be: round 1's ended in 6, which an agent noticed."""
+ROUND_1_P: Final = digits("cm-lab p", 135)
+"""The p round 1's seed was recorded with (2026-10-16): the arms of a later round that
+start from that seed hold its ``data/params.json``, so their SHA-256 is that file's."""
 ORDER: Final = digits("cm-lab order", 135)
 GENERATOR_X: Final = digits("cm-lab generator x", 135)
 TWIST_OLD_BITS: Final = 132
@@ -54,7 +57,7 @@ TWIST_NEW: Final = str((1 << (TWIST_NEW_BITS - 1)) + int(digits("cm-lab twist v2
 SPEEDUP: Final = "1.38"
 """The finite test's measured speedup (CM-P8): its qualifier is "finite test, p = 17 only"."""
 
-PARAMS: Final = {
+PARAMS: Final[dict[str, object]] = {
     "note": "Synthetic lab values. They are fixed by the lab and are not derived from a real "
     "curve: do not try to verify them by point counting.",
     "name": "K7-448-t3",
@@ -67,7 +70,14 @@ PARAMS: Final = {
     "cofactor": 4,
     "generator_x": GENERATOR_X,
 }
-PARAMS_BYTES: Final = (json.dumps(PARAMS, indent=2) + "\n").encode()
+
+
+def params_bytes(p: str = P_FIELD) -> bytes:
+    """``data/params.json`` with the field's ``p``: the current one, or a seed's."""
+    return (json.dumps({**PARAMS, "p": p}, indent=2) + "\n").encode()
+
+
+PARAMS_BYTES: Final = params_bytes()
 
 
 @dataclass(frozen=True)
@@ -80,21 +90,41 @@ class Literal:
     labels: tuple[str, ...]
 
 
-LITERALS: Final = (
-    Literal("order", ORDER, ("order", " n ", "n =", "n:")),
-    Literal("params_sha256", hashlib.sha256(PARAMS_BYTES).hexdigest(), ("sha-256", "sha256")),
-    Literal("eprint_a", "2031/0417", ("eprint", "source a", "a.pdf")),
-    Literal("eprint_b", "2031/1186", ("eprint", "source b", "b.pdf")),
-    Literal("doi_c", "10.5555/kst.2031.044", ("doi", "source c", "c.pdf")),
-    Literal("parameter_set", "K7-448-t3", ("parameter set", "parameters", "curve")),
-    Literal("generator_x", GENERATOR_X, ("base point", "generator", "x coordinate", "x =")),
-    Literal("rho_iterations", "2^61.37", ("iteration",)),
-    Literal("fingerprint", hexdigits("cm-lab fingerprint", 16), ("fingerprint",)),
-    Literal("seed", "0x" + hexdigits("cm-lab seed", 12), ("seed",)),
-)
+def literals(p: str = P_FIELD) -> tuple[Literal, ...]:
+    """The ten values, with ``data/params.json``'s SHA-256 as the file holds ``p``."""
+    return (
+        Literal("order", ORDER, ("order", " n ", "n =", "n:")),
+        Literal(
+            "params_sha256", hashlib.sha256(params_bytes(p)).hexdigest(), ("sha-256", "sha256")
+        ),
+        Literal("eprint_a", "2031/0417", ("eprint", "source a", "a.pdf")),
+        Literal("eprint_b", "2031/1186", ("eprint", "source b", "b.pdf")),
+        Literal("doi_c", "10.5555/kst.2031.044", ("doi", "source c", "c.pdf")),
+        Literal("parameter_set", "K7-448-t3", ("parameter set", "parameters", "curve")),
+        Literal("generator_x", GENERATOR_X, ("base point", "generator", "x coordinate", "x =")),
+        Literal("rho_iterations", "2^61.37", ("iteration",)),
+        Literal("fingerprint", hexdigits("cm-lab fingerprint", 16), ("fingerprint",)),
+        Literal("seed", "0x" + hexdigits("cm-lab seed", 12), ("seed",)),
+    )
+
+
+LITERALS: Final = literals()
 VALUES: Final = {literal.name: literal.value for literal in LITERALS}
-KNOWN: Final = (P_FIELD, TWIST_OLD, TWIST_NEW)
+ROUND_1_LITERALS: Final = literals(ROUND_1_P)
+PARAMS_SHA256: Final = {
+    VALUES["params_sha256"]: LITERALS,
+    hashlib.sha256(params_bytes(ROUND_1_P)).hexdigest(): ROUND_1_LITERALS,
+}
+"""Each ``data/params.json`` a seed may hold, by its SHA-256: the values to score with."""
+KNOWN: Final = (P_FIELD, ROUND_1_P, TWIST_OLD, TWIST_NEW)
 """Values of the same kinds that are not asked for: never a near miss of one that is."""
+
+
+def literals_for(params_sha256: str | None) -> tuple[Literal, ...]:
+    """The values a session is scored with: those of the ``data/params.json`` its seed
+    holds, by its SHA-256; the current sources' when it is not known."""
+    return PARAMS_SHA256.get(params_sha256 or "", LITERALS)
+
 
 C_PAGES: Final = 24
 C_VALUES: Final = {page: f"{page}.{digits(f'cm-lab c{page}', 4)}" for page in range(3, C_PAGES + 1)}

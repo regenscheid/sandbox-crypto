@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 """The context-management lab's driver: ``.venv/bin/python -I .agents/labs/cm_drive.py
---help`` (``cm_lab/drive.py``; the runbook is ``cm-lab-round-1.md``)."""
+--help`` (``cm_lab/drive.py``; the runbook is ``cm-lab-round-2.md``)."""
 
 import sys
 from pathlib import Path
