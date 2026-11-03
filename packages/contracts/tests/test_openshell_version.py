@@ -162,3 +162,51 @@ def test_the_containerfile_and_the_example_config_agree() -> None:
     installs = re.findall(r"openshell-([0-9.]+)/bin", example)
     assert installs
     assert set(installs) == {OPENSHELL_VERSION}
+
+
+DOC_STATEMENT = re.compile(
+    r"openshell-(\d+\.\d+\.\d+)/bin"  # the install directory
+    r"|OpenShell/v(\d+\.\d+\.\d+)/install\.sh|OPENSHELL_VERSION=v(\d+\.\d+\.\d+)"  # the installer
+    r"|(?:assumes|needs|requires|pins) (?:OpenShell |v)(\d+\.\d+\.\d+)"  # a requirement
+    r"|the OpenShell (\d+\.\d+\.\d+) CLI"
+)
+"""How a page states the release the code needs. A page that reports what a lab measured on
+another release ("OpenShell 0.1.3, VM driver") is history, and is not matched."""
+
+
+def test_the_docs_that_state_the_required_release_agree_with_the_constant() -> None:
+    names = [
+        name
+        for name in tracked()
+        if (name.startswith("docs/") and name.endswith(".md"))
+        or name in ("README.md", ".agents/labs/README.md")
+    ]
+    assert "docs/PERSONAL-BABBAGE.md" in names
+    stated = 0
+    wrong: list[str] = []
+    for name in names:
+        lines = (ROOT / name).read_text(encoding="utf-8").splitlines()
+        for number, line in enumerate(lines, 1):
+            for found in DOC_STATEMENT.finditer(line):
+                stated += 1
+                release = next(group for group in found.groups() if group)
+                if release != OPENSHELL_VERSION:
+                    wrong.append(f"{name}:{number}: says {release}")
+    assert stated >= 5  # the pages that name it are found
+    assert not wrong, (
+        f"these pages state another release than OPENSHELL_VERSION ({OPENSHELL_VERSION}):\n"
+        + "\n".join(wrong)
+    )
+
+
+def test_the_doc_scan_reads_what_a_page_says() -> None:
+    def release(text: str) -> str | None:
+        found = DOC_STATEMENT.search(text)
+        return next((group for group in found.groups() if group), None) if found else None
+
+    assert release("it assumes OpenShell 9.9.9 at the usual place") == "9.9.9"
+    assert release("unpacked at `~/.local/opt/openshell-9.9.9/bin`") == "9.9.9"
+    assert release("The helper requires v9.9.9 and will not") == "9.9.9"
+    assert release("curl .../OpenShell/v9.9.9/install.sh | OPENSHELL_VERSION=v9.9.9 sh") == "9.9.9"
+    assert release("helm 3, the OpenShell 9.9.9 CLI, and uv") == "9.9.9"
+    assert release("Measured on babbage (OpenShell 0.1.3, VM driver)") is None

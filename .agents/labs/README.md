@@ -626,9 +626,9 @@ The production selected-file policy, AGPL and permission checks still decide wor
 No model/provider call, automatic approval, rollback or disk-quota enforcement is
 claimed. Preserve original failures, identities and owners before any retry.
 
-## Context-management lab, round 1: the continuity probes
+## Context-management lab: the continuity probes
 
-The kit for the acceptance condition of context management's first build: a scripted research scenario on synthetic sources, a driver that records its seed once with folding off and runs each arm (250,000 and 600,000, and the skeleton-only control) from a copy of it, within per-arm caps and the round's budget, and a scorer for CM-P1 to CM-P9. Round 1 runs OpenAI models alone, through the gateway's `arrcodex` aliases, within USD 500; the Claude arms are deferred. It waits for steps (f2b) and (f3). Its runbook, with the models, each arm's configuration, the expected cost and the teardown, is [cm-lab-round-1.md](cm-lab-round-1.md); the code is in `cm_lab/`, run through `cm_drive.py` and `cm_score.py`.
+The kit for the acceptance condition of context management's first build: a scripted research scenario on synthetic sources, a driver that records its seed once with folding off and runs each arm (250,000 and 600,000, and the skeleton-only control) from a copy of it, within per-arm caps and the round's budget, and a scorer for CM-P1 to CM-P9. Round 1 (2026-10-16) ran OpenAI models alone, through the gateway's `arrcodex` aliases, within USD 500 ([its runbook](cm-lab-round-1.md)). Round 2 runs Claude alone, on `arr-claude-opus-4-8`, within USD 300 for the whole lab, from round 1's seed counted with Claude's tokenizer, and adds L16, a delegated reading task whose child folds within its own run and is scored on CM-P2/P7, CM-P3, CM-P8 and CM-P9, and a third arm, Anthropic's server-side compaction in place of folds (`--context-mode provider_compaction`, CM-38b), whose compactions the scorer counts as its folds; its caps come from a cost model with Claude's cache writes ([its runbook](cm-lab-round-2.md)). The code is in `cm_lab/`, run through `cm_drive.py` and `cm_score.py`.
 
 ## Real-model lab of the Phase A/B items (2026-10-31)
 
@@ -655,3 +655,47 @@ note lines), and `cleanup` or `abort`.
 ```
 
 [Report](../docs/agent-reports/babbage-phase-ab-labs-2026-10-31.md).
+
+## DA-20 on real OpenShell: a child's processes held to its write area (2026-11-01)
+
+`da20_probes.py` sends a parent run's and a child's requests straight to the worker of a
+`model_lab.py` root (its own gateway, VM driver), with no model: project `modellab`'s
+environment, session `held`, a parent with no write area, a child in `work/dlg-da20a` and a
+sibling's area `work/dlg-da20b`. Its parts are `seed` (the environment, created as the
+harness's `ensure_environment` does, and the parent's, input, sibling and shared files),
+`hello` (`sandbox_confine.abi()` and `--probe` run in the sandbox as the executor's `hello`
+runs them, and the seccomp filter count of a parent's and a child's process), `shell`, `cell`
+(with a kernel restart and the `kernel_confinement` refusals), `job`, `network`, `process`
+(limits, priority, ptrace, signals, locks and a lease on the parent's kernel and the executor,
+then a SIGTERM to the parent's kernel), `provision` (sympy through `/v1/provisioning`, then
+`pip install` in the child's shell) and `parent` (the same shell probe unheld). Each part's
+requests and answers are evidence `da20-<part>`, exported by `cleanup` with the root's
+manifest. The `process` part ends the parent's kernel on purpose.
+
+`model_lab.py` adds the sessions `held` and `delegate` and the stages `delegate` (three tasks:
+cells and a shell command, sympy, a background job) and `delegate2` (a task needing networkx,
+which the environment lacks).
+
+```bash
+.venv/bin/python -I .agents/labs/model_lab.py prepare --model arr-claude-opus-5.5 --api messages
+.venv/bin/python -I .agents/labs/model_lab.py up "$LAB"
+.venv/bin/python -I .agents/labs/da20_probes.py "$LAB"            # all parts, in order
+.venv/bin/python -I .agents/labs/model_lab.py send "$LAB" delegate delegate
+.venv/bin/python -I .agents/labs/model_lab.py wait "$LAB" delegate
+.venv/bin/python -I .agents/labs/model_lab.py capture "$LAB" delegate delegate-final
+.venv/bin/python -I .agents/labs/model_lab.py cleanup "$LAB"
+```
+
+The fixes' recheck added the part `signals` (every signal call against the parent's kernel, the
+executor and a parent's job that records what it gets, then the child's own processes, pools and
+joblib) and `model_lab.py prepare --no-model`, which reads no personal config and names no
+credentials (the model is a loopback port nothing listens on; no direct MCP path), for scripted labs:
+
+```bash
+.venv/bin/python -I .agents/labs/model_lab.py prepare --no-model
+.venv/bin/python -I .agents/labs/model_lab.py up "$LAB"
+.venv/bin/python -I .agents/labs/da20_probes.py "$LAB"
+.venv/bin/python -I .agents/labs/model_lab.py cleanup "$LAB"
+```
+
+[Report](../docs/agent-reports/babbage-da20-lab-2026-11-01.md), with the recheck as its addendum.

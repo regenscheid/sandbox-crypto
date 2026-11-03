@@ -86,7 +86,7 @@ CHECK_PROMPT: Final = (
 )
 CHECK: Final = Section("delegated-check", CHECK_VERSION, CHECK_PROMPT)
 
-TASK_VERSION: Final = "sandbox-delegated-task-17"
+TASK_VERSION: Final = "sandbox-delegated-task-19"
 """The version of ``TASK_PROMPT``'s text."""
 TASK_PROMPT: Final = (
     "You are a delegated research agent. Your tokens, turns, active time and cost have "
@@ -162,13 +162,16 @@ TASK_PROMPT: Final = (
     "found it) and result_files (the paths of the files that are your results, as your "
     "calls wrote or published them; the platform pins each to the revision your calls "
     "made, and refuses one they did not). "
-    "When your brief lists deliverables, your result's deliverables accounts for every "
-    "one, honestly, by its number as id: produced with what you produced (for an "
-    "artifact its path and revision, for a file its path, for an entry its handle as "
-    "entry, for an answer the answer itself), partial with what exists and what is "
-    "missing, or not_produced with its reason, rather than left out; your status is "
-    "complete only when every one was produced. When it lists none, leave deliverables "
-    "out. "
+    "When your brief lists deliverables, your result's deliverables is a list, not an "
+    "object keyed by number, with one object for each deliverable that accounts for it, "
+    "honestly, with its number as id, such as "
+    '{"id": "d1", "status": "produced", ...}: '
+    "produced with what you produced, in the fields of its kind and no others, as the "
+    "brief's line for it shows (for an artifact its path and the revision number your "
+    "calls recorded, for a file its path alone, for an entry its handle as entry, for an "
+    "answer the answer itself), partial with what exists and what is missing, or "
+    "not_produced with its reason, rather than left out; your status is complete only "
+    "when every one was produced. When it lists none, leave deliverables out. "
     "You may give lessons, at most 5, each one line of at most 200 characters: what you "
     "learned operating the tools that a later run could use, stated as observations, "
     "such as a query form that works, a fetch that stalled and what worked instead, or a "
@@ -200,25 +203,37 @@ REOPENED_TASK: Final = (
 (PD-46): the platform's words; the parent's message comes as an agent message."""
 
 
+def processes_text(own_environment: bool) -> str:
+    """What a brief says of a child's processes (DA-20), after the file tools' rule."""
+    where = "your environment's files" if own_environment else "the session's files"
+    return (
+        "Your shell commands, jobs and Python and Sage cells start in your write area "
+        "($RUN_WORK) and can write only there and in $TMPDIR: not inputs/, shared/, other "
+        "files or the installed packages (install packages with provision when you have "
+        f"it). They read {where} at $SESSION_WORKSPACE."
+    )
+
+
 def write_area_text(area: str, *, own_environment: bool = False) -> str:
-    """The platform's line of a brief that names the child's write area (DA-19). A child in
-    the session's environment reads every file of the session and its parent reads the
-    area where it is. A child in an environment of its own (CE-1) has only what was
-    copied into it, which the brief's next line names (CE-7), so the line does not say it
-    reads the session's files, and says the area's files come back to the same paths in
-    the session when the task ends (CE-6)."""
+    """The platform's line of a brief that names the child's write area (DA-19), and holds
+    its processes to it (DA-20). A child in the session's environment reads every file of
+    the session and its parent reads the area where it is. A child in an environment of
+    its own (CE-1) has only what was copied into it, which the brief's next line names
+    (CE-7), so the line does not say it reads the session's files, and says the area's
+    files come back to the same paths in the session when the task ends (CE-6)."""
     if own_environment:
         return (
             f"Your write area: {area}/, in your own environment. write_file and edit_file "
             "write only there and in shared/ (with create_only or expected_sha256); you "
             "read your own environment's files, not the session's other files; when your "
             "task ends, the files of your write area are copied to the same paths in the "
-            "session for your parent to read."
+            f"session for your parent to read. {processes_text(True)}"
         )
     return (
         f"Your write area: {area}/. write_file and edit_file write only there and in "
         "shared/ (with create_only or expected_sha256); you read every file of the "
-        "session, and your parent reads your write area, by the paths you wrote."
+        "session, and your parent reads your write area, by the paths you wrote. "
+        f"{processes_text(False)}"
     )
 
 
@@ -307,6 +322,22 @@ def brief_text(task: str, inputs: list[str], note: str, flags: Sequence[str] = (
     return "\n\n".join(parts)
 
 
+PRODUCED: Final = {
+    "artifact": '"path": "<its path>", "revision": <the revision your calls recorded>',
+    "file": '"path": "<its path>"',
+    "entry": '"entry": "<its handle>"',
+    "answer": '"answer": "<the answer itself>"',
+}
+"""The fields a produced deliverable of each kind gives, and only those (PD-45)."""
+
+
+def produced_form(number: str, kind: str) -> str:
+    """How a result accounts for deliverable ``number`` of ``kind`` produced, as its line
+    of the brief shows it: the kind's fields alone, so that one kind's form is not
+    copied into another's."""
+    return f'{{"id": "{number}", "status": "produced", {PRODUCED[kind]}}}'
+
+
 def task_text(
     task: str,
     context: str,
@@ -328,10 +359,12 @@ def task_text(
         parts.append("Inputs:\n" + "\n".join(f"- {item}" for item in inputs))
     if deliverables:
         parts.append(
-            "Deliverables, each to account for in your result's deliverables by its number:\n"
+            "Deliverables; your result's deliverables is a list with one object for each, "
+            "its number as id, produced in the form its line shows:\n"
             + "\n".join(
                 f"- {number} ({kind}): {title}"
                 + (f". What counts: {description}" if description else "")
+                + (f". Produced: {produced_form(number, kind)}" if kind in PRODUCED else "")
                 for number, title, kind, description in deliverables
             )
         )

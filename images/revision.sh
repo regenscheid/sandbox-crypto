@@ -23,7 +23,8 @@ recipe_inputs() {
   case $1 in
     minimal|crypto-base)
       inputs+=(../packages/worker/src/sandbox_science/worker/binding_inventory.py
-        ../packages/worker/src/sandbox_science/worker/shim/sched_self.c)
+        ../packages/worker/src/sandbox_science/worker/shim/sched_self.c
+        ../packages/worker/src/sandbox_science/worker/shim/signal_self.c)
       ;;
     trusted-app|trusted-worker)
       inputs+=(trusted services build_trusted.sh test_trusted.sh orchestrator/conda-lock.yml ../pyproject.toml ../uv.lock

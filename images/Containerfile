@@ -112,8 +112,10 @@ RUN rmdir /opt/sandbox-science && \
 ENV PATH=/opt/sandbox-science/bin:/opt/sandbox-science-base/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     JUPYTER_PATH=/opt/sandbox-science-base/share/jupyter
 
-# Compile for the image's target platform, independently of the worker host.
-# Only the library reaches research images; the compiler stays in this stage.
+# Compile for the image's target platform, independently of the worker host: the scheduler
+# shim, which every sandbox process preloads under OpenShell, and the signal shim, which a
+# delegated run's processes preload (DA-20). Only the libraries reach research images; the
+# compiler stays in this stage.
 FROM base AS scheduler-shim
 ARG UBUNTU_SNAPSHOT
 RUN apt-get -o APT::Snapshot="${UBUNTU_SNAPSHOT}" update && \
@@ -123,6 +125,11 @@ RUN --mount=type=bind,from=binding-inventory,source=shim/sched_self.c,target=/tm
     install -d "/output/$revision" && \
     cc -shared -fPIC -O2 "-DSANDBOX_SCIENCE_SCHED_SOURCE_SHA256=\"$revision\"" \
         -o "/output/$revision/libsandbox-science-sched.so" /tmp/sched_self.c
+RUN --mount=type=bind,from=binding-inventory,source=shim/signal_self.c,target=/tmp/signal_self.c \
+    revision=$(sha256sum /tmp/signal_self.c | cut -d ' ' -f 1) && \
+    install -d "/output/$revision" && \
+    cc -shared -fPIC -O2 "-DSANDBOX_SCIENCE_SIGNAL_SOURCE_SHA256=\"$revision\"" \
+        -o "/output/$revision/libsandbox-science-signal.so" /tmp/signal_self.c
 
 # ---------------------------------------------------------------------------------------------
 FROM research-base AS minimal

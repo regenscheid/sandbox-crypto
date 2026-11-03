@@ -66,6 +66,28 @@ def require_run_kernels(channel: ExecutorChannel) -> None:
         )
 
 
+def require_confinement(channel: ExecutorChannel) -> None:
+    """Refuse a delegated run's execution (one naming a write area) on an executor that
+    cannot hold its processes to the area (DA-20): one from before confinement, which
+    would ignore the field, one whose confinement predates protocol 2 (which leaves
+    the signal calls a sandbox's supervisor carries out open, and never checks that its
+    rules hold), or one that says why it cannot. Its code never runs unconfined."""
+    report = channel.hello.get("confinement")
+    if not isinstance(report, dict) or cast(dict[str, Any], report).get("protocol") != 2:
+        raise WorkerError(
+            ErrorKind.UNSUPPORTED,
+            "this environment's executor predates holding a delegated run to its write area; "
+            "recycle the environment",
+        )
+    reason = cast(dict[str, Any], report).get("unavailable")
+    if reason is not None:
+        raise WorkerError(
+            ErrorKind.UNSUPPORTED,
+            "this environment cannot hold a delegated run's processes to its write area "
+            f"({str(reason)[:300]}), so it runs none of them",
+        )
+
+
 def require_conditional_kernel_restart(channel: ExecutorChannel) -> None:
     """Refuse a recovery restart when the attached executor cannot make it atomic.
 
@@ -300,6 +322,14 @@ class KernelRegistry:
             if request.run is not None:
                 require_run_kernels(channel)
                 fields["run"] = request.run
+            if context.write_area is not None:
+                if request.run is None:
+                    raise WorkerError(
+                        ErrorKind.INVALID_REQUEST,
+                        "a delegated run's kernel is its own; name its run",
+                    )
+                require_confinement(channel)
+                fields["write_area"] = context.write_area
             if request.only_if_absent:
                 require_conditional_kernel_restart(channel)
                 fields["only_if_absent"] = True

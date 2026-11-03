@@ -24,6 +24,7 @@ lock serializes cooperating commands; it is no security boundary.
 from __future__ import annotations
 
 import contextlib
+import errno
 import fcntl
 import hashlib
 import ipaddress
@@ -2154,6 +2155,23 @@ def take_turn(state: State, config: Config, path: str, argv: Sequence[str], via:
             exit_as(1)
 
 
+HELD_HINT = (
+    "sandbox-science: a delegated run's processes cannot change the installed packages; "
+    "install them with the provision tool instead\n"
+)
+"""What a delegated run's package command adds when it is refused (DA-20)."""
+
+
+def held_refusal(error: OSError) -> bool:
+    """Whether ``error`` refused a package command of a delegated run's processes, whose
+    write area ``RUN_WORK`` names (DA-20): the environment is read-only to them."""
+    return bool(os.environ.get("RUN_WORK")) and error.errno in (
+        errno.EACCES,
+        errno.EPERM,
+        errno.EROFS,
+    )
+
+
 def wrap(directory: str, tool: str, path: str, args: Sequence[str]) -> NoReturn:
     """A wrapper's work for a command that may change the environment: run ``tool``, which
     is ``path``, in its turn. The shell wrapper runs any other command itself."""
@@ -2173,6 +2191,8 @@ def wrap(directory: str, tool: str, path: str, args: Sequence[str]) -> NoReturn:
         code = take_turn(state, config, path, argv, "wrapper")
     except OSError as exc:
         sys.stderr.write(f"{tool}: cannot run {path}: {exc}\n")
+        if held_refusal(exc):
+            sys.stderr.write(HELD_HINT)
         exit_as(126)
     if code is None:
         os.execv(path, argv)  # noqa: S606
@@ -2196,7 +2216,13 @@ def hook(directory: str, module: str, argv: Sequence[str], args: Sequence[str]) 
     except (OSError, ValueError) as exc:
         sys.stderr.write(f"sandbox-science: running {module} without its turn: {exc}\n")
         return
-    code = take_turn(state, config, sys.executable, [sys.executable, *argv[1:]], "module")
+    try:
+        code = take_turn(state, config, sys.executable, [sys.executable, *argv[1:]], "module")
+    except OSError as exc:
+        if not held_refusal(exc):
+            raise
+        sys.stderr.write(f"{module}: cannot run: {exc}\n{HELD_HINT}")
+        exit_as(126)
     if code is not None:
         exit_as(code)
 

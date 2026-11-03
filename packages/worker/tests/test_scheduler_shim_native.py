@@ -14,7 +14,12 @@ from pathlib import Path
 import pytest
 
 from sandbox_science.worker import backends
-from sandbox_science.worker.backends import SCHED_SHIM_NAME, SCHED_SHIM_SOURCE, OpenShellBackend
+from sandbox_science.worker.backends import (
+    SCHED_SHIM_NAME,
+    SCHED_SHIM_SOURCE,
+    SIGNAL_SHIM,
+    OpenShellBackend,
+)
 from sandbox_science.worker.channel import ExecutorChannel
 from sandbox_science.worker.errors import WorkerError
 from sandbox_science.worker.settings import OpenShellBackendSettings
@@ -66,7 +71,7 @@ class NativePeer:
         )
         return completed.returncode, completed.stdout + completed.stderr
 
-    async def connect(self) -> None:
+    async def connect(self, signal_shim: bool = False) -> None:
         async def event(_message: object) -> None:
             pass
 
@@ -79,6 +84,7 @@ class NativePeer:
                 sandboxes={"env": "test"},
                 executor_dir=str(self.executor),
                 project_root=str(self.root / "project"),
+                signal_shim=signal_shim,
             ),
             self.root / "state",
         )
@@ -110,7 +116,7 @@ def native_peer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> NativePeer:
         return await original(*argv, env=env)
 
     monkeypatch.setattr(backends, "_command", command)
-    monkeypatch.setattr(backends, "SCHED_SHIM_IMAGE_DIR", str(tmp_path / "image"))
+    monkeypatch.setattr(backends, "SHIM_IMAGE_DIR", str(tmp_path / "image"))
     return peer
 
 
@@ -152,3 +158,16 @@ async def test_concurrent_install_never_overwrites_an_existing_library(
     assert native_peer.installed.stat().st_ino == native_peer.race_inode
     assert native_peer.installed.read_bytes() == library.read_bytes()
     assert not list(native_peer.installed.parent.glob("incoming-*.so"))
+
+
+async def test_the_signal_shim_is_checked_and_built_the_same_way(native_peer: NativePeer) -> None:
+    """The image's scheduler shim is used; the signal shim, missing from the image, is
+    built with the host's compiler, uploaded once and validated in the target."""
+    compile_library(native_peer.image)
+    with pytest.raises(WorkerError, match="no usable SSH configuration"):
+        await native_peer.connect(signal_shim=True)
+    assert len(native_peer.uploads) == 1
+    machine = native_peer.installed.parent.name.rsplit("-", 1)[1]
+    installed = native_peer.executor / "shim" / f"{SIGNAL_SHIM.revision}-{machine}"
+    assert (installed / SIGNAL_SHIM.name).is_file()
+    assert not list(installed.glob("incoming-*.so"))

@@ -72,3 +72,17 @@ this existing unsupported path does not gain authority through an effort setting
 change a saved continuation's profile. An adapter/alias mismatch fails rather than
 silently changing the pinned caller. Existing budgets, response bounds and turn limits
 still apply.
+
+## Refusal fallback
+
+`[model.refusal_fallback]` maps a Claude alias to a fallback alias, such as
+`{ sandbox-orchestrator = "claude-opus-4-8" }` (the run service's
+`--refusal-fallback ALIAS=FALLBACK`, repeated; empty by default). When the alias's model
+declines a call (`stop_reason: "refusal"`), the Messages adapter sends the same request
+once to the fallback, with the caller's pinned profile (its role and effort) under the
+fallback's alias, and the rest of that run calls the fallback. The pinned profile does not
+change: the record names the model that answered each call, and a new run or a Resume
+starts on the configured alias again. A fallback is called through the Messages adapter,
+so it names a Claude alias that takes the role's effort; a fallback that refuses the
+effort fails the call as such an error would. See
+[context management](specs/context-management.md), CM-42a.

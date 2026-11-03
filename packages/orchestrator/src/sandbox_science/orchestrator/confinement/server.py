@@ -173,6 +173,17 @@ class ControlSettings(Contract):
         return value
 
     @model_validator(mode="after")
+    def folds_in_confinement(self) -> ControlSettings:
+        # The runtime's adapters carry no compaction scope across the boundary yet: a
+        # confined run would send its whole history uncompacted (CM-38b).
+        if self.settings.context_mode == "provider_compaction":
+            raise ValueError(
+                "the provider_compaction context mode runs in the run service only, not in "
+                "the confined agent runtime"
+            )
+        return self
+
+    @model_validator(mode="after")
     def remote_tls(self) -> ControlSettings:
         if not loopback(self.listen) and self.tls is None:
             raise ValueError("a non-loopback control bind requires TLS")

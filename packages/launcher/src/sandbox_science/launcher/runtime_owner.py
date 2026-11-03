@@ -308,6 +308,7 @@ def agent_settings(
     embedding: str | None,
     default_api: str = "chat",
     thinking_replay: Mapping[str, object] | None,
+    refusal_fallback: Mapping[str, str] | None = None,
     generation: str,
     control_ca: bool = False,
     mcp: Mapping[str, object] | None = None,
@@ -333,6 +334,7 @@ def agent_settings(
         "reasoning_effort": dict(reasoning_effort),
         "embedding": embedding,
         "thinking_replay": None if thinking_replay is None else dict(thinking_replay),
+        "refusal_fallback": dict(refusal_fallback or {}),
         "generation": generation,
     }
 

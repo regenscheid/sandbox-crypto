@@ -16,13 +16,17 @@ import hashlib
 import json
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field, replace
 from typing import Any, ClassVar, Final, Protocol, Self, cast
 
 import aiohttp
+from pydantic import Field
 
 from sandbox_science.contracts.clock import SYSTEM_CLOCK, Clock
+from sandbox_science.contracts.model import Contract
 
 from . import images
 from .model_profiles import PROFILES, ModelProfile, ModelRole, default_effort, requested
@@ -49,6 +53,26 @@ class ToolCall:
     name: str
     arguments: str
     """The arguments as the model wrote them: JSON text, not yet validated."""
+
+
+class Refusal(Contract):
+    """A call the model declined to answer (Claude's ``stop_reason: "refusal"``, CM-42a):
+    the category and explanation the API gave (its ``stop_details``), the alias it was
+    asked on and the model that declined, and the call's tokens and cost, which the
+    gateway charged as any call's."""
+
+    category: str | None = Field(default=None, max_length=64)
+    explanation: str | None = Field(default=None, max_length=2000)
+    alias: str | None = Field(default=None, max_length=200)
+    model: str | None = Field(default=None, max_length=200)
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    cost: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    cost_source: CostSource | None = None
+
+    def said(self) -> str:
+        """The refusal in a few words: ``the model declined: cyber``."""
+        return f"the model declined: {self.category or 'no category given'}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +128,10 @@ class ModelTurn:
     cache_read_input_tokens: int | None = None
     cache_creation_input_tokens: int | None = None
     """Provider-reported cache counters; absent counters are unknown, not zero."""
+    refused: Refusal | None = None
+    """The call this answer stands in for, when the alias's model declined it and the
+    alias's fallback answered (CM-42a). ``cost`` is then both calls' when both are known;
+    ``model``, ``alias``, the tokens and the rest are the answering call's."""
 
 
 COST_HEADER: Final = "x-litellm-response-cost"
@@ -263,6 +291,112 @@ class GatewayBudgetError(ModelError):
 
 GATEWAY_BUDGET: Final = "gateway_budget"
 """How a run stops when the gateway refuses a call for its budget."""
+
+
+class ModelRefusedError(ModelError):
+    """The model declined to answer (Claude's ``stop_reason: "refusal"``), and no fallback
+    answered for it (CM-42a): never an empty answer. ``refusals`` are the declined calls in
+    order, the alias's and, when it was asked, its fallback's; ``cost`` is theirs together,
+    as far as the gateway reported it."""
+
+    def __init__(self, refusals: Sequence[Refusal], *, intent_id: str | None = None) -> None:
+        if not refusals:
+            raise ValueError("a refusal names the call that was declined")
+        costs = [refusal.cost for refusal in refusals if refusal.cost is not None]
+        super().__init__(
+            declined(refusals), cost=sum(costs) if costs else None, intent_id=intent_id
+        )
+        self.refusals = tuple(refusals)
+
+    def summary(self) -> dict[str, Any]:
+        """What a run's record keeps of it (``summaries["refusal"]``)."""
+        last = self.refusals[-1]
+        return {
+            "category": last.category,
+            "said": str(self),
+            "calls": [refusal.model_dump(mode="json") for refusal in self.refusals],
+        }
+
+
+def declined(refusals: Sequence[Refusal]) -> str:
+    """A refusal, and its fallback's, in a sentence: ``the model declined: cyber
+    (claude-opus-5-5 on main)``."""
+    first = refusals[0]
+    said = f"{first.said()} ({first.model or 'model not named'} on {first.alias or 'its alias'})"
+    for other in refusals[1:]:
+        said += (
+            f"; its fallback {other.alias or 'alias'} declined too: "
+            f"{other.category or 'no category given'}"
+        )
+    return said
+
+
+MODEL_REFUSED: Final = "model_refused"
+"""How a run stops when the model declines a call and no fallback answers it (CM-42a)."""
+NOT_RETRIED: Final = frozenset({"reasoning_extraction"})
+"""The refusal categories never sent to a fallback: Anthropic's own fallback does not
+retry a request declined for trying to extract the model's reasoning."""
+
+
+@dataclass
+class Fallbacks:
+    """A run's fallbacks (CM-42a): each alias whose call a refusal sent to its fallback,
+    which the rest of the run then calls in its place, and the refusals that did."""
+
+    taken: dict[str, str] = field(default_factory=dict[str, str])
+    refusals: list[Refusal] = field(default_factory=list[Refusal])
+
+    def took(self, alias: str, fallback: str, refusal: Refusal) -> None:
+        self.taken[alias] = fallback
+        self.refusals.append(refusal)
+
+    def summary(self) -> dict[str, Any] | None:
+        """What the run's record keeps (``summaries["model_fallback"]``); none when no
+        call fell back."""
+        if not self.taken:
+            return None
+        return {
+            "taken": dict(self.taken),
+            "refusals": [refusal.model_dump(mode="json") for refusal in self.refusals[:16]],
+        }
+
+
+FALLBACKS: ContextVar[Fallbacks | None] = ContextVar("model_fallbacks", default=None)
+"""The current run's fallbacks; none outside a run, where each call starts on its alias."""
+
+
+@contextmanager
+def run_fallbacks() -> Generator[Fallbacks]:
+    """A run's scope for its fallbacks: within it, an alias that fell back stays on its
+    fallback; a new run starts on the configured alias again."""
+    scope = Fallbacks()
+    token = FALLBACKS.set(scope)
+    try:
+        yield scope
+    finally:
+        FALLBACKS.reset(token)
+
+
+MIN_COMPACTION: Final = 50_000
+"""The least trigger, in input tokens, that Anthropic's server-side compaction takes."""
+COMPACTION: ContextVar[int | None] = ContextVar("model_compaction", default=None)
+"""The current run's trigger for Anthropic's server-side compaction, in input tokens
+(docs/specs/context-management.md, CM-38b): set for a run in the ``provider_compaction``
+context mode, and read by the Messages adapter for the run's own calls (the main and
+delegated roles); none outside such a run."""
+
+
+@contextmanager
+def run_compaction(trigger: int | None) -> Generator[None]:
+    """A run's scope for provider compaction at ``trigger`` input tokens; ``None``, a run
+    whose view folds, sends none, whatever an enclosing run sends."""
+    if trigger is not None and trigger < MIN_COMPACTION:
+        raise ValueError(f"a compaction trigger is at least {MIN_COMPACTION:,} tokens")
+    token = COMPACTION.set(trigger)
+    try:
+        yield
+    finally:
+        COMPACTION.reset(token)
 
 
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024

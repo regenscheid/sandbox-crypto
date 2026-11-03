@@ -74,6 +74,8 @@ from .control import ControlError
 from .documents import DocumentError, DocumentStore, store_path
 from .figurecheck import FigureChecker
 from .harness import (
+    CONTEXT_MODES,
+    ContextMode,
     Finished,
     Harness,
     IsolationRefusedError,
@@ -93,6 +95,7 @@ from .model import (
     API_KINDS,
     DEFAULT_API,
     MAX_RESPONSE_BYTES,
+    MIN_COMPACTION,
     ChatModel,
     GatewayModel,
     ModelError,
@@ -177,9 +180,16 @@ def effort_setting(value: str) -> tuple[ModelRole, str]:
 
 
 def _options(args: argparse.Namespace) -> dict[str, dict[str, object]]:
-    """Each adapter's own options, by its kind: Claude's thinking replay (CM-39)."""
+    """Each adapter's own options, by its kind: Claude's thinking replay (CM-39) and the
+    fallback aliases of declined calls (CM-42a)."""
     replay = getattr(args, "thinking_replay", None)
-    return {"messages": {"replay": replay}} if replay is not None else {}
+    fallbacks = dict(getattr(args, "refusal_fallback", None) or [])
+    messages: dict[str, object] = {}
+    if replay is not None:
+        messages["replay"] = replay
+    if fallbacks:
+        messages["fallbacks"] = fallbacks
+    return {"messages": messages} if messages else {}
 
 
 def _thinking_replay(value: str) -> ThinkingReplay:
@@ -196,6 +206,13 @@ def _apis(args: argparse.Namespace) -> dict[str, str]:
     if chosen is not None:
         return dict(chosen)
     return dict(cast(list[tuple[str, str]], getattr(args, "api", None) or []))
+
+
+def _context_mode(args: argparse.Namespace) -> ContextMode:
+    """``--context-mode``, or ``skeleton`` for ``--skeleton-only-folds``."""
+    if getattr(args, "skeleton_only_folds", False):
+        return "skeleton"
+    return cast(ContextMode | None, getattr(args, "context_mode", None)) or "folds"
 
 
 def _default_api(args: argparse.Namespace) -> str:
@@ -217,6 +234,16 @@ async def _choose_apis(args: argparse.Namespace) -> None:
         args.chosen_api = await gateway.choose_apis()
     finally:
         await gateway.close()
+
+
+def fallback_setting(value: str) -> tuple[str, str]:
+    """A ``--refusal-fallback`` setting, ``ALIAS=FALLBACK``: two different aliases."""
+    alias, equals, fallback = value.partition("=")
+    if not equals or not alias.strip() or not fallback.strip() or alias == fallback:
+        raise argparse.ArgumentTypeError(f"{value!r} is not ALIAS=FALLBACK, two different aliases")
+    if max(len(alias.encode()), len(fallback.encode())) > 200:
+        raise argparse.ArgumentTypeError("an alias is at most 200 bytes")
+    return alias, fallback
 
 
 def api_setting(value: str) -> tuple[str, str]:
@@ -429,7 +456,8 @@ def _harness(
                 getattr(args, "region_share", 0.15),
                 getattr(args, "region_cap_share", None),
             ),
-            skeleton_only=getattr(args, "skeleton_only_folds", False),
+            context_mode=_context_mode(args),
+            compaction_trigger=getattr(args, "compaction_trigger", None),
             fold_alias=getattr(args, "fold_alias", None),
             image_aliases=frozenset(getattr(args, "images", None) or ()),
             watcher_calls_per_hour=args.watcher_calls_per_hour,
@@ -532,6 +560,16 @@ def _agent_arguments(command: argparse.ArgumentParser) -> None:
         '"run": the run\'s ID}; off without it',
     )
     command.add_argument(
+        "--refusal-fallback",
+        action="append",
+        type=fallback_setting,
+        default=[],
+        metavar="ALIAS=FALLBACK",
+        help="the alias a Claude alias's call goes to, once, when its model declines it "
+        "(stop_reason refusal), for the rest of the run; repeat for more aliases. "
+        "Without it a declined call ends the run as model_refused",
+    )
+    command.add_argument(
         "--skills-embedding-model",
         type=embedding_alias,
         help="the gateway's embedding model alias: skills are compared by meaning too",
@@ -600,9 +638,24 @@ def _agent_arguments(command: argparse.ArgumentParser) -> None:
         "the shortening of decisions and the research_state stop",
     )
     command.add_argument(
+        "--context-mode",
+        choices=CONTEXT_MODES,
+        help="how every run's older work is condensed, a delegated run's as its root's: "
+        "folds (the default); skeleton, folds without the enrichment call; or "
+        "provider_compaction, Anthropic's server-side compaction in place of folds, for "
+        "Claude aliases called through the Messages API only",
+    )
+    command.add_argument(
         "--skeleton-only-folds",
         action="store_true",
-        help="fold MAIN's view without the enrichment call: outlines built by code alone",
+        help="fold MAIN's view without the enrichment call: outlines built by code alone "
+        "(--context-mode skeleton)",
+    )
+    command.add_argument(
+        "--compaction-trigger",
+        type=int,
+        help="the provider_compaction mode's trigger in input tokens, at least 50,000 "
+        "(default: 0.75 of the run's ceiling, where folds would start)",
     )
     command.add_argument(
         "--images",
@@ -686,6 +739,13 @@ def _agent_arguments(command: argparse.ArgumentParser) -> None:
 
 def _check_agent(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     """Refuse arguments of ``run`` or ``serve`` that do not go together."""
+    if args.skeleton_only_folds and args.context_mode not in (None, "skeleton"):
+        parser.error(f"--skeleton-only-folds is --context-mode skeleton, not {args.context_mode}")
+    if args.compaction_trigger is not None:
+        if _context_mode(args) != "provider_compaction":
+            parser.error("--compaction-trigger needs --context-mode provider_compaction")
+        if args.compaction_trigger < MIN_COMPACTION:
+            parser.error(f"--compaction-trigger is at least {MIN_COMPACTION:,} tokens")
     if args.watcher_calls_per_hour < 1:
         parser.error("--watcher-calls-per-hour must be positive")
     try:
@@ -746,6 +806,11 @@ def _check_agent(parser: argparse.ArgumentParser, args: argparse.Namespace) -> N
         parser.error("--api needs --model-url")
     if len({alias for alias, _ in args.api}) < len(set(args.api)):
         parser.error("--api names two adapters for one alias")
+    fallbacks = getattr(args, "refusal_fallback", [])
+    if fallbacks and args.model_url is None:
+        parser.error("--refusal-fallback needs --model-url")
+    if len({alias for alias, _ in fallbacks}) < len(set(fallbacks)):
+        parser.error("--refusal-fallback names two fallbacks for one alias")
     if getattr(args, "skills_embedding_model", None) is not None and args.model_url is None:
         parser.error("--skills-embedding-model needs --model-url")
     if args.max_input_chars is not None and args.max_input_chars < 1:

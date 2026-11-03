@@ -2,13 +2,15 @@
 """An arm's session as one JSON bundle: what ``score`` reads.
 
 The bundle holds the session's archived messages in order (with the files saved behind
-a sampled tool result), its main runs' records as the session keeps them, the project's
-ledger with every revision of every entry, and the read register's sources. It is read
+a sampled tool result), delegated runs' among them; its runs' records as the session
+keeps them, delegated runs' with their role, parent and delegation; the project's
+ledger with every revision of every entry; and the read register's sources. It is read
 from a copy of the arm's store, never the store a run is writing.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Final
 
@@ -27,16 +29,20 @@ REVISION: Final = {
 """What an entry's revision keeps, as it read then."""
 RECORD: Final = {
     "run_id", "task", "started_at", "ended_at", "stopped", "answer", "final_text", "usage",
-    "summaries", "alias",
+    "summaries", "alias", "role", "parent", "delegation",
 }  # fmt: skip
 """What a run's record keeps that the scores read."""
+READ_BYTES: Final = 1 << 30
+"""The most one page of the archive may load. The archive's default (8 MiB, ``limits``)
+bounds a run's working memory; GPT's native payloads in round 1's seed pass it, and the
+export, which reads the archive once, offline, needs every message whole."""
 
 
 def rows(archive: Archive, project: str, session: str) -> list[Json]:
     """The session's archived messages, in order."""
     found: list[Json] = []
     start = 1
-    while page := archive.messages(project, session, start=start):
+    while page := archive.messages(project, session, start=start, max_bytes=READ_BYTES):
         for row in page:
             entry = row.entry
             item: Json = {
@@ -57,6 +63,9 @@ def rows(archive: Archive, project: str, session: str) -> list[Json]:
                     for call in entry.tool_calls
                 ],
                 "native": entry.native.decode() if entry.kind == "fold" and entry.native else None,
+                "compaction": _compaction(entry.native)
+                if entry.kind == "assistant" and entry.native_format == "messages"
+                else None,
             }
             if entry.files:
                 item["saved"] = {
@@ -65,6 +74,22 @@ def rows(archive: Archive, project: str, session: str) -> list[Json]:
             found.append(item)
         start = page[-1].position + 1
     return found
+
+
+def _compaction(native: bytes | None) -> str | None:
+    """The summary of a Claude answer's compaction block (the compaction arm's fold,
+    CM-38b), if the answer holds one with a summary: one whose content is null condensed
+    nothing, and the adapter never sends it."""
+    try:
+        data = json.loads(native or b"")
+    except ValueError:
+        return None
+    content = data.get("content") if isinstance(data, dict) else None
+    for block in content if isinstance(content, list) else []:
+        if isinstance(block, dict) and block.get("type") == "compaction":
+            text = block.get("content")
+            return text if isinstance(text, str) and text.strip() else None
+    return None
 
 
 def ledger(documents: DocumentStore, project: str) -> list[Json]:
@@ -119,7 +144,6 @@ def export(state: Path, meta: Json) -> Json:
             projects.run(project, session, entry.name).model_dump(mode="json", include=RECORD)
             | {"name": entry.name}
             for entry in projects.runs(project, session)
-            if entry.role == "main"
         ]
         return {
             "meta": meta,

@@ -19,8 +19,18 @@ reference the hook checks against what the run's calls recorded, as it checks a 
 file (RA-38). A result that leaves one out gets the one correction, naming it; if the
 answer that stands still leaves one out, and fails no other check, the result is the
 child's with the platform's status ``blocked`` and its obstacle, marked ``set_by:
-platform``, the child's own status kept beside them. Its ``lessons`` are the child's
-notes on operating the tools (DA-27): agent text, data for the parent, read by no code.
+platform``, the child's own status kept beside them. An answer the schema refuses has its
+deliverables checked too, as far as they can be read, so that its one correction names
+every problem, within ``MAX_ERRORS`` and ``ERROR_CHARS``; it stays invalid. Its
+``lessons`` are the child's notes on operating the tools (DA-27): agent text, data for the
+parent, read by no code.
+
+Two forms models keep giving are read as what they unambiguously say, and the kept
+result's ``platform_notes`` says so (PD-18 as amended 2026-11-01): ``deliverables`` given
+as an object keyed by number becomes the list, in the brief's order, each key the item's
+``id`` (a value that is not an object, or names another ``id``, stays an error); and an
+artifact produced with its path alone gets the one revision the run's calls recorded of
+that path (none or several stay an error). Nothing else is filled in.
 
 A result stands only for a run that ended with that answer (``result_of``): one stopped
 by a limit, a cancel or a failure has none, whatever it answered before.
@@ -28,6 +38,7 @@ by a limit, a cancel or a failure has none, whatever it answered before.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -377,14 +388,90 @@ def proof_reads(links: Sequence[EvidenceLink]) -> frozenset[Proof]:
     return frozenset(found)
 
 
+KEYED_NOTE: Final = (
+    "deliverables: given as an object keyed by deliverable number; the platform made it "
+    "the list the result's form has, in the brief's order, each key the item's id, and "
+    "changed nothing else"
+)
+"""The platform's note on a result whose ``deliverables`` it listed (PD-18)."""
+PATH_NOTE: Final = (
+    "{ids}: each artifact gave its path without its revision; the platform gave each the "
+    "one revision the run's calls recorded of that path"
+)
+"""The platform's note on a result whose artifacts it gave their revisions (PD-18)."""
+
+
+def _unfenced(answer: str | None) -> str:
+    """An answer's JSON text: alone, or the content of its one fenced block."""
+    text = (answer or "").strip()
+    if (fenced := _FENCED.match(text)) is not None:
+        text = fenced[1]
+    return text
+
+
+def _listed(answer: str | None, order: Sequence[str]) -> tuple[str | None, tuple[str, ...]]:
+    """An answer whose ``deliverables`` is an object keyed by number, as the list the
+    result's form has, with the platform's note; any other answer as it is, with none.
+
+    Each key becomes its item's ``id``, in the order of the brief's deliverables
+    (``order``), then any other key in the order given, which the accounting then
+    refuses as one the brief does not have. Only that form, with nothing to choose, is
+    listed: a value that is not an object, one whose own ``id`` differs from its key, or a
+    key given twice raises ``ValueError`` saying so, and nothing is filled in."""
+    repeated: list[dict[str, object]] = []
+    """The objects that gave a key twice, kept so that none is freed and its ID reused."""
+
+    def pairs(items: list[tuple[str, object]]) -> dict[str, object]:
+        found = dict(items)
+        if len(found) != len(items):
+            repeated.append(found)
+        return found
+
+    try:
+        loaded: object = json.loads(_unfenced(answer), object_pairs_hook=pairs)
+    except (ValueError, RecursionError):
+        # Not JSON, or nested past what Python reads: the schema's own reading says what
+        # is wrong with it.
+        return answer, ()
+    if not isinstance(loaded, dict):
+        return answer, ()
+    whole = cast(dict[str, object], loaded)
+    keyed = whole.get("deliverables")
+    if not isinstance(keyed, dict):
+        return answer, ()
+    given = cast(dict[str, object], keyed)
+    form = "deliverables: a list with one object for each deliverable, its number as id"
+    if any(found is given for found in repeated):
+        raise ValueError(f"{form}; given as an object keyed by number, with a key given twice")
+    ranked = {key: rank for rank, key in enumerate(order)}
+    items: list[object] = []
+    for key in sorted(given, key=lambda k: ranked.get(k, len(ranked))):
+        value = given[key]
+        if not isinstance(value, dict):
+            raise ValueError(f"{form}; given as an object keyed by number, {key} is no object")
+        item = cast(dict[str, object], value)
+        if "id" in item and item["id"] != key:
+            raise ValueError(
+                f"{form}; given as an object keyed by number, key {key} holds another id"
+            )
+        items.append({**item, "id": key})
+    return json.dumps({**whole, "deliverables": items}), (KEYED_NOTE,)
+
+
+class SchemaError(ValueError):
+    """An answer its schema refuses, with each of its errors, at most ``MAX_ERRORS``."""
+
+    def __init__(self, errors: Sequence[str]) -> None:
+        super().__init__("; ".join(errors))
+        self.errors = tuple(errors)
+
+
 def _parsed[R: CheckResult | TaskResult](
     answer: str | None, schema: type[R], limit: int = MAX_BYTES
 ) -> R:
     """The ``schema`` result an answer gives: a JSON object, alone or in one fenced block.
-    Raises ``ValueError`` with what is wrong."""
-    text = (answer or "").strip()
-    if (fenced := _FENCED.match(text)) is not None:
-        text = fenced[1]
+    Raises ``ValueError`` with what is wrong, ``SchemaError`` when the schema refuses it."""
+    text = _unfenced(answer)
     try:
         result = schema.model_validate_json(text)
     except ValidationError as error:
@@ -392,15 +479,23 @@ def _parsed[R: CheckResult | TaskResult](
             f"{'.'.join(str(part) for part in e['loc']) or 'result'}: {e['msg']}"
             for e in error.errors()[:MAX_ERRORS]
         ]
-        raise ValueError("; ".join(found)) from None
+        raise SchemaError(found) from None
     if len(result.model_dump_json().encode()) > limit:
         raise ValueError(f"the result is longer than {limit} bytes")
     return result
 
 
-def parse_task(answer: str | None) -> TaskResult:
+def read_task(answer: str | None, order: Sequence[str] = ()) -> tuple[TaskResult, tuple[str, ...]]:
+    """The result a task's answer gives, its ``deliverables`` listed in the order of the
+    brief's (``order``) when it gave them keyed by number, and the platform's notes on
+    what it listed; raises ``ValueError`` with what is wrong."""
+    text, notes = _listed(answer, order)
+    return _parsed(text, TaskResult, TASK_BYTES), notes
+
+
+def parse_task(answer: str | None, order: Sequence[str] = ()) -> TaskResult:
     """The result a task's answer gives; raises ``ValueError`` with what is wrong."""
-    return _parsed(answer, TaskResult, TASK_BYTES)
+    return read_task(answer, order)[0]
 
 
 def parse(answer: str | None, target: Target | None = None) -> CheckResult:
@@ -444,6 +539,8 @@ class Outcome(TurnHook):
         """The platform's status and obstacle for a result that left deliverables
         unaccounted for (PD-45), which the kept result shows over the child's."""
         self.errors: list[str] = []
+        self.notes: tuple[str, ...] = ()
+        """The platform's notes on the forms it read in the result that stands (PD-18)."""
         self.corrected = False
         self.read = False
         """Whether a ``ledger_read`` of the run showed the target's whole statement at its
@@ -664,7 +761,15 @@ class Outcome(TurnHook):
         if other := [name for name in item.references if name not in allowed]:
             return [f"{asked.id} is {_KINDS.get(asked.kind)}: it gives {gives}, not {other[0]}"]
         if item.status == "produced" and len(item.references) != len(allowed):
-            return [f"{asked.id} is {_KINDS.get(asked.kind)}: produced, it gives {gives}"]
+            error = f"{asked.id} is {_KINDS.get(asked.kind)}: produced, it gives {gives}"
+            if asked.kind == "artifact" and item.path is not None:
+                made = sorted(self.revisions.get(item.path.removeprefix("./"), ()))
+                error += (
+                    f"; your calls recorded revisions {', '.join(map(str, made[:10]))} of it"
+                    if made
+                    else "; your calls recorded no revision of it"
+                )
+            return [error]
         path = item.path.removeprefix("./") if item.path is not None else None
         if path is not None and item.revision is not None:
             if item.revision not in self.revisions.get(path, set()):
@@ -677,6 +782,30 @@ class Outcome(TurnHook):
             if found is None or found.get("deleted") is True:
                 return [f"{asked.id}: your calls wrote or published no file {item.path}"]
         return []
+
+    def _resolved(self, result: TaskResult) -> tuple[TaskResult, tuple[str, ...]]:
+        """The result with each artifact it says it produced by its path alone given the
+        one revision the run's calls recorded of that path, which the path then names
+        with nothing to choose, and the platform's note; a path they recorded no revision
+        of, or several, is left as given, an error (PD-18, PD-45)."""
+        kinds = {asked.id: asked.kind for asked in self.deliverables}
+        items: list[Accounted] = []
+        named: list[str] = []
+        for item in result.deliverables or ():
+            if (
+                kinds.get(item.id) == "artifact"
+                and item.status == "produced"
+                and item.references == ("path",)
+                and item.path is not None
+                and len(made := self.revisions.get(item.path.removeprefix("./"), set[int]())) == 1
+            ):
+                item = item.model_copy(update={"revision": next(iter(made))})
+                named.append(item.id)
+            items.append(item)
+        if not named:
+            return result, ()
+        note = PATH_NOTE.format(ids=", ".join(named))
+        return result.model_copy(update={"deliverables": tuple(items)}), (note,)
 
     async def _entries(self, result: TaskResult) -> list[str]:
         """The entries the result names that do not check: each must exist and have a
@@ -699,7 +828,7 @@ class Outcome(TurnHook):
         """An answer that is no result: one correction (PD-18), naming the deliverables it
         left out; with no turn or room left, or the correction spent, the answer stands
         with no result."""
-        self.result, self.marked, self.pinned = None, None, []
+        self.result, self.marked, self.pinned, self.notes = None, None, [], ()
         self.errors = [*self.errors, error[:ERROR_CHARS]][-KEPT_ERRORS:]
         return self._correction(missing)
 
@@ -742,11 +871,54 @@ class Outcome(TurnHook):
             self.marked["child_obstacle"] = result.obstacle
         return self._correction(missing)
 
+    async def _leniently(self, answer: str | None) -> tuple[list[Asked], list[str]]:
+        """What the accounting finds wrong with an answer the schema refuses, as far as
+        its deliverables can be read: each item that validates on its own is checked as
+        a valid result's is, and the brief's deliverables that no item names are left
+        out; an item that does not validate counts as given and is not checked, and
+        ``deliverables`` that is no list is not read (PD-18, PD-45). The answer stays
+        invalid: this only lets its one correction name every problem at once."""
+        order = [asked.id for asked in self.deliverables]
+        try:
+            text, _ = _listed(answer, order)
+            loaded: object = json.loads(_unfenced(text))
+        except (ValueError, RecursionError):
+            return [], []
+        if not isinstance(loaded, dict):
+            return [], []
+        whole = cast(dict[str, object], loaded)
+        given = whole.get("deliverables")
+        if given is not None and not isinstance(given, list):
+            return [], []
+        items: list[Accounted] = []
+        unread: set[str] = set()
+        for value in cast(list[object], given or []):
+            try:
+                items.append(Accounted.model_validate(value))
+            except ValidationError:
+                named = (
+                    cast(dict[str, object], value).get("id") if isinstance(value, dict) else None
+                )
+                if isinstance(named, str):
+                    unread.add(named)
+        # A result as far as it could be read, unvalidated, for the checks that read only
+        # its status and its deliverables.
+        read = TaskResult.model_construct(
+            status=whole.get("status"), deliverables=None if given is None else tuple(items)
+        )
+        read, _ = self._resolved(read)
+        missing, problems = self._unaccounted(read)
+        problems.extend(await self._entries(read))
+        return [asked for asked in missing if asked.id not in unread], problems
+
     async def _task_closing(self, answer: str | None) -> Closing:
         try:
-            found = parse_task(answer)
+            found, listed = read_task(answer, [asked.id for asked in self.deliverables])
         except ValueError as error:
-            return self._invalid(str(error))
+            errors = list(error.errors) if isinstance(error, SchemaError) else [str(error)]
+            missing, problems = await self._leniently(answer)
+            return self._invalid("; ".join([*errors, *problems][:MAX_ERRORS]), missing)
+        found, resolved = self._resolved(found)
         missing, problems = self._unaccounted(found)
         pinned: list[dict[str, JsonValue]] = []
         try:
@@ -756,6 +928,7 @@ class Outcome(TurnHook):
         problems.extend(await self._entries(found))
         if problems:
             return self._invalid("; ".join(problems[:MAX_ERRORS]), missing)
+        self.notes = (*listed, *resolved)
         if missing:
             return self._omitted(found, pinned, missing)
         self.result, self.marked, self.pinned = found, None, pinned
@@ -772,12 +945,16 @@ class Outcome(TurnHook):
 
     def kept(self) -> dict[str, JsonValue] | None:
         """The result as the delegation keeps it: a task's with the platform's mark over
-        the child's status when deliverables were left out (PD-45)."""
+        the child's status when deliverables were left out (PD-45), and its notes on the
+        forms it read, when it read any (PD-18)."""
         if self.result is None:
             return None
         if isinstance(self.result, CheckResult):
             return cast(dict[str, JsonValue], self.result.model_dump(mode="json"))
-        return {**self.result.kept(), **(self.marked or {})}
+        notes: dict[str, JsonValue] = {}
+        if self.notes:
+            notes["platform_notes"] = list[JsonValue](self.notes)
+        return {**self.result.kept(), **(self.marked or {}), **notes}
 
     @property
     def format(self) -> str:

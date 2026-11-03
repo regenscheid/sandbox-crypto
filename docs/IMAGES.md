@@ -64,6 +64,7 @@ sandbox:
 - Everything else the images use is under the baseline: micromamba in `/usr/local`, the record in `/usr/share/sandbox-science`, apt's programs in `/usr`. `/bin`, `/lib64` and `/sbin` are links into `/usr`.
 - Without `/var/lib/texmf`, `pdflatex` cannot read its format file. Without `/opt/sandbox-science`, nothing in the prefix runs.
 - The compiler adds `/opt/sandbox-science-frozen` and `/opt/sandbox-science-base` to every research sandbox, read-only (`RESEARCH_IMAGE_READ_ONLY`), so the targets file need not list them: crypto-base's [frozen trees](#prefix-layout) and each research image's [base environment](#the-environment-outside-the-workspace-b11) are there, and without them Landlock refuses the interpreter, GAP, Maxima, Giac and the compilers. No filesystem section may name either, or a directory above them such as `/opt`, writable; the targets file is refused if one does.
+- The compiler also adds `/sys/fs/cgroup` to every research sandbox, read-only (`KERNEL_INTERFACES_READ_ONLY`): the sandbox's cgroup, whose CPU limit (`cpu.max`) joblib's default `loky` backend and other CPU-count code read to size their worker pools. Where the container runtime gives a sandbox a cgroup namespace (containers, Kata, Kubernetes) the file exists, and loky stops with `PermissionError` if Landlock refuses it; where it is absent, as with OpenShell's VM driver, OpenShell skips the path. It is never writable, since a cgroup's files can be writable by its owner: no filesystem section may name it, a directory above it such as `/sys`, or a path inside it, writable. The orchestrator's and the MCP egress sandboxes do not get it.
 
 ### The environment outside the workspace (B11)
 
@@ -265,7 +266,9 @@ crypto-base's `pari-elldata` entries were added to its lockfile by hand, from co
 `images/test.sh <profile> [image]` runs `images/checks/check_image.py` in the image twice. Each time it runs as uid 1000, with no capabilities, `no-new-privileges`, a read-only root filesystem, a populated workspace volume at `/sandbox` and tmpfs at `/tmp`, and for the research profiles a volume for the Conda prefix:
 
 - **container**: as a container driver would run the image;
-- **landlock**: the same, under a Landlock ruleset like OpenShell's: its baseline, the devices and the frozen trees' and the base's paths the compiler adds (none for `orchestrator`), and the paths above. A check confirms that the ruleset is in effect.
+- **landlock**: the same, under a Landlock ruleset like OpenShell's: its baseline, the devices, the frozen trees' and the base's paths and `/sys/fs/cgroup` the compiler adds (none for `orchestrator`), and the paths above. A check confirms that the ruleset is in effect.
+
+Both modes give the container a cgroup namespace of its own (`--cgroupns private`), as Kata and Kubernetes give a sandbox, so on a cgroup v2 host `/sys/fs/cgroup/cpu.max` is the container's. On a cgroup v1 host the file is absent, and the `cgroup-cpu` and `joblib-loky` checks below say so.
 
 In the research profiles the checks start the worker's executor as the OpenShell backend does (`python -I /sandbox/.sandbox-science/executor.py --stdio --root /sandbox/project`), so kernels start through jupyter_client with the executor's environment. As the worker's first sync of an environment does, the check opens the executor's package admission after `hello` (`package_gate`, generation 0, `ready`): the executor holds it from its start and admits no shell or cell until then. Each shell and cell carries the check's own time limit:
 
@@ -273,8 +276,11 @@ In the research profiles the checks start the worker's executor as the OpenShell
 | --- | --- |
 | `identity`, `filesystem`, `record` | uid 1000 is `sandbox` with home `/sandbox`; only the declared paths are writable, not the base or the frozen trees; the image record names the profile, and there is no OpenShell image policy |
 | `layer` | `/sandbox` holds only the layer (at most 5,000 entries): its marker names the base, its Conda records are the base's without their files, and `/opt/sandbox-science/bin/python` runs with the layer as its prefix and the base below |
+| `scheduler-shim`, `signal-shim` | The native shims under `/usr/local/lib/sandbox-science/shim/<source-sha256>/` load and return their source's SHA-256; the scheduler shim sets the calling thread's scheduling and refuses another thread's; the signal shim's `kill` ends a child. The executor is started naming the signal shim, as the worker names it, for the held runs below |
 | `executor` | The executor's `hello` lists `python` and the `jobs` feature, and in crypto-base `sage` and the `pdf` feature too |
 | `python-kernel`, `tools-on-path`, `multiprocessing` | A Python cell runs with the prefix's interpreter; the environment's programs are on `PATH`, and its `python`, the package-command wrappers' stand-in first on `PATH`, runs the prefix's; `multiprocessing` locks, pools and process pools work |
+| `cgroup-cpu` | A Python cell reads `/sys/fs/cgroup/cpu.max` as joblib's loky does: where the file exists, opening it must succeed. Under the Landlock mode this fails without the compiler's `/sys/fs/cgroup`. Where the file is absent, the check passes and says it proved nothing |
+| `held-run` | A delegated run's shell and Python cell, held to its write area as the worker holds them ([worker](WORKER.md#a-delegated-runs-processes)): they start in the area and write there and in `$TMPDIR`; an input file and the layer are refused; a Python pool works; the shell's `kill` ends its own `sleep` and `timeout` works (the signal shim), while its `kill -0` of the executor is refused; in crypto-base a held Sage kernel runs gp and Singular through pseudo-terminals, and libgap. Under the Landlock mode, this ruleset is nested in the OpenShell-like one |
 | `sage-kernel`, `sage-interfaces` | A Sage cell computes in GF(17) and preparses `2^10`; gp and Singular start through pseudo-terminals, and libgap works |
 | `frozen-trees` | crypto-base's [frozen trees](#prefix-layout) are behind the image's exact links, read-only and pinned; GAP, Maxima and Giac answer through Sage, and `gcc -lpari -lgmp` builds and runs a program with the frozen compilers |
 | `fpylll`, `g6k`, `lattice-estimator` | LLL on a 60-dimensional q-ary lattice; a G6K sieve in dimension 50; the primal uSVP estimate for Kyber512 |
@@ -282,6 +288,7 @@ In the research profiles the checks start the worker's executor as the OpenShell
 | `pdf-tools` | The worker's PDF operations ([PDF sources](specs/pdf-sources.md)) through the executor and its helper, copied beside it: page facts, line anchors, search and a page render, with the image's pdf_oxide |
 | `runtime-install` | micromamba and pip install packages into the layer, never the base, and a new kernel imports them; micromamba's `xz-tools` finds the base's `liblzma` through the layer and runs (needs conda-forge and PyPI; `NETWORK=0` skips it) |
 | `runtime-upgrade` | micromamba replaces base packages in the layer: `pygments<2.19` (it has a command, which the layer's copy becomes) and, in crypto-base, `networkx<3.6.1`, which Sage depends on; Sage keeps its record, the replacements import and run, and the lockfile equals the layer's records and `importlib.metadata`. In crypto-base the dry run of `sympy<1.14` unlinks Sage without linking it, the JSON the provisioning tool refuses such a request by (needs conda-forge) |
+| `joblib-loky` | pip installs joblib, which neither image has, and its dependency cloudpickle into the layer; a cell runs `Parallel` with its default backend, loky, and loky's `cpu_count()`, which reads the cgroup's CPU limit, and the count is between 1 and the machine's CPUs (needs PyPI; `NETWORK=0` skips it) |
 
 In the orchestrator image they run the harness by its full path, with only `HOME` and a system `PATH` set, as an OpenShell sandbox runs it:
 
@@ -303,7 +310,8 @@ In the orchestrator image they run the harness by its full path, with only `HOME
 
 What the checks show about the paths:
 
-- Under the research ruleset without `/var/lib/texmf`, pdflatex cannot find its format file, so that path stays in the section. Nothing beyond OpenShell's baseline, the compiler's devices and the two declared paths is needed: Sage's pseudo-terminal interfaces, `multiprocessing`, runtime installs and the PDF tools all work.
+- Under the research ruleset without `/var/lib/texmf`, pdflatex cannot find its format file, so that path stays in the section. Nothing beyond OpenShell's baseline, the compiler's devices, image trees and cgroup, and the two declared paths is needed: Sage's pseudo-terminal interfaces, `multiprocessing`, joblib's loky, runtime installs and the PDF tools all work.
+- Under the research ruleset without `/sys/fs/cgroup`, where the container has a cgroup namespace, reading `cpu.max` is refused, and loky's `cpu_count()` and joblib's `Parallel` fail with it.
 - Under the orchestrator's ruleset without `/opt/sandbox-science`, Landlock refuses to start the prefix's interpreter. With it, the harness needs nothing else beyond OpenShell's baseline: no devices, and no `/dev/shm`.
 
 ## arm64

@@ -144,6 +144,8 @@ def run_settings(model: ModelConfig, service: RunServiceConfig, recover: bool) -
         settings["max_turns"] = service.max_turns
     if service.run_share is not None:
         settings["run_share"] = service.run_share / 100
+    if service.context_mode != "folds":  # the configuration refuses provider_compaction here
+        settings["context_mode"] = service.context_mode
     for name in (
         "watcher_calls_per_hour",
         "watcher_first_check",
@@ -281,6 +283,7 @@ def prepare(
         thinking_replay=model.thinking_replay.model_dump(mode="json")
         if model.thinking_replay
         else None,
+        refusal_fallback=model.refusal_fallback,
         generation=generation,
         mcp=direct,
     )

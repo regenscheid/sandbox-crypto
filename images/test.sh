@@ -7,9 +7,9 @@
 # root filesystem and only the declared paths writable (docs/IMAGES.md, "Tests"):
 #   container  a populated workspace volume at /sandbox for research, tmpfs at /tmp;
 #              services use an empty tmpfs home and their read-only image prefix;
-#   landlock   the same under a Landlock ruleset like OpenShell's: its baseline, the devices and
-#              the frozen trees' and the base's paths the policy compiler adds to research sandboxes, and the
-#              image's filesystem section
+#   landlock   the same under a Landlock ruleset like OpenShell's: its baseline, the devices,
+#              the frozen trees' and the base's paths and the cgroup the policy compiler adds to
+#              research sandboxes, and the image's filesystem section
 #              (images/common/sandbox-filesystem.yml, or images/<profile>/filesystem.yml for the
 #              orchestrator's sandbox, which gets no devices).
 # IMAGE defaults to the tag build.sh gives. MODES picks the modes (default
@@ -42,6 +42,8 @@ devices_ro=(/dev/random)
 devices_rw=(/dev/full /dev/ptmx /dev/pts /dev/shm /dev/tty /dev/zero)
 # The research images' frozen trees and base, read-only (...policy.openshell.RESEARCH_IMAGE_READ_ONLY).
 frozen_ro=(/opt/sandbox-science-frozen /opt/sandbox-science-base)
+# The kernel interfaces research code reads (...policy.openshell.KERNEL_INTERFACES_READ_ONLY).
+kernel_ro=(/sys/fs/cgroup)
 # The image's own paths, as the targets file lists them.
 filesystem=${FILESYSTEM:-$here/common/sandbox-filesystem.yml}
 # Empty Docker volumes copy the image workspace, matching OpenShell workspace seeding.
@@ -52,6 +54,7 @@ case $profile in
     devices_ro=()
     devices_rw=()
     frozen_ro=()
+    kernel_ro=()
     filesystem=${FILESYSTEM:-$here/$profile/filesystem.yml}
     workspace=(--tmpfs /sandbox:rw,exec,uid=1000,gid=1000,mode=0755,size=8g)
     ;;
@@ -64,10 +67,10 @@ checks=$(mktemp -d)
 trap 'rm -rf "$checks"' EXIT
 # The worker's in-sandbox files (SANDBOX_FILES in backends.py; a worker test keeps this in step).
 cp "$here/checks/check_image.py" "$here/checks/landlock.py" "$checks/"
-for name in binding_inventory executor executor_lifecycle executor_admission provisioning pdfhelper daemon request_frames capture sandbox_files sandbox_processes sandbox_search sandbox_setup workspace_prefix; do
+for name in binding_inventory executor executor_lifecycle executor_admission provisioning pdfhelper daemon request_frames capture sandbox_confine sandbox_files sandbox_processes sandbox_search sandbox_setup workspace_prefix; do
   cp "$worker/$name.py" "$checks/"
 done
-cp "$worker/shim/sched_self.c" "$checks/"
+cp "$worker/shim/sched_self.c" "$worker/shim/signal_self.c" "$checks/"
 chmod -R a+rX "$checks"
 
 check_args=(--profile "$profile" --worker-files /checks)
@@ -78,7 +81,7 @@ if [ "${NETWORK:-1}" != 0 ]; then
 fi
 
 landlock=(python -I /checks/landlock.py)
-for path in "${baseline_ro[@]}" "${devices_ro[@]}" "${frozen_ro[@]}" "${image_ro[@]}" /checks; do
+for path in "${baseline_ro[@]}" "${devices_ro[@]}" "${frozen_ro[@]}" "${kernel_ro[@]}" "${image_ro[@]}" /checks; do
   landlock+=(--ro "$path")
 done
 for path in "${baseline_rw[@]}" "${devices_rw[@]}" "${image_rw[@]}"; do landlock+=(--rw "$path"); done
@@ -92,9 +95,11 @@ for mode in ${MODES:-container landlock}; do
     *) echo "test.sh: unknown mode $mode" >&2; exit 2 ;;
   esac
   echo "== $image ($mode)" >&2
+  # A cgroup namespace of its own, as Kata and Kubernetes give a sandbox: /sys/fs/cgroup is the
+  # container's cgroup, with its cpu.max (cgroup v2 hosts only).
   docker run --rm --name "ss-image-test-$profile-$mode-$$" \
     --user 1000:1000 --cap-drop ALL --security-opt no-new-privileges \
-    --read-only \
+    --read-only --cgroupns private \
     --tmpfs /tmp:rw,exec,mode=1777,size=4g \
     --shm-size 1g \
     "${workspace[@]}" \

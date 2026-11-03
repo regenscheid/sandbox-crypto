@@ -250,6 +250,22 @@ class ModelConfig(_Strict):
     """Claude's thinking sent back on the gateway image a CM-F30 run verified (CM-39),
     for the aliases called through ``messages``; off by default, until a LiteLLM release
     with its thinking fixes passes it."""
+    refusal_fallback: dict[
+        Annotated[str, StringConstraints(min_length=1, max_length=200)],
+        Annotated[str, StringConstraints(min_length=1, max_length=200)],
+    ] = Field(default_factory=dict[str, str], max_length=128)
+    """Each Claude alias's fallback alias (docs/specs/context-management.md, CM-42a): when
+    the alias's model declines a call (``stop_reason: "refusal"``), the same request goes
+    once to the fallback, and the rest of the run stays on it. An alias without one ends
+    the run ``model_refused``. Empty by default."""
+
+    @field_validator("refusal_fallback")
+    @classmethod
+    def _fallbacks(cls, values: dict[str, str]) -> dict[str, str]:
+        if any(alias == fallback for alias, fallback in values.items()):
+            raise ValueError("an alias's refusal fallback is another alias")
+        return values
+
     daily_cost_limit: float | None = Field(default=None, ge=0, le=1_000_000_000)
     """What each project's runs may cost over a rolling 24 hours, as the gateway reports
     it, in its currency (normally USD); ``up`` sets it for each project. Unset, as by
@@ -417,6 +433,15 @@ class RunServiceConfig(_Strict):
     run_share: int | None = Field(default=None, ge=1, le=100)
     """The percent of a project's daily cost limit one run may use, when the project has
     a limit; none when unset."""
+    context_mode: Literal["folds", "skeleton", "provider_compaction"] = "folds"
+    """How every run's older work is condensed (docs/specs/context-management.md, CM-2a):
+    ``folds``; ``skeleton``, folds without the enrichment call; or
+    ``provider_compaction``, Anthropic's server-side compaction in place of folds, for
+    Claude aliases called through the Messages API only, and not with ``[orchestrator]``
+    (CM-38b)."""
+    compaction_trigger: int | None = Field(default=None, ge=50_000)
+    """The provider_compaction mode's trigger in input tokens; unset, 0.75 of the run's
+    ceiling, where folds would start."""
     math_checks: ConfigPath | None = None
     """The math checker's build, ``web/workspace/dist-math`` after ``npm run build:math``:
     with it, the run service checks the documents' formulas, and their charts with the
@@ -428,6 +453,12 @@ class RunServiceConfig(_Strict):
     """Environment variables this part gets besides the usual few (``PATH``, ``HOME``, the
     locale, proxies and CA settings). Never a secret: the parts run in the control zone
     (docs/THREAT-MODEL.md), which holds no engine or cluster credentials."""
+
+    @model_validator(mode="after")
+    def _trigger_with_compaction(self) -> Self:
+        if self.compaction_trigger is not None and self.context_mode != "provider_compaction":
+            raise ValueError("compaction_trigger is the provider_compaction context mode's")
+        return self
 
 
 class WorkspaceConfig(_Strict):
@@ -636,6 +667,11 @@ class LauncherConfig(_Strict):
         ids = [project.id for project in self.projects]
         if len(set(ids)) != len(ids):
             raise ValueError("each project is listed once")
+        if self.run_service.context_mode == "provider_compaction" and self.orchestrator is not None:
+            raise ValueError(
+                "run_service.context_mode provider_compaction runs in the run service only, "
+                "not in the confined agent runtime ([orchestrator])"
+            )
         if self.canaries.enabled and self.mcp_direct is None:
             raise ValueError(
                 "canaries list the servers through the agent runtime's own client: configure "

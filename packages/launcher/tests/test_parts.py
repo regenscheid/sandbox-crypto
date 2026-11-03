@@ -577,6 +577,22 @@ def test_the_run_service_calls_claude_aliases_through_messages_with_the_replay_s
     assert "--thinking-replay" in parts.harness_argv(unnamed, Layout(unnamed.state_dir))
 
 
+def test_each_claude_alias_s_refusal_fallback_goes_to_the_run_service(
+    make_config: Any, commands: Path
+) -> None:
+    """CM-42a: ``[model.refusal_fallback]`` maps an alias to the alias its declined calls
+    go to, passed as ``--refusal-fallback``; none by default, and never an alias's own."""
+    model = {"refusal_fallback": {"sandbox-orchestrator": "older-claude"}}
+    config = load_config(make_config({"bin_dir": str(commands), "model": model}))
+    harness = parts.harness_argv(config, Layout(config.state_dir))
+    named = [harness[i + 1] for i, flag in enumerate(harness) if flag == "--refusal-fallback"]
+    assert named == ["sandbox-orchestrator=older-claude"]
+    plain = load_config(make_config({"bin_dir": str(commands)}))
+    assert "--refusal-fallback" not in parts.harness_argv(plain, Layout(plain.state_dir))
+    with pytest.raises(LauncherError):
+        load_config(make_config({"model": {"refusal_fallback": {"main": "main"}}}))
+
+
 def test_the_run_service_is_told_which_aliases_accept_images(
     make_config: Any, commands: Path
 ) -> None:
@@ -689,3 +705,24 @@ def test_role_effort_reaches_both_confined_sides_and_native_cli(make_config: Any
 def test_invalid_role_effort_is_refused(make_config: Any, efforts: dict[str, str]) -> None:
     with pytest.raises(LauncherError, match="reasoning_effort"):
         load_config(make_config({"model": {"reasoning_effort": efforts}}))
+
+
+def test_the_launcher_passes_the_mode_to_the_run_service(make_config: Any) -> None:
+    service = {"context_mode": "provider_compaction", "compaction_trigger": 80_000}
+    config = load_config(make_config({"orchestrator": None, "run_service": service}))
+    argv = parts.harness_argv(config, parts.prepare(config))
+    assert argv[argv.index("--context-mode") + 1] == "provider_compaction"
+    assert argv[argv.index("--compaction-trigger") + 1] == "80000"
+    with pytest.raises(LauncherError, match="confined agent runtime"):
+        load_config(make_config({"run_service": service}))
+    with pytest.raises(LauncherError, match="compaction_trigger"):
+        load_config(
+            make_config({"orchestrator": None, "run_service": {"compaction_trigger": 80_000}})
+        )
+    skeleton = load_config(make_config({"run_service": {"context_mode": "skeleton"}}))
+    assert orchestrator.run_settings(skeleton.model, skeleton.run_service, False)[
+        "context_mode"
+    ] == ("skeleton")
+    folds = load_config(make_config())
+    assert "context_mode" not in orchestrator.run_settings(folds.model, folds.run_service, False)
+    assert "--context-mode" not in parts.harness_argv(folds, parts.prepare(folds))

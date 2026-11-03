@@ -14,7 +14,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from .executor import Clock, Kernel, Running
+    from .executor import Clock, Confinement, Kernel, Running
     from .sandbox_processes import Leader, Process
 
 
@@ -37,7 +37,7 @@ class Lifecycle:
         self,
         clock: Clock,
         *,
-        make_kernel: Callable[[str, str, str | None], Kernel],
+        make_kernel: Callable[[str, str, str | None, Confinement | None], Kernel],
         error: Callable[[str, str], Exception],
         signal: Callable[[str, Leader | None], Awaitable[None]],
         leftovers: Callable[[str, Leader | None], tuple[list[Process], bool]],
@@ -193,8 +193,16 @@ class Lifecycle:
                 raise self.error("conflict", f"run {kernel.run} has ended, and its kernels with it")
             await start()
 
-    def kernel(self, session: str, language: str, run: str | None = None) -> Kernel:
-        """The session's kernel of ``language``, or the run's own, made on first use."""
+    def kernel(
+        self,
+        session: str,
+        language: str,
+        run: str | None = None,
+        confinement: Confinement | None = None,
+    ) -> Kernel:
+        """The session's kernel of ``language``, or the run's own, made on first use. A
+        run's kernel keeps the write area it was made with (DA-20): a request naming
+        another, or none for a kernel that has one, is refused."""
         if language not in self.languages:
             raise self.error("unsupported", f"no {language!r} kernel here")
         key = (session, run or "", language)
@@ -215,9 +223,19 @@ class Lifecycle:
                     f"{self.max_run_kernels} runs of this session have kernels of their own; "
                     "one must end first",
                 )
-            kernel = self.make_kernel(session, language, run)
+            kernel = self.make_kernel(session, language, run, confinement)
             self.kernels[key] = kernel
-        return self.kernels[key]
+        kernel = self.kernels[key]
+        held = kernel.confinement.area if kernel.confinement is not None else None
+        wanted = confinement.area if confinement is not None else None
+        if held != wanted:
+            raise self.error(
+                "conflict",
+                f"kernel_confinement: run {run}'s {language} kernel holds "
+                f"{'write area ' + held if held else 'no write area'}, not "
+                f"{'write area ' + wanted if wanted else 'none'}",
+            )
+        return kernel
 
     async def reap_idle_kernels(self, idle: float) -> None:
         """Stop kernels unused for ``idle`` seconds; the session's next cell reports lost state."""

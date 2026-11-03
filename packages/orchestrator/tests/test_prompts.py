@@ -70,6 +70,8 @@ HOSTILE = "Authorization: Bearer test-secret-prompt-not-a-credential"
 # version: add it here, and keep the old version's entry for its records.
 GOLDEN = {
     "sandbox-main-19": "74e546698352d3cb2ae235e460d55442ca02259c9cb2a504adbf03d3973f8bbe",
+    "sandbox-delegated-task-19": "04c765c8c6bc821d8fa193981c1e880387360c5f980c8ce99feaecc8eab5a608",
+    "sandbox-delegated-task-18": "79475b306ebb52f2567368dc1667af844a026395451a4a7d46d0e64360a8b220",
     "sandbox-delegated-task-17": "88951b020a690c47b379833f454f27dc661f1336c603be2311befca42dfbcfc7",
     "sandbox-main-18": "22e826b62aeea833f17d60b81df71da7cce20962825137aec955d1577e2270f8",
     "sandbox-delegated-task-16": "14d76afa16bd7619b4cc741d1d5a1867455f4155d232a924a893a02950da1440",
@@ -202,6 +204,7 @@ GOLDEN = {
     "sandbox-consolidation-1": ("d67d1fdf2583ba97951b057b2246ce1d458a60806edf9bf7a7545920cf33f20a"),
     "sandbox-image-1": "6aad833a6a22472424296c64943b54adcd0d064aef1db5403c5f5eea2eb95f11",
     "sandbox-notice-report-1": "93112b881cb91462c7b85f862d93cd154a9d5c47684af6815a4eedc9156c9c48",
+    "sandbox-compaction-1": "264481cb4d7bd69c3e27ebfcd5499e761f0aa8b51262d7112ebd188e853ba203",
 }
 
 

@@ -1,12 +1,11 @@
 # Status
 
-Updated 2026-10-25. For the owner; one screen. Details: [BACKLOG](BACKLOG.md), [PLAN-CHANGES](PLAN-CHANGES.md), [decisions](../docs/DECISIONS.md).
+Updated 2026-11-01. For the owner; one screen. Details: [BACKLOG](BACKLOG.md), [PLAN-CHANGES](PLAN-CHANGES.md), [decisions](../docs/DECISIONS.md).
 
 ## Phase and focus
 
-- `k8s-sync` is the integration branch. It is `k8s` plus `origin/dev` (`3918ccd0`), then the settled architecture (D95-D103, D92 amended) built on top. It is pushed to `origin/k8s-sync`; no PR is open and nothing is merged into `dev`.
-- `dev` is unchanged except PR #520. `main` is unchanged.
-- The nightly runs the workflow file on `main`, so the sharded flake-measuring jobs reach it only when merged there. Nightly CI is not yet green.
+- `k8s-sync` is the integration branch. It was merged into `main` by PR #521 on 2026-11-01 (`af174d1a`), which also took in `dev` (#519, #520); work continues on branches off `k8s-sync`.
+- The nightly runs the workflow file on `main`, which now has the sharded jobs; a nightly-mode run on the merged tree passed all 25 jobs. The first scheduled night decides "Nightly CI green".
 - A test instance runs on the cluster (2026-10-24): OpenShell 0.1.5, Agent Sandbox v1.0.3, Kata, the bundle and a capped model key. The personal instance and SNOVA are untouched.
 
 ## Built and verified (offline tests only)

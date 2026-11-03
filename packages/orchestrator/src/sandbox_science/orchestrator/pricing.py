@@ -30,10 +30,16 @@ taken lower than the list allows: an input or output rate is the highest the dep
 gives for that kind, a cached-input rate the tier's input rate, and a cache-write rate is
 none, so a call that wrote the cache stays unpriced.
 
-LiteLLM lists only the 5-minute cache-write price. On ``chat`` it may cache a Claude
-prompt for an hour itself (``ephemeral_1h_input_tokens``, at about twice the input
-price; Messages lab, 2026-10-31), which a price from this list would understate. The
-gateway's own cost, taken first, covers it.
+LiteLLM lists the 5-minute cache-write price, and for Claude the 1-hour one beside it
+(``cache_creation_input_token_cost_above_1hr``). A call whose usage says it wrote to the
+1-hour cache (``cache_creation.ephemeral_1h_input_tokens``) pays that rate for those
+tokens: Anthropic's server-side compaction writes its input there (CM-38b), and on
+``chat`` LiteLLM may cache a Claude prompt for an hour itself (Messages lab, 2026-10-31).
+A deployment that lists no 1-hour price leaves such a call unpriced, as a missing
+5-minute price does. The gateway's own cost, taken first, covers both.
+
+A Claude message's usage counts only its answer when the API did more within the call,
+as a compaction (``usage.iterations``): the tokens priced are every iteration's.
 """
 
 from __future__ import annotations
@@ -84,6 +90,8 @@ class Prices:
     cache_read: float | None = None
     cache_write: float | None = None
     tiers: tuple[Tier, ...] = ()
+    cache_write_1h: float | None = None
+    """The 1-hour cache's write price, where the deployment lists one."""
 
     def at(self, given: int) -> Prices:
         """The prices of a call whose input, cached or not, is ``given`` tokens: the
@@ -107,7 +115,7 @@ class Prices:
             cast(float, rate("output")),
             tier.cache_read,
             tier.cache_write,
-        )
+        )  # a tier lists no 1-hour price: a call that wrote there stays unpriced
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +127,8 @@ class Tokens:
     cache_read: int
     cache_write: int
     output: int
+    cache_write_1h: int = 0
+    """Of ``cache_write``, the tokens written to the 1-hour cache."""
 
 
 def source_of(cost: float | None, source: CostSource | None) -> CostSource | None:
@@ -138,13 +148,16 @@ def cost(prices: Prices | Sequence[Prices], tokens: Tokens) -> float | None:
             return None
         return max(cast(list[float], found))
     prices = prices.at(tokens.fresh + tokens.cache_read + tokens.cache_write)
-    if tokens.cache_write and prices.cache_write is None:
+    hour = min(tokens.cache_write_1h, tokens.cache_write)
+    minutes = tokens.cache_write - hour
+    if (minutes and prices.cache_write is None) or (hour and prices.cache_write_1h is None):
         return None
     read = prices.cache_read if prices.cache_read is not None else prices.input
     total = (
         tokens.fresh * prices.input
         + tokens.cache_read * read
-        + tokens.cache_write * (prices.cache_write or 0.0)
+        + minutes * (prices.cache_write or 0.0)
+        + hour * (prices.cache_write_1h or 0.0)
         + tokens.output * prices.output
     )
     return total if math.isfinite(total) and total >= 0 else None
@@ -215,6 +228,7 @@ def prices_of(info: object, alias: str) -> tuple[Prices, ...] | None:
                 _price(fields.get("cache_read_input_token_cost")),
                 _price(fields.get("cache_creation_input_token_cost")),
                 tiers,
+                _price(fields.get("cache_creation_input_token_cost_above_1hr")),
             )
         )
     return tuple(priced) or None
@@ -268,13 +282,43 @@ def responses_tokens(usage: Mapping[str, object]) -> Tokens | None:
 
 
 def messages_tokens(usage: Mapping[str, object]) -> Tokens | None:
-    """A Claude message's tokens: its ``input_tokens`` leave out the cache's."""
+    """A Claude message's tokens: its ``input_tokens`` leave out the cache's, and its
+    writes to the 1-hour cache are those ``cache_creation`` names. With
+    ``usage.iterations``, as when a compaction ran within the call, the top-level counts
+    are only the answer's: the call's tokens are every iteration's."""
+    found = iterations(usage)
+    if found is None:
+        return _message_tokens(usage)
+    parts = [_message_tokens(iteration) for iteration in found]
+    if not parts or any(part is None for part in parts):
+        return None
+    known = cast(list[Tokens], parts)
+    return Tokens(
+        sum(part.fresh for part in known),
+        sum(part.cache_read for part in known),
+        sum(part.cache_write for part in known),
+        sum(part.output for part in known),
+        sum(part.cache_write_1h for part in known),
+    )
+
+
+def iterations(usage: Mapping[str, object]) -> list[Mapping[str, object]] | None:
+    """A Claude message's ``usage.iterations``, each an object; ``None`` without them."""
+    found = usage.get("iterations")
+    if not isinstance(found, list) or not found:
+        return None
+    listed = cast(list[object], found)
+    return [cast(Mapping[str, object], each) for each in listed if isinstance(each, dict)]
+
+
+def _message_tokens(usage: Mapping[str, object]) -> Tokens | None:
     given, output = count(usage.get("input_tokens")), count(usage.get("output_tokens"))
     if given is None or output is None:
         return None
     read = count(usage.get("cache_read_input_tokens")) or 0
     write = count(usage.get("cache_creation_input_tokens")) or 0
-    return Tokens(given, read, write, output)
+    hour = _details(usage, "cache_creation", "ephemeral_1h_input_tokens")
+    return Tokens(given, read, write, output, min(hour, write))
 
 
 class PriceList:

@@ -61,6 +61,10 @@ class RuntimeSettings(Contract):
     image_record: Path = Path("/usr/share/sandbox-science/image.json")
     embedding: ModelAlias | None = None
     thinking_replay: ThinkingReplay | None = None
+    refusal_fallback: dict[ModelAlias, ModelAlias] = Field(
+        default_factory=dict[ModelAlias, ModelAlias], max_length=128
+    )
+    """Each Claude alias's fallback for a call its model declines (CM-42a)."""
     generation: Identifier
     mcp: DirectSettings | None = None
     """The direct MCP client, which runs here, beside OpenShell's proxy and the provider's
@@ -73,10 +77,27 @@ class RuntimeSettings(Contract):
         return control_endpoint(value)
 
     @model_validator(mode="after")
+    def fallback_is_another_alias(self) -> RuntimeSettings:
+        if any(alias == fallback for alias, fallback in self.refusal_fallback.items()):
+            raise ValueError("an alias's refusal fallback is another alias")
+        return self
+
+    @model_validator(mode="after")
     def ca_requires_tls(self) -> RuntimeSettings:
         if self.control_ca_file is not None and not self.control_url.startswith("https://"):
             raise ValueError("a control CA requires an HTTPS control endpoint")
         return self
+
+
+def _messages_options(settings: RuntimeSettings) -> dict[str, dict[str, object]]:
+    """The Messages adapter's options: thinking replay (CM-39) and the fallbacks of
+    declined calls (CM-42a)."""
+    found: dict[str, object] = {}
+    if settings.thinking_replay:
+        found["replay"] = settings.thinking_replay
+    if settings.refusal_fallback:
+        found["fallbacks"] = dict(settings.refusal_fallback)
+    return {"messages": found} if found else {}
 
 
 async def serve(settings: RuntimeSettings, *, clock: Clock = SYSTEM_CLOCK) -> None:
@@ -104,14 +125,7 @@ async def serve(settings: RuntimeSettings, *, clock: Clock = SYSTEM_CLOCK) -> No
         apis=settings.apis,
         default_api=settings.default_api,
         reasoning_effort=settings.reasoning_effort,
-        options={
-            **settings.options,
-            **(
-                {"messages": {"replay": settings.thinking_replay}}
-                if settings.thinking_replay
-                else {}
-            ),
-        },
+        options={**settings.options, **_messages_options(settings)},
     )
     session = aiohttp.ClientSession(
         timeout=aiohttp.ClientTimeout(sock_connect=10), trace_configs=[control_trace()]

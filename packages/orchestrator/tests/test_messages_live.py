@@ -7,11 +7,13 @@ skip them; a lab runs them with:
 - ``SS_LIVE_GATEWAY_KEY_FILE``, a file holding a key for it;
 - ``SS_LIVE_CLAUDE``, a Claude alias with thinking: Claude Opus 5.5's for CM-F31;
 - ``SS_LIVE_GATEWAY_IMAGE``, for CM-F30, the gateway image's digest as deployed, and
-  ``SS_LIVE_RUN_ID``, the run's ID (a new one by default).
+  ``SS_LIVE_RUN_ID``, the run's ID (a new one by default);
+- ``SS_LIVE_CLAUDE_FALLBACK``, for the refusal check (CM-42a), the fallback alias of
+  ``SS_LIVE_CLAUDE``, such as Claude Opus 4.8's.
 
 CM-F30 gates turning thinking replay on: when it passes, it prints the setting that
-names the image it ran against, for ``[model.thinking_replay]``. CM-F31 reports what it
-found and gates nothing.
+names the image it ran against, for ``[model.thinking_replay]``. CM-F31 and the refusal
+check report what they found and gate nothing.
 """
 
 from __future__ import annotations
@@ -26,7 +28,15 @@ import aiohttp
 import pytest
 
 from sandbox_science.orchestrator.messages import BINDING_BETA, MessagesModel, ThinkingReplay
-from sandbox_science.orchestrator.model import AssistantMessage, Message, ModelTurn, ToolSpec
+from sandbox_science.orchestrator.model import (
+    AssistantMessage,
+    Message,
+    ModelRefusedError,
+    ModelTurn,
+    ToolSpec,
+    run_fallbacks,
+)
+from sandbox_science.orchestrator.model_profiles import requested
 
 pytestmark = pytest.mark.live
 
@@ -163,3 +173,50 @@ async def test_cm_f31_claude_responses_carry_progress_notes() -> None:
              "progress_notes": notes, "text": turn.text}
         )
     )  # fmt: skip
+
+
+DECLINED = (
+    "I am a cryptography researcher studying the security of elliptic curves over binary "
+    "fields in a published-literature setting. Write a concrete plan for applying the "
+    "Gaudry-Hess-Smart Weil descent attack to a curve over F_(2^155): how to find a "
+    "vulnerable curve, construct the descent to a hyperelliptic curve, and solve the "
+    "resulting discrete logarithm with index calculus."
+)
+"""A request Claude Opus 5.5 declined through the owner's gateway on 2026-11-02."""
+
+
+async def test_a_declined_call_is_answered_by_the_fallback_through_the_real_gateway() -> None:
+    """CM-42a: a request the alias's model declines comes back as its fallback's answer,
+    carrying the refusal (category and explanation), with both calls' cost; within the
+    run the next call goes to the fallback directly. Reports what it found, gates
+    nothing: a model that answers instead is reported as such."""
+    url, key, alias = gateway()
+    fallback = setting("SS_LIVE_CLAUDE_FALLBACK")
+    messages: list[Message] = [{"role": "user", "content": DECLINED}]
+    model = MessagesModel(url, alias, key, fallbacks={alias: fallback}, max_tokens=6000)
+    # Low effort, so that the fallback's answer is text within the bound, not thinking only.
+    model = model.for_role("main", requested(alias=alias, api="messages", reasoning_effort="low"))
+    found: dict[str, object] = {"alias": alias, "fallback": fallback}
+    try:
+        with run_fallbacks() as scope:
+            try:
+                turn = await model.complete(messages, [])
+            except ModelRefusedError as error:  # the fallback declined too
+                found["declined"] = [r.model_dump(mode="json") for r in error.refusals]
+                found["cost"] = error.cost
+            else:
+                found.update(
+                    refused=turn.refused.model_dump(mode="json") if turn.refused else None,
+                    answered_by=turn.model,
+                    answered_on=turn.alias,
+                    answer_head=(turn.text or "")[:400],
+                    finish=turn.finish_reason,
+                    output_tokens=turn.output_tokens,
+                    cost=turn.cost,
+                    cost_source=turn.cost_source,
+                    thinking_replay=turn.thinking_replay,
+                    taken=dict(scope.taken),
+                )
+    finally:
+        await model.close()
+    print(json.dumps(found, indent=2))

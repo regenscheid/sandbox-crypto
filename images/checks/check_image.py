@@ -37,6 +37,7 @@ import queue
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -70,6 +71,7 @@ WORKER_FILES = (
     "daemon.py",
     "request_frames.py",
     "capture.py",
+    "sandbox_confine.py",
     "sandbox_files.py",
     "sandbox_processes.py",
     "sandbox_search.py",
@@ -78,6 +80,7 @@ WORKER_FILES = (
 )
 """The worker's files that run inside a sandbox (packages/worker/src/sandbox_science/worker)."""
 PROJECT = Path("/sandbox/project")
+SHIM_DIR = "/usr/local/lib/sandbox-science/shim"
 SESSION = "image-check"
 WORKSPACE = PROJECT / "sessions" / SESSION
 LANGUAGES = {"minimal": ["python"], "crypto-base": ["python", "sage"]}
@@ -85,6 +88,8 @@ FEATURES = {"minimal": ["jobs"], "crypto-base": ["jobs", "pdf"]}
 """What the executor offers beyond kernels: ``jobs``, background shell jobs, everywhere, and
 ``pdf`` where the PDF helper finds pdf_oxide."""
 MARKER = "Sandbox Science image check"
+CPU_MAX = "/sys/fs/cgroup/cpu.max"
+"""The cgroup v2 CPU limit, which joblib's loky reads to size its pool."""
 
 HARNESS = f"{PREFIX}/bin/sandbox-science-harness"
 HARNESS_PACKAGES = (
@@ -190,13 +195,16 @@ def harness_run_args(worker: str, directory: Path, transcript: Path) -> list[str
 class Executor:
     """The worker's executor over stdin and stdout, one request at a time."""
 
-    def __init__(self, script: Path, root: Path, log: Path) -> None:
+    def __init__(
+        self, script: Path, root: Path, log: Path, env: dict[str, str] | None = None
+    ) -> None:
         self.log = log
         self.process = subprocess.Popen(  # noqa: S603 - as the OpenShell backend starts it
             [sys.executable, "-I", str(script), "--stdio", "--root", str(root)],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=log.open("wb"),
+            env=env,
         )
         self.messages: queue.Queue[Message] = queue.Queue()
         self.ids = itertools.count(1)
@@ -337,9 +345,7 @@ class Checks:
 
     def scheduler_shim(self) -> str:
         revision = hashlib.sha256((self.worker_files / "sched_self.c").read_bytes()).hexdigest()
-        path = (
-            Path("/usr/local/lib/sandbox-science/shim") / revision / "libsandbox-science-sched.so"
-        )
+        path = Path(SHIM_DIR) / revision / "libsandbox-science-sched.so"
         shim = ctypes.CDLL(str(path))
         source = shim.sandbox_science_sched_source_sha256
         source.restype = ctypes.c_char_p
@@ -371,6 +377,24 @@ class Checks:
             "scheduler shim admitted another thread",
         )
         return f"native scheduler shim, source {revision}"
+
+    def signal_shim_path(self) -> Path:
+        revision = hashlib.sha256((self.worker_files / "signal_self.c").read_bytes()).hexdigest()
+        return Path(SHIM_DIR) / revision / "libsandbox-science-signal.so"
+
+    def signal_shim(self) -> str:
+        """The library a delegated run's processes preload for ``kill`` (DA-20): its
+        source revision, and a signal through it to a child of this process."""
+        path = self.signal_shim_path()
+        revision = path.parent.name
+        shim = ctypes.CDLL(str(path), use_errno=True)
+        source = shim.sandbox_science_signal_source_sha256
+        source.restype = ctypes.c_char_p
+        expect(source() == revision.encode(), "signal shim source revision differs")
+        child = subprocess.Popen(["sleep", "30"])  # noqa: S607 - the image's own sleep
+        expect(shim.kill(child.pid, signal.SIGTERM) == 0, "signal shim's kill failed")
+        expect(child.wait(10) == -signal.SIGTERM, "the child did not get SIGTERM")
+        return f"native signal shim, source {revision}"
 
     def identity(self) -> str:
         entry = pwd.getpwuid(os.getuid())
@@ -482,7 +506,8 @@ class Checks:
         for name in WORKER_FILES:
             shutil.copyfile(self.worker_files / name, EXECUTOR_DIR / name)
         script = EXECUTOR_DIR / "executor.py"
-        self.client = Executor(script, PROJECT, Path("/tmp/executor.log"))  # noqa: S108
+        env = {**os.environ, "SANDBOX_SCIENCE_SIGNAL_SHIM": str(self.signal_shim_path())}
+        self.client = Executor(script, PROJECT, Path("/tmp/executor.log"), env)  # noqa: S108
         reply = self.client.open()
         languages, features = reply.get("languages"), reply.get("features")
         expect(languages == LANGUAGES[self.profile], f"languages {languages}")
@@ -542,6 +567,100 @@ class Checks:
         stdout, _ = self.ex().cell(code)
         expect(stdout.startswith("[1, 2, 3] [4, 5]"), f"output {stdout!r}")
         return f"Lock, Pool and ProcessPoolExecutor: {stdout.strip()}"
+
+    def cgroup_cpu(self) -> str:
+        """A kernel reads the sandbox's cgroup CPU limit the way joblib's loky does: where
+        ``/sys/fs/cgroup/cpu.max`` exists it opens it, and Landlock must let it, since loky
+        does not catch the refusal (``KERNEL_INTERFACES_READ_ONLY`` in the policy compiler).
+        The file exists in a cgroup namespace on a cgroup v2 host, which test.sh asks Docker
+        for; without one there is nothing to read, and the check says it proved nothing."""
+        code = (
+            "import os\n"
+            f"path = {CPU_MAX!r}\n"
+            "if os.path.exists(path):\n"
+            "    with open(path) as fh:\n"
+            "        print('read', *fh.read().split())\n"
+            "else:\n"
+            "    print('absent')\n"
+        )
+        stdout, _ = self.ex().cell(code)
+        words = stdout.split()
+        if words == ["absent"]:
+            return f"{CPU_MAX} is absent here (no cgroup v2 namespace): this proves nothing"
+        expect(len(words) == 3 and words[0] == "read", f"output {stdout!r}")
+        return f"{CPU_MAX} reads {words[1]} {words[2]}"
+
+    def joblib_loky(self) -> str:
+        """joblib's ``Parallel`` with its default backend, loky, and loky's ``cpu_count()``,
+        which reads the cgroup's CPU limit. joblib is in neither image, so it is installed
+        into the layer at runtime, as research code would."""
+        self.ex().shell("python -m pip install -q --no-cache-dir joblib >/dev/null", limit=600)
+        code = (
+            "import os, joblib\n"
+            "from joblib import Parallel, delayed\n"
+            "from joblib.externals.loky import cpu_count\n"
+            "count = cpu_count()\n"
+            "out = Parallel(n_jobs=2)(delayed(abs)(-i) for i in range(4))\n"
+            "print(joblib.__version__, count, os.cpu_count(), *out)\n"
+        )
+        stdout, _ = self.ex().cell(code)
+        words = stdout.split()
+        expect(len(words) == 7 and words[3:] == ["0", "1", "2", "3"], f"output {stdout!r}")
+        version, count, total = words[0], int(words[1]), int(words[2])
+        expect(1 <= count <= total, f"loky counts {count} of {total} CPUs")
+        exists = Path(CPU_MAX).exists()
+        where = f"with {CPU_MAX}" if exists else f"without {CPU_MAX}, which proves less"
+        return f"joblib {version}: Parallel through loky, cpu_count() {count} of {total}, {where}"
+
+    def held_run(self) -> str:
+        """A delegated run's shell and cells, held to its write area (DA-20), inside the
+        sandbox's own ruleset: they start in the area and write there and in $TMPDIR, never
+        an input or the prefix; a Python pool still works, and in crypto-base Sage with its
+        pexpect interfaces."""
+        area = "work/dlg-image-check"
+        held = {"write_area": area}
+        data = WORKSPACE / "inputs/data.csv"
+        data.parent.mkdir(parents=True, exist_ok=True)
+        data.write_text("kept\n")
+        script = (
+            'pwd; echo ok > notes.md; echo t > "$TMPDIR/t"; '
+            f"(echo no > {data}) 2>/dev/null || echo refused-input; "
+            f"touch {LAYER}/held 2>/dev/null || echo refused-prefix; "
+            "sleep 30 & kill $!; wait $!; echo own-$?; "
+            "timeout 1 sleep 10; echo timeout-$?; "
+            "kill -0 $PPID 2>/dev/null || echo refused-signal"
+        )
+        result = self.ex().run("shell", 120, script=script, **held)
+        out = str(result.get("stdout", {}).get("text", "")).split()
+        expected = [
+            str(WORKSPACE / area), "refused-input", "refused-prefix", "own-143", "timeout-124",
+            "refused-signal",
+        ]  # fmt: skip
+        expect(out == expected, f"shell {out}")
+        code = (
+            "import multiprocessing as mp, os\n"
+            "with mp.Pool(2) as pool:\n"
+            "    print(pool.map(abs, [-1, -2]), os.getcwd())\n"
+            "try:\n"
+            f"    open({str(data)!r}, 'w')\n"
+            "except OSError as error:\n"
+            "    print('refused', error.errno)\n"
+        )
+        result = self.ex().run("cell", 120, code=code, language="python", run="held", **held)
+        lines = str(result.get("stdout", {}).get("text", "")).splitlines()
+        expect(lines == [f"[1, 2] {WORKSPACE / area}", "refused 13"], f"python {lines}")
+        detail = (
+            "shell and a Python pool held: area written, input and prefix refused, "
+            "own processes signalled, the executor not"
+        )
+        if self.crypto:
+            code = "print(gp('2 + 2'), singular('3 * 7'), libgap.SymmetricGroup(5).Size())"
+            result = self.ex().run("cell", 300, code=code, language="sage", run="held", **held)
+            stdout = str(result.get("stdout", {}).get("text", ""))
+            expect(stdout.split() == ["4", "21", "120"], f"sage {stdout!r}")
+            detail += "; Sage's gp and Singular through pexpect"
+        expect(data.read_text() == "kept\n", "the input changed")
+        return detail
 
     # crypto-base.
 
@@ -918,13 +1037,16 @@ def planned(profile: str, *, landlock: bool, network: bool) -> list[str]:
         # The harness's image: no executor or kernels, and nothing installed at runtime.
         harness = ["harness-cli", "harness-imports", "no-kernels", "harness-state", "harness-run"]
         return names + harness
-    names += ["scheduler-shim", "executor", "python-kernel", "tools-on-path", "multiprocessing"]
+    names += ["scheduler-shim", "signal-shim", "executor", "python-kernel", "tools-on-path"]
+    names.append("multiprocessing")
+    names.append("cgroup-cpu")
+    names.append("held-run")
     if profile == "crypto-base":
         names += ["sage-kernel", "sage-interfaces", "frozen-trees", "fpylll", "g6k"]
         names += ["lattice-estimator"]
         names += ["latexmk", "pdftotext", "pdf-oxide", "pdf-tools"]
     if network:
-        names += ["runtime-install", "runtime-upgrade"]
+        names += ["runtime-install", "runtime-upgrade", "joblib-loky"]
     return names
 
 

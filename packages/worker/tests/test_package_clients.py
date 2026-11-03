@@ -420,6 +420,7 @@ def openshell_settings(tmp_path: Path, **changes: Any) -> OpenShellBackendSettin
         executor_dir=str(sandbox / ".sandbox-science"),
         isolation_tier=3,  # the probe lowers it: the stand-in runs everything here
         sched_shim=False,
+        signal_shim=False,
         env={"HOME": str(sandbox), "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"]},
         sandboxes={"env1": "research-1"},
         **changes,

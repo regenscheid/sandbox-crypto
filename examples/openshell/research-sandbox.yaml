@@ -13,6 +13,7 @@ filesystem_policy:
   - /dev/random
   - /opt/sandbox-science-frozen
   - /opt/sandbox-science-base
+  - /sys/fs/cgroup
   read_write:
   - /tmp
   - /dev/null
