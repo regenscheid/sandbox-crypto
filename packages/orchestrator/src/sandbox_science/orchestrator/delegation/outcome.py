@@ -19,8 +19,11 @@ reference the hook checks against what the run's calls recorded, as it checks a 
 file (RA-38). A result that leaves one out gets the one correction, naming it; if the
 answer that stands still leaves one out, and fails no other check, the result is the
 child's with the platform's status ``blocked`` and its obstacle, marked ``set_by:
-platform``, the child's own status kept beside them. Its ``lessons`` are the child's
-notes on operating the tools (DA-27): agent text, data for the parent, read by no code.
+platform``, the child's own status kept beside them. An answer the schema refuses has its
+deliverables checked too, as far as they can be read, so that its one correction names
+every problem, within ``MAX_ERRORS`` and ``ERROR_CHARS``; it stays invalid. Its
+``lessons`` are the child's notes on operating the tools (DA-27): agent text, data for the
+parent, read by no code.
 
 Two forms models keep giving are read as what they unambiguously say, and the kept
 result's ``platform_notes`` says so (PD-18 as amended 2026-11-01): ``deliverables`` given
@@ -455,11 +458,19 @@ def _listed(answer: str | None, order: Sequence[str]) -> tuple[str | None, tuple
     return json.dumps({**whole, "deliverables": items}), (KEYED_NOTE,)
 
 
+class SchemaError(ValueError):
+    """An answer its schema refuses, with each of its errors, at most ``MAX_ERRORS``."""
+
+    def __init__(self, errors: Sequence[str]) -> None:
+        super().__init__("; ".join(errors))
+        self.errors = tuple(errors)
+
+
 def _parsed[R: CheckResult | TaskResult](
     answer: str | None, schema: type[R], limit: int = MAX_BYTES
 ) -> R:
     """The ``schema`` result an answer gives: a JSON object, alone or in one fenced block.
-    Raises ``ValueError`` with what is wrong."""
+    Raises ``ValueError`` with what is wrong, ``SchemaError`` when the schema refuses it."""
     text = _unfenced(answer)
     try:
         result = schema.model_validate_json(text)
@@ -468,7 +479,7 @@ def _parsed[R: CheckResult | TaskResult](
             f"{'.'.join(str(part) for part in e['loc']) or 'result'}: {e['msg']}"
             for e in error.errors()[:MAX_ERRORS]
         ]
-        raise ValueError("; ".join(found)) from None
+        raise SchemaError(found) from None
     if len(result.model_dump_json().encode()) > limit:
         raise ValueError(f"the result is longer than {limit} bytes")
     return result
@@ -860,11 +871,53 @@ class Outcome(TurnHook):
             self.marked["child_obstacle"] = result.obstacle
         return self._correction(missing)
 
+    async def _leniently(self, answer: str | None) -> tuple[list[Asked], list[str]]:
+        """What the accounting finds wrong with an answer the schema refuses, as far as
+        its deliverables can be read: each item that validates on its own is checked as
+        a valid result's is, and the brief's deliverables that no item names are left
+        out; an item that does not validate counts as given and is not checked, and
+        ``deliverables`` that is no list is not read (PD-18, PD-45). The answer stays
+        invalid: this only lets its one correction name every problem at once."""
+        order = [asked.id for asked in self.deliverables]
+        try:
+            text, _ = _listed(answer, order)
+            loaded: object = json.loads(_unfenced(text))
+        except (ValueError, RecursionError):
+            return [], []
+        if not isinstance(loaded, dict):
+            return [], []
+        whole = cast(dict[str, object], loaded)
+        given = whole.get("deliverables")
+        if given is not None and not isinstance(given, list):
+            return [], []
+        items: list[Accounted] = []
+        unread: set[str] = set()
+        for value in cast(list[object], given or []):
+            try:
+                items.append(Accounted.model_validate(value))
+            except ValidationError:
+                named = (
+                    cast(dict[str, object], value).get("id") if isinstance(value, dict) else None
+                )
+                if isinstance(named, str):
+                    unread.add(named)
+        # A result as far as it could be read, unvalidated, for the checks that read only
+        # its status and its deliverables.
+        read = TaskResult.model_construct(
+            status=whole.get("status"), deliverables=None if given is None else tuple(items)
+        )
+        read, _ = self._resolved(read)
+        missing, problems = self._unaccounted(read)
+        problems.extend(await self._entries(read))
+        return [asked for asked in missing if asked.id not in unread], problems
+
     async def _task_closing(self, answer: str | None) -> Closing:
         try:
             found, listed = read_task(answer, [asked.id for asked in self.deliverables])
         except ValueError as error:
-            return self._invalid(str(error))
+            errors = list(error.errors) if isinstance(error, SchemaError) else [str(error)]
+            missing, problems = await self._leniently(answer)
+            return self._invalid("; ".join([*errors, *problems][:MAX_ERRORS]), missing)
         found, resolved = self._resolved(found)
         missing, problems = self._unaccounted(found)
         pinned: list[dict[str, JsonValue]] = []

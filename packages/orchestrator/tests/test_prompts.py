@@ -70,6 +70,7 @@ HOSTILE = "Authorization: Bearer test-secret-prompt-not-a-credential"
 # version: add it here, and keep the old version's entry for its records.
 GOLDEN = {
     "sandbox-main-19": "74e546698352d3cb2ae235e460d55442ca02259c9cb2a504adbf03d3973f8bbe",
+    "sandbox-delegated-task-19": "04c765c8c6bc821d8fa193981c1e880387360c5f980c8ce99feaecc8eab5a608",
     "sandbox-delegated-task-18": "79475b306ebb52f2567368dc1667af844a026395451a4a7d46d0e64360a8b220",
     "sandbox-delegated-task-17": "88951b020a690c47b379833f454f27dc661f1336c603be2311befca42dfbcfc7",
     "sandbox-main-18": "22e826b62aeea833f17d60b81df71da7cce20962825137aec955d1577e2270f8",
