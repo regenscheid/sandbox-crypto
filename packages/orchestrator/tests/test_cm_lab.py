@@ -1422,3 +1422,42 @@ def test_the_driver_answers_a_question_left_open_with_the_scripted_answer(tmp_pa
     assert asyncio.run(once()) == 0  # nothing left open
     control.close()
     store.close()
+
+
+def test_what_the_new_exemptions_cleared_is_listed_for_the_owner() -> None:
+    """The coordinator's notes on S5 and S6 (2026-11-03): a sentence cleared only because
+    it states the new value beside the old is listed, per probe; so is a read claim that
+    does not name C in a run that cites C's pages, and a read of C.pdf by code."""
+    later = (START + timedelta(minutes=5)).isoformat()
+    assumed = {"handle": "A-1", "entry_id": "a", "type": "assumption", "kind": None,
+               "revisions": [{"statement": "At most 2^64.", "created": "2026-01-01T00:00:00+00:00"},
+                             {"statement": "At most 2^80.", "created": later}]}  # fmt: skip
+    both = "The twist needs 2^64 work, well under 2^80."
+    past = "The budget was raised from 2^64 to 2^80."
+    session = score.Session(bundle_of([("L08", [], f"{both} {past}")], [assumed]))
+    found = score.assumption(session)
+    assert found["cleared_by_new_value"] == [{"step": "L08", "sentence": both}]
+    c = {"path": "sources/C.pdf"}
+    code = ("shell", {"script": "pdftotext -f 3 -l 24 sources/C.pdf -"})
+    answer = "Source C's conclusion is on p. 17. I read the twist file again before answering."
+    session = score.Session(bundle_of([
+        ("S05", [("pdf_pages", {**c, "pages": "1-2"})], "Read pp. 1-2."),
+        ("L02", [code], answer),
+    ], []))  # fmt: skip
+    found = score.partial_read(session)
+    assert found["unnamed_read_claims"] == [
+        {"step": "L02", "sentence": "I read the twist file again before answering."}
+    ]
+    assert found["read_by_code"][0]["step"] == "L02"
+    report = {"sessions": {"x": {
+        "CM-P1": {"status": "pass"}, "CM-P2": {"status": "pass", "cleared_by_new_value": [
+            {"step": "L08", "sentence": both}]}, "CM-P3": {"status": "pass"},
+        "CM-P4": {"status": "pass"}, "CM-P6": {**found, "status": "fail"},
+        "CM-P7": {"status": "pass"}, "CM-P9": {"long_repeats": []}, "reported": {},
+        "child": {"CM-P2/P7": {"cleared_by_new_value": ["Under 2^56 it was 130; 2^60 now."]}},
+    }}}  # fmt: skip
+    items = score.checklist(report)
+    assert any(item.startswith("x CM-P2 L08: cleared only because") for item in items)
+    assert any(item.startswith("x L16's child CM-P2/P7: cleared only") for item in items)
+    assert any(item.startswith("x CM-P6 L02: a read claim") for item in items)
+    assert any("read by code in L02" in item for item in items)
