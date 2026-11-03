@@ -123,11 +123,14 @@ def step_argv(
     task: str,
     folding_off: bool = False,
     skeleton_only: bool = False,
+    compaction: bool = False,
     extra: Sequence[str] = (),
 ) -> list[str]:
     """One step's run: on ``alias``, under ``ceiling``; ``folding_off`` for the seed;
-    ``extra``, the arm's further options, such as the lab's small shares. A delegated run
-    calls ``alias`` too, when the config names a delegated model (L16's child)."""
+    ``compaction``, Anthropic's server-side compaction in place of folds, at the trigger
+    the ceiling gives (CM-38b); ``extra``, the arm's further options, such as the lab's
+    small shares. A delegated run calls ``alias`` too, when the config names a delegated
+    model (L16's child), and is in its root's context mode."""
     argv = list(base)
     argv[argv.index("--model") + 1] = alias
     if "--delegated-model" in argv:
@@ -138,6 +141,8 @@ def step_argv(
         argv += ["--input-limit", str(scenario.FOLDING_OFF)]
     if skeleton_only:
         argv.append("--skeleton-only-folds")
+    if compaction:
+        argv += ["--context-mode", "provider_compaction"]
     return [*argv, *extra, task]
 
 
@@ -348,18 +353,32 @@ def clone(snapshot: Path, target: Path, project: str, session: str, environment:
 FREED = 1.6
 """What a fold frees, in chunks: its span, and the old tool output it stubs. Lab round 1
 measured 1.5 to 1.8 (74,000 to 90,000 tokens at C = 250,000, 210,000 at 600,000)."""
+SUMMARY = 5_000
+"""What a compaction leaves of the conversation, in tokens: its summary (CM-38b). The
+probe of 2026-11-02 summarized 89,000 tokens of synthetic pages in 220; a session's work
+is denser, so this is a generous guess."""
+COMPACTION_OUTPUT = 4_000
+"""A compaction's own output tokens, its summary written, for the cost model."""
 
 
-def forecast(start: int, ceiling: int, growth: Sequence[int], prompt: int = 30_000) -> list[int]:
+def forecast(
+    start: int,
+    ceiling: int,
+    growth: Sequence[int],
+    prompt: int = 30_000,
+    *,
+    compaction: bool = False,
+) -> list[int]:
     """The folds each live step makes, roughly: the view grows by each step's tokens, and
-    a fold frees ``FREED`` chunks whenever it passes the trigger."""
+    a fold frees ``FREED`` chunks whenever it passes the trigger; with ``compaction``, the
+    compactions, each leaving the system message, tools and a ``SUMMARY``."""
     shape = geometry(ceiling, prompt)
     tokens, folds = start, []
     for added in growth:
         tokens += added
         made = 0
         while tokens > shape.trigger:
-            tokens -= int(FREED * shape.chunk)
+            tokens = prompt + SUMMARY if compaction else tokens - int(FREED * shape.chunk)
             made += 1
         folds.append(made)
     return folds
@@ -524,6 +543,9 @@ class Prices:
     output_long: float
     cache_write: float | None = None
     long_at: int = LONG
+    cache_write_1h: float | None = None
+    """A 1-hour cache write's price, where the gateway lists one: a compaction writes its
+    input there (CM-38b). Without it, twice the input price, Anthropic's rate."""
 
     @classmethod
     def of(cls, info: Mapping[str, Any]) -> Prices | None:
@@ -540,6 +562,7 @@ class Prices:
         long_input = price(f"input_cost_per_token_{above}", given)
         cached = price("cache_read_input_token_cost", given)
         write = price("cache_creation_input_token_cost", 0.0)
+        hour = price("cache_creation_input_token_cost_above_1hr", 0.0)
         return cls(
             given,
             cached,
@@ -553,13 +576,14 @@ class Prices:
             price(f"output_cost_per_token_{above}", output),
             write or None,
             long_at,
+            hour or None,
         )
 
 
-OPUS_4_8: Final = Prices(5e-6, 5e-7, 25e-6, 5e-6, 5e-7, 25e-6, 6.25e-6)
+OPUS_4_8: Final = Prices(5e-6, 5e-7, 25e-6, 5e-6, 5e-7, 25e-6, 6.25e-6, LONG, 1e-5)
 """``arr-claude-opus-4-8``'s prices as the gateway's model information gave them on
-2026-11-02 (USD 5 and 25 a million, cache reads 0.50, 5-minute writes 6.25; no
-long-context rates): ``plan`` uses them offline, ``preflight`` reads them again."""
+2026-11-02 (USD 5 and 25 a million, cache reads 0.50, 5-minute writes 6.25, 1-hour writes
+10; no long-context rates): ``plan`` uses them offline, ``preflight`` reads them again."""
 
 
 def views(ceiling: int, calls: int = CALLS_PER_ARM) -> list[int]:
@@ -651,9 +675,12 @@ def plan_arm(
     prompt = counted.prompt if counted is not None else 30_000
     ratio = counted.ratio if counted is not None else 1.0
     start = pick_snapshot(manifest, ceiling, counted.views if counted is not None else None)
-    made = forecast(start["tokens"], ceiling, growth(ratio), prompt)
+    compacting = chosen.compaction
+    made = forecast(start["tokens"], ceiling, growth(ratio), prompt, compaction=compacting)
     child_start = prompt + 4_000
-    child_made = forecast(child_start, ceiling, [child_growth(ratio)], prompt)
+    child_made = forecast(
+        child_start, ceiling, [child_growth(ratio)], prompt, compaction=compacting
+    )
     if prices.cache_write is not None:
         main = estimate_written(
             views(ceiling), prices, added=sum(growth(ratio)),
@@ -666,6 +693,11 @@ def plan_arm(
     else:
         main = estimate(views(ceiling), prices, 0.5)
         child = estimate(child_views(ceiling, child_start), prices, 0.5)
+    if compacting:  # each compaction writes the view at its trigger, priced at 1 hour's rate
+        hour = prices.cache_write_1h or 2 * prices.input
+        each = int(0.75 * ceiling) * hour + COMPACTION_OUTPUT * prices.output
+        main += sum(made) * each
+        child += sum(child_made) * each
     cap = chosen.budget or 5 * math.ceil(MARGIN * (main + child) / 5)
     return Planned(
         chosen.name, ceiling, start["step"], start["tokens"], sum(made),
@@ -904,6 +936,7 @@ async def arm(
         meta = {
             "arm": name, "family": chosen.family, "alias": alias, "ceiling": chosen.ceiling,
             "effective_ceiling": ceiling, "skeleton_only": chosen.skeleton_only,
+            "compaction": chosen.compaction,
             "seed": snapshot["step"], "seed_tokens": snapshot["tokens"],
             "project": lab.project, "session": session, "restored": False,
             "extra": list(extra), "budget": budget, "delegation": False,
@@ -940,7 +973,8 @@ async def arm(
             argv = step_argv(
                 lab.base, state_dir=state, project=lab.project, session=session, alias=alias,
                 ceiling=chosen.ceiling, transcript=transcript, task=step.message,
-                skeleton_only=chosen.skeleton_only, extra=meta["extra"],
+                skeleton_only=chosen.skeleton_only, compaction=chosen.compaction,
+                extra=meta["extra"],
             )  # fmt: skip
             code = _run(argv, home / "logs" / f"{step.id}.log", transcript)
             keep_delegated(store, lab.project, session, home)
@@ -1057,7 +1091,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 start = pick_snapshot(manifest, chosen.ceiling, counted.views if counted else None)
                 folds = forecast(
                     start["tokens"], chosen.ceiling, growth(counted.ratio if counted else 1.0),
-                    prompt,
+                    prompt, compaction=chosen.compaction,
                 )  # fmt: skip
                 runs = sum(1 for made in folds if made)
                 print(
@@ -1151,6 +1185,8 @@ def plan_round(
             f"{found.child_cost:.2f} = {found.cost:.2f}; cap {found.cap:g}"
         )
         needed, across = (4, 3) if chosen.ceiling < 600_000 else (2, 1)
+        if chosen.compaction:  # a compaction frees nearly the whole view, not a chunk
+            needed, across = 2, 2
         if found.folds < needed or found.runs_with_folds < across:
             problems.append(
                 f"{chosen.name}: about {found.folds} folds in {found.runs_with_folds} runs "

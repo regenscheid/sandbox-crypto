@@ -10,6 +10,7 @@ from a copy of the arm's store, never the store a run is writing.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Final
 
@@ -62,6 +63,9 @@ def rows(archive: Archive, project: str, session: str) -> list[Json]:
                     for call in entry.tool_calls
                 ],
                 "native": entry.native.decode() if entry.kind == "fold" and entry.native else None,
+                "compaction": _compaction(entry.native)
+                if entry.kind == "assistant" and entry.native_format == "messages"
+                else None,
             }
             if entry.files:
                 item["saved"] = {
@@ -70,6 +74,22 @@ def rows(archive: Archive, project: str, session: str) -> list[Json]:
             found.append(item)
         start = page[-1].position + 1
     return found
+
+
+def _compaction(native: bytes | None) -> str | None:
+    """The summary of a Claude answer's compaction block (the compaction arm's fold,
+    CM-38b), if the answer holds one with a summary: one whose content is null condensed
+    nothing, and the adapter never sends it."""
+    try:
+        data = json.loads(native or b"")
+    except ValueError:
+        return None
+    content = data.get("content") if isinstance(data, dict) else None
+    for block in content if isinstance(content, list) else []:
+        if isinstance(block, dict) and block.get("type") == "compaction":
+            text = block.get("content")
+            return text if isinstance(text, str) and text.strip() else None
+    return None
 
 
 def ledger(documents: DocumentStore, project: str) -> list[Json]:

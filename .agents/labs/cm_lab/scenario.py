@@ -312,6 +312,9 @@ class Arm:
     family: Literal["claude", "gpt"]
     ceiling: int
     skeleton_only: bool = False
+    compaction: bool = False
+    """Anthropic's server-side compaction in place of folds (``--context-mode
+    provider_compaction``, CM-38b)."""
     model: Literal["primary", "second", "claude"] = "primary"
     """Which alias runs it: round 1's primary GPT model, its second, or Claude's."""
     budget: float | None = None
@@ -328,13 +331,9 @@ OVER_BUDGET: Final = (
 )
 NO_ROOM: Final = (
     "not in the budget's margin: at Opus 4.8's prices its cap (USD 115 with its child, "
-    "estimate 76) with the three 250,000 arms' (165, the compaction arm's held in reserve) "
+    "estimate 76) with the three 250,000 arms' (170) "
     "and what was spent outside the kit leaves under USD 15 of the 300 for overruns or a "
     "rerun, and its forecast is at its validity bar (two folds; round 1's made one)"
-)
-COMPACTION_PENDING: Final = (
-    "pending product work: the run service has no mode that hands folding to Anthropic's "
-    "server-side compaction (beta compact-2026-01-12); its cap is held in reserve"
 )
 
 # Round 2 runs on Claude alone, arr-claude-opus-4-8 (Opus 5.5 declines the scenario's
@@ -351,10 +350,10 @@ ARMS: Final = (
     Arm("second-600", "gpt", 600_000, model="second", deferred=OVER_BUDGET),
     Arm("claude-250", "claude", 250_000, model="claude"),
     Arm("claude-250-skeleton", "claude", 250_000, skeleton_only=True, model="claude"),
-    Arm("claude-250-compaction", "claude", 250_000, model="claude", deferred=COMPACTION_PENDING),
+    Arm("claude-250-compaction", "claude", 250_000, compaction=True, model="claude"),
     Arm("claude-600", "claude", 600_000, model="claude", deferred=NO_ROOM),
 )
-RESERVED: Final = ("claude-250-compaction",)
+RESERVED: Final[tuple[str, ...]] = ()
 """Deferred arms whose caps the round's plan holds back: they are expected this round."""
 SEED_BUDGET: Final = 65.0
 SEED_TARGET: Final = 400_000
