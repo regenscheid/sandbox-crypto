@@ -35,6 +35,7 @@ from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.session_plans import SessionPlans
 from sandbox_science.orchestrator.tokens import chars_per_token
 
+from .compaction import ProviderCompaction
 from .history import (
     Archive,
     Folder,
@@ -52,7 +53,7 @@ from .history import (
     session_view,
     settle,
 )
-from .history.delegated import delegated_folder
+from .history.delegated import delegated_compaction, delegated_folder
 from .history.geometry import Shares
 
 _log = logging.getLogger(__name__)
@@ -80,9 +81,10 @@ class FoldLimits:
 
 @dataclass(frozen=True)
 class PreparedContext:
-    """One attempt's reconstructed context and its archive-backed capabilities."""
+    """One attempt's reconstructed context and its archive-backed capabilities: the fold
+    engine, or in the provider-compaction mode an engine that never folds (CM-2a)."""
 
-    folder: Folder
+    folder: Folder | ProviderCompaction
     log: RunArchive
     retrieval: HistoryTool
 
@@ -107,26 +109,39 @@ async def prepare_context(
     learned: MutableMapping[str, int],
     observe_kernels: Callable[[ExecutionContext], Awaitable[KernelObservation]],
     clock: Clock = SYSTEM_CLOCK,
+    compaction: int | None = None,
 ) -> PreparedContext:
-    """Reconstruct scoped history and give folding, logging and retrieval one owner."""
+    """Reconstruct scoped history and give folding, logging and retrieval one owner;
+    ``compaction``, the trigger of the provider-compaction mode, puts an engine that
+    never folds in the fold engine's place (CM-38b)."""
     context, name = scope.context, scope.run
+    folder: Folder | ProviderCompaction
     if scope.parent is not None:
         block = await threaded(task_block, documents, scope, delegation, clock=clock)
-        folder = await delegated_folder(
-            Archive(projects.control, clock=clock, chain=True),
-            context,
-            run=name,
-            parent=scope.parent,
-            brief=brief,
-            constraints=block,
-            # A rebuild's state block holds the references of the messages shown since.
-            refresh=functools.partial(task_block, documents, scope, delegation, clock=clock),
-            ceiling=limits.ceiling,
-            chunk=limits.chunk,
-            shares=limits.shares,
-            clock=clock,
-            model=narrator,
-        )
+        archived = Archive(projects.control, clock=clock, chain=True)
+        if compaction is not None:
+            folder = await delegated_compaction(
+                archived, context, run=name, parent=scope.parent, brief=brief,
+                constraints=block, ceiling=limits.ceiling, chunk=limits.chunk,
+                shares=limits.shares, trigger=compaction, clock=clock,
+            )  # fmt: skip
+        else:
+            folder = await delegated_folder(
+                archived,
+                context,
+                run=name,
+                parent=scope.parent,
+                brief=brief,
+                constraints=block,
+                # A rebuild's state block holds the references of the messages shown
+                # since.
+                refresh=functools.partial(task_block, documents, scope, delegation, clock=clock),
+                ceiling=limits.ceiling,
+                chunk=limits.chunk,
+                shares=limits.shares,
+                clock=clock,
+                model=narrator,
+            )
     else:
         folder = await _main_folder(
             scope,
@@ -140,6 +155,7 @@ async def prepare_context(
             learned=learned,
             observe_kernels=observe_kernels,
             clock=clock,
+            compaction=compaction,
         )
     return PreparedContext(
         folder=folder,
@@ -186,7 +202,8 @@ async def _main_folder(
     learned: MutableMapping[str, int],
     observe_kernels: Callable[[ExecutionContext], Awaitable[KernelObservation]],
     clock: Clock,
-) -> Folder:
+    compaction: int | None = None,
+) -> Folder | ProviderCompaction:
     context, name = scope.context, scope.run
     project, session = context.project_id, context.session_id
     archive = Archive(projects.control, clock=clock)
@@ -225,6 +242,8 @@ async def _main_folder(
         except Exception as error:  # unknown, then: the run goes on
             _log.warning("the kernels could not be observed for the view: %r", error)
     view = await settle(view, archive, context, run=name, kernels=kernels, clock=clock)
+    if compaction is not None:  # the provider condenses older work (CM-38b)
+        return ProviderCompaction(view, trigger=compaction, ceiling=top)
 
     def exists(handle: str) -> bool:
         try:

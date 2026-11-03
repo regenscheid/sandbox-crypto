@@ -320,6 +320,10 @@ def harness_argv(config: LauncherConfig, layout: Layout) -> list[str]:
         shared += ["--max-turns", str(service.max_turns)]
     if service.context_ceiling is not None:
         shared += ["--context-ceiling", str(service.context_ceiling)]
+    if service.context_mode != "folds":  # how older work is condensed (CM-2a)
+        shared += ["--context-mode", service.context_mode]
+    if service.compaction_trigger is not None:
+        shared += ["--compaction-trigger", str(service.compaction_trigger)]
     if (embedding := config.skills.embedding_model) is not None:
         shared += ["--skills-embedding-model", embedding]  # the skills' imports used it too
     if (derived := config.skills.metadata_model) is not None:

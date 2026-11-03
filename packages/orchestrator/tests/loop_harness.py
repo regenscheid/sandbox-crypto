@@ -311,12 +311,28 @@ class Reply:
     """The call's cost, as LiteLLM's proxy reports it in ``x-litellm-response-cost``."""
     tokens: int | None = None
     """The prompt tokens the gateway reports for the call; by default, its messages' count."""
+    compact: str | None = None
+    """Through ``/messages``: the API compacts the request first, with this summary, which
+    the request's compaction edit must allow (CM-38b)."""
 
 
 AREA: Final = "@AREA@"
 """In a delegated run's scripted calls and answers, its write area, ``work/<delegation_id>``
 as its brief names it (DA-19)."""
 _WRITE_AREA = re.compile(r"Your write area: (work/dlg-[0-9a-f]{24})/")
+
+
+def _chat_view(body: Json) -> list[Message]:
+    """A ``/messages`` request's conversation as chat messages, enough for a reply's
+    ``calls_from``: each tool result a ``tool`` message, each text its role's."""
+    found: list[Message] = []
+    for message in cast(list[Json], body["messages"]):
+        for block in cast(list[Json], message["content"]):
+            if block.get("type") == "tool_result":
+                found.append({"role": "tool", "content": str(block.get("content", ""))})
+            elif block.get("type") == "text":
+                found.append({"role": message["role"], "content": block["text"]})
+    return found
 
 
 def written_area(messages: list[Message]) -> str | None:
@@ -471,29 +487,49 @@ class Gateway:
         self.claude_raw.append(await request.read())
         self.claude_betas.append(request.headers.get("anthropic-beta", ""))
         body = cast(Json, json.loads(self.claude_raw[-1]))
-        assert body["model"] == "main", body["model"]
+        assert body["model"] in ("main", "delegated"), body["model"]
         self.claude.append(body)
-        reply = self.script.pop(0) if self.script else Reply("(the script has ended)")
+        system = body.get("system") or [{"text": ""}]
+        if str(system[0]["text"]).startswith(DELEGATED):
+            reply = self.delegated.pop(0) if self.delegated else Reply("(the script has ended)")
+        else:
+            reply = self.script.pop(0) if self.script else Reply("(the script has ended)")
         turn = len(self.claude)
         updates = body["thinking"]["display"] == "updates"
-        content: list[Json] = [{"type": "thinking", "thinking": "", "signature": f"sig-{turn}a"}]
+        content: list[Json] = []
+        iterations: list[Json] = []
+        if reply.compact is not None:
+            (edit,) = body["context_management"]["edits"]
+            assert edit["type"] == "compact_20260112", edit
+            assert "compact-2026-01-12" in self.claude_betas[-1]
+            content.append({"type": "compaction", "content": reply.compact})
+            iterations.append(
+                {"type": "compaction", "input_tokens": 40, "output_tokens": 200,
+                 "cache_read_input_tokens": 0, "cache_creation_input_tokens": 60_000,
+                 "cache_creation": {"ephemeral_5m_input_tokens": 0,
+                                    "ephemeral_1h_input_tokens": 60_000}}
+            )  # fmt: skip
+        content.append({"type": "thinking", "thinking": "", "signature": f"sig-{turn}a"})
         if reply.text is not None and reply.calls:
             note = reply.text if updates else ""
             content.append({"type": "thinking", "thinking": note, "signature": f"sig-{turn}b"})
         elif reply.text is not None:
             content.append({"type": "text", "text": reply.text})
-        for name, arguments in reply.calls:
+        made = reply.calls_from(_chat_view(body)) if reply.calls_from is not None else reply.calls
+        for name, arguments in made:
             self.numbered += 1
             content.append(
                 {"type": "tool_use", "id": f"toolu_{self.numbered}", "name": name,
                  "input": purposed(arguments)}
             )  # fmt: skip
+        usage: Json = {"input_tokens": 10, "cache_read_input_tokens": len(body["messages"]),
+                       "cache_creation_input_tokens": 0, "output_tokens": 1}  # fmt: skip
+        if iterations:
+            usage["iterations"] = [*iterations, {"type": "message", **usage}]
         text = json.dumps(
             {"id": f"msg_{turn}", "type": "message", "role": "assistant",
              "model": "scripted-main", "content": content,
-             "stop_reason": "tool_use" if reply.calls else "end_turn",
-             "usage": {"input_tokens": 10, "cache_read_input_tokens": len(body["messages"]),
-                       "cache_creation_input_tokens": 0, "output_tokens": 1}}
+             "stop_reason": "tool_use" if made else "end_turn", "usage": usage}
         )  # fmt: skip
         self.claude_answers.append(text)
         headers = {"x-litellm-version": self.version, "Content-Type": "application/json"}

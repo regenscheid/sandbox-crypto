@@ -56,6 +56,13 @@ control_listen = "127.0.0.1:8202"
 # Context tokens before the provider's input limit caps them; default 600,000.
 # Lower ceilings exercise the same folding path sooner, without changing budgets.
 # context_ceiling = 600000
+# How older work is condensed: "folds" (the default), "skeleton" (folds without the
+# enrichment call), or "provider_compaction", Anthropic's server-side compaction in place
+# of folds, for Claude aliases called through the Messages API only, and not with
+# [orchestrator]; its trigger is 0.75 of the ceiling unless compaction_trigger (at least
+# 50,000 tokens) says otherwise.
+# context_mode = "folds"
+# compaction_trigger = 150000
 # The model calls a main run makes before it pauses and asks you in the chat to continue
 # for another block of as many, or to stop: 2,000 unless set (0 is the default too), at
 # most 100,000.

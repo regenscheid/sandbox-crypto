@@ -433,6 +433,15 @@ class RunServiceConfig(_Strict):
     run_share: int | None = Field(default=None, ge=1, le=100)
     """The percent of a project's daily cost limit one run may use, when the project has
     a limit; none when unset."""
+    context_mode: Literal["folds", "skeleton", "provider_compaction"] = "folds"
+    """How every run's older work is condensed (docs/specs/context-management.md, CM-2a):
+    ``folds``; ``skeleton``, folds without the enrichment call; or
+    ``provider_compaction``, Anthropic's server-side compaction in place of folds, for
+    Claude aliases called through the Messages API only, and not with ``[orchestrator]``
+    (CM-38b)."""
+    compaction_trigger: int | None = Field(default=None, ge=50_000)
+    """The provider_compaction mode's trigger in input tokens; unset, 0.75 of the run's
+    ceiling, where folds would start."""
     math_checks: ConfigPath | None = None
     """The math checker's build, ``web/workspace/dist-math`` after ``npm run build:math``:
     with it, the run service checks the documents' formulas, and their charts with the
@@ -444,6 +453,12 @@ class RunServiceConfig(_Strict):
     """Environment variables this part gets besides the usual few (``PATH``, ``HOME``, the
     locale, proxies and CA settings). Never a secret: the parts run in the control zone
     (docs/THREAT-MODEL.md), which holds no engine or cluster credentials."""
+
+    @model_validator(mode="after")
+    def _trigger_with_compaction(self) -> Self:
+        if self.compaction_trigger is not None and self.context_mode != "provider_compaction":
+            raise ValueError("compaction_trigger is the provider_compaction context mode's")
+        return self
 
 
 class WorkspaceConfig(_Strict):
@@ -652,6 +667,11 @@ class LauncherConfig(_Strict):
         ids = [project.id for project in self.projects]
         if len(set(ids)) != len(ids):
             raise ValueError("each project is listed once")
+        if self.run_service.context_mode == "provider_compaction" and self.orchestrator is not None:
+            raise ValueError(
+                "run_service.context_mode provider_compaction runs in the run service only, "
+                "not in the confined agent runtime ([orchestrator])"
+            )
         if self.canaries.enabled and self.mcp_direct is None:
             raise ValueError(
                 "canaries list the servers through the agent runtime's own client: configure "

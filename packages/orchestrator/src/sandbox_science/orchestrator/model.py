@@ -377,6 +377,28 @@ def run_fallbacks() -> Generator[Fallbacks]:
         FALLBACKS.reset(token)
 
 
+MIN_COMPACTION: Final = 50_000
+"""The least trigger, in input tokens, that Anthropic's server-side compaction takes."""
+COMPACTION: ContextVar[int | None] = ContextVar("model_compaction", default=None)
+"""The current run's trigger for Anthropic's server-side compaction, in input tokens
+(docs/specs/context-management.md, CM-38b): set for a run in the ``provider_compaction``
+context mode, and read by the Messages adapter for the run's own calls (the main and
+delegated roles); none outside such a run."""
+
+
+@contextmanager
+def run_compaction(trigger: int | None) -> Generator[None]:
+    """A run's scope for provider compaction at ``trigger`` input tokens; ``None``, a run
+    whose view folds, sends none, whatever an enclosing run sends."""
+    if trigger is not None and trigger < MIN_COMPACTION:
+        raise ValueError(f"a compaction trigger is at least {MIN_COMPACTION:,} tokens")
+    token = COMPACTION.set(trigger)
+    try:
+        yield
+    finally:
+        COMPACTION.reset(token)
+
+
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 """The largest answer read from the gateway, by default."""
 RETRIED: Final = frozenset({429, 502, 503, 504, 524, 529})
