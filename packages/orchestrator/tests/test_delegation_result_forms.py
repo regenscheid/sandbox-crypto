@@ -3,7 +3,9 @@
 say (plans-and-delegation spec, PD-18 as amended 2026-11-01, PD-45): ``deliverables``
 keyed by number becomes the list in the brief's order, and an artifact given by its path
 alone gets the one revision the run's calls recorded of it, each with the platform's
-note; every other form stays an error, and nothing is filled in."""
+note; every other form stays an error, and nothing is filled in. An answer the schema
+refuses has its deliverables checked as far as they can be read, so that its one
+correction names every problem; and the brief shows each deliverable's produced form."""
 
 from __future__ import annotations
 
@@ -14,14 +16,21 @@ import pytest
 from pydantic import JsonValue
 
 from sandbox_science.orchestrator.delegation.outcome import (
+    ERROR_CHARS,
     KEYED_NOTE,
+    MAX_ERRORS,
     TASK_BYTES,
     Asked,
     Outcome,
     parse,
     parse_task,
 )
-from sandbox_science.orchestrator.delegation.prompt import TASK_PROMPT, task_text
+from sandbox_science.orchestrator.delegation.prompt import (
+    TASK_PROMPT,
+    TASK_VERSION,
+    produced_form,
+    task_text,
+)
 from sandbox_science.orchestrator.delegation.records import RESULT_BYTES
 
 from .test_delegation import RESULT as CHECKED
@@ -231,12 +240,138 @@ async def test_the_longest_result_with_the_notes_and_the_mark_fits_its_record() 
     assert len(json.dumps(kept, ensure_ascii=False, separators=(",", ":")).encode()) <= RESULT_BYTES
 
 
+# --- One correction for every problem -----------------------------------------------
+
+RESULTS = "work/dlg-1/out/results.json"
+PRIMES = ("d1", "out/results.json", "file")
+
+
+async def test_an_extra_field_and_a_file_given_a_revision_are_corrected_at_once() -> None:
+    """The schema refuses the answer for its extra field, and its file deliverable gives a
+    revision, which a file does not: the one correction names both, and an answer that
+    still gives the revision is the result's last, missing with its error."""
+    found = Outcome(task=True, deliverables=(Asked(*PRIMES),))
+    await found.observe_tool(run(), recorded(RESULTS))
+    item = {"id": "d1", "status": "produced", "path": RESULTS, "revision": 1}
+    first = {
+        **DONE,
+        "content": {"primes": [2, 3, 5], "sum": 10},
+        "deliverables": [item],
+        "result_files": [RESULTS],
+    }
+    closing = await found.closing(run(), json.dumps(first))
+    assert closing.action == "continue"
+    (notice,) = closing.notices
+    (error,) = cast(dict[str, Any], notice.payload)["errors"]
+    assert error == (
+        "content: Extra inputs are not permitted; d1 is a file: it gives path, not revision"
+    )
+    assert found.result is None
+    second = {k: v for k, v in first.items() if k != "content"}
+    closing = await found.closing(run(), json.dumps(second))
+    assert (closing.action, closing.notices) == ("accept", ())
+    assert (found.result, found.kept()) == (None, None)
+    assert found.errors[-1] == "d1 is a file: it gives path, not revision"
+    fixed = Outcome(task=True, deliverables=(Asked(*PRIMES),))
+    await fixed.observe_tool(run(), recorded(RESULTS))
+    await fixed.closing(run(), json.dumps({**second, "deliverables": [{**item, "revision": None}]}))
+    assert fixed.result is not None, fixed.errors
+
+
+async def test_a_refused_answer_names_what_it_leaves_out_and_stays_invalid() -> None:
+    """A deliverable no item names is listed in the correction, but an answer the schema
+    refuses is never the platform's block: it stays missing; an item that does not
+    validate counts as given, and its own errors are the schema's."""
+    found = Outcome(task=True, deliverables=ASKED)
+    await found.observe_tool(run(), recorded("table.txt"))
+    await found.observe_tool(run(), CHANGED)
+    unread = {"id": "d2", "status": "produced", "entry": "T-1", "note": "x"}
+    closing = await found.closing(
+        run(), json.dumps({**PARTIAL, "extra": 1, "deliverables": [D1, unread]})
+    )
+    payload = cast(dict[str, Any], closing.notices[0].payload)
+    assert payload["missing"] == [{"id": "d3", "title": "Whether every value is 1"}]
+    (error,) = payload["errors"]
+    assert "extra: Extra inputs are not permitted" in error
+    assert "deliverables.1.note: Extra inputs are not permitted" in error
+    assert (found.result, found.marked) == (None, None)
+    await found.closing(run(), json.dumps({**PARTIAL, "deliverables": [D1, D2]}))
+    assert found.kept() is not None  # the second answer alone is read for the block
+
+
+async def test_a_refused_answer_whose_deliverables_cannot_be_read_names_only_its_errors() -> None:
+    for deliverables in ("d1, d2, d3", None, 3):
+        found = Outcome(task=True, deliverables=ASKED)
+        answer = {**PARTIAL, "extra": 1, "deliverables": deliverables}
+        closing = await found.closing(run(), json.dumps(answer))
+        payload = cast(dict[str, Any], closing.notices[0].payload)
+        assert payload["errors"][0].startswith("extra: Extra inputs are not permitted")
+        assert ("missing" in payload) == (deliverables is None)
+
+
+async def test_a_refused_answers_correction_keeps_its_bounds() -> None:
+    asked = tuple(Asked(f"d{n}", "Table", "file") for n in range(1, 13))
+    found = Outcome(task=True, deliverables=asked)
+    items = [{"id": f"d{n}", "status": "produced", "path": "p" * 400} for n in range(1, 13)]
+    await found.closing(run(), json.dumps({**DONE, "extra": 1, "deliverables": items}))
+    (error,) = found.errors
+    assert len(error) == ERROR_CHARS
+    assert error.startswith("extra: Extra inputs are not permitted; d1: your calls wrote")
+    wide = Outcome(task=True, deliverables=asked)
+    short = [{**item, "path": "t"} for item in items]
+    await wide.closing(run(), json.dumps({**DONE, "extra": 1, "deliverables": short}))
+    assert wide.errors[0].count("; ") == MAX_ERRORS - 1
+
+
 # --- What the child is told ----------------------------------------------------------
 
 
 def test_the_prompt_and_the_brief_say_deliverables_is_a_list() -> None:
     assert "deliverables is a list, not an object keyed by number" in TASK_PROMPT
-    assert '{"id": "d1", "status": "produced"' in TASK_PROMPT
-    assert "the revision number your calls recorded" in TASK_PROMPT
+    assert '{"id": "d1", "status": "produced", ...}' in TASK_PROMPT
+    assert "the revision number your calls" in TASK_PROMPT
     brief = task_text("Tabulate.", "", (), deliverables=[("d1", "The table", "file", "")])
     assert "your result's deliverables is a list with one object for each" in brief
+
+
+def test_the_task_prompts_example_is_of_no_one_kind() -> None:
+    """The prompt's one example gives no kind's fields, which a child copied into another
+    kind's; it names each kind's fields in words, and the brief shows each form."""
+    assert TASK_VERSION == "sandbox-delegated-task-19"
+    assert '"revision": 2' not in TASK_PROMPT
+    assert '"path"' not in TASK_PROMPT
+    assert "in the fields of its kind and no others" in TASK_PROMPT
+    assert "for a file its path alone" in TASK_PROMPT
+
+
+def test_the_brief_shows_each_kinds_produced_form() -> None:
+    brief = task_text(
+        "Tabulate.",
+        "",
+        (),
+        deliverables=[
+            ("d1", "The table", "artifact", ""),
+            ("d2", "out/results.json", "file", "the primes and their sum"),
+            ("d3", "A task to recheck C-1", "entry", ""),
+            ("d4", "Whether every value is 1", "answer", ""),
+        ],
+    )
+    lines = brief.splitlines()
+    assert "produced in the form its line shows" in brief
+    assert lines[-4:] == [
+        '- d1 (artifact): The table. Produced: {"id": "d1", "status": "produced", '
+        '"path": "<its path>", "revision": <the revision your calls recorded>}',
+        "- d2 (file): out/results.json. What counts: the primes and their sum. Produced: "
+        '{"id": "d2", "status": "produced", "path": "<its path>"}',
+        '- d3 (entry): A task to recheck C-1. Produced: {"id": "d3", "status": "produced", '
+        '"entry": "<its handle>"}',
+        '- d4 (answer): Whether every value is 1. Produced: {"id": "d4", "status": '
+        '"produced", "answer": "<the answer itself>"}',
+    ]
+    filled = {"<its path>": "t", "<the revision your calls recorded>": "2"}
+    filled |= {"<its handle>": "T-1", "<the answer itself>": "Yes."}
+    for number, kind in enumerate(("artifact", "file", "entry", "answer"), 1):
+        form = produced_form(f"d{number}", kind)
+        for placeholder, value in filled.items():
+            form = form.replace(placeholder, value)
+        assert parse_task(json.dumps({**DONE, "deliverables": [json.loads(form)]})).deliverables

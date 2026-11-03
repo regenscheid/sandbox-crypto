@@ -86,7 +86,7 @@ CHECK_PROMPT: Final = (
 )
 CHECK: Final = Section("delegated-check", CHECK_VERSION, CHECK_PROMPT)
 
-TASK_VERSION: Final = "sandbox-delegated-task-18"
+TASK_VERSION: Final = "sandbox-delegated-task-19"
 """The version of ``TASK_PROMPT``'s text."""
 TASK_PROMPT: Final = (
     "You are a delegated research agent. Your tokens, turns, active time and cost have "
@@ -165,9 +165,10 @@ TASK_PROMPT: Final = (
     "When your brief lists deliverables, your result's deliverables is a list, not an "
     "object keyed by number, with one object for each deliverable that accounts for it, "
     "honestly, with its number as id, such as "
-    '{"id": "d1", "status": "produced", "path": "<its path>", "revision": 2}: '
-    "produced with what you produced (for an artifact its path and the revision number "
-    "your calls recorded, for a file its path, for an entry its handle as entry, for an "
+    '{"id": "d1", "status": "produced", ...}: '
+    "produced with what you produced, in the fields of its kind and no others, as the "
+    "brief's line for it shows (for an artifact its path and the revision number your "
+    "calls recorded, for a file its path alone, for an entry its handle as entry, for an "
     "answer the answer itself), partial with what exists and what is missing, or "
     "not_produced with its reason, rather than left out; your status is complete only "
     "when every one was produced. When it lists none, leave deliverables out. "
@@ -321,6 +322,22 @@ def brief_text(task: str, inputs: list[str], note: str, flags: Sequence[str] = (
     return "\n\n".join(parts)
 
 
+PRODUCED: Final = {
+    "artifact": '"path": "<its path>", "revision": <the revision your calls recorded>',
+    "file": '"path": "<its path>"',
+    "entry": '"entry": "<its handle>"',
+    "answer": '"answer": "<the answer itself>"',
+}
+"""The fields a produced deliverable of each kind gives, and only those (PD-45)."""
+
+
+def produced_form(number: str, kind: str) -> str:
+    """How a result accounts for deliverable ``number`` of ``kind`` produced, as its line
+    of the brief shows it: the kind's fields alone, so that one kind's form is not
+    copied into another's."""
+    return f'{{"id": "{number}", "status": "produced", {PRODUCED[kind]}}}'
+
+
 def task_text(
     task: str,
     context: str,
@@ -343,10 +360,11 @@ def task_text(
     if deliverables:
         parts.append(
             "Deliverables; your result's deliverables is a list with one object for each, "
-            "its number as id:\n"
+            "its number as id, produced in the form its line shows:\n"
             + "\n".join(
                 f"- {number} ({kind}): {title}"
                 + (f". What counts: {description}" if description else "")
+                + (f". Produced: {produced_form(number, kind)}" if kind in PRODUCED else "")
                 for number, title, kind, description in deliverables
             )
         )
