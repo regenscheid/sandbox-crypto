@@ -356,6 +356,9 @@ class Arm:
     """Why it is not in this round, if it is not: the driver refuses to run it."""
 
 
+REPEAT_CAP: Final = 45.0
+"""Each phase-2 repeat arm's cap, USD (the coordinator, 2026-11-03): phase 1's arms cost
+22.26 to 27.82; the three caps are phase 2's hard stop, USD 135."""
 ROUND_1: Final = "ran in round 1 (2026-10-16, lab 44); round 2 runs Claude alone"
 OVER_BUDGET: Final = (
     "dropped at the seed's checkpoint: at the calls a run takes, it would not fit the budget"
@@ -383,7 +386,15 @@ ARMS: Final = (
     Arm("claude-250-skeleton", "claude", 250_000, skeleton_only=True, model="claude"),
     Arm("claude-250-compaction", "claude", 250_000, compaction=True, model="claude"),
     Arm("claude-600", "claude", 600_000, model="claude", deferred=NO_ROOM),
-)
+    # Phase 2 (the owner, 2026-11-03): each of phase 1's arms once more, from the same seed
+    # with the same shares, so that each comparison has two sessions an arm; the child
+    # now reads its pages in view (``CHILD_READS_IN_VIEW``).
+    Arm("claude-250-b", "claude", 250_000, model="claude", budget=REPEAT_CAP),
+    Arm("claude-250-skeleton-b", "claude", 250_000, skeleton_only=True, model="claude",
+        budget=REPEAT_CAP),
+    Arm("claude-250-compaction-b", "claude", 250_000, compaction=True, model="claude",
+        budget=REPEAT_CAP),
+)  # fmt: skip
 RESERVED: Final[tuple[str, ...]] = ()
 """Deferred arms whose caps the round's plan holds back: they are expected this round."""
 SEED_BUDGET: Final = 65.0

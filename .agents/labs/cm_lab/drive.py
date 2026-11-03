@@ -472,8 +472,27 @@ SUMMARY = 5_000
 """What a compaction leaves of the conversation, in tokens: its summary (CM-38b). The
 probe of 2026-11-02 summarized 89,000 tokens of synthetic pages in 220; a session's work
 is denser, so this is a generous guess."""
-COMPACTION_OUTPUT = 4_000
-"""A compaction's own output tokens, its summary written, for the cost model."""
+COMPACTION_OUTPUT = 4_600
+"""A compaction call's output tokens, its summary written: 4,217 and 5,066 in round 2's
+phase 1, for the cost model."""
+CLAUDE_FREED = 1.08
+"""What a fold frees on Claude, in chunks: round 2's phase 1 measured 50,270 to 61,101
+tokens at C = 250,000 (mean 54,149, chunk 50,000). Claude reads Source D's pages with
+code, so there is little old PDF output for a fold to stub (GPT's ``FREED``)."""
+CLAUDE_GROWTH: Final = {
+    "L01": 27_610, "L02": 6_525, "L03": 10_944, "L04": 6_178, "L05": 8_108, "L06": 20_025,
+    "L07": 27_095, "L08": 16_918, "L09": 11_448, "L10": 10_466, "L11": 11_211, "L12": 6_089,
+    "L13": 6_154, "L14": 5_193, "L15": 9_999, "L16": 22_845,
+}  # fmt: skip
+"""Each live step's growth of the main view on Opus 4.8, as round 2's phase 1 measured
+it: the view at the run's end, less the view before it, plus what its folds freed; the
+mean of the three arms (the compaction arm's two compacting steps left out). 206,808 in
+all, against the 594,000 that ``growth`` estimates from the pages the steps read: Claude
+extracts Source D's tables with code, where GPT read them in view."""
+CLAUDE_PAGE_TOKENS = 2_335
+"""A page of Source D in view on Opus 4.8, as ``pdf_pages`` shows it (numbered lines):
+3,859 characters, 2,353 tokens by the gateway's ``count_tokens`` for p. 41, and 4,669 for
+pp. 321 and 360 (2026-11-03). L16's child reads its 150 pages so (``CHILD_READS_IN_VIEW``)."""
 
 
 def forecast(
@@ -483,9 +502,10 @@ def forecast(
     prompt: int = 30_000,
     *,
     compaction: bool = False,
+    freed: float = FREED,
 ) -> list[int]:
     """The folds each live step makes, roughly: the view grows by each step's tokens, and
-    a fold frees ``FREED`` chunks whenever it passes the trigger; with ``compaction``, the
+    a fold frees ``freed`` chunks whenever it passes the trigger; with ``compaction``, the
     compactions, each leaving the system message, tools and a ``SUMMARY``."""
     shape = geometry(ceiling, prompt)
     tokens, folds = start, []
@@ -493,7 +513,7 @@ def forecast(
         tokens += added
         made = 0
         while tokens > shape.trigger:
-            tokens = prompt + SUMMARY if compaction else tokens - int(FREED * shape.chunk)
+            tokens = prompt + SUMMARY if compaction else tokens - int(freed * shape.chunk)
             made += 1
         folds.append(made)
     return folds
@@ -510,9 +530,20 @@ def growth(ratio: float = 1.0) -> list[int]:
     ]
 
 
-def child_growth(ratio: float = 1.0) -> int:
-    """The child's reading (L16): its pages and its run's own messages."""
+def child_growth(ratio: float = 1.0, *, page_tokens: int | None = None) -> int:
+    """The child's reading (L16): its pages and its run's own messages; with
+    ``page_tokens``, a page in view as the arm's model counts it, and each of the child's
+    calls' own output."""
+    if page_tokens is not None:
+        pages = page_tokens * scenario.CHILD_GROWTH_PAGES
+        return TOKENS_PER_RUN + pages + CHILD_CALLS * OUTPUT_PER_CALL
     return int(ratio * (TOKENS_PER_RUN + TOKENS_PER_PAGE * scenario.CHILD_GROWTH_PAGES))
+
+
+def child_steps(total: int) -> list[int]:
+    """The child's growth call by call: it reads two pages a call, so that a fold or a
+    compaction comes as its view passes the trigger, not once at the end."""
+    return [total // CHILD_CALLS] * CHILD_CALLS
 
 
 # The arm's model's counts.
@@ -631,9 +662,9 @@ LONG = 272_000
 CALLS_PER_ARM = 170
 """An arm's calls, as lab round 1's seed measured them: about 7.5 a step, 15 to 20 a step
 that reads 20 pages (plans, extraction, ledger), and the folds' enrichment calls."""
-CHILD_CALLS = 60
-"""L16's child's calls: 150 pages read 5 to 10 at a time, its notes, the experiment, its
-messages and result, and its folds' enrichment calls."""
+CHILD_CALLS = 85
+"""L16's child's calls: 150 pages read in view two at a time (75), its notes, the
+experiment, its messages and result, and its folds' enrichment calls."""
 SEED_CALLS = 250
 """The seed's: 195 in its first 16 steps, to 300,000 tokens."""
 OUTPUT_PER_CALL = 400
@@ -791,26 +822,34 @@ def plan_arm(
     ratio = counted.ratio if counted is not None else 1.0
     start = pick_snapshot(manifest, ceiling, counted.views if counted is not None else None)
     compacting = chosen.compaction
-    made = forecast(start["tokens"], ceiling, growth(ratio), prompt, compaction=compacting)
+    # Claude's arms: the growth, the folds and the child's pages as round 2's phase 1
+    # measured them on Opus 4.8; GPT's: round 1's estimates from the pages read.
+    claude = chosen.family == "claude"
+    grown = [CLAUDE_GROWTH[step.id] for step in scenario.LIVE] if claude else growth(ratio)
+    freed = CLAUDE_FREED if claude else FREED
+    made = forecast(start["tokens"], ceiling, grown, prompt, compaction=compacting, freed=freed)
     child_start = prompt + 4_000
+    read = child_growth(ratio, page_tokens=CLAUDE_PAGE_TOKENS if claude else None)
     child_made = forecast(
-        child_start, ceiling, [child_growth(ratio)], prompt, compaction=compacting
+        child_start, ceiling, child_steps(read), prompt, compaction=compacting, freed=freed
     )
     if prices.cache_write is not None:
         main = estimate_written(
-            views(ceiling), prices, added=sum(growth(ratio)),
+            views(ceiling), prices, added=sum(grown),
             rebuilds=len(scenario.LIVE) + sum(made), prompt=prompt,
         )  # fmt: skip
         child = estimate_written(
-            child_views(ceiling, child_start), prices, added=child_growth(ratio),
+            child_views(ceiling, child_start), prices, added=read,
             rebuilds=1 + sum(child_made), prompt=prompt,
         )  # fmt: skip
     else:
         main = estimate(views(ceiling), prices, 0.5)
         child = estimate(child_views(ceiling, child_start), prices, 0.5)
-    if compacting:  # each compaction writes the view at its trigger, priced at 1 hour's rate
-        hour = prices.cache_write_1h or 2 * prices.input
-        each = int(0.75 * ceiling) * hour + COMPACTION_OUTPUT * prices.output
+    if compacting:
+        # A compaction call reads the view at its trigger from the cache and writes its
+        # summary (round 2's phase 1: USD 0.25 and 0.29, 230,863 and 229,436 tokens read,
+        # 4,217 and 5,066 written out); the next call's rewrite is one of the rebuilds.
+        each = int(0.75 * ceiling) * prices.cached + COMPACTION_OUTPUT * prices.output
         main += sum(made) * each
         child += sum(child_made) * each
     cap = chosen.budget or 5 * math.ceil(MARGIN * (main + child) / 5)
@@ -1257,6 +1296,16 @@ def _round_options(parser: argparse.ArgumentParser, *, given: bool = True) -> No
     )
 
 
+def finished(lab: Path, name: str) -> float | None:
+    """What arm ``name`` spent, its children included, once every live step kept its
+    transcript; ``None`` while it has not run them all (round 2's phase 2 plans its repeat
+    arms beside phase 1's, which ran)."""
+    runs = lab / "arms" / name / "runs"
+    if not all((runs / f"{step.id}.json").exists() for step in scenario.LIVE):
+        return None
+    return spent(sorted(runs.glob("*.json")) + sorted((runs / "delegated").glob("*.json")))[0]
+
+
 def plan_round(
     lab: Path,
     aliases: Mapping[str, str | None],
@@ -1307,6 +1356,11 @@ def plan_round(
             continue
         ceiling = (ceilings or {}).get(chosen.name, chosen.ceiling)
         found = plan_arm(chosen, ceiling, manifest, found_prices, counted)
+        done = finished(lab, chosen.name)
+        if done is not None:  # it ran: the round holds what it spent, not its cap
+            planned += done
+            lines.append(f"{chosen.name} ({alias}): ran every live step; spent USD {done:.2f}")
+            continue
         planned += found.cap
         state = "reserved, " + str(chosen.deferred) if chosen.deferred else alias
         lines.append(
@@ -1325,7 +1379,9 @@ def plan_round(
             )
         if found.child_folds < 1:
             problems.append(f"{chosen.name}: the child is not forecast to fold")
-    lines.append(f"caps in all, with what was spent elsewhere: USD {planned:g} of {round_.total:g}")
+    lines.append(
+        f"caps in all, with what was spent elsewhere: USD {planned:.2f} of {round_.total:g}"
+    )
     if planned > round_.total:
         problems.append("the caps add up to more than the round's budget")
     return lines, problems
