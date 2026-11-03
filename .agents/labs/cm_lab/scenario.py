@@ -216,7 +216,9 @@ LIVE: Final = (
         "live",
         "One more reading task, which I want delegated so that it does not fill your context: "
         "give it to one task with delegate, and do not read the pages yourself. The task: read "
-        "pages 41 to 190 of sources/D.pdf (the survey's walk tables) and write "
+        "pages 41 to 190 of sources/D.pdf (the survey's walk tables) in view, with pdf_pages, "
+        "two pages a call, so that no result is cut; the tables' layout matters, so it must not "
+        "extract them as text (no pdftotext or code reading the PDF). It writes "
         "shared/fast_walks.md, one line per curve whose walk length was under 0.87 sqrt(n): "
         "its ID, its n in bits, its walk length, its table and page, and whether rho on it "
         "(about 2^(bits/2) operations) is within the survey comparison budget, which it "
@@ -233,7 +235,20 @@ LIVE: Final = (
 )
 STEPS: Final = (*SEED, *LIVE)
 BY_ID: Final = {step.id: step for step in STEPS}
-BY_MESSAGE: Final = {step.message: step for step in STEPS}
+CHILD_READS_IN_VIEW: Final = (
+    "in view, with pdf_pages, two pages a call, so that no result is cut; the tables' layout "
+    "matters, so it must not extract them as text (no pdftotext or code reading the PDF). It "
+    "writes"
+)
+"""What round 2's phase 2 added to L16's brief, so that the child's view holds the pages
+and it folds (CM-37): in phase 1 every child extracted them with code and never folded.
+Two pages a call keep a result under the tool's cut (``output_chars``)."""
+EARLIER_MESSAGES: Final = {
+    LIVE[-1].message.replace(f" {CHILD_READS_IN_VIEW}", " and write"): LIVE[-1],
+}
+"""Messages a step had in an earlier phase, so that its bundles are still scored: L16 as
+round 2's phase 1 sent it."""
+BY_MESSAGE: Final = {step.message: step for step in STEPS} | EARLIER_MESSAGES
 
 # What the scorer looks for, by probe.
 CONSTRAINT_STEP: Final = "S01"
@@ -297,8 +312,8 @@ DELEGATION: Final = (
 )  # fmt: skip
 """The project's delegation settings for L16, set on each arm's store before its runs:
 main runs may delegate; a task's soft caps (tokens, turns, and the cost check-in, in USD)
-well above what 150 pages take (about 60 calls, 10 million tokens, USD 10), so no
-check-in interrupts the child."""
+well above what 150 pages take in view (about 85 calls, 13 million tokens, USD 12), so
+no check-in interrupts the child."""
 CLOSING_FILE: Final = "report/closing.md"
 WORDS_OF_THE_PAST: Final = (
     "previous", "previously", "old ", "earlier", "before", "was ", "were ", "instead", "no longer",

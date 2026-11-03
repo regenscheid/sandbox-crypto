@@ -88,8 +88,10 @@ def test_the_sources_plant_every_value_where_the_scenario_says(
 
 def test_the_scenario_plants_before_it_tests() -> None:
     """Every probe is planted in the seed and tested in the live steps; each message is
-    one step's, so a run's task names its step."""
-    assert len(scenario.BY_MESSAGE) == len(scenario.STEPS)
+    one step's, so a run's task names its step; a message a step had in an earlier phase
+    (L16 in round 2's phase 1) names it too."""
+    assert len(scenario.BY_MESSAGE) == len(scenario.STEPS) + len(scenario.EARLIER_MESSAGES)
+    assert {step.id for step in scenario.EARLIER_MESSAGES.values()} == {scenario.CHILD_STEP}
     assert all(step.phase == "seed" for step in scenario.SEED)
     assert all(step.phase == "live" for step in scenario.LIVE)
     planted = (
