@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""The context-management lab's kit (.agents/labs/cm_lab, runbook cm-lab-round-1.md): its
+"""The context-management lab's kit (.agents/labs/cm_lab, runbook cm-lab-round-2.md): its
 synthetic sources, its scenario, its driver's parts that need no lab, and its scores,
 from a synthetic archive exported as the lab exports an arm."""
 
@@ -20,7 +20,7 @@ import pytest
 from sandbox_science.contracts import ExecutionContext
 from sandbox_science.orchestrator.context.history import Archive, Entry
 from sandbox_science.orchestrator.context.history.record import FORMAT, FoldRecord
-from sandbox_science.orchestrator.projects import ProjectStore, RunRecord, run_name
+from sandbox_science.orchestrator.projects import ModelUsage, ProjectStore, RunRecord, run_name
 
 LABS = Path(__file__).resolve().parents[3] / ".agents" / "labs"
 sys.path.insert(0, str(LABS))
@@ -110,6 +110,47 @@ def test_the_scenario_plants_before_it_tests() -> None:
     assert staged == set(sources.LATER)
 
 
+def test_the_child_step_delegates_and_steers_the_task_mid_way() -> None:
+    """L16 (round 2): the main run delegates about 150 pages, the child reports page 115,
+    and the parent changes its budget with message_child; the scorer reads the values the
+    message and the brief name."""
+    step = scenario.BY_ID[scenario.CHILD_STEP]
+    assert step is scenario.LIVE[-1]
+    first, last = scenario.CHILD_PAGES
+    assert scenario.CHILD_GROWTH_PAGES == 150
+    assert f"pages {first} to {last}" in step.message
+    assert first < scenario.CHILD_REPORT_PAGE < last
+    for words in (("delegate", "message_parent", "message_child", scenario.CHILD_FILE),
+                  scenario.CHILD_OLD_BUDGET[:1], scenario.CHILD_NEW_BUDGET[:1],
+                  ("p = 17 only",)):  # fmt: skip
+        assert all(word in step.message for word in words)
+    assert set(scenario.CHILD_LITERALS) <= set(sources.VALUES)
+    assert scenario.CHILD_OLD_BITS == 2 * 56
+    assert scenario.CHILD_NEW_BITS == 2 * 60
+    settings = dict(zip(scenario.DELEGATION[::2], scenario.DELEGATION[1::2], strict=True))
+    assert settings["--depth"] == "1"
+    assert int(settings["--task-tokens"]) >= 20_000_000
+    assert float(settings["--soft-cost"]) > 2 * 6.5  # the child's estimate, twice over
+
+
+def test_round_1s_seed_is_scored_with_its_own_params() -> None:
+    """Round 1's seed was recorded before p changed (an even p ended its file): its
+    data/params.json, and so its SHA-256, differ from the current sources'."""
+    old = sources.ROUND_1_LITERALS
+    assert sources.ROUND_1_P.endswith("6")
+    assert sources.P_FIELD.endswith("7")
+    now = {lit.name: lit.value for lit in sources.LITERALS}
+    then = {lit.name: lit.value for lit in old}
+    assert {name for name in now if now[name] != then[name]} == {"params_sha256"}
+    assert then["params_sha256"] == (
+        "079cfd84bfebf1a00d9848b3277cc8fec99e5c3f94fd064ab8d6f95f5bd2a826"
+    )  # data/params.json in round 1's seed snapshots
+    assert sources.literals_for(then["params_sha256"]) is old
+    assert sources.literals_for(None) is sources.LITERALS
+    assert sources.literals_for("0" * 64) is sources.LITERALS
+    assert sources.ROUND_1_P in sources.KNOWN
+
+
 # The driver.
 
 SERVE = [
@@ -139,6 +180,21 @@ def test_a_step_runs_with_the_services_options_and_the_arms_own() -> None:
         ceiling=scenario.FOLDING_OFF, transcript=Path("/s.json"), task="Go.", folding_off=True,
     )  # fmt: skip
     assert seeding[seeding.index("--input-limit") + 1] == str(scenario.FOLDING_OFF)
+    assert "--delegated-model" not in seeding
+
+
+def test_a_delegated_run_calls_the_arms_alias() -> None:
+    """L16's child runs on the arm's model, whatever alias the config names delegated."""
+    base = drive.run_argv([*SERVE, "--delegated-model", "other"])
+    argv = drive.step_argv(
+        base, state_dir=Path("/arm"), project="cm1", session="seed", alias="arr-claude-opus-4-8",
+        ceiling=250_000, transcript=Path("/arm/L16.json"), task="Go.",
+    )  # fmt: skip
+    assert argv[argv.index("--delegated-model") + 1] == "arr-claude-opus-4-8"
+    settings = drive.delegation_argv(base, Path("/arm/control"), "cm1")
+    assert settings[:3] == ["/x/sandbox-science-harness", "project", "delegation"]
+    assert settings[settings.index("--state-dir") + 1] == "/arm/control"
+    assert settings[-len(scenario.DELEGATION) :] == list(scenario.DELEGATION)
 
 
 def test_each_arm_starts_from_the_largest_seed_under_its_trigger() -> None:
@@ -152,6 +208,53 @@ def test_each_arm_starts_from_the_largest_seed_under_its_trigger() -> None:
     assert drive.pick_snapshot(manifest, 600_000)["step"] == "S20"
     with pytest.raises(SystemExit):
         drive.pick_snapshot(manifest, 100_000)
+
+
+def test_a_claude_arm_starts_from_the_seed_as_claude_counts_it() -> None:
+    """Round 1's seed was recorded on GPT; Claude's tokenizer, with the main run's tool
+    schemas, counts its views about 1.5 times larger (2026-11-02: S08 at 155,046 against
+    98,364, S10 at 228,146 against 149,820). At C = 250,000 the arm starts from S08, not
+    S10 as round 1's did, and still folds at least four times in three runs."""
+    manifest = [
+        {"step": "S07", "tokens": 70_869}, {"step": "S08", "tokens": 98_364},
+        {"step": "S09", "tokens": 124_511}, {"step": "S10", "tokens": 149_820},
+        {"step": "S11", "tokens": 175_059},
+    ]  # fmt: skip
+    counted = {"S07": 116_498, "S08": 155_046, "S09": 192_050, "S10": 228_146, "S11": 264_166}
+    assert drive.pick_snapshot(manifest, 250_000)["step"] == "S10"
+    chosen = drive.pick_snapshot(manifest, 250_000, counted)
+    assert (chosen["step"], chosen["tokens"], chosen["recorded"]) == ("S08", 155_046, 98_364)
+    with pytest.raises(SystemExit, match="count again"):
+        drive.pick_snapshot(manifest, 250_000, {"S07": 1})
+    ratio = drive.growth_ratio(
+        [{**kept, "step": step} for step, kept in zip(counted, manifest, strict=True)], counted
+    )
+    assert 1.4 < ratio < 1.5
+    made = drive.forecast(chosen["tokens"], 250_000, drive.growth(ratio), 39_960)
+    assert sum(made) >= 4
+    assert sum(1 for n in made if n) >= 3
+    child = drive.forecast(39_960 + 4_000, 250_000, [drive.child_growth(ratio)], 39_960)
+    assert sum(child) >= 1
+
+
+def test_the_main_runs_tools_are_counted_with_the_view() -> None:
+    """The seed's transcripts keep no tool schemas; the count adds the main run's, as the
+    Claude adapter sends them, with their cache breakpoint."""
+    tools = drive.main_tools()
+    names = {tool.name for tool in tools}
+    assert {"pdf_pages", "ledger_change", "history_read", "delegate", "message_child"} <= names
+    assert all("purpose_note" in tool.parameters["properties"] for tool in tools)
+    body = drive.messages_body(
+        "arr-claude-opus-4-8",
+        [{"role": "system", "content": "You are a research agent."},
+         {"role": "user", "content": "Read A."}],
+        tools,
+    )  # fmt: skip
+    assert body["model"] == "arr-claude-opus-4-8"
+    assert "thinking" not in body
+    assert len(body["tools"]) == len(tools)
+    assert body["tools"][-1]["cache_control"] == {"type": "ephemeral"}
+    assert body["system"][0]["text"] == "You are a research agent."
 
 
 def test_an_arm_gets_the_seed_in_an_environment_of_its_own(tmp_path: Path) -> None:
@@ -231,25 +334,10 @@ GPT_6_SOL = {  # the gateway's model information for arrcodex-gpt-6-sol, 2026-10
 }
 
 
-def test_the_plan_runs_no_claude_model_and_keeps_to_its_budget() -> None:
-    runnable = [arm for arm in scenario.ARMS if not arm.deferred]
-    assert {arm.family for arm in runnable} == {"gpt"}
-    assert sum(arm.budget for arm in runnable) + scenario.SEED_BUDGET <= scenario.TOTAL_BUDGET
-    base = [arm.name for arm in runnable if not arm.proposed]
-    assert base == ["gpt-250-a", "gpt-250-b", "gpt-600", "gpt-250-skeleton"]
-    with pytest.raises(SystemExit, match="leave Claude out"):
-        drive.runnable("claude-600", proposed=True)
-    with pytest.raises(SystemExit, match="checkpoint"):
-        drive.runnable("gpt-600-b", proposed=True)
-    with pytest.raises(SystemExit, match="--proposed"):
-        drive.runnable("second-250", proposed=False)
-    assert drive.runnable("second-250", proposed=True).model == "second"
-
-
-def test_each_cap_holds_its_arm_with_half_its_input_cached() -> None:
-    """The caps hold what an arm costs as its calls report it, if half its input is read
-    from the cache: the reported costs price calls past 272,000 tokens at the base rates
-    (lab round 1), and the round's hard stop leaves room for the listed ones."""
+def test_round_1s_caps_held_its_arms_with_half_their_input_cached() -> None:
+    """Round 1's caps held what an arm cost as its calls reported it, with half its input
+    read from the cache: the reported costs priced calls past 272,000 tokens at the base
+    rates (lab round 1)."""
     listed = drive.Prices.of(GPT_6_SOL)
     reported = drive.Prices.of({**GPT_6_SOL, "input_cost_per_token_above_272k_tokens": 2e-06,
                                 "cache_read_input_token_cost_above_272k_tokens": 2e-07,
@@ -257,6 +345,7 @@ def test_each_cap_holds_its_arm_with_half_its_input_cached() -> None:
     assert listed is not None
     assert reported is not None
     assert listed.cached_long == 4e-07
+    assert listed.cache_write is None  # GPT's cache writes cost input
     small = [drive.estimate(drive.views(250_000), reported, s) for s in (0.9, 0.5, 0.0)]
     large = drive.estimate(drive.views(600_000), reported, 0.5)
     seeded = drive.estimate(drive.seed_views(scenario.SEED_TARGET), reported, 0.5)
@@ -264,16 +353,141 @@ def test_each_cap_holds_its_arm_with_half_its_input_cached() -> None:
     assert small[1] <= scenario.ARM_BY_NAME["gpt-250-a"].budget < small[2]
     assert large <= scenario.ARM_BY_NAME["gpt-600"].budget
     assert seeded <= scenario.SEED_BUDGET
-    planned = sum(arm.budget for arm in scenario.ARMS if not arm.deferred)
-    assert planned + scenario.SEED_BUDGET <= scenario.TOTAL_BUDGET
-    at_listed = drive.estimate(drive.views(600_000), listed, 0.5)
-    assert scenario.TOTAL_BUDGET + (at_listed - large) <= 500
     assert drive.Prices.of({"input_cost_per_token": 0, "output_cost_per_token": 0}) is None
     unpriced_cache = drive.Prices.of(
         {"input_cost_per_token": 2e-06, "output_cost_per_token": 1e-05}
     )
     assert unpriced_cache is not None
     assert unpriced_cache.cached == 2e-06  # a cache read the gateway does not price costs input
+
+
+# Round 2's plan: Claude alone, within USD 300 for the whole lab (the owner, 2026-11-02).
+
+OPUS_4_8 = {  # the gateway's model information for arr-claude-opus-4-8, 2026-11-02
+    "max_input_tokens": 1_000_000,
+    "max_output_tokens": 128_000,
+    "input_cost_per_token": 5e-06,
+    "output_cost_per_token": 2.5e-05,
+    "cache_read_input_token_cost": 5e-07,
+    "cache_creation_input_token_cost": 6.25e-06,
+    "cache_creation_input_token_cost_above_1hr": 1e-05,
+    "litellm_provider": "anthropic",
+}
+
+
+def test_the_plan_runs_claude_alone() -> None:
+    runnable = [arm for arm in scenario.ARMS if not arm.deferred]
+    assert [arm.name for arm in runnable] == ["claude-250", "claude-250-skeleton"]
+    assert {(arm.family, arm.model, arm.ceiling) for arm in runnable} == {
+        ("claude", "claude", 250_000)
+    }
+    assert [arm.skeleton_only for arm in runnable] == [False, True]
+    assert all(arm.budget is None for arm in runnable)  # the cost model's caps
+    with pytest.raises(SystemExit, match="round 1"):
+        drive.runnable("gpt-250-a", proposed=True)
+    with pytest.raises(SystemExit, match="pending product work"):
+        drive.runnable("claude-250-compaction", proposed=True)
+    with pytest.raises(SystemExit, match="budget"):
+        drive.runnable("claude-600", proposed=True)
+    assert scenario.RESERVED == ("claude-250-compaction",)
+    assert scenario.TOTAL_BUDGET == 300
+
+
+def test_claudes_prices_charge_for_cache_writes_and_rewrites() -> None:
+    """A Claude call reads its prefix and writes what is new (1.25 times input); a run's
+    start and each fold write the view again from the state block on, the system message
+    and tools staying cached (the fact pass, 2026-11-02)."""
+    prices = drive.Prices.of(OPUS_4_8)
+    assert prices == drive.OPUS_4_8
+    assert prices.cache_write == 6.25e-06
+    assert prices.long_at == drive.LONG  # no long-context rates given
+    tiered = drive.Prices.of({**OPUS_4_8, "input_cost_per_token_above_200k_tokens": 1e-05})
+    assert (tiered.long_at, tiered.input_long, tiered.cached_long) == (200_000, 1e-05, 1e-05)
+    sizes = drive.views(250_000)
+    calm = drive.estimate_written(sizes, prices, added=300_000, rebuilds=0, prompt=40_000)
+    busy = drive.estimate_written(sizes, prices, added=300_000, rebuilds=20, prompt=40_000)
+    assert busy > calm
+    # One rebuild of a view of V tokens writes V - prompt where a call writes its growth.
+    one = drive.estimate_written([100_000], prices, added=0, rebuilds=1, prompt=40_000)
+    assert one == pytest.approx(40_000 * 5e-07 + 60_000 * 6.25e-06 + 400 * 2.5e-05)
+    # Mostly read from the cache, an arm costs far less than uncached, more than all read.
+    assert drive.estimate(sizes, prices, 0.9) < busy < drive.estimate(sizes, prices, 0.0)
+    assert drive.spread(170, 20) == {j * 170 // 20 for j in range(20)}
+    assert drive.spread(5, 0) == set()
+
+
+def seed_manifest(path: Path) -> list[Json]:
+    """Round 1's seed as it recorded it, and Opus 4.8's counts (2026-11-02)."""
+    recorded = [26_654, 35_710, 45_847, 55_641, 58_269, 61_506, 70_869, 98_364, 124_511,
+                149_820, 175_059, 200_153, 225_380, 250_315, 275_197, 300_189, 324_927,
+                349_791, 374_631, 399_508]  # fmt: skip
+    counted = [54_741, 67_439, 81_855, 95_906, 99_696, 104_227, 116_498, 155_046, 192_050,
+               228_146, 264_166, 300_070, 336_057, 371_820, 407_487, 443_310, 478_904,
+               514_619, 550_352, 586_064]  # fmt: skip
+    manifest = [
+        {"step": f"S{n + 1:02d}", "tokens": tokens, "snapshot": f"/s/S{n + 1:02d}"}
+        for n, tokens in enumerate(recorded)
+    ]
+    (path / "seed").mkdir(parents=True)
+    (path / "seed" / "manifest.json").write_text(json.dumps(manifest))
+    views = {kept["step"]: count for kept, count in zip(manifest, counted, strict=True)}
+    counts = drive.Counted("arr-claude-opus-4-8", views, 36_966, 39_960,
+                           drive.growth_ratio(manifest, views))  # fmt: skip
+    (path / drive.COUNTS).write_text(json.dumps({counts.alias: drive.asdict(counts)}))
+    return manifest
+
+
+def test_the_round_fits_its_budget_with_the_compaction_arm_held(tmp_path: Path) -> None:
+    """From round 1's seed as Opus 4.8 counts it: each 250,000 arm starts from S08, is
+    forecast valid, its child folds, and its cap holds its estimate with a margin; the
+    caps, the compaction arm's reserve and what was spent outside the kit fit USD 300."""
+    manifest = seed_manifest(tmp_path)
+    counted = drive.load_counts(tmp_path, "arr-claude-opus-4-8")
+    assert counted is not None
+    assert 1.4 < counted.ratio < 1.45
+    arm = scenario.ARM_BY_NAME["claude-250"]
+    found = drive.plan_arm(arm, 250_000, manifest, drive.OPUS_4_8, counted)
+    assert (found.seed, found.start) == ("S08", 155_046)
+    assert found.folds >= 4
+    assert found.runs_with_folds >= 3
+    assert found.child_folds >= 1
+    assert 20 < found.main_cost < 40
+    assert 3 < found.child_cost < 12
+    assert found.cost * drive.MARGIN <= found.cap < found.cost * drive.MARGIN + 5
+    round_ = drive.Round(300, 4.29, seed_reused=True)
+    lines, problems = drive.plan_round(
+        tmp_path, {"claude": "arr-claude-opus-4-8"}, {"arr-claude-opus-4-8": drive.OPUS_4_8},
+        round_,
+    )  # fmt: skip
+    assert problems == []
+    assert sum(line.startswith("claude-250") for line in lines) == 3
+    assert any(line.startswith("claude-600: not run") for line in lines)
+    total = float(lines[-1].split("USD ")[1].split(" of")[0])
+    assert total == 3 * found.cap + 4.29 <= 300
+    # A smaller budget, or a seed recorded this round, is a problem the plan names.
+    _, short = drive.plan_round(
+        tmp_path, {"claude": "arr-claude-opus-4-8"}, {"arr-claude-opus-4-8": drive.OPUS_4_8},
+        drive.Round(150, 0, seed_reused=True),
+    )  # fmt: skip
+    assert short == ["the caps add up to more than the round's budget"]
+    _, uncounted = drive.plan_round(
+        tmp_path, {"claude": "arr-claude-opus-4-8-other"},
+        {"arr-claude-opus-4-8-other": drive.OPUS_4_8}, round_,
+    )  # fmt: skip
+    assert any("run count" in problem for problem in uncounted)
+
+
+def test_the_plan_names_an_arm_under_its_validity_bar(tmp_path: Path) -> None:
+    manifest = seed_manifest(tmp_path)
+    counted = drive.load_counts(tmp_path, "arr-claude-opus-4-8")
+    early = drive.Counted(counted.alias, dict(counted.views), counted.tools, counted.prompt, 0.3)
+    (tmp_path / drive.COUNTS).write_text(json.dumps({early.alias: drive.asdict(early)}))
+    _, problems = drive.plan_round(
+        tmp_path, {"claude": early.alias}, {early.alias: drive.OPUS_4_8},
+        drive.Round(300, 0, seed_reused=True),
+    )  # fmt: skip
+    assert any("under the validity bar" in problem for problem in problems)
+    assert manifest
 
 
 def test_no_step_starts_past_its_arms_cap_or_the_rounds(tmp_path: Path) -> None:
@@ -283,13 +497,44 @@ def test_no_step_starts_past_its_arms_cap_or_the_rounds(tmp_path: Path) -> None:
         return path
 
     seeded = kept(tmp_path / "seed/runs/S01.json", 25.0)
-    mine = kept(tmp_path / "arms/gpt-600/runs/L01.json", 70.0)
-    drive.within(tmp_path, 80, [mine], "gpt-600")
+    mine = kept(tmp_path / "arms/claude-250/runs/L01.json", 70.0)
+    drive.within(tmp_path, 80, [mine], "claude-250")
     with pytest.raises(SystemExit, match="its budget"):
-        drive.within(tmp_path, 60, [mine], "gpt-600")
-    kept(tmp_path / "arms/second-600/runs/L01.json", 410.0)
-    with pytest.raises(SystemExit, match="the round spent"):
+        drive.within(tmp_path, 60, [mine], "claude-250")
+    kept(tmp_path / "arms/claude-250-skeleton/runs/L01.json", 190.0)
+    assert drive.spent_all(tmp_path) == 285.0
+    drive.within(tmp_path, 500, [seeded], "the seed")
+    # A child's record counts toward the round, as does what was spent outside the kit.
+    kept(tmp_path / "arms/claude-250/runs/delegated/child.json", 10.0)
+    drive.Round(290).save(tmp_path)
+    with pytest.raises(SystemExit, match=r"the round spent USD 295\.00, past its USD 290"):
         drive.within(tmp_path, 500, [seeded], "the seed")
+    # A seed an earlier round recorded costs this round nothing.
+    drive.Round(300, elsewhere=4.5, seed_reused=True).save(tmp_path)
+    assert drive.spent_all(tmp_path) == 270 + 4.5
+    assert drive.Round.load(tmp_path) == drive.Round(300, 4.5, True)
+
+
+def test_a_childs_record_is_kept_beside_the_arms_transcripts(tmp_path: Path) -> None:
+    store = ProjectStore(tmp_path / "state")
+    store.create(PROJECT, "crypto-base", "sha256:" + "c" * 64)
+    store.open_session(PROJECT, SESSION, dedicated=False)
+    context = ExecutionContext(project_id=PROJECT, session_id=SESSION, environment_id="e")
+    parent = RunRecord(run_id="main1", context=context, task="Go.", started_at=START,
+                       ended_at=START, stopped="answered", messages=[], tools=[])  # fmt: skip
+    store.save_run(parent)
+    later = START + timedelta(minutes=1)
+    child = RunRecord(
+        run_id="child1", context=context, task="Read.", started_at=later, ended_at=later,
+        stopped="answered", messages=[], tools=[], role="delegated",
+        parent=run_name(START, "main1"), delegation="dlg-1",
+        usage=[ModelUsage(cost=2.5, input_tokens=9)],
+    )  # fmt: skip
+    store.save_run(child)
+    kept = drive.keep_delegated(store, PROJECT, SESSION, tmp_path / "arm")
+    store.close()
+    assert [path.name for path in kept] == [f"{run_name(later, 'child1')}.json"]
+    assert drive.spent(kept) == (2.5, 0)
 
 
 # The scores, from a synthetic archive.
@@ -355,6 +600,62 @@ class Writer:
                 answer=answer,
                 messages=[],
                 tools=[],
+            )
+        )
+
+    def child(
+        self,
+        step: str,
+        answer: str,
+        calls: Sequence[tuple[str, Json, str]] = (),
+        *,
+        message: str | None = None,
+        folds_after: int = 0,
+    ) -> None:
+        """A delegated run of ``step``'s main run: its calls, the parent's message after
+        the first half of them, then ``folds_after`` folds, then the rest and its result."""
+        parent = run_name(datetime.fromisoformat(self.started[step]), step.lower())
+        self.at += timedelta(minutes=1)
+        name = run_name(self.at, "child")
+
+        def add(entry: Entry) -> None:
+            self.archive.append(PROJECT, SESSION, name, entry, parent=parent)
+
+        add(Entry("user", "task", "Task (delegated): read pages 41 to 190 of sources/D.pdf."))
+        half = len(calls) // 2
+        for index, (tool, arguments, result) in enumerate(calls):
+            if index == half and message is not None:
+                add(Entry("user", "notice", message))
+                for _ in range(folds_after):
+                    last = self.archive.messages(PROJECT, SESSION, start=1)[-1]
+                    record = FoldRecord(
+                        level=1, first=(1, last.message_id),
+                        last=(last.position, last.message_id), runs=(name,),
+                        dates=(last.created, last.created), skeleton=("outline",), markers=(),
+                        keys=(),
+                    )  # fmt: skip
+                    add(Entry("user", "fold", record.text("x"), source="folds",
+                              native=record.stored(), native_format=FORMAT))  # fmt: skip
+            self.calls += 1
+            call = {"id": f"c{self.calls}", "type": "function",
+                    "function": {"name": tool, "arguments": json.dumps(arguments)}}  # fmt: skip
+            add(Entry("assistant", "assistant", None, tool_calls=(call,)))
+            add(Entry("tool", "tool_result", result, source=tool, call_id=f"c{self.calls}"))
+        add(Entry("assistant", "assistant", answer))
+        self.projects.save_run(
+            RunRecord(
+                run_id="child",
+                context=self.context,
+                task="Read.",
+                started_at=self.at,
+                ended_at=self.at,
+                stopped="answered",
+                answer=answer,
+                messages=[],
+                tools=[],
+                role="delegated",
+                parent=parent,
+                delegation="dlg-1",
             )
         )
 
@@ -468,6 +769,49 @@ def live(writer: Writer, *, good: bool) -> None:
     )
     note = {"path": "report/closing.md", "content": "K7 resists rho under 2^80 (C-1, p. 4)."}
     writer.run("L15", "Written.", [("write_file", note, "ok")])
+    child_step(writer, good=good)
+
+
+def child_step(writer: Writer, *, good: bool) -> None:
+    """L16: the main run delegates; the child reads, receives the change, folds, and
+    answers. A forgetful child keeps the old budget, misquotes the fingerprint, drops the
+    caveat and reads pages again after its fold."""
+    message = "[msg-00000000000000aa · agent message] " + CORRECTION
+    writer.run("L16", "Delegated: 3 curves, 2 within the budget.", [
+        ("delegate", {"task": "Read pages 41 to 190 of sources/D.pdf."}, "dlg-1"),
+        ("message_child", {"delegation": "dlg-1", "message": CORRECTION}, "queued"),
+        ("wait_delegations", {}, "returned"),
+    ])  # fmt: skip
+    experiment = f"speedup 1.38 seed {V['seed']} fingerprint {V['fingerprint']}"
+    reads = [("pdf_pages", {"path": "sources/D.pdf", "pages": f"{first}-{first + 24}"}, FILLER)
+             for first in range(41, 191, 25)]  # fmt: skip
+    again = [] if good else reads[:3]
+    notes = (
+        "K7-x-04102 | n 118 bits | walk 0.861 | Table D.21, p. 41 | within 2^60\n"
+        "K7-x-10007 | n 104 bits | walk 0.852 | Table D.80, p. 100 | within 2^60\n"
+        "K7-x-18533 | n 126 bits | walk 0.866 | Table D.165, p. 185 | beyond 2^60"
+        if good
+        else "K7-x-04102 | n 118 bits | walk 0.861 | Table D.21, p. 41 | beyond 2^56\n"
+        "K7-x-18533 | n 126 bits | walk 0.866 | Table D.165, p. 185 | beyond 2^56"
+    )
+    write = ("write_file", {"path": scenario.CHILD_FILE, "content": notes}, "ok")
+    answer = (
+        f"Listed 3 curves; 2 are within the budget of 2^60 operations (it was 2^56 before the "
+        f"correction). Seed {V['seed']}, fingerprint {V['fingerprint']}.\n\nThe fast walks do "
+        "not bear on the measured speedup of 1.38, a finite test (p = 17 only)."
+        if good
+        else f"Listed 2 curves; 0 are within 2^56 operations. Seed {V['seed']}, fingerprint "
+        f"{V['fingerprint'][:-2]}00.\n\nThe speedup of 1.38 holds for K7."
+    )
+    calls = [("shell", {"command": "python scripts/rho_experiment.py --p 17"}, experiment),
+             *reads, *again, write]  # fmt: skip
+    writer.child("L16", answer, calls, message=message, folds_after=2)
+
+
+CORRECTION = (
+    "Correction: the survey comparison budget is 2^60 operations, not 2^56. Use 2^60 from "
+    "now on, and revise the marks of the lines you already wrote."
+)
 
 
 def ledger(writer: Writer, *, good: bool) -> list[Json]:
@@ -535,11 +879,32 @@ def bundles(tmp_path: Path) -> list[Json]:
 def test_the_export_holds_the_sessions_messages_runs_and_folds(bundles: list[Json]) -> None:
     bundle = bundles[0]
     steps = [*scenario.SEED[:6], *scenario.LIVE]
-    assert [run["task"] for run in bundle["runs"]] == [step.message for step in steps]
+    main = [run for run in bundle["runs"] if run["role"] == "main"]
+    assert [run["task"] for run in main] == [step.message for step in steps]
+    (child,) = [run for run in bundle["runs"] if run["role"] == "delegated"]
+    assert child["parent"] == main[-1]["name"]
+    assert child["delegation"] == "dlg-1"
+    assert any(row["run"] == child["name"] for row in bundle["rows"])
     folds = [row for row in bundle["rows"] if row["kind"] == "fold"]
-    assert len(folds) == 4
+    assert len(folds) == 4 + 2  # the main runs' and the child's
     assert json.loads(folds[0]["native"])["level"] == 1
     assert bundle["rows"][0]["kind"] == "task"
+
+
+def test_the_export_reads_a_message_past_the_archives_working_limit(tmp_path: Path) -> None:
+    """Round 1's seed holds GPT's native payloads past the archive's 8 MiB read limit
+    (limits.METADATA_BYTES), which a run's working memory keeps; the export reads them."""
+    from sandbox_science.orchestrator.context.history.limits import METADATA_BYTES
+
+    writer = Writer(tmp_path / "big")
+    huge = "y" * (METADATA_BYTES + 1024)
+    writer.run("S01", "Recorded.", [("shell", {"command": "cat big"}, huge)])
+    writer.projects.close()
+    meta = {"arm": "a", "family": "claude", "ceiling": 250_000, "project": PROJECT,
+            "session": SESSION}  # fmt: skip
+    bundle = export.export(tmp_path / "big", meta)
+    assert any(len(row["content"] or "") > METADATA_BYTES for row in bundle["rows"])
+    assert export.READ_BYTES > METADATA_BYTES
 
 
 def test_a_session_that_keeps_every_probe_passes(bundles: list[Json]) -> None:
@@ -554,6 +919,14 @@ def test_a_session_that_keeps_every_probe_passes(bundles: list[Json]) -> None:
     assert report["models"]["arrcodex-gpt-6-sol"]["sessions"] == ["gpt-250-a"]
     assert found["reported"]["never_discussed"] == {"said_not_found": True, "searched": True}
     assert found["reported"]["closing_note"] == {"sentences": 1, "with_reference": 1}
+    kid = found["child"]
+    assert (kid["status"], kid["folds"]) == ("valid", 2)
+    for probe in ("CM-P3", "CM-P2/P7", "CM-P8", "CM-P9"):
+        assert kid[probe]["status"] == "pass", (probe, kid[probe])
+    assert kid["CM-P2/P7"]["folded_after"]
+    assert kid["CM-P2/P7"]["stale_marks"] == []
+    assert kid["pages_read"] == list(range(41, 191))
+    assert "| L16's child |" in score.markdown(report)
 
 
 def test_a_session_that_breaks_them_fails_with_its_evidence(bundles: list[Json]) -> None:
@@ -579,9 +952,60 @@ def test_a_session_that_breaks_them_fails_with_its_evidence(bundles: list[Json])
     family = report["families"]["gpt"]
     assert family["CM-P8"]["status"] == "fail"
     assert family["CM-P9"]["status"] == "fail"
+    kid = found["child"]
+    assert kid["CM-P3"]["status"] == "fail"
+    assert kid["CM-P3"]["inexact"][0]["value"] == "fingerprint"
+    p27 = kid["CM-P2/P7"]
+    assert p27["status"] == "fail"
+    assert p27["stale_sentences"]
+    assert p27["stale_marks"] == [
+        "K7-x-04102 | n 118 bits | walk 0.861 | Table D.21, p. 41 | beyond 2^56"
+    ]
+    assert kid["CM-P8"]["status"] == "fail"
+    assert kid["CM-P9"]["status"] == "fail"
+    # The main session's repeated work is its own: the child's calls are not among them.
+    assert all(f["calls_after"] <= 10 for f in found["CM-P9"]["folds"])
     text = score.markdown(report)
     assert "| gpt-250-b | yes | " in text
     assert "For the owner's judgment" in text
+
+
+def test_a_session_from_round_1s_seed_is_scored_with_its_values(bundles: list[Json]) -> None:
+    """An arm of round 2 starts from round 1's seed: its tools returned the old file's
+    SHA-256, which is then exact, not a near miss of the current one."""
+    old = {lit.name: lit.value for lit in sources.ROUND_1_LITERALS}["params_sha256"]
+    bundle = json.loads(json.dumps(bundles[0]).replace(V["params_sha256"], old))
+    session = score.Session(bundle)
+    assert session.values["params_sha256"] == old
+    assert score.exact_values(session)["status"] == "pass"
+    with_meta = {**bundle, "meta": {**bundle["meta"], "params_sha256": old}}
+    assert score.Session(with_meta).literals is sources.ROUND_1_LITERALS
+    # A miscopy of the seed's own value is a near miss of it.
+    miscopied = score.near_misses(f"SHA-256: {old[:-4]}0000", "L09", session.literals)
+    assert [miss["value"] for miss in miscopied] == ["params_sha256"]
+    # Scored with the current sources' values instead, the exact copy would go unseen.
+    session.literals = sources.LITERALS
+    assert score.exact_values(session)["status"] == "review"
+
+
+def test_an_l16_that_never_delegated_fails_its_child() -> None:
+    bundle = bundle_of([
+        ("L16", [("pdf_pages", {"path": "sources/D.pdf", "pages": "41-190"})], "Read it myself."),
+    ], [])  # fmt: skip
+    found = score.child(score.Session(bundle))
+    assert found["status"] == "fail"
+    assert found["main_reads_of_d"] == 1
+    assert score.child(score.Session(bundle_of([], [])))["status"] == "not_reached"
+
+
+def test_a_mark_under_the_old_budget_alone_is_stale() -> None:
+    notes = (
+        "K7-x-1 | n 118 bits | beyond the budget\n"  # 2^59: within 2^60, beyond 2^56
+        "K7-x-2 | n 126 bits | beyond the budget\n"  # beyond either
+        "K7-x-3 | n 110 bits | within the budget\n"  # within either
+        "K7-x-4 | n 116 bits | within 2^60 (beyond the old 2^56)"
+    )
+    assert score._stale_marks(notes) == ["K7-x-1 | n 118 bits | beyond the budget"]
 
 
 # What lab round 1's live runs showed the scores must read rightly.

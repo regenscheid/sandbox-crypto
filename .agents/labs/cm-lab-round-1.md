@@ -2,7 +2,7 @@
 
 The acceptance condition of context management's first build ([spec](../../docs/specs/context-management.md), "Continuity probes" and "Changes from the study's tests"): the probes CM-P1 to CM-P9, at about 250,000 tokens and at the default 600,000, with the skeleton-only control arm. This file is the kit's runbook. **Run it only once steps (f2b) and (f3) are merged**: without overviews and fold proposals, the retention boundaries the spec forces cannot happen.
 
-**Round 1 ran on 2026-10-16:** [lab 44's report](../docs/agent-reports/babbage-openshell-lab-44-2026-10-16.md) has its scores, folds, costs and bugs. The arms and costs below are what it ran and measured.
+**Round 1 ran on 2026-10-16:** [lab 44's report](../docs/agent-reports/babbage-openshell-lab-44-2026-10-16.md) has its scores, folds, costs and bugs. The arms and costs below are what it ran and measured. **Round 2** runs the Claude arms from this round's seed, with a delegated child: [its runbook](cm-lab-round-2.md) says what changed in the kit since.
 
 **The owner's conditions for this round (2026-10-16):** USD 500 in all, the seed included; OpenAI models through the gateway's `arrcodex` aliases only; no Claude model. The spec asks for both families, so the Claude arms are kept below as deferred, for a later round.
 
@@ -108,7 +108,7 @@ Time: about 40 minutes for the seed and 45 to 60 minutes an arm, with three at o
 
 ## Deferred: the Claude arms
 
-The spec asks for both families; this round runs GPT alone, by the owner's conditions. The Claude arms (`claude-250-a`, `claude-250-b`, `claude-600`, `claude-250-skeleton`) stay in `scenario.ARMS`, marked deferred, and the driver refuses them. To run them later: give them caps, clear `deferred`, set `[model.api]` to send the Claude alias through `messages`, and check in `preflight` that its window, less its output, holds the 600,000 arm. The seed recorded this round can serve them too, if the kit's sources and scenario have not changed since.
+The spec asks for both families; this round ran GPT alone, by the owner's conditions. Round 2 runs the Claude arms ([its runbook](cm-lab-round-2.md)), from this round's seed.
 
 ## Teardown
 

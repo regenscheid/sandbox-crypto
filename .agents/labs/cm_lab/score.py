@@ -12,6 +12,15 @@ live runs are scored: the seed's runs are the scenario's, the same in every arm.
 session is valid when it folded as the spec asks (at least four folds in three runs at
 250,000, two at 600,000); an invalid session's scores are reported but marked so.
 
+L16's child (round 2) is scored apart (``child``): its folds, and on them CM-P3 (the
+experiment's values in its result), CM-P2/P7 (the parent's ``message_child`` changing its
+budget, in its result and its notes' marks), CM-P8 (the caveat) and CM-P9 (repeated
+calls). The main session's probes read the main runs alone.
+
+A session is scored with the values of the ``data/params.json`` its seed holds (its
+SHA-256 in the arm's ``meta``, or found in the seed's tool output): an arm of round 2
+starts from round 1's seed, recorded before the synthetic p changed.
+
 What needs judgment is listed apart, for the owner's checklist (``report.md``).
 """
 
@@ -59,6 +68,8 @@ class Run:
     started: str
     stopped: str = ""
     rows: list[Json] = field(default_factory=list[Json])
+    role: str = "main"
+    parent: str | None = None
 
     def calls(self) -> list[Call]:
         return [
@@ -86,6 +97,18 @@ def _text(row: Json) -> str:
     return "\n".join([row.get("content") or "", *(row.get("saved") or {}).values()])
 
 
+def _seed_params(rows: Sequence[Json]) -> str | None:
+    """The SHA-256 of ``data/params.json`` the seed's tools returned, of those the sources
+    know: a bundle exported before arms kept it in their ``meta``."""
+    for row in rows:
+        if row["role"] == "tool":
+            text = _text(row)
+            for digest in sources.PARAMS_SHA256:
+                if digest in text:
+                    return digest
+    return None
+
+
 class Session:
     """One arm's bundle, its runs matched to the scenario's steps."""
 
@@ -96,6 +119,10 @@ class Session:
         self.ceiling: int = self.meta["ceiling"]
         self.rows: list[Json] = bundle["rows"]
         self.ledger: list[Json] = bundle["ledger"]
+        self.literals: tuple[sources.Literal, ...] = sources.literals_for(
+            self.meta.get("params_sha256") or _seed_params(self.rows)
+        )
+        self.values: dict[str, str] = {lit.name: lit.value for lit in self.literals}
         records = {run["name"]: run for run in bundle["runs"]}
         tasks = {row["run"]: row["content"] for row in self.rows if row["kind"] == "task"}
         self.runs: list[Run] = []
@@ -111,9 +138,14 @@ class Session:
                 answer or "",
                 record.get("started_at", ""),
                 record.get("stopped", ""),
+                role=record.get("role") or "main",
+                parent=record.get("parent"),
             )
             run.rows = [row for row in self.rows if row["run"] == name]
             self.runs.append(run)
+        # Delegated runs (L16's child) are scored apart; the main probes read main runs.
+        self.children = [run for run in self.runs if run.role != "main"]
+        self.runs = [run for run in self.runs if run.role == "main"]
         self.by_step = {run.step: run for run in self.runs if run.step}
         self.live = [run for run in self.runs if run.step and run.step.startswith("L")]
 
@@ -130,7 +162,12 @@ class Session:
         return [run for run in self.live if run.step and run.step >= step]
 
     def folds(self) -> list[Json]:
-        return [row for row in self.rows if row["kind"] == "fold"]
+        """The main runs' folds; a delegated run's are its own (``child_folds``)."""
+        main = {run.name for run in self.runs}
+        return [row for row in self.rows if row["kind"] == "fold" and row["run"] in main]
+
+    def child_folds(self, run: Run) -> list[Json]:
+        return [row for row in run.rows if row["kind"] == "fold"]
 
     def in_view(self, run: Run, value: str) -> bool:
         """Whether ``value`` stood in the run's view as it began: in a message still raw,
@@ -352,7 +389,7 @@ def exact_values(session: Session) -> Json:
         wanted = scenario.LITERAL_STEPS.get(run.step or "", ())
         reached = reached or bool(wanted)
         texts = [(None, run.answer), *run.written()]
-        for literal in sources.LITERALS:
+        for literal in session.literals:
             for position, text in texts:
                 for match in re.finditer(re.escape(literal.value), text):
                     before = _plain(text[max(0, match.start() - 160) : match.start()])
@@ -372,7 +409,11 @@ def exact_values(session: Session) -> Json:
                 uses.append({"step": run.step, "value": name, "missing": True})
     if not reached:
         return _result("not_reached")
-    inexact = [found for run in session.live for found in near_misses(run.answer, run.step)]
+    inexact = [
+        found
+        for run in session.live
+        for found in near_misses(run.answer, run.step, session.literals)
+    ]
     failed = inexact or any(
         not u.get("missing") and not (u["retrieved"] or u["in_view"]) for u in uses
     )
@@ -407,12 +448,14 @@ PATTERNS = {
 }
 
 
-def near_misses(text: str, step: str | None) -> list[Json]:
-    """Values in ``text`` that look like a planted value but are not it: the same kind,
+def near_misses(
+    text: str, step: str | None, literals: Sequence[sources.Literal] = sources.LITERALS
+) -> list[Json]:
+    """Values in ``text`` that look like one of ``literals`` but are not it: the same kind,
     sharing its first or last eight characters."""
     found = []
-    planted = {*sources.VALUES.values(), *sources.KNOWN}
-    for literal in sources.LITERALS:
+    planted = {*(literal.value for literal in literals), *sources.KNOWN}
+    for literal in literals:
         pattern = PATTERNS.get(literal.name)
         if pattern is None:
             continue
@@ -567,7 +610,11 @@ def caveat_uses(session: Session) -> list[Json]:
 def repeats(session: Session) -> list[Json]:
     """CM-P9: for each fold, the calls among the ten before it and the ten after it that
     repeat an earlier call's tool and arguments."""
-    calls = [call for run in session.runs for call in run.calls()]
+    return _repeats(session.runs, session.folds())
+
+
+def _repeats(runs: Sequence[Run], folds: Sequence[Json]) -> list[Json]:
+    calls = [call for run in runs for call in run.calls()]
     seen: list[tuple[str, str]] = []
     repeated: list[bool] = []
     for call in calls:
@@ -575,7 +622,7 @@ def repeats(session: Session) -> list[Json]:
         repeated.append(key in seen)
         seen.append(key)
     found = []
-    for fold in session.folds():
+    for fold in folds:
         cut = next(
             (i for i, call in enumerate(calls) if call.position > fold["position"]), len(calls)
         )
@@ -617,6 +664,153 @@ def long_repeats(session: Session) -> list[Json]:
                     {"step": run.step, "tool": call.name, "arguments": call.arguments[:200]}
                 )
             seen.setdefault(key, call.position)
+    return found
+
+
+# L16's child.
+
+BITS = re.compile(r"\b(\d{2,3})[- ]?bits?\b", re.IGNORECASE)
+BEYOND = re.compile(r"\b(?:beyond|outside|over|exceeds?|not within|above)\b", re.IGNORECASE)
+WITHIN = re.compile(r"\bwithin\b", re.IGNORECASE)
+
+
+def child(session: Session) -> Json:
+    """L16's child, on its own folds (CM-37): whether it folded; CM-P3, the experiment's
+    seed and fingerprint quoted exactly in its result, from its own run's tools; CM-P2/P7,
+    the parent's ``message_child`` (2^56 becomes 2^60) applied to its result and to the
+    marks of its notes as last written whole; CM-P8, the speedup's qualifier kept; CM-P9,
+    repeated calls around its folds."""
+    asked = session.by_step.get(scenario.CHILD_STEP)
+    if asked is None:
+        return _result("not_reached")
+    mine = [run for run in session.children if run.parent == asked.name]
+    if not mine:
+        # The main run read the pages itself, or never delegated: nothing to score.
+        reads = [c for c in asked.calls() if c.name == "pdf_pages" and "D.pdf" in c.arguments]
+        return _result("fail", why="no task was delegated", main_reads_of_d=len(reads))
+    calls = [call for run in mine for call in run.calls()]
+    folds = [fold for run in mine for fold in session.child_folds(run)]
+    answer = mine[-1].answer
+    found: Json = {
+        "runs": [run.name for run in mine],
+        "stopped": [run.stopped for run in mine],
+        "folds": len(folds),
+        "calls": len(calls),
+        "pages_read": sorted(
+            {page for c in calls if c.name == "pdf_pages" for page in _pages(c.arguments)}
+        ),
+    }
+    found["CM-P3"] = _child_values(session, mine, answer)
+    found["CM-P2/P7"] = _child_change(mine, folds, answer)
+    kept = [
+        _has(paragraph, scenario.QUALIFIERS)
+        for paragraph in _paragraphs(answer)
+        if re.search(rf"(?<![\d.]){re.escape(scenario.CAVEAT_VALUE)}(?![\d])", paragraph)
+    ]
+    found["CM-P8"] = {
+        "uses": len(kept),
+        "kept": sum(kept),
+        "status": "not_reached" if not kept else ("pass" if all(kept) else "fail"),
+    }
+    folded = _repeats(mine, folds)
+    rise = sum(f["after"] - f["before"] for f in folded) / len(folded) if folded else None
+    found["CM-P9"] = {
+        "folds": folded,
+        "mean_rise": rise,
+        "status": "not_reached" if rise is None else ("pass" if rise <= 1 else "fail"),
+    }
+    # The probes are about the child's folds: one that never folded tests none of them.
+    found["status"] = "valid" if folds else "no_folds"
+    return found
+
+
+def _child_values(session: Session, runs: Sequence[Run], answer: str) -> Json:
+    wanted = {name: session.values[name] for name in scenario.CHILD_LITERALS}
+    results = "\n".join(run.results() for run in runs)
+    uses = {
+        name: {"quoted": value in answer, "retrieved": value in results}
+        for name, value in wanted.items()
+    }
+    inexact = [
+        miss
+        for miss in near_misses(answer, scenario.CHILD_STEP, session.literals)
+        if miss["value"] in wanted
+    ]
+    if inexact or any(u["quoted"] and not u["retrieved"] for u in uses.values()):
+        status = "fail"
+    elif all(u["quoted"] for u in uses.values()):
+        status = "pass"
+    else:
+        status = "review"  # left out: not a wrong copy
+    return _result(status, uses=uses, inexact=inexact)
+
+
+def _child_change(runs: Sequence[Run], folds: Sequence[Json], answer: str) -> Json:
+    """The budget's change, by the parent's message: where the child received it, whether
+    a fold came after it, and whether its result and its notes use the new budget."""
+    received = [
+        row["position"]
+        for run in runs
+        for row in run.rows
+        if row["role"] != "assistant" and row["role"] != "tool"
+        and _has(row.get("content") or "", scenario.CHILD_NEW_BUDGET)
+    ]  # fmt: skip
+    first = min(received, default=None)
+    folded_after = first is not None and any(fold["position"] > first for fold in folds)
+    stale = [
+        sentence.strip()[:300]
+        for sentence in _sentences(answer)
+        if _has(sentence, scenario.CHILD_OLD_BUDGET)
+        and not _has(sentence, scenario.WORDS_OF_THE_PAST)
+    ]
+    notes = _last_notes(runs)
+    marks = _stale_marks(notes) if notes is not None else None
+    uses_new = _has(answer, scenario.CHILD_NEW_BUDGET)
+    if first is None:
+        status = "not_reached"  # the parent never sent the change
+    elif stale or marks:
+        status = "fail"
+    elif uses_new and marks is not None:
+        status = "pass"
+    else:
+        status = "review"
+    return _result(
+        status,
+        received_at=first,
+        folded_after=folded_after,
+        uses_new=uses_new,
+        stale_sentences=stale,
+        notes_written_whole=notes is not None,
+        stale_marks=marks,
+    )
+
+
+def _last_notes(runs: Sequence[Run]) -> str | None:
+    """The notes file as the child last wrote it whole (``write_file``), if it did."""
+    text = None
+    for run in runs:
+        for call in run.calls():
+            if call.name != "write_file" or scenario.CHILD_FILE not in call.arguments:
+                continue
+            try:
+                text = str(json.loads(call.arguments).get("content", ""))
+            except (ValueError, AttributeError):
+                continue
+    return text
+
+
+def _stale_marks(notes: str) -> list[str]:
+    """Lines whose mark follows the old budget, not the new: a curve of more than 112 and
+    at most 120 bits (rho about 2^56 to 2^60) marked beyond the budget."""
+    found = []
+    for line in notes.splitlines():
+        bits = BITS.search(line)
+        if bits is None:
+            continue
+        size = int(bits.group(1))
+        old_only = scenario.CHILD_OLD_BITS < size <= scenario.CHILD_NEW_BITS
+        if old_only and BEYOND.search(line) and not WITHIN.search(BEYOND.sub("", line)):
+            found.append(line.strip()[:200])
     return found
 
 
@@ -677,13 +871,14 @@ def score(bundles: Sequence[Json]) -> Json:
             "CM-P8": {"uses": caveat_uses(session)},
             "CM-P9": {"folds": repeats(session), "long_repeats": long_repeats(session)},
             "reported": reported(session),
+            "child": child(session),
         }
     enriched = [s for s in sessions if not s.meta.get("skeleton_only")]
     families = {
         family: aggregate([s for s in enriched if s.family == family])
         for family in sorted({session.family for session in enriched})
     }
-    # Round 1 runs one family on more than one model: each model's sessions apart too.
+    # A family may run on more than one model (round 1): each model's sessions apart too.
     models = {
         alias: aggregate([s for s in enriched if s.meta.get("alias") == alias])
         for alias in sorted({str(s.meta.get("alias")) for s in enriched if s.meta.get("alias")})
@@ -714,7 +909,7 @@ def markdown(report: Json) -> str:
     """The report as tables, then the owner's checklist."""
     probes = ("CM-P1", "CM-P2", "CM-P3", "CM-P4", "CM-P5", "CM-P6", "CM-P7")
     lines = [
-        "# Continuity probes, lab round 1",
+        "# Continuity probes",
         "",
         "| Session | Valid | " + " | ".join(probes) + " | CM-P1 cited handle (reported) |",
         "| --- | --- | " + " | ".join("---" for _ in (*probes, "")) + " |",
@@ -738,6 +933,27 @@ def markdown(report: Json) -> str:
         lines.append(
             f"| {family} | {p8['kept']} of {p8['uses']} | {p8['status']} | {rise} | {p9['status']} |"
         )
+    children = {
+        name: found["child"]
+        for name, found in report["sessions"].items()
+        if found["child"].get("status") not in (None, "not_reached") or "folds" in found["child"]
+    }
+    if children:
+        lines += [
+            "",
+            "| L16's child | Folds | CM-P3 | CM-P2/P7 | Folded after the change | CM-P8 | CM-P9 mean rise |",
+            "| --- | --- | --- | --- | --- | --- | --- |",
+        ]
+        for name, found in children.items():
+            if "folds" not in found:
+                lines.append(f"| {name} | {found['status']}: {found.get('why', '')} | | | | | |")
+                continue
+            rise = found["CM-P9"]["mean_rise"]
+            lines.append(
+                f"| {name} | {found['folds']} | {found['CM-P3']['status']} | "
+                f"{found['CM-P2/P7']['status']} | {str(found['CM-P2/P7']['folded_after']).lower()} | "
+                f"{found['CM-P8']['status']} | {'n/a' if rise is None else f'{rise:.2f}'} |"
+            )
     lines += ["", "## For the owner's judgment", ""]
     for item in checklist(report):
         lines.append(f"- [ ] {item}")
@@ -760,6 +976,14 @@ def checklist(report: Json) -> list[str]:
             items.append(
                 f"{name} L13: does the answer say the paper was never discussed, with the search's diagnostics?"
             )
+        kid = found.get("child", {})
+        for probe in ("CM-P3", "CM-P2/P7"):
+            if kid.get(probe, {}).get("status") == "review":
+                items.append(
+                    f"{name} L16's child {probe}: read the evidence in report.json and decide."
+                )
+        if kid.get("status") == "no_folds":
+            items.append(f"{name} L16's child never folded: its probes test nothing.")
         items.append(f"{name} L14: does 'what is done, what is next' match the plan?")
         items.append(
             f"{name} L15: does every claim in report/closing.md map to a ledger reference or anchor?"
