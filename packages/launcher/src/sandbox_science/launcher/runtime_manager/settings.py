@@ -171,6 +171,8 @@ class RuntimeManagerSettings(Contract):
     model_url: str = Field(min_length=1, max_length=2048)
     model_key_file: Path
     thinking_replay: ThinkingReplayConfig | None = None
+    refusal_fallback: dict[str, str] = Field(default_factory=dict[str, str], max_length=128)
+    """Each Claude alias's fallback for a call its model declines (CM-42a)."""
     image: str = Field(pattern=r"^[^\s@]{1,400}@sha256:[0-9a-f]{64}$")
     """The runtime image, pinned by digest."""
     revision: str = Field(pattern=r"^[0-9a-f]{40}$")
@@ -250,6 +252,7 @@ class RuntimeManagerSettings(Contract):
             thinking_replay=self.thinking_replay.model_dump(mode="json")
             if self.thinking_replay is not None
             else None,
+            refusal_fallback=self.refusal_fallback,
             generation=generation,
             control_ca=True,
             mcp=mcp,

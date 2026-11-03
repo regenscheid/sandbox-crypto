@@ -309,6 +309,12 @@ def harness_argv(config: LauncherConfig, layout: Layout) -> list[str]:
     # Claude's thinking replay setting (CM-39).
     if (replay := model.thinking_replay) is not None:
         apis += ["--thinking-replay", replay.model_dump_json()]
+    # Each Claude alias's fallback for a call its model declines (CM-42a).
+    apis += [
+        option
+        for alias, fallback in model.refusal_fallback.items()
+        for option in ("--refusal-fallback", f"{alias}={fallback}")
+    ]
     shared = [] if service.run_share is None else ["--run-share", str(service.run_share)]
     if service.max_turns:  # unset or 0: the run service's default
         shared += ["--max-turns", str(service.max_turns)]

@@ -43,7 +43,7 @@ from .hooks import (
 from .images import IMAGE
 from .kernel_check import KernelCheck
 from .memory_prompt import MemoryGiven
-from .model import AssistantMessage, ChatModel, Message, ModelTurn, ToolCall
+from .model import AssistantMessage, ChatModel, Message, ModelTurn, ToolCall, run_fallbacks
 from .notices import REPORT
 from .plan_tools import GUIDANCE, GUIDANCE_VERSION, Plans
 from .plan_tools import NAMES as PLAN_NAMES
@@ -925,15 +925,22 @@ async def run_task(
                     await on_started(transcript)
                 try:
                     try:
-                        await _run_task(
-                            model,
-                            toolbox,
-                            transcript,
-                            hooks,
-                            run_id=run_id,
-                            task=task,
-                            on_tool=on_tool,
-                        )
+                        # A run that falls back from a declined call stays on the fallback
+                        # until it ends; the next run starts on its alias again (CM-42a).
+                        with run_fallbacks() as fallbacks:
+                            try:
+                                await _run_task(
+                                    model,
+                                    toolbox,
+                                    transcript,
+                                    hooks,
+                                    run_id=run_id,
+                                    task=task,
+                                    on_tool=on_tool,
+                                )
+                            finally:
+                                if (taken := fallbacks.summary()) is not None:
+                                    transcript.summaries["model_fallback"] = taken
                     except WorkingMemoryLimitError as error:
                         transcript.stopped = "memory_limit"
                         transcript.final_text = transcript.answer = None

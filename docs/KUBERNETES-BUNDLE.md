@@ -113,7 +113,11 @@ the workspace shows it as the deployment default, with both values. An explicit
 `effort` applies on every API. Set the reviewer's alias to the site's approved cheaper
 reviewer model. One shared alias must have the same
 API in every role, or none in every role, though effort is per role, and the site file's
-`model.api` may not name a catalog alias.
+`model.api` may not name a catalog alias. The site file's `model.refusal_fallback` names a
+Claude alias's fallback for a call its model declines, such as
+`{ research = "claude-opus-4-8" }` ([context management](specs/context-management.md),
+CM-42a); the runtime manager passes it to the agent runtime, whose Messages adapter asks
+the fallback. None by default.
 
 The example names generic research/reviewer aliases, not real gateway routes. This
 catalog contains no model endpoint, API key or credential and makes no LLM calls.

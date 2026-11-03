@@ -63,6 +63,7 @@ from sandbox_science.contracts import (
 from sandbox_science.contracts.model import Contract
 
 from .control import ControlStore, store_path
+from .model import Refusal
 from .model_profiles import ModelProfile, ModelRole
 from .prompts import PromptPins
 from .worker_client import WorkerAPIError, WorkerClient, WorkerProtocolError
@@ -190,6 +191,11 @@ class ModelUsage(Contract):
     """What the attempts before this answer's came to, in order (``HTTP 524``, or ``failed
     response``): the gateway's timeouts and rate limits the call got past (lab 44, B3).
     Only the answered attempt's tokens and cost are this entry's."""
+    refusals: list[Refusal] = Field(default_factory=list[Refusal], max_length=2)
+    """The calls the model declined (CM-42a): for an answer, the call on the configured
+    alias its fallback answered for; for a run's last entry when it stopped
+    ``model_refused``, each declined call, the entry's model and tokens being the last's.
+    ``cost`` is then all of them together, as far as the gateway reported it."""
 
 
 def _summary(value: JsonValue | None) -> dict[str, JsonValue]:
@@ -242,10 +248,12 @@ class RunRecord(Contract):
     (by the user), ``budget`` (the project spent its model budget during the run),
     ``run_budget`` (the run used its share of it, or a delegated run its tokens),
     ``gateway_budget`` (the model gateway refused a call because its spending budget is
-    exhausted), ``runaway`` (the runaway guard saw the run repeat itself without progress),
-    or ``error``. A run stopped by its turn limit, a delegated run's tokens, its
-    conversation's length or the runaway guard first took a report round, whose answer
-    is its ``final_text`` (run-service spec, RS-6f)."""
+    exhausted), ``model_refused`` (the model declined a call and no fallback answered for
+    it, ``summaries["refusal"]``, context-management CM-42a), ``runaway`` (the runaway
+    guard saw the run repeat itself without progress), or ``error``. A run stopped by its
+    turn limit, a delegated run's tokens, its conversation's length or the runaway guard
+    first took a report round, whose answer is its ``final_text`` (run-service spec,
+    RS-6f)."""
     failure: FailurePhase | None = None
     """Failed phase; old records omit it. Partial messages are observations, not an answer."""
     delivered: dict[Identifier, list[Identifier]] = Field(

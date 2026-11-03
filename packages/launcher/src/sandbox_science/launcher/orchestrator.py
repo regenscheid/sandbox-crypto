@@ -281,6 +281,7 @@ def prepare(
         thinking_replay=model.thinking_replay.model_dump(mode="json")
         if model.thinking_replay
         else None,
+        refusal_fallback=model.refusal_fallback,
         generation=generation,
         mcp=direct,
     )

@@ -480,7 +480,12 @@ def shown_call(call: Mapping[str, Any]) -> dict[str, Any]:
 def _context_stop(record: RunRecord) -> dict[str, Any]:
     """Why a run that folds stopped for its context, as its folds say (CM-43 to CM-45);
     or what tripped the runaway guard (RS-6f); or that the root's turn limit is a check-in
-    waiting for the user (D102)."""
+    waiting for the user (D102); or the category of a declined call and what declined it
+    (CM-42a)."""
+    refusal = record.summaries.get("refusal")
+    if record.stopped == "model_refused" and isinstance(refusal, dict):
+        found = cast(dict[str, Any], refusal)
+        return {"reason": found.get("category"), "detail": found.get("said")}
     resources = record.summaries.get("resources")
     if record.stopped == "turn_limit" and isinstance(resources, dict):
         # A root that paused at its turn limit asks the user, with no report round (D102).

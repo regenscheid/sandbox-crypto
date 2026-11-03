@@ -473,6 +473,8 @@ const STOPPED: Record<string, string> = {
     "The run stopped at its own limit: its part of the project's daily cost limit, or a delegated run's tokens.",
   gateway_budget:
     'The run stopped: the model gateway refused the call because its spending budget is used up. What waits for the session waits until the gateway allows calls again.',
+  model_refused:
+    'The run stopped: the model declined to answer, and no fallback model answered for it. Send a message to try again, or choose another model.',
   user_message:
     'The run stopped without an answer: a newer message of yours comes first, and the next run takes it up.',
   plan_unread:
@@ -506,6 +508,8 @@ export function stoppedText(data: Record<string, unknown>): string {
   // What tripped the runaway guard (run service, RS-6f).
   const detail = text(data['detail']);
   if (stopped === 'runaway' && detail) said += ` It saw ${visible(detail)}.`;
+  // What the model declined, as the API named it (context management, CM-42a).
+  if (stopped === 'model_refused' && detail) said += ` It said: ${visible(detail)}.`;
   return failure ? `${said} Failure: ${visible(failure)}.` : said;
 }
 
@@ -584,7 +588,9 @@ function outcomeText(value: unknown): string {
 
 /**
  * One model call's tokens, as an `assistant` event's `usage` keeps them (RS-14): the model
- * and its input and output tokens, saying when the gateway left a count out.
+ * and its input and output tokens, saying when the gateway left a count out; and, for an
+ * answer a fallback gave, the model that declined the call and why (CM-42a), the cost
+ * then being both calls'.
  */
 export function tokensText(value: unknown): string | null {
   const usage = record(value);
@@ -592,8 +598,14 @@ export function tokensText(value: unknown): string | null {
   const count = (key: string) =>
     typeof usage[key] === 'number' ? (usage[key] as number).toLocaleString('en-US') : 'unreported';
   const model = text(usage['model']);
-  const cost = typeof usage['cost'] === 'number' ? `, ${formatCost(usage['cost'])}` : '';
-  return `${model ? `${model}: ` : ''}${count('input_tokens')} input and ${count('output_tokens')} output tokens${cost}`;
+  const declined = list(usage['refusals']).map(record)[0];
+  const both = declined === undefined ? '' : ' for both calls';
+  const cost = typeof usage['cost'] === 'number' ? `, ${formatCost(usage['cost'])}${both}` : '';
+  const said = `${model ? `${model}: ` : ''}${count('input_tokens')} input and ${count('output_tokens')} output tokens${cost}`;
+  if (declined === undefined) return said;
+  const who = visible(text(declined['model']) || text(declined['alias']) || 'the model');
+  const why = visible(text(declined['category']) || 'no category given');
+  return `${said}; ${who} declined the call (${why}), and its fallback answered`;
 }
 
 /**

@@ -19,6 +19,7 @@ from sandbox_science.orchestrator.model import (
     Message,
     ModelError,
     ModelGateway,
+    ModelRefusedError,
     ModelTurn,
     ToolSpec,
 )
@@ -133,9 +134,13 @@ class CallbackModel(GatewayModel):
         except TransportError as error:
             raise ModelError("confined model runtime unavailable") from error
         if reply.error is not None:
+            if reply.error == "refused" and reply.refusals:
+                # The model declined in the runtime, and no fallback answered (CM-42a).
+                raise ModelRefusedError(reply.refusals, intent_id=reply.intent_id)
             kind = {
                 "context_limit": ContextLimitError,
                 "gateway_budget": GatewayBudgetError,
+                "refused": ModelError,
                 "model": ModelError,
             }[reply.error]
             raise kind(
@@ -267,6 +272,8 @@ class RuntimeModels:
                 if isinstance(error, ContextLimitError)
                 else "gateway_budget"
                 if isinstance(error, GatewayBudgetError)
+                else "refused"
+                if isinstance(error, ModelRefusedError)
                 else "model"
             )
             return payload(
@@ -277,6 +284,9 @@ class RuntimeModels:
                         "message": str(error)[:512],
                         "status": error.status,
                         "cost": error.cost,
+                        "refusals": (
+                            error.refusals if isinstance(error, ModelRefusedError) else ()
+                        ),
                     }
                 )
             )

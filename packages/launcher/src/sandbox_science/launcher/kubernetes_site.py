@@ -480,6 +480,7 @@ def manager_settings(site: Site, bundle: BundleConfig) -> RuntimeManagerSettings
         model_url=site.model.url,
         model_key_file=Path(PRIVATE, "model.key"),
         thinking_replay=site.model.thinking_replay,
+        refusal_fallback=site.model.refusal_fallback,
         image=site.runtime.image,
         revision=site.runtime.revision,
         # worker_api is required by the target, though the runtime never calls the

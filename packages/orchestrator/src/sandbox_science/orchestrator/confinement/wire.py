@@ -30,6 +30,7 @@ from sandbox_science.orchestrator.model import (
     AssistantMessage,
     Message,
     ModelTurn,
+    Refusal,
     ToolCall,
     ToolSpec,
 )
@@ -58,7 +59,7 @@ _MAX_BINARY_B64 = 4 * -(-MAX_BINARY_BYTES // 3)
 
 
 class Hello(Contract):
-    protocol: Literal[6] = CONTROL_PROTOCOL
+    protocol: Literal[7] = CONTROL_PROTOCOL
     image_revision: str = Field(min_length=1, max_length=128)
     apis: dict[ModelAlias, ApiKind] | None = Field(default=None, max_length=256)
     """The adapter the runtime chose for each of its aliases from the gateway's model
@@ -66,7 +67,7 @@ class Hello(Contract):
 
 
 class Ready(Contract):
-    protocol: Literal[6] = CONTROL_PROTOCOL
+    protocol: Literal[7] = CONTROL_PROTOCOL
     generation: Identifier
     projects: tuple[Identifier, ...] = Field(min_length=1, max_length=128)
     control_schema: Counter
@@ -167,6 +168,7 @@ class WireTurn(Contract):
     content: str | None = None
     native_b64: str | None = Field(default=None, max_length=24 * 1024 * 1024)
     intent_id: str | None = Field(default=None, max_length=128)
+    refused: Refusal | None = None
 
     @classmethod
     def of(cls, turn: ModelTurn) -> WireTurn:
@@ -472,10 +474,12 @@ def json_value(value: Any) -> JsonValue:
 class ModelReply(Contract):
     intent_id: Identifier | None = None
     turn: WireTurn | None = None
-    error: Literal["context_limit", "gateway_budget", "model"] | None = None
+    error: Literal["context_limit", "gateway_budget", "refused", "model"] | None = None
     message: str = Field(default="", max_length=512)
     status: int | None = Field(default=None, ge=100, le=599)
     cost: float | None = Field(default=None, ge=0)
+    refusals: tuple[Refusal, ...] = Field(default=(), max_length=2)
+    """The declined calls of a ``refused`` error (CM-42a)."""
 
 
 class ModelInfo(Contract):

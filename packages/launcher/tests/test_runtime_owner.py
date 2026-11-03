@@ -359,6 +359,9 @@ def test_agent_settings_name_a_control_ca_only_when_one_is_uploaded() -> None:
     assert "control_ca_file" not in plain
     verified = runtime_owner.agent_settings(**common, control_ca=True)
     assert verified["control_ca_file"] == "/sandbox/runtime/control-ca.crt"
+    assert plain["refusal_fallback"] == {}
+    fallback = runtime_owner.agent_settings(**common, refusal_fallback={"main": "older"})
+    assert fallback["refusal_fallback"] == {"main": "older"}
 
 
 @asynccontextmanager

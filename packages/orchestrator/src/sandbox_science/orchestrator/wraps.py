@@ -23,7 +23,15 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
 from .hooks import ModelHandler, RunView, ToolHandler, TurnHook, overrides
-from .model import GATEWAY_BUDGET, ContextLimitError, GatewayBudgetError, ModelTurn, ToolCall
+from .model import (
+    GATEWAY_BUDGET,
+    MODEL_REFUSED,
+    ContextLimitError,
+    GatewayBudgetError,
+    ModelRefusedError,
+    ModelTurn,
+    ToolCall,
+)
 from .purpose import without
 
 if TYPE_CHECKING:
@@ -131,9 +139,12 @@ class OverflowRetry:
 @dataclass
 class ModelRefusals:
     """The model's refusals that end the call without a reply, not the run with an error:
-    one for the conversation's length, which ``overflowed`` then says, and the gateway's
-    for its budget, which ``halted`` says, its refusal kept in the run's summaries. Any
-    other error passes, and fails the run in the model phase."""
+    one for the conversation's length, which ``overflowed`` then says; the gateway's for
+    its budget, which ``halted`` says, its refusal kept in the run's summaries; and the
+    model's own when it declines to answer and no fallback answers for it (CM-42a), which
+    ``halted`` says as ``model_refused``, the refusal kept in the summaries (``refusal``)
+    and the declined calls' cost in the run's usage. Any other error passes, and fails
+    the run in the model phase."""
 
     transcript: Transcript
 
@@ -150,6 +161,11 @@ class ModelRefusals:
             transcript.halted = GATEWAY_BUDGET
             # Whose budget it was, the gateway's or a configured local limit, stays on record.
             transcript.summaries["budget"] = {"refusal": str(error)[:500]}
+        except ModelRefusedError as error:
+            _log.warning("the run stops: %s", error)
+            transcript.halted = MODEL_REFUSED
+            transcript.summaries["refusal"] = error.summary()
+            transcript.context.record_refusal(error)
         transcript.phase = "harness"
         return None
 

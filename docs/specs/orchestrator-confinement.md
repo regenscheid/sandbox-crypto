@@ -273,7 +273,10 @@ the model gateway, chooses the adapter of each of its aliases the deployment nam
 for from the gateway's model information before it connects, and control adopts that
 choice before any caller's profile is read ([context management](context-management.md),
 CM-41). A model call's adapter is the one its attempt pinned, so a runtime builds the
-adapter the request's profile names. Older control/runtime peers are refused.
+adapter the request's profile names. Private control protocol 7 carries a model's
+refusals (CM-42a): a turn its fallback answered keeps the declined call (`refused`), and a
+declined call comes back as a `refused` error with each declined call, which control
+raises as the same refusal. Older control/runtime peers are refused.
 
 How long each request may wait:
 

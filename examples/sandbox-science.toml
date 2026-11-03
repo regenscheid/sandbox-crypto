@@ -31,6 +31,10 @@ delegated = "sandbox-orchestrator"
 # unless set).
 # api = { sandbox-orchestrator = "responses" }
 # default_api = "chat"
+# A Claude alias's fallback for a call its model declines (stop_reason "refusal"): the
+# same request goes once to the fallback, and the rest of the run stays on it. Without
+# one, a declined call stops the run "model_refused".
+# refusal_fallback = { sandbox-orchestrator = "claude-opus-4-8" }
 # Uploaded by path into the confined runtime; keep it mode 600.
 api_key_file = "~/.config/sandbox-science/secrets/litellm-harness.key"
 # Claude's thinking sent back, once the CM-F30 run passes against the deployed gateway

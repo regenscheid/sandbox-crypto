@@ -576,6 +576,7 @@ async def test_a_run_rides_out_a_rate_limit_and_records_its_usage(harness: Harne
             "gateway_version": GATEWAY_VERSION,  # each call's, as the run record keeps it
             "thinking_replay": None,  # chat completions sends no thinking back
             "retried": retried,
+            "refusals": [],  # no call was declined (CM-42a)
         }
         for tokens, retried in ((first, []), (last, ["HTTP 429"]))
     ]
