@@ -451,20 +451,42 @@ def test_the_change_tool_describes_the_new_fields() -> None:
 def test_the_prompts_say_when_to_record_the_research_state() -> None:
     """CM-48 to CM-48b, as far as these fields go: the main run records constraints,
     abandoned approaches with their reopen conditions, failures, caveats and
-    contradictions; a task proposes; a check reports them in its result."""
+    contradictions; a task proposes; a check reports them in its result. The prompts say
+    when; ``ledger_change``'s schema says how (``sandbox-main-20``)."""
     for phrase in (
-        "standing constraint",
+        "standing constraint the user sets, as a decision in effect with basis user_quoted",
         "fields.session",
         "rejected decision with its reason and its reopen condition",
         "work record ending limit",
-        "call nothing impossible that the ledger has not settled",
+        "Call nothing impossible that the ledger has not settled",
         "kind contradiction",
         "caveats",
+        "ledger_change gives each record's rules",
     ):
         assert phrase in SYSTEM_PROMPT, phrase
-    for phrase in ("proposed decision to exclude it", "reopen condition", "kind contradiction"):
+    for phrase in (
+        "proposed decision to exclude it",
+        "reopen condition",
+        "kind contradiction",
+        "ledger_change gives each record's rules",
+    ):
         assert phrase in TASK_PROMPT, phrase
     assert "Put in open_questions the caveats" in CHECK_PROMPT
+    # The mechanics the main prompt no longer gives are the change tool's own.
+    from sandbox_science.orchestrator.ledger.tool import SPECS
+
+    (spec,) = [s for s in SPECS if s.name == "ledger_change"]
+    change = spec.parameters["properties"]["changes"]["items"]["properties"]
+    fields = change["fields"]["properties"]
+    assert "reopen_on links" in fields["reopen_condition"]["description"]
+    assert '"this"' in fields["session"]["description"]
+    assert "a contradiction concerns the two sides" in fields["kind"]["description"]
+    assert "with a quote of at least 20" in change["basis"]["description"]
+    assert "needed to create an entry" in change["anchors"]["description"]
+    work = spec.parameters["properties"]["work"]["items"]["description"]
+    assert "limit names what ran out" in work
+    for gone in ("anchored on the user's message", "a work record on its issue"):
+        assert gone not in SYSTEM_PROMPT, gone
 
 
 # Migration.

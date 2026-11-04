@@ -352,7 +352,7 @@ def test_the_schema_and_the_brief_say_deliverables_is_a_list() -> None:
 def test_the_task_prompts_rule_is_of_no_one_kind() -> None:
     """The prompt gives no kind's fields, which a child copied into another kind's: the
     schema and each line of the brief give each kind's form."""
-    assert TASK_VERSION == "sandbox-delegated-task-20"
+    assert TASK_VERSION == "sandbox-delegated-task-21"
     assert '"revision": 2' not in TASK_PROMPT
     assert '"path"' not in TASK_PROMPT
     assert "in the fields of its kind and no others" in TASK_PROMPT

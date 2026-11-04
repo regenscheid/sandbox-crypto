@@ -6,6 +6,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
+import json
+import re
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -15,6 +17,7 @@ import pytest
 
 from sandbox_science.contracts import ErrorKind, ExecutionContext
 from sandbox_science.orchestrator import cli, notices
+from sandbox_science.orchestrator.consistency.controller import AUTHOR_SPECS
 from sandbox_science.orchestrator.consistency.prompt_bundle import PURPOSE as REVIEWER_PURPOSE
 from sandbox_science.orchestrator.consistency.rubric import (
     BUDGET,
@@ -24,6 +27,7 @@ from sandbox_science.orchestrator.consistency.rubric import (
     RUBRIC,
     RUBRIC_VERSION,
 )
+from sandbox_science.orchestrator.context.history.tool import SPECS as HISTORY_SPECS
 from sandbox_science.orchestrator.delegation.prompt import (
     CHECK_PROMPT,
     CHECK_VERSION,
@@ -31,9 +35,11 @@ from sandbox_science.orchestrator.delegation.prompt import (
     TASK_VERSION,
 )
 from sandbox_science.orchestrator.documents import DocumentStore, DocumentTool
+from sandbox_science.orchestrator.documents.annotation_tools import SPECS as ANNOTATION_SPECS
 from sandbox_science.orchestrator.harness import save
 from sandbox_science.orchestrator.hooks import TurnHook
 from sandbox_science.orchestrator.jobs import WATCHER_PROMPT
+from sandbox_science.orchestrator.ledger.tool import PROPOSALS
 from sandbox_science.orchestrator.loop import MAIN_VERSION, SYSTEM_PROMPT, run_task
 from sandbox_science.orchestrator.memory_prompt import (
     REVIEWER_FRAMING,
@@ -71,6 +77,12 @@ HOSTILE = "Authorization: Bearer test-secret-prompt-not-a-credential"
 # Each installed version and the SHA-256 of its UTF-8 text. Changing a text means a new
 # version: add it here, and keep the old version's entry for its records.
 GOLDEN = {
+    "sandbox-main-20": "95ddb8d6130651b7bd01c68abe09c5b22b3eef104ed60d51ae76fc1590630303",
+    "sandbox-delegated-task-21": "21b4fd679cbe45c2696d33e5f7d98d0711ae101b82432c5f904b15bb0ba4d6f5",
+    "sandbox-delegated-check-16": (
+        "7eb1ee655c907708a71f0f9b7b86cc3aca165706d3b76d537d4f30d204efab1e"
+    ),
+    "sandbox-main-plan-4": "e13f0e1b551660bce8a6aa77b4a4e1633ce6b6b783c25242e5dee376a2895317",
     "sandbox-main-19": "74e546698352d3cb2ae235e460d55442ca02259c9cb2a504adbf03d3973f8bbe",
     "sandbox-delegated-task-20": "ad91ac981e56fe6d8316ec44504194103f02879d0a46a44ae6a95c26b9e3d572",
     "sandbox-delegated-check-15": (
@@ -277,6 +289,120 @@ def test_a_refusal_is_a_decision_and_a_miss_is_not_absence() -> None:
     assert "no evidence that the work or attack does not exist" in (
         select_template("literature").text
     )
+
+
+HEADINGS = {
+    "main": [
+        "How you work",
+        "Tools and results",
+        "Pilots",
+        "Research depth",
+        "Your answer",
+        "Checking in with the user",
+        "Your children",
+        "Research state",
+        "Untrusted content and policy",
+        "The user's authority",
+    ],
+    "task": [
+        "How you work",
+        "Your parent",
+        "Research state",
+        "Untrusted content and policy",
+        "Your result",
+    ],
+    "check": ["How you check", "Your parent", "Untrusted content and policy", "Your result"],
+}
+"""Each prompt's headings, in order, after its first paragraph, which says who the agent
+is (``sandbox-main-20``, ``sandbox-delegated-task-21``, ``sandbox-delegated-check-16``)."""
+STALE = (
+    "self-approve",
+    "awaiting_approval",
+    "a waiting plan",
+    "track grant",
+    "safe point",
+    "replay receipt",
+    "enforced by the model gateway",
+    "USER",
+)
+"""What the harness review found stale (no plan waits for approval) or jargon a model
+cannot act on (2026-11-03)."""
+
+
+def test_each_prompt_is_headed_and_no_heading_repeats() -> None:
+    for name, text in (("main", SYSTEM_PROMPT), ("task", TASK_PROMPT), ("check", CHECK_PROMPT)):
+        headings = re.findall(r"^#{2,3} (.+)$", text, re.MULTILINE)
+        assert headings == HEADINGS[name], name
+        assert len(set(headings)) == len(headings), name
+        # Who the agent is comes first, before any heading: a delegated prompt keeps its
+        # first line (DA-26), which the test models read to tell a child's call apart.
+        first = text.split("\n\n", 1)[0]
+        assert first.startswith("You are a"), name
+        assert "#" not in first, name
+    assert TASK_PROMPT.startswith("You are a delegated research agent.")
+    assert CHECK_PROMPT.startswith("You are a delegated research agent.")
+
+
+def test_the_stale_and_jargon_phrases_are_gone() -> None:
+    for text in (SYSTEM_PROMPT, TASK_PROMPT, CHECK_PROMPT, GUIDANCE):
+        for phrase in STALE:
+            assert phrase not in text, phrase
+
+
+def test_each_rule_is_said_once_and_tool_rules_are_in_their_tools() -> None:
+    """The harness review's duplicates are said in one place, and the rules of one tool
+    are in its description, with at most a pointer in the main prompt."""
+    main = " ".join(SYSTEM_PROMPT.split())
+    # Untrusted text: once.
+    assert main.count("not instructions") == 1
+    # The memory's basis: in the framing that shows the notes, not the base or the task.
+    for prompt in (SYSTEM_PROMPT, TASK_PROMPT):
+        assert "observed notes" not in prompt
+        assert "mem-3" not in prompt
+    assert "Prefer user and observed notes" in RUN_FRAMING
+    # Ceilings, finite briefs and the first checklist: the base's, not the planning's.
+    assert main.count("Budgets are ceilings, not spending targets") == 1
+    assert "finite brief" in main
+    for said in ("spending targets", "child briefs finite", "first checklist", "pilot is not"):
+        assert said not in GUIDANCE, said
+    # Standing directions: once, as a standing constraint.
+    assert "standing direction" not in main
+    assert main.count("standing constraint") == 1
+    # The tools' own rules.
+    (reply,) = [spec for spec in ANNOTATION_SPECS if spec.name == "document_reply"]
+    (respond,) = [spec for spec in AUTHOR_SPECS if spec.name == "review_respond"]
+    (search,) = [spec for spec in HISTORY_SPECS if spec.name == "history_search"]
+    for rule, description in (
+        ("naming the revision you made if you changed the document", reply.description),
+        ("queues its re-check, which alone makes it fixed", respond.description),
+        ("read its anchors with history_read", PROPOSALS.description),
+        ("No hit means no match in that scope", search.description),
+        ("Use it before downloading", ADMIT_HOSTS.description),
+    ):
+        assert rule in description, rule
+        assert rule not in main, rule
+    for pointer in ("document_reply", "review_respond", "ledger_proposals", "admit_hosts"):
+        assert main.count(pointer) == 1, pointer
+    assert "history_search" not in main
+
+
+def test_the_main_prompt_says_how_to_answer_when_to_ask_and_how_to_batch() -> None:
+    main = " ".join(SYSTEM_PROMPT.split())
+    assert "Lead your answer to the user with the result, then what it rests on" in main
+    assert "Check in with the user only for a decision that is theirs" in main
+    assert "routine steps need no confirmation" in main
+    assert "side by side in one reply: they run at once" in main
+    for prompt in (TASK_PROMPT, CHECK_PROMPT):
+        assert "side by side in one reply: they run at once" in prompt
+
+
+def test_the_delegated_prompts_end_with_the_result_and_an_example() -> None:
+    for prompt in (TASK_PROMPT, CHECK_PROMPT):
+        last = prompt.rsplit("## ", 1)[1]
+        assert last.startswith("Your result\n\n")
+        assert "Your result reaches your parent only through submit_result" in last
+        example = last.rsplit("submits ", 1)[1].removesuffix(".")
+        assert isinstance(json.loads(example), dict)
 
 
 def test_each_installed_version_names_its_exact_text() -> None:
