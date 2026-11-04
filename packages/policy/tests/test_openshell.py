@@ -947,6 +947,60 @@ def test_the_pool_ceiling_counts_when_opam_downloads_are_checked() -> None:
     assert opam_findings(compiled) == []
 
 
+def resource_findings(compiled: Compiled) -> dict[str, tuple[Severity, str]]:
+    return {
+        finding.subject: (finding.severity, finding.message)
+        for finding in compiled.findings
+        if finding.subject.startswith("resources")
+    }
+
+
+def test_without_a_kubernetes_placement_no_compute_limit_is_applied() -> None:
+    # The example sets cpu, memory, pids and workspace_disk; the VM driver gets no driver
+    # configuration, so the sandbox has none of them.
+    findings = resource_findings(compile_research(EXAMPLE))
+    assert list(findings) == [
+        "resources.cpu",
+        "resources.memory",
+        "resources.pids",
+        "resources.workspace_disk",
+    ]
+    for name in ("cpu", "memory"):
+        severity, message = findings[f"resources.{name}"]
+        assert severity is Severity.WARNING
+        assert message.startswith("not applied: this pool places its sandboxes without Kubernetes")
+    assert findings["resources.pids"] == (
+        Severity.WARNING,
+        "not applied: no compute driver this worker configures sets a process limit yet",
+    )
+    severity, message = findings["resources.workspace_disk"]
+    assert severity is Severity.WARNING
+    assert message.startswith("not applied: no compute driver this worker configures limits")
+
+
+def test_a_kubernetes_placement_applies_cpu_and_memory_only() -> None:
+    compiled = compile_sandbox(EXAMPLE, TARGETS.sandbox, ceiling=OPEN, kubernetes_placement=True)
+    findings = resource_findings(compiled)
+    for name in ("cpu", "memory"):
+        severity, message = findings[f"resources.{name}"]
+        assert severity is Severity.INFO
+        assert message.startswith("applied by the pool's Kubernetes placement")
+    for name in ("pids", "workspace_disk"):
+        severity, message = findings[f"resources.{name}"]
+        assert severity is Severity.WARNING
+        assert message.startswith("not applied: no compute driver")
+
+
+def test_resource_findings_cover_the_ceilings_caps_and_only_set_limits() -> None:
+    # A limit the project leaves unset takes the ceiling's cap, which the pool must apply
+    # as well; an unset limit with no cap is no finding.
+    policy = parse_policy(HEADER + "resources: {wall_time: 1h}\n")
+    assert resource_findings(compile_research(policy)) == {}
+    capped = resource_findings(compile_research(policy, resources={"pids": 512, "cpu": 2}))
+    assert list(capped) == ["resources.cpu", "resources.pids"]
+    assert all(severity is Severity.WARNING for severity, _ in capped.values())
+
+
 # The agent runtime's MCP egress (D98): the fence the MCP proxy's sandbox had before.
 
 

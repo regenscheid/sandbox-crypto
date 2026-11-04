@@ -142,7 +142,10 @@ def with_cache() -> dict:
     data["network"]["sandboxes"] = [
         {
             "namespace_labels": {"kubernetes.io/metadata.name": "workloads"},
-            "pod_labels": {"role": "sandbox"},
+            "pod_labels": {
+                "openshell.ai/component": "supervisor",
+                "openshell.ai/gateway-id": "test-gateway-id",
+            },
         }
     ]
     return data
@@ -335,6 +338,27 @@ def test_default_deny_explicit_peers_and_no_wildcard_egress():
     assert "::/0" not in json.dumps(policies)
 
 
+@pytest.mark.parametrize(
+    "pod_labels",
+    [
+        {"role": "sandbox"},
+        {"openshell.ai/component": "workload", "openshell.ai/gateway-id": "test-gateway-id"},
+        {"openshell.ai/component": "supervisor"},
+    ],
+)
+def test_cache_peers_select_supervisor_pods_of_one_gateway(pod_labels):
+    # A research sandbox's traffic to the cache leaves through its supervisor Pod, so a
+    # selector for anything else admits Pods that never carry it, or every gateway's.
+    data = with_cache()
+    data["network"]["sandboxes"] = [
+        {"namespace_labels": {"kubernetes.io/metadata.name": "workloads"}, "pod_labels": pod_labels}
+    ]
+    with pytest.raises(ValidationError, match="sandbox peers select OpenShell supervisor Pods"):
+        configured(data)
+    data["network"]["sandboxes"] = [{"cidr": "192.0.2.16/32"}]
+    assert configured(data).network.sandboxes[0].cidr == "192.0.2.16/32"
+
+
 def test_optional_cache_requires_sandbox_scope_and_adds_only_cache_flow():
     data = values()
     data["secrets"]["cache"] = {"name": "test-cache"}
@@ -343,7 +367,10 @@ def test_optional_cache_requires_sandbox_scope_and_adds_only_cache_flow():
     data["network"]["sandboxes"] = [
         {
             "namespace_labels": {"kubernetes.io/metadata.name": "workloads"},
-            "pod_labels": {"role": "sandbox"},
+            "pod_labels": {
+                "openshell.ai/component": "supervisor",
+                "openshell.ai/gateway-id": "test-gateway-id",
+            },
         }
     ]
     items = objects(configured(data))

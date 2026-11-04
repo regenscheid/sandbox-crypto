@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import stat
 import sys
 import tomllib
 from pathlib import Path
@@ -403,7 +404,14 @@ class Settings(_Model):
         return int(self.listen.rpartition(":")[2])
 
     def token(self) -> str:
+        """The pool's token, from a private regular file: never through a symlink, a
+        projected key or a file group or others may read, as the TLS key (``tls.py``)."""
         try:
+            mode = self.token_file.lstat().st_mode
+            if not stat.S_ISREG(mode) or mode & 0o077:
+                raise SettingsError(
+                    f"the token file {self.token_file} must be a private regular file"
+                )
             token = self.token_file.read_text().strip()
         except OSError as exc:
             raise SettingsError(f"cannot read the token file {self.token_file}: {exc}") from exc

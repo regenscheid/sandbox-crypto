@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import configparser
 import dataclasses
+import json
 import os
 import re
 import sys
@@ -545,6 +546,40 @@ async def test_the_worker_says_which_files_it_left_alone(
     ]
 
 
+@pytest.mark.asyncio
+async def test_the_ssh_bridge_forwards_nothing_and_inherits_no_agent_or_display(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The worker user's SSH agent or X display, offered to a sandbox, would be reachable
+    # from it: ssh gets neither variable, and forwarding is off whatever the config says.
+    for name in ("SSH_AUTH_SOCK", "DISPLAY", "XAUTHORITY"):
+        monkeypatch.setenv(name, f"/worker/{name.lower()}")
+    settings = openshell_settings(tmp_path)
+    record = tmp_path / "ssh-call.json"
+    (tmp_path / "ssh").write_text(
+        f"#!/bin/sh\nexec '{sys.executable}' -I -c "
+        "'import json,os,shlex,sys; args=sys.argv[1:]; "
+        f'open("{record}","w").write(json.dumps({{"args":args,"env":sorted(os.environ)}})); '
+        'cmd=shlex.split(args[-1]); os.execvp(cmd[0],cmd)\' "$@"\n'
+    )
+    (shell,) = await with_manager(
+        tmp_path, settings, ShellRequest(operation_id="op-shell", context=CONTEXT, script="true")
+    )
+    assert shell.result is not None
+    assert shell.result.exit_code == 0
+    call = json.loads(record.read_text())
+    options = [call["args"][i + 1] for i, arg in enumerate(call["args"]) if arg == "-o"]
+    for option in (
+        "BatchMode=yes",
+        "ClearAllForwardings=yes",
+        "ForwardAgent=no",
+        "ForwardX11=no",
+        "PermitLocalCommand=no",
+    ):
+        assert option in options
+    assert not {"SSH_AUTH_SOCK", "DISPLAY", "XAUTHORITY"} & set(call["env"])
+
+
 def test_the_package_cache_setting_is_checked(tmp_path: Path) -> None:
     settings = openshell_settings(tmp_path, package_cache="http://Cache.Example:8090/")
     assert settings.package_cache == "http://cache.example:8090"
@@ -569,6 +604,7 @@ def test_the_cache_endpoint_is_the_host_and_port_clients_connect_to(
 def environment_settings(tmp_path: Path, package_cache: str) -> Path:
     """A worker settings file whose worker creates sandboxes, with the example targets."""
     (tmp_path / "worker.token").write_text("t" * 40)
+    (tmp_path / "worker.token").chmod(0o600)
     (tmp_path / "pool-ceiling.yaml").write_text(
         "apiVersion: sandbox-science/v0alpha1\nkind: PoolCeiling\n"
     )

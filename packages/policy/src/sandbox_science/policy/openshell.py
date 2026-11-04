@@ -50,7 +50,7 @@ from urllib.parse import urlsplit
 import yaml
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints
 
-from .ceiling import PoolCeiling
+from .ceiling import PoolCeiling, effective_resources
 from .classification import (
     ServerClassification,
     class_action,
@@ -79,6 +79,7 @@ from .hosts import (
     normalize_host,
     parse_ip,
 )
+from .kubernetes import COMPUTE_LIMITS, unapplied_limits
 from .loader import LoadedPolicy, parse_model, read_limited
 from .model import (
     API_VERSION,
@@ -980,6 +981,7 @@ def compile_sandbox(
     ceiling: PoolCeiling,
     floor: HardFloor = DEFAULT_FLOOR,
     admitted: Iterable[str] = (),
+    kubernetes_placement: bool = False,
 ) -> Compiled:
     """Compile a research sandbox's policy: admission endpoints plus the policy middleware.
 
@@ -987,7 +989,9 @@ def compile_sandbox(
     policy middleware for every admitted request; the middleware decides with
     this library. ``admitted`` names hosts the worker admitted on demand
     (``admission_refusal``); they are checked again and get endpoints like the
-    hosts the policy names. Raises CompileError when the result would not load.
+    hosts the policy names. ``kubernetes_placement`` says whether the pool places its
+    sandboxes with Kubernetes profiles, which decides the resource limits it applies.
+    Raises CompileError when the result would not load.
     """
     project = policy.policy
     findings: list[Finding] = []
@@ -1313,14 +1317,7 @@ def compile_sandbox(
         findings.append(
             Finding(Severity.INFO, "monitors", "evaluated from the middleware's request records")
         )
-    if project.resources.model_dump(exclude_none=True):
-        findings.append(
-            Finding(
-                Severity.INFO,
-                "resources",
-                "applied by the compute driver and the LiteLLM virtual key, not by network policy",
-            )
-        )
+    findings.extend(_resource_findings(policy, ceiling, kubernetes_placement))
     return Compiled(
         policy=OpenShellPolicy(
             filesystem_policy=_sandbox_filesystem(target.filesystem),
@@ -1339,6 +1336,41 @@ def compile_sandbox(
         suffixes=suffixes,
         admitted=tuple(entries),
     )
+
+
+_UNAPPLIED: Final = {
+    "pids": "no compute driver this worker configures sets a process limit yet",
+    "workspace_disk": (
+        "no compute driver this worker configures limits the workspace's disk yet; a "
+        "Kubernetes placement's ephemeral-storage limit is its profile's own"
+    ),
+}
+
+
+def _resource_findings(policy: LoadedPolicy, ceiling: PoolCeiling, placed: bool) -> list[Finding]:
+    """Per compute limit the project's policy sets or the ceiling caps, whether the pool
+    applies it: a Kubernetes placement applies CPU and memory as the Pod's limits;
+    nothing applies the others yet, and without a placement none is applied."""
+    resources = effective_resources(policy.policy, ceiling)[0]
+    unapplied = unapplied_limits(resources, placed=placed)
+    findings: list[Finding] = []
+    for name in COMPUTE_LIMITS:
+        if getattr(resources, name) is None:
+            continue
+        if name not in unapplied:
+            message = (
+                "applied by the pool's Kubernetes placement: the sandbox Pod's limit is at "
+                "most this, and at most its profile's"
+            )
+            findings.append(Finding(Severity.INFO, f"resources.{name}", message))
+            continue
+        reason = _UNAPPLIED.get(
+            name,
+            "this pool places its sandboxes without Kubernetes settings (the VM driver, or a "
+            "gateway's defaults), so no driver configuration carries it",
+        )
+        findings.append(Finding(Severity.WARNING, f"resources.{name}", f"not applied: {reason}"))
+    return findings
 
 
 def _sandbox_filesystem(extra: SandboxFilesystem) -> FilesystemPolicy:

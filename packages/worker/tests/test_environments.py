@@ -535,6 +535,49 @@ async def test_kubernetes_creation_pins_trusted_settings_and_resume_keeps_alloca
         restarted.close()
 
 
+@pytest.mark.parametrize("placed", [False, True], ids=["vm-driver", "kubernetes"])
+async def test_admission_warns_of_each_resource_limit_the_pool_cannot_apply(
+    setup: Setup, placed: bool, caplog: pytest.LogCaptureFixture
+) -> None:
+    # The example policy sets cpu, memory, pids and workspace_disk. Only a Kubernetes
+    # placement carries any of them to the sandbox, and then only cpu and memory.
+    if placed:
+        resources = KubernetesResources(
+            cpu_millicores=1000, memory_mib=512, ephemeral_storage_mib=256
+        )
+        placement = KubernetesProfile(
+            node_selector={"kubernetes.io/arch": "amd64"}, requests=resources, limits=resources
+        )
+        setup.environments.settings = setup.environments.settings.model_copy(
+            update={"kubernetes": {"minimal": placement}}
+        )
+    unapplied = (
+        ("pids", "workspace_disk") if placed else ("cpu", "memory", "pids", "workspace_disk")
+    )
+    with caplog.at_level(logging.WARNING, logger=environments_module.__name__):
+        info, _ = await setup.environments.create(setup.request())
+    [warning] = [record for record in caplog.records if "cannot apply" in record.getMessage()]
+    assert warning.levelno == logging.WARNING
+    assert warning.getMessage() == (
+        "environment env-1: this pool cannot apply the policy's "
+        + ", ".join(f"resources.{name}" for name in unapplied)
+    )
+    reported = {
+        finding.split(": ")[1]: finding.split(": ")[0]
+        for finding in info.findings
+        if ": resources." in finding
+    }
+    assert reported == {
+        f"resources.{name}": "warning" if name in unapplied else "info"
+        for name in ("cpu", "memory", "pids", "workspace_disk")
+    }
+    # Asking again for the environment it has admits nothing new and warns no more.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger=environments_module.__name__):
+        await setup.environments.create(setup.request())
+    assert not [record for record in caplog.records if "cannot apply" in record.getMessage()]
+
+
 @pytest.mark.parametrize("change", ["revision", "ceiling"])
 async def test_kubernetes_existing_allocation_cannot_claim_tighter_resource_caps(
     setup: Setup,
@@ -985,9 +1028,25 @@ async def test_policy_add_stores_revisions_for_environments(
     digest = re.search(r"as (sha256:[0-9a-f]{64})", output)
     assert digest is not None
     assert (tmp_path / "middleware" / "policies" / f"{digest[1][7:]}.yaml").exists()
+    # Without a Kubernetes placement, the pool applies none of the example's compute limits.
+    assert "  warning: resources.cpu: not applied: this pool places" in output
+    assert "  warning: resources.pids: not applied" in output
     broken = tmp_path / "broken.yaml"
     broken.write_text("kind: ProjectPolicy\n")
     assert main(["policy", "add", "--settings", str(settings), str(broken)]) == 1
+    capsys.readouterr()
+    sizes = "{cpu_millicores = 1000, memory_mib = 512, ephemeral_storage_mib = 256}"
+    with settings.open("a") as file:
+        file.write(
+            "\n[openshell.environments.kubernetes.minimal]\n"
+            'node_selector = {"kubernetes.io/arch" = "amd64"}\n'
+            f"requests = {sizes}\nlimits = {sizes}\n"
+        )
+    assert main(["policy", "add", "--settings", str(settings), str(EXAMPLE)]) == 0
+    output = capsys.readouterr().out
+    assert "  info: resources.cpu: applied by the pool's Kubernetes placement" in output
+    assert "  info: resources.memory: applied by the pool's Kubernetes placement" in output
+    assert "  warning: resources.workspace_disk: not applied" in output
 
 
 MISSING = "status: 'Some requested entity was not found', self: \"sandbox not found\""
@@ -3076,6 +3135,32 @@ async def test_clients_are_named_by_their_tokens_digests(
             create_app(idle_manager(tmp_path / "twin"), TOKEN, environments, (pool_twin,))
     finally:
         environments.close()
+
+
+async def test_the_pool_token_comes_only_from_a_private_regular_file(tmp_path: Path) -> None:
+    # As the TLS key: a symlink, something other than a regular file, or a file group or
+    # others may read is refused before the token is read.
+    assert main(["token", "--out", str(tmp_path / "private.token")]) == 0
+    private = tmp_path / "private.token"
+    settings = Settings.model_validate(
+        {"token_file": private, "state_dir": tmp_path / "state", "local": {}}
+    )
+    assert settings.token() == private.read_text().strip()
+    link = tmp_path / "linked.token"
+    link.symlink_to(private)
+    directory = tmp_path / "directory.token"
+    directory.mkdir(mode=0o700)
+    fifo = tmp_path / "fifo.token"
+    os.mkfifo(fifo, 0o600)
+    readable = []
+    for mode in (0o640, 0o604, 0o620):
+        path = tmp_path / f"mode-{mode:o}.token"
+        path.write_text(private.read_text())
+        path.chmod(mode)
+        readable.append(path)
+    for refused in (link, directory, fifo, *readable):
+        with pytest.raises(SettingsError, match="must be a private regular file"):
+            settings.model_copy(update={"token_file": refused}).token()
 
 
 async def test_admission_does_not_wait_for_a_change_under_way(setup: Setup) -> None:

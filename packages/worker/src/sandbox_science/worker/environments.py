@@ -84,7 +84,7 @@ from sandbox_science.policy.store import PolicyStore, StoreError
 from .checkpoint_records import HeldError, begin_start, end_start
 from .claims import EnvironmentClaims
 from .errors import WorkerError
-from .kubernetes import check_pinned_policy
+from .kubernetes import check_pinned_policy, unapplied_limits
 from .provisioner import Governing
 from .recovery_fence import check_dispatch
 from .settings import JOB_SANDBOX_LABEL, EnvironmentSettings, OpenShellBackendSettings
@@ -1081,12 +1081,9 @@ class Environments:
             policy = self._policy(request.policy)
             compiled = self._compile(policy)
             placement = self.settings.kubernetes.get(request.profile)
+            resources = effective_resources(policy.policy, self.ceiling)[0]
             try:
-                launch = (
-                    placement.driver_json(effective_resources(policy.policy, self.ceiling)[0])
-                    if placement is not None
-                    else "{}"
-                )
+                launch = placement.driver_json(resources) if placement is not None else "{}"
             except ValueError as exc:
                 raise WorkerError(ErrorKind.POLICY_DENIED, str(exc)) from exc
             providers = await self._check_providers(policy)
@@ -1119,6 +1116,12 @@ class Environments:
                 driver_config=launch,
                 require_workspace_prefix=placement.require_workspace_prefix if placement else False,
             )
+            if unapplied := unapplied_limits(resources, placed=placement is not None):
+                _log.warning(
+                    "environment %s: this pool cannot apply the policy's %s",
+                    request.environment_id,
+                    ", ".join(f"resources.{name}" for name in unapplied),
+                )
             try:
                 sandbox_id = await self._create_sandbox(info, compiled)
                 self.store.bind(sandbox_id, request.policy)
@@ -2237,6 +2240,7 @@ class Environments:
                 ceiling=self.ceiling,
                 floor=self.floor,
                 admitted=admitted,
+                kubernetes_placement=bool(self.settings.kubernetes),
             )
         except CompileError as exc:
             raise WorkerError(
