@@ -38,8 +38,11 @@ and PVC a profile names must carry the `openshell.ai/sandbox-attachable` labels
 A first UID-1000 init container mounts only that Pod's data PVC and creates the
 fixed missing state directories: `control` for the application, `worker`,
 `worker-config` and `middleware` for the pool, plus `package-cache` when enabled, and
-`runtime` for the runtime manager, so that each directory a service mounts exists, owned
-by UID 1000, before the service starts. This breaks the cold
+`runtime` for the runtime manager, so that each of these directories a service mounts
+exists, owned by UID 1000, before the service starts. A managed home/config directory a
+service's environment selects (such as the worker's `HOME`) is not among them: the kubelet
+creates it at the container's first mount of its `subPath`, owned by root with the Pod's
+`fsGroup` and the volume root's mode, so the service writes it through its group. This breaks the cold
 volume startup dependency: workspace can initialize its empty control database
 before any runtime has connected. Initialization is create-only, preserves existing
 directory modes and all content, refuses symlink/non-directory collisions and does
