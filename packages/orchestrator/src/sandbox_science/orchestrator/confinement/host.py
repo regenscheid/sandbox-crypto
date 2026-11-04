@@ -224,6 +224,12 @@ class Prepared:
         self.max_turns = given.max_turns
         """The attempt's turn limit: the admitted one, until a hook's ``turn_limit`` sets
         it; the runtime's loop state must carry it."""
+        self.answers = 0
+        """The model answers this attempt committed: what its model calls are counted by,
+        whatever turns the runtime's loop state says, which the host keeps for display."""
+        self.reported = False
+        """Whether it committed an answer at its turn limit, its report round's: after it,
+        no main or delegated model call is admitted (``spent``)."""
         self.task_pending = given.task is not None
         self.tool: ToolOutcome | None = None
         self.tool_call: ToolRequest | None = None
@@ -255,6 +261,12 @@ class Prepared:
         self._child_wait = False
         self._passive_wait: asyncio.Task[Any] | None = None
         self._close_task: asyncio.Task[None] | None = None
+
+    @property
+    def spent(self) -> bool:
+        """Whether the attempt has taken its turns and its report round, as the host counts
+        its committed answers."""
+        return self.reported and self.answers >= self.max_turns
 
     def _notified(self, notices: Sequence[Notice]) -> None:
         """The toolbox loads the tool groups the notices entering the conversation make
@@ -313,6 +325,9 @@ class Prepared:
         for name, value in state.model_dump(exclude=omitted).items():
             if name not in {"delivered", "offered", "prompt_provenance"}:
                 setattr(run, name, value)
+        # Never fewer turns than the answers committed here, which bound its model calls
+        # (``spent``); the runtime's count, a call ahead while one is made, is for display.
+        run.turns = max(run.turns, self.answers)
         if state.delivered or state.offered:
             raise TransportError("invalid_request", "historical receipts do not cross loop state")
         run.context.max_input_chars = state.max_input_chars
@@ -627,6 +642,9 @@ class Prepared:
         if consumed is not None:
             for key, ids in consumed.items():
                 self.shadow.identities(key, delivered=True).update(ids)
+        if request.kind == "assistant":
+            self.reported = self.reported or self.answers >= self.max_turns
+            self.answers += 1
         if request.kind == "assistant" and request.reply is not None:
             self.pending_calls = {call.id: call for call in request.reply.tool_calls}
         if request.usage is not None and request.usage_index == len(self.shadow.context.usage) + 1:
@@ -838,6 +856,14 @@ class HostLoops:
                         ):
                             raise TransportError(
                                 "denied", "model dispatch is outside the admitted role"
+                            )
+                        if prepared.spent:
+                            # Counted from the answers committed here, not the runtime's
+                            # turns: its limit and its report round.
+                            raise TransportError(
+                                "denied",
+                                f"the attempt has made its {prepared.max_turns:,} model "
+                                "calls and its report round",
                             )
                     elif request.alias not in self.model_roles.get(
                         request.kind, frozenset()

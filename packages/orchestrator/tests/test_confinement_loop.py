@@ -535,6 +535,37 @@ async def test_a_runtime_cannot_give_the_loops_own_notices_a_payload_of_its_own(
     assert (record.stopped, record.failure) == ("error", "harness")
 
 
+async def test_the_host_counts_a_runtimes_model_calls_itself(
+    harness: Harness, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The orchestrator audit: the host counts an attempt's model calls by the answers it
+    committed, not by the turns the runtime's loop state says. A runtime whose loop goes
+    on past its turn limit, its loop state saying the limit is the admitted one, is
+    refused its next main model call once it has made its limit's and a report round's."""
+    from sandbox_science.orchestrator.confinement import runtime_loop
+    from sandbox_science.orchestrator.loop import run_task as ran
+
+    said = runtime_loop.state
+
+    async def past_its_limit(*args: Any, **options: Any) -> Transcript:
+        return await ran(*args, **{**options, "max_turns": options["max_turns"] + 5})
+
+    def admitted(run: Transcript) -> Any:
+        return said(run).model_copy(update={"max_turns": 2})
+
+    async def no_limit(self: Any, run: RunView) -> None:
+        return None  # nor does it ask the host's hooks whether to stop
+
+    monkeypatch.setattr(runtime_loop, "run_task", past_its_limit)
+    monkeypatch.setattr(runtime_loop, "state", admitted)
+    monkeypatch.setattr(runtime_loop.RemoteHook, "turn_limit", no_limit)
+    monkeypatch.setattr(runtime_loop.RemoteHook, "halt", no_limit)
+    script = [Reply(calls=[call(f"no_tool_{n}")]) for n in range(7)]
+    (record,) = await confined(harness, tmp_path, *script, max_turns=2)
+    assert len(harness.gateway.main) == 3  # its two turns, then the report round's call
+    assert (record.stopped, record.failure) == ("error", "model")
+
+
 def test_loop_metadata_never_iterates_historical_delivery_membership() -> None:
     from sandbox_science.orchestrator.confinement.runtime_loop import state
     from sandbox_science.orchestrator.loop import Transcript

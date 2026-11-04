@@ -143,7 +143,15 @@ or one of the attempt's hooks gave the host as its last call, with at most 1,000
 characters of detail; a request to continue a cut-off answer names a bounded
 output-token count and the attempt's next continuation, of at most `CONTINUATIONS`,
 which the host counts itself; an error-streak nudge names a tool, an error kind and
-the streak's `STREAK` failed calls. Any other append of one is refused.
+the streak's `STREAK` failed calls. Any other append of one is refused. The host
+counts an attempt's model calls by the answers it committed, not by the turns the
+runtime's loop state says: once the attempt has made its turn limit's calls and its
+report round's answer is committed, a main or delegated `model_intent` is refused, and
+its hooks never see fewer turns than those answers; the runtime's own count, a call
+ahead while one is made, is kept for display. Still taken on the runtime's word: each
+model call's usage and cost as it observes them (`model_observed` and the assistant
+append), which the gateway's key and budget bound, and the outputs of the model calls
+it makes for the host, the reviewer's, the watcher's and the folds'.
 
 ## Launcher and replacement
 
