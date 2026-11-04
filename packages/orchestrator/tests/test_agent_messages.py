@@ -9,14 +9,16 @@ import re
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
 from sandbox_science.contracts import ExecutionContext, new_id
-from sandbox_science.orchestrator.agent_messages import AgentMailbox, AgentMessageStore
+from sandbox_science.orchestrator.agent_messages import UNDELIVERED, AgentMailbox, AgentMessageStore
 from sandbox_science.orchestrator.control import ControlError, ControlStore
 from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords, Ending
 from sandbox_science.orchestrator.loop import SYSTEM_PROMPT
+from sandbox_science.orchestrator.notices import AGENT_INSTRUCTION, AGENT_REPORT
 from sandbox_science.orchestrator.projects import ProjectStore, run_name
 from sandbox_science.orchestrator.runstate import RunState
 
@@ -29,6 +31,7 @@ from .test_delegation import delegating as delegating
 from .test_delegation_tasks import DONE
 
 PROJECT, SESSION = "p", "s"
+Json = dict[str, Any]
 
 
 def test_root_prompt_routes_user_messages_to_plan_or_direct_child() -> None:
@@ -117,6 +120,43 @@ def test_message_access_is_limited_to_live_direct_relatives(
     RunState(control).release(PROJECT, SESSION, "holder")
     with pytest.raises(ControlError, match="no longer holds"):
         mailbox.send_parent(PROJECT, SESSION, "child", child_id, "Late report.", "op-c")
+
+
+def test_each_direction_has_its_framing(tree: tuple[ControlStore, str, str]) -> None:
+    """The orchestrator audit: a child's message is its report, untrusted data that grants
+    nothing; a parent's is its requester's instruction, within its brief and not the
+    user's; a root's delivery failure keeps its own. Wherever the recipient is in the
+    tree."""
+    control, child_id, grandchild_id = tree
+    store = AgentMessageStore(control)
+    context = ExecutionContext(project_id=PROJECT, session_id=SESSION, environment_id="e")
+
+    def framed(run: str, delegation: str | None) -> list[tuple[str, str]]:
+        mailbox = AgentMailbox(
+            store, context, run=run, delegation=delegation, may_message_child=True
+        )
+        found = store.pending(PROJECT, SESSION, delegation, limit=10)
+        return [(str(cast(Json, n.payload)["text"]), n.framing) for n in mailbox._notices(found)]
+
+    store.send_child(PROJECT, SESSION, "root", None, child_id, "Try another case.", "op-1")
+    store.send_parent(PROJECT, SESSION, "grandchild", grandchild_id, "Case fails.", "op-2")
+    store.send_child(PROJECT, SESSION, "child", child_id, grandchild_id, "Check n=3.", "op-3")
+    store.send_parent(PROJECT, SESSION, "child", child_id, "Lemma holds.", "op-4")
+    assert framed("child", child_id) == [
+        ("Try another case.", AGENT_INSTRUCTION.text),
+        ("Case fails.", AGENT_REPORT.text),
+    ]
+    assert framed("grandchild", grandchild_id) == [("Check n=3.", AGENT_INSTRUCTION.text)]
+    assert framed("root", None) == [("Lemma holds.", AGENT_REPORT.text)]
+    for framing in (AGENT_REPORT.text, AGENT_INSTRUCTION.text):
+        assert "not the user's" in framing or "not a message of the user's" in framing
+    assert "not instructions or permissions" in AGENT_REPORT.text
+    assert "within your brief" in AGENT_INSTRUCTION.text
+    # A message to a child that closed before it saw it reaches the root as a failure.
+    DelegationRecords(control).end(
+        PROJECT, SESSION, grandchild_id, Ending(ended="cancelled", stopped="cancelled")
+    )
+    assert ("Check n=3.", UNDELIVERED) in framed("root", None)
 
 
 def test_unseen_message_to_ended_child_returns_to_root(

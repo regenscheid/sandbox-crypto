@@ -4,15 +4,17 @@
 // request's ceiling allows, and each choice sends its decision.
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import ChatPanel from '../views/ChatPanel.svelte';
 import ChatPermission from '../views/ChatPermission.svelte';
-import type { PendingApproval, RunEvent } from './api-types';
+import type { PendingApproval, PendingListing, RunEvent } from './api-types';
 import { awaitingApproval, chatEntries } from './chat';
-import { heldCall } from './conversation';
+import { heldCall, requestCall, type HeldCall } from './conversation';
 
 const mounted: ReturnType<typeof mount>[] = [];
 afterEach(() => {
   for (const component of mounted.splice(0)) unmount(component);
   document.body.innerHTML = '';
+  vi.unstubAllGlobals();
 });
 
 const request: PendingApproval = {
@@ -67,10 +69,7 @@ const network: PendingApproval = {
   scopes: ['once'],
 };
 
-function card(
-  call: { arguments: string; text: string } | null = null,
-  asked: PendingApproval = request,
-) {
+function card(call: HeldCall | null = null, asked: PendingApproval = request) {
   const sent: string[] = [];
   const target = document.createElement('div');
   document.body.append(target);
@@ -104,6 +103,7 @@ describe('a held tool call', () => {
     const { target } = card({
       arguments: '{"url": "https://www.washingtonpost.com/", "max_chars": 12000}',
       text: 'Fetching the homepage.',
+      pending: 1,
     });
     expect(target.textContent).toContain('Use web_fetch?');
     expect(target.textContent).toContain('crypto-research-mcp');
@@ -211,7 +211,7 @@ describe("research code's network request (D97)", () => {
 describe("a delegated agent's held call (D99)", () => {
   it('names the child, shows its brief and its own words, and still asks the user', () => {
     const { target } = card(
-      { arguments: '{}', text: 'The main run said this.' },
+      { arguments: '{}', text: 'The main run said this.', pending: 1 },
       {
         ...request,
         child: {
@@ -232,7 +232,7 @@ describe("a delegated agent's held call (D99)", () => {
 
   it("shows a direct-path child's brief without borrowing the main run's words", () => {
     const { target } = card(
-      { arguments: '{}', text: 'The main run said this.' },
+      { arguments: '{}', text: 'The main run said this.', pending: 1 },
       {
         ...request,
         run: 'child-run',
@@ -267,7 +267,11 @@ describe('the transcript of a held call', () => {
   ];
 
   it('finds the held call and says the run waits for the user', () => {
-    expect(heldCall(events, 'web_fetch')).toEqual({ arguments: '{"url": "a"}', text: 'Fetching.' });
+    expect(heldCall(events, 'web_fetch')).toEqual({
+      arguments: '{"url": "a"}',
+      text: 'Fetching.',
+      pending: 1,
+    });
     expect(heldCall([...events, event(3, 'tool', { call_id: 'c1' })], 'web_fetch')).toBeNull();
     expect(awaitingApproval({ run: 'r', state: 'active', events })).toBe('web_fetch');
     const ended = [...events, event(3, 'waiting', { permission_request: null })];
@@ -275,5 +279,114 @@ describe('the transcript of a held call', () => {
     expect(chatEntries(ended).map((entry) => ('text' in entry ? entry.text : ''))).toContain(
       'The wait for approval ended.',
     );
+  });
+
+  it("takes the call from the request's own run, never another run's", () => {
+    const child = [
+      event(1, 'assistant', {
+        text: 'Fetching the other page.',
+        tool_calls: [{ id: 'k1', name: 'web_fetch', arguments: '{"url": "b"}' }],
+      }),
+    ];
+    const runs = [
+      { run: 'main-1', events },
+      { run: 'child-1', events: child },
+    ];
+    expect(requestCall(runs, { ...request, run: 'main-1' })?.arguments).toBe('{"url": "a"}');
+    expect(requestCall(runs, { ...request, run: 'child-1' })?.arguments).toBe('{"url": "b"}');
+    // A run the chat does not show, or none named: no call is borrowed from another run.
+    expect(requestCall(runs, { ...request, run: 'child-2' })).toBeNull();
+    expect(requestCall(runs, { ...request, run: null })).toBeNull();
+    expect(requestCall(runs, { ...request, kind: 'network', run: 'main-1' })).toBeNull();
+  });
+
+  it('gives no arguments when more than one pending call could be the one held', () => {
+    const concurrent = [
+      event(1, 'assistant', {
+        text: 'Fetching both.',
+        tool_calls: [
+          { id: 'c1', name: 'web_fetch', arguments: '{"url": "a"}' },
+          { id: 'c2', name: 'web_fetch', arguments: '{"url": "b"}' },
+        ],
+      }),
+    ];
+    expect(heldCall(concurrent, 'web_fetch')).toEqual({
+      arguments: null,
+      text: 'Fetching both.',
+      pending: 2,
+    });
+    // One answered, the other is the one held.
+    const one = [...concurrent, event(2, 'tool', { call_id: 'c1' })];
+    expect(heldCall(one, 'web_fetch')?.arguments).toBe('{"url": "b"}');
+    // Calls of different steps: neither step's words are the card's.
+    const steps = [
+      event(1, 'assistant', {
+        text: 'First.',
+        tool_calls: [{ id: 'c1', name: 'web_fetch', arguments: '{"url": "a"}' }],
+      }),
+      event(2, 'assistant', {
+        text: 'Second.',
+        tool_calls: [{ id: 'c2', name: 'web_fetch', arguments: '{"url": "b"}' }],
+      }),
+    ];
+    expect(heldCall(steps, 'web_fetch')).toEqual({ arguments: null, text: '', pending: 2 });
+  });
+
+  it('says which call it is cannot be told, rather than show one call for another', () => {
+    const { target } = card({ arguments: null, text: '', pending: 2 });
+    expect(target.textContent).toContain('Which of 2 pending calls this is cannot be told');
+    expect(target.querySelector('pre')).toBeNull();
+    const shown = card(
+      { arguments: '{"url": "a"}', text: '', pending: 1 },
+      {
+        ...request,
+        run: 'main-1',
+      },
+    );
+    expect(shown.target.querySelector('pre')?.textContent).toContain('"url": "a"');
+  });
+});
+
+describe("the chat's permission cards", () => {
+  /** The chat panel, with the workspace answering ``listing`` for its permission requests. */
+  async function panel(listing: PendingListing) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('/permission-requests')) return new Response(JSON.stringify(listing));
+        if (url.includes('/messages'))
+          return new Response(
+            JSON.stringify({ messages: [], run: null, service: true, environment: null }),
+          );
+        if (url.includes('/questions'))
+          return new Response(JSON.stringify({ questions: [], run: null }));
+        if (url.includes('/recovery/resources'))
+          return new Response(JSON.stringify({ requests: [], next_after: null }));
+        return new Response(JSON.stringify({ state: 'active', events: [], runs: [] }));
+      }),
+    );
+    const target = document.createElement('div');
+    document.body.append(target);
+    mounted.push(
+      mount(ChatPanel, { target, props: { projectId: 'p1', sessionId: 'main', closed: false } }),
+    );
+    for (let i = 0; i < 8; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+    }
+    return target;
+  }
+
+  it('says how many more requests wait than the listing carries', async () => {
+    const target = await panel({ requests: [request], truncated: 3 });
+    expect(target.querySelectorAll('.permission')).toHaveLength(1);
+    expect(target.textContent).toContain('3 more requests not shown');
+  });
+
+  it('says nothing more when the listing carries them all', async () => {
+    const target = await panel({ requests: [request], truncated: 0 });
+    expect(target.querySelectorAll('.permission')).toHaveLength(1);
+    expect(target.textContent).not.toContain('more requests not shown');
+    expect(target.textContent).not.toContain('more request not shown');
   });
 });

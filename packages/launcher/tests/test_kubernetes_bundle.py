@@ -142,7 +142,10 @@ def with_cache() -> dict:
     data["network"]["sandboxes"] = [
         {
             "namespace_labels": {"kubernetes.io/metadata.name": "workloads"},
-            "pod_labels": {"role": "sandbox"},
+            "pod_labels": {
+                "openshell.ai/component": "supervisor",
+                "openshell.ai/gateway-id": "test-gateway-id",
+            },
         }
     ]
     return data
@@ -335,6 +338,27 @@ def test_default_deny_explicit_peers_and_no_wildcard_egress():
     assert "::/0" not in json.dumps(policies)
 
 
+@pytest.mark.parametrize(
+    "pod_labels",
+    [
+        {"role": "sandbox"},
+        {"openshell.ai/component": "workload", "openshell.ai/gateway-id": "test-gateway-id"},
+        {"openshell.ai/component": "supervisor"},
+    ],
+)
+def test_cache_peers_select_supervisor_pods_of_one_gateway(pod_labels):
+    # A research sandbox's traffic to the cache leaves through its supervisor Pod, so a
+    # selector for anything else admits Pods that never carry it, or every gateway's.
+    data = with_cache()
+    data["network"]["sandboxes"] = [
+        {"namespace_labels": {"kubernetes.io/metadata.name": "workloads"}, "pod_labels": pod_labels}
+    ]
+    with pytest.raises(ValidationError, match="sandbox peers select OpenShell supervisor Pods"):
+        configured(data)
+    data["network"]["sandboxes"] = [{"cidr": "192.0.2.16/32"}]
+    assert configured(data).network.sandboxes[0].cidr == "192.0.2.16/32"
+
+
 def test_optional_cache_requires_sandbox_scope_and_adds_only_cache_flow():
     data = values()
     data["secrets"]["cache"] = {"name": "test-cache"}
@@ -343,7 +367,10 @@ def test_optional_cache_requires_sandbox_scope_and_adds_only_cache_flow():
     data["network"]["sandboxes"] = [
         {
             "namespace_labels": {"kubernetes.io/metadata.name": "workloads"},
-            "pod_labels": {"role": "sandbox"},
+            "pod_labels": {
+                "openshell.ai/component": "supervisor",
+                "openshell.ai/gateway-id": "test-gateway-id",
+            },
         }
     ]
     items = objects(configured(data))
@@ -807,6 +834,59 @@ def test_app_containers_mount_only_their_own_state_directories():
     assert initialize["volumeMounts"] == [{"name": "data", "mountPath": "/var/lib/sandbox-science"}]
 
 
+def data_mounts(container: dict) -> list[tuple[str, str | None, bool]]:
+    return [
+        (mount["mountPath"], mount.get("subPath"), mount.get("readOnly", False))
+        for mount in container["volumeMounts"]
+        if mount["name"] == "data"
+    ]
+
+
+def test_pool_containers_mount_only_their_own_state_directories():
+    data = with_cache()
+    data["worker"] = {
+        "environment": {
+            "HOME": "/var/lib/sandbox-science/worker-home",
+            "XDG_CONFIG_HOME": "/var/lib/sandbox-science/worker-config",
+        }
+    }
+    data["middleware"] = {"environment": {"HOME": "/var/lib/sandbox-science/middleware-home"}}
+    containers = pool_containers(data)
+    root = "/var/lib/sandbox-science"
+    assert {name: data_mounts(container) for name, container in containers.items()} == {
+        # Its state, its OpenShell CLI tree (the gateway client's key) and the policy store
+        # it writes for the middleware; the selected home once, the CLI tree once.
+        "worker": [
+            (f"{root}/worker", "worker", False),
+            (f"{root}/worker-config", "worker-config", False),
+            (f"{root}/middleware", "middleware", False),
+            (f"{root}/worker-home", "worker-home", False),
+        ],
+        "middleware": [
+            (f"{root}/middleware", "middleware", False),
+            (f"{root}/middleware-home", "middleware-home", False),
+        ],
+        # Sandboxes reach the cache: it reads the worker's records, never writes them, and
+        # sees neither the CLI tree nor the middleware's stores.
+        "cache": [
+            (f"{root}/package-cache", "package-cache", False),
+            (f"{root}/worker", "worker", True),
+        ],
+    }
+    assert [data_mounts(container) for container in pool_containers().values()] == [
+        [
+            (f"{root}/worker", "worker", False),
+            (f"{root}/worker-config", "worker-config", False),
+            (f"{root}/middleware", "middleware", False),
+        ],
+        [(f"{root}/middleware", "middleware", False)],
+    ]
+    spec = pod(objects(configured(data)), "pool")
+    initialize = spec["initContainers"][0]
+    assert initialize["volumeMounts"] == [{"name": "data", "mountPath": root}]
+    assert initialize["args"][-1] == "--package-cache"
+
+
 def test_manager_port_is_reachable_only_from_the_manager_and_it_only_reaches_out():
     policies = {
         item["metadata"]["name"]: item["spec"]
@@ -1203,6 +1283,7 @@ def test_forward_auth_reaches_the_workspace_command():
         "--forward-auth-user-group": "atlas-users",
         "--forward-auth-admin-group": "atlas-admins",
         "--forward-auth-header": "X-authentik-jwt",
+        "--login-url-file": "/run/sandbox-science/workspace-login/login-url",
     }
     for flag, value in expected.items():
         assert command[command.index(flag) + 1] == value
@@ -1217,7 +1298,39 @@ def test_forward_auth_reaches_the_workspace_command():
     for off in (with_forward_auth(enabled=False), with_ingress()):
         items = objects(configured(off))
         assert not any(a.startswith("--forward-auth") for a in workspace_command(items))
+        assert "--login-url-file" not in workspace_command(items)
         assert "egress" not in named(items, "NetworkPolicy", "research-ingress")["spec"]
+
+
+def test_the_login_url_is_written_to_the_workspaces_memory_volume_not_the_pvc():
+    """With forward auth the workspace writes the operator's login URL, an admin's login,
+    to a file: on a memory volume of its own, not in the state directory on the backed-up
+    app PVC, where control could read it too."""
+    spec = pod(objects(configured(with_forward_auth())), "app")
+    volumes = {volume["name"]: volume for volume in spec["volumes"]}
+    assert volumes["workspace-login"] == {
+        "name": "workspace-login",
+        "emptyDir": {"medium": "Memory", "sizeLimit": "1Mi"},
+    }
+    mounting = {
+        container["name"]: mount
+        for container in spec["containers"] + spec["initContainers"]
+        for mount in container["volumeMounts"]
+        if mount["name"] == "workspace-login"
+    }
+    assert mounting == {
+        "workspace": {
+            "name": "workspace-login",
+            "mountPath": "/run/sandbox-science/workspace-login",
+        }
+    }
+    command = workspace_command(objects(configured(with_forward_auth())))
+    written = command[command.index("--login-url-file") + 1]
+    assert written.startswith(mounting["workspace"]["mountPath"] + "/")
+    assert not written.startswith(command[command.index("--state-dir") + 1])
+    for off in (with_forward_auth(enabled=False), with_ingress(), values()):
+        spec = pod(objects(configured(off)), "app")
+        assert "workspace-login" not in {volume["name"] for volume in spec["volumes"]}
 
 
 def test_forward_auth_adds_only_the_egress_to_authentiks_server_pods():
@@ -1839,6 +1952,17 @@ def test_worker_operation_job_runs_the_command_on_the_pool_volume_like_the_relea
     assert volumes["worker-source"]["secret"]["secretName"] == "test-worker"
     assert [init["name"] for init in pod_spec["initContainers"]] == ["copy-worker"]
     assert {"name": "SS_LOG_FORMAT", "value": "json"} in container["env"]
+
+
+def test_offline_worker_jobs_mount_the_pool_workers_directories_only():
+    data = values()
+    data["worker"] = {"environment": {"HOME": "/var/lib/sandbox-science/worker-home"}}
+    config = configured(data)
+    worker = pool_containers(data)["worker"]
+    for job in (release(config), operation(["child-environments", "list"], config)):
+        (container,) = pod_of(job)["containers"]
+        assert data_mounts(container) == data_mounts(worker)
+        assert "/var/lib/sandbox-science" not in {m["mountPath"] for m in container["volumeMounts"]}
 
 
 def test_worker_operation_job_has_the_release_jobs_hardening_and_the_workers_environment():

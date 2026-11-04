@@ -30,7 +30,9 @@ class grant never covers research code's call, nor a host grant the agent's.
 Routes:
 
 - ``GET …/sessions/{session}/permission-requests``: the requests that wait in the session,
-  with network and package requests that name no session in every session of the project.
+  with network and package requests that name no session in every session of the project,
+  and ``truncated``, how many more of the project's wait than the worker's listing carries
+  (holds first, then the others oldest first; none that timed out).
 - ``POST …/permission-requests/{seq}/answer`` with ``{"decision": "once" | "session" |
   "project" | "deny" | "clear" | "stop", "kind": "mcp" | "network" | "packages" | "hold",
   "source": "worker" | null, "hours": null | number, "session": null | id}``; ``clear``
@@ -41,7 +43,9 @@ Routes:
 
 A project grant and clearing a hold are admin-only actions (identity.py, D104): with an
 admin group configured, only its members may take them, while every user may allow once,
-for the session, deny or stop. A grant's author is the user who gave or revoked it.
+for the session, deny or stop. A grant's author is the user who gave or revoked it. The
+worker's record of an answer names no user: the workspace logs each answer and each
+revoke with the user's name, the request's number and the choice.
 
 The relay answers each new request a grant covers, and notes the grant's use. It answers
 the request itself (an MCP call with its exact arguments, so a grant never stretches to a
@@ -96,7 +100,7 @@ from sandbox_science.policy import normalize_host
 from sandbox_science.policy.approvals import offered
 
 from .context import CONTEXT, WorkspaceContext, identifier, json_answer, json_body, session_record
-from .identity import author, require_admin
+from .identity import author, log_action, require_admin
 from .requests import document_answer, dumps
 
 _log = logging.getLogger(__name__)
@@ -176,6 +180,9 @@ class PendingApproval(Contract):
 
 class PendingListing(Contract):
     requests: list[PendingApproval]
+    truncated: int = 0
+    """How many more of the project's requests wait than the worker's listing carries:
+    their cards are not shown, and they cannot be answered here until earlier ones are."""
 
 
 class Decision(Contract):
@@ -320,8 +327,15 @@ def _from_worker(found: WorkerPermissionRequest) -> PendingApproval:
 
 
 async def _worker_pending(worker: WorkerClient, project: str) -> list[PendingApproval]:
+    return (await _worker_listing(worker, project))[0]
+
+
+async def _worker_listing(worker: WorkerClient, project: str) -> tuple[list[PendingApproval], int]:
+    """The project's waiting requests the worker lists, and how many more wait."""
     listing = await worker.permission_requests(project)
-    return [_from_worker(item) for item in listing.requests[:MAX_REQUESTS]]
+    kept = listing.requests[:MAX_REQUESTS]
+    more = listing.truncated + len(listing.requests) - len(kept)
+    return [_from_worker(item) for item in kept], more
 
 
 async def session_requests(request: web.Request) -> web.Response:
@@ -330,9 +344,10 @@ async def session_requests(request: web.Request) -> web.Response:
     await asyncio.to_thread(session_record, context.projects, project, session)
     config = request.app.get(APPROVALS)
     listed: list[PendingApproval] = []
+    truncated = 0
     if config is not None and config.worker is not None:
         try:
-            found = await _worker_pending(config.worker, project)
+            found, truncated = await _worker_listing(config.worker, project)
         except WorkerAPIError:  # the CLI path remains
             _log.warning("the worker's permission requests are unavailable", exc_info=True)
             found = []
@@ -348,7 +363,7 @@ async def session_requests(request: web.Request) -> web.Response:
             for item in await _with_children(context, project, session, kept)
         ]
     shown = [_offered(item).model_dump(mode="json") for item in listed]
-    return json_answer(dumps({"requests": shown}))
+    return json_answer(dumps({"requests": shown, "truncated": truncated}))
 
 
 async def _with_children(
@@ -534,6 +549,7 @@ async def answer(request: web.Request) -> web.Response:
     except BaseException:
         config.release(project, seq)
         raise
+    _log_answer(request, project, held, decision)
     if granted:
         await asyncio.to_thread(
             ProjectGrants(context.writer).used,
@@ -568,8 +584,17 @@ async def _answer_hold(
 
         await asyncio.to_thread(stop)
     await _send(config, held, approve=decision.decision == "clear", scope="session", hours=None)
+    _log_answer(request, project, held, decision)
     result = AnswerResult(seq=held.seq, decision=decision.decision, kind="hold", source="worker")
     return json_answer(dumps(result.model_dump(mode="json")))
+
+
+def _log_answer(
+    request: web.Request, project: str, held: PendingApproval, decision: Decision
+) -> None:
+    """Log who answered the request and how: the worker's record of it names no user."""
+    action = f"answered {held.kind} permission request {held.seq} of project {project}"
+    log_action(request, f"{action}: {decision.decision}")
 
 
 async def grants(request: web.Request) -> web.Response:
@@ -588,6 +613,8 @@ async def revoke(request: web.Request) -> web.Response:
         return ProjectGrants(store).revoke(project, grant, by, clock.now())
 
     answered = await document_answer(request, write, access="write")
+    if answered.status == 200:
+        log_action(request, f"revoked grant {grant} of project {project}")
     config = request.app.get(APPROVALS)
     if answered.status != 200 or config is None or config.worker is None:
         return answered

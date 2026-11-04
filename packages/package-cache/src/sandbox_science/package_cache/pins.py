@@ -7,7 +7,8 @@ and every kept revision with its lockfile (``revision_entries``) in
 ``<worker state_dir>/worker.sqlite3``, and keeps the lockfiles themselves, by the SHA-256
 of their JSON, in ``<worker state_dir>/lockfiles/blobs/<ab>/<sha256>`` (docs/WORKER.md,
 "Package commands"). The cache runs in the worker's Pod, on the same volume (D101); it
-opens that database read-only and never writes it.
+opens that database read-only and never writes it, and the Kubernetes bundle mounts the
+worker's state directory read-only into its container.
 
 A lockfile pins while it is an environment's current or known-good revision's, and for
 ``protect_days`` after it stopped being current (when the environment's next revision was

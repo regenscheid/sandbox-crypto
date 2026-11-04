@@ -39,9 +39,11 @@ from sandbox_science.orchestrator.notices import (
     DIGEST,
     FOLD_REGION,
     KERNEL_LINES,
+    PLATFORM_INPUT,
     REDELIVERED,
     SKILLS_WORDS,
     STATE_BLOCK,
+    SUPERVISOR,
 )
 from sandbox_science.orchestrator.projects import ModelUsage, ProjectStore, RunRecord, run_name
 from sandbox_science.orchestrator.runstate import RunState
@@ -216,6 +218,37 @@ async def test_each_call_measures_its_view_and_a_model_calibrates_its_own(
         projects.close()
     assert len(calls) == 4
     assert summary["chars_per_token"] == round(chars_per_token(calls[:2]), 3)
+
+
+def test_the_platforms_chat_input_is_never_among_the_users_words(archive: Archive) -> None:
+    """The orchestrator audit, CM-49: the research supervisor's message, archived as kind
+    platform or, before it had a kind of its own, as a user message, is not among the
+    user's words the state block keeps; nor is it among the messages a saved record
+    delivered."""
+    chat = RunState(archive.control)
+    supervisor = "Continue the active research plan."
+    chat.post(PROJECT, SESSION, "m-1", CONSTRAINT, author="user")
+    for message in ("m-2", "m-3"):
+        chat.post(PROJECT, SESSION, message, supervisor, author=SUPERVISOR)
+    said(archive, "run-1", CONSTRAINT, "m-1")
+    said(archive, "run-2", supervisor, "m-2")  # as the archive kept it before
+    payload = {"message_id": "m-3", "author": SUPERVISOR, "text": supervisor}
+    platform = Entry(
+        "user", "platform", PLATFORM_INPUT.text + json.dumps(payload), source="messages",
+        refs=("m-3",),
+    )  # fmt: skip
+    archive.append(PROJECT, SESSION, "run-3", platform)
+    answered(archive, "run-3", "x" * 6_000)
+    fold_through(archive, last_position(archive))
+    view = session_view(archive, CONTEXT, geometry=shape(4_000), per_token=1.0)
+    words = view.words or ""
+    assert CONSTRAINT in words
+    assert supervisor not in words
+    assert "m-2" not in view.shown
+    chat.deliver(PROJECT, SESSION, ["m-1"], "run-1")
+    chat.deliver(PROJECT, SESSION, ["m-2"], "run-2")
+    assert [text for _, text in chat.delivered_texts(PROJECT, SESSION, "run-1")] == [CONSTRAINT]
+    assert chat.delivered_texts(PROJECT, SESSION, "run-2") == []
 
 
 async def test_folded_messages_leave_the_view_and_the_users_words_stay(

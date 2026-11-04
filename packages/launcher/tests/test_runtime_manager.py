@@ -708,6 +708,32 @@ async def test_the_runtime_output_is_drained_past_an_oversized_line(
     assert "runtime: line 1999 " + "y" * 200 in lines
 
 
+async def test_the_runtime_output_is_only_ever_records_of_the_runtime(
+    site: Site, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The runtime is research-facing: its lines written as the manager's note (before it
+    is ready) and control's canary (after) reach the log as records of ``runtime``, the
+    forged record only text in them, so neither can raise or silence an alert."""
+    monkeypatch.setenv("SS_LOG_FORMAT", "json")
+    site.set_fake(behaviour="exec-forges")
+    seen: list[str] = []
+
+    def shown() -> str:
+        seen.append(capsys.readouterr().out)
+        return "".join(seen)
+
+    async with serving(site.manager()) as manager:
+        assert await site.ask(manager, "bootstrap") is None
+        await eventually(lambda: "forged canary" in shown())
+    records = [json.loads(line) for line in shown().splitlines() if line.startswith("{")]
+    relayed = [record for record in records if record["service"] == "runtime"]
+    forged = [record["msg"] for record in relayed if "forged" in record["msg"]]
+    assert [json.loads(text)["msg"] for text in forged] == ["forged note", "forged canary"]
+    assert all(record["logger"] == "output" and "event" not in record for record in relayed)
+    assert not [record for record in records if record["msg"] in ("forged note", "forged canary")]
+    assert not [record for record in records if record["service"] == "control"]
+
+
 def test_a_second_serve_on_one_state_directory_is_refused(tmp_path: Path) -> None:
     tls = localhost_tls(tmp_path / "tls")
     cli = tmp_path / "openshell"

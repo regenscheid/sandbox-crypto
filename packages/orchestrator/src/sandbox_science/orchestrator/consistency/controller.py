@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import logging
 import re
 from collections.abc import AsyncGenerator, Collection, MutableSequence, Sequence
@@ -15,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
 from sandbox_science.contracts import ExecutionContext, new_id
 from sandbox_science.contracts.artifact_inventory import ArtifactRevisionRef
+from sandbox_science.orchestrator import jsontext
 from sandbox_science.orchestrator.aio import lease, threaded
 from sandbox_science.orchestrator.context.history import Archive, body
 from sandbox_science.orchestrator.context.history.collections import Collection as RunCollection
@@ -233,7 +233,7 @@ def source_of(
     ):
         return None
     try:
-        arguments: object = json.loads(str(raw or "{}"))
+        arguments: object = jsontext.loads(str(raw or "{}"))
     except ValueError:
         return None
     if not isinstance(arguments, dict):

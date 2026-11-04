@@ -554,6 +554,37 @@ async def test_a_server_cannot_claim_a_denial_or_a_timeout_for_another_request(
         assert record["unconfirmed_request"] == request
 
 
+async def test_a_refusal_no_check_confirms_is_worded_as_the_servers_report(
+    gateway: Gateway,
+) -> None:
+    """The orchestrator audit: OpenShell's denial body, which any server can write, says
+    only what the server reported, unconfirmed by the platform: a ``middleware_denied``
+    with a code of the server's own and a native rules' ``policy_denied`` alike. Neither
+    the model nor the user reads a server's word as the platform's policy."""
+    error, record, heard = await spoofed_call(
+        gateway, "budget_exceeded", READ_TOOL, {"query": "SNOVA"}
+    )
+    assert error == {
+        "kind": "budget_exceeded",
+        "message": "the server reported a refusal (budget_exceeded), unconfirmed by the platform",
+    }
+    assert record == {"connector": SERVER, "error": "budget_exceeded"}
+    assert heard == []
+    assert gateway.reached == [READ_TOOL]  # the server had the call
+    direct = client(gateway)
+    try:
+        with pytest.raises(ConnectorError) as raised:
+            await direct.request(
+                SERVER, "tools/call", {"name": DENIED_TOOL, "arguments": {}}, session="s-1"
+            )
+    finally:
+        await direct.close()
+    assert (raised.value.kind, raised.value.message) == (
+        "policy_denied",
+        "the server reported a refusal (policy_denied), unconfirmed by the platform",
+    )
+
+
 async def test_without_a_check_no_refusal_naming_a_request_is_trusted(gateway: Gateway) -> None:
     direct, connectors = await connectors_for(gateway, checked=False)
     try:

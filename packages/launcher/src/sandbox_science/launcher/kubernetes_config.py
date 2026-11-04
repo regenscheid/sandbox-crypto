@@ -17,6 +17,7 @@ from pydantic import (
     Field,
     StringConstraints,
     ValidationError,
+    ValidationInfo,
     field_validator,
     model_validator,
 )
@@ -299,20 +300,23 @@ class Network(Model):
     each with its own client identity (the worker creates every research sandbox), and it
     reaches the middleware: it connects to each registered middleware at startup."""
     sandboxes: Annotated[tuple[Peer, ...], Field(max_length=16)] = ()
+    """Research sandboxes reaching the package cache, whose traffic leaves through their
+    supervisor Pods as the runtime's does."""
     app_egress: Annotated[tuple[Egress, ...], Field(max_length=16)] = ()
     pool_egress: Annotated[tuple[Egress, ...], Field(max_length=16)] = ()
 
-    @field_validator("runtimes")
+    @field_validator("runtimes", "sandboxes")
     @classmethod
-    def supervisor_peers(cls, peers: tuple[Peer, ...]) -> tuple[Peer, ...]:
+    def supervisor_peers(cls, peers: tuple[Peer, ...], info: ValidationInfo) -> tuple[Peer, ...]:
         # A selector naming anything but this gateway's supervisors would admit Pods
-        # that never carry the runtime's traffic, or every gateway's supervisors.
+        # that never carry a sandbox's traffic, or every gateway's supervisors.
+        what = "runtime" if info.field_name == "runtimes" else "sandbox"
         for peer in peers:
             if peer.cidr is None and (
                 peer.pod_labels.get(SUPERVISOR[0]) != SUPERVISOR[1]
                 or not peer.pod_labels.get(GATEWAY_ID)
             ):
-                raise ValueError("runtime peers select OpenShell supervisor Pods of one gateway")
+                raise ValueError(f"{what} peers select OpenShell supervisor Pods of one gateway")
         return peers
 
 

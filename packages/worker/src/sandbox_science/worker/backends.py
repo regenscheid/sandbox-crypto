@@ -18,7 +18,7 @@ import sys
 import tempfile
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path, PurePosixPath
-from typing import Literal, Protocol, cast
+from typing import Final, Literal, Protocol, cast
 
 from sandbox_science.contracts import ErrorKind
 
@@ -73,6 +73,10 @@ SANDBOX_FILES: tuple[Path, ...] = (
 executor's directory. They use only the standard library and each other (the executor
 loads its siblings by path), plus jupyter_client and pdf_oxide where those are installed;
 test_sandbox_payload.py checks both."""
+
+_FORWARDING: Final = frozenset({"SSH_AUTH_SOCK", "DISPLAY", "XAUTHORITY"})
+"""Variables by which ``ssh`` could offer the sandbox the worker user's SSH agent or X
+display; the bridge's ``ssh`` and the CLI never inherit them."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -400,10 +404,15 @@ class OpenShellBackend:
         return sandbox
 
     def _env(self) -> dict[str, str]:
-        """The CLI's environment: the worker's, without the ``OPENSHELL_*`` variables it
-        inherited, which could point the CLI at another gateway or workspace, and with
-        those its settings give."""
-        inherited = {k: v for k, v in _child_env().items() if not k.startswith("OPENSHELL_")}
+        """The environment of the CLI and of ``ssh``: the worker's, without the
+        ``OPENSHELL_*`` variables it inherited, which could point the CLI at another gateway
+        or workspace, or those that would offer a sandbox its SSH agent or X display
+        (``_FORWARDING``), and with those its settings give."""
+        inherited = {
+            k: v
+            for k, v in _child_env().items()
+            if not k.startswith("OPENSHELL_") and k not in _FORWARDING
+        }
         return {**inherited, **self.settings.env}
 
     async def _run(self, *args: str) -> None:
@@ -589,6 +598,12 @@ class OpenShellBackend:
             "BatchMode=yes",
             "-o",
             "ClearAllForwardings=yes",
+            "-o",
+            "ForwardAgent=no",
+            "-o",
+            "ForwardX11=no",
+            "-o",
+            "PermitLocalCommand=no",
             "-o",
             "SetEnv=OPENSHELL_NO_LOGIN_SHELL=1",
             hosts[0].decode("ascii"),

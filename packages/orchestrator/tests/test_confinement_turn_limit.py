@@ -18,15 +18,21 @@ from sandbox_science.orchestrator.confinement.host import HostLoops
 from sandbox_science.orchestrator.confinement.models import CallbackModel, RuntimeModels
 from sandbox_science.orchestrator.confinement.runtime_loop import RuntimeLoops, state
 from sandbox_science.orchestrator.confinement.transport import Capability, Channel, TransportError
-from sandbox_science.orchestrator.confinement.wire import HookRequest, payload
+from sandbox_science.orchestrator.confinement.wire import (
+    FoldRequest,
+    HookRequest,
+    LogAppend,
+    WireMessage,
+    payload,
+)
 from sandbox_science.orchestrator.context.agent import AgentContext
 from sandbox_science.orchestrator.continuity.resources import ResourceRequest, ResourceRequests
 from sandbox_science.orchestrator.harness import Role
-from sandbox_science.orchestrator.hooks import RunView, TurnHook
-from sandbox_science.orchestrator.loop import Transcript
+from sandbox_science.orchestrator.hooks import Notice, RunView, TurnHook
+from sandbox_science.orchestrator.loop import REPORT_SOURCE, Transcript, notice_message
 from sandbox_science.orchestrator.model import ChatModel, ModelGateway
 from sandbox_science.orchestrator.model_profiles import ModelProfile
-from sandbox_science.orchestrator.notices import OUTCOME_REPORT
+from sandbox_science.orchestrator.notices import OUTCOME_REPORT, REPORT
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord
 from sandbox_science.orchestrator.tools import Toolbox
 
@@ -39,6 +45,7 @@ from .test_delegation import configure, wait
 from .test_delegation_tasks import DONE
 from .test_run_service import records, serving
 from .test_tool_journal import projects as projects
+from .test_tool_journal import toolbox as journal_toolbox
 
 pytestmark = pytest.mark.slow
 
@@ -204,4 +211,49 @@ async def test_the_host_holds_the_runtime_to_the_hooks_turn_limit(projects: Proj
         await prepared.call(Capability.HALT, asked(1))  # the runtime kept the old limit
     run.max_turns = 7
     assert await prepared.call(Capability.HALT, asked(1)) is None
+    await prepared.close()
+
+
+async def test_the_host_admits_a_report_round_only_at_a_limit_it_knows(
+    projects: ProjectStore,
+) -> None:
+    """The orchestrator audit: the report round's notice, one of the loop's own, names a
+    limit the loop takes one at, or one a hook of the attempt gave as its last call
+    (``last_call``), which the host heard as it answered; any other is refused."""
+
+    class Budget(TurnHook):
+        name = "budget_fixture"
+
+        async def last_call(self, run: RunView) -> str | None:
+            return "run_budget"
+
+    async def unused(arguments: object) -> object:
+        raise AssertionError("no tool runs")
+
+    prepared = prepared_attempt(projects, journal_toolbox(unused), (Budget(),))
+    attempt = prepared.given.attempt
+    run = Transcript(
+        context=AgentContext(
+            messages=[{"role": "system", "content": "system"}], max_input_chars=100000
+        ),
+        max_turns=3,
+    )
+    await prepared.call(
+        Capability.LOG_INIT, payload(FoldRequest(attempt=attempt, state=state(run)))
+    )
+
+    async def report(limit: str) -> JsonValue:
+        notice = Notice(REPORT_SOURCE, (), REPORT.text, {"limit": limit, "detail": "a limit"})
+        message = WireMessage.of(notice_message(notice))
+        appended = LogAppend(attempt=attempt, message=message, kind="notice", notice=notice)
+        return await prepared.call(Capability.LOG_APPEND, payload(appended))
+
+    with pytest.raises(TransportError, match="its limit is none the loop or the attempt's hooks"):
+        await report("run_budget")  # no hook has given it
+    asked = payload(HookRequest(attempt=attempt, slot=0, state=state(run)))
+    assert await prepared.call(Capability.LAST_CALL, asked) == "run_budget"
+    await report("run_budget")
+    with pytest.raises(TransportError, match="its limit is none the loop or the attempt's hooks"):
+        await report("planted")
+    await report("turn_limit")
     await prepared.close()

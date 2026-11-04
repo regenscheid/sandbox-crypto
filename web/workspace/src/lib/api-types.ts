@@ -2083,6 +2083,7 @@ export interface PendingApproval {
 
 export interface PendingListing {
   requests: PendingApproval[];
+  truncated: number;
 }
 
 /** A Python distribution that pip or uv installed beside the Conda packages. */

@@ -150,6 +150,7 @@ def add_policies(settings: Settings, paths: list[Path], projects: Sequence[str] 
                     environments.targets.sandbox,
                     ceiling=environments.ceiling,
                     floor=environments.floor,
+                    kubernetes_placement=bool(environments.settings.kubernetes),
                 )
             except (OSError, StoreError, CompileError) as exc:
                 print(f"error: {path}: {exc}", file=sys.stderr)

@@ -3,20 +3,24 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
+from sandbox_science.orchestrator.context.history import Archive, body
 from sandbox_science.orchestrator.continuity.auto_continuation import AutoContinuation
 from sandbox_science.orchestrator.continuity.records import WorkRecords
 from sandbox_science.orchestrator.documents import DocumentStore
+from sandbox_science.orchestrator.notices import PLATFORM_INPUT, SUPERVISOR
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.session_plans import SessionPlans
 
-from .loop_harness import Harness
+from .loop_harness import PROJECT, SESSION, Harness, Reply
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
-from .test_run_service import serving
+from .test_run_service import ended, runs, serving
 from .test_session_plans import actor, made, outcome, status, update
 from .test_tool_journal import RUN
 from .test_tool_journal import projects as projects
@@ -191,6 +195,39 @@ async def test_service_continues_without_a_local_cost_check(harness: Harness):
         messages = service.runs.messages("p", "s")
         assert len(messages) == 1
         assert messages[0].author == "research-supervisor"
+
+
+async def test_the_supervisors_message_reaches_a_run_as_the_platforms_notice(
+    harness: Harness,
+) -> None:
+    """The orchestrator audit, CM-49: the continuation the research supervisor queues is
+    the platform's chat input, not the user's. The run receives it under its own framing,
+    not as a user message; the archive keeps it as kind platform; and it is delivered as
+    a user's message is."""
+    text = "The active research plan remains open. Pursue the next justified step."
+    runs(harness).post(PROJECT, SESSION, "m-sup", text, author=SUPERVISOR)
+    async with serving(harness, Reply("Continuing.")):
+        (record,) = await ended(harness)
+    assert record.delivered["messages"] == ["m-sup"]
+    assert runs(harness).messages(PROJECT, SESSION)[0].state == "delivered"
+    (first,) = harness.gateway.main
+    (sent,) = [m for m in first if "m-sup" in str(m.get("content"))]
+    assert sent["role"] == "user"
+    content = str(sent["content"])
+    assert content.startswith("[msg-")
+    assert " · platform message]\n" in content
+    framed = body(content)
+    assert framed.startswith(PLATFORM_INPUT.text)
+    payload = json.loads(framed[len(PLATFORM_INPUT.text) :])
+    assert payload == {"message_id": "m-sup", "author": SUPERVISOR, "text": text}
+    projects = ProjectStore(harness.state)
+    try:
+        rows = Archive(projects.control).messages(PROJECT, SESSION)
+    finally:
+        projects.close()
+    (row,) = [row for row in rows if row.entry.refs == ("m-sup",)]
+    assert (row.entry.kind, row.entry.source) == ("platform", "messages")
+    assert not [row for row in rows if row.entry.kind == "user"]
 
 
 async def test_conflicting_message_id_does_not_stop_service(

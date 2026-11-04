@@ -292,13 +292,15 @@ async def test_a_refused_submission_names_what_it_leaves_out_and_stays_invalid()
     await found.observe_tool(run(), CHANGED)
     unread = {"id": "d2", "status": "produced", "entry": "T-1", "note": "x"}
     refused = await submit(found, {**PARTIAL, "extra": 1, "deliverables": [D1, unread]})
-    assert refused["error"]["problems"] == [
-        {
-            "at": "deliverables",
-            "problem": "your result does not account for d3 (Whether every value is 1)",
-        },
-        {"at": "extra", "problem": "Extra inputs are not permitted"},
+    first, *schema = refused["error"]["problems"]
+    assert first == {
+        "at": "deliverables",
+        "problem": "your result does not account for d3 (Whether every value is 1)",
+    }
+    # Then the schema's own errors, in the order pydantic reports them.
+    assert sorted(schema, key=lambda problem: problem["at"]) == [
         {"at": "deliverables[1].note", "problem": "Extra inputs are not permitted"},
+        {"at": "extra", "problem": "Extra inputs are not permitted"},
     ]
     assert (found.result, found.marked) == (None, None)
     await submit(found, {**PARTIAL, "deliverables": [D1, D2]})

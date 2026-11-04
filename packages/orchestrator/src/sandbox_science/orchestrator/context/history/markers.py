@@ -41,6 +41,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final, cast
 
+from sandbox_science.orchestrator import jsontext
 from sandbox_science.orchestrator.purpose import without
 
 from .archive import PAGE
@@ -328,7 +329,7 @@ def _succeeded(
 
 def _done(row: Archived) -> bool:
     try:
-        found: object = json.loads(row.entry.content or "")
+        found: object = jsontext.loads(row.entry.content or "")
     except ValueError:
         return False  # a result that is not the tool's JSON: not known to have succeeded
     return isinstance(found, dict) and not failed(outcome_of(cast(Json, found)))
@@ -337,7 +338,7 @@ def _done(row: Archived) -> bool:
 def _same(args: str) -> str:
     """Arguments in one form, so that the same ones written apart compare equal."""
     try:
-        return json.dumps(json.loads(args), sort_keys=True, separators=(",", ":"))
+        return json.dumps(jsontext.loads(args), sort_keys=True, separators=(",", ":"))
     except ValueError:
         return args
 

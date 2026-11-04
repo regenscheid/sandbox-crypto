@@ -29,13 +29,13 @@ shows every line of the narrative quoted, as the run's model's.
 
 from __future__ import annotations
 
-import json
 import re
 import unicodedata
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Final, cast
 
+from sandbox_science.orchestrator import jsontext
 from sandbox_science.orchestrator.aio import threaded
 from sandbox_science.orchestrator.ledger.provenance import numbers
 from sandbox_science.orchestrator.model import (
@@ -463,7 +463,7 @@ def _object(text: str) -> Json | None:
     if body.startswith("```"):
         body = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", body)
     try:
-        found: object = json.loads(body)
+        found: object = jsontext.loads(body)
     except ValueError:
         return None
     return cast(Json, found) if isinstance(found, dict) else None

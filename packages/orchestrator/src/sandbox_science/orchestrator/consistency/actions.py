@@ -18,12 +18,12 @@ context (lab 42's B5). A narrated action the list does not hold has no record (r
 
 from __future__ import annotations
 
-import json
 import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final, cast
 
+from sandbox_science.orchestrator import jsontext
 from sandbox_science.orchestrator.documents.errors import DocumentError
 from sandbox_science.orchestrator.documents.store import DocumentStore
 from sandbox_science.orchestrator.model import Message
@@ -71,7 +71,7 @@ def action_from(call: Json | None, call_id: str) -> Json | None:
     if call is None or call.get("effect") not in CHANGES:
         return None
     try:
-        arguments: object = json.loads(str(call.get("arguments") or "{}"))
+        arguments: object = jsontext.loads(str(call.get("arguments") or "{}"))
     except ValueError:
         arguments = {}
     given = cast(Json, arguments) if isinstance(arguments, dict) else {}

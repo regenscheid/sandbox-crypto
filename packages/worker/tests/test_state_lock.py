@@ -316,6 +316,7 @@ def serving(worker: list[str], tmp_path: Path) -> tuple[subprocess.Popen[bytes],
     another reason, or is not serving within 60 s, fails the test with its stderr.
     """
     (tmp_path / "worker.token").write_text(secrets.token_hex(32) + "\n")
+    (tmp_path / "worker.token").chmod(0o600)
     settings = tmp_path / "worker.toml"
     log = tmp_path / "first-serve.txt"
     code: int | None = None

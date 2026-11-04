@@ -153,6 +153,7 @@ def _served(tmp_path: Path) -> tuple[str, Callable[[str], Awaitable[subprocess.P
     """The URL of a ``sandbox-science-worker serve`` process, and how to start one."""
     port = _free_port()
     (tmp_path / "worker.token").write_text(TOKEN + "\n")
+    (tmp_path / "worker.token").chmod(0o600)
     (tmp_path / "worker.toml").write_text(
         f'listen = "127.0.0.1:{port}"\ntoken_file = "worker.token"\nstate_dir = "state"\n'
         f'pool_id = "test"\n\n[local]\npython = "{sys.executable}"\n'

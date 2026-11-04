@@ -439,6 +439,22 @@ def test_the_image_checks_client_runs_work_on_this_executor(tmp_path: Path) -> N
         client.close()
 
 
+def test_the_wheels_are_built_with_an_exactly_pinned_backend() -> None:
+    """build.sh builds the service images' wheels with ``uv build``: every package names
+    hatchling as its backend, and the workspace pins it and what it needs to one version
+    each (``build-constraint-dependencies``), so a new release cannot change the build."""
+    for folder in sorted((ROOT / "packages").iterdir()):
+        system = tomllib.loads((folder / "pyproject.toml").read_text())["build-system"]
+        assert system["build-backend"] == "hatchling.build", folder.name
+        assert [re.sub(r"[^a-z].*", "", item) for item in system["requires"]] == ["hatchling"]
+    workspace = tomllib.loads((ROOT / "pyproject.toml").read_text())["tool"]["uv"]
+    pins = dict(item.split("==") for item in workspace["build-constraint-dependencies"])
+    assert all(re.fullmatch(r"[0-9][0-9.]*", version) for version in pins.values()), pins
+    assert {"hatchling", "packaging", "pathspec", "pluggy", "tomlkit", "trove-classifiers"} <= set(
+        pins
+    )
+
+
 def test_the_service_checks_expect_each_packages_declared_license() -> None:
     """The record check compares each repository package the service images install with
     the license its ``pyproject.toml`` declares, which changed for the orchestrator."""

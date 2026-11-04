@@ -38,6 +38,7 @@ from sandbox_science.contracts.artifact_inventory import (
     artifact_path,
 )
 
+from . import jsontext
 from .artifact_publisher import ArtifactPublisher
 from .artifacts import ExecutionReplay
 from .documents.errors import DocumentError
@@ -508,7 +509,7 @@ def with_recorded(text: str, report: dict[str, Any]) -> str:
     import json
 
     try:
-        value = json.loads(text)
+        value = jsontext.loads(text)
     except ValueError:
         value = None
     if isinstance(value, dict):

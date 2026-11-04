@@ -324,6 +324,16 @@ class Verifier:
     def header(self) -> str:
         return self.settings.header
 
+    @property
+    def sign_out(self) -> str | None:
+        """Where the user signs out of Authentik: its proxy outpost's sign-out on
+        Authentik's host, the issuer's, which domain-level forward auth reaches. None when
+        the issuer is not an https URL."""
+        parts = urlsplit(self.settings.issuer)
+        if parts.scheme != "https" or not parts.hostname or "@" in parts.netloc:
+            return None
+        return f"https://{parts.netloc}/outpost.goauthentik.io/sign_out"
+
     async def verify(self, token: str) -> Claimed:
         settings = self.settings
         if not token or len(token) > MAX_TOKEN:
