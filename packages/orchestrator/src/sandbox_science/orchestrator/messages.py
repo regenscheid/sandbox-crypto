@@ -38,7 +38,9 @@ it cut, with its ``stop_reason`` null and no output count, which never came, so 
 is unknown. A part with text or a finished call stands as the answer: one the output limit
 cut off (``length``) without a call, and one that called its tools with them. Anything
 less is tried again, as a stream with no final event is. An answer may take the role's
-length, or else ``MAX_TOKENS``, but never more than the model's ``max_output_tokens``.
+length, or else ``MAX_TOKENS``, but never more than the model's ``max_output_tokens``; a
+run's own calls and its folds' are given the output reserve its ceiling leaves in the
+model's window as the role's length (``harness.output_reserve``).
 
 A turn's answer (``text``) is its text blocks, and its progress notes are ``notes``. What
 the conversation holds (``content``) is both, in order, a paragraph each, so the archive
@@ -137,7 +139,8 @@ drops it."""
 COMPACTION_BLOCK: Final = "compaction"
 MAX_TOKENS: Final = 64_000
 """An answer's length when the role sets none, thinking included: the API needs one. A
-model whose information gives a smaller ``max_output_tokens`` is asked for that."""
+model whose information gives a smaller ``max_output_tokens`` is asked for that. A run's
+calls get the reserve its ceiling leaves, at most this (``harness.output_reserve``)."""
 REPLAY_DAYS: Final = 30
 """How long a check of the gateway lets thinking replay stay on (CM-39)."""
 MIN_THINKING: Final = 256
