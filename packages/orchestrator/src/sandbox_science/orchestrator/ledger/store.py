@@ -13,6 +13,7 @@ import json
 import re
 import sqlite3
 from collections.abc import Callable
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -64,6 +65,19 @@ Json = dict[str, Any]
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+class _DryRun(Exception):  # noqa: N818 - control flow, not an error
+    """Rolls a dry run's change back once every check passed, carrying its results."""
+
+    def __init__(self, results: list[MutationResult]) -> None:
+        super().__init__("dry run")
+        self.results = results
+
+
+_TRYING: ContextVar[bool] = ContextVar("ledger_dry_run", default=False)
+"""Whether the calling context's changes are a dry run, which ``Ledger.change`` sets: a
+context's own, so that a ledger other threads share sees no other call's."""
 
 
 class Ledger:
@@ -213,7 +227,9 @@ class Ledger:
         try:
             value = CategoryDefinition.model_validate(raw)
         except ValidationError as error:
-            raise DocumentError(INVALID_REQUEST, records.validation_error(error)) from None
+            raise DocumentError(
+                INVALID_REQUEST, records.validation_error(error, CategoryDefinition)
+            ) from None
         if self._authority(project, author) == "delegated":
             raise records.refused("a delegated agent defines no frontier category")
         if author.kind != "user":
@@ -433,14 +449,29 @@ class Ledger:
                     raise DocumentError(NOT_FOUND, f"{entry.handle} has no flag {flag}")
 
     def change(
-        self, project: str, raw: object, author: Author, *, provenance: Json | None = None
+        self,
+        project: str,
+        raw: object,
+        author: Author,
+        *,
+        provenance: Json | None = None,
+        dry_run: bool = False,
     ) -> MutationResult:
-        """Apply one mutation (LG-30), or replay its first result (LG-31)."""
+        """Apply one mutation (LG-30), or replay its first result (LG-31); with
+        ``dry_run``, make it, every check included, and roll it back (LG-42): the result is
+        the one it would have, the refusal the one it would get, and nothing is recorded,
+        not even a receipt."""
         try:
             mutation = Mutation.model_validate(raw)
         except ValidationError as error:
-            raise DocumentError(INVALID_REQUEST, records.validation_error(error)) from None
-        return self.apply(project, [(mutation, provenance)], author)[0]
+            raise DocumentError(
+                INVALID_REQUEST, records.validation_error(error, Mutation)
+            ) from None
+        trying = _TRYING.set(dry_run)
+        try:
+            return self.apply(project, [(mutation, provenance)], author)[0]
+        finally:
+            _TRYING.reset(trying)
 
     def apply(
         self,
@@ -454,7 +485,8 @@ class Ledger:
         operation ID and receipt. ``provenance`` names where a mutation came from, such
         as the line of a results file (LG-41). ``within`` runs in the same change, after
         them, and refuses it all by raising: so a fold's proposal is marked accepted, or
-        nothing is written (CM-15)."""
+        nothing is written (CM-15). In a dry run (``change``'s), the change is rolled back
+        once it is made."""
         role = self._authority(project, author)
         if role != "user":
             kept: list[tuple[Mutation, Json | None]] = []
@@ -491,22 +523,28 @@ class Ledger:
                 pinned.update(self._blocks(project, blocks))
             except DocumentError as error:
                 raise preparation.labelled(error, provenance) from None
-        with self.control.write() as tx:
-            results: list[MutationResult] = []
-            for mutation, provenance in mutations:
-                try:
-                    results.append(
-                        self._apply(
-                            records.MutationInput(
-                                tx.sql, project, mutation, author, role, pinned, provenance
+        try:
+            with self.control.write() as tx:
+                results: list[MutationResult] = []
+                for mutation, provenance in mutations:
+                    try:
+                        results.append(
+                            self._apply(
+                                records.MutationInput(
+                                    tx.sql, project, mutation, author, role, pinned, provenance
+                                )
                             )
                         )
-                    )
-                except DocumentError as error:
-                    raise preparation.labelled(error, provenance) from None
-            if within is not None:
-                within(tx.sql, results)
-            return results
+                    except DocumentError as error:
+                        raise preparation.labelled(error, provenance) from None
+                if within is not None:
+                    within(tx.sql, results)
+                if _TRYING.get():
+                    # Raised inside the change, so that the store rolls all of it back.
+                    raise _DryRun(results)
+                return results
+        except _DryRun as checked:
+            return checked.results
 
     def _apply(self, inputs: records.MutationInput) -> MutationResult:
         digest = preparation.fingerprint(inputs.mutation)
