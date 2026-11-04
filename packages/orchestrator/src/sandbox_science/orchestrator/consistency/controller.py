@@ -668,8 +668,9 @@ class ReviewController:
                 and (await asyncio.to_thread(self.store.progress, *self.scope))["retry_end"]
                 is not None
             ):
-                # A limit ended it: its window waits for a later review, not this hold,
-                # which the same limit would end again.
+                # A limit ended it before it covered anything: its window waits for a
+                # later review, not this hold, which the same limit would end again. One
+                # that covered part of its window goes on: the next continues from there.
                 summary["outcome"] = ended["state"]
                 summary["pending"] = True
                 break

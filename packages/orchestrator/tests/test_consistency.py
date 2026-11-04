@@ -676,10 +676,15 @@ def test_finding_and_reported_caps_remain_capped_at_finish(store) -> None:
     reviews.finish("p", "s", review, "owner", "findings", "A finding was retained.")
     assert reviews.run("p", "s", review)["state"] == "capped"
     assert reviews.run("p", "s", review)["cap_reached"]
+    # The cap bounds what a review reports, not what its verdict covers: its window is
+    # not reviewed again (CR-19, CR-31 as amended).
+    assert reviews.progress("p", "s")["watermark"] == 1
+    assert reviews.run("p", "s", review)["coverage"]["through"] == 1
+    claim(reviews, "A later claim.", "m2")
     another = dispatch(reviews)
     reviews.finish("p", "s", another, "owner", "passed", "Bound reached.", cap_reached=True)
     assert reviews.run("p", "s", another)["state"] == "capped"
-    assert reviews.progress("p", "s")["watermark"] == 0
+    assert reviews.progress("p", "s")["watermark"] == 2
 
 
 def test_failed_and_dropped_windows_retry_without_skipping_new_work(store) -> None:

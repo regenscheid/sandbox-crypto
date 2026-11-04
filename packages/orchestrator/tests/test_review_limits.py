@@ -286,24 +286,32 @@ def deferrals(documents: Any) -> list[Any]:
 
 
 @pytest.mark.asyncio
-async def test_a_review_a_limit_ends_keeps_its_window(store) -> None:
-    """Lab 38's capped reviews took their windows as covered. A review a limit ends now
-    leaves its window to the next review, as a failed one does."""
+async def test_a_review_a_limit_ends_covers_what_it_read_and_the_next_continues(store) -> None:
+    """Lab 38's capped reviews took their windows as covered; after it, a capped review left
+    its whole window to the next, which began it again (the SNOVA run reviewed 33 windows
+    three times). A review a limit ends now covers the new items it read, up to the first
+    it did not, and the next review continues from there. What it covered without a verdict
+    is not reviewed again, and stays a gap that a later pass does not hide."""
     reviews, _, now = store
-    reviews.defaults = ReviewConfig(max_turns=3)
-    first = window(reviews, 4)
+    reviews.defaults = ReviewConfig(max_turns=2, max_feed_items=20)
+    first = window(reviews, 20)
     await ReviewerRunner(reviews, "p", "s", first, "owner", LabReviewer()).run()
-    assert reviews.run("p", "s", first)["state"] == "capped"
+    run = reviews.run("p", "s", first)
+    assert run["state"] == "capped"
+    # Its second and last call read the first 16 items; the other four did not run.
+    assert (run["coverage"]["through"], len(run["coverage"]["unreviewed"])) == (16, 4)
+    assert not run["coverage_complete"]
     progress = reviews.progress("p", "s")
-    assert (progress["watermark"], progress["retry_end"]) == (0, 4)
-    reviews.defaults = ReviewConfig()
+    assert (progress["watermark"], progress["retry_end"], progress["failures"]) == (16, None, 0)
+    assert progress["historical_holes"]
+    reviews.defaults = ReviewConfig(max_feed_items=20)
     now[0] += 200
     again = dispatch(reviews)
     run = reviews.run("p", "s", again)
-    assert (run["start_seq"], run["end_seq"]) == (1, 4)
+    assert (run["start_seq"], run["end_seq"]) == (17, 20)
     await ReviewerRunner(reviews, "p", "s", again, "owner", LabReviewer()).run()
     assert reviews.run("p", "s", again)["state"] == "passed"
-    assert reviews.progress("p", "s")["watermark"] == 4
+    assert reviews.progress("p", "s")["watermark"] == 20
 
 
 @pytest.mark.asyncio

@@ -453,10 +453,11 @@ class ReviewStore:
         with self.documents.control.read() as tx:
             db = tx.sql
             row = db.execute(
-                "SELECT watermark,retry_end FROM review_windows WHERE project=? AND session=?",
+                "SELECT watermark,retry_end,failures FROM review_windows WHERE project=? "
+                "AND session=?",
                 (project, session),
             ).fetchone()
-            watermark, retry = row if row else (0, None)
+            watermark, retry, failures = row if row else (0, None, 0)
             remaining = (
                 db.execute(
                     "SELECT 1 FROM review_feed WHERE project=? AND session=? AND seq>? LIMIT 1",
@@ -484,10 +485,21 @@ class ReviewStore:
                     (project, session),
                 ).fetchone()
                 is not None
+                # Work a review covered without a verdict: a limit ended it after it read
+                # them (CR-31 as amended). It is not reviewed again, nor passed.
+                or db.execute(
+                    "SELECT 1 FROM review_records c JOIN review_runs r USING(review_id) "
+                    "WHERE r.project=? AND r.session=? AND c.kind='coverage' "
+                    "AND json_extract(c.payload,'$.verdict')=0 "
+                    "AND json_extract(c.payload,'$.through') IS NOT NULL LIMIT 1",
+                    (project, session),
+                ).fetchone()
+                is not None
             )
         return {
             "watermark": watermark,
             "retry_end": retry,
+            "failures": failures,
             "remaining": remaining,
             "historical_holes": historical_holes,
         }
@@ -1234,6 +1246,13 @@ class ReviewStore:
                 "AND json_extract(payload,'$.decision')='rejected'",
                 (review,),
             ).fetchone()[0]
+            # What an ended author-work review covered of its window (CR-31 as amended).
+            covered = db.execute(
+                "SELECT payload FROM review_records WHERE review_id=? AND kind='coverage' "
+                "ORDER BY seq DESC LIMIT 1",
+                (review,),
+            ).fetchone()
+        found["coverage"] = json.loads(covered[0]) if covered is not None else None
         found["config"] = json.loads(found["config"])
         found["classifier"] = json.loads(found["classifier"])
         found.pop("owner", None)
@@ -1319,20 +1338,28 @@ class ReviewStore:
         *,
         cap_reached: bool = False,
         require_expired: bool = False,
-        retry: bool = False,
+        unreviewed: Sequence[str] = (),
+        exhausted: bool = False,
     ) -> None:
-        """End a review. Failed, dropped and capped windows retain their watermark.
+        """End a review. An author-work review that ends with a verdict covers its window
+        up to the first new item it names ``unreviewed``; one that ends without a verdict
+        (a limit ended it), or after it was told its budget was running out
+        (``exhausted``), covers only the new items it examined, up to the first it did
+        not (CR-31 as amended). The watermark moves to the end of what it covered, and a
+        later review continues from there; what is left stays pending and the review's
+        coverage is incomplete.
 
-        The next attempt shrinks its evidence allowance based on the failure count.
-        The remainder stays after the watermark, so a successful smaller review
-        advances coverage without treating the capped span as checked. Three failures
-        defer further attempts; they never silently certify or skip failed evidence.
+        A review that covered nothing, or failed or was dropped, keeps its window: the
+        next attempt shrinks its evidence allowance based on the failure count, and three
+        failures defer further attempts. Failure never silently certifies or skips
+        evidence.
         """
         if outcome == "running":
             raise DocumentError(INVALID_REQUEST, "a review must end with an outcome")
         # The reviewer's own summary was checked when it gave it (runner.py); the
         # platform's can quote an error, which must not keep the review from ending.
         text(summary)
+        verdict = outcome in ("passed", "findings", "inconclusive")
         with self.documents.control.write() as tx:
             db = tx.sql
             found = self.load_run(db, project, session, review)
@@ -1347,6 +1374,18 @@ class ReviewStore:
             cap_reached = cap_reached or bool(found["cap_reached"])
             if cap_reached and outcome in ("passed", "findings", "inconclusive"):
                 outcome = "capped"
+            coverage: Json | None = None
+            if found["kind"] != "confirmation" and outcome not in ("failed", "dropped"):
+                coverage = self._coverage(
+                    db,
+                    found,
+                    verdict=verdict,
+                    examined_only=not verdict or exhausted,
+                    named=unreviewed,
+                )
+                if coverage["through"] is None:
+                    # Nothing covered: no verdict on anything, whatever the reviewer said.
+                    outcome = "capped"
             db.execute(
                 (
                     "UPDATE review_runs SET "
@@ -1372,7 +1411,7 @@ class ReviewStore:
                             "confirmation_key": found["confirmation_key"],
                         },
                     )
-            elif outcome in ("failed", "dropped", "capped") or retry:
+            elif coverage is None or coverage["through"] is None:
                 window = db.execute(
                     "SELECT failures FROM review_windows WHERE project=? AND session=?",
                     (project, session),
@@ -1404,9 +1443,125 @@ class ReviewStore:
                         "watermark=max(watermark,?),retry_end=NULL,failures=0 WHERE "
                         "project=? AND session=?"
                     ),
-                    (found["end_seq"], project, session),
+                    (coverage["through"], project, session),
                 )
-            self.event(db, project, session, "review.ended", {"review": review, "outcome": outcome})
+                if coverage["through"] < found["end_seq"]:
+                    db.execute(
+                        "UPDATE review_runs SET coverage_complete=0 WHERE review_id=?", (review,)
+                    )
+            if coverage is not None:
+                db.execute(
+                    "INSERT INTO review_records(review_id,kind,payload,created) "
+                    "VALUES(?,'coverage',?,?)",
+                    (review, dump(coverage), self.clock()),
+                )
+            self.event(
+                db,
+                project,
+                session,
+                "review.ended",
+                {
+                    "review": review,
+                    "outcome": outcome,
+                    **({"covered_through": coverage["through"]} if coverage is not None else {}),
+                },
+            )
+
+    @staticmethod
+    def _window_items(db: sqlite3.Connection, run: Json) -> list[tuple[int, list[str]]]:
+        """An author-work review's new feed items: each feed position in its window and the
+        evidence IDs that copy it, in feed order. Context it carries from before the
+        watermark, findings, the plan and derived items are none of them."""
+        grouped: dict[int, list[str]] = {}
+        for evidence, seq in db.execute(
+            "SELECT e.evidence_id,f.seq FROM review_evidence e JOIN review_feed f "
+            "ON f.project=? AND f.session=? AND f.seq>=? AND f.seq<=? AND f.kind=e.kind "
+            "AND f.locator=e.locator AND f.sha256=e.sha256 WHERE e.review_id=? "
+            "ORDER BY f.seq,e.ordinal",
+            (run["project"], run["session"], run["start_seq"], run["end_seq"], run["review_id"]),
+        ):
+            grouped.setdefault(seq, []).append(evidence)
+        return sorted(grouped.items())
+
+    @staticmethod
+    def _examined(db: sqlite3.Connection, review: str) -> set[str]:
+        """The evidence the reviewer examined: what it read, and what a call of its that
+        succeeded named, a checked claim's evidence, a finding's or a decision's anchors,
+        an image it viewed or a citation's source."""
+        found = {
+            evidence
+            for (evidence,) in db.execute(
+                "SELECT evidence_id FROM review_reads WHERE review_id=?", (review,)
+            )
+        }
+        for (payload,) in db.execute(
+            "SELECT payload FROM review_records WHERE review_id=? AND kind='tool'", (review,)
+        ):
+            record = stored_json(payload)
+            result = record.get("result")
+            try:
+                arguments: object = json.loads(str(record.get("arguments") or "{}"))
+            except ValueError:
+                continue
+            if not isinstance(arguments, dict) or not isinstance(result, dict):
+                continue
+            if "error" in result:
+                continue
+            given = cast(Json, arguments)
+            named: list[object] = [given.get("source")]
+            evidence = given.get("evidence")
+            named.extend(cast(list[object], evidence) if isinstance(evidence, list) else [evidence])
+            anchors = given.get("anchors")
+            if isinstance(anchors, list):
+                named.extend(
+                    cast(Json, a).get("evidence")
+                    for a in cast(list[object], anchors)
+                    if isinstance(a, dict)
+                )
+            found.update(n for n in named if isinstance(n, str))
+        return found
+
+    def _coverage(
+        self,
+        db: sqlite3.Connection,
+        run: Json,
+        *,
+        verdict: bool,
+        examined_only: bool,
+        named: Sequence[str],
+    ) -> Json:
+        """What an ending author-work review covered: ``through``, the feed position up to
+        which it covered its window (its end when it covered every new item), or None when
+        it covered none; the new items it covered and those it left unreviewed. A new item
+        is covered when the reviewer did not name it unreviewed and, when only what it
+        examined counts, examined it (``_examined``)."""
+        items = self._window_items(db, run)
+        examined = self._examined(db, run["review_id"])
+        unnamed = set(named)
+        covered: list[str] = []
+        unreviewed: list[str] = []
+        through: int | None = None
+        for seq, copies in items:
+            if (
+                not unreviewed
+                and not unnamed & set(copies)
+                and (not examined_only or examined & set(copies))
+            ):
+                covered.extend(copies)
+                through = seq
+            else:
+                unreviewed.extend(copies)
+        if not unreviewed and (items or not examined_only or examined):
+            through = run["end_seq"]
+        return {
+            "through": through,
+            "end": run["end_seq"],
+            "verdict": verdict,
+            "examined_only": examined_only,
+            "covered": covered,
+            "unreviewed": unreviewed,
+            "named": sorted(unnamed),
+        }
 
     def _undecided(
         self,
@@ -1540,6 +1695,28 @@ class ReviewStore:
                 (estimated_tokens, review),
             )
             return cursor.lastrowid
+
+    def calls_left(
+        self, project: str, session: str, review: str, estimated_tokens: int
+    ) -> tuple[int, str]:
+        """How many more calls the review can make, the next of ``estimated_tokens``
+        included, by the tightest of its call limit, the project's hourly calls and its
+        token budget, if it has one; and which limit that is (CR-31 as amended)."""
+        found = self.run(project, session, review)
+        config = ReviewConfig.model_validate(found["config"])
+        with self.documents.control.read() as tx:
+            hourly = tx.sql.execute(
+                "SELECT count(*) FROM review_calls WHERE project=? AND created>?",
+                (project, self.clock() - 3600),
+            ).fetchone()[0]
+        left = [
+            (config.max_turns - found["calls"], "calls"),
+            (config.calls_per_hour - hourly, "calls_per_hour"),
+        ]
+        if config.token_budget is not None:
+            used = max(found["estimated_tokens"], found["input_tokens"] + found["output_tokens"])
+            left.append(((config.token_budget - used) // max(1, estimated_tokens), "tokens"))
+        return min(left)
 
     def refusal(self, project: str, session: str, review: str, estimated_tokens: int) -> str:
         """Why ``reserve_call`` refused a call of ``estimated_tokens``: the limit, with what
@@ -1705,6 +1882,11 @@ class ReviewStore:
                     (review, review, after, limit + 1),
                 )
             )
+            new: set[str] = (
+                {e for _, copies in self._window_items(db, found) for e in copies}
+                if found["kind"] != "confirmation"
+                else set()
+            )
         return {
             "review": found,
             "evidence": [
@@ -1715,6 +1897,8 @@ class ReviewStore:
                     "locator": stored_json(r[3]),
                     "sha256": r[4],
                     "complete": bool(r[5]),
+                    # The window's own evidence, which its coverage counts (CR-31 as amended).
+                    "new": r[0] in new,
                 }
                 for r in rows[:limit]
             ],
