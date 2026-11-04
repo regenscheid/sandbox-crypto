@@ -287,8 +287,9 @@ def deferrals(documents: Any) -> list[Any]:
 
 @pytest.mark.asyncio
 async def test_a_review_a_limit_ends_keeps_its_window(store) -> None:
-    """Lab 38's capped reviews took their windows as covered. A review a limit ends now
-    leaves its window to the next review, as a failed one does."""
+    """Lab 38's capped reviews took their windows as covered. A review a limit ends, with
+    no verdict on what it read, leaves its window to the next review, as a failed one
+    does (CR-34 as amended)."""
     reviews, _, now = store
     reviews.defaults = ReviewConfig(max_turns=3)
     first = window(reviews, 4)

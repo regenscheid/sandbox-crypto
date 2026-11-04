@@ -833,3 +833,4 @@ def lifecycle(answers: dict[str, Any], expected: dict[str, Any]) -> None:
                 new.pop(key, None)
     for run in answers["runs"].values():
         assert run.pop("dismissals_rejected") == 0
+        assert run.pop("coverage") is None  # what a review covered, recorded since

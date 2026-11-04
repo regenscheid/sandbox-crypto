@@ -52,7 +52,7 @@ def flat(text: str) -> str:
 
 
 def test_the_rubric_names_each_category_once_as_a_check() -> None:
-    assert RUBRIC_VERSION == "sandbox-consistency-9"
+    assert RUBRIC_VERSION == "sandbox-consistency-10"
     rubric = flat(RUBRIC)
     assert "Cryptographic claims." in rubric
     for category in CRYPTO:
