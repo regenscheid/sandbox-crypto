@@ -25,9 +25,11 @@ import pytest_asyncio
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
+from sandbox_science.contracts import ExecutionContext
 from sandbox_science.orchestrator import cli
 from sandbox_science.orchestrator.context.history import Archive, entry_of
 from sandbox_science.orchestrator.hooks import Appended
+from sandbox_science.orchestrator.loop import run_task
 from sandbox_science.orchestrator.messages import (
     _TOOL_CHANGES,
     _UPDATES,
@@ -41,6 +43,7 @@ from sandbox_science.orchestrator.messages import (
     ThinkingReplay,
     _decide,
     _efforts,
+    failed,
 )
 from sandbox_science.orchestrator.model import (
     AssistantMessage,
@@ -58,6 +61,8 @@ from sandbox_science.orchestrator.model_profiles import ModelProfile
 from sandbox_science.orchestrator.pairing import ABORTED
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.responses import ResponsesModel
+from sandbox_science.orchestrator.tools import Toolbox
+from sandbox_science.orchestrator.worker_client import WorkerClient
 
 from .loop_harness import API_KEY, GATEWAY_VERSION, PROJECT, SESSION, Harness, call
 from .loop_harness import Reply as Scripted
@@ -233,6 +238,12 @@ class Fake:
     def refused(self, body: Json, betas: set[str]) -> str | None:
         """Why Anthropic's API would refuse the request, if it would."""
         thinking = body.get("thinking", {})
+        choice = body.get("tool_choice")
+        if choice is not None and "tools" not in body:
+            return "tool_choice: tool_choice may only be specified while providing tools"
+        if thinking and isinstance(choice, dict) and choice.get("type") in ("any", "tool"):
+            # Only auto and none take thinking (Anthropic's extended thinking with tools).
+            return "Thinking may not be enabled when tool_choice forces tool use."
         if thinking.get("display") == "updates" and UPDATES_BETA not in betas:
             return self.undisplayed
         if "block_binding" in thinking and BINDING_BETA not in betas:
@@ -1343,3 +1354,64 @@ async def test_working_projection_preserves_signed_thinking_and_calibration(fake
     assert fake.bodies[-2] == fake.bodies[-1]
     assert thoughts(fake.bodies[-1])
     assert original.native == full_native
+
+
+# --- Failed results and the report round ---------------------------------------------
+
+FAILURE = '{"error":{"kind":"invalid_request","message":"there is no tool named \'nope\'"}}'
+
+
+def test_a_failed_calls_result_is_told_from_one_that_ran() -> None:
+    """The error every tool reports when a call fails, however the platform carried it,
+    is a failure; an execution whose code raised, and any other text, is not."""
+    header = '[msg-0123456789abcdef · tool result · shell · purpose: "Count lines."]\n'
+    riding = json.dumps({"tool_result": FAILURE, "job_notices": [{"job": "j1"}]})
+    noticed = json.dumps({**json.loads(FAILURE), "platform_notices": ["doc changed"]})
+    ledger = json.dumps({"error": {"kind": "conflict", "message": "stale", "current": 3}})
+    for text in (FAILURE, header + FAILURE, riding, header + riding, noticed, ledger, ABORTED):
+        assert failed(text), text
+    raised = json.dumps({"state": "failed", "error": {"kind": "exception", "message": "1/0"}})
+    for text in (raised, '{"ran": true}', "plain text", "[1, 2]", header + "ok", ""):
+        assert not failed(text), text
+    assert not failed(json.dumps({"tool_result": "plain text", "job_notices": []}))
+
+
+async def test_a_failed_calls_result_is_sent_marked_as_an_error(fake: Fake) -> None:
+    model = claude(fake)
+    try:
+        messages, turns = await converse(model, [LOOKING], fake)
+        first, second = turns[0].tool_calls
+        messages[-2:] = [tool(first.id, FAILURE), tool(second.id, "x holds 42 lines")]
+        fake.then(DONE)
+        await model.complete(messages, TOOLS)
+    finally:
+        await model.close()
+    results = [b for m in fake.bodies[-1]["messages"] for b in m["content"]
+               if b["type"] == "tool_result"]  # fmt: skip
+    assert [result.get("is_error") for result in results] == [True, None]
+
+
+async def test_the_report_rounds_call_takes_thinking_and_no_tool_choice_but_none(
+    fake: Fake,
+) -> None:
+    """RS-6f: the report round's request keeps the tools, and adaptive thinking, with
+    ``tool_choice: none``, which Anthropic's API takes with thinking as it takes ``auto``
+    (LiteLLM 1.102.1 passes it on unchanged; only ``any`` and ``tool`` are refused)."""
+    fake.then(Reply(calls=[("nope", {})]), Reply(text="So far: one lead."))
+    model = claude(fake)
+    context = ExecutionContext(project_id="p", session_id="s", environment_id="env")
+    try:
+        transcript = await run_task(
+            model, Toolbox(cast(WorkerClient, object()), context), "go", run_id="r", max_turns=1
+        )
+    finally:
+        await model.close()
+    assert (transcript.stopped, transcript.final_text) == ("turn_limit", "So far: one lead.")
+    working, report = fake.bodies
+    assert "tool_choice" not in working
+    assert report["tool_choice"] == {"type": "none"}
+    assert report["thinking"]["type"] == "adaptive"
+    assert [t["name"] for t in report["tools"]] == [t["name"] for t in working["tools"]]
+    # The failed call's result went back marked as an error.
+    (result,) = [b for b in report["messages"][-1]["content"] if b["type"] == "tool_result"]
+    assert result["is_error"] is True

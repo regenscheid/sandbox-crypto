@@ -314,6 +314,9 @@ class Reply:
     compact: str | None = None
     """Through ``/messages``: the API compacts the request first, with this summary, which
     the request's compaction edit must allow (CM-38b)."""
+    finish: str | None = None
+    """Through chat completions: the answer's ``finish_reason``, as ``length`` for one the
+    output limit cut off; ``stop`` by default."""
 
 
 AREA: Final = "@AREA@"
@@ -654,7 +657,7 @@ class Gateway:
         return web.json_response(
             {
                 "model": f"scripted-{alias}",
-                "choices": [{"message": message, "finish_reason": "stop"}],
+                "choices": [{"message": message, "finish_reason": reply.finish or "stop"}],
                 "usage": {
                     "prompt_tokens": (
                         reply.tokens

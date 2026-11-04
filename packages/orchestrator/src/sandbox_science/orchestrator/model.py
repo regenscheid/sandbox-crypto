@@ -134,6 +134,24 @@ class ModelTurn:
     ``model``, ``alias``, the tokens and the rest are the answering call's."""
 
 
+LENGTH: Final = "length"
+"""The finish reason of an answer the output limit cut off, as every adapter names it:
+chat completions' own, Claude's ``max_tokens`` (and ``model_context_window_exceeded``),
+and a response incomplete for its ``max_output_tokens``."""
+_WHOLE_CALLS: Final = frozenset({"responses"})
+"""The native formats whose adapter keeps only an answer's completed calls: a call the
+limit cut off is left out of the turn (``responses.py``)."""
+
+
+def cut_call(turn: ModelTurn) -> ToolCall | None:
+    """The call the output limit may have cut off in ``turn``: the last of an answer that
+    stopped at its length, whose arguments may be incomplete, unless its adapter keeps
+    only completed calls; ``None`` for any other answer."""
+    if turn.finish_reason != LENGTH or not turn.tool_calls or turn.native_format in _WHOLE_CALLS:
+        return None
+    return turn.tool_calls[-1]
+
+
 COST_HEADER: Final = "x-litellm-response-cost"
 """The header in which LiteLLM's proxy reports a call's cost."""
 VERSION_HEADER: Final = "x-litellm-version"
@@ -197,12 +215,21 @@ class AssistantMessage(dict[str, Any]):
 
     @classmethod
     def of(cls, reply: ModelTurn) -> AssistantMessage:
-        """A turn's answer, its calls in the chat format."""
+        """A turn's answer, its calls in the chat format. A call the output limit cut off
+        (``cut_call``) whose arguments are not a JSON object is held with none (``{}``):
+        an API that reads a call's arguments, as the gateway does to send it on to
+        another provider, would refuse every later request with it."""
+        cut = cut_call(reply)
         calls = [
             {
                 "id": call.id,
                 "type": "function",
-                "function": {"name": call.name, "arguments": call.arguments},
+                "function": {
+                    "name": call.name,
+                    "arguments": "{}"
+                    if call is cut and not _json_object(call.arguments)
+                    else call.arguments,
+                },
             }
             for call in reply.tool_calls
         ]
@@ -236,6 +263,13 @@ class AssistantMessage(dict[str, Any]):
             prefix=self.prefix,
             adapter_state=self.adapter_state,
         )
+
+
+def _json_object(text: str) -> bool:
+    try:
+        return isinstance(json.loads(text), dict)
+    except (ValueError, RecursionError):
+        return False
 
 
 def prefix_digest(parts: Mapping[str, object]) -> str:
@@ -411,7 +445,14 @@ OVERLOADED: Final = frozenset({"overloaded", "overloaded_error", "server_error"}
 Anthropic's ``overloaded_error``, and OpenAI's ``server_error`` with which a response
 fails ("Our servers are currently overloaded", lab 43, B3)."""
 MAX_RETRY_WAIT: Final = 60.0
-"""The longest wait before a retry, whatever the gateway's ``Retry-After`` asks."""
+"""The longest wait before a retry, whatever the gateway's ``Retry-After`` asks, but a
+rate limit's or an overloaded upstream's (``MAX_RATE_WAIT``)."""
+RATE_LIMITED: Final = frozenset({429, 529})
+"""The statuses of a gateway that asks the client to slow down: a rate limit, and
+Anthropic's overloaded upstream."""
+MAX_RATE_WAIT: Final = 300.0
+"""The longest ``Retry-After`` that a rate limit or an overloaded upstream
+(``RATE_LIMITED``) is waited for; a longer ask fails the call at once."""
 REQUEST_BYTES_PER_SECOND: Final = 5_000
 """How much of a request the client allows a second of its timeout for, beyond the
 timeout itself: a conversation of 450,000 tokens (about 1.8 MB) gets 360 s more, since
@@ -427,18 +468,19 @@ class GatewayModel(ABC):
     another address), and any other status but 2xx are errors. A gateway that refuses
     the call because a spending budget is exhausted raises ``GatewayBudgetError``, never
     tried again, whatever its status. A rate limit (429) or an unavailable upstream (502,
-    503, 504, or Cloudflare's 524) is tried again up to ``retries`` times, after
-    ``Retry-After`` or ``backoff`` seconds doubling each time, at most a minute, and so
-    is another 5xx, or an answer whose response failed (``OverloadedError``), that says
-    the upstream is overloaded; the body of such an error need not be JSON. So are a lost
-    connection and an answer cut off before its end, a truncated body or a stream with no
-    final event, whose charge is unknown; an error answer cut off is not, since it may
-    hide a budget refusal. Only the
-    HTTP call is tried again, before anything of it is recorded: the turn that results
-    names the attempts that failed (``retried``). The client's ``timeout`` is for a
-    request of any size; a larger one is allowed more (``REQUEST_BYTES_PER_SECOND``). A
-    gateway that says the conversation exceeds the model's context raises
-    ``ContextLimitError``. An error's message quotes
+    503, 504, 529, or Cloudflare's 524) is tried again up to ``retries`` times, after
+    ``Retry-After`` or ``backoff`` seconds doubling each time, and so is another 5xx, or
+    an answer whose response failed (``OverloadedError``), that says the upstream is
+    overloaded; the body of such an error need not be JSON. So are a lost connection and
+    an answer cut off before its end, a truncated body or a stream with no final event,
+    whose charge is unknown; an error answer cut off is not, since it may hide a budget
+    refusal. The backoff is at most a minute, and so is a ``Retry-After`` waited for, but
+    a rate limit's or a 529's, which is waited for up to ``MAX_RATE_WAIT``: a longer ask
+    fails the call at once. Only the HTTP call is tried again, before anything of it is
+    recorded: the turn that results names the attempts that failed (``retried``). The
+    client's ``timeout`` is for a request of any size; a larger one is allowed more
+    (``REQUEST_BYTES_PER_SECOND``). A gateway that says the conversation exceeds the
+    model's context raises ``ContextLimitError``. An error's message quotes
     the gateway's answer, with the key replaced if the answer holds it. Each turn keeps
     the answer as the gateway sent it (``native``, in ``FORMAT``), the gateway's version,
     the alias, and the digest of the request's ``PREFIX`` fields; its cost is
@@ -670,10 +712,6 @@ class GatewayModel(ABC):
                     retried=tuple(retried),
                 )
             except _RetryableError as retry:
-                # A gateway that asks for a longer wait than the cap is not waited for.
-                if attempt == self._retries or (retry.after or 0) > MAX_RETRY_WAIT:
-                    raise retry.error from None
-                delay = retry.after if retry.after is not None else min(wait, MAX_RETRY_WAIT)
                 # The status only: the error, with the gateway's text, is the caller's to
                 # report once if the retries end.
                 failed = retry.outcome or (
@@ -681,11 +719,26 @@ class GatewayModel(ABC):
                     if retry.error.status is None
                     else f"HTTP {retry.error.status}"
                 )
+                said = f"a {failed}" if retry.error.status is None else failed
+                # A gateway that asks for a longer wait than the cap is not waited for.
+                cap = MAX_RATE_WAIT if retry.error.status in RATE_LIMITED else MAX_RETRY_WAIT
+                if attempt == self._retries or (retry.after or 0) > cap:
+                    if attempt < self._retries:
+                        _log.warning(
+                            "the model gateway answered %s and asks for a wait of %.0f s, "
+                            "longer than %.0f s; the call fails",
+                            said,
+                            retry.after,
+                            cap,
+                        )
+                    raise retry.error from None
+                delay = retry.after if retry.after is not None else min(wait, MAX_RETRY_WAIT)
                 retried.append(failed)
                 _log.warning(
-                    "the model gateway answered %s; trying again in %.1f s",
-                    f"a {failed}" if retry.error.status is None else failed,
+                    "the model gateway answered %s; trying again in %.1f s%s",
+                    said,
                     delay,
+                    ", as its Retry-After asks" if retry.after is not None else "",
                 )
                 await self._clock.sleep(delay)
                 wait *= 2

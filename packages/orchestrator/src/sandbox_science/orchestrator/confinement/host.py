@@ -40,6 +40,7 @@ from sandbox_science.orchestrator.hooks import (
 from sandbox_science.orchestrator.images import IMAGE
 from sandbox_science.orchestrator.kernel_check import KernelCheck
 from sandbox_science.orchestrator.loop import (
+    LOOP_NOTICES,
     Transcript,
     attach_notices,
     not_run,
@@ -48,7 +49,7 @@ from sandbox_science.orchestrator.loop import (
 from sandbox_science.orchestrator.mcp_direct import HeldCall, RequestCheck, parameters_digest
 from sandbox_science.orchestrator.model import AssistantMessage, ChatModel, ToolCall
 from sandbox_science.orchestrator.model_profiles import PROFILES, ModelProfile, ModelRole, profiles
-from sandbox_science.orchestrator.notices import DELEGATIONS, REPORT
+from sandbox_science.orchestrator.notices import DELEGATIONS
 from sandbox_science.orchestrator.plan_tools import Plans
 from sandbox_science.orchestrator.purpose import without
 from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome, operation_id
@@ -409,12 +410,10 @@ class Prepared:
                 raise TransportError("invalid_request", "notice body is absent")
             if notice in self.notices:
                 self.notices.remove(notice)
-            elif (
-                notice.source != "report"
-                or notice.ids
-                or notice.user
-                or notice.framing != REPORT.text
-            ):
+            elif LOOP_NOTICES.get(notice.source) != notice.framing or notice.ids or notice.user:
+                # Only the loop's own notices, each with its fixed framing, come from the
+                # runtime itself: its report round, its request to continue an answer the
+                # output limit cut off, and its error-streak nudge.
                 raise TransportError("denied", "notice was not returned by trusted capabilities")
             source = notice_message(notice)
             for known, token in tuple(self.images):
