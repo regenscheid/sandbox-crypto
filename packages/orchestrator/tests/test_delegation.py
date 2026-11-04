@@ -135,10 +135,16 @@ _RESOURCE = re.compile(r"resource-[0-9a-f]{24}")
 
 
 def decide(action: str = "stop", reason: str = "Report what you found.") -> Reply:
-    """A call that answers the latest child check-in the run was shown (D102)."""
+    """A call that answers the latest child check-in the run was shown that waits for it
+    (D102): not a first check-in at a soft cap, which only reports progress."""
 
     def calls(messages: list[Message]) -> list[tuple[str, dict[str, Any]]]:
-        found = [found for message in messages for found in _RESOURCE.findall(str(message))]
+        found = [
+            found
+            for message in messages
+            if "so nothing waits for you" not in str(message)  # a progress notice
+            for found in _RESOURCE.findall(str(message))
+        ]
         return [call("resource_decide", request_id=found[-1], action=action, reason=reason)]
 
     return Reply(calls_from=calls)
