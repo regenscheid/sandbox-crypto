@@ -5,12 +5,13 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 import logging
 import secrets
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from dataclasses import replace
-from typing import Any, cast
+from typing import Any, Final, cast
 
 from pydantic import JsonValue, TypeAdapter
 
@@ -96,6 +97,33 @@ _log = logging.getLogger(__name__)
 RELAY_SECONDS = 1800.0
 """How long the host waits for the runtime's answer to one relayed MCP request: a call's
 own bound (``CALL_SECONDS``) and the publication of its binary results."""
+RUNTIME_SUMMARIES: Final = frozenset(
+    {"length", "empty_answers", "runaway", "model_fallback", "failure", "refusal", "budget",
+     "memory"}
+)  # fmt: skip
+"""The run summaries a confined runtime's loop writes that its host does not: the answers
+the output limit cut off and the empty ones asked for again, the runaway guard, the model
+fallback, the loop's failure, a model's refusal, the gateway's budget refusal and the
+working memory's limit. Every other summary of a confined run is the host's."""
+MAX_RUNTIME_SUMMARIES: Final = 1024 * 1024
+"""The most the runtime's summaries may take, as compact JSON: a run's record keeps them,
+and a record past what a run's preparation reads (``projects.RUN_READ_BYTES``) would
+stop every later run of its session."""
+
+
+def runtime_summaries(summaries: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
+    """What a confined run's record takes of its runtime's summaries: the keys of
+    ``RUNTIME_SUMMARIES`` alone, refused past ``MAX_RUNTIME_SUMMARIES``, before the record
+    is saved."""
+    kept = {key: value for key, value in summaries.items() if key in RUNTIME_SUMMARIES}
+    size = len(json.dumps(kept, ensure_ascii=False, separators=(",", ":")).encode())
+    if size > MAX_RUNTIME_SUMMARIES:
+        raise TransportError(
+            "invalid_request",
+            f"the runtime's run summaries take {size:,} bytes, past the "
+            f"{MAX_RUNTIME_SUMMARIES:,} a run's record keeps of them",
+        )
+    return kept
 
 
 def remote_outcome(outcome: ToolOutcome) -> ToolOutcome:
@@ -946,10 +974,13 @@ class HostLoops:
             if result.state is None:
                 raise TransportError("conflict", "runtime returned no terminal receipt")
             run = prepared.sync(result.state)
-            run.summaries.update(result.summaries)
+            # Only what the runtime's loop alone knows; the host's values stand for the rest.
+            run.summaries.update(runtime_summaries(result.summaries))
             if toolbox.tool_mix is not None:
                 # The calls ran here, through this toolbox: its counts are the run's.
                 run.summaries["tool_mix"] = toolbox.tool_mix.summary()
+            if toolbox.image_offer is not None:
+                run.summaries["view_image"] = toolbox.image_offer
             # And it loaded the run's tool groups.
             record_groups(toolbox, run)
             for hook in hooks:

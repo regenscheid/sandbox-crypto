@@ -127,6 +127,16 @@ support bounded status polling. Cancellation closes the runtime's active call;
 the authoritative service continues to own already-admitted effects until their
 outcome is reconciled.
 
+*Amended 2026-11-04 after the orchestrator audit; built 2026-11-04:* the host takes
+the runtime's word only where it cannot know better. Of a run's summaries it takes
+from the runtime's terminal receipt only those the runtime's loop writes and the host
+does not (`RUNTIME_SUMMARIES`: the answers the output limit cut off, the empty answers
+asked for again, the runaway guard, the model fallback, the loop's failure, a model's
+refusal, the gateway's budget refusal and the working memory's limit), and at most
+1 MiB of them as JSON: past that the receipt is refused before the run's record is
+saved, since a record past what a run's preparation reads would stop every later run
+of its session. Every other summary of a confined run is the host's.
+
 ## Launcher and replacement
 
 The launcher starts the worker and control service first. It compiles the sandbox
