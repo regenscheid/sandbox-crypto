@@ -324,7 +324,9 @@ def check(
                 f"{where} is user_quoted: it anchors on a message the user wrote (a chat "
                 "message, a run's task from the user's messages, or a comment's request), "
                 f"with a quote of at least {MIN_QUOTE} characters of it (or all of a shorter "
-                f"one), word for word, and every quote it has is one{which}"
+                f"one), word for word, and every quote it has is one{which}: give "
+                '{"message": "msg-…", "quote": "<words of the user, copied>"}, or record it '
+                "as interpreted"
             )
     else:
         for anchor in quoted:
@@ -340,7 +342,9 @@ def check(
     if not seen:
         raise refused(
             f"{where} is observed: it anchors on a tool result (or a range of its output), "
-            "an artifact revision, or holds evidence pinned to an artifact or a quote"
+            "an artifact revision, or holds evidence pinned to an artifact or a quote: give "
+            'anchors such as [{"call": "<call ID>"}] or [{"artifact": "artifact-…", '
+            '"revision": 1}], or record it as interpreted'
         )
     for text in texts:
         left = unread(text)
@@ -356,7 +360,11 @@ def check(
         raise refused(
             f"{where} is observed, but {', '.join(missing[:5])} "
             f"{'is' if len(missing) == 1 else 'are'} in none of its observations: copy "
-            "numbers from what was observed, or record it as interpreted"
+            "numbers from what was observed, or record it as interpreted. Every number it "
+            "holds appears in a tool result or artifact it anchors on, or an artifact or "
+            "quote its evidence pins: write each as that shows it, anchor the result that "
+            'shows it as well ({"call": "<call ID>"}), or give "basis": "interpreted" for a '
+            "number you derived"
         )
 
 

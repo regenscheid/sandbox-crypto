@@ -81,36 +81,93 @@ LINKS: Final[dict[str, tuple[tuple[str, ...], tuple[str, ...]]]] = {
 }
 """Which entries hold each kind of link, and what it points to (LG-5)."""
 
+_CITE: Final = (
+    'to cite a reference, remove the link and give the claim or result evidence {"role": '
+    '"supports", "type": "source_claim", "entry": "{handle}"} (LG-8)'
+)
 _LINK_ADVICE: Final[dict[tuple[str, str], str]] = {
     ("assumes", "claim"): "to rest on another claim, link it with builds_on",
     ("assumes", "result"): "to rest on another result, link it with builds_on",
-    ("builds_on", "reference"): (
-        "to cite a reference, give the claim or result supports evidence of type "
-        "source_claim that names it (LG-8)"
-    ),
+    ("builds_on", "reference"): _CITE,
     ("builds_on", "assumption"): "to rely on an assumption, link it with assumes",
-    ("restates", "reference"): (
-        "to cite a reference, give the claim or result supports evidence of type "
-        "source_claim that names it (LG-8)"
+    ("builds_on", "decision"): (
+        "remove the link: a decision names the entries it decides with affects links of "
+        "its own, and a claim or result builds on claims and results"
     ),
+    ("restates", "reference"): _CITE,
 }
+"""What to do instead, for a kind of link to a target of a type it does not take."""
+
+_HOLDER_ADVICE: Final[dict[tuple[str, str | None], str]] = {
+    ("affects", None): (
+        "a decision affects the entries it decides; to say what an entry is about, "
+        "record an issue that concerns it"
+    ),
+    ("builds_on", "decision"): (
+        "a decision cites what it rests on as evidence, such as "
+        '{"role": "supports", "type": "exact_computation", "entry": "C-4"}, and names '
+        "what would reopen it with reopen_on links"
+    ),
+    ("reopen_on", None): "only a decision has a reopen condition, which its reopen_on links watch",
+    ("concerns", None): "an issue concerns what it is about",
+}
+"""What to do instead, for a kind of link an entry of a type holds (``None``: any type)
+that does not hold it."""
 
 
-def _a(noun: str) -> str:
+def a(noun: str) -> str:
+    """``noun`` with its indefinite article."""
     return f"{'an' if noun[0] in 'aeiou' else 'a'} {noun}"
+
+
+def _either(nouns: list[str]) -> str:
+    return ", ".join(nouns[:-1]) + (" or " if len(nouns) > 1 else "") + nouns[-1]
+
+
+def held_kinds(holder: str) -> list[str]:
+    """The kinds of link an entry of type ``holder`` holds (LG-5)."""
+    return [kind for kind, (holders, _) in LINKS.items() if holder in holders]
+
+
+def wrong_link_holder(kind: str, holder: str) -> str:
+    """Why an entry of type ``holder`` holds no ``kind`` link, which types do, and the
+    kinds it holds (LG-5)."""
+    holders = _either([a(t) for t in LINKS[kind][0]])
+    held = held_kinds(holder)
+    holds = f"{a(holder)} holds " + (
+        _either(held) + " links" if held else "no links: leave out links"
+    )
+    advice = _HOLDER_ADVICE.get((kind, holder)) or _HOLDER_ADVICE.get((kind, None))
+    return f"{a(holder)} holds no {kind} link: remove it ({holders} holds one; {holds})" + (
+        f"; {advice}" if advice else ""
+    )
 
 
 def wrong_link_target(kind: str, holder: str, handle: str, target: str) -> str:
     """Why a ``kind`` link from a ``holder`` entry cannot point to ``handle``, a ``target``
     entry, and what it may point to (LG-5). The type decides it, never the target's
     status or how the target was named."""
-    names = [_a(t) for t in LINKS[kind][1] if t not in ("finding", "block")]
-    names += [_a(t) for t in ("review finding", "document block") if t.split()[1] in LINKS[kind][1]]
-    allowed = ", ".join(names[:-1]) + (" or " if len(names) > 1 else "") + names[-1]
+    names = [a(t) for t in LINKS[kind][1] if t not in ("finding", "block")]
+    names += [a(t) for t in ("review finding", "document block") if t.split()[1] in LINKS[kind][1]]
     advice = _LINK_ADVICE.get((kind, target))
-    return (
-        f"{_a(kind + ' link')} cannot point to {handle}, {_a(target)}: it points to {allowed}"
-        + (f" ({advice})" if advice else "")
+    return f"{a(kind + ' link')} cannot point to {handle}, {a(target)}: it points to " + (
+        _either(names) + (f" ({advice.replace('{handle}', handle)})" if advice else "")
+    )
+
+
+def link_table() -> str:
+    """Which entries hold each kind of link and what it points to, as the change tool
+    says it (LG-5)."""
+
+    def types(names: tuple[str, ...]) -> str:
+        shown = {"finding": "review finding", "block": "document block"}
+        if not set(PREFIXES) <= set(names):
+            return "/".join(names)
+        return "/".join(["any entry", *(shown[t] for t in names if t in shown)])
+
+    return "; ".join(
+        f"{kind}: {types(holders)} to {types(targets)}"
+        for kind, (holders, targets) in LINKS.items()
     )
 
 
@@ -187,11 +244,17 @@ class QuoteInput(Contract):
             )
         if self.source == "pdf":
             if self.page is None or self.first_line is None or self.last_line is None:
-                raise ValueError("a PDF quote names its page and its first and last lines")
+                raise ValueError(
+                    "a PDF quote names its page and its first and last lines, as pdf_pages "
+                    'numbered them: "page": 4, "first_line": 10, "last_line": 12'
+                )
             if self.dated is not None:
                 raise ValueError("a PDF quote names no date stamp: the PDF's hash names it")
         elif self.dated is None:
-            raise ValueError("an ePrint quote names the date stamp the e-print tools gave")
+            raise ValueError(
+                "an ePrint quote names the date stamp the e-print tools gave the paper, "
+                'in dated, such as "dated": "2015-06-30T18:41:29Z"'
+            )
         if (self.first_line is None) != (self.last_line is None) or (
             self.first_line is not None
             and self.last_line is not None
@@ -265,7 +328,8 @@ class AnchorInput(Contract):
         named = [self.message, self.call, self.artifact, self.document, self.entry, self.memory]
         if sum(value is not None for value in named) != 1:
             raise ValueError(
-                "an anchor names one message, call, artifact, document, entry or memory entry"
+                "an anchor names one message, call, artifact, document, entry or memory "
+                'entry, such as {"call": "<call ID>"} or {"message": "msg-…"}'
             )
         if self.memory is not None and self.revision is not None:
             raise ValueError("a memory anchor gives its revision as mem-3@2")
@@ -492,15 +556,25 @@ class WorkInput(Contract):
         if self.ending == "reopened":
             raise ValueError("the ledger records a reopening itself, with the change's reason")
         if (self.ending == "limit") != (self.limit is not None):
-            raise ValueError("a work record that ends limit names what ran out, and only it")
+            raise ValueError(
+                "a work record that ends limit names what ran out, and only it: with "
+                '"ending": "limit", give "limit": "time", "tools", "context" or "ideas"'
+            )
         if (self.ending == "produced") != bool(self.produced):
-            raise ValueError("a work record that ends produced names the entries, and only it")
+            raise ValueError(
+                "a work record that ends produced names the entries, and only it: with "
+                '"ending": "produced", give "produced": the handles, or new:<key>, of the '
+                "entries it created; otherwise leave produced out"
+            )
         if (self.assesses is not None or self.verdict is not None) and self.ending != "assessment":
             raise ValueError("only an assessment names the work it assesses and its verdict")
         if (self.assesses is None) != (self.verdict is None):
             raise ValueError("an assessment that names the work it assesses gives its verdict")
         if self.ending == "obstruction_claimed" and not self.references:
-            raise ValueError("a claimed obstruction cites its evidence in references")
+            raise ValueError(
+                "a claimed obstruction cites its evidence in references, such as "
+                '"references": [{"artifact": "artifact-…", "revision": 1, "note": "…"}]'
+            )
         if sum(len((r.note or "").encode()) for r in self.references) > MAX_NOTES:
             raise ValueError(f"the references' notes are at most {MAX_NOTES} bytes in all")
         return self
