@@ -17,7 +17,7 @@ from typing import Any
 import pytest
 
 from sandbox_science.orchestrator.consistency.controller import ReviewController
-from sandbox_science.orchestrator.consistency.models import ReviewConfig
+from sandbox_science.orchestrator.consistency.models import ReviewConfig, ReviewOutcome
 from sandbox_science.orchestrator.consistency.rubric import (
     BUDGET,
     BUDGET_VERSION,
@@ -159,7 +159,8 @@ async def test_the_reviewer_is_told_its_budget_and_before_its_last_two_calls_wha
     assert run["state"] == "passed"
     assert run["coverage"]["through"] == seqs[3]
     assert len(run["coverage"]["unreviewed"]) == 2
-    assert not run["coverage_complete"]
+    # Complete for what its verdict covered; the gate leaves out what it names unreviewed.
+    assert run["coverage_complete"] == 1
     progress = reviews.progress("p", "s")
     assert (progress["watermark"], progress["retry_end"], progress["remaining"]) == (
         seqs[3],
@@ -382,7 +383,7 @@ def test_a_ledger_entry_left_unreviewed_is_not_reviewed_for_the_gate(store, name
     reviews.finish("p", "s", review, "owner", "findings", "Checked.", unreviewed=unreviewed)
     with reviews.documents.control.read() as tx:
         assert gate.reviewed(tx.sql, "entry-1") == ([] if named else [1])
-    assert reviews.run("p", "s", review)["coverage_complete"] == (0 if named else 1)
+    assert reviews.run("p", "s", review)["coverage_complete"] == 1
 
 
 @pytest.mark.asyncio
@@ -408,3 +409,69 @@ async def test_the_notice_names_the_tightest_limit(
     told = [n for request in reviewer.requests for n in notices(request)[-1:]]
     assert told[0] == {"calls_left": 2, "limit": limit}
     assert reviews.run("p", "s", review)["coverage"]["verdict"]
+
+
+@pytest.mark.asyncio
+async def test_a_verdict_credits_the_entries_it_covered_and_the_next_review_the_rest(
+    store,
+) -> None:
+    """A review that ran into its budget and named item 5 of 8 unreviewed credits, at the
+    ledger gate, the entries items 1 to 4 hold; the next review covers items 5 to 8 and
+    credits them. Before, the cursor moved past items 1 to 4 and no review credited them."""
+    from sandbox_science.orchestrator.ledger import gate
+
+    class First(Reviewer):
+        def verdict(self, unreviewed: list[str]) -> ModelTurn:
+            return super().verdict(unreviewed[:1])
+
+    reviews, _, now = store
+    reviews.defaults = ReviewConfig(max_turns=5)
+    seqs = [
+        reviews.observe(
+            "p", "s", f"entry-{n}:1", "ledger", {"entry": f"entry-{n}", "revision": 1},
+            {"claim": f"Entry {n} gives 16."},
+        )
+        for n in range(1, 9)
+    ]  # fmt: skip
+
+    def credited() -> dict[str, list[int]]:
+        with reviews.documents.control.read() as tx:
+            return {f"entry-{n}": gate.reviewed(tx.sql, f"entry-{n}") for n in range(1, 9)}
+
+    first = dispatch(reviews)
+    reviewer = First(per_turn=2)
+    await ReviewerRunner(reviews, "p", "s", first, "owner", reviewer).run()
+    run = reviews.run("p", "s", first)
+    assert notices(reviewer.requests[-1])  # it was told its budget was running out
+    assert (run["state"], run["coverage_complete"]) == ("passed", 1)
+    assert len(run["coverage"]["named"]) == 1
+    assert run["coverage"]["through"] == seqs[3]
+    assert credited() == {f"entry-{n}": [1] if n <= 4 else [] for n in range(1, 9)}
+
+    reviews.defaults = ReviewConfig()
+    now[0] += 200
+    second = dispatch(reviews)
+    assert reviews.run("p", "s", second)["start_seq"] == seqs[4]
+    await ReviewerRunner(reviews, "p", "s", second, "owner", Reviewer(per_turn=4)).run()
+    run = reviews.run("p", "s", second)
+    assert (run["state"], run["coverage"]["through"]) == ("passed", seqs[7])
+    assert credited() == {f"entry-{n}": [1] for n in range(1, 9)}
+    assert not reviews.progress("p", "s")["historical_holes"]
+
+
+@pytest.mark.parametrize("outcome", ["capped", "failed", "dropped"])
+def test_without_a_verdict_a_review_credits_no_entry(store, outcome: ReviewOutcome) -> None:
+    """What a review examined without a verdict is reviewed for no ledger entry."""
+    from sandbox_science.orchestrator.ledger import gate
+
+    reviews, _, _ = store
+    reviews.observe(
+        "p", "s", "entry-1:1", "ledger", {"entry": "entry-1", "revision": 1}, {"claim": "16."}
+    )
+    review = dispatch(reviews)
+    item = next(i for i in reviews.manifest("p", "s", review)["evidence"] if i["new"])
+    reviews.read_evidence("p", "s", review, item["evidence"], owner="owner")
+    reviews.finish("p", "s", review, "owner", outcome, "Ended without a verdict.")
+    assert reviews.run("p", "s", review)["coverage_complete"] == 0
+    with reviews.documents.control.read() as tx:
+        assert gate.reviewed(tx.sql, "entry-1") == []

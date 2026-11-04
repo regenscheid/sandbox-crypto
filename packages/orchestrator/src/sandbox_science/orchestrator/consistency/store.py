@@ -1377,6 +1377,10 @@ class ReviewStore:
         later review continues from there; what is left stays pending and the review's
         coverage is incomplete.
 
+        A verdict keeps the review's coverage complete, if it was, for the items it
+        covered: the ledger gate leaves out those its coverage names unreviewed. A review
+        without a verdict, or that covered nothing, has incomplete coverage.
+
         A review that covered nothing, or failed or was dropped, keeps its window: the
         next attempt shrinks its evidence allowance based on the failure count, and three
         failures defer further attempts. Failure never silently certifies or skips
@@ -1473,10 +1477,15 @@ class ReviewStore:
                     ),
                     (coverage["through"], project, session),
                 )
-                if coverage["through"] < found["end_seq"]:
-                    db.execute(
-                        "UPDATE review_runs SET coverage_complete=0 WHERE review_id=?", (review,)
-                    )
+            if found["kind"] != "confirmation" and (
+                coverage is None or not verdict or coverage["through"] is None
+            ):
+                # No verdict, or nothing covered: what the review held is reviewed for no
+                # ledger entry. A verdict credits what it covered, the gate leaving out
+                # what its coverage names unreviewed (CR-31 as amended).
+                db.execute(
+                    "UPDATE review_runs SET coverage_complete=0 WHERE review_id=?", (review,)
+                )
             if coverage is not None:
                 db.execute(
                     "INSERT INTO review_records(review_id,kind,payload,created) "
