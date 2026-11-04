@@ -16,6 +16,14 @@ members = [
     "sandbox-science-worker",
     "sandbox-science-workspace",
 ]
+build-constraints = [
+    { name = "hatchling", specifier = "==1.33.0" },
+    { name = "packaging", specifier = "==26.3" },
+    { name = "pathspec", specifier = "==1.1.1" },
+    { name = "pluggy", specifier = "==1.7.0" },
+    { name = "tomlkit", specifier = "==0.15.2" },
+    { name = "trove-classifiers", specifier = "==2026.9.21.13" },
+]
 
 [[package]]
 name = "aiohappyeyeballs"
