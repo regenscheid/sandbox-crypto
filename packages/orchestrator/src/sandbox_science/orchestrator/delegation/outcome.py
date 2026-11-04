@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import deque
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import partial
@@ -63,6 +64,8 @@ from typing import Annotated, Any, Final, Literal, Self, cast
 from pydantic import BeforeValidator, Field, JsonValue, ValidationError, model_validator
 
 from sandbox_science.contracts.model import StrictContract
+from sandbox_science.orchestrator import jsontext
+from sandbox_science.orchestrator.aio import threaded
 from sandbox_science.orchestrator.context.history.archive import body
 from sandbox_science.orchestrator.documents.agent_text import agent_text
 from sandbox_science.orchestrator.documents.errors import DocumentError
@@ -94,6 +97,15 @@ it, a task's longest result stays within the table's 32 KiB."""
 ERROR_CHARS: Final = 500
 KEPT_ERRORS: Final = 4
 _FENCED: Final = re.compile(r"^```(?:json)?\s*\n(.*)\n```$", re.DOTALL)
+LENIENT_CHARS: Final = 64 * 1024
+"""How much of an answer's end the lenient reader looks for its last JSON object in:
+more than twice the longest task result."""
+LENIENT_STARTS: Final = 64
+"""The places that may begin an object the lenient reader tries there, the last ones:
+more than twice the objects of the largest task result."""
+_OPENING: Final = re.compile(r'\{\s*["}]')
+"""What may begin a JSON object: a ``{`` before a key or its close, not one of prose or
+of LaTeX, nor one in a JSON string, whose quotes are escaped."""
 SUBMIT: Final = "submit_result"
 """The tool a delegated run submits its result with."""
 NUDGES: Final = 3
@@ -562,21 +574,23 @@ def _fenced(text: str) -> list[str]:
 
 
 def _last_object(text: str) -> str | None:
-    """The text of the last top-level JSON object in ``text``: each ``{`` that begins an
-    object, outside an object read before it, read whole."""
-    decoder = json.JSONDecoder()
-    last: str | None = None
-    start = text.find("{")
-    while start >= 0:
+    """The text of the last top-level JSON object in ``text``'s last ``LENIENT_CHARS``:
+    of the objects read whole from its last ``LENIENT_STARTS`` places that may begin one
+    (``_OPENING``), the one that ends last, which holds any other read inside it. Each
+    read is of at most ``LENIENT_CHARS``, so an answer of any length costs at most
+    ``LENIENT_STARTS`` of them (the orchestrator audit: reading every ``{`` of a 300 KB
+    answer took 14 seconds)."""
+    window = text[-LENIENT_CHARS:]
+    starts = deque((found.start() for found in _OPENING.finditer(window)), LENIENT_STARTS)
+    last: tuple[int, int] | None = None
+    for start in reversed(starts):
         try:
-            found, end = decoder.raw_decode(text, start)
-        except (ValueError, RecursionError):
-            start = text.find("{", start + 1)
+            found, end = jsontext.raw_decode(window, start)
+        except ValueError:
             continue
-        if isinstance(found, dict):
-            last = text[start:end]
-        start = text.find("{", end)
-    return last
+        if isinstance(found, dict) and (last is None or end > last[1]):
+            last = start, end
+    return None if last is None else window[last[0] : last[1]]
 
 
 def _object(text: str) -> bool:
@@ -588,9 +602,9 @@ def _object(text: str) -> bool:
 
 def candidates(answer: str | None) -> tuple[str, ...]:
     """The JSON objects an answer may give its result in, read leniently, most likely
-    first: its last fenced ``json`` block, then its last top-level JSON object, prose
-    before or after either allowed (lab round 2: every child wrote a sentence before its
-    JSON, and one a stub block before it)."""
+    first: its last fenced ``json`` block, then its last top-level JSON object near its
+    end (``_last_object``), prose before or after either allowed (lab round 2: every
+    child wrote a sentence before its JSON, and one a stub block before it)."""
     text = answer or ""
     found: list[str] = []
     blocks = [block.strip() for block in _fenced(text) if _object(block.strip())]
@@ -1346,7 +1360,7 @@ class Outcome(TurnHook):
         """The best reading of the JSON an answer holds (``candidates``): the first that
         checks, else the first that checks but for deliverables it leaves out, else the
         first; ``None`` for an answer that holds none."""
-        readings = [await self._reading(text) for text in candidates(answer)]
+        readings = [await self._reading(text) for text in await threaded(candidates, answer)]
         found = next((r for r in readings if r.valid), None)
         found = found or next((r for r in readings if r.omits), None)
         return found or (readings[0] if readings else None)

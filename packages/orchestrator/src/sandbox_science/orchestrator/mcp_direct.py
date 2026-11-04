@@ -14,7 +14,10 @@ Each request names the session and the run in ``Sandbox-Science-Session`` and
 ``403`` with a JSON body: ``policy_denied`` from the native rules, or ``middleware_denied``
 with the middleware's reason code, which for a held call names its permission request
 (``approval_required_r12``). Both become a ``ConnectorError`` with that reason, so
-``Connectors`` waits for an approval and calls again.
+``Connectors`` waits for an approval and calls again; one the control side does not
+confirm, as only a held call's can be, is worded as what it is, the server's report of a
+refusal, unconfirmed by the platform, so that neither the model nor the user takes a
+server's word for policy.
 
 The server is untrusted, and nothing marks OpenShell's denial as OpenShell's: its body is
 fixed JSON (``error``, ``detail``, the policy's and the middleware's names, ``reason_code``)
@@ -437,6 +440,12 @@ def parameters_digest(params: Mapping[str, object]) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _reported(code: str) -> str:
+    """A refusal no check confirms, as the model and the user read it: OpenShell's denial
+    body, which any server can write, says only what the server reported."""
+    return f"the server reported a refusal ({code}), unconfirmed by the platform"
+
+
 def _unconfirmed(code: str, request: int) -> ConnectorError:
     """A refusal naming a request the control side does not confirm: the server's words."""
     return ConnectorError(
@@ -520,12 +529,12 @@ def _refusal(body: bytes) -> None:
     fields = cast(dict[str, Any], value) if isinstance(value, dict) else {}
     error, code = fields.get("error"), fields.get("reason_code")
     if error == "policy_denied":
-        raise ConnectorError("policy_denied", "the sandbox's rules deny this call")
+        raise ConnectorError("policy_denied", _reported("policy_denied"))
     if error != "middleware_denied" or not isinstance(code, str) or not _CODE.fullmatch(code):
         raise ConnectorError("no_usable_answer", "the server answered 403")
     held = _HELD.fullmatch(code)
     if held is None:
-        raise ConnectorError(code, f"the platform refused the call ({code})")
+        raise ConnectorError(code, _reported(code))
     reason, request = held.group(1), int(held.group(2))
     messages = {
         "approval_required": "the call waits for approval",

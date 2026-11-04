@@ -25,7 +25,7 @@ from sandbox_science.orchestrator.documents import (
 from sandbox_science.orchestrator.documents.tool import REQUESTS_TASK
 from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.ledger.provenance import normal, numbers, unread
-from sandbox_science.orchestrator.notices import REQUESTS
+from sandbox_science.orchestrator.notices import PLATFORM_INPUT, REQUESTS, SUPERVISOR
 from sandbox_science.orchestrator.projects import ProjectStore, run_name
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.worker_client import dump
@@ -221,6 +221,29 @@ def test_user_quoted_quotes_only_the_users_own_words(ledger: Ledger) -> None:
                                  content="Work requests [v0]: " + dump(payload)))  # fmt: skip
     change(ledger, {**DECISION, "anchors": [{"message": earlier, "quote": request}]}, op="e")
     assert [e.basis for e in ledger.entries("p").entries] == ["user_quoted"] * 3
+
+
+def test_the_platforms_chat_input_is_never_the_users_to_quote(ledger: Ledger) -> None:
+    """The orchestrator audit, CM-49: the research supervisor's message is no anchor for
+    user_quoted, archived as kind platform or, before it had a kind of its own, as a user
+    message; a task of chat messages quotes only the user's among them."""
+    chat = RunState(ledger.control)
+    supervisor = "Pursue the next justified research step with memory below 2^80 bits."
+    chat.post("p", "s", "chat-sup", supervisor, author=SUPERVISOR)
+    chat.post("p", "s", "chat-user", CONSTRAINT, author="user")
+    legacy = said(ledger, Entry("user", "user", supervisor, source="messages", refs=("chat-sup",)))
+    payload = dump({"message_id": "chat-sup", "author": SUPERVISOR, "text": supervisor})
+    platform = said(ledger, Entry("user", "platform", PLATFORM_INPUT.text + payload,
+                                  source="messages", refs=("chat-sup",)))  # fmt: skip
+    task = said(ledger, Entry("user", "task", f"{supervisor}\n\n{CONSTRAINT}",
+                              refs=("chat-sup", "chat-user")))  # fmt: skip
+    quote = "next justified research step with memory below 2^80"
+    for n, message in enumerate((legacy, platform, task)):
+        refused(ledger, {**DECISION, "anchors": [{"message": message, "quote": quote}]},
+                op=f"platform-{n}", match="anchors on a message the user wrote")  # fmt: skip
+    mine = "attacks whose memory stays below 2^64 bits"
+    change(ledger, {**DECISION, "anchors": [{"message": task, "quote": mine}]}, op="users")
+    assert ledger.entry("p", "D-1").basis == "user_quoted"
 
 
 def test_every_quote_of_a_user_quoted_record_is_the_users(ledger: Ledger) -> None:

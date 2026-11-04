@@ -1363,6 +1363,44 @@ class ListingClient:
         }
 
 
+class AnsweringClient:
+    """A client whose server lists one tool, ``find``, and answers each call with
+    ``text``."""
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+    async def request(
+        self,
+        server: str,
+        method: str,
+        params: Mapping[str, object],
+        *,
+        session: str,
+        run: str | None = None,
+    ) -> dict[str, Any]:
+        if method == "tools/call":
+            return {"content": [{"type": "text", "text": self.text}]}
+        return {"tools": [{"name": "find", "inputSchema": {"type": "object"}}]}
+
+
+@pytest.mark.parametrize("text", ["[" * 9999, '{"a":' * 201 + "1" + "}" * 201])
+async def test_a_result_nested_too_deep_is_neither_shown_nor_kept(text: str) -> None:
+    """The orchestrator audit: the archive keeps a result for readers that parse it, and
+    CPython's parser cannot read ``"[" * 9999``; a result past ``MAX_NESTING`` is an
+    error, its text gone."""
+    connectors = Connectors(AnsweringClient(text), ["papers"], session="s-1")
+    await connectors.load()
+    shown, record = await connectors.call("find", {})
+    assert error_of(shown)["kind"] == record["error"] == "result_too_nested"
+    assert "deeper than 200 levels" in error_of(shown)["message"]
+    assert "[[" not in shown
+    assert '{"a":{' not in shown
+    for kept in ("[" * 200 + "]" * 200, json.dumps({"text": "[" * 9999})):
+        connectors.client = AnsweringClient(kept)
+        assert await connectors.call("find", {}) == (kept, {"connector": "papers"})
+
+
 async def test_a_listings_own_word_on_a_class_is_never_taken() -> None:
     """D96, DA-7: a listed tool's class comes from the trusted side only; what the listing's
     ``_meta`` says is not believed (``test_connector_classes.py`` has the host's join)."""

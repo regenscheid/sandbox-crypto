@@ -23,6 +23,7 @@ from sandbox_science.contracts import (
     new_id,
 )
 from sandbox_science.contracts.worker import KERNEL_OBSERVATION_BUSY, CellRequest
+from sandbox_science.orchestrator import jsontext
 from sandbox_science.orchestrator.aio import threaded
 from sandbox_science.orchestrator.control import ControlError, ControlStore
 from sandbox_science.orchestrator.control.errors import CONFLICT
@@ -180,7 +181,7 @@ class KernelJournal:
                 and result.execution_count is not None
             ):
                 try:
-                    arguments: object = json.loads(record.get("arguments") or "{}")
+                    arguments: object = jsontext.loads(record.get("arguments") or "{}")
                 except (ValueError, TypeError):
                     arguments = {}
                 values = cast(dict[str, object], arguments) if isinstance(arguments, dict) else {}

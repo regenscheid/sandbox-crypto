@@ -23,6 +23,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Final, cast
 
+from sandbox_science.orchestrator import jsontext
 from sandbox_science.orchestrator.documents.agent_text import newlines
 from sandbox_science.orchestrator.model import ChatModel, Message, ModelError, ToolSpec
 from sandbox_science.orchestrator.pricing import CostSource
@@ -230,7 +231,7 @@ async def derive(model: ChatModel, snap: Snapshot, alias: str) -> Derived:
     calls = [c for c in turn.tool_calls if c.name == TOOL.name]
     text = calls[0].arguments if calls else (turn.text or "")
     try:
-        answer = json.loads(_unfenced(text))
+        answer = jsontext.loads(_unfenced(text))
     except ValueError:
         answer = None
     derived, dropped = check(answer, snap)

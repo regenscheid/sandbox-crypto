@@ -5,7 +5,8 @@ docs/specs/run-service.md says what these do. ``RunChat`` is one run's view of i
 session's records (``runstate.py``), which its two hooks and its job waits share:
 
 - ``UserMessages`` offers each queued message before the next model call, as the
-  user's own message (RS-7); at a closing answer, a message that waits makes the run
+  user's own message (RS-7), or, when the platform wrote it (``PLATFORM_AUTHORS``), as
+  the platform's notice (CM-49); at a closing answer, a message that waits makes the run
   continue (RS-8). After the run's record is saved, the messages a model call saw are
   marked delivered (RS-9). A message, or a work request addressed to the session's
   main agent, also ends a job wait (``RunChat.arrived``).
@@ -44,7 +45,7 @@ from .aio import threaded
 from .control import ControlError
 from .control.errors import CONFLICT
 from .hooks import Closing, Effect, Notice, Point, Refusal, RunView, TurnHook
-from .notices import REDELIVERED
+from .notices import PLATFORM_INPUT, REDELIVERED
 from .projects import ModelUsage, RunRecord
 from .purpose import purpose_of, without
 from .runstate import (
@@ -215,7 +216,8 @@ class SessionHeld(TurnHook):
 
 
 class UserMessages(TurnHook):
-    """The user's queued messages, offered before each model call (RS-7, RS-8, RS-9)."""
+    """The user's queued messages, offered before each model call (RS-7, RS-8, RS-9),
+    with the platform's chat input among them as its notice."""
 
     name = SOURCE
 
@@ -235,15 +237,8 @@ class UserMessages(TurnHook):
         if found:
             await self.chat.offer(found)
         shown = self.chat.shown
-        # A message the view already holds, as one an interrupted run received, is named,
-        # not repeated (CM-29a, RS-12); its delivery is acknowledged all the same.
-        messages = tuple(
-            Notice(SOURCE, (message.message_id,), REDELIVERED.text, shown[message.message_id])
-            if message.message_id in shown
-            else Notice(SOURCE, (message.message_id,), message.text, None, user=True)
-            for message in found
-        )
-        fresh = [message for message in found if message.message_id not in shown]
+        messages = tuple(_notice(message, shown) for message in found)
+        fresh = [m for m in found if m.message_id not in shown and not m.platform]
         if fresh and self.discover is not None:
             skills = await self.discover(
                 [message.text for message in fresh], [message.message_id for message in fresh]
@@ -314,6 +309,20 @@ class UserMessages(TurnHook):
                     "research_state",
                 )
                 after = queued[-1].number
+
+
+def _notice(message: ChatMessage, shown: Mapping[str, str]) -> Notice:
+    """A queued message as a run receives it: the user's own words, or the platform's
+    notice when the platform wrote it, never the user's (CM-49). A message of the user's
+    the view already holds, as one an interrupted run received, is named, not repeated
+    (CM-29a, RS-12); its delivery is acknowledged all the same."""
+    ids = (message.message_id,)
+    if message.platform:
+        payload = {"message_id": message.message_id, "author": message.author}
+        return Notice(SOURCE, ids, PLATFORM_INPUT.text, {**payload, "text": message.text})
+    if message.message_id in shown:
+        return Notice(SOURCE, ids, REDELIVERED.text, shown[message.message_id])
+    return Notice(SOURCE, ids, message.text, None, user=True)
 
 
 class EventLog(TurnHook):

@@ -23,7 +23,7 @@ from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.control.errors import BUSY
 from sandbox_science.orchestrator.hooks import Appended
 from sandbox_science.orchestrator.model import Message, ToolCall
-from sandbox_science.orchestrator.notices import DELEGATIONS, REQUESTS
+from sandbox_science.orchestrator.notices import DELEGATIONS, PLATFORM_INPUT, REQUESTS
 from sandbox_science.orchestrator.purpose import purpose_of, without
 
 from .archive import Archive, Archived, Entry
@@ -218,6 +218,8 @@ def entry_of(message: Message, appended: Appended, *, task_refs: Sequence[str] =
         kind = "notice"
         if notice.user:
             kind = "user"
+        elif notice.framing == PLATFORM_INPUT.text:
+            kind = "platform"
         elif notice.source == REQUESTS.id:
             kind = "comment"
         elif notice.source == DELEGATIONS.id and notice.ids:

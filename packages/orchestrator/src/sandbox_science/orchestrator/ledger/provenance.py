@@ -38,7 +38,7 @@ from typing import Any, Final
 
 from sandbox_science.orchestrator.artifact_blobs import ArtifactBlobs, Blob
 from sandbox_science.orchestrator.documents.errors import POLICY_DENIED, DocumentError
-from sandbox_science.orchestrator.notices import requests
+from sandbox_science.orchestrator.notices import PLATFORM_AUTHORS, requests
 from sandbox_science.orchestrator.projects import operator_ref, run_id_of
 
 from . import evidence
@@ -397,13 +397,28 @@ def _quoted_text(db: sqlite3.Connection, project: str, anchor: Json) -> str:
     return text[anchor["start"] : anchor["end"]] if "start" in anchor else text
 
 
+def platform_written(db: sqlite3.Connection, project: str, session: str) -> frozenset[str]:
+    """The chat messages of ``session`` the platform wrote (``PLATFORM_AUTHORS``), which
+    are never the user's words (CM-49), whatever kind the archive kept them as."""
+    return frozenset(
+        str(found)
+        for (found,) in db.execute(
+            "SELECT message_id FROM session_messages WHERE project_id=? AND session_id=? "
+            "AND author IN (SELECT value FROM json_each(?))",
+            (project, session, json.dumps(sorted(PLATFORM_AUTHORS))),
+        )
+    )
+
+
 def users_words(db: sqlite3.Connection, project: str, message: str) -> list[str]:
     """The user's own words an archive message holds, each apart: a chat message the run
     received (``user``); the chat messages a main run's task is made of (``task``, by the
     chat messages it names: a delegation's brief and the stand-in for comments name
     none), or the task the operator typed at the command line, which names its own run;
     the request text of each comment a notice delivered (``comment``), not the platform's
-    framing or the document text beside it, which an agent may have written."""
+    framing or the document text beside it, which an agent may have written. Chat input
+    the platform wrote is none of them (``platform_written``), though the archive kept it
+    as a ``user`` message before it had a kind of its own."""
     row = db.execute(
         "SELECT kind,content,refs,session,run FROM archive_messages "
         "WHERE project=? AND message_id=?",
@@ -412,21 +427,22 @@ def users_words(db: sqlite3.Connection, project: str, message: str) -> list[str]
     if row is None:
         return []
     kind, content, refs, session, run = row
-    if kind == "user":
-        return [content or ""]
     if kind == "comment":
         return [str(r["request_text"]) for r in requests(content or "") if "request_text" in r]
-    if kind != "task":
+    if kind not in ("user", "task"):
         return []
     named = [ref for ref in json.loads(refs) if isinstance(ref, str)]
+    if kind == "user":
+        return [] if platform_written(db, project, session) & set(named) else [content or ""]
     if operator_ref(run) in named:
         return [content or ""]
     return [
         text
         for (text,) in db.execute(
             "SELECT text FROM session_messages WHERE project_id=? AND session_id=? "
-            "AND message_id IN (SELECT value FROM json_each(?)) ORDER BY number",
-            (project, session, json.dumps(named)),
+            "AND message_id IN (SELECT value FROM json_each(?)) "
+            "AND author NOT IN (SELECT value FROM json_each(?)) ORDER BY number",
+            (project, session, json.dumps(named), json.dumps(sorted(PLATFORM_AUTHORS))),
         )
     ]
 

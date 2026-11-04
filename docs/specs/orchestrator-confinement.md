@@ -127,6 +127,32 @@ support bounded status polling. Cancellation closes the runtime's active call;
 the authoritative service continues to own already-admitted effects until their
 outcome is reconciled.
 
+*Amended 2026-11-04 after the orchestrator audit; built 2026-11-04:* the host takes
+the runtime's word only where it cannot know better. Of a run's summaries it takes
+from the runtime's terminal receipt only those the runtime's loop writes and the host
+does not (`RUNTIME_SUMMARIES`: the answers the output limit cut off, the empty answers
+asked for again, the runaway guard, the model fallback, the loop's failure, a model's
+refusal, the gateway's budget refusal and the working memory's limit), and at most
+1 MiB of them as JSON: past that the receipt is refused before the run's record is
+saved, since a record past what a run's preparation reads would stop every later run
+of its session. Every other summary of a confined run is the host's. The loop's own
+notices, which no hook hands out, are admitted only in their fixed framing, with no
+IDs, and with the payload the loop gives each (`loop_notice_refusal`): the report
+round's names a limit the loop takes one at (`turn_limit`, `runaway`, `context_limit`)
+or one of the attempt's hooks gave the host as its last call, with at most 1,000
+characters of detail; a request to continue a cut-off answer names a bounded
+output-token count and the attempt's next continuation, of at most `CONTINUATIONS`,
+which the host counts itself; an error-streak nudge names a tool, an error kind and
+the streak's `STREAK` failed calls. Any other append of one is refused. The host
+counts an attempt's model calls by the answers it committed, not by the turns the
+runtime's loop state says: once the attempt has made its turn limit's calls and its
+report round's answer is committed, a main or delegated `model_intent` is refused, and
+its hooks never see fewer turns than those answers; the runtime's own count, a call
+ahead while one is made, is kept for display. Still taken on the runtime's word: each
+model call's usage and cost as it observes them (`model_observed` and the assistant
+append), which the gateway's key and budget bound, and the outputs of the model calls
+it makes for the host, the reviewer's, the watcher's and the folds'.
+
 ## Launcher and replacement
 
 The launcher starts the worker and control service first. It compiles the sandbox

@@ -130,6 +130,7 @@ class _Search(_Args):
             "user",
             "comment",
             "notice",
+            "platform",
             "outcome",
             "tool_result",
             "state_block",
