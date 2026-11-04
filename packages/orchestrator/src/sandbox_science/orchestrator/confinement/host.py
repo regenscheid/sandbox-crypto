@@ -9,6 +9,7 @@ import json
 import logging
 import secrets
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from dataclasses import replace
 from typing import Any, Final, cast
@@ -41,7 +42,10 @@ from sandbox_science.orchestrator.hooks import (
 from sandbox_science.orchestrator.images import IMAGE
 from sandbox_science.orchestrator.kernel_check import KernelCheck
 from sandbox_science.orchestrator.loop import (
+    CONTINUATIONS,
+    CONTINUE_SOURCE,
     LOOP_NOTICES,
+    REPORT_SOURCE,
     Transcript,
     attach_notices,
     not_run,
@@ -55,6 +59,7 @@ from sandbox_science.orchestrator.notices import DELEGATIONS
 from sandbox_science.orchestrator.plan_tools import Plans
 from sandbox_science.orchestrator.purpose import without
 from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome, operation_id
+from sandbox_science.orchestrator.wraps import STREAK
 
 from .binaries import CallBinaries
 from .connector_calls import failure
@@ -109,6 +114,64 @@ MAX_RUNTIME_SUMMARIES: Final = 1024 * 1024
 """The most the runtime's summaries may take, as compact JSON: a run's record keeps them,
 and a record past what a run's preparation reads (``projects.RUN_READ_BYTES``) would
 stop every later run of its session."""
+
+
+REPORT_LIMITS: Final = frozenset({"turn_limit", "runaway", "context_limit"})
+"""The limits the loop itself takes its report round at; a hook's ``last_call`` gives the
+others, which the host hears as it answers."""
+MAX_REPORT_DETAIL: Final = 1000
+"""The longest detail of a report round's limit: the loop's own are a sentence."""
+MAX_OUTPUT_TOKENS: Final = 10_000_000
+"""The most output tokens a cut-off answer's request to continue may name."""
+MAX_STREAK_TEXT: Final = 256
+"""The longest tool name or error kind an error-streak nudge may name."""
+
+
+def loop_notice_refusal(
+    source: str, payload: object, *, limits: AbstractSet[str], continuation: int
+) -> str | None:
+    """Why a confined loop's own notice from ``source`` cannot carry ``payload``, or
+    ``None`` when it may: the shape the loop gives it (``loop._report``, ``_run_task``).
+    A report round names a limit the loop takes one at (``REPORT_LIMITS``) or one of the
+    attempt's hooks gave (``limits``), and bounded detail; a request to continue a cut-off
+    answer, a bounded output-token count, ``CONTINUATIONS`` and the attempt's next
+    continuation as the host counts them (``continuation``), at most ``CONTINUATIONS``;
+    an error-streak nudge, a tool, an error kind and the streak's ``STREAK`` failed
+    calls."""
+    if not isinstance(payload, dict):
+        return "its payload is no object"
+    found = cast(dict[str, object], payload)
+    if source == REPORT_SOURCE:
+        if set(found) != {"limit", "detail"}:
+            return "a report names its limit and its detail, and nothing else"
+        limit, detail = found["limit"], found["detail"]
+        if not isinstance(limit, str) or limit not in REPORT_LIMITS | limits:
+            return "its limit is none the loop or the attempt's hooks give"
+        if not isinstance(detail, str) or not 0 < len(detail) <= MAX_REPORT_DETAIL:
+            return f"its detail is no text of 1 to {MAX_REPORT_DETAIL:,} characters"
+        return None
+    if source == CONTINUE_SOURCE:
+        if set(found) != {"output_tokens", "continuation", "at_most"}:
+            return "a continuation names its output tokens, its number and the most, alone"
+        tokens = found["output_tokens"]
+        if tokens is not None and not (type(tokens) is int and 0 <= tokens <= MAX_OUTPUT_TOKENS):
+            return f"its output tokens are no count of at most {MAX_OUTPUT_TOKENS:,}"
+        if found["at_most"] != CONTINUATIONS or type(found["at_most"]) is not int:
+            return f"a run continues its answers at most {CONTINUATIONS} times"
+        if continuation > CONTINUATIONS:
+            return f"the attempt has continued its answers {CONTINUATIONS} times already"
+        if found["continuation"] != continuation or type(found["continuation"]) is not int:
+            return f"it is the attempt's continuation {continuation}"
+        return None
+    if set(found) != {"tool", "error", "failed_calls"}:
+        return "an error streak names its tool, its error kind and its failed calls, alone"
+    for key in ("tool", "error"):
+        value = found[key]
+        if not isinstance(value, str) or not 0 < len(value) <= MAX_STREAK_TEXT:
+            return f"its {key} is no text of 1 to {MAX_STREAK_TEXT} characters"
+    if found["failed_calls"] != STREAK or type(found["failed_calls"]) is not int:
+        return f"a streak is {STREAK} failed calls"
+    return None
 
 
 def runtime_summaries(summaries: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
@@ -181,6 +244,11 @@ class Prepared:
         self.observed_slots: set[int] = set()
         self.retooled = False
         """Whether the notices of the append in progress loaded a tool group."""
+        self.continuations = 0
+        """The loop's requests to continue a cut-off answer this attempt committed."""
+        self.limits: set[str] = set()
+        """The limits the attempt's hooks gave for its last call (``last_call``), which its
+        report round may name."""
         self._memory_close: Callable[[], None] | None = None
         self._lock = asyncio.Lock()
         self._closing = False
@@ -388,7 +456,10 @@ class Prepared:
             if kind is Capability.HALT:
                 return await hook.halt(run)
             if kind is Capability.LAST_CALL:
-                return await hook.last_call(run)
+                limit = await hook.last_call(run)
+                if limit is not None:
+                    self.limits.add(limit)
+                return limit
             if kind is Capability.REPORT_NOTICES:
                 if request.stopped is None:
                     raise TransportError("invalid_request", "report notices require the limit")
@@ -443,6 +514,7 @@ class Prepared:
             raise TransportError("conflict", "loop state has not been initialized")
         call, outcome, operation = request.call, request.outcome, request.operation_id
         source = request.message.message()
+        continued = False
         if request.kind == "assistant":
             if request.reply is None:
                 raise TransportError("invalid_request", "assistant append requires its model turn")
@@ -462,6 +534,16 @@ class Prepared:
                 # runtime itself: its report round, its request to continue an answer the
                 # output limit cut off, and its error-streak nudge.
                 raise TransportError("denied", "notice was not returned by trusted capabilities")
+            elif problem := loop_notice_refusal(
+                notice.source,
+                notice.payload,
+                limits=self.limits,
+                continuation=self.continuations + 1,
+            ):
+                # Each in the shape the loop gives it, the host counting continuations.
+                raise TransportError("denied", f"the loop's {notice.source} notice: {problem}")
+            elif notice.source == CONTINUE_SOURCE:
+                continued = True
             source = notice_message(notice)
             for known, token in tuple(self.images):
                 if known == notice:
@@ -540,6 +622,8 @@ class Prepared:
         )
         if request.kind == "task":
             self.task_pending = False
+        if continued:
+            self.continuations += 1
         if consumed is not None:
             for key, ids in consumed.items():
                 self.shadow.identities(key, delivered=True).update(ids)

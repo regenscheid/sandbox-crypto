@@ -135,7 +135,15 @@ asked for again, the runaway guard, the model fallback, the loop's failure, a mo
 refusal, the gateway's budget refusal and the working memory's limit), and at most
 1 MiB of them as JSON: past that the receipt is refused before the run's record is
 saved, since a record past what a run's preparation reads would stop every later run
-of its session. Every other summary of a confined run is the host's.
+of its session. Every other summary of a confined run is the host's. The loop's own
+notices, which no hook hands out, are admitted only in their fixed framing, with no
+IDs, and with the payload the loop gives each (`loop_notice_refusal`): the report
+round's names a limit the loop takes one at (`turn_limit`, `runaway`, `context_limit`)
+or one of the attempt's hooks gave the host as its last call, with at most 1,000
+characters of detail; a request to continue a cut-off answer names a bounded
+output-token count and the attempt's next continuation, of at most `CONTINUATIONS`,
+which the host counts itself; an error-streak nudge names a tool, an error kind and
+the streak's `STREAK` failed calls. Any other append of one is refused.
 
 ## Launcher and replacement
 
