@@ -20,6 +20,7 @@ from typing import Any, cast
 import pytest
 
 from sandbox_science.contracts import ExecutionContext
+from sandbox_science.orchestrator.confinement.models import CallbackModel
 from sandbox_science.orchestrator.context.agent import AgentContext
 from sandbox_science.orchestrator.context.folding import FoldLifecycle, FoldPoint
 from sandbox_science.orchestrator.context.history import (
@@ -42,8 +43,9 @@ from sandbox_science.orchestrator.context.history.reads import Read, Register
 from sandbox_science.orchestrator.context.history.skeleton import _fit
 from sandbox_science.orchestrator.control import ControlStore
 from sandbox_science.orchestrator.harness import Harness as Harness_
-from sandbox_science.orchestrator.harness import Role
+from sandbox_science.orchestrator.harness import Role, RunRequest, Settings, output_reserve
 from sandbox_science.orchestrator.loop import Transcript, run_task
+from sandbox_science.orchestrator.messages import MessagesModel
 from sandbox_science.orchestrator.model import (
     GatewayModel,
     Limits,
@@ -51,6 +53,7 @@ from sandbox_science.orchestrator.model import (
     ToolSpec,
     session_cache_key,
 )
+from sandbox_science.orchestrator.model_profiles import ModelProfile
 from sandbox_science.orchestrator.notices import FOLD_ENRICH, FOLD_REGION, STATE_BLOCK
 from sandbox_science.orchestrator.projects import ModelUsage, ProjectStore, RunRecord, run_name
 from sandbox_science.orchestrator.runstate import RunState
@@ -1052,6 +1055,58 @@ async def test_a_claude_model_is_known_by_its_family_too() -> None:
     assert await made._ceiling() == 136_000
     other = Harness_(cast(Any, None), Role(cast(Any, None), "gpt"), gateway=cast(Any, Gateway()))
     assert await other._ceiling() == 272_000
+
+
+@pytest.mark.parametrize(
+    ("window", "configured", "reserve", "ceiling"),
+    [
+        (1_000_000, 600_000, 64_000, 600_000),  # the window leaves the most room past C
+        (200_000, 600_000, 16_000, 184_000),  # a small window keeps C, and gives the least
+        (200_000, 100_000, 64_000, 100_000),  # a low ceiling leaves the most room again
+    ],
+)
+async def test_a_claude_answer_on_messages_takes_the_room_the_ceiling_leaves(
+    window: int, configured: int, reserve: int, ceiling: int
+) -> None:
+    """CM-27 on the Messages API: the output reserve is min(64,000, max(16,000, window -
+    the configured ceiling)), C is min(ceiling, window - the reserve), and the run's model
+    and its folds' ask for the reserve, or for the role's own length when that is less."""
+    assert output_reserve(window, configured) == reserve
+    model = MessagesModel("http://127.0.0.1:9/v1", "main", "test-secret-reserve-key")
+    made = Harness_(cast(Any, None), Role(model, "main"), settings=Settings(ceiling=configured))
+    made._limits_seen = {"main": Limits(window, 128_000, "anthropic", "claude-opus-4-8")}
+    try:
+        assert await made._ceiling() == ceiling
+        assert cast(MessagesModel, made._reserved(model, "main")).max_output == reserve
+        narrator = made._narrator(PROJECT, SESSION, RunRequest(PROJECT, SESSION, "go"))
+        assert isinstance(narrator, MessagesModel)
+        assert narrator.max_output == reserve
+        shorter = model.limited(max_output=4_096)
+        assert cast(MessagesModel, made._reserved(shorter, "main")).max_output == 4_096
+        # A confined run's model carries it to the runtime as its role's length.
+        confined = CallbackModel(
+            cast(Any, None), "main", profile=ModelProfile(alias="main", api="messages")
+        )
+        assert cast(CallbackModel, made._reserved(confined, "main")).max_output == reserve
+        chat = CallbackModel(cast(Any, None), "main", profile=ModelProfile(alias="main"))
+        assert made._reserved(chat, "main") is chat  # chat completions set no length
+    finally:
+        await model.close()
+
+
+async def test_a_run_on_messages_asks_for_its_reserve(harness: Harness) -> None:
+    """The reserve on the wire: a run on a 200,000-token Claude window through Messages
+    keeps C at 184,000 and asks for 16,000 tokens an answer."""
+    harness.gateway.limits = {
+        "main": {
+            "max_input_tokens": 200_000,
+            "max_output_tokens": 64_000,
+            "litellm_provider": "anthropic",
+        }
+    }
+    record = await harness.run("run-1", [Reply("Hi.")], options=["--api", "main=messages"])
+    assert folds(record)["geometry"]["ceiling"] == 184_000
+    assert [body["max_tokens"] for body in harness.gateway.claude] == [16_000]
 
 
 # The enrichment call (CM-19, CM-20, CM-24, CM-24a; CM-F4, CM-F5, CM-F14).

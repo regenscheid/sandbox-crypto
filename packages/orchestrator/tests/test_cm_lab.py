@@ -250,7 +250,7 @@ def test_a_claude_arm_starts_from_the_seed_as_claude_counts_it() -> None:
 
 def test_the_main_runs_tools_are_counted_with_the_view() -> None:
     """The seed's transcripts keep no tool schemas; the count adds the main run's, as the
-    Claude adapter sends them, with their cache breakpoint."""
+    Claude adapter sends them, with their 1-hour cache breakpoint."""
     tools = drive.main_tools()
     names = {tool.name for tool in tools}
     assert {"pdf_pages", "ledger_change", "history_read", "delegate", "message_child"} <= names
@@ -264,7 +264,7 @@ def test_the_main_runs_tools_are_counted_with_the_view() -> None:
     assert body["model"] == "arr-claude-opus-4-8"
     assert "thinking" not in body
     assert len(body["tools"]) == len(tools)
-    assert body["tools"][-1]["cache_control"] == {"type": "ephemeral"}
+    assert body["tools"][-1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
     assert body["system"][0]["text"] == "You are a research agent."
 
 
