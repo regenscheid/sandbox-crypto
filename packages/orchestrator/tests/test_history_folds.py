@@ -755,6 +755,19 @@ def test_a_result_nested_past_the_parser_folds_as_text(archive: Archive) -> None
     assert line.startswith(f"{rows[2].message_id} papers_search → done, 9,999 characters")
 
 
+def test_the_platforms_chat_input_is_a_notice_line_of_the_skeleton(archive: Archive) -> None:
+    """CM-49: a fold's skeleton shows the platform's chat input as a notice, naming it,
+    not among the user's lines."""
+    platform = Entry("user", "platform", "Continue.", source="messages", refs=("m-sup",))
+    rows = [
+        archive.append(PROJECT, SESSION, "r", Entry("user", "task", "Look. " * 200)),
+        archive.append(PROJECT, SESSION, "r", platform),
+    ]
+    record = build(rows, geometry(600_000, 30_000), 4.0)
+    assert record is not None
+    assert f"{rows[1].message_id} platform message: m-sup" in record.skeleton
+
+
 def test_a_cut_skeleton_keeps_the_users_lines_and_ledger_changes() -> None:
     """#459's review: a skeleton over its share keeps every user line and ledger change,
     and cuts only other lines, each run of them named."""

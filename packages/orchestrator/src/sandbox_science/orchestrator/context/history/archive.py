@@ -83,6 +83,7 @@ LABELS: Final = {
     "user": "user message",
     "comment": "comment",
     "notice": "notice",
+    "platform": "platform message",
     "outcome": "delegation outcome",
     "tool_result": "tool result",
     "state_block": "state block",

@@ -220,6 +220,9 @@ GOLDEN = {
     "sandbox-notice-redelivered-1": (
         "706f5ef5f1441a5194177af083185c8eb53cf9f9b31cfd7bb5609d3e666b4726"
     ),
+    "sandbox-notice-platform-input-1": (
+        "aa9c21caadd2eeefb6372bfdf123347a16af59de179c789d388a22b5671c41d9"
+    ),
     "sandbox-kernel-lines-1": "99de31152145fd974d443f21919e252f90f922b3c961e183522d98c46c79c246",
     "sandbox-fold-region-3": "b844c1fa240b73328d646cb1304caff16d5114ebee7b6c4a0ddf75a886e6cf00",
     "sandbox-fold-enrich-3": "c76e9d3e1abb63bb694323af221cfd8fd772b36d096b72368356f01cf40156aa",

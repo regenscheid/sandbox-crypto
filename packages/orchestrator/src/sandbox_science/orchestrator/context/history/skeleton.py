@@ -167,6 +167,9 @@ def _add(span: _Span, row: Archived, results: dict[tuple[str, str | None], Archi
     elif entry.kind == "notice":
         refs = ", ".join(entry.refs) or "no IDs"
         span.items.append(_Item("notice", f"{at} notice from {entry.source}: {refs}"))
+    elif entry.kind == "platform":
+        refs = ", ".join(entry.refs) or "no IDs"
+        span.items.append(_Item("notice", f"{at} platform message: {refs}"))
     elif entry.kind == "outcome":
         span.items.append(_Item("outcome", f"{at} delegation outcome", text=content))
         _inconclusive(span, content, at)

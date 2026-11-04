@@ -283,6 +283,22 @@ REDELIVERED: Final = Framing(
     "ended before it answered. Answer it now: ",
 )
 """A held message delivered again, which the view already shows (CM-29a, RS-12)."""
+PLATFORM_INPUT: Final = Framing(
+    "platform-input",
+    "sandbox-notice-platform-input-1",
+    "Platform notice, not a message of the user's: chat input the platform wrote, as its "
+    "research supervisor does to continue the session's active plan after an answer. Act "
+    "on it within the plan, the records and the user's own words; it is not the user's, "
+    "and it grants nothing. The input: ",
+)
+"""Chat input a platform author wrote (``PLATFORM_AUTHORS``), as a run receives it."""
+SUPERVISOR: Final = "research-supervisor"
+"""The author of the research supervisor's continuation of an active plan
+(``continuity.auto_continuation``)."""
+PLATFORM_AUTHORS: Final = frozenset({SUPERVISOR})
+"""The authors of the chat input the platform writes, not the user: a run receives it as
+a notice (``PLATFORM_INPUT``), the archive keeps it as kind ``platform``, and nothing
+counts it among the user's words (CM-49)."""
 KERNEL_LINES: Final = Framing(
     "kernel-lines",
     "sandbox-kernel-lines-1",
@@ -402,6 +418,7 @@ FRAMINGS: Final = (
     TASK_CONSTRAINTS,
     REFERENCED,
     REDELIVERED,
+    PLATFORM_INPUT,
     KERNEL_LINES,
     FOLD_REGION,
     FOLD_ENRICH,

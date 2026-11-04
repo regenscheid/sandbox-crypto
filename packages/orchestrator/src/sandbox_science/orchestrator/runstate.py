@@ -39,6 +39,7 @@ from .control.errors import BUSY, CONFLICT, INVALID_REQUEST, NOT_FOUND
 from .documents import DocumentStore
 from .documents.pins import pin as pin_references
 from .documents.pins import text_references
+from .notices import PLATFORM_AUTHORS
 from .projects import ModelUsage, ProjectStore, run_name
 from .questions import Question, answer_with, answered_by, by_message, waiting
 
@@ -217,6 +218,11 @@ class ChatMessage(Contract):
     cancelled or interrupted run left held, the GUI shows from it."""
     pins: list[dict[str, JsonValue]] = Field(default_factory=list[dict[str, JsonValue]])
     """Its references to recorded files, pinned when it was written (figures, FG-7)."""
+
+    @property
+    def platform(self) -> bool:
+        """Whether the platform wrote it (``notices.PLATFORM_AUTHORS``), not the user."""
+        return self.author in PLATFORM_AUTHORS
 
 
 class RunEvent(Contract):
@@ -531,13 +537,15 @@ class RunState:
         return [(project, session) for project, session in rows]
 
     def delivered_texts(self, project: str, session: str, run: str) -> list[tuple[float, str]]:
-        """The messages ``run`` delivered, in the order they were written: each one's
-        time, in seconds since the epoch, and its text."""
+        """The user's messages ``run`` delivered, in the order they were written: each
+        one's time, in seconds since the epoch, and its text. The platform's chat input
+        (``PLATFORM_AUTHORS``) is not the user's (CM-49)."""
         with self.control.read() as tx:
             rows = tx.sql.execute(
                 "SELECT created_at, text FROM session_messages WHERE project_id = ? "
-                "AND session_id = ? AND run = ? ORDER BY number",
-                (project, session, run),
+                "AND session_id = ? AND run = ? "
+                "AND author NOT IN (SELECT value FROM json_each(?)) ORDER BY number",
+                (project, session, run, json.dumps(sorted(PLATFORM_AUTHORS))),
             ).fetchall()
         return [(datetime.fromisoformat(at).timestamp(), text) for at, text in rows]
 

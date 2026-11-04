@@ -15,6 +15,7 @@ import sqlite3
 from sandbox_science.contracts import new_id
 from sandbox_science.orchestrator.control import ControlStore
 from sandbox_science.orchestrator.documents import DocumentStore
+from sandbox_science.orchestrator.notices import SUPERVISOR
 from sandbox_science.orchestrator.projects import run_id_of
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.session_plans import (
@@ -28,7 +29,7 @@ from sandbox_science.orchestrator.session_plans import (
 from .records import tree_cancelled
 
 PAGE = 100
-AUTHOR = "research-supervisor"
+AUTHOR = SUPERVISOR
 
 
 class AutoContinuation:

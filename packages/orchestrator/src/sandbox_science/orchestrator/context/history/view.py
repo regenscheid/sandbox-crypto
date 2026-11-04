@@ -54,6 +54,7 @@ from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ErrorKind, ExecutionC
 from sandbox_science.orchestrator import jsontext
 from sandbox_science.orchestrator.documents.tool import REQUESTS_TASK
 from sandbox_science.orchestrator.hooks import Point, RunView, TurnHook
+from sandbox_science.orchestrator.ledger.provenance import platform_written
 from sandbox_science.orchestrator.notices import (
     CONSOLIDATION,
     FOLD_REGION,
@@ -288,13 +289,21 @@ def session_view(
         history=(record for _, record in historical(archive, context, scope_run)),
     )
     retired = {row.message_id: gone[row.message_id] for row, _ in records if row.message_id in gone}
-    folded = archive.scan(
-        context.project_id,
-        context.session_id,
-        run=scope_run,
-        end=end,
-        kinds=("task", "user", "comment"),
-        main_only=scope_run is None,
+    with archive.control.read() as tx:
+        platform = platform_written(tx.sql, context.project_id, context.session_id)
+    folded = (
+        row
+        for row in archive.scan(
+            context.project_id,
+            context.session_id,
+            run=scope_run,
+            end=end,
+            kinds=("task", "user", "comment"),
+            main_only=scope_run is None,
+        )
+        # The platform's chat input is not the user's words (CM-49), though the archive
+        # kept it as a user message before it had a kind of its own.
+        if not (row.entry.kind == "user" and platform.intersection(row.entry.refs))
     )
     raw = [
         row
