@@ -177,6 +177,7 @@ def retained(tmp_path) -> Settings:
     """A worker state directory with one stopped session environment."""
     token = tmp_path / "pool-token"
     token.write_text("test-secret-" + "t" * 40)
+    token.chmod(0o600)
     settings = Settings(
         token_file=token,
         state_dir=tmp_path / "state",

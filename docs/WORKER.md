@@ -1,13 +1,15 @@
 # Worker service
 
 The API can serve HTTPS with a `[tls]` table containing `certificate` and
-`private_key` paths. Relative paths resolve against the settings file. The key must
-be a private regular file, not a projected symlink; cluster init copies it into a
-mode-600 memory-backed file. Scoped bearer authorization and worker protocol checks
-still apply. Existing local HTTP behavior is unchanged. Control settings accept
-`worker_ca_file`; the workspace accepts `--worker-ca-file`. A custom worker CA
-requires HTTPS, adds to system trust and never disables certificate/hostname
-verification or changes a borrowed HTTP session.
+`private_key` paths. Relative paths resolve against the settings file. The key must be
+a private regular file, not a projected symlink; cluster init copies it into a
+mode-600 memory-backed file. So must the pool's `token_file` be, as
+`sandbox-science-worker token --out` and the launcher make it: the worker refuses a
+symlink, anything but a regular file, and a file its group or others may read. Scoped
+bearer authorization and worker protocol checks still apply. Existing local HTTP
+behavior is unchanged. Control settings accept `worker_ca_file`; the workspace accepts
+`--worker-ca-file`. A custom worker CA requires HTTPS, adds to system trust and never
+disables certificate/hostname verification or changes a borrowed HTTP session.
 
 The worker service runs research code for the orchestrator. It is trusted infrastructure, one per worker pool, outside every research sandbox. It starts an executor inside each sandbox and talks to it. The orchestrator reaches it only through the worker API, so the harness has no local execution path ([architecture](ARCHITECTURE.md)). [Execution tools](specs/tools.md) defines the behavior. The code is in `packages/worker` (`sandbox_science.worker`), the shared types in `packages/contracts`, and the orchestrator's client in `packages/orchestrator`.
 

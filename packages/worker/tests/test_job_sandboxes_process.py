@@ -164,6 +164,7 @@ class Site:
             "apiVersion: sandbox-science/v0alpha1\nkind: PoolCeiling\n"
         )
         (root / "worker.token").write_text(TOKEN + "\n")
+        (root / "worker.token").chmod(0o600)
         self.port = _free_port()
         self.url = f"http://127.0.0.1:{self.port}"
         box = root / "box"  # the path each sandbox's own directory takes the place of

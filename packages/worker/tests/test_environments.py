@@ -3137,6 +3137,32 @@ async def test_clients_are_named_by_their_tokens_digests(
         environments.close()
 
 
+async def test_the_pool_token_comes_only_from_a_private_regular_file(tmp_path: Path) -> None:
+    # As the TLS key: a symlink, something other than a regular file, or a file group or
+    # others may read is refused before the token is read.
+    assert main(["token", "--out", str(tmp_path / "private.token")]) == 0
+    private = tmp_path / "private.token"
+    settings = Settings.model_validate(
+        {"token_file": private, "state_dir": tmp_path / "state", "local": {}}
+    )
+    assert settings.token() == private.read_text().strip()
+    link = tmp_path / "linked.token"
+    link.symlink_to(private)
+    directory = tmp_path / "directory.token"
+    directory.mkdir(mode=0o700)
+    fifo = tmp_path / "fifo.token"
+    os.mkfifo(fifo, 0o600)
+    readable = []
+    for mode in (0o640, 0o604, 0o620):
+        path = tmp_path / f"mode-{mode:o}.token"
+        path.write_text(private.read_text())
+        path.chmod(mode)
+        readable.append(path)
+    for refused in (link, directory, fifo, *readable):
+        with pytest.raises(SettingsError, match="must be a private regular file"):
+            settings.model_copy(update={"token_file": refused}).token()
+
+
 async def test_admission_does_not_wait_for_a_change_under_way(setup: Setup) -> None:
     # One client's revisions must not hold up admission for every project (review of D78).
     info, _ = await setup.environments.create(setup.request())

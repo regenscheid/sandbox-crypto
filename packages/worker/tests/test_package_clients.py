@@ -604,6 +604,7 @@ def test_the_cache_endpoint_is_the_host_and_port_clients_connect_to(
 def environment_settings(tmp_path: Path, package_cache: str) -> Path:
     """A worker settings file whose worker creates sandboxes, with the example targets."""
     (tmp_path / "worker.token").write_text("t" * 40)
+    (tmp_path / "worker.token").chmod(0o600)
     (tmp_path / "pool-ceiling.yaml").write_text(
         "apiVersion: sandbox-science/v0alpha1\nkind: PoolCeiling\n"
     )
