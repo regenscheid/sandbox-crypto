@@ -114,7 +114,7 @@ def test_offered_schemas_effects_and_entry_flags(role: str) -> None:
     )
     expected = {
         "main": "9d609d8cecfcb734ca5e8ec2ceddc27c40dad79fffb5348c45bf12eae273270c",
-        "task": "48ad7b25c25ae25735ea14100f9729c6d252df5e092fed39011eef02ff5f76da",
+        "task": "1c85c7dd71f75399d6b0421bba44d2a002019835695f5fdbfc06417998c1158c",
         "check": "bc9f784aac5e2d3764dbf4c0517e8bd541ff9248d0e7023ec19ab37ce1ba9704",
     }
     assert hashlib.sha256(encoded.encode()).hexdigest() == expected[role]

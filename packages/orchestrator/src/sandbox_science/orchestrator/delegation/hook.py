@@ -1623,8 +1623,9 @@ def _ending(delegation: Delegation) -> dict[str, object]:
 
 def outcome(delegation: Delegation, left: Sequence[Delegation] = ()) -> dict[str, object]:
     """A delegation's whole outcome as its parent receives it (PD-20): how it ended,
-    whether it read the entry it checked, and its result, or, when that is missing, its
-    answer as returned and why it did not validate; then the files its calls recorded,
+    whether it read the entry it checked, and its result, with why the child's own did
+    not validate when the result is the platform's, or, when that is missing, its answer
+    as returned and why it did not validate; then the files its calls recorded,
     the platform's list apart from the child's own claims (RA-36); and the outcomes of
     its own children that it never received, ``left``, each summarized (PD-15)."""
     files: dict[str, object] = {}
@@ -1647,6 +1648,9 @@ def outcome(delegation: Delegation, left: Sequence[Delegation] = ()) -> dict[str
         lessons = result.pop("lessons", None)
         if isinstance(lessons, list) and lessons:
             shown["lessons"] = {"framing": LESSONS_FRAMING, "notes": lessons}
+        if by_platform(delegation.result) and delegation.errors:
+            # The child submitted none that checked: what was wrong with those it gave.
+            shown["errors"] = list(delegation.errors)
         return {**_ending(delegation), "result": result, **shown, **files}
     unaccounted: dict[str, object] = {}
     if asked:
@@ -1713,8 +1717,9 @@ def _counted(delegation: Delegation) -> str | None:
 
 def summarized(delegation: Delegation, left: Sequence[Delegation] = ()) -> dict[str, object]:
     """A delegation's outcome as a notice gives it: a check's verdict and status, a
-    task's status and the head of its summary, or without a result the head of its
-    answer; and the IDs of its own children's outcomes it never received, ``left``."""
+    task's status and the head of its summary, marked ``result_by: platform`` when the
+    result is the platform's, or without a result the head of its answer; and the IDs of
+    its own children's outcomes it never received, ``left``."""
     found: dict[str, object] = _ending(delegation)
     if left:
         found["unreceived"] = [d.delegation_id for d in left[:10]]
@@ -1729,6 +1734,8 @@ def summarized(delegation: Delegation, left: Sequence[Delegation] = ()) -> dict[
         found["deliverables"] = counted
     if delegation.result is not None:
         result = delegation.result
+        if by_platform(result):
+            found["result_by"] = "platform"  # the child submitted none (PD-18)
         if delegation.kind == "task":
             summary = str(result.get("summary") or "")
             head = summary if len(summary) <= SUMMARY_CHARS else summary[:SUMMARY_CHARS] + "…"

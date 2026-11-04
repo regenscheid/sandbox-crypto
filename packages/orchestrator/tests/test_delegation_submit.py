@@ -23,6 +23,7 @@ from sandbox_science.contracts import ExecutionContext
 from sandbox_science.orchestrator import capabilities as caps
 from sandbox_science.orchestrator.context.agent import AgentContext
 from sandbox_science.orchestrator.context.history import body
+from sandbox_science.orchestrator.delegation.hook import outcome, summarized
 from sandbox_science.orchestrator.delegation.outcome import (
     CAME,
     LIMIT_OBSTACLE,
@@ -38,7 +39,7 @@ from sandbox_science.orchestrator.delegation.outcome import (
     task_schema,
 )
 from sandbox_science.orchestrator.delegation.prompt import CHECK_PROMPT, TASK_PROMPT
-from sandbox_science.orchestrator.delegation.records import DelegationRecords, Ending
+from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords, Ending
 from sandbox_science.orchestrator.delegation.specs import SPECS
 from sandbox_science.orchestrator.loop import Transcript
 from sandbox_science.orchestrator.model import ToolCall
@@ -521,6 +522,34 @@ async def test_a_parents_closing_names_a_returned_task_with_the_platforms_result
     assert found.result is not None
     assert cast(dict[str, Any], found.result["set_by"])["summary"] == "platform"
     assert (found.review, found.review_reason) == ("accepted", "parent_ended")
+    assert summarized(found)["result_by"] == "platform"
+
+
+async def test_the_parent_reads_why_a_childs_submissions_were_refused() -> None:
+    """With the platform's result, the outcome a parent reads gives the problems of the
+    child's submissions that did not check, beside the result."""
+    found = await made()
+    await submit(found, {**PARTIAL, "status": "done"})
+    kept = found.kept()
+    assert kept is not None
+    record = Delegation.model_validate(
+        {
+            "delegation_id": "dlg-1",
+            "parent": "root",
+            "run": "child",
+            "kind": "task",
+            "brief": {"task": "Go."},
+            "started_at": "2026-11-03T12:00:00+00:00",
+            "ended": "returned",
+            "stopped": "answered",
+            "ended_at": "2026-11-03T12:01:00+00:00",
+            "result": kept,
+            "errors": found.errors,
+        }
+    )
+    shown = outcome(record)
+    assert shown["errors"] == found.errors
+    assert summarized(record)["result_by"] == "platform"
 
 
 def test_the_delegate_tool_says_when_to_delegate() -> None:

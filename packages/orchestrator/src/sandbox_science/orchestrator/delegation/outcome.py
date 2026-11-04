@@ -713,8 +713,9 @@ def _accounted(kind: str, ids: Sequence[str]) -> dict[str, Any]:
     gives = " and ".join(references)
     return {
         "type": "object",
-        "description": f"{', '.join(ids)}: {_KINDS[kind]} each. produced gives its {gives}; "
-        "partial what exists and what is missing; not_produced why",
+        "description": f"{', '.join(ids)}: {_KINDS[kind]}{' each' if len(ids) > 1 else ''}; "
+        f"produced gives its {gives}, partial what exists and what is missing, not_produced "
+        "why",
         "properties": {
             "id": {"type": "string", "enum": list(ids)},
             "status": {"type": "string", "enum": ["produced", "partial", "not_produced"]},
