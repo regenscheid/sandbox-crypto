@@ -7,8 +7,10 @@ naming what might exist. It deletes only by that record: the name must still rep
 recorded ID, and the record goes only once the gateway confirms the sandbox gone. An
 uncertain outcome (a failed create, a gateway that does not answer, a delete it cannot
 confirm) keeps the record and refuses, since only the CLI's ``SandboxMissingError``
-proves absence. On the host, ``orchestrator`` uses this with ``sandbox.json`` in the
-launcher's state directory.
+proves absence. A record that never got an ID (a create the gateway refused, or one
+whose outcome was never seen) is cleared on that proof too where the owner asks for it
+(``reconcile_absent``), since no sandbox of its name then exists to delete. On the host,
+``orchestrator`` uses this with ``sandbox.json`` in the launcher's state directory.
 """
 
 from __future__ import annotations
@@ -143,13 +145,22 @@ async def delete_recorded(
     clock: Clock = SYSTEM_CLOCK,
     poll: float = 0.5,
     binding: Binding | None = None,
+    reconcile_absent: bool = False,
 ) -> bool:
     """Retain uncertain ownership; only confirmed original-identity deletion permits replacement.
+
+    A record without an ID names a create whose outcome was never seen. If the gateway
+    reports a sandbox of that name, its ID is adopted and the sandbox deleted. If it
+    answers that none has the name (``SandboxMissingError``), the record is kept and the
+    call refuses, unless ``reconcile_absent`` says to clear it: nothing exists to delete,
+    and the call returns True as for a deletion. Any other answer, or none, refuses.
 
     A cancellation waits for the deletion to finish, so the record never outlives or
     predeceases what the gateway did.
     """
-    task = asyncio.create_task(_delete_recorded(store, cli, timeout, clock, poll, binding))
+    task = asyncio.create_task(
+        _delete_recorded(store, cli, timeout, clock, poll, binding, reconcile_absent)
+    )
     cancelled = False
     while True:
         try:
@@ -172,18 +183,37 @@ async def _delete_recorded(
     clock: Clock,
     poll: float,
     binding: Binding | None,
+    reconcile_absent: bool,
 ) -> bool:
     prior = store.read()
     if prior is None:
         return False
     name, identity = prior
-    document = await cli.sandbox(name)
+    try:
+        document = await cli.sandbox(name)
+    except (LauncherError, OSError, ValueError) as exc:
+        if identity is not None:
+            raise
+        raise _unknown(
+            name,
+            f"the gateway gave no definite answer: {exc}; check that "
+            f"`openshell sandbox get {name}` answers, then start again",
+        ) from exc
     if identity is None:
-        observed = document.get("id") if document is not None else None
+        if document is None:
+            if not reconcile_absent:
+                raise _unknown(
+                    name,
+                    "the gateway reports no sandbox of that name; confirm that none was "
+                    "made before clearing the record",
+                )
+            store.remove()
+            return True
+        observed = document.get("id")
         if not isinstance(observed, str) or not observed:
-            raise LauncherError(
-                "orchestrator creation outcome is unknown; "
-                "original name retained for reconciliation"
+            raise _unknown(
+                name,
+                f"the gateway reports it without an ID; check `openshell sandbox get {name}`",
             )
         identity = observed
         store.write(Owned(name, identity))
@@ -206,6 +236,14 @@ async def _delete_recorded(
         await binding.unbind(identity)
     store.remove()
     return True
+
+
+def _unknown(name: str, said: str) -> LauncherError:
+    """The refusal for a record that never got an ID, with what to check."""
+    return LauncherError(
+        f"orchestrator creation outcome is unknown; original name {name} retained for "
+        f"reconciliation: {said}"
+    )
 
 
 async def create_owned(

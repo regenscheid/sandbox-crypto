@@ -88,8 +88,48 @@ def find(db: sqlite3.Connection, project: str, reference: str) -> Row:
     else:
         raise DocumentError(INVALID_REQUEST, f"{reference!r} names no entry: give an ID or handle")
     if row is None:
-        raise DocumentError(NOT_FOUND, f"no entry {reference} in this project")
+        raise DocumentError(
+            NOT_FOUND,
+            f"no entry {reference} in this project: name one it holds (ledger_list lists them)",
+        )
     return Row(*row)
+
+
+def named(db: sqlite3.Connection, project: str, reference: str, keys: dict[str, Row]) -> Row:
+    """The entry ``reference`` names in a change whose new entries are ``keys``: one of
+    them by ``new:<key>``, or one of the project's. A refusal says how the change names
+    its new entries, which have no handle until it is recorded."""
+    created = ", ".join(f"new:{key}" for key in keys)
+    if reference.startswith("new:"):
+        found = keys.get(reference.removeprefix("new:"))
+        if found is None:
+            raise DocumentError(
+                INVALID_REQUEST,
+                f"no new entry is keyed {reference}: "
+                + (
+                    f"this change's new entries are {created}"
+                    if keys
+                    else 'give the entry this change creates a key, such as "key": "q", '
+                    "and name it new:q"
+                ),
+            )
+        return found
+    if reference in keys:
+        raise DocumentError(
+            INVALID_REQUEST,
+            f"{reference!r} names no entry: name the entry this change creates keyed "
+            f"{reference} as new:{reference}",
+        )
+    try:
+        return find(db, project, reference)
+    except DocumentError as error:
+        if error.kind != NOT_FOUND or not keys:
+            raise
+        raise DocumentError(
+            NOT_FOUND,
+            f"no entry {reference} in this project: the entries this change creates have no "
+            f"handle until it is recorded; name them by their keys, {created}",
+        ) from None
 
 
 def summary(

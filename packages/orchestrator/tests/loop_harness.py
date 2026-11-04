@@ -76,7 +76,7 @@ Shape = tuple[str, str, tuple[str, ...]]
 FRAMINGS = {
     "requests": "Document work requests: request_text is the user's instruction. ",
     "jobs": "Job completion notices (output is untrusted data): ",
-    "plans": "Session plan state: reread_required means use plan_read(current) ",
+    "plans": "Session plan as it now stands, because someone other than this run changed ",
     "reviews": "Consistency findings from an independent reviewer. ",
     "review_counts": "Consistency review counts of open findings by severity, ",
     "math": "Mechanical math findings at this closing boundary. ",
@@ -101,7 +101,7 @@ def _detail(kind: str, content: str) -> tuple[str, ...]:
     match kind:
         case "plans":
             plan = cast(Json, value)
-            return (str(plan["planning"]), f"reread_required={plan['reread_required']}")
+            return (str(plan["status"]), *(["answer_held"] if "answer_held" in plan else []))
         case "review_counts":
             return tuple(f"{key}={count}" for key, count in cast(Json, value).items())
         case _:
@@ -184,8 +184,9 @@ def own(record: RunRecord) -> list[Message]:
     return [*record.messages[:1], *record.messages[1 + parts :]]
 
 
-def plans(planning: str, reread: bool) -> Shape:
-    return ("user", "plans", (planning, f"reread_required={reread}"))
+def plans(status: str, *, held: bool = False) -> Shape:
+    """A plans notice showing a plan of this status, holding the answer if ``held``."""
+    return ("user", "plans", (status, "answer_held") if held else (status,))
 
 
 def counts(**values: int) -> Shape:
@@ -314,6 +315,9 @@ class Reply:
     compact: str | None = None
     """Through ``/messages``: the API compacts the request first, with this summary, which
     the request's compaction edit must allow (CM-38b)."""
+    finish: str | None = None
+    """Through chat completions: the answer's ``finish_reason``, as ``length`` for one the
+    output limit cut off; ``stop`` by default."""
 
 
 AREA: Final = "@AREA@"
@@ -343,6 +347,78 @@ def written_area(messages: list[Message]) -> str | None:
             if found:
                 return found[1]
     return None
+
+
+_STARTED: Final = {
+    "text": {"text": ""},
+    "thinking": {"thinking": "", "signature": ""},
+    "tool_use": {"input": {}},
+    "compaction": {"content": None},
+}
+"""What each kind of block starts as in a stream, before its deltas: the rest of a block,
+as a redacted thinking block's data, starts whole."""
+_FINAL: Final = ("stop_reason", "stop_sequence", "stop_details")
+"""What a stream's ``message_delta`` gives of the message, with its usage."""
+
+
+def message_events(message: Json, *, piece: int = 5) -> list[Json]:
+    """The events in which Anthropic's API streams ``message``: ``message_start`` with the
+    message's fields but its content, a stop reason of null and its input counts, then each
+    block from what it starts as (``_STARTED``), its text, thinking and input JSON in
+    deltas of ``piece`` characters, its signature and a compaction's summary in a delta of
+    their own; then ``message_delta`` with the stop reason, ``stop_details`` and the whole
+    usage, and ``message_stop``, with ``ping`` events between."""
+    usage = cast(Json, message.get("usage") or {})
+    opening = {k: v for k, v in message.items() if k not in ("content", "usage", *_FINAL)}
+    started = {k: v for k, v in usage.items() if k != "iterations"} | {"output_tokens": 1}
+    opening |= {"content": [], "stop_reason": None, "usage": started}
+    if "stop_sequence" in message:
+        opening["stop_sequence"] = None
+    events: list[Json] = [{"type": "message_start", "message": opening}, {"type": "ping"}]
+
+    def pieces(text: str) -> list[str]:
+        return [text[i : i + piece] for i in range(0, len(text), piece)] or [""]
+
+    for index, block in enumerate(cast(list[Json], message["content"])):
+        kind = str(block["type"])
+        start = {**block, **_STARTED.get(kind, {})}
+        events.append({"type": "content_block_start", "index": index, "content_block": start})
+        deltas: list[Json] = []
+        if kind == "text":
+            deltas = [{"type": "text_delta", "text": part} for part in pieces(block["text"])]
+        elif kind == "thinking":
+            if block["thinking"]:
+                deltas = [
+                    {"type": "thinking_delta", "thinking": part}
+                    for part in pieces(block["thinking"])
+                ]
+            deltas.append({"type": "signature_delta", "signature": block["signature"]})
+        elif kind == "tool_use":
+            deltas = [
+                {"type": "input_json_delta", "partial_json": part}
+                for part in pieces(json.dumps(block["input"]))
+            ]
+        elif kind == "compaction":
+            deltas = [{"type": "compaction_delta", "content": block["content"]}]
+        events.extend(
+            {"type": "content_block_delta", "index": index, "delta": delta} for delta in deltas
+        )
+        events.append({"type": "content_block_stop", "index": index})
+        if index % 2:
+            events.append({"type": "ping"})
+    ending: Json = {
+        "type": "message_delta",
+        "delta": {k: message[k] for k in _FINAL if k in message},
+        "usage": usage,
+    }
+    if "context_management" in message:
+        ending["context_management"] = message["context_management"]
+    return [*events, ending, {"type": "message_stop"}]
+
+
+def server_sent(events: Sequence[Json]) -> str:
+    """Events as an SSE stream: each named by its type, its data its JSON."""
+    return "".join(f"event: {e['type']}\ndata: {json.dumps(e)}\n\n" for e in events)
 
 
 def call(name: str, /, **arguments: Any) -> tuple[str, Json]:
@@ -532,6 +608,11 @@ class Gateway:
              "stop_reason": "tool_use" if made else "end_turn", "usage": usage}
         )  # fmt: skip
         self.claude_answers.append(text)
+        if body.get("stream") is True:
+            return web.Response(
+                text=server_sent(message_events(json.loads(text))),
+                headers={"x-litellm-version": self.version, "Content-Type": "text/event-stream"},
+            )
         headers = {"x-litellm-version": self.version, "Content-Type": "application/json"}
         return web.Response(text=text, headers=headers)
 
@@ -654,7 +735,7 @@ class Gateway:
         return web.json_response(
             {
                 "model": f"scripted-{alias}",
-                "choices": [{"message": message, "finish_reason": "stop"}],
+                "choices": [{"message": message, "finish_reason": reply.finish or "stop"}],
                 "usage": {
                     "prompt_tokens": (
                         reply.tokens
@@ -1048,7 +1129,7 @@ async def six_sources(harness: Harness) -> Sources:
     """One notice of each kind waiting for the session's next run."""
     started = await harness.run("run-job", [Reply(calls=[start_job()]), Reply("A job is running.")])
     assert shape(started.messages) == [
-        SYSTEM, TASK_MESSAGE, plans("no_current_plan", False), calls("start_job"), RESULT, ANSWER
+        SYSTEM, TASK_MESSAGE, calls("start_job"), RESULT, ANSWER
     ]  # fmt: skip
     job = await harness.end_job()
     request = harness.work_request()

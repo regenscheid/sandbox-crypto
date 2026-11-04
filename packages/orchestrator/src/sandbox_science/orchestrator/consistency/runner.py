@@ -7,6 +7,7 @@ import asyncio
 import contextlib
 import json
 import math
+from collections.abc import Sequence
 from typing import Final, Literal, cast, get_args
 
 from pydantic import Field, ValidationError
@@ -32,7 +33,15 @@ from .findings import Findings
 from .models import REVIEWER_MAX_REPLAY_NATIVE_BYTES, Category, ReviewConfig, ReviewerFinish
 from .numbers import copied_numbers
 from .prompt_bundle import assemble_reviewer, recheck_pin
-from .rubric import RECHECK, RECHECK_VERSION, RUBRIC, RUBRIC_VERSION
+from .rubric import (
+    BUDGET,
+    BUDGET_CALLS,
+    BUDGET_VERSION,
+    RECHECK,
+    RECHECK_VERSION,
+    RUBRIC,
+    RUBRIC_VERSION,
+)
 from .store import MANIFEST_PAGE, Json, ReviewStore, agent_text, clipped, dump
 
 READ_CHARACTERS: Final = 16000
@@ -226,6 +235,17 @@ class ReviewerRunner:
         """Whether this snapshot reaches the feed end that existed at dispatch."""
         self.span_complete = store.span_complete(project, session, review)
         self.config = ReviewConfig.model_validate(self.record["config"])
+        self.told: set[int] = set()
+        """The calls-left counts the reviewer was given a budget notice of (CR-31 as
+        amended); once it has one, only what it examined counts as covered."""
+        self.last: str | None = None
+        """The limit its last call was announced by, once it was told one call is left."""
+        self.growth = 0
+        """The most characters one turn added to the review's context."""
+        self.slowest = 0.0
+        """The longest one model call has taken, in seconds."""
+        self.started = 0.0
+        """When the review began, by the event loop's clock, which its time budget runs on."""
 
     async def tool(self, call: ToolCall) -> str:
         """One of the reviewer's calls. Its purpose is checked before anything else
@@ -410,6 +430,7 @@ class ReviewerRunner:
                     return
 
         lease = asyncio.create_task(heartbeat())
+        self.started = asyncio.get_running_loop().time()
         try:
             async with asyncio.timeout(self.config.time_seconds):
                 await self._loop()
@@ -419,7 +440,6 @@ class ReviewerRunner:
                 f"The review's time budget ended: {self.config.time_seconds:g} seconds"
                 f"{await self._calls()}. Recorded findings are retained.",
                 cap=True,
-                retry=True,
             )
         except asyncio.CancelledError:
             await self._finish("dropped", "The live reviewer task ended before a durable outcome.")
@@ -450,10 +470,12 @@ class ReviewerRunner:
         copied = await threaded(
             copied_numbers, self.store, self.project, self.session, self.review, self.owner
         )
+        calls, _ = await threaded(self.store.calls_left, self.project, self.session, self.review, 1)
         opening: Json = {
             "review": self.review,
             "instruction": "Read review_manifest first. Check only this pinned snapshot.",
             "chronological_coverage": ("complete" if self.chronological_complete else "partial"),
+            "budget": {"calls": calls},
         }
         if not self.chronological_complete:
             opening["coverage_instruction"] = (
@@ -474,8 +496,14 @@ class ReviewerRunner:
             {"role": "user", "content": dump(opening)},
         ]
         invalid = 0
+        size = len(dump(messages))
         for _ in range(self.config.max_turns):
+            if self.last is not None:
+                # It was told its last call had come, and that call gave no verdict.
+                await self._finish("capped", await self._spent(self.last, messages), cap=True)
+                return
             encoded = dump(messages)
+            self.growth = max(self.growth, len(encoded) - size)
             if len(encoded) > self.config.max_input_chars:
                 await self._finish(
                     "capped",
@@ -483,7 +511,6 @@ class ReviewerRunner:
                     f"{self.config.max_input_chars:,}-character bound{await self._calls()}. "
                     "Recorded findings are retained.",
                     cap=True,
-                    retry=True,
                 )
                 return
             native_bytes = sum(
@@ -499,17 +526,12 @@ class ReviewerRunner:
                     f"{REVIEWER_MAX_REPLAY_NATIVE_BYTES:,}-byte confined transport "
                     f"budget{await self._calls()}. Recorded findings are retained.",
                     cap=True,
-                    retry=True,
                 )
                 return
-            # This is a soft estimate; provider usage is recorded separately and
-            # used when higher. Only the gateway's spend cap is a monetary cap.
-            # The images the call carries count by their pixels, as providers count them.
-            estimate = (
-                math.ceil(len(encoded) / 4)
-                + math.ceil(self.config.max_output_chars / 4)
-                + images.tokens(messages)
-            )
+            await self._budget(messages, encoded)
+            encoded = dump(messages)
+            size = len(encoded)
+            estimate = self._estimate(messages, encoded)
             reservation = await threaded(
                 self.store.reserve_call,
                 self.project,
@@ -523,12 +545,13 @@ class ReviewerRunner:
                 why = await threaded(
                     self.store.refusal, self.project, self.session, self.review, estimate
                 )
-                await self._finish(
-                    "capped", why + " Recorded findings are retained.", cap=True, retry=True
-                )
+                await self._finish("capped", why + " Recorded findings are retained.", cap=True)
                 return
             await threaded(self.store.renew, self.project, self.session, self.review, self.owner)
+            clock = asyncio.get_running_loop().time
+            began = clock()
             reply = await self.model.complete(messages, self.specs)
+            self.slowest = max(self.slowest, clock() - began)
             await threaded(
                 self.store.call_usage,
                 self.project,
@@ -650,14 +673,84 @@ class ReviewerRunner:
                 outcome = "findings"
             elif outcome == "passed" and (not checked or undecided or not self.span_complete):
                 outcome = "inconclusive"
-            await self._finish(outcome, finish.summary, cap=finish.cap_reached)
+            await self._finish(
+                outcome, finish.summary, cap=finish.cap_reached, unreviewed=finish.unreviewed
+            )
             return
         await self._finish(
             "capped",
             f"The review's call limit was reached: {self.config.max_turns} calls without an "
             "outcome. Recorded findings are retained.",
             cap=True,
-            retry=True,
+        )
+
+    def _estimate(self, messages: Sequence[Message], encoded: str) -> int:
+        """The tokens the next call is reserved: a soft estimate; provider usage is
+        recorded separately and used when higher. Only the gateway's spend cap is a
+        monetary cap. The images the call carries count by their pixels, as providers
+        count them."""
+        return (
+            math.ceil(len(encoded) / 4)
+            + math.ceil(self.config.max_output_chars / 4)
+            + images.tokens(messages)
+        )
+
+    async def _budget(self, messages: list[Message], encoded: str) -> None:
+        """Before each of the review's last ``BUDGET_CALLS`` calls, tell the reviewer how
+        many are left, this one included, and which limit sets them (CR-31 as amended):
+        the call limit, the project's hourly calls or the token budget, as the store
+        counts them, or the context bound or the time budget, estimated from the largest
+        turn and the slowest call so far."""
+        left, limit = await threaded(
+            self.store.calls_left,
+            self.project,
+            self.session,
+            self.review,
+            self._estimate(messages, encoded),
+        )
+        estimates = [(left, limit)]
+        if self.growth > 0:
+            room = self.config.max_input_chars - len(encoded)
+            estimates.append((1 + room // self.growth, "context"))
+        if self.slowest > 0:
+            remaining = self.config.time_seconds - (
+                asyncio.get_running_loop().time() - self.started
+            )
+            estimates.append((int(remaining // self.slowest), "time"))
+        left, limit = min(estimates)
+        left = max(1, left)
+        if left > BUDGET_CALLS or left in self.told:
+            return
+        self.told.add(left)
+        if left == 1:
+            self.last = limit
+        payload: Json = {"calls_left": left, "limit": limit}
+        messages.append({"role": "user", "content": BUDGET + dump(payload)})
+        await threaded(
+            self.store.record,
+            self.project,
+            self.session,
+            self.review,
+            "budget",
+            {"version": BUDGET_VERSION, **payload},
+            owner=self.owner,
+        )
+
+    async def _spent(self, limit: str, messages: Sequence[Message]) -> str:
+        """Why a review whose announced last call gave no verdict ended: the limit's
+        refusal, as the store words it, or the estimated bound's."""
+        if limit in ("calls", "calls_per_hour", "tokens"):
+            estimate = self._estimate(messages, dump(messages))
+            return (
+                await threaded(
+                    self.store.refusal, self.project, self.session, self.review, estimate
+                )
+                + " Recorded findings are retained."
+            )
+        bound = "context bound" if limit == "context" else "time budget"
+        return (
+            f"The review's {bound} left no call after its last{await self._calls()}, which "
+            "gave no verdict. Recorded findings are retained."
         )
 
     async def _calls(self) -> str:
@@ -671,10 +764,12 @@ class ReviewerRunner:
         summary: str,
         *,
         cap: bool = False,
-        retry: bool = False,
+        unreviewed: Sequence[str] = (),
     ) -> None:
-        """End the review; ``retry`` when a limit ended it, so that its window is reviewed
-        again rather than taken as covered (lab 38)."""
+        """End the review. With a verdict it covers its window up to the first item it
+        names ``unreviewed``, and once it was given a budget notice, up to the first it did
+        not examine; a review without a verdict, or that covered nothing, leaves its window
+        to be reviewed again (CR-31, CR-34 as amended)."""
         try:
             await threaded(
                 self.store.finish,
@@ -685,7 +780,8 @@ class ReviewerRunner:
                 outcome,
                 summary,
                 cap_reached=cap,
-                retry=retry,
+                unreviewed=unreviewed,
+                exhausted=bool(self.told),
             )
         except DocumentError as error:
             # An expired/recovered owner cannot overwrite the replacement's outcome.

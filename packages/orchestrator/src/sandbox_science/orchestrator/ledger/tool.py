@@ -15,8 +15,9 @@ import base64
 import binascii
 import hashlib
 import json
+import re
 from collections.abc import Awaitable, Callable
-from typing import Annotated, Any, Final, get_args
+from typing import Annotated, Any, Final, cast, get_args
 
 from pydantic import ConfigDict, Field, ValidationError
 
@@ -34,7 +35,10 @@ from sandbox_science.orchestrator.model import ToolSpec
 from sandbox_science.orchestrator.recording import FileRecorder, Written
 from sandbox_science.orchestrator.worker_client import WorkerAPIError
 
+from . import records
 from .models import (
+    MAX_ANCHORS,
+    MAX_CAVEATS,
     MAX_CLEARED,
     PREFIXES,
     STATUSES,
@@ -45,6 +49,7 @@ from .models import (
     EntryPage,
     EntryType,
     EntryView,
+    EvidenceType,
     FlagCause,
     FrontierChange,
     FrontierGroup,
@@ -52,9 +57,12 @@ from .models import (
     FrontierResult,
     FrontierView,
     IssueKind,
+    LinkKind,
     Mutation,
     Scheme,
+    WorkLimit,
     WorkPage,
+    link_table,
 )
 from .proposals import FoldProposals
 from .store import Ledger
@@ -74,45 +82,164 @@ LEDGER_EFFECTS: Final[dict[str, Effect]] = {
 }
 """The ledger tools that only read; the others are effects, which the plan fence gates."""
 
+_CALL: Final = [{"call": "<call ID>"}]
+EXAMPLES: Final[tuple[tuple[str, list[Json]], ...]] = (
+    (
+        "a finding, observed",
+        [
+            {
+                "type": "claim",
+                "origin": "project",
+                "title": "...",
+                "statement": "The largest factor has 125 bits.",
+                "fields": {"kind": "observation", "caveats": ["From the corrected table only."]},
+                "evidence": [
+                    {
+                        "role": "supports",
+                        "type": "exact_computation",
+                        "artifact": "artifact-...",
+                        "revision": 1,
+                    }
+                ],
+                "basis": "observed",
+                "anchors": _CALL,
+            }
+        ],
+    ),
+    (
+        "a reference and a published claim citing it",
+        [
+            {
+                "key": "r",
+                "type": "reference",
+                "title": "...",
+                "statement": "A. Smith, Twist attacks, J. Cryptology, 2021.",
+                "fields": {"identifiers": {"doi": "10.1007/..."}, "published": "2021"},
+                "anchors": _CALL,
+            },
+            {
+                "type": "claim",
+                "origin": "published",
+                "title": "...",
+                "statement": "...",
+                "evidence": [{"role": "supports", "type": "source_claim", "entry": "new:r"}],
+                "anchors": _CALL,
+            },
+        ],
+    ),
+    (
+        "a decision reversing D-2",
+        [
+            {
+                "type": "decision",
+                "status": "in_effect",
+                "title": "...",
+                "statement": "...",
+                "fields": {"reopen_condition": "The table is corrected again."},
+                "links": [
+                    {"kind": "affects", "entry": "D-2"},
+                    {"kind": "reopen_on", "entry": "C-4"},
+                ],
+                "anchors": _CALL,
+            },
+            {
+                "entry": "D-2",
+                "expected": 1,
+                "status": "reversed",
+                "fields": {"reopen_condition": "none"},
+                "anchors": _CALL,
+            },
+        ],
+    ),
+    (
+        "an approach abandoned",
+        [
+            {
+                "key": "q",
+                "type": "issue",
+                "title": "...",
+                "statement": "Is there a twist of small embedding degree?",
+                "fields": {"kind": "question"},
+                "anchors": _CALL,
+            },
+            {
+                "type": "decision",
+                "status": "rejected",
+                "title": "...",
+                "statement": "...",
+                "fields": {"reopen_condition": "Such a twist is found."},
+                "links": [{"kind": "reopen_on", "entry": "new:q"}],
+                "anchors": _CALL,
+            },
+        ],
+    ),
+    ("a revision", [{"entry": "C-4", "expected": 2, "statement": "...", "anchors": _CALL}]),
+    ("an obstructed issue reopened", [{"entry": "I-3", "expected": 2, "status": "open"}]),
+)
+"""Worked examples of ``ledger_change``'s changes, one per common operation, which its
+schema shows and a test applies; ``...`` and ``<call ID>`` stand for the caller's own."""
+
+EXAMPLE_FLAGS: Final[list[Json]] = [{"entry": "C-4", "cause": "assumption_revised"}]
+"""Clearing an entry's flags of one cause, as the schema shows it."""
+
+
+_BARE: Final = re.compile(r"[A-Za-z0-9_.:/<>@-]+(?: [A-Za-z0-9_.:/<>@-]+)*")
+
+
+def _json(value: object) -> str:
+    """``value`` as a description shows it: JSON whose keys and plain words go unquoted,
+    as in YAML's flow style, which holds a third of the quotes JSON escapes in a
+    schema."""
+    if isinstance(value, dict):
+        items = cast(dict[str, object], value).items()
+        return "{" + ", ".join(f"{key}: {_json(item)}" for key, item in items) + "}"
+    if isinstance(value, list):
+        return "[" + ", ".join(_json(item) for item in cast(list[object], value)) + "]"
+    if (
+        isinstance(value, str)
+        and _BARE.fullmatch(value)
+        and value not in ("none", "true", "false")
+        and not value.isdigit()
+    ):
+        return value
+    return json.dumps(value)
+
+
+CHANGE_DESCRIPTION: Final = (
+    "Create or revise ledger entries in one change: all of it is recorded, or none; with "
+    "dry_run, it is checked and nothing is recorded. Fields' descriptions give their rules, "
+    "changes' gives examples, and a refusal says what to add or change. A "
+    "revision names the revision you read as expected; if the entry changed since, read it "
+    "again. An entry becomes established, obstructed or refuted, leaves refuted, withdrawn "
+    "or superseded, and a decision is reversed, only in a change that puts in effect a "
+    "decision that affects it (a new decision with status in_effect, or a proposed one "
+    "moved to in_effect); establishing a claim or result, or bringing one back, needs the "
+    "project's gate, and a refusal names the clause that does not hold. A delegated agent "
+    "creates entries, its decisions proposed, and adds evidence to entries, and changes "
+    "nothing else."
+)
+"""``ledger_change``'s description: the rules of a whole change; each field's are in its
+own description."""
+
 LINK_RULES: Final = (
-    "targets by kind: assumes an assumption (for a claim use builds_on); builds_on a claim or "
-    "result (a reference is cited by source_claim evidence); answers and split_into an issue; "
-    "restates, compares_to, supersedes and dominates a claim or result"
+    "Its kind and the two entries' types alone decide what may link, as holder to target: "
+    + link_table()
 )
 """What each kind of link joins (LG-5), as the change tool says it."""
 
 _ENTRY = {"type": "string", "description": "An entry's handle (such as C-12) or ID"}
+_NAMED = {"type": "string", "description": "A handle, an ID, or new:<key>"}
 _LINK = {
     "type": "object",
     "description": (
-        "A link: its kind, and one target: entry (a handle, an ID, or new:<key> for an "
-        "entry this change creates), finding (a review finding's ID), or document with "
-        "revision and block. revision also pins an entry target; note states a "
-        "compares_to link's difference, or a dominates link's reason (one eligible result "
-        "dominates another of its category where the frontier cannot compare them). A "
-        "decision's reopen_on links name what its reopen condition watches: an open issue "
-        "that states the condition as a question, or an assumption, claim or result whose "
-        "change would matter; when it is resolved or changes, the decision is flagged. "
-        "Only the kind and the target's type decide what may link, not its status; " + LINK_RULES
+        "A link: its kind, and one target: entry, finding (a review finding's ID), or "
+        "document with revision and block. revision also pins an entry target; note states "
+        "a compares_to link's difference, or a dominates link's reason (one eligible result "
+        "dominates another of its category where the frontier cannot compare them). " + LINK_RULES
     ),
     "properties": {
-        "kind": {
-            "type": "string",
-            "enum": [
-                "answers",
-                "assumes",
-                "builds_on",
-                "restates",
-                "compares_to",
-                "supersedes",
-                "split_into",
-                "affects",
-                "concerns",
-                "dominates",
-                "reopen_on",
-            ],
-        },
-        "entry": {"type": "string"},
+        "kind": {"type": "string", "enum": list(get_args(LinkKind))},
+        "entry": _NAMED,
         "finding": {"type": "string"},
         "document": {"type": "string"},
         "revision": {"type": "integer"},
@@ -125,18 +252,16 @@ _LINK = {
 _EVIDENCE = {
     "type": "object",
     "description": (
-        "Evidence for the entry: its role, its type, a scope note saying what it covers, "
-        "and one pinned target: entry (with revision, its current one by default), "
-        "artifact with revision (sha256 is optional, best left out: the revision's own is "
-        "pinned; find_artifacts gives an "
-        "artifact's ID, revision and SHA-256 by its path, in any run), document with revision, "
-        "block and optionally math (a span), or review. An independent_check names the "
-        "revision of this entry it checked as checked; its target can be delegation: the "
-        "ID of a delegation that checked that revision, once it ended (the gate counts "
-        "one that returned confirmed and complete). A published claim or result "
-        "cites its reference with a supports link of type source_claim, best with quote: "
-        "what it quotes, as you read it, from the PDF (page and lines as pdf_pages or "
-        "pdf_search numbered them) or from the e-print tools (the date stamp they gave)"
+        "Evidence a claim, result or decision holds: its role, its type, a scope note saying "
+        "what it covers, and one pinned target: entry (with revision, its current one by "
+        "default), artifact with revision (find_artifacts gives both by path; sha256 is best "
+        "left out), document with revision, block and optionally math (a span), or review. "
+        "An independent_check names the revision of this entry it checked as checked; its "
+        "target can be delegation, an ended delegation that checked that revision. A claim "
+        "or result cites a reference with supports evidence of type source_claim naming it, "
+        "and a published one must; best with quote: what it quotes, from the reference's "
+        "PDF (page and lines as pdf_pages numbered them) or the e-print tools (the date "
+        "stamp they gave)"
     ),
     "properties": {
         "role": {
@@ -145,16 +270,9 @@ _EVIDENCE = {
         },
         "type": {
             "type": "string",
-            "enum": [
-                "proof",
-                "exact_computation",
-                "finite_test",
-                "numerical_experiment",
-                "source_claim",
-                "synthetic",
-            ],
+            "enum": [kind for kind in get_args(EvidenceType) if kind != "unclassified"],
         },
-        "entry": {"type": "string"},
+        "entry": _NAMED,
         "artifact": {"type": "string"},
         "document": {"type": "string"},
         "review": {"type": "string"},
@@ -187,42 +305,63 @@ _STATUSES = sorted({status for statuses in STATUSES.values() for status in statu
 _FIELDS = {
     "type": "object",
     "description": (
-        "The type's own fields; a revision that gives fields replaces them all. An issue: "
-        "kind (question when none is given; contradiction for two sources or results that "
-        "disagree, which concerns both). A claim: kind and caveats (at most 10 lines that "
-        "qualify it beyond its evidence's scope and its assumptions, such as estimated "
-        "from 2^20 samples). A result: kind, caveats, category, conditions "
-        "(name: text) and measures (name: number or text). A reference: identifiers, "
-        "authors, published, version or retrieved, and pdf. A decision: reopen_condition "
-        "(what would justify reconsidering it, none when nothing would; a rejected or "
-        'reversed decision states one), session ("this", for a decision meant for the '
-        "session you run in only, such as a constraint the user set for it), and, in the "
-        "change that makes an issue obstructed, excluded_scope and assessment (the user's "
-        "accepting assessment's work record). A decision in effect, rejected or reversed "
-        "keeps its statement, fields and links. Other types have none"
+        "The type's own fields, each naming the types that take it; a revision that gives "
+        "fields replaces them all. A decision in effect, rejected or reversed keeps its "
+        "statement, fields and links"
     ),
     "properties": {
         "kind": {
             "type": "string",
             "enum": list(dict.fromkeys((*get_args(ClaimKind), *get_args(IssueKind)))),
+            "description": "A claim's or result's, lemma to other; an issue's, question (the "
+            "default) to reproduction (a failed one); a contradiction concerns the two sides",
         },
-        "caveats": {"type": "array", "items": {"type": "string"}, "maxItems": 10},
-        "reopen_condition": {"type": "string"},
-        "session": {"type": "string"},
-        "category": {"type": "string"},
-        "conditions": {"type": "object", "additionalProperties": {"type": "string"}},
+        "caveats": {
+            "type": "array",
+            "items": {"type": "string"},
+            "maxItems": MAX_CAVEATS,
+            "description": "A claim's or result's: lines of at most 300 characters qualifying "
+            "it beyond its evidence's scope and assumptions. An agent removes none: a "
+            "revision gives those it has, then new ones",
+        },
+        "reopen_condition": {
+            "type": "string",
+            "description": "A decision's: what would justify reconsidering it, or none; a "
+            "rejected or reversed one states it. Unless none, its links hold reopen_on links "
+            "to what it watches (an open question stating it, or an assumption, claim or "
+            "result whose change would matter), which flag it",
+        },
+        "session": {
+            "type": "string",
+            "description": 'A decision\'s: "this", for one meant only for the session you run in',
+        },
+        "category": {"type": "string", "description": "A result's frontier category"},
+        "conditions": {
+            "type": "object",
+            "additionalProperties": {"type": "string"},
+            "description": "A result's, in printable ASCII",
+        },
         "measures": {"type": "object", "additionalProperties": {"type": ["number", "string"]}},
         "identifiers": {
             "type": "object",
             "properties": {scheme: {"type": "string"} for scheme in get_args(Scheme)},
             "additionalProperties": False,
+            "description": "A reference's locators: it gives these or pdf, and a date",
         },
         "authors": {"type": "array", "items": {"type": "string"}},
-        "published": {"type": "string"},
+        "published": {
+            "type": "string",
+            "description": "A reference's date: this, version or retrieved",
+        },
         "version": {"type": "string"},
         "retrieved": {"type": "string"},
-        "excluded_scope": {"type": "string"},
-        "assessment": {"type": "string", "pattern": "^work-[0-9a-f]{24}$"},
+        "excluded_scope": {"type": "string", "description": "A decision's"},
+        "assessment": {
+            "type": "string",
+            "pattern": "^work-[0-9a-f]{24}$",
+            "description": "As excluded_scope, in the change that makes an issue obstructed: "
+            "the user's accepting assessment",
+        },
         "pdf": {
             "type": "object",
             "properties": {
@@ -240,30 +379,25 @@ _BASIS = {
     "type": "string",
     "enum": ["user_quoted", "observed", "interpreted"],
     "description": (
-        "Where it comes from: user_quoted, what the user said (anchor the user's message "
-        "with a quote of at least 20 characters of it, word for word); observed, what a tool "
-        "result, an artifact or a source's text shows (anchor it there: every number must "
-        "occur in it); interpreted (the default), your own reading or inference"
+        "user_quoted: what the user said (anchor the message with a quote of at least 20 "
+        "characters, word for word); observed: what a tool result, an artifact or a source's "
+        "text shows (anchor it there, where each number of its statement and fields must "
+        "occur); interpreted (the default): your own reading"
     ),
 }
 _ANCHORS = {
     "type": "array",
-    "maxItems": 16,
+    "maxItems": MAX_ANCHORS,
     "description": (
-        "Where it comes from, besides this call: needed to create an entry, change its "
-        "statement or fields, or put a decision in effect, reject or reverse it, and for "
-        "every work record, unless its evidence or references already show it"
+        "Where it comes from, unless its evidence shows it: needed to create an entry, change "
+        "its statement or fields, or put a decision in effect, reject or reverse it, and for "
+        "every work record. Each one of: call (a tool call's ID, or its result's message ID; "
+        "start and end for a range of its output), message (msg-..., from its header; quote "
+        "for the user's words), artifact with revision, document with revision and block, "
+        "entry (with revision), or memory (mem-3@2, never an observation)"
     ),
     "items": {
         "type": "object",
-        "description": (
-            "One of: message (an archive ID, msg-…, from a message's header; quote for the "
-            "user's words), call (a tool call's ID, or the message ID of its result, for "
-            "the result; start and end for a range of its output), artifact with revision, "
-            "document with revision and block, entry (with revision), or memory "
-            "(a project memory entry at a revision, such as mem-3@2: it exists, and is "
-            "never an observation)"
-        ),
         "properties": {
             "message": {"type": "string"},
             "call": {"type": "string"},
@@ -284,26 +418,24 @@ _ANCHORS = {
 _WORK = {
     "type": "object",
     "description": (
-        "A work record to append on an issue, claim or result (entry: a handle, ID, or "
-        "new:<key> of an entry this change creates): what was tried, and how it ended. "
-        "limit names what ran out (time, tools, context or ideas): the issue stays open "
-        "for new work. obstruction_claimed cites its evidence in references; only a "
-        "decision, with an assessment that accepts the claim, makes an issue obstructed. "
-        "produced names the entries it created. An assessment may name the work record "
-        "it assesses (on the same entry) and its verdict. part_of names the record this "
-        "one belongs to; key names this one to the change's other records (new:<key>). "
-        "Work records are never changed or removed."
+        "A work record to append on an issue, claim or result: what was tried, and how it "
+        "ended. limit names what ran out: the issue stays open. obstruction_claimed cites "
+        "its evidence in references; only a decision, with an assessment that accepts the "
+        "claim, makes an issue obstructed. produced names the entries it created. An "
+        "assessment may name the record it assesses and its verdict. part_of names the "
+        "record this one belongs to; key names it new:<key> to the change's others. Work "
+        "records are never changed or removed"
     ),
     "properties": {
         "key": {"type": "string"},
-        "entry": _ENTRY,
+        "entry": _NAMED,
         "tried": {"type": "string", "description": "What was tried, in Markdown"},
         "ending": {
             "type": "string",
             "enum": ["limit", "obstruction_claimed", "produced", "assessment"],
         },
-        "limit": {"type": "string", "enum": ["time", "tools", "context", "ideas"]},
-        "produced": {"type": "array", "items": _ENTRY, "maxItems": 64},
+        "limit": {"type": "string", "enum": list(get_args(WorkLimit))},
+        "produced": {"type": "array", "items": _NAMED, "maxItems": 64},
         "assesses": {"type": "string", "description": "A work record's ID, or new:<key>"},
         "verdict": {"type": "string", "enum": ["accepted", "rejected", "inconclusive"]},
         "references": {
@@ -329,9 +461,14 @@ _WORK = {
                 "additionalProperties": False,
             },
         },
-        "part_of": {"type": "string", "description": "A work record's ID, or new:<key>"},
-        "basis": _BASIS,
-        "anchors": _ANCHORS,
+        "part_of": {"type": "string"},
+        "basis": {"type": "string", "enum": _BASIS["enum"]},
+        "anchors": {
+            "type": "array",
+            "maxItems": MAX_ANCHORS,
+            "items": {"type": "object"},
+            "description": "As a change's",
+        },
     },
     "required": ["entry", "tried", "ending"],
     "additionalProperties": False,
@@ -339,14 +476,12 @@ _WORK = {
 _CHANGE = {
     "type": "object",
     "description": (
-        "One entry to create (give type, title and statement; origin project for a "
-        "claim or result; key to link to it from this change's other entries) or to "
-        "revise (give entry and the revision you read as expected, then only what "
-        "changes). links replaces the "
-        "entry's outgoing links; evidence adds evidence links, and evidence_removed "
-        "removes those with the IDs it names. A statement's references to recorded files, "
-        "![caption](path), are pinned to the file's revision when it is saved; repin moves "
-        "a pin to a named revision, or to the current one without revision"
+        "One entry to create: type, title and statement; origin for a claim or result only; "
+        "key to name it new:<key> in this change. Or one to revise: entry and expected, then "
+        "only what changes, never type, origin or key. links replaces the entry's links; "
+        "evidence adds evidence, and evidence_removed removes it by ID. A statement's "
+        "![caption](path) references to recorded files are pinned when it is saved; repin "
+        "moves a pin to a named revision, or the current one"
     ),
     "properties": {
         "entry": _ENTRY,
@@ -357,13 +492,14 @@ _CHANGE = {
         "title": {"type": "string"},
         "statement": {
             "type": "string",
-            "description": "Markdown with $…$ math; a reference's citation text",
+            "description": "Markdown with $...$ math; a reference's citation text",
         },
         "status": {
             "type": "string",
             "description": "The statuses of each type: "
             + "; ".join(f"{kind}: {', '.join(statuses)}" for kind, statuses in STATUSES.items())
-            + ". A new decision may start in_effect, or rejected for an approach abandoned",
+            + ". A new entry starts in the first (a published one, recorded); a new decision "
+            "may start in_effect, or rejected for an approach abandoned",
             "enum": _STATUSES,
         },
         "fields": _FIELDS,
@@ -389,6 +525,7 @@ _CHANGE = {
     },
     "additionalProperties": False,
 }
+
 
 SPECS: Final = (
     ToolSpec(
@@ -469,42 +606,36 @@ SPECS: Final = (
     ),
     ToolSpec(
         "ledger_change",
-        "Create or revise ledger entries in one change: all of it is recorded, or none. "
-        "Each revision names the revision you read; if the entry changed since, read it "
-        "again. A new entry starts in its first status (open, proposed, active, todo). "
-        "An operation_id names one change in the project: retrying with it returns the "
-        "first result. An entry becomes established, obstructed or refuted, leaves "
-        "refuted, withdrawn or superseded, and a decision is reversed, only in a change "
-        "that puts in effect a decision that affects it (a new decision with status "
-        "in_effect, or a proposed one moved to in_effect); establishing a claim or result, "
-        "or bringing one back, needs the project's gate, and a refusal names the clause "
-        "that does not hold. A delegated agent creates entries, its decisions proposed, "
-        "and adds evidence to entries, and changes nothing else. A change can clear open "
-        "flags for its reason (the entry still holds, or is revised to): by ID "
-        "(flags_cleared), or all on an entry, or those of one cause (flags_cleared_on).",
+        CHANGE_DESCRIPTION,
         {
             "type": "object",
             "properties": {
                 "reason": {"type": "string", "description": "Why, in a sentence"},
-                "changes": {"type": "array", "items": _CHANGE, "maxItems": 32},
+                "changes": {
+                    "type": "array",
+                    "items": _CHANGE,
+                    "maxItems": 32,
+                    "description": "Examples, keys and plain words unquoted: "
+                    + "; ".join(f"{label}, {_json(changes)}" for label, changes in EXAMPLES),
+                },
                 "work": {
                     "type": "array",
                     "items": _WORK,
                     "maxItems": 32,
-                    "description": "Work records to append after the change's entries; a "
-                    "change may hold work alone",
                 },
                 "flags_cleared": {
                     "type": "array",
-                    "description": "On a settled entry (established, obstructed, a confirmed "
-                    "published one, or the decision that settled one), only after a "
-                    "delegation's check of it at its current revision, started since the "
-                    "flag, confirmed it; otherwise the user clears it",
+                    "description": "Open flags it clears, for its reason: the entry still holds, "
+                    "or is revised to. A settled entry's (established, obstructed, a confirmed "
+                    "published one, or the decision that settled one) only once a delegation's "
+                    "check of its current revision, started since, confirmed it; else the user's",
                     "items": {"type": "string", "pattern": "^flag-[0-9a-f]{24}$"},
                     "maxItems": MAX_CLEARED,
                 },
                 "flags_cleared_on": {
                     "type": "array",
+                    "description": "Clears an entry's open flags, all or of one cause, as "
+                    "flags_cleared does, such as " + _json(EXAMPLE_FLAGS),
                     "items": {
                         "type": "object",
                         "properties": {
@@ -516,7 +647,11 @@ SPECS: Final = (
                     },
                     "maxItems": 32,
                 },
-                "operation_id": {"type": "string"},
+                "operation_id": {
+                    "type": "string",
+                    "description": "A retry under it returns the first result",
+                },
+                "dry_run": {"type": "boolean"},
             },
             "required": ["reason"],
             "additionalProperties": False,
@@ -714,10 +849,24 @@ def _clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-def _invalid(error: ValidationError) -> DocumentError:
-    first = error.errors()[0]
-    where = ".".join(str(part) for part in first["loc"]) or "arguments"
-    return DocumentError(INVALID_REQUEST, _clip(f"{where}: {first['msg']}", 300))
+def _invalid(error: ValidationError, model: type[_Args]) -> DocumentError:
+    return DocumentError(INVALID_REQUEST, _clip(records.validation_error(error, model), 1000))
+
+
+MESSAGE_CHARS: Final = 2000
+"""The most characters of a refusal's message the model gets: enough for a change's
+problems, each with its fix."""
+
+CHANGE_ARGUMENTS: Final = (
+    "reason",
+    "changes",
+    "work",
+    "flags_cleared",
+    "flags_cleared_on",
+    "operation_id",
+    "dry_run",
+)
+"""The arguments ``ledger_change`` takes."""
 
 
 class LedgerTool:
@@ -768,6 +917,7 @@ class LedgerTool:
             return _failure(INVALID_REQUEST, f"there is no tool named {name!r}")
         author = self.author(call_id, model)
         read: Json | None = None
+        dry = name == "ledger_change" and args.get("dry_run") is True
         try:
             if name == "ledger_change":
                 # Unknown arguments are refused, so that none can stand for an author.
@@ -778,7 +928,7 @@ class LedgerTool:
                 try:
                     parsed = _ARGS[name].model_validate(args)
                 except ValidationError as error:
-                    raise _invalid(error) from None
+                    raise _invalid(error, _ARGS[name]) from None
                 if isinstance(parsed, _Import):
                     text = await self._import(parsed, author)
                 elif isinstance(parsed, _Proposals):
@@ -788,30 +938,54 @@ class LedgerTool:
                 else:
                     text = await asyncio.to_thread(self._read_only, parsed)
         except DocumentError as error:
-            return _failure(error.kind, _clip(error.message, 1000), **error.details)
+            text, record = _failure(
+                error.kind, _clip(error.message, MESSAGE_CHARS), **error.details
+            )
+            return text, ({**record, "dry_run": True} if dry else record)
         record: Json = {"ledger": name}
         if read is not None:
             record["read"] = read
-        if name in ("ledger_change", "ledger_import", "ledger_category", "ledger_proposals"):
+        if dry:
+            # What a dry run would record is no record of anything: it names no entry.
+            record["dry_run"] = True
+        elif name in ("ledger_change", "ledger_import", "ledger_category", "ledger_proposals"):
             record["result"] = json.loads(text)
         return text, record
 
     def _change(self, args: dict[str, Any], operation: str, author: Author) -> str:
-        allowed = {
-            "reason",
-            "changes",
-            "work",
-            "flags_cleared",
-            "flags_cleared_on",
-            "operation_id",
-        }
-        unknown = sorted(set(args) - allowed)
+        unknown = sorted(set(args) - set(CHANGE_ARGUMENTS))
         if unknown:
-            raise DocumentError(INVALID_REQUEST, f"unknown arguments: {', '.join(unknown)}")
+            raise DocumentError(
+                INVALID_REQUEST,
+                f"unknown arguments: {', '.join(unknown)}: ledger_change takes "
+                f"{', '.join(CHANGE_ARGUMENTS)}",
+            )
+        given = dict(args)
+        dry_run = given.pop("dry_run", False)
+        if not isinstance(dry_run, bool):
+            raise DocumentError(INVALID_REQUEST, "dry_run: give true or false")
         result = self.ledger.change(
-            self.context.project_id, {"operation_id": operation, **args}, author
+            self.context.project_id, {"operation_id": operation, **given}, author, dry_run=dry_run
         )
-        return result.model_dump_json()
+        if not dry_run:
+            return result.model_dump_json()
+        return _dump(
+            {
+                "dry_run": True,
+                "recorded": False,
+                "would_record": [
+                    {"handle": e.handle, "revision": e.revision, "status": e.status}
+                    | ({"created": True} if e.created else {})
+                    for e in result.entries
+                ],
+                "would_flag": result.flagged,
+                "would_clear": result.cleared_total,
+                "work": len(result.work),
+                "replayed": result.replayed,
+                "next": "nothing was recorded: call again without dry_run to record it; "
+                "the handles of new entries are those they would get now",
+            }
+        )
 
     def _proposals(self, args: _Proposals, operation: str, author: Author) -> str:
         """Each proposal accepted, under an operation ID of this call's, or dismissed; one
@@ -1311,11 +1485,9 @@ def parse_results(data: bytes) -> list[tuple[int, Mutation]]:
             value = json.loads(line, object_pairs_hook=_no_duplicates, parse_constant=_no_constant)
             found.append((number, Mutation.model_validate(value)))
         except ValidationError as error:
-            first = error.errors()[0]
-            where = ".".join(str(part) for part in first["loc"]) or "line"
             raise DocumentError(
                 INVALID_REQUEST,
-                _clip(f"line {number}: {where}: {first['msg']}", 300),
+                _clip(f"line {number}: {records.validation_error(error, Mutation)}", 1000),
                 {"line": number},
             ) from None
         except (ValueError, RecursionError) as error:

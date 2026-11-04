@@ -60,12 +60,15 @@ def _binding(config: LauncherConfig, layout: Layout) -> runtime_owner.Binding:
 
 async def delete_recorded(config: LauncherConfig, layout: Layout) -> bool:
     """Retain uncertain ownership; only confirmed original-identity deletion permits
-    replacement. The deleted sandbox's binding goes with it."""
+    replacement. The deleted sandbox's binding goes with it. A record that never got an
+    ID (a create the gateway refused) is cleared once the gateway answers that no
+    sandbox has its name."""
     return await runtime_owner.delete_recorded(
         _ownership(layout),
         mcp.OpenShell(config),
         timeout=config.stop_timeout,
         binding=_binding(config, layout),
+        reconcile_absent=True,
     )
 
 

@@ -118,7 +118,7 @@ from .mcp_binaries import ArtifactBinaries
 from .memory import MemoryEntry, ProjectMemory
 from .memory_prompt import for_reviewer, for_run, for_watcher
 from .memory_tools import MemoryTool
-from .messages import MessagesModel
+from .messages import MAX_TOKENS, MessagesModel
 from .model import (
     MIN_COMPACTION,
     ChatModel,
@@ -172,6 +172,18 @@ CONTEXT_MODES: Final[tuple[ContextMode, ...]] = ("folds", "skeleton", "provider_
 FOLDING_CHARS: Final = 1 << 40
 """A folding run's character limit, by default: none that a run reaches; its ceiling
 is in tokens."""
+RESERVE_FLOOR: Final = 16_000
+"""The least room an answer on the Messages API is given in a window input and output
+share, which a small window's ceiling keeps for the conversation beyond it (CM-27)."""
+
+
+def output_reserve(window: int, configured: int) -> int:
+    """The room a run's answers on the Messages API take in a ``window`` input and output
+    share, for the ceiling ``configured`` (CM-27): what the window leaves beyond that
+    ceiling, but at least ``RESERVE_FLOOR`` and at most the adapter's ``MAX_TOKENS``. C is
+    then min(ceiling, window - the reserve), and the run's calls ask for the reserve."""
+    return min(MAX_TOKENS, max(RESERVE_FLOOR, window - configured))
+
 
 KERNEL_CLOSE_SECONDS: Final = 20.0
 """How long a delegated run's end waits for the worker to stop its kernels; the next
@@ -855,8 +867,9 @@ class Harness:
         """The model a run calls (``role``), calling as its session, so that all of the
         session's calls share one prompt cache (CM-32)."""
         context = admitted.context
-        model = cached_for(
-            self.role(admitted.request).model, context.project_id, context.session_id
+        role = self.role(admitted.request)
+        model = self._reserved(
+            cached_for(role.model, context.project_id, context.session_id), role.alias
         )
         if self.stores is None or self.loop_runner is not run_task:
             return model
@@ -1291,8 +1304,10 @@ class Harness:
     async def _ceiling(self, role: Role | None = None) -> int:
         """MAIN's ceiling C (CM-27): the role's, capped by the model's limit: the setting's
         input limit, or the gateway's model information's. For a Claude model that is a
-        window input and output share, so the answer's room comes off it. A gateway that
-        cannot be asked is asked again at the next run's start."""
+        window input and output share, so the answer's room comes off it: on the Messages
+        API the output reserve (``_reserve``), which the run's calls ask for; on another,
+        which sets no answer's length, the role's or the model's whole output. A gateway
+        that cannot be asked is asked again at the next run's start."""
         settings = self.settings
         role = role or self.main
         if settings.input_limit is not None:
@@ -1302,12 +1317,39 @@ class Harness:
         found = (self._limits_seen or {}).get(role.alias)
         if found is None:
             return settings.ceiling
+        if (reserve := self._reserve(role.model, role.alias)) is not None:
+            return ceiling(settings.ceiling, window=found.input, max_output=reserve)
         model = role.model
         named = " ".join(name or "" for name in (found.provider, found.model, role.alias))
-        if isinstance(model, MessagesModel) or "anthropic" in named or "claude" in named.lower():
+        if "anthropic" in named or "claude" in named.lower():
             output = model.max_output if isinstance(model, GatewayModel) else None
             return ceiling(settings.ceiling, window=found.input, max_output=output or found.output)
         return ceiling(settings.ceiling, input_limit=found.input)
+
+    def _reserve(self, model: ChatModel, alias: str) -> int | None:
+        """The room the ceiling leaves an answer of ``model`` on ``alias``
+        (``output_reserve``): for a model on the Messages API, Claude's, whose window the
+        gateway's model information gives, as the ceiling read it; none with the setting's
+        input limit, or on another API."""
+        if self.settings.input_limit is not None or not isinstance(model, GatewayModel):
+            return None
+        # A confined model calls through the adapter its profile names.
+        if (adapter_of(model) or model.requested_profile.api) != "messages":
+            return None
+        found = (self._limits_seen or {}).get(alias)
+        return None if found is None else output_reserve(found.input, self.settings.ceiling)
+
+    def _reserved(self, model: ChatModel, alias: str) -> ChatModel:
+        """``model`` on ``alias``, its answers asking for the room the ceiling leaves them
+        (``_reserve``) as their length, or the role's own when that is less; the adapter
+        asks for no more than the model's ``max_output_tokens`` either. A run's own model
+        and its folds' are made so, a fold's from the run's model before it takes the fold
+        role, whose copy keeps the length."""
+        reserve = self._reserve(model, alias)
+        if reserve is None or not isinstance(model, GatewayModel):
+            return model
+        own = model.max_output
+        return model.limited(max_output=reserve if own is None else min(own, reserve))
 
     def _child_narrator(self, request: RunRequest, context: ExecutionContext) -> ChatModel | None:
         if self.settings.skeleton_only:
@@ -1317,13 +1359,12 @@ class Harness:
         if alias is not None and self.gateway is not None:
             model = self.gateway.model(alias, role="fold")
         else:
-            own = self.role(request).model
-            if not isinstance(own, GatewayModel):
+            role = self.role(request)
+            if not isinstance(role.model, GatewayModel):
                 return None
-            return cast(
-                GatewayModel, cached_for(own, context.project_id, context.session_id)
-            ).for_role("fold")
-        return cached_for(model, context.project_id, context.session_id)
+            own = cached_for(role.model, context.project_id, context.session_id)
+            return cast(GatewayModel, self._reserved(own, role.alias)).for_role("fold")
+        return self._reserved(cached_for(model, context.project_id, context.session_id), alias)
 
     def _narrator(self, project: str, session: str, request: RunRequest) -> ChatModel | None:
         """The model that writes MAIN's folds' narratives: the setting's alias through
@@ -1336,10 +1377,13 @@ class Harness:
         profile = (request.model_profiles or {}).get("fold")
         alias = profile.alias if profile is not None else self.settings.fold_alias
         if alias is not None and self.gateway is not None:
-            return cached_for(self.gateway.model(alias, role="fold"), project, session)
+            return self._reserved(
+                cached_for(self.gateway.model(alias, role="fold"), project, session), alias
+            )
         main = self.role(request)
         if isinstance(main.model, GatewayModel):
-            return cast(GatewayModel, cached_for(main.model, project, session)).for_role("fold")
+            own = self._reserved(cached_for(main.model, project, session), main.alias)
+            return cast(GatewayModel, own).for_role("fold")
         return None
 
     def _input_chars(self, *, folding: bool) -> int:

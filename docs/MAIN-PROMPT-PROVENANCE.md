@@ -30,7 +30,7 @@ The system message is its sections' texts joined by a blank line, in order
 4. `skills`, with no version, when the project pins skills: the framing
    `sandbox-skills-index-4`, the index of the run's skills and the skills loaded at its
    start ([skills](SKILLS.md)); the `skills` pin below names the framing's version.
-5. `planning`, version `sandbox-main-plan-2`, when the plan tools are offered. Plan
+5. `planning`, version `sandbox-main-plan-3`, when the plan tools are offered. Plan
    tools offered without their hook, or the hook without the tools, refuse before any
    model call.
 

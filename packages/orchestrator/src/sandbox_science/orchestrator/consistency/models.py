@@ -186,6 +186,9 @@ class ReviewerFinish(Contract):
     outcome: Literal["passed", "findings", "inconclusive"]
     summary: str = Field(min_length=1, max_length=8192)
     cap_reached: bool = False
+    unreviewed: tuple[EvidenceID, ...] = Field(default=(), max_length=256)
+    """The window's new items the reviewer did not examine (CR-31 as amended): the review
+    covers its window up to the first of them, and a later review continues from there."""
 
 
 class Scope(Contract):

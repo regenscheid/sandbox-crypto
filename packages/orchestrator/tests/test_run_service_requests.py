@@ -35,7 +35,6 @@ from .loop_harness import (
     Reply,
     call,
     notice,
-    plans,
     shape,
     start_job,
 )
@@ -89,7 +88,7 @@ async def test_a_comment_to_an_idle_session_starts_a_run(harness: Harness) -> No
     assert harness.request_states() == {request: "delivered"}
     # The run begins with the request, as its hook offers it: there is no task message.
     (first,) = harness.gateway.main
-    assert shape(first) == [SYSTEM, notice("requests", request), plans("no_current_plan", False)]
+    assert shape(first) == [SYSTEM, notice("requests", request)]
     events = runs(harness).events(PROJECT, SESSION, names(harness)[0])
     assert events[0].data["message_ids"] == []
     assert "user" not in [e.kind for e in events]

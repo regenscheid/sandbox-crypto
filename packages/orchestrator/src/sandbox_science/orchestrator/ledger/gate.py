@@ -522,8 +522,9 @@ def _kept(
 
 def reviewed(db: sqlite3.Connection, entry: str, *, after: float | None = None) -> list[int]:
     """The revisions of ``entry`` a completed checkpoint or terminal review whose coverage
-    was complete held, whole, in its snapshot; only reviews started after ``after``, when
-    given."""
+    was complete held, whole, in its snapshot, and did not leave unreviewed (its verdict
+    covers its window up to the first item it did not examine, consistency review CR-31
+    as amended); only reviews started after ``after``, when given."""
     return [
         revision
         for (revision,) in db.execute(
@@ -531,7 +532,10 @@ def reviewed(db: sqlite3.Connection, entry: str, *, after: float | None = None) 
             "JOIN review_runs r USING(review_id) WHERE e.kind='ledger' "
             "AND json_extract(e.locator,'$.entry')=? AND e.complete=1 "
             "AND r.state IN ('passed','findings') AND r.kind IN ('checkpoint','terminal') "
-            "AND r.coverage_complete=1 AND (? IS NULL OR r.created>?)",
+            "AND r.coverage_complete=1 AND (? IS NULL OR r.created>?) "
+            "AND NOT EXISTS(SELECT 1 FROM review_records c,"
+            "json_each(c.payload,'$.unreviewed') u WHERE c.review_id=r.review_id "
+            "AND c.kind='coverage' AND u.value=e.evidence_id)",
             (entry, after, after),
         )
         if isinstance(revision, int)

@@ -113,8 +113,8 @@ def test_offered_schemas_effects_and_entry_flags(role: str) -> None:
         sort_keys=True,
     )
     expected = {
-        "main": "9d609d8cecfcb734ca5e8ec2ceddc27c40dad79fffb5348c45bf12eae273270c",
-        "task": "1c85c7dd71f75399d6b0421bba44d2a002019835695f5fdbfc06417998c1158c",
+        "main": "fd932d7e798800e5f6611dba62d00e9390543189e3c411809aca939b2f7ab8b8",
+        "task": "ef00a5da85c98eab0c4d69a3ec9c79e7b187006f9fa3d49eb91cd1d177318661",
         "check": "bc9f784aac5e2d3764dbf4c0517e8bd541ff9248d0e7023ec19ab37ce1ba9704",
     }
     assert hashlib.sha256(encoded.encode()).hexdigest() == expected[role]

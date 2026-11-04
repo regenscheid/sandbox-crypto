@@ -43,6 +43,7 @@ from typing import Any, Final, cast
 
 from . import images
 from .model import (
+    LENGTH,
     AssistantMessage,
     ContextLimitError,
     GatewayModel,
@@ -270,7 +271,7 @@ def parse_response(text: str, priced: str | None = None) -> ModelTurn:
     if status == "incomplete":
         details = data.get("incomplete_details")
         reason = cast(dict[str, Any], details).get("reason") if isinstance(details, dict) else None
-        finish = "length" if reason == "max_output_tokens" else str(reason or "incomplete")
+        finish = LENGTH if reason == "max_output_tokens" else str(reason or "incomplete")
     else:
         finish = "tool_calls" if calls else "stop"
     usage = data.get("usage")

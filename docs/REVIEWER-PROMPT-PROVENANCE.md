@@ -12,7 +12,7 @@ separate in [MAIN-PROMPT-PROVENANCE.md](MAIN-PROMPT-PROVENANCE.md) and
 
 [consistency/prompt_bundle.py](../packages/orchestrator/src/sandbox_science/orchestrator/consistency/prompt_bundle.py)
 assembles one owned reviewer bundle from the unchanged `RUBRIC`,
-`RUBRIC_VERSION="sandbox-consistency-9"`, the re-check instructions `RECHECK`
+`RUBRIC_VERSION="sandbox-consistency-10"`, the re-check instructions `RECHECK`
 (`RECHECK_VERSION="sandbox-recheck-1"`, also in
 [rubric.py](../packages/orchestrator/src/sandbox_science/orchestrator/consistency/rubric.py)),
 the purpose guidance `PURPOSE` (`sandbox-reviewer-purpose-1`) and the ordered six `SPECS` in
@@ -98,9 +98,9 @@ is the rubric, a blank line, the re-check instructions, a blank line, the purpos
 guidance, and then, when the reviewed run had the project memory, a blank line and the
 memory section.
 
-The rubric `sandbox-consistency-9` is unchanged; its paragraph on confirmation, rebuttals
-and challenged findings is replaced, as the re-check instructions (`sandbox-recheck-1`)
-say, by them: a finding item with a queued re-check is answered with `review_decide`
+In the rubric (`sandbox-consistency-10`), the paragraph on confirmation, rebuttals and
+challenged findings is replaced, as the re-check instructions (`sandbox-recheck-1`) say,
+by them: a finding item with a queued re-check is answered with `review_decide`
 `resolved` or `unresolved`, with at least one anchor in the new revision or message, and
 no answer when the evidence cannot decide; an author's dismissal is accepted or rejected
 (`accept_dismissal`, `reject_dismissal`) and stands either way; a better finding of the

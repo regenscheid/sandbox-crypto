@@ -17,12 +17,30 @@ The conversation stays in the chat format the loop keeps, and each request rende
   as text blocks marked ``NOTE``, the same from the first time the answer goes back.
   Thinking is only ever left out from the start or the end of the run, never from the
   middle. Any other answer is sent as its text and calls (CM-42);
-- calls and results are paired first (``pairing``, CM-29a);
+- calls and results are paired first (``pairing``, CM-29a), and the result of a call
+  that failed, with the error every tool reports, is marked ``is_error`` (``failed``);
 - tools loaded during the run are declared with ``defer_loading`` and announced by a
   ``tool_addition`` where they first appeared, so the request's tool list is not
   edited, on the models that take it; elsewhere the list changes, which leaves out the
   thinking of the answers before the change, as a rebuild does;
-- cache breakpoints mark the tools, the system message and the last user turn.
+- cache breakpoints mark the tools and the system message, in the 1-hour cache, and the
+  last user turn, in the five-minute one.
+
+Every request streams (``stream: true``), so that bytes come long before a long answer
+ends. The answer is the message its events build, as Anthropic's SDK builds one
+(``_Streamed``), kept as compact JSON with the content of the message the request would
+return unstreamed: its blocks, thinking with its signature, redacted thinking and the
+compaction block among them, the stop reason and ``stop_details``, and the usage, with
+``iterations``, of its ``message_delta``. A stream cut after part of an answer (the
+connection lost, the stream ended early, or an ``error`` event a later attempt can get
+past) keeps what arrived whole: its finished blocks, and the text so far of a text block
+it cut, with its ``stop_reason`` null and no output count, which never came, so its cost
+is unknown. A part with text or a finished call stands as the answer: one the output limit
+cut off (``length``) without a call, and one that called its tools with them. Anything
+less is tried again, as a stream with no final event is. An answer may take the role's
+length, or else ``MAX_TOKENS``, but never more than the model's ``max_output_tokens``; a
+run's own calls and its folds' are given the output reserve its ceiling leaves in the
+model's window as the role's length (``harness.output_reserve``).
 
 A turn's answer (``text``) is its text blocks, and its progress notes are ``notes``. What
 the conversation holds (``content``) is both, in order, a paragraph each, so the archive
@@ -65,6 +83,7 @@ import json
 import logging
 import re
 from collections.abc import Mapping, Sequence
+from contextlib import aclosing
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from typing import Any, Final, cast
@@ -75,10 +94,13 @@ from . import images
 from .model import (
     COMPACTION,
     FALLBACKS,
+    LENGTH,
     MESSAGES_EFFORTS,
     NOT_RETRIED,
+    STREAM_RETRIED,
     AssistantMessage,
     GatewayModel,
+    IncompleteStreamError,
     Message,
     ModelError,
     ModelRefusedError,
@@ -90,6 +112,8 @@ from .model import (
     prefix_digest,
     read_limited,
     reported_cost,
+    server_events,
+    stream_failure,
 )
 from .model_profiles import ModelProfile
 from .notices import COMPACTION as COMPACTION_PROMPT
@@ -113,9 +137,10 @@ COMPACT_EDIT: Final = "compact_20260112"
 ``compaction`` parameter (beta ``compact-2026-09-04``) is not used: LiteLLM 1.102.1
 drops it."""
 COMPACTION_BLOCK: Final = "compaction"
-MAX_TOKENS: Final = 16_000
-"""An answer's length when the role sets none: the API needs one, and a request that
-does not stream must end within the client's timeout."""
+MAX_TOKENS: Final = 64_000
+"""An answer's length when the role sets none, thinking included: the API needs one. A
+model whose information gives a smaller ``max_output_tokens`` is asked for that. A run's
+calls get the reserve its ceiling leaves, at most this (``harness.output_reserve``)."""
 REPLAY_DAYS: Final = 30
 """How long a check of the gateway lets thinking replay stay on (CM-39)."""
 MIN_THINKING: Final = 256
@@ -178,16 +203,36 @@ _UNDISPLAYED: Final = re.compile(
 beta header on: Anthropic's names the field by its path, "thinking.adaptive.display:
 Input should be 'summarized', 'omitted'" (lab 43, B4), or another path to ``display``
 within ``thinking``; or the refusal names the beta."""
+_HEADER: Final = re.compile(r"\[msg-[^\]\n]*\]\n")
+"""The header the platform's messages begin with (``archive.header``, CM-4a)."""
+_ADDED: Final = frozenset({"platform_notices", "recorded_files"})
+"""What the harness adds beside any tool result's own fields: the document notices and
+the report of the files the call changed."""
 _THINKING: Final = frozenset({"thinking", "redacted_thinking"})
 _FINISH: Final = {
     "end_turn": "stop",
     "stop_sequence": "stop",
     "tool_use": "tool_calls",
-    "max_tokens": "length",
-    "model_context_window_exceeded": "length",
+    "max_tokens": LENGTH,
+    "model_context_window_exceeded": LENGTH,
 }
 _CACHED: Final = {"type": "ephemeral"}
+"""The last user turn's cache breakpoint: Anthropic's five minutes."""
+_KEPT: Final = {"type": "ephemeral", "ttl": "1h"}
+"""The breakpoints of the fixed prefix, the tools and the system message, which the
+calls of a session share for longer than five minutes (CM-32): the 1-hour cache, whose
+writes cost twice the input price and its reads the same as the five minutes'. LiteLLM
+1.102.1 passes ``ttl`` on to Anthropic as it is."""
 _INFO_BYTES: Final = 1024 * 1024
+_PIECES: Final = {
+    "text_delta": ("text", "text"),
+    "thinking_delta": ("thinking", "thinking"),
+    "input_json_delta": ("input", "partial_json"),
+}
+"""The deltas that add a piece to a block: the block's field, and the delta's."""
+FRAMING: Final = 64
+"""How many times larger than the message it builds a stream may be: each delta's event
+wraps a few characters of the answer in about a hundred bytes."""
 
 
 @dataclass(frozen=True)
@@ -314,6 +359,9 @@ class _Served:
     compaction: bool = False
     """Whether the model takes server-side compaction (CM-38b)."""
     why_not_compaction: str = "the gateway does not say which model"
+    output: int | None = None
+    """The most an answer may take on the model, thinking included (``max_output_tokens``),
+    or ``None`` when the gateway's model information does not say."""
 
 
 @dataclass(frozen=True)
@@ -369,7 +417,17 @@ class MessagesModel(GatewayModel):
 
     @property
     def max_output(self) -> int | None:
-        return self._max_tokens or MAX_TOKENS
+        return self._length(self._served)
+
+    def _length(self, served: _Served | None) -> int:
+        """The answer's length the request asks for: the role's own, or ``MAX_TOKENS``, but
+        never more than the model's, when the gateway's model information gives it."""
+        asked = self._max_tokens or MAX_TOKENS
+        limit = served.output if served is not None else None
+        return asked if limit is None else min(asked, limit)
+
+    async def _read_stream(self, response: aiohttp.ClientResponse, limit: int) -> bytes:
+        return await read_message_stream(response, limit)
 
     @property
     def requested_profile(self) -> ModelProfile:
@@ -506,7 +564,8 @@ class MessagesModel(GatewayModel):
         trigger = self._trigger()
         view = _render(messages, tools, served, replay, compacting=trigger is not None)
         view.body["model"] = self.model
-        view.body["max_tokens"] = self._max_tokens or MAX_TOKENS
+        view.body["max_tokens"] = self._length(served)
+        view.body["stream"] = True
         if trigger is not None:
             edit: Json = {
                 "type": COMPACT_EDIT,
@@ -553,14 +612,17 @@ class MessagesModel(GatewayModel):
         """What the alias's model takes, asked of the gateway once it has answered."""
         if self._served is not None:
             return self._served
-        models = await self._models()
-        if models is None:
+        described = await self._models()
+        if described is None:
             return _Served(False, False)
+        models, output = described
         updates, why_updates = _decide(models, _UPDATES)
         changes, why_changes = _decide(models, _TOOL_CHANGES)
         compacts, why_compaction = _decide(models, _COMPACTING)
         adaptive = not models or not all(_OLDER.search(_hyphenated(model)) for model in models)
-        served = _Served(updates, changes, adaptive, _efforts(models), compacts, why_compaction)
+        served = _Served(
+            updates, changes, adaptive, _efforts(models), compacts, why_compaction, output
+        )
         # The features are inferred from a string the operator typed at the gateway, so
         # say what was chosen, once for the alias (and again if the gateway names another
         # model); a name that matched nothing is a warning, since it turns the features
@@ -572,7 +634,8 @@ class MessagesModel(GatewayModel):
         _FEATURES_LOGGED.add(seen)
         report(
             "Messages adapter for %s: gateway model %s; progress notes (display updates) "
-            "%s (%s); mid-run tool changes %s (%s); adaptive thinking %s",
+            "%s (%s); mid-run tool changes %s (%s); adaptive thinking %s; answers of up to "
+            "%s tokens",
             self.model,
             ", ".join(models) or "not given",
             "on" if updates else "off",
@@ -580,13 +643,16 @@ class MessagesModel(GatewayModel):
             "on" if changes else "off",
             why_changes,
             "on" if adaptive else "off (a model before the 4.6 family)",
+            f"{self._length(served):,}",
         )
         self._served = served
         return served
 
-    async def _models(self) -> list[str] | None:
+    async def _models(self) -> tuple[list[str], int | None] | None:
         """The provider models the gateway serves the alias by (``GET /model/info``, its
-        ``litellm_params.model``); ``None`` when the gateway could not be asked."""
+        ``litellm_params.model``), and the least ``max_output_tokens`` its deployments'
+        information gives, if any gives one; ``None`` when the gateway could not be
+        asked."""
         if self._session is None:
             self._session = aiohttp.ClientSession()
         try:
@@ -599,22 +665,28 @@ class MessagesModel(GatewayModel):
                 data = await read_limited(response, _INFO_BYTES)
                 if not 200 <= response.status < 300:
                     _log.warning("the gateway describes no models: HTTP %s", response.status)
-                    return []
+                    return [], None
         except (aiohttp.ClientError, TimeoutError, ModelError) as error:
             _log.warning("the gateway describes no models: %s", type(error).__name__)
             return None
         try:
             found = _object(json.loads(data)).get("data")
         except (ValueError, TypeError, RecursionError):
-            return []
+            return [], None
         models: list[str] = []
+        outputs: list[int] = []
         for entry in cast(list[object], found) if isinstance(found, list) else []:
             fields = cast(Json, entry) if isinstance(entry, dict) else {}
-            params = fields.get("litellm_params")
+            if fields.get("model_name") != self.model:
+                continue
+            params, info = fields.get("litellm_params"), fields.get("model_info")
             named = cast(Json, params).get("model") if isinstance(params, dict) else None
-            if fields.get("model_name") == self.model and isinstance(named, str):
+            if isinstance(named, str):
                 models.append(named.lower())
-        return models
+            most = cast(Json, info).get("max_output_tokens") if isinstance(info, dict) else None
+            if type(most) is int and most > 0:
+                outputs.append(most)
+        return models, min(outputs, default=None)
 
 
 class _Reading:
@@ -652,6 +724,15 @@ class _Reading:
             (dict(each) for each in found if each.get("type") == COMPACTION_BLOCK), None
         )
         stop, resolved = data.get("stop_reason"), data.get("model")
+        finish = _FINISH.get(stop, stop) if isinstance(stop, str) else None
+        if cut(data):
+            # Part of an answer from a cut stream (read_message_stream): with a finished
+            # call, it called that; else the output limit might have cut it.
+            finish = "tool_calls" if calls else LENGTH
+            _log.warning(
+                "the model's stream was cut after part of its answer; the part stands as %s",
+                "an answer with its calls" if calls else "one the output limit cut off",
+            )
         if stop == "refusal":
             details = data.get("stop_details")
             found = cast(Json, details) if isinstance(details, dict) else {}
@@ -668,7 +749,7 @@ class _Reading:
             content=said if said != answer else None,
             notes=tuple(str(note) for note in notes) if self.notes else (),
             tool_calls=calls,
-            finish_reason=_FINISH.get(stop, stop) if isinstance(stop, str) else None,
+            finish_reason=finish,
             model=resolved if isinstance(resolved, str) else None,
             input_tokens=_input(usage),
             output_tokens=_tokens(usage.get("output_tokens")),
@@ -676,6 +757,245 @@ class _Reading:
             cache_creation_input_tokens=_tokens(usage.get("cache_creation_input_tokens")),
             cost=reported_cost(priced if priced is not None else usage.get("cost")),
         )
+
+
+def cut(message: Mapping[str, object]) -> bool:
+    """Whether a message is the part of an answer a cut stream left: its ``stop_reason``
+    is null, as only an unfinished message's is (``read_message_stream``)."""
+    return "stop_reason" in message and message["stop_reason"] is None
+
+
+async def read_message_stream(response: aiohttp.ClientResponse, limit: int) -> bytes:
+    """The message a bounded Messages stream builds (``_Streamed``), as compact JSON. A
+    stream cut before its end (the connection lost or idle, the stream's end before
+    ``message_stop``, or an ``error`` event of a kind a later attempt can get past,
+    ``STREAM_RETRIED``) gives what it left (``_Streamed.left``): the message, when only
+    its ``message_stop`` is missing, or else the part of an answer it holds, when that
+    has text or a finished call. One that left less is an ``IncompleteStreamError`` or
+    what the transport raised, tried again; any other ``error`` event is the error it
+    names (``stream_failure``). The message may take ``limit`` bytes, its stream
+    ``FRAMING`` times that. An answer the gateway sends whole, not as a stream, is read
+    as it is."""
+    if response.content_type != "text/event-stream":
+        return await read_limited(response, limit)
+    built = _Streamed(limit)
+    try:
+        async with aclosing(server_events(response, limit * FRAMING, "Messages")) as events:
+            async for name, data in events:
+                built.add(name, data)
+    except _StreamError as failed:
+        error = stream_failure(failed.text)
+        if failed.kind in STREAM_RETRIED and (left := built.left()) is not None:
+            _log.warning("the model gateway's stream failed before its end: %s", error)
+            return left
+        raise error from None
+    except (aiohttp.ClientPayloadError, aiohttp.ClientConnectionError, TimeoutError) as lost:
+        if (left := built.left()) is None:
+            raise
+        _log.warning("the model gateway's stream was cut: %s", type(lost).__name__)
+        return left
+    if (left := built.left()) is not None:
+        if not built.ended:
+            _log.warning("the model gateway's stream ended before its message_stop")
+        return left
+    raise IncompleteStreamError(
+        "the model gateway's Messages stream ended without a final response (message_stop)"
+    )
+
+
+class _StreamError(Exception):
+    """A stream's ``error`` event: its error's type, and its data's JSON text."""
+
+    def __init__(self, kind: str | None, text: str) -> None:
+        super().__init__(kind)
+        self.kind, self.text = kind, text
+
+
+class _Streamed:
+    """A message as its stream's events build it, as Anthropic's SDK accumulates one
+    (``accumulate_event``): ``message_start``'s message, each block as its
+    ``content_block_start`` gave it, with its deltas applied (text, thinking, the
+    signature, citations, a compaction's summary, and a call's input as the JSON its
+    pieces make once the block stops), and each field of ``message_delta``'s ``delta`` and
+    of its other fields, the usage's counts among them, over the message's. ``ping`` and
+    event types it does not know are passed over, as the SDK passes them."""
+
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        self.size = 0
+        """About how large the message is so far: its events' data, but a piece of text,
+        thinking or input JSON for itself alone."""
+        self.message: Json | None = None
+        self.content: list[Json] = []
+        self.pieces: dict[tuple[int, str], list[str]] = {}
+        """The text, thinking and input JSON of each open block so far, in pieces, which
+        its stop joins."""
+        self.stopped: set[int] = set()
+        """The blocks whose ``content_block_stop`` came."""
+        self.ended = False
+        """Whether ``message_stop`` came."""
+        self.finished = False
+        """Whether ``message_delta`` gave the message's stop reason."""
+
+    def add(self, name: str, data: bytes) -> None:
+        try:
+            raw: object = json.loads(data)
+        except (ValueError, UnicodeDecodeError, RecursionError):
+            raise ModelError("the model gateway sent invalid Messages SSE data") from None
+        if not isinstance(raw, dict):
+            raise ModelError("the model gateway sent a non-object Messages SSE event")
+        event = cast(Json, raw)
+        named = event.get("type")
+        kind = named if isinstance(named, str) else name
+        given = event.get("delta")
+        delta = cast(Json, given) if isinstance(given, dict) else {}
+        if kind != "content_block_delta" or delta.get("type") not in _PIECES:
+            self._grown(len(data))  # a piece counts as itself, without its event
+        if kind == "error":
+            found = event.get("error")
+            error = cast(Json, found) if isinstance(found, dict) else {}
+            failed = error.get("type")
+            raise _StreamError(
+                failed if isinstance(failed, str) else None, data.decode("utf-8", "replace")
+            )
+        if kind == "message_start":
+            message = event.get("message")
+            if self.message is not None or not isinstance(message, dict):
+                raise ModelError("the model gateway sent an invalid message_start event")
+            self.message = dict(cast(Json, message))
+            content = self.message.get("content")
+            self.content = [
+                dict(cast(Json, block))
+                for block in (cast(list[object], content) if isinstance(content, list) else [])
+                if isinstance(block, dict)
+            ]
+            self.stopped.update(range(len(self.content)))
+            return
+        if kind not in ("content_block_start", "content_block_delta", "content_block_stop",
+                        "message_delta", "message_stop"):  # fmt: skip
+            return
+        if self.message is None:
+            raise ModelError(f"the model gateway's Messages stream began with {kind}")
+        if kind == "content_block_start":
+            block = event.get("content_block")
+            if event.get("index") != len(self.content) or not isinstance(block, dict):
+                raise ModelError("the model gateway sent a block out of order")
+            self.content.append(dict(cast(Json, block)))
+        elif kind == "content_block_delta":
+            self._delta(self._open(event), delta)
+        elif kind == "content_block_stop":
+            index = self._open(event)
+            self.content[index] = self._joined(index)
+            self.pieces = {key: kept for key, kept in self.pieces.items() if key[0] != index}
+            self.stopped.add(index)
+        elif kind == "message_delta":
+            self.message.update(delta)
+            self.finished = self.message.get("stop_reason") is not None
+            usage, kept = event.get("usage"), self.message.get("usage")
+            if isinstance(usage, dict):
+                counts = dict(cast(Json, kept)) if isinstance(kept, dict) else {}
+                counts.update((k, v) for k, v in cast(Json, usage).items() if v is not None)
+                self.message["usage"] = counts
+            self.message.update(
+                (key, value)
+                for key, value in event.items()
+                if key not in ("type", "delta", "usage") and value is not None
+            )
+        else:
+            self.ended = True
+
+    def _open(self, event: Json) -> int:
+        """The index of the block an event names, one started and not yet stopped."""
+        index = event.get("index")
+        if type(index) is not int or not 0 <= index < len(self.content) or index in self.stopped:
+            raise ModelError("the model gateway sent a delta for no open block")
+        return index
+
+    def _delta(self, index: int, fields: Json) -> None:
+        block = self.content[index]
+        kind = fields.get("type")
+        if (named := _PIECES.get(str(kind))) is not None:
+            field, given = named
+            piece = fields.get(given)
+            if not isinstance(piece, str):
+                raise ModelError(f"the model gateway sent a {kind} without its {given}")
+            if (index, field) not in self.pieces:
+                before = block.get(field)
+                self.pieces[index, field] = [before] if isinstance(before, str) else []
+            self.pieces[index, field].append(piece)
+            self._grown(len(piece))
+        elif kind == "signature_delta":
+            block["signature"] = fields.get("signature")
+        elif kind == "citations_delta":
+            listed = block.get("citations")
+            block["citations"] = [
+                *(cast(list[object], listed) if isinstance(listed, list) else []),
+                fields.get("citation"),
+            ]
+        elif kind == "compaction_delta":
+            block.update((key, value) for key, value in fields.items() if key != "type")
+        else:
+            _log.warning("a Messages stream's %s was passed over", str(kind)[:64])
+
+    def _grown(self, size: int) -> None:
+        self.size += size
+        if self.size > self.limit:
+            raise ModelError(f"the model gateway's answer is larger than {self.limit} bytes")
+
+    def _joined(self, index: int) -> Json:
+        """A block with its pieces so far joined: a call's input the JSON object they make,
+        or none (``{}``) when they make none, as when the output limit cut the call."""
+        block = dict(self.content[index])
+        for (at, field), pieces in self.pieces.items():
+            if at != index:
+                continue
+            if field != "input":
+                block[field] = "".join(pieces)
+                continue
+            try:
+                given: object = json.loads("".join(pieces))
+            except (ValueError, RecursionError):
+                given = None
+            block[field] = given if isinstance(given, dict) else {}
+        return block
+
+    def left(self) -> bytes | None:
+        """The message, once its ``message_stop`` came, or its ``message_delta`` with every
+        block stopped; else the part of an answer the stream left (``part``)."""
+        if self.message is None:
+            return None
+        if self.ended or (self.finished and self.stopped.issuperset(range(len(self.content)))):
+            blocks = [self._joined(index) for index in range(len(self.content))]
+            return _compact({**self.message, "content": blocks})
+        return self.part()
+
+    def part(self) -> bytes | None:
+        """The part of an answer a cut stream left, when it holds text or a finished call:
+        the finished blocks, and the text so far of a text block it cut, with its
+        ``stop_reason`` null and no ``output_tokens``, which only the message's end gives;
+        ``None`` for anything less."""
+        if self.message is None:
+            return None
+        blocks = [self._joined(index) for index in range(len(self.content))]
+        kept = [
+            block
+            for index, block in enumerate(blocks)
+            if index in self.stopped or (block.get("type") == "text" and block.get("text"))
+        ]
+        said = any(block.get("type") == "text" and block.get("text") for block in kept)
+        if not said and not any(block.get("type") == "tool_use" for block in kept):
+            return None
+        usage = self.message.get("usage")
+        counts = {
+            key: value
+            for key, value in (cast(Json, usage).items() if isinstance(usage, dict) else ())
+            if key != "output_tokens"
+        }
+        return _compact({**self.message, "content": kept, "stop_reason": None, "usage": counts})
+
+
+def _compact(message: Json) -> bytes:
+    return json.dumps(message, ensure_ascii=False, separators=(",", ":")).encode()
 
 
 def _refusal(turn: ModelTurn, category: str | None, explanation: str | None) -> Refusal:
@@ -789,8 +1109,11 @@ def _render(
     for message in conversation:
         role = message.get("role")
         if role == "tool":
-            call = _scrubbed(message.get("tool_call_id"))
-            results.append({"type": "tool_result", "tool_use_id": call, "content": _text(message)})
+            call, text = _scrubbed(message.get("tool_call_id")), _text(message)
+            result: Json = {"type": "tool_result", "tool_use_id": call, "content": text}
+            if failed(text):
+                result["is_error"] = True
+            results.append(result)
         elif role in ("user", "system"):
             if text := _text(message):
                 texts.append({"type": "text", "text": text})
@@ -824,10 +1147,10 @@ def _render(
     prefix = digest()
     body: Json = {"messages": _cached(out)}
     if system:
-        body["system"] = [*system[:-1], {**system[-1], "cache_control": _CACHED}]
+        body["system"] = [*system[:-1], {**system[-1], "cache_control": _KEPT}]
     if declared or deferred:
         if declared:
-            declared[-1] = {**declared[-1], "cache_control": _CACHED}
+            declared[-1] = {**declared[-1], "cache_control": _KEPT}
         body["tools"] = [*declared, *deferred]
     # Claude models before the 4.6 family take no adaptive thinking: they run without.
     if served.adaptive:
@@ -838,6 +1161,36 @@ def _render(
         body["thinking"] = thinking
     added = len(_canonical(out[after:])) if prior is not None else 0
     return _View(body, prefix, prior, added)
+
+
+def failed(text: str) -> bool:
+    """Whether a tool result, as the conversation holds it, is a failed call's, which the
+    request marks ``is_error``: the error every tool reports when a call fails
+    (docs/specs/tools.md, "Errors"), an object of its ``error`` alone, with its ``kind``,
+    and what the harness adds to any result (``_ADDED``), after the platform's header; or
+    such a result with notices riding on it (its ``tool_result``); or the result of a
+    call that never answered (``pairing.ABORTED``). A result that holds an error among
+    fields of its own, as an execution whose code raised does, is not one: the call ran.
+    The error is what the outcome's record names (its ``error``), for every tool."""
+    body = _HEADER.sub("", text, count=1) if text.startswith("[msg-") else text
+    if body == ABORTED:
+        return True
+    for _ in range(2):  # the result itself, or the one notices ride on
+        try:
+            value: object = json.loads(body)
+        except (ValueError, RecursionError):
+            return False
+        if not isinstance(value, dict):
+            return False
+        fields = cast(Json, value)
+        error = fields.get("error")
+        if isinstance(error, dict) and isinstance(cast(Json, error).get("kind"), str):
+            return fields.keys() - _ADDED == {"error"}
+        inner = fields.get("tool_result")
+        if not isinstance(inner, str):
+            return False
+        body = inner
+    return False
 
 
 def _paired(messages: Sequence[Message]) -> list[Message]:

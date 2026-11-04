@@ -23,6 +23,7 @@ from contextlib import (
 from dataclasses import dataclass, field
 from typing import Any, Final, Literal, TypeVar, cast
 
+from .agent_messages import CHILD_SPEC, PARENT_SPEC
 from .context.agent import MAX_INPUT_CHARS as MAX_INPUT_CHARS
 from .context.agent import AgentContext
 from .context.folding import Folds
@@ -43,21 +44,35 @@ from .hooks import (
 from .images import IMAGE
 from .kernel_check import KernelCheck
 from .memory_prompt import MemoryGiven
-from .model import AssistantMessage, ChatModel, Message, ModelTurn, ToolCall, run_fallbacks
-from .notices import REPORT
+from .model import (
+    LENGTH,
+    AssistantMessage,
+    ChatModel,
+    GatewayModel,
+    Message,
+    ModelTurn,
+    ToolCall,
+    cut_call,
+    run_fallbacks,
+)
+from .notices import CONTINUE, ERROR_STREAK, REPORT
 from .plan_tools import GUIDANCE, GUIDANCE_VERSION, Plans
 from .plan_tools import NAMES as PLAN_NAMES
 from .projects import FailurePhase
 from .prompts import Section, assemble, schema_json
 from .purpose import GUIDANCE as PURPOSE_GUIDANCE
 from .purpose import without
+from .question_tool import ASK_USER
+from .resource_hooks import SPEC as DECIDE_SPEC
+from .skills.tool import NAME as SKILLS_TOOL
 from .stock_prompts import select_template
 from .tool_mix import ToolMix
-from .tools import Toolbox, ToolOutcome, bound, operation_id
+from .tools import MCP_TOOLS, Toolbox, ToolOutcome, bound, operation_id
 from .worker_client import dump
 from .wraps import POLLS as POLLS
 from .wraps import RUNAWAY as RUNAWAY
 from .wraps import (
+    ErrorStreak,
     ModelRefusals,
     OverflowRetry,
     Runaway,
@@ -78,6 +93,30 @@ REPORT_ROOM: Final = 8
 this part of its ``max_input_chars`` (one eighth), which leaves room for the call."""
 REPORT_SOURCE: Final = "report"
 """The report round's notice source."""
+CONTINUE_SOURCE: Final = "continue"
+"""The notice source of the loop's request to continue an answer the output limit cut off."""
+STREAK_SOURCE: Final = "error_streak"
+"""The notice source of the loop's nudge after an error streak (``wraps.ErrorStreak``)."""
+LOOP_NOTICES: Final = {
+    REPORT_SOURCE: REPORT.text,
+    CONTINUE_SOURCE: CONTINUE.text,
+    STREAK_SOURCE: ERROR_STREAK.text,
+}
+"""The notices the loop offers of its own, by source, each with this framing and no IDs: a
+confined run's host admits these beside the notices its hooks handed out."""
+CONTINUATIONS: Final = 2
+"""How many times a run asks the model to continue an answer the output limit cut off;
+after that, the text so far is the answer (RS-6f)."""
+OUTPUT_LIMIT: Final = "output_limit"
+"""Why a call the output limit cut off did not run (``not_run``)."""
+CONCURRENT: Final = 8
+"""The most read-class calls of one reply that run at once."""
+IN_ORDER: Final = frozenset(
+    {ASK_USER, CHILD_SPEC.name, PARENT_SPEC.name, DECIDE_SPEC.name, SKILLS_TOOL, MCP_TOOLS}
+)
+"""The read-class tools whose calls run in the reply's order all the same: they reach
+someone else (a question to the user, a message to a parent or a child, the decision on a
+child's check-in), stage a skill's files, or change the run's tools."""
 MAIN_VERSION: Final = "sandbox-main-19"
 """The version of ``SYSTEM_PROMPT``'s text."""
 SYSTEM_PROMPT: Final = (
@@ -521,20 +560,88 @@ def _tool_call(
     toolbox: Toolbox,
     transcript: Transcript,
     hooks: Sequence[TurnHook],
-    guard: Runaway,
     model: str | None,
 ) -> ToolHandler:
     """A tool call of a reply from ``model``, once its intent is saved: the toolbox runs
-    it, through every hook's gate. Its wraps, outermost first: the runaway guard, then
-    each hook's (``wraps.py``)."""
+    it, through every hook's gate, inside each hook's wrap (``wraps.py``). The loop gives
+    its outcome to the runaway guard and the error streak in the reply's order."""
 
     async def dispatch(call: ToolCall, operation: str) -> ToolOutcome:
-        transcript.phase = "tool"
-        outcome = await toolbox.call(call, operation, model=model, gates=hooks)
-        transcript.phase = "harness"
-        return outcome
+        return await toolbox.call(call, operation, model=model, gates=hooks)
 
-    return wrap_tool(dispatch, [guard.wrap, *hook_tool_wraps(hooks, transcript)])
+    return wrap_tool(dispatch, hook_tool_wraps(hooks, transcript))
+
+
+def _concurrent(toolbox: Toolbox, call: ToolCall) -> bool:
+    """Whether ``call`` may run at once with the calls beside it: a read-class call
+    (``hooks.Effect``) of a toolbox that runs its calls itself, other than ``IN_ORDER``'s.
+    A confined run's toolbox hands each call to its host, which admits one at a time."""
+    if type(toolbox).call is not Toolbox.call or call.name in IN_ORDER:
+        return False
+    entry = toolbox.entries.get(call.name)
+    return entry is not None and entry.effect == "read"
+
+
+def _batches(
+    toolbox: Toolbox, calls: Sequence[ToolCall], cut: ToolCall | None
+) -> list[tuple[ToolCall, ...]]:
+    """A reply's calls as they run, in its order: each run of calls in a row that may run
+    at once (``_concurrent``) together, every other call alone, the one the output limit
+    cut off among them."""
+    batches: list[list[ToolCall]] = []
+    together = False
+    for call in calls:
+        joins = call is not cut and _concurrent(toolbox, call)
+        if joins and together:
+            batches[-1].append(call)
+        else:
+            batches.append([call])
+        together = joins
+    return [tuple(batch) for batch in batches]
+
+
+type Ran = tuple[ToolCall, str | None, ToolOutcome | BaseException]
+"""A call of a batch, its operation ID (none for a call that did not run), and its outcome,
+or what it raised."""
+
+
+async def _run_batch(
+    batch: Sequence[ToolCall],
+    dispatch: ToolHandler,
+    transcript: Transcript,
+    prefix: str,
+    cut: ToolCall | None,
+) -> list[Ran]:
+    """One batch of a reply's calls, each run once its intent is saved, in order: a call
+    alone, or read-class calls at once, at most ``CONCURRENT`` together. The call the
+    output limit cut off does not run, and has no intent: its outcome is ``not_run``
+    (``OUTPUT_LIMIT``). The outcomes come in the batch's order, whatever order the calls
+    ended in; a call of several that raised has its exception in its place, for the
+    caller to raise there, with the phase ``tool`` again."""
+    if len(batch) == 1 and batch[0] is cut:
+        return [(batch[0], None, not_run(OUTPUT_LIMIT))]
+    operations: list[str] = []
+    for call in batch:
+        operation = operation_id(prefix, call)
+        if transcript.context.log is not None:
+            await transcript.context.log.start_tool(call, operation)
+        operations.append(operation)
+    transcript.phase = "tool"
+    if len(batch) == 1:
+        found: list[ToolOutcome | BaseException] = [await dispatch(batch[0], operations[0])]
+    else:
+        room = asyncio.Semaphore(CONCURRENT)
+
+        async def bounded(call: ToolCall, operation: str) -> ToolOutcome:
+            async with room:
+                return await dispatch(call, operation)
+
+        found = await asyncio.gather(
+            *(bounded(call, operation) for call, operation in zip(batch, operations, strict=True)),
+            return_exceptions=True,
+        )
+    transcript.phase = "harness"
+    return list(zip(batch, operations, found, strict=True))
 
 
 async def _turn_limit(hooks: Sequence[TurnHook], transcript: Transcript) -> None:
@@ -580,12 +687,51 @@ async def _out_of_room(hooks: Sequence[TurnHook], transcript: Transcript) -> Non
 
 
 def not_run(reason: str) -> ToolOutcome:
-    """The result of a tool call the report round does not run."""
-    message = f"not_run: the run reached a limit ({reason}); this call did not run"
-    return ToolOutcome(
-        dump({"error": {"kind": "unavailable", "message": message}}),
-        {"error": "unavailable", "not_run": reason},
+    """The result of a tool call that does not run: one the report round does not run,
+    for the run's limit, or the one the output limit cut off (``OUTPUT_LIMIT``), whose
+    arguments may be incomplete."""
+    kind = "invalid_request" if reason == OUTPUT_LIMIT else "unavailable"
+    message = (
+        "not_run: your reply reached its output limit inside this call, so its arguments "
+        "may be incomplete and it did not run; make the call again, smaller (split a long "
+        "file or cell into parts)"
+        if reason == OUTPUT_LIMIT
+        else f"not_run: the run reached a limit ({reason}); this call did not run"
     )
+    return ToolOutcome(
+        dump({"error": {"kind": kind, "message": message}}), {"error": kind, "not_run": reason}
+    )
+
+
+def _answering(model: ChatModel) -> ChatModel:
+    """``model`` for the report round: its request keeps the tools, so the prompt cache
+    still covers them, but the model may not call one (``tool_choice: none``). A model
+    that is not the gateway's, as a scripted one, is as it is: a call it asks for is
+    answered ``not_run``."""
+    return model.choosing("none") if isinstance(model, GatewayModel) else model
+
+
+@dataclass
+class _Answer:
+    """The answer the loop is getting: the parts of one the output limit cut off, which
+    later calls continue (``CONTINUATIONS`` a run, ``continued`` so far), and whether an
+    empty answer was asked for again."""
+
+    parts: list[str] = field(default_factory=list[str])
+    continued: int = 0
+    retried: bool = False
+
+
+def _counted(transcript: Transcript, name: str, key: str, *, at: int | None = None) -> None:
+    """Count one in the run record's ``summaries[name][key]``, as archives count them:
+    the answers the output limit cut off (``length``) and the empty answers asked for again
+    (``empty_answers``). ``at`` is the answer's usage entry, by its 1-based position."""
+    found = cast(dict[str, Any], transcript.summaries.setdefault(name, {}))
+    found[key] = cast(int, found.get(key, 0)) + 1
+    if at is not None:
+        kept = cast(list[int], found.setdefault("at", []))
+        if len(kept) < 32:
+            kept.append(at)
 
 
 async def _last_call(hooks: Sequence[TurnHook], transcript: Transcript) -> tuple[str, str] | None:
@@ -607,7 +753,8 @@ async def _last_call(hooks: Sequence[TurnHook], transcript: Transcript) -> tuple
 
 
 async def _report(
-    complete: ModelHandler,
+    model: ChatModel,
+    toolbox: Toolbox,
     transcript: Transcript,
     hooks: Sequence[TurnHook],
     reason: str,
@@ -618,8 +765,9 @@ async def _report(
     ``stopped``, and an answer its closing lets stand its ``final_text``.
 
     A hook that halts the run first, as a spent cost limit does, stops it without one. No
-    hook offers notices before the call, so the user's messages wait for the next run; no
-    tool the reply asks for runs, each answered as not run; and the closing has no turn
+    hook offers notices before the call, so the user's messages wait for the next run.
+    The call offers the tools but may not call them (``_answering``); a tool a reply asks
+    for all the same does not run, each answered as not run; and the closing has no turn
     to give. A run that made no model call has nothing to report.
     """
     if transcript.turns == 0 or await _halted(hooks, transcript):
@@ -647,12 +795,14 @@ async def _report(
     await _offer(transcript, (notice,))
     transcript.turns += 1
     await _consumption(hooks, transcript)
-    reply = await complete()
+    reply = await _model_call(_answering(model), toolbox, transcript, hooks)()
     transcript.halted = reason
     if reply is None:
         return
     await _append(transcript, AssistantMessage.of(reply), Appended("assistant", reply=reply))
     await _model_returned(hooks, transcript)
+    if reply.finish_reason == LENGTH:
+        _counted(transcript, "length", "stops", at=len(transcript.context.usage))
     for call in reply.tool_calls:
         outcome = not_run(reason)
         await _append(
@@ -681,13 +831,24 @@ async def _run_task(
     on_tool: Callable[[str, str, ToolOutcome], Awaitable[None]] | None = None,
 ) -> Transcript:
     """Run the observed conversation from ``task``, if any; ``run_id`` prefixes every
-    worker operation ID."""
+    worker operation ID.
+
+    An answer the output limit cut off stays in the conversation, and the next call is
+    asked to continue it (``CONTINUE``), at most ``CONTINUATIONS`` times a run; the parts
+    together are the answer the closing sees. An empty answer, with no text and no call,
+    is asked for once more before its closing. A reply's calls run in its order, a run of
+    read-class calls in a row at once (``_batches``); their results, records, observers
+    and checks follow the reply's order whatever order the calls ended in. A call the
+    output limit cut off does not run (``not_run``). Three failed calls in a row of one
+    tool with one kind of error bring a notice (``ERROR_STREAK``) after the reply's
+    results.
+    """
     if task is not None:
         await _append(transcript, {"role": "user", "content": task}, Appended("task"))
     await _notices(hooks, "start", transcript)
     revision = toolbox.revision
     complete = _model_call(model, toolbox, transcript, hooks)
-    guard = Runaway()
+    guard, streak, answer = Runaway(), ErrorStreak(), _Answer()
     while True:
         await _turn_limit(hooks, transcript)
         if transcript.turns >= transcript.max_turns:
@@ -696,7 +857,7 @@ async def _run_task(
         if await _halted(hooks, transcript):
             return transcript
         if turn and (last := await _last_call(hooks, transcript)) is not None:
-            await _report(complete, transcript, hooks, *last)
+            await _report(model, toolbox, transcript, hooks, *last)
             return transcript
         await _notices(hooks, "turn", transcript)
         transcript.turns = turn + 1
@@ -712,65 +873,77 @@ async def _run_task(
                 await _out_of_room(hooks, transcript)
             return transcript
         # The answer as a chat message, carrying the gateway's answer for its adapter.
-        answer = AssistantMessage.of(reply)
-        await _append(transcript, answer, Appended("assistant", reply=reply))
+        await _append(transcript, AssistantMessage.of(reply), Appended("assistant", reply=reply))
         await _model_returned(hooks, transcript)
         await _turn_limit(hooks, transcript)
+        limited = reply.finish_reason == LENGTH
+        if limited:
+            _counted(transcript, "length", "stops", at=len(transcript.context.usage))
         if not reply.tool_calls:
+            if limited and answer.continued < CONTINUATIONS:
+                notice = Notice(
+                    CONTINUE_SOURCE,
+                    (),
+                    CONTINUE.text,
+                    {
+                        "output_tokens": reply.output_tokens,
+                        "continuation": answer.continued + 1,
+                        "at_most": CONTINUATIONS,
+                    },
+                )
+                if transcript.has_room((notice,)):
+                    answer.parts.append(reply.text or "")
+                    answer.continued += 1
+                    _counted(transcript, "length", "continued")
+                    await _offer(transcript, (notice,))
+                    continue
+            text = "".join([*answer.parts, reply.text or ""]) if answer.parts else reply.text
+            answer.parts.clear()
+            if not (text or "").strip() and not answer.retried:
+                answer.retried = True
+                _counted(transcript, "empty_answers", "retried")
+                continue
+            answer.retried = False
             held = transcript.held
-            if await _closing(hooks, transcript, reply.text):
-                transcript.pending = reply.text
+            if await _closing(hooks, transcript, text):
+                transcript.pending = text
                 guard.answer(transcript.held > held)
                 if guard.tripped is not None:
-                    await _runaway(complete, transcript, hooks, guard.tripped)
+                    await _runaway(model, toolbox, transcript, hooks, guard.tripped)
                     return transcript
                 continue
             return transcript
+        answer.parts.clear()
+        answer.retried = False
         viewed: list[tuple[Notice, str]] = []
-        dispatch = _tool_call(toolbox, transcript, hooks, guard, reply.model)
-        for call in reply.tool_calls:
-            operation = operation_id(f"{run_id}-t{turn}", call)
-            if transcript.context.log is not None:
-                await transcript.context.log.start_tool(call, operation)
-            outcome = await dispatch(call, operation)  # the guard saw it before any notice
-            await _attach(hooks, transcript, outcome, toolbox.output_chars)
-            await _append(
-                transcript,
-                {"role": "tool", "tool_call_id": call.id, "content": outcome.text},
-                Appended("tool_result", call=call, outcome=outcome, operation_id=operation),
-            )
-            # The record's arguments are the call's as the harness ran it, without its
-            # purpose, which the record keeps beside them (Purpose 3).
-            record = {"tool": call.name, "arguments": without(call.arguments), **outcome.record}
-            index = len(transcript.tool_records)
-            retained = (
-                transcript.context.log.retained_tool(record)
-                if transcript.context.log is not None
-                else record
-            )
-            transcript.tool_records.append(retained)
-            archived_records = (
-                transcript.tool_records if isinstance(transcript.tool_records, Collection) else None
-            )
-            if archived_records is not None:
-                archived_records.expose_current(index, record)
+        streaks: list[tuple[str, str]] = []
+        dispatch = _tool_call(toolbox, transcript, hooks, reply.model)
+        cut_off = cut_call(reply)
+        if cut_off is not None:
+            _counted(transcript, "length", "calls_not_run")
+        for batch in _batches(toolbox, reply.tool_calls, cut_off):
+            ran = await _run_batch(batch, dispatch, transcript, f"{run_id}-t{turn}", cut_off)
             try:
-                for hook in hooks:
-                    await hook.observe_tool(
-                        transcript, record if isinstance(hook, KernelCheck) else outcome.record
-                    )
-                if on_tool is not None:
-                    await on_tool(call.name, without(call.arguments), outcome)
-                if outcome.image is not None:
-                    viewed.append(outcome.image)
+                while ran:
+                    call, operation, outcome = ran.pop(0)
+                    try:
+                        if isinstance(outcome, BaseException):
+                            transcript.phase = "tool"
+                            raise outcome
+                        # Before any notice rides on the outcome, in the reply's order.
+                        guard.call(call, outcome)
+                        if (found := streak.call(call, outcome)) is not None:
+                            streaks.append(found)
+                        await _result(
+                            transcript, hooks, toolbox, call, operation, outcome, viewed, on_tool
+                        )
+                    finally:
+                        # Coroutine locals otherwise retain the full last result across
+                        # the next model call, including after observer failure or
+                        # cancellation.
+                        del outcome
             finally:
-                if archived_records is not None:
-                    archived_records.release_current(index)
-                else:
-                    transcript.tool_records[index] = retained
-                # Coroutine locals otherwise retain the full last result across the
-                # next model call, including after observer failure or cancellation.
-                del record, outcome
+                ran.clear()
         # Images go after all of the turn's results, in framed messages of their own
         # whose token each client turns into its API's image (docs/specs/figures.md, FG-37).
         for notice, token in viewed:
@@ -785,17 +958,90 @@ async def _run_task(
             revision = toolbox.revision
             transcript.context.tools_chars = len(schema_json(toolbox.specs))
         if guard.tripped is not None:
-            await _runaway(complete, transcript, hooks, guard.tripped)
+            await _runaway(model, toolbox, transcript, hooks, guard.tripped)
             return transcript
+        nudges = [
+            Notice(
+                STREAK_SOURCE,
+                (),
+                ERROR_STREAK.text,
+                {"tool": tool, "error": kind, "failed_calls": streak.limit},
+            )
+            for tool, kind in streaks
+        ]
+        if nudges and transcript.has_room(nudges):
+            await _offer(transcript, nudges)
     turns = transcript.max_turns
     await _report(
-        complete, transcript, hooks, "turn_limit", f"its turn limit, {turns:,} model calls"
+        model,
+        toolbox,
+        transcript,
+        hooks,
+        "turn_limit",
+        f"its turn limit, {turns:,} model calls",
     )
     return transcript
 
 
+async def _result(
+    transcript: Transcript,
+    hooks: Sequence[TurnHook],
+    toolbox: Toolbox,
+    call: ToolCall,
+    operation: str | None,
+    outcome: ToolOutcome,
+    viewed: list[tuple[Notice, str]],
+    on_tool: Callable[[str, str, ToolOutcome], Awaitable[None]] | None,
+) -> None:
+    """A call's result in the conversation, with the tool point's notices riding on it,
+    and its record, which the hooks then observe; an image it gives the model joins
+    ``viewed``. A call that did not run, which has no ``operation``, has no notices and
+    no observers, as the report round's calls have none."""
+    if operation is not None:
+        await _attach(hooks, transcript, outcome, toolbox.output_chars)
+    await _append(
+        transcript,
+        {"role": "tool", "tool_call_id": call.id, "content": outcome.text},
+        Appended("tool_result", call=call, outcome=outcome, operation_id=operation),
+    )
+    # The record's arguments are the call's as the harness ran it, without its purpose,
+    # which the record keeps beside them (Purpose 3).
+    record = {"tool": call.name, "arguments": without(call.arguments), **outcome.record}
+    index = len(transcript.tool_records)
+    retained = (
+        transcript.context.log.retained_tool(record)
+        if transcript.context.log is not None
+        else record
+    )
+    transcript.tool_records.append(retained)
+    if operation is None:
+        return
+    archived_records = (
+        transcript.tool_records if isinstance(transcript.tool_records, Collection) else None
+    )
+    if archived_records is not None:
+        archived_records.expose_current(index, record)
+    try:
+        for hook in hooks:
+            await hook.observe_tool(
+                transcript, record if isinstance(hook, KernelCheck) else outcome.record
+            )
+        if on_tool is not None:
+            await on_tool(call.name, without(call.arguments), outcome)
+        if outcome.image is not None:
+            viewed.append(outcome.image)
+    finally:
+        if archived_records is not None:
+            archived_records.release_current(index)
+        else:
+            transcript.tool_records[index] = retained
+        # As the caller's: no frame a failure keeps holds the full result.
+        del record, outcome
+
+
 async def _runaway(
-    complete: ModelHandler,
+    model: ChatModel,
+    toolbox: Toolbox,
     transcript: Transcript,
     hooks: Sequence[TurnHook],
     tripped: dict[str, str],
@@ -805,7 +1051,7 @@ async def _runaway(
     _log.warning("the runaway guard stopped the run: %s", tripped["detail"])
     transcript.summaries["runaway"] = {**tripped, "count": RUNAWAY}
     detail = f"the runaway guard: {tripped['detail']}"
-    await _report(complete, transcript, hooks, "runaway", detail)
+    await _report(model, toolbox, transcript, hooks, "runaway", detail)
 
 
 def _sections(

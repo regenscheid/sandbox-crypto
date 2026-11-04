@@ -17,6 +17,8 @@ from sandbox_science.contracts import ErrorKind, ExecutionContext
 from sandbox_science.orchestrator import cli, notices
 from sandbox_science.orchestrator.consistency.prompt_bundle import PURPOSE as REVIEWER_PURPOSE
 from sandbox_science.orchestrator.consistency.rubric import (
+    BUDGET,
+    BUDGET_VERSION,
     RECHECK,
     RECHECK_VERSION,
     RUBRIC,
@@ -120,6 +122,7 @@ GOLDEN = {
     "sandbox-delegated-task-9": "70e83d0cf1f6f803b862cf773d3c35f1d67a390391ab0419ade26836989f7ee1",
     "sandbox-main-11": "f67fd27c0f4937b2e370bb07563ac8aa6d41089f8307e61f5f32e505093d057c",
     "sandbox-main-10": "e8b5e21ed6aa88254c3b40661874fea44954d4c4d4ef7d577c198ee4419f5f23",
+    "sandbox-main-plan-3": "6b150573a6436953255a639e0535664f23d8ca0af72fdb476593de29cb434ff8",
     "sandbox-main-plan-2": "768cd18b5403bf7d316a60eb89ca100ba270ec29f5195343baf41d0d55a301df",
     "sandbox-stock-intake-2": "2bdb3f65587f99c7f78555349196c27f7bb2cbe1429b0adebb3ca549e93e6572",
     "sandbox-stock-experiment-2": (
@@ -144,6 +147,7 @@ GOLDEN = {
     "sandbox-notice-jobs-attached-1": (
         "962543a55f349e3fab95b93c92e0a765c03933193b4e1be7fa70b92032e20f67"
     ),
+    "sandbox-notice-plans-2": "48d64155cc1079258c772e77813f38de9a75c445fe7a39f4f4f4fa8fef6bf0d0",
     "sandbox-notice-plans-1": "4257527cd034fa0bc91f2fe0939af3ff63e2d28fddd04dfb438d39a94e30d00b",
     "sandbox-notice-review-findings-1": (
         "d9fe98f7e1b697bb2d3264496fd601484a9dbce030d3fd0985e049aabd9e67a1"
@@ -177,6 +181,8 @@ GOLDEN = {
     "sandbox-delegated-check-8": "1911d9d5cf0036fe6d952132042f96124e0845bde8271078eb65c5960b655a78",
     "sandbox-delegated-task-8": "0928db5b6b9d08a097dd67464f69ff56eae48890d32f982dd2e516d71ae157fc",
     "sandbox-job-watcher-1": "4b545fe81e35622bf1b894c435833d78fb122116f9364d429b21c6c3551e1ab1",
+    "sandbox-consistency-10": "5400f167e3174daab99f268bfc0ed9613ed3886d97e4a86832054a33b5b3f135",
+    "sandbox-review-budget-1": "0c8b1f5f323c09ae4aef090f39a724f14efe468eeeaed0f8f72d28dbf7f14681",
     "sandbox-consistency-9": "3905f61a0b76144e6ec941e436cd37dea2343b76a7f84f34e5ecf65d8048a588",
     "sandbox-recheck-1": "70923310becc982206fb8caad884bacc282ce182c065f9e978f653ff412eb7fa",
     "sandbox-memory-run-1": "b69cc482f75853487a499ac89b5701b148066e919842a9970e6e318b2bdce121",
@@ -208,6 +214,12 @@ GOLDEN = {
     "sandbox-consolidation-1": ("d67d1fdf2583ba97951b057b2246ce1d458a60806edf9bf7a7545920cf33f20a"),
     "sandbox-image-1": "6aad833a6a22472424296c64943b54adcd0d064aef1db5403c5f5eea2eb95f11",
     "sandbox-notice-report-1": "93112b881cb91462c7b85f862d93cd154a9d5c47684af6815a4eedc9156c9c48",
+    "sandbox-notice-continue-1": (
+        "a8c62c53d35c41e34094b147b09f4e6af414c09030bf6db0460b7025c20654b9"
+    ),
+    "sandbox-notice-error-streak-1": (
+        "aca99a5cd96a97759b5cd54a8e5a63588b0354e287b80134f96624103669136c"
+    ),
     "sandbox-compaction-1": "264481cb4d7bd69c3e27ebfcd5499e761f0aa8b51262d7112ebd188e853ba203",
     "sandbox-notice-outcome-submit-1": (
         "55a457b0cc0426d049e8c0387c7b04368282929908d9b5b8905603cacef3180b"
@@ -228,6 +240,7 @@ def installed() -> dict[str, str]:
         PROMPT_VERSION: WATCHER_PROMPT,
         RUBRIC_VERSION: RUBRIC,
         RECHECK_VERSION: RECHECK,
+        BUDGET_VERSION: BUDGET,
         REVIEWER_PURPOSE.version or "": REVIEWER_PURPOSE.text,
         RUN_VERSION: RUN_FRAMING,
         REVIEWER_VERSION: REVIEWER_FRAMING,
