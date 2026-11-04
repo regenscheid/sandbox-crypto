@@ -49,7 +49,7 @@
   import ChatQuestion from './ChatQuestion.svelte';
   import { api, type PermissionDecision } from '../lib/api';
   import type { PendingApproval, RunTree } from '../lib/api-types';
-  import { heldCall } from '../lib/conversation';
+  import { requestCall } from '../lib/conversation';
   import ChatRecovery from './ChatRecovery.svelte';
   import ChatRun from './ChatRun.svelte';
   import ChatWaiting from './ChatWaiting.svelte';
@@ -211,7 +211,6 @@
       { intervalMs: 2000 },
     ).watch();
   });
-  const transcript = $derived(chat?.runs.flatMap((run) => run.events) ?? []);
   /** The session's automatic continuations, which the conversation shows folded. */
   const continuations = $derived(
     new Set(
@@ -406,7 +405,7 @@
       {:else}
         <ChatPermission
           {request}
-          call={request.kind === 'mcp' ? heldCall(transcript, request.tool) : null}
+          call={requestCall(chat?.runs ?? [], request)}
           answer={(decision) => answerPermission(request, decision)}
         />
       {/if}
