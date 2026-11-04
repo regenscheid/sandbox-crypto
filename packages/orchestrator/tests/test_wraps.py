@@ -34,6 +34,8 @@ from sandbox_science.orchestrator.model import (
 from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome
 from sandbox_science.orchestrator.worker_client import WorkerClient
 from sandbox_science.orchestrator.wraps import (
+    STREAK,
+    ErrorStreak,
     ModelRefusals,
     OverflowRetry,
     Runaway,
@@ -212,28 +214,52 @@ async def test_other_model_errors_pass_in_the_model_phase() -> None:
 # --- Runaway -------------------------------------------------------------------------
 
 
-async def test_the_runaway_wrap_counts_each_outcome_and_returns_it_unchanged() -> None:
+def test_the_runaway_guard_counts_each_outcome_it_is_given() -> None:
     guard = Runaway(limit=2)
     failed = ToolOutcome("no such tool", {"error": "invalid_request"})
-
-    async def run(call: ToolCall, operation: str) -> ToolOutcome:
-        return failed
-
-    assert await guard.wrap(CALL, "op1", run) is failed
+    guard.call(CALL, failed)
     assert guard.tripped is None
-    assert await guard.wrap(CALL, "op2", run) is failed
+    guard.call(CALL, failed)
     assert cast(dict[str, str], guard.tripped)["rule"] == "same_error"
 
 
-async def test_the_runaway_wrap_counts_no_call_that_raised() -> None:
-    guard = Runaway(limit=1)
+# --- ErrorStreak ---------------------------------------------------------------------
 
-    async def lost(call: ToolCall, operation: str) -> ToolOutcome:
-        raise ConnectionError("the worker is gone")
 
-    with pytest.raises(ConnectionError):
-        await guard.wrap(CALL, "op", lost)
-    assert (guard.count, guard.tripped) == (0, None)
+def failure(kind: str = "invalid_request") -> ToolOutcome:
+    return ToolOutcome(f'{{"error":{{"kind":"{kind}"}}}}', {"error": kind})
+
+
+def test_an_error_streak_names_its_tool_and_kind_once_at_its_limit() -> None:
+    streak = ErrorStreak()
+    other = ToolCall("c2", "python", '{"code": "1/0"}')  # other arguments, the same tool
+    assert [streak.call(call, failure()) for call in (CALL, other, CALL, other)] == [
+        None,
+        None,
+        ("python", "invalid_request"),
+        None,  # once a streak
+    ]
+    assert STREAK == 3
+
+
+def test_another_tool_kind_or_a_success_starts_a_streak_again() -> None:
+    streak = ErrorStreak()
+    shell = ToolCall("c3", "shell", "{}")
+    found = [
+        streak.call(CALL, failure()),
+        streak.call(CALL, failure()),
+        streak.call(shell, failure()),  # another tool
+        streak.call(shell, failure("not_found")),  # another kind
+        streak.call(shell, ToolOutcome("ok", {})),  # a success
+        *(streak.call(shell, failure()) for _ in range(3)),
+    ]
+    assert found == [None] * 7 + [("shell", "invalid_request")]
+
+
+def test_a_polling_tools_failures_start_no_streak() -> None:
+    streak = ErrorStreak()
+    wait = ToolCall("c4", "wait_jobs", "{}")
+    assert [streak.call(wait, failure("timed_out")) for _ in range(5)] == [None] * 5
 
 
 # --- The hooks' wrap points ----------------------------------------------------------

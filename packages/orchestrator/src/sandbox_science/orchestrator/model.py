@@ -134,6 +134,24 @@ class ModelTurn:
     ``model``, ``alias``, the tokens and the rest are the answering call's."""
 
 
+LENGTH: Final = "length"
+"""The finish reason of an answer the output limit cut off, as every adapter names it:
+chat completions' own, Claude's ``max_tokens`` (and ``model_context_window_exceeded``),
+and a response incomplete for its ``max_output_tokens``."""
+_WHOLE_CALLS: Final = frozenset({"responses"})
+"""The native formats whose adapter keeps only an answer's completed calls: a call the
+limit cut off is left out of the turn (``responses.py``)."""
+
+
+def cut_call(turn: ModelTurn) -> ToolCall | None:
+    """The call the output limit may have cut off in ``turn``: the last of an answer that
+    stopped at its length, whose arguments may be incomplete, unless its adapter keeps
+    only completed calls; ``None`` for any other answer."""
+    if turn.finish_reason != LENGTH or not turn.tool_calls or turn.native_format in _WHOLE_CALLS:
+        return None
+    return turn.tool_calls[-1]
+
+
 COST_HEADER: Final = "x-litellm-response-cost"
 """The header in which LiteLLM's proxy reports a call's cost."""
 VERSION_HEADER: Final = "x-litellm-version"
@@ -197,12 +215,21 @@ class AssistantMessage(dict[str, Any]):
 
     @classmethod
     def of(cls, reply: ModelTurn) -> AssistantMessage:
-        """A turn's answer, its calls in the chat format."""
+        """A turn's answer, its calls in the chat format. A call the output limit cut off
+        (``cut_call``) whose arguments are not a JSON object is held with none (``{}``):
+        an API that reads a call's arguments, as the gateway does to send it on to
+        another provider, would refuse every later request with it."""
+        cut = cut_call(reply)
         calls = [
             {
                 "id": call.id,
                 "type": "function",
-                "function": {"name": call.name, "arguments": call.arguments},
+                "function": {
+                    "name": call.name,
+                    "arguments": "{}"
+                    if call is cut and not _json_object(call.arguments)
+                    else call.arguments,
+                },
             }
             for call in reply.tool_calls
         ]
@@ -236,6 +263,13 @@ class AssistantMessage(dict[str, Any]):
             prefix=self.prefix,
             adapter_state=self.adapter_state,
         )
+
+
+def _json_object(text: str) -> bool:
+    try:
+        return isinstance(json.loads(text), dict)
+    except (ValueError, RecursionError):
+        return False
 
 
 def prefix_digest(parts: Mapping[str, object]) -> str:

@@ -17,7 +17,8 @@ The conversation stays in the chat format the loop keeps, and each request rende
   as text blocks marked ``NOTE``, the same from the first time the answer goes back.
   Thinking is only ever left out from the start or the end of the run, never from the
   middle. Any other answer is sent as its text and calls (CM-42);
-- calls and results are paired first (``pairing``, CM-29a);
+- calls and results are paired first (``pairing``, CM-29a), and the result of a call
+  that failed, with the error every tool reports, is marked ``is_error`` (``failed``);
 - tools loaded during the run are declared with ``defer_loading`` and announced by a
   ``tool_addition`` where they first appeared, so the request's tool list is not
   edited, on the models that take it; elsewhere the list changes, which leaves out the
@@ -75,6 +76,7 @@ from . import images
 from .model import (
     COMPACTION,
     FALLBACKS,
+    LENGTH,
     MESSAGES_EFFORTS,
     NOT_RETRIED,
     AssistantMessage,
@@ -178,13 +180,18 @@ _UNDISPLAYED: Final = re.compile(
 beta header on: Anthropic's names the field by its path, "thinking.adaptive.display:
 Input should be 'summarized', 'omitted'" (lab 43, B4), or another path to ``display``
 within ``thinking``; or the refusal names the beta."""
+_HEADER: Final = re.compile(r"\[msg-[^\]\n]*\]\n")
+"""The header the platform's messages begin with (``archive.header``, CM-4a)."""
+_ADDED: Final = frozenset({"platform_notices", "recorded_files"})
+"""What the harness adds beside any tool result's own fields: the document notices and
+the report of the files the call changed."""
 _THINKING: Final = frozenset({"thinking", "redacted_thinking"})
 _FINISH: Final = {
     "end_turn": "stop",
     "stop_sequence": "stop",
     "tool_use": "tool_calls",
-    "max_tokens": "length",
-    "model_context_window_exceeded": "length",
+    "max_tokens": LENGTH,
+    "model_context_window_exceeded": LENGTH,
 }
 _CACHED: Final = {"type": "ephemeral"}
 _INFO_BYTES: Final = 1024 * 1024
@@ -789,8 +796,11 @@ def _render(
     for message in conversation:
         role = message.get("role")
         if role == "tool":
-            call = _scrubbed(message.get("tool_call_id"))
-            results.append({"type": "tool_result", "tool_use_id": call, "content": _text(message)})
+            call, text = _scrubbed(message.get("tool_call_id")), _text(message)
+            result: Json = {"type": "tool_result", "tool_use_id": call, "content": text}
+            if failed(text):
+                result["is_error"] = True
+            results.append(result)
         elif role in ("user", "system"):
             if text := _text(message):
                 texts.append({"type": "text", "text": text})
@@ -838,6 +848,36 @@ def _render(
         body["thinking"] = thinking
     added = len(_canonical(out[after:])) if prior is not None else 0
     return _View(body, prefix, prior, added)
+
+
+def failed(text: str) -> bool:
+    """Whether a tool result, as the conversation holds it, is a failed call's, which the
+    request marks ``is_error``: the error every tool reports when a call fails
+    (docs/specs/tools.md, "Errors"), an object of its ``error`` alone, with its ``kind``,
+    and what the harness adds to any result (``_ADDED``), after the platform's header; or
+    such a result with notices riding on it (its ``tool_result``); or the result of a
+    call that never answered (``pairing.ABORTED``). A result that holds an error among
+    fields of its own, as an execution whose code raised does, is not one: the call ran.
+    The error is what the outcome's record names (its ``error``), for every tool."""
+    body = _HEADER.sub("", text, count=1) if text.startswith("[msg-") else text
+    if body == ABORTED:
+        return True
+    for _ in range(2):  # the result itself, or the one notices ride on
+        try:
+            value: object = json.loads(body)
+        except (ValueError, RecursionError):
+            return False
+        if not isinstance(value, dict):
+            return False
+        fields = cast(Json, value)
+        error = fields.get("error")
+        if isinstance(error, dict) and isinstance(cast(Json, error).get("kind"), str):
+            return fields.keys() - _ADDED == {"error"}
+        inner = fields.get("tool_result")
+        if not isinstance(inner, str):
+            return False
+        body = inner
+    return False
 
 
 def _paired(messages: Sequence[Message]) -> list[Message]:

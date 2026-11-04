@@ -6,12 +6,14 @@ after it, try it again, or answer in its place. The loop composes them outermost
 
 - a model call: ``OverflowRetry``, ``ModelRefusals``, each hook's ``wrap_model_call``
   in hook order, then the attempt, which raises the model's errors;
-- a tool call, once its intent is saved: ``Runaway``, each hook's ``wrap_tool_call``
-  in hook order, then the toolbox, whose gates may refuse it.
+- a tool call, once its intent is saved: each hook's ``wrap_tool_call`` in hook order,
+  then the toolbox, whose gates may refuse it.
 
 The loop's own wraps hold its run's transcript and change only what they did inline
 before: they are its concerns, kept apart, not hooks a subsystem supplies
-(docs/ARCHITECTURE.md, "The loop's composition points").
+(docs/ARCHITECTURE.md, "The loop's composition points"). So are the checks the loop
+gives each tool outcome in the reply's order, however its calls ran: the runaway guard
+(``Runaway``) and the error streak (``ErrorStreak``).
 """
 
 from __future__ import annotations
@@ -58,7 +60,11 @@ POLLS: Final = frozenset(
     }
 )
 """Tools that watch something change: the same answer again is time passing, so the
-runaway guard never counts them as repeated calls, only as failed ones."""
+runaway guard never counts them as repeated calls, only as failed ones, and their failures
+start no error streak."""
+STREAK: Final = 3
+"""Failed calls in a row of one tool with one kind of error, after which the run is told
+to find the cause before it goes on (``ErrorStreak``, RS-6f)."""
 
 _log = logging.getLogger(__name__)
 
@@ -184,8 +190,8 @@ class Runaway:
     - closing answers that a hook held back for another turn (a ``retry``), with no
       tool call between them.
 
-    Anything else in between starts the count again. As the outermost tool wrap, it sees
-    each outcome before any notice rides on it; the loop tells it of closing answers.
+    Anything else in between starts the count again. The loop gives it each outcome in
+    the reply's order, before any notice rides on it, and tells it of closing answers.
     """
 
     limit: int = RUNAWAY
@@ -193,11 +199,6 @@ class Runaway:
     count: int = 0
     tripped: dict[str, str] | None = None
     """What tripped it: the rule and its detail, which the run's record keeps."""
-
-    async def wrap(self, call: ToolCall, operation: str, handler: ToolHandler) -> ToolOutcome:
-        outcome = await handler(call, operation)
-        self.call(call, outcome)
-        return outcome
 
     def call(self, call: ToolCall, outcome: ToolOutcome) -> None:
         """A tool call made, with its outcome before any notice rides on it."""
@@ -238,3 +239,29 @@ class Runaway:
                     "no tool call between them"
                 )
             self.tripped = {"rule": rule, "detail": detail}
+
+
+@dataclass
+class ErrorStreak:
+    """The error streak (RS-6f): ``limit`` tool calls in a row of one tool that failed
+    with one kind of error, whatever their arguments or messages, other than ``POLLS``,
+    whose failures start none. ``call`` names the tool and the kind once, when a streak
+    reaches the limit, and the loop then tells the model to find the cause; any other
+    outcome in between starts the count again. A cheap nudge long before the runaway
+    guard stops a run: it changes nothing else."""
+
+    limit: int = STREAK
+    key: tuple[str, str] | None = None
+    count: int = 0
+
+    def call(self, call: ToolCall, outcome: ToolOutcome) -> tuple[str, str] | None:
+        """A tool call made, with its outcome before any notice rides on it: the tool and
+        the error's kind when this call makes the streak ``limit`` long."""
+        error = outcome.record.get("error")
+        key = (call.name, str(error)) if error is not None and call.name not in POLLS else None
+        if key is None or key != self.key:
+            self.key, self.count = key, 0
+        if key is None:
+            return None
+        self.count += 1
+        return key if self.count == self.limit else None
