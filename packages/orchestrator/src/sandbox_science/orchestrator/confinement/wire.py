@@ -494,6 +494,9 @@ class ToolReply(Contract):
 class AppendReply(Contract):
     message: WireMessage
     retained: dict[str, JsonValue] | None = None
+    toolbox: ToolboxGiven | None = None
+    """The toolbox as it now is, when the notices appended loaded a tool group, as a tool
+    call's reply gives it (docs/specs/tools.md, tool groups)."""
 
 
 class RunReply(Attempt):
