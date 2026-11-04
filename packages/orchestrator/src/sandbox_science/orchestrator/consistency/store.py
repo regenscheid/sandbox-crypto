@@ -535,7 +535,27 @@ class ReviewStore:
             and self.clock() - row[0] < FAILURE_COOLDOWN_SECONDS
         )
 
+    @staticmethod
+    def _triggered(db: sqlite3.Connection, project: str, session: str) -> int:
+        """The session's feed position when its latest author-work review was dispatched,
+        or 0: what the feed gained after it is what changed since that review."""
+        row = db.execute(
+            "SELECT json_extract(payload,'$.head') FROM control_events WHERE project=? "
+            "AND subject_type='review' AND session=? AND kind='review.dispatched' "
+            "AND json_extract(payload,'$.type') IN ('checkpoint','terminal') "
+            "ORDER BY seq DESC LIMIT 1",
+            (project, session),
+        ).fetchone()
+        return row[0] if row is not None and type(row[0]) is int else 0
+
     def due(self, project: str, session: str) -> bool:
+        """Whether a checkpoint review is due (CR-10 as amended): the minimum interval since
+        the last dispatch has passed and, since the latest author-work review was
+        dispatched, enough has changed: artifact revisions, agent-written durable
+        characters, a structural block, or kernel cells over their interval; or a review
+        was asked for, or a window whose review covered nothing waits for its retry. Work
+        an earlier review left pending makes none due by itself: the next review, when
+        one is due, continues from the watermark."""
         config, _ = self.config(project)
         if not config.enabled:
             return False
@@ -557,11 +577,12 @@ class ReviewStore:
                 (project, session),
             ).fetchone():
                 return False
+            since = max(row[0], self._triggered(db, project, session))
             chars, structure, artifacts, cells = db.execute(
                 """SELECT coalesce(sum(characters),0),coalesce(sum(structural),0),
                 coalesce(sum(artifacts),0),coalesce(sum(cells),0) FROM review_feed
                 WHERE project=? AND session=? AND seq>?""",
-                (project, session, row[0]),
+                (project, session, since),
             ).fetchone()
             cooling = self._cooling(db, project, session, row[4], row[2])
         elapsed = self.clock() - row[1] if row[1] is not None else float("inf")
@@ -1129,6 +1150,12 @@ class ReviewStore:
             "UPDATE review_windows SET last_dispatch=?,requested=0 WHERE project=? AND session=?",
             (self.clock(), project, session),
         )
+        # What the session's feed held when this review started: the work after it is what
+        # changed since, which the next checkpoint's triggers count (CR-10 as amended).
+        (head,) = db.execute(
+            "SELECT coalesce(max(seq),0) FROM review_feed WHERE project=? AND session=?",
+            (project, session),
+        ).fetchone()
         self.event(
             db,
             project,
@@ -1139,6 +1166,7 @@ class ReviewStore:
                 "type": plan.kind,
                 "start": window.watermark + 1,
                 "end": plan.selected_end,
+                "head": head,
                 "span_complete": plan.span_complete,
                 "chronological_complete": (
                     plan.kind == "confirmation" or plan.selected_end == window.end
