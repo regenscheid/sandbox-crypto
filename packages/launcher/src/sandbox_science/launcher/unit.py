@@ -379,8 +379,9 @@ async def unhealthy(
 
 def _echo(name: str, line: str) -> None:
     """A service's line on the unit's output: under ``[service]``, or, with
-    ``SS_LOG_FORMAT=json``, as the JSON record it is (its own, or one made of plain text)."""
-    print(relayed_line(name, line, prefix=f"[{name}] "), flush=True)
+    ``SS_LOG_FORMAT=json``, as the JSON record it is when it is a record of that service, or
+    as one of that service's made of the line (plain text, or a record naming another)."""
+    print(relayed_line(name, line, prefix=f"[{name}] ", trusted=(name,)), flush=True)
 
 
 def _say(text: str, *, error: bool = False) -> None:

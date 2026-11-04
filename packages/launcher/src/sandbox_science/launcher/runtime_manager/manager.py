@@ -568,7 +568,7 @@ class RuntimeManager:
                 raise LauncherError(
                     f"the runtime exec ended before it was ready (status {process.returncode})"
                 )
-            print(relayed_line("runtime", text, prefix="runtime: "), flush=True)
+            print(_relayed(text), flush=True)
             if READY_LINE in text:
                 break
         self._output = asyncio.create_task(_relay(lines))
@@ -894,11 +894,19 @@ def _text(line: bytes) -> str:
     return line.decode("utf-8", errors="replace").rstrip()
 
 
+def _relayed(text: str) -> str:
+    """One line of the runtime's output as the manager's log shows it: after ``runtime: ``,
+    or, with ``SS_LOG_FORMAT=json``, a record of the service ``runtime`` whatever the line
+    holds. The runtime is research-facing: a line it writes as another service's record
+    (control's canary, the manager's note) must not pass for one in Loki."""
+    return relayed_line("runtime", text, prefix="runtime: ")
+
+
 async def _relay(lines: _Lines) -> None:
     """Pass the runtime's output on to the manager's own, for the Pod's log, until the
     output ends."""
     while (text := await lines.next()) is not None:
-        print(relayed_line("runtime", text, prefix="runtime: "), flush=True)
+        print(_relayed(text), flush=True)
 
 
 def _hold_serve_lock(root: Path) -> int:

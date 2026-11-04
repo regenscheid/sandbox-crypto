@@ -121,6 +121,33 @@ def test_each_rule_reads_the_event_its_service_logs() -> None:
     assert "project" not in hold
 
 
+def test_each_event_rule_selects_its_services_own_container() -> None:
+    """``service`` is a field of the line, which another container's process could write
+    (the runtime's output is the manager container's): each rule over a service's events
+    also selects that service's container, a label Alloy takes from the Pod."""
+    rules = _rules(_alerts()[0])
+    owners = {
+        "SandboxScienceManagerUnreachable": "runtime-manager",
+        "SandboxScienceCreationUnknown": "worker",
+        "SandboxScienceMcpCanaryChanged": "control",
+        "SandboxScienceMcpCanaryFailing": "control",
+        "SandboxSciencePolicyHold": "middleware",
+    }
+    containers = {
+        container["name"]
+        for item in json.loads(json.dumps(render(configured())))["items"]
+        if item["kind"] == "Deployment"
+        for container in item["spec"]["template"]["spec"]["containers"]
+    }
+    for name, service in owners.items():
+        expr = rules[name]["expr"]
+        selector = f'instance="research", container="{service}", service="{service}"}}'
+        # Every stream selector of the rule, both sides of an ``unless`` included.
+        assert expr.count("{namespace=") == expr.count(selector) > 0, name
+        assert service in containers
+    assert set(owners) | {"SandboxScienceServiceErrors"} == set(rules)
+
+
 def test_the_event_names_are_the_ones_the_services_log() -> None:
     from sandbox_science.launcher.runtime_manager.manager import NOTE_EVENT
     from sandbox_science.orchestrator.mcp_canaries import CHANGED, EVENT

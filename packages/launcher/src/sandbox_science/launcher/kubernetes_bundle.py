@@ -862,6 +862,13 @@ def _streams(config: BundleConfig, **matchers: str) -> str:
     return "{" + ", ".join(fields) + "}"
 
 
+def _service_streams(config: BundleConfig, service: str, container: str) -> str:
+    """The selector of ``service``'s own records: its ``container`` too, a label Alloy takes
+    from the Pod, not from the line, so that a record another container's process wrote in
+    the service's name (``service`` is a field of the line) cannot satisfy a rule."""
+    return _streams(config, container=f'="{container}"', service=f'="{service}"')
+
+
 def _event(name: str) -> str:
     """A line filter for one structured log event, as the services' JSON lines write it
     (``"event":"<name>"``, compact): it finds the event however a pipeline labels it."""
@@ -892,9 +899,12 @@ def alert_rules(config: BundleConfig, alerts: Alerts) -> dict[str, object]:
         return found
 
     errors = _streams(config, level='=~"error|critical"')
-    manager = _streams(config, service='="runtime-manager"')
-    worker = _streams(config, service='="worker"')
-    middleware = _streams(config, service='="middleware"')
+    manager = _service_streams(config, "runtime-manager", MANAGER)
+    worker = _service_streams(config, "worker", "worker")
+    middleware = _service_streams(config, "middleware", "middleware")
+    # Control runs the canaries; the runtime, which lists for them, is not trusted to say
+    # how they went (its output reaches Loki only as records of the service "runtime").
+    control = _service_streams(config, "control", "control")
     rules = [
         rule(
             ALERTS[0],
@@ -928,7 +938,7 @@ def alert_rules(config: BundleConfig, alerts: Alerts) -> dict[str, object]:
         ),
         rule(
             ALERTS[3],
-            f"sum by (service, server, status) (count_over_time({_streams(config)} "
+            f"sum by (service, server, status) (count_over_time({control} "
             f"{_event('mcp_canary_changed')}"
             ' | json server="server", status="status" | status!="listed" [20m])) > 0',
             "MCP canary of {{ $labels.server }} changed to {{ $labels.status }}",
@@ -939,10 +949,10 @@ def alert_rules(config: BundleConfig, alerts: Alerts) -> dict[str, object]:
         rule(
             ALERTS[4],
             # Every canary result in the window failed: no listed one among them.
-            f"(sum by (service, server) (count_over_time({_streams(config)} "
+            f"(sum by (service, server) (count_over_time({control} "
             f'{_event("mcp_canary")} | json server="server", status="status" '
             f'| status!="listed" [{canary}m])) > 0) unless (sum by (service, server) '
-            f"(count_over_time({_streams(config)} {_event('mcp_canary')} "
+            f"(count_over_time({control} {_event('mcp_canary')} "
             f'| json server="server", status="status" | status="listed" [{canary}m])) > 0)',
             "MCP canary of {{ $labels.server }} keeps failing",
             f"Every scheduled MCP canary of the server within {canary} minutes failed "

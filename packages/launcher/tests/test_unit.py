@@ -257,13 +257,16 @@ def test_json_logging_keeps_the_unit_output_json(
     own = json.dumps({"service": "worker", "level": "info", "msg": "ready"})
     unit._echo("worker", own)
     unit._echo("cache", "Traceback (most recent call last):")
+    # The cache, which sandboxes reach, cannot write a record of the worker's.
+    unit._echo("cache", own)
     unit._say("the unit is ready: cache, worker")
     unit._say("a service stopped", error=True)
     captured = capsys.readouterr()
     lines = [json.loads(line) for line in captured.out.splitlines()]
     assert lines[0] == json.loads(own)
     assert (lines[1]["service"], lines[1]["msg"]) == ("cache", "Traceback (most recent call last):")
-    assert (lines[2]["service"], lines[2]["level"]) == ("unit", "info")
+    assert (lines[2]["service"], lines[2]["msg"]) == ("cache", own)
+    assert (lines[3]["service"], lines[3]["level"]) == ("unit", "info")
     assert json.loads(captured.err)["level"] == "error"
 
 

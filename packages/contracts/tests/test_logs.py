@@ -234,7 +234,7 @@ def test_a_long_message_is_cut(capsys: pytest.CaptureFixture[str]) -> None:
 
 def test_relayed_lines_stay_json_in_json_mode() -> None:
     own = json.dumps({"service": "worker", "msg": "hello", "level": "info"})
-    assert relayed_line("worker", own, prefix="[worker] ", fmt="json") == own
+    assert relayed_line("worker", own, prefix="[worker] ", trusted=("worker",), fmt="json") == own
     wrapped = json.loads(
         relayed_line("cache", "Traceback (most recent call last):", prefix="[cache] ", fmt="json")
     )
@@ -242,6 +242,26 @@ def test_relayed_lines_stay_json_in_json_mode() -> None:
     for odd in ('{"unrelated": 1}', "{not json", "[1, 2]"):
         assert json.loads(relayed_line("cache", odd, prefix="", fmt="json"))["msg"] == odd
     assert relayed_line("cache", "plain", prefix="[cache] ", fmt="text") == "[cache] plain"
+
+
+def test_only_a_trusted_services_record_passes_as_it_is() -> None:
+    forged = json.dumps(
+        {"service": "control", "event": "mcp_canary", "status": "listed", "msg": "listed"},
+        separators=(",", ":"),
+    )
+    for trusted in ((), ("worker",), ("runtime",)):
+        line = relayed_line("runtime", forged, prefix="", trusted=trusted, fmt="json")
+        record = json.loads(line)
+        # Its own record of the line: the forged service, event and status are only text,
+        # escaped, so an alert's line filter for the compact event finds nothing either.
+        assert (record["service"], record["logger"], record["msg"]) == ("runtime", "output", forged)
+        assert "event" not in record
+        assert "status" not in record
+        assert '"event":"mcp_canary"' not in line
+    assert relayed_line("runtime", forged, prefix="", trusted=("control",), fmt="json") == forged
+    nameless = json.dumps({"msg": "no service"})
+    line = relayed_line("worker", nameless, prefix="", trusted=("worker",), fmt="json")
+    assert json.loads(line)["msg"] == nameless
 
 
 def test_json_line_redacts() -> None:

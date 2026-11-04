@@ -38,7 +38,7 @@ import math
 import os
 import re
 import sys
-from collections.abc import Generator, Iterable, Mapping
+from collections.abc import Collection, Generator, Iterable, Mapping
 from datetime import UTC, datetime
 from itertools import islice
 from types import MappingProxyType
@@ -247,18 +247,29 @@ def json_line(
     return json.dumps(entry, ensure_ascii=False, separators=(",", ":"), default=str)
 
 
-def relayed_line(service: str, line: str, *, prefix: str, fmt: LogFormat | None = None) -> str:
+def relayed_line(
+    service: str,
+    line: str,
+    *,
+    prefix: str,
+    trusted: Collection[str] = (),
+    fmt: LogFormat | None = None,
+) -> str:
     """A line another process wrote, as this one passes it on. In ``text`` it is ``prefix``
-    then the line. In ``json`` a line that is already a record (an object with ``service``
-    and ``msg``) goes on unchanged, since its own ``service`` names it, and anything else
-    becomes a record of ``service``'s, so the stream stays JSON throughout."""
+    then the line. In ``json`` a line that is already a record of a ``trusted`` service (an
+    object with ``msg`` whose ``service`` is one of them) goes on unchanged, since its own
+    ``service`` names it; anything else, a record naming any other service included,
+    becomes a record of ``service``'s, so the stream stays JSON throughout and a process
+    can write no record in the name of a service it is not trusted to speak for."""
     if (fmt or log_format()) != "json":
         return f"{prefix}{line}"
-    if line.startswith("{"):
+    if trusted and line.startswith("{"):
         try:
             parsed: object = json.loads(line)
         except ValueError:
             parsed = None
-        if isinstance(parsed, dict) and "service" in parsed and "msg" in parsed:
-            return line
+        if isinstance(parsed, dict):
+            record = cast(dict[str, object], parsed)
+            if "msg" in record and record.get("service") in trusted:
+                return line
     return json_line(service, line)
