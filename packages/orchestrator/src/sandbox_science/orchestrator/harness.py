@@ -1109,7 +1109,11 @@ class Harness:
                         hooks = (
                             *hooks,
                             *await self._chat_hooks(
-                                admitted, chat, discovery, connectors=toolbox.connectors
+                                admitted,
+                                chat,
+                                discovery,
+                                connectors=toolbox.connectors,
+                                outcome=toolbox.outcome,
                             ),
                         )
                     if view is not None:
@@ -1370,12 +1374,14 @@ class Harness:
         *,
         recovering: bool = False,
         connectors: Connectors | None = None,
+        outcome: Outcome | None = None,
     ) -> tuple[TurnHook, ...]:
         """The user's messages, which reach the model last, and the run's events, which
         come last. No hook keeps a budget (D102): a configured project cost limit is the
         model-call journal's, and a delegated run's tokens are a soft cap its resource
         check-ins keep. A delegated run's calls that may change something need its root's
-        lease and the plan's leave (PD-34); the user writes to the root."""
+        lease and the plan's leave (PD-34); the user writes to the root. A delegated run's
+        ``outcome`` is the one its ``submit_result`` records into (``_outcome``)."""
         request = admitted.request
         if request.parent is not None and self.stores is not None:
             fence = await threaded(
@@ -1389,31 +1395,41 @@ class Harness:
                 # (D99, DA-7).
                 connectors=connectors.classed if connectors is not None else None,
             )
-            # Its result is read from its closing answer once every other hook has had its say,
-            # and accounts for the deliverables its brief lists, as written once (PD-45).
-            outcome = Outcome(
-                request.target,
-                task=request.target is None,
-                deliverables=await threaded(
-                    _deliverables, self.stores.documents, admitted.context, request.delegation
-                ),
-                entry_made=functools.partial(
-                    _entry_made, Ledger(self.stores.documents), admitted.context.project_id
-                ),
-            )
-            if request.opening is not None and request.delegation is not None:
-                # A reopened task's result may name what its earlier runs made (PD-46).
-                files, made = await threaded(
-                    _earlier,
-                    self.stores,
-                    admitted.context,
-                    request.delegation,
-                    run_name(admitted.started_at, admitted.run_id),
-                )
-                outcome.carry(files, made)
+            # Its closing answers are read once every other hook has had its say.
+            if outcome is None:
+                outcome = await self._outcome(admitted)
             return (SessionHeld(chat), fence, outcome, EventLog(chat))
         discover = discovery.about if discovery is not None else None
         return (UserMessages(chat, discover), EventLog(chat))
+
+    async def _outcome(self, admitted: Admitted) -> Outcome:
+        """A delegated run's result, which its ``submit_result`` records and its closing
+        answers are read for (PD-17, PD-18): it accounts for the deliverables its brief
+        lists, as written once (PD-45), and a reopened task's may name what its earlier
+        runs made (PD-46)."""
+        if self.stores is None:
+            raise ValueError("a delegated run's result needs the stores")
+        request = admitted.request
+        outcome = Outcome(
+            request.target,
+            task=request.target is None,
+            deliverables=await threaded(
+                _deliverables, self.stores.documents, admitted.context, request.delegation
+            ),
+            entry_made=functools.partial(
+                _entry_made, Ledger(self.stores.documents), admitted.context.project_id
+            ),
+        )
+        if request.opening is not None and request.delegation is not None:
+            files, made = await threaded(
+                _earlier,
+                self.stores,
+                admitted.context,
+                request.delegation,
+                run_name(admitted.started_at, admitted.run_id),
+            )
+            outcome.carry(files, made)
+        return outcome
 
     async def _delegations(
         self,
@@ -1882,14 +1898,14 @@ class Harness:
             # The exception may contain gateway data or credentials. Hand the parent
             # the trusted failure phase, not an exception string or a false result.
             errors = (*errors, f"the child's {transcript.failure} phase failed")
-        # A result stands only for a run that ended with that answer.
+        # A result stands for a run that ended with its answer or at a limit (PD-19).
         result = result_of(found, transcript.stopped, failed) if found is not None else None
         return ChildEnd(
             transcript.stopped,
             failed,
             transcript.final_text,
             fence.refused if fence is not None else None,
-            found.kept() if found is not None and result is not None else None,
+            result,
             errors,
             finished.alias or self.delegated.alias,
             tuple(dict.fromkeys(u.model for u in transcript.context.usage if u.model is not None))[
@@ -1989,7 +2005,8 @@ class Harness:
         the delegate tools and ``ask_user``, and a check only the reads of the ledger, the
         documents and the memory, and of the connectors only the tools classed ``read``;
         it is not reviewed, and the user's messages do not end its job waits
-        (PD-34, DA-1, DA-3)."""
+        (PD-34, DA-1, DA-3). It alone gets ``submit_result``, with which it returns its
+        result (PD-17)."""
         stores, settings = self.stores, self.settings
         alias = self.role(admitted.request).alias
         watcher, reviewer = self.watcher, self.reviewer_role(admitted.request)
@@ -2182,7 +2199,7 @@ class Harness:
             )
             bundles.append(caps.plans(plans))
         # A main run asks the user and waits in the call; a delegated run that needs
-        # the user ends blocked (PD-41).
+        # the user asks its parent, which decides whether to ask (PD-41, DA-15).
         questions = None
         if not delegated:
             questions = QuestionTool(
@@ -2256,6 +2273,9 @@ class Harness:
         if resources is not None:
             bundles.append(caps.resources(resources))
         bundles.append(caps.history(prepared.retrieval))
+        if delegated:
+            # Its result goes to its parent through submit_result (PD-17, PD-18).
+            bundles.append(caps.result(await self._outcome(admitted)))
         selected = (
             caps.main(bundles, read_only_records=admitted.request.target is not None)
             if not delegated

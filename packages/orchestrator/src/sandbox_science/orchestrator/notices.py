@@ -328,6 +328,35 @@ COMPACTION: Final = Framing(
 ``instructions``; docs/specs/context-management.md, CM-38b). Without it, a request with
 tools may get a compaction with no summary, the model having called a tool instead."""
 
+OUTCOME_SUBMIT: Final = Framing(
+    "outcome-submit",
+    "sandbox-notice-outcome-submit-1",
+    "Platform notice: your run has no recorded result, as it submitted none that checked. "
+    "Your parent receives your result only through submit_result, in the form below: "
+    "submit it now, fix what its answer names, then end with a short final answer. "
+    "Otherwise your parent gets a blocked result, the platform's. ",
+)
+"""A delegated run's closing answer with no result submitted, at most three times
+(plans-and-delegation spec, PD-18)."""
+OUTCOME_LAST_CALL: Final = Framing(
+    "outcome-last-call",
+    "sandbox-notice-outcome-last-call-1",
+    "Platform notice: this is your run's last model call with tools before its turn limit; "
+    "the call after it is your report, where no tool runs. Submit your result with "
+    "submit_result now, in the form below. ",
+)
+"""A delegated run's last call with tools before its turn limit, with no result
+submitted (PD-18)."""
+DELEGATIONS_UNSUBMITTED: Final = Framing(
+    "delegations-unsubmitted",
+    "sandbox-notice-delegations-unsubmitted-1",
+    "Returned tasks whose child submitted no result, so that the platform wrote each one's "
+    "blocked result from its answer; your run's end accepts them as they are. Read each "
+    "with delegation_status, then accept it or message_child, before you end: ",
+)
+"""A parent's closing answer while returned tasks with the platform's result await its
+review (PD-46)."""
+
 FRAMINGS: Final = (
     REQUESTS,
     JOBS,
@@ -356,4 +385,7 @@ FRAMINGS: Final = (
     IMAGES,
     REPORT,
     COMPACTION,
+    OUTCOME_SUBMIT,
+    OUTCOME_LAST_CALL,
+    DELEGATIONS_UNSUBMITTED,
 )

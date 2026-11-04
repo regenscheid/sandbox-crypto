@@ -5,7 +5,8 @@ LG-F8; research artifacts' attribution, RA-34).
 When a delegation's outcome is written, the platform records it as the delegated run's
 work, citing the delegation, whose outcome stays as returned in its own record (PD-17).
 A check's is on the entry it checked: ``assessment`` when it returned a result, its
-note giving the verdict and status, or ``limit``, naming what ran out. A task's is on
+note giving the verdict and status, or ``limit``, naming what ran out. The result the
+platform writes for a run that submitted none is none of the run's work. A task's is on
 the issue its brief names, if any (the coordinator, 2026-10-15):
 
 - ``produced`` when its run created entries, naming them;
@@ -31,6 +32,7 @@ from sandbox_science.orchestrator.documents.models import Author
 from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.projects import run_id_of
 
+from .outcome import by_platform
 from .records import Delegation
 
 Json = dict[str, Any]
@@ -100,7 +102,7 @@ def _check(delegation: Delegation) -> list[Json]:
         "fresh context."
     )
     record: Json = {"entry": entry, "tried": tried}
-    result = delegation.result
+    result = _own(delegation)
     if result is not None:
         record["ending"] = "assessment"
         said = f"{result.get('verdict')}, {result.get('status')}"
@@ -121,7 +123,7 @@ def _task(delegation: Delegation, created: Sequence[str]) -> list[Json]:
         return []
     task = str(delegation.brief.get("task") or "")
     tried = _clipped(f"A delegated task: {task}", 8000)
-    result = delegation.result
+    result = _own(delegation)
     record: Json = {"key": OUTCOME, "entry": entry, "tried": tried}
     status = result.get("status") if result is not None else None
     if created:
@@ -188,6 +190,13 @@ def _items(value: object) -> list[dict[str, Any]]:
     return [
         cast(dict[str, Any], item) for item in cast(list[object], value) if isinstance(item, dict)
     ]
+
+
+def _own(delegation: Delegation) -> dict[str, Any] | None:
+    """The child's own result, which its work records: the platform's, written for a run
+    that submitted none (PD-17), is none."""
+    result = delegation.result
+    return None if by_platform(result) else result
 
 
 def _ran_out(stopped: str | None) -> str:

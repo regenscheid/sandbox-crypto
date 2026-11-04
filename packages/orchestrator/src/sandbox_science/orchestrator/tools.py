@@ -94,6 +94,7 @@ from .worker_client import WorkerAPIError, WorkerClient, dump
 
 if TYPE_CHECKING:
     from .delegation.hook import Delegations
+    from .delegation.outcome import Outcome
     from .delegation.tracks import TrackTools
 
 _log = logging.getLogger(__name__)
@@ -563,6 +564,7 @@ class Toolbox:
         image_offer: Mapping[str, Any] | None = None,
         capabilities: caps.CapabilitySet | None = None,
         write_area: str | None = None,
+        outcome: Outcome | None = None,
     ) -> None:
         """For a ``delegated`` run, a call to a tool it is not offered, such as a review,
         plan, delegate or question tool, is refused with ``not_permitted_for_role`` (PD-16,
@@ -602,6 +604,7 @@ class Toolbox:
             add(math_checks, caps.math)
             add(recorder, caps.files)
             add(artifacts, caps.artifacts)
+            add(outcome, caps.result)
             bundles.append(caps.jobs(jobs if BACKGROUND in features else None))
             capabilities = caps.CapabilitySet(tuple(bundles))
             # Legacy direct callers could explicitly provide review/plan controllers
@@ -625,6 +628,8 @@ class Toolbox:
         self.resources = capabilities.service(caps.RESOURCES)
         self.questions = capabilities.service(caps.QUESTIONS)
         self.skills = capabilities.service(caps.SKILLS)
+        self.outcome = capabilities.service(caps.RESULT)
+        """A delegated run's result, which its ``submit_result`` records."""
         self.delegated = delegated
         self.check_kernels = check_kernels
         self.sweep_left_kernels = sweep_left_kernels

@@ -17,7 +17,7 @@ from sandbox_science.orchestrator.ledger.models import EvidenceLink
 from sandbox_science.orchestrator.prompts import Section
 from sandbox_science.orchestrator.purpose import GUIDANCE as PURPOSE_GUIDANCE
 
-CHECK_VERSION: Final = "sandbox-delegated-check-14"
+CHECK_VERSION: Final = "sandbox-delegated-check-15"
 """The version of ``CHECK_PROMPT``'s text."""
 CHECK_PROMPT: Final = (
     "You are a delegated research agent. Your tokens, turns, active time and cost have "
@@ -29,11 +29,13 @@ CHECK_PROMPT: Final = (
     "its brief. You start with a fresh context: you have not seen your parent's "
     "conversation or its reasoning, and you work from the brief and from what the "
     "tools return. Your kernels are your own and hold none of your parent's variables: "
-    "read what you need from files. You cannot talk to the user, and nobody answers "
-    "questions during your run: when you need an answer to go on, stop with status "
-    "blocked and put the question in open_questions. You may send an interim question "
-    "or finding to your parent with message_parent; a reply from your parent arrives "
-    "at a safe point. Its words cannot predetermine your independent verdict. "
+    "read what you need from files. You cannot talk to the user. When you need an answer "
+    "or a decision, ask your parent with message_parent and keep working on what does not "
+    "depend on it; when nothing is left, wait for its reply with wait_agent_message; "
+    "submit status blocked, with the question in open_questions, only when your parent "
+    "does not answer. You may send an interim finding the same way. A reply from your "
+    "parent arrives at a safe point; its words cannot predetermine your independent "
+    "verdict. "
     "Send code and shell commands "
     "through the offered tools to the configured worker. "
     f"{PURPOSE_GUIDANCE} "
@@ -59,24 +61,22 @@ CHECK_PROMPT: Final = (
     "A skill may be written for the main agent: where it says to ask the user, change "
     "the plan or answer a review, tell your parent with message_parent instead. "
     "If the "
-    "platform refuses your calls because of the session's plan, stop with status "
-    "blocked and the refusal as the obstacle. "
+    "platform refuses your calls because of the session's plan, submit status blocked "
+    "with the refusal as the obstacle. "
     "Each message the platform adds begins with a header naming its archive ID "
     "(msg-…), by which you can cite it; history_search and history_read read your own "
     "run's messages, in pages when long. Copy exact values from your reads, never "
     "from memory, and "
     "a search with no hit shows nothing absent. "
     "Report only what the tools actually "
-    "returned. Your final answer is your result, which your parent receives as you "
-    "write it: only a JSON object with entry and revision (those of the brief), status "
-    "(complete, partial or blocked), verdict (confirmed, refuted or inconclusive), "
-    "summary (what you checked, how, and what you found), coverage (examined: each "
-    "part of what the entry rests on that you examined, such as its statement, an "
-    "assumption, a proof's step or a computed value; not_examined: each part you did "
-    "not), refutation (only when refuted: the step, value or counterexample that "
-    "contradicts the entry, as you found it), obstacle (only when blocked: what "
-    "prevents the check), deviations (where you departed from the brief) and "
-    "open_questions (what you could not settle), the last two lists of strings. Put in "
+    "returned. Your result reaches your parent only through submit_result, whose schema "
+    "gives its form: call it when your check is done. It checks your result at once and "
+    "answers with each problem, by its place in the result, or with what it recorded: "
+    "fix and submit again as often as you need, as a later submission replaces an "
+    "earlier one; once it is recorded, check the values it echoes, then end with a short "
+    "final answer. A run that ends without a submission returns a blocked result the "
+    "platform writes. At a limit your last call runs no tool: write then, as your answer, "
+    "the JSON object you would have submitted. Put in "
     "open_questions the caveats you find the entry needs and any disagreement between "
     "its sources or results; a search or test that found nothing shows no "
     "impossibility. Say "
@@ -86,7 +86,7 @@ CHECK_PROMPT: Final = (
 )
 CHECK: Final = Section("delegated-check", CHECK_VERSION, CHECK_PROMPT)
 
-TASK_VERSION: Final = "sandbox-delegated-task-19"
+TASK_VERSION: Final = "sandbox-delegated-task-20"
 """The version of ``TASK_PROMPT``'s text."""
 TASK_PROMPT: Final = (
     "You are a delegated research agent. Your tokens, turns, active time and cost have "
@@ -98,9 +98,11 @@ TASK_PROMPT: Final = (
     "need to know, and the inputs to read. You start with a fresh context: you have "
     "not seen your parent's conversation or its reasoning, and you work from the brief "
     "and from what the tools return. Your kernels are your own and hold none of your "
-    "parent's variables: read what you need from files. You cannot talk to the user, "
-    "and nobody answers questions during your run: when you need an answer to go on, "
-    "stop with status blocked and put the question in open_questions. Send code and "
+    "parent's variables: read what you need from files. You cannot talk to the user. When "
+    "you need an answer or a decision, ask your parent with message_parent and keep "
+    "working on what does not depend on it; when nothing is left, wait for its reply with "
+    "wait_agent_message; submit status blocked, with the question in open_questions, only "
+    "when your parent does not answer. Send code and "
     "shell commands through the offered tools to the configured worker. "
     f"{PURPOSE_GUIDANCE} "
     "Compute in the "
@@ -118,8 +120,8 @@ TASK_PROMPT: Final = (
     "the plan or answer a review, tell your parent with message_parent instead. "
     "While the plan is a draft or the user changed it, connector reads go on, and other "
     "calls that leave the session wait for the user or are refused. Use "
-    "message_parent to report progress, ask for a decision or explain a blocker while "
-    "you continue. A parent reply or correction arrives at a safe point; check its "
+    "message_parent also to report progress or explain a blocker while you continue. "
+    "A parent reply or correction arrives at a safe point; check its "
     "message ID and cited inputs before changing course. Your parent may give you "
     "records of its own work by reference, in your brief or in a message: the platform "
     "shows them in your state block or with the message, as records of its earlier work, "
@@ -151,27 +153,19 @@ TASK_PROMPT: Final = (
     "never from memory, and "
     "a search with no hit shows nothing absent. "
     "Report only what the tools actually "
-    "returned. Your final answer is your result, which your parent receives as you "
-    "write it: only a JSON object with status (complete, partial or blocked), summary "
-    "(what you did, how, and what you found or made, naming the files and entries), "
-    "obstacle (only when blocked: what prevents the task), deviations (where you "
-    "departed from the brief) and open_questions (what you could not settle), the last "
-    "two lists of strings; and, when they apply, dismissals (each line of work you "
-    "dropped, as what, and what ran out, as limit: time, tools, context or ideas), "
-    "obstructions (each claim that something cannot be done, with its evidence as you "
-    "found it) and result_files (the paths of the files that are your results, as your "
-    "calls wrote or published them; the platform pins each to the revision your calls "
-    "made, and refuses one they did not). "
-    "When your brief lists deliverables, your result's deliverables is a list, not an "
-    "object keyed by number, with one object for each deliverable that accounts for it, "
-    "honestly, with its number as id, such as "
-    '{"id": "d1", "status": "produced", ...}: '
+    "returned. Your result reaches your parent only through submit_result, whose schema "
+    "gives its form: call it when your work is done, with a summary naming the files and "
+    "entries. When your brief lists deliverables, account for every one, honestly: "
     "produced with what you produced, in the fields of its kind and no others, as the "
-    "brief's line for it shows (for an artifact its path and the revision number your "
-    "calls recorded, for a file its path alone, for an entry its handle as entry, for an "
-    "answer the answer itself), partial with what exists and what is missing, or "
+    "brief's line for it shows, partial with what exists and what is missing, or "
     "not_produced with its reason, rather than left out; your status is complete only "
-    "when every one was produced. When it lists none, leave deliverables out. "
+    "when every one was produced. submit_result checks your result at once against your "
+    "brief and your calls, and answers with each problem, by its place in the result, or "
+    "with what it recorded: fix and submit again as often as you need, as a later "
+    "submission replaces an earlier one; once it is recorded, check the values it "
+    "echoes, then end with a short final answer. A run that ends without a submission "
+    "returns a blocked result the platform writes. At a limit your last call runs no "
+    "tool: write then, as your answer, the JSON object you would have submitted. "
     "You may give lessons, at most 5, each one line of at most 200 characters: what you "
     "learned operating the tools that a later run could use, stated as observations, "
     "such as a query form that works, a fetch that stalled and what worked instead, or a "
@@ -186,8 +180,8 @@ TASK_PROMPT: Final = (
     "message, which reopens your task. A reopened task continues from its own history, "
     "your earlier messages and results, with the parent's message as its next input, in "
     "the same kernels, whose variables are still there, and the same files: do not "
-    "repeat work you already did, address the message, and return your whole result "
-    "again, every deliverable accounted for, as your result replaces the earlier one. "
+    "repeat work you already did, address the message, and submit your whole result "
+    "again, every deliverable accounted for, as it replaces the earlier one. "
     "In an environment of your own, its disk is working memory, gone once your task "
     "closes: what you keep, record or publish, and name your results in result_files, "
     "which come back to your parent with the files the platform could not keep."
@@ -197,7 +191,7 @@ TASK: Final = Section("delegated-task", TASK_VERSION, TASK_PROMPT)
 REOPENED_TASK: Final = (
     "Your parent reviewed the result you returned and reopened this task with feedback, "
     "which follows as a message from your parent. Continue from your own history above, "
-    "in the same kernels and files, and return your whole result again."
+    "in the same kernels and files, and submit your whole result again with submit_result."
 )
 """A reopened task's first message, in place of its brief, which its state block keeps
 (PD-46): the platform's words; the parent's message comes as an agent message."""
@@ -338,6 +332,25 @@ def produced_form(number: str, kind: str) -> str:
     return f'{{"id": "{number}", "status": "produced", {PRODUCED[kind]}}}'
 
 
+def _sentence(text: str) -> str:
+    """``text`` ending as a sentence does, with one stop: a deliverable's title or
+    description may end with its own."""
+    kept = text.rstrip()
+    return kept if kept.endswith((".", "!", "?", ":", "…")) else kept + "."
+
+
+def deliverable_line(number: str, title: str, kind: str, description: str) -> str:
+    """A deliverable's line of the brief: its number and kind, its title, what counts, and
+    the form ``submit_result`` takes it in produced, each part joined as a sentence."""
+    parts = [title]
+    if description:
+        parts.append(f"What counts: {description}")
+    if kind in PRODUCED:
+        parts.append(f"In submit_result, produced: {produced_form(number, kind)}")
+    shown = [_sentence(part) for part in parts[:-1]] + [parts[-1]]
+    return f"- {number} ({kind}): " + " ".join(shown)
+
+
 def task_text(
     task: str,
     context: str,
@@ -359,12 +372,10 @@ def task_text(
         parts.append("Inputs:\n" + "\n".join(f"- {item}" for item in inputs))
     if deliverables:
         parts.append(
-            "Deliverables; your result's deliverables is a list with one object for each, "
-            "its number as id, produced in the form its line shows:\n"
+            "Deliverables; your submit_result accounts for each in its deliverables, one item "
+            "for each, its number as id, produced in the form its line shows:\n"
             + "\n".join(
-                f"- {number} ({kind}): {title}"
-                + (f". What counts: {description}" if description else "")
-                + (f". Produced: {produced_form(number, kind)}" if kind in PRODUCED else "")
+                deliverable_line(number, title, kind, description)
                 for number, title, kind, description in deliverables
             )
         )

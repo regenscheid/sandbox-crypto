@@ -78,6 +78,7 @@ from sandbox_science.orchestrator.notices import (
     DELEGATIONS,
     DELEGATIONS_ATTACHED,
     DELEGATIONS_RUNNING,
+    DELEGATIONS_UNSUBMITTED,
 )
 from sandbox_science.orchestrator.projects import RunRecord, run_id_of, run_name, run_started
 from sandbox_science.orchestrator.runstate import RunState
@@ -88,7 +89,7 @@ from .child_inputs import reference_files
 from .environments import NOT_OFFERED, ChildPlacement, placement, reconcile, waiting_notice
 from .models import Choice, ModelChoice
 from .narrowing import narrow
-from .outcome import Asked, Target, asked_of, proof_reads
+from .outcome import LIMITS, Asked, Target, asked_of, by_platform, proof_reads
 from .prompt import (
     REOPENED_TASK,
     brief_text,
@@ -248,21 +249,9 @@ def observed(end: ChildEnd) -> Ended:
             # A continuation an automatic Resume could not start under changed pins waits
             # for the user's Resume, as an interrupted run does (D100).
             return "interrupted"
-        case (
-            "turn_limit"
-            | "context_limit"
-            | "run_budget"
-            | "budget"
-            | "runaway"
-            | "resource_pause"
-            | "resource_report"
-            | "resource_time"
-            | "resource_storage"
-            | "resource_retention"
-            | "environment_time"
-        ):
+        case stopped if stopped in LIMITS:
             # A limit, or the runaway guard: the answer of its report round, if it took
-            # one, is the delegation's report (RS-6f).
+            # one, is the delegation's report (RS-6f), and its result stands (PD-19).
             return "limit_reached"
         case _:
             return "failed"
@@ -378,6 +367,9 @@ class Delegations(TurnHook):
         scope = (self.context.project_id, self.context.session_id, parent)
         self.received = Members(records.control, scope, "delegations:received")
         """Outcomes a wait returned that a model call saw."""
+        self.unsubmitted: set[str] = set()
+        """The returned tasks with the platform's result a closing notice named, by
+        their outcomes' keys."""
 
     async def live(self) -> set[str]:
         """The run IDs of the running children, and for a main run of every delegated run
@@ -1421,7 +1413,34 @@ class Delegations(TurnHook):
                 # A task can end after every outcome write failed. Its disappearance
                 # from the live set is not evidence that its parent may finish.
                 return Closing("stop", tuple(notices), stopped="child_outcome_unavailable")
+        if run.turns_left > 0 and run.halted is None and (left := await self._unsubmitted()):
+            notices.append(Notice(self.name, (), DELEGATIONS_UNSUBMITTED.text, left))
         return Closing("continue", tuple(notices)) if notices else Closing()
+
+    async def _unsubmitted(self) -> list[dict[str, object]]:
+        """This run's returned tasks that await its review with the platform's result,
+        their child having submitted none, each named once: the run's end accepts them
+        as they are (PD-46)."""
+        context = self.context
+        try:
+            found = await threaded(
+                self.records.awaiting,
+                context.project_id,
+                context.session_id,
+                parent=self.parent,
+                work=self.work,
+            )
+        except Exception:
+            _log.exception("the returned tasks of run %s were not read", self.parent)
+            return []
+        named: list[dict[str, object]] = []
+        for delegation in found:
+            key = notice_key(delegation)
+            if key in self.unsubmitted or not by_platform(delegation.result):
+                continue
+            self.unsubmitted.add(key)
+            named.append(_named(delegation))
+        return named
 
     async def finishing(self, run: RunView, stopped: str) -> str | None:
         """A limit pauses this parent's model work, not the authorized children's.

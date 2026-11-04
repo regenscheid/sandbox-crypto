@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 from sandbox_science.orchestrator.context.history import body
-from sandbox_science.orchestrator.delegation.outcome import TASK_FORMAT, parse_task
+from sandbox_science.orchestrator.delegation.outcome import CAME, TASK_FORMAT, parse_task
 from sandbox_science.orchestrator.delegation.prompt import TASK_PROMPT, write_area_text
 from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords
 from sandbox_science.orchestrator.documents import DocumentError
@@ -25,7 +25,16 @@ from .loop_harness import PROJECT, SESSION, Harness, Reply, call
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
-from .test_delegation import children, configure, decide, delegation, results, started, wait
+from .test_delegation import (
+    children,
+    configure,
+    decide,
+    delegation,
+    results,
+    started,
+    submitted,
+    wait,
+)
 from .test_delegation import delegating as delegating
 from .test_ledger import MAIN
 from .test_ledger_delegated_check import link
@@ -54,11 +63,11 @@ KEPT: dict[str, Any] = {
 
 async def test_a_task_runs_with_its_own_prompt_brief_and_limits(delegating: Harness) -> None:
     """PD-11: the child is given the parent's task, context and inputs, under the task
-    prompt and a task's limits; its result is a task's, kept as returned."""
+    prompt and a task's limits; its result is a task's, kept as it submitted it."""
     root = await delegating.run(
         "root",
         [Reply(calls=[TASK]), wait(), Reply("Done.")],
-        delegated=[Reply(json.dumps(DONE))],
+        delegated=submitted(DONE, "Done."),
     )
     first = delegating.gateway.children[0]
     assert str(first[0]["content"]).startswith(TASK_PROMPT[:60])
@@ -180,7 +189,9 @@ def test_a_blank_obstacle_is_no_obstacle(blank: str) -> None:
         parse_task(json.dumps({**DONE, "status": "blocked", "obstacle": blank}))
 
 
-async def test_a_task_that_answers_badly_is_corrected_once(delegating: Harness) -> None:
+async def test_a_task_that_answers_in_prose_is_told_to_submit_and_its_json_answer_kept(
+    delegating: Harness,
+) -> None:
     root = await delegating.run(
         "root",
         [Reply(calls=[TASK]), wait(), Reply("Done.")],
@@ -189,9 +200,12 @@ async def test_a_task_that_answers_badly_is_corrected_once(delegating: Harness) 
     (child,) = children(delegating, root)
     outcome = child.summaries["outcome"]
     assert isinstance(outcome, dict)
-    assert outcome["errors"]
+    assert (outcome["nudges"], outcome["submissions"], outcome["source"]) == (1, 0, "answer")
     (delegation_id,) = started(root)
-    assert delegation(delegating, delegation_id).result == KEPT
+    assert delegation(delegating, delegation_id).result == {
+        **KEPT,
+        "platform_notes": [CAME["answer"]],
+    }
 
 
 async def test_a_task_is_no_check_for_the_gate(delegating: Harness) -> None:
@@ -284,7 +298,8 @@ async def test_a_task_at_a_soft_cap_checks_in_and_reports_when_stopped(
 ) -> None:
     """D102, RS-6f, PD-19: a task at a soft cap checks in and waits; its parent's stop
     makes its next call its report round, whose answer reaches the parent as the
-    delegation's report; it ended ``limit_reached``, with no result."""
+    delegation's report; it ended ``limit_reached``, with the platform's result, as it
+    submitted none, its report the summary."""
     configure(delegating, depth=1, **limits)
     root = await delegating.run(
         "root",
@@ -297,11 +312,15 @@ async def test_a_task_at_a_soft_cap_checks_in_and_reports_when_stopped(
     assert (child.stopped, child.final_text) == ("resource_report", PARTIAL)
     (delegation_id,) = started(root)
     found = delegation(delegating, delegation_id)
-    assert (found.ended, found.stopped, found.report, found.result) == (
+    assert (found.ended, found.stopped, found.report) == (
         "limit_reached",
         "resource_report",
         PARTIAL,
-        None,
+    )
+    assert found.result is not None
+    assert (found.result["status"], found.result["summary"]) == ("blocked", PARTIAL)
+    assert found.result["obstacle"] == (
+        "the run reached a limit (resource_report) without submitting a result"
     )
     checked_in = json.loads(results(root)[1])
     assert checked_in.get("reason", "resource_request") == "resource_request"
