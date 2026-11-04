@@ -51,6 +51,7 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Final, cast
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ErrorKind, ExecutionContext, KernelInfo
+from sandbox_science.orchestrator import jsontext
 from sandbox_science.orchestrator.documents.tool import REQUESTS_TASK
 from sandbox_science.orchestrator.hooks import Point, RunView, TurnHook
 from sandbox_science.orchestrator.notices import (
@@ -881,9 +882,9 @@ def _block(item: _Words, cap: int) -> str:
 def _kernel(content: str) -> Json | None:
     """The kernel a cell's result names: its language, ID and generation."""
     try:
-        found: object = json.loads(content)
+        found: object = jsontext.loads(content)
         if isinstance(found, dict) and isinstance(cast(Json, found).get("tool_result"), str):
-            found = json.loads(cast(Json, found)["tool_result"])  # notices rode on it
+            found = jsontext.loads(cast(Json, found)["tool_result"])  # notices rode on it
     except ValueError:
         return None
     kernel = cast(Json, found).get("kernel") if isinstance(found, dict) else None

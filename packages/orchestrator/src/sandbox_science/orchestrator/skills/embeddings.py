@@ -20,7 +20,6 @@ float32. Each call's cost, as the gateway reported it, is counted for the projec
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import math
 from collections.abc import Iterable, Sequence
@@ -30,6 +29,7 @@ from typing import Any, Final, NamedTuple, cast
 import aiohttp
 
 from sandbox_science.contracts.clock import SYSTEM_CLOCK, Clock
+from sandbox_science.orchestrator import jsontext
 from sandbox_science.orchestrator.aio import threaded
 from sandbox_science.orchestrator.model import COST_HEADER, ModelError, gateway_said, read_limited
 
@@ -194,7 +194,7 @@ def _cost(header: str | None) -> float | None:
 
 
 def _json(raw: bytes) -> dict[str, Any]:
-    found = json.loads(raw)
+    found = jsontext.loads(raw)
     if not isinstance(found, dict):
         raise ValueError("not an object")
     return cast(dict[str, Any], found)

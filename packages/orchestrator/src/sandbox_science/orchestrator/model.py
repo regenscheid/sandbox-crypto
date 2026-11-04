@@ -28,7 +28,7 @@ from pydantic import Field
 from sandbox_science.contracts.clock import SYSTEM_CLOCK, Clock
 from sandbox_science.contracts.model import Contract
 
-from . import images
+from . import images, jsontext
 from .model_profiles import PROFILES, ModelProfile, ModelRole, default_effort, requested
 from .pricing import GATEWAY, MODEL_INFO, CostSource, PriceList, Tokens, chat_tokens
 from .pricing import cost as priced_cost
@@ -1114,7 +1114,7 @@ class ModelGateway:
             _log.warning("the model gateway lists no models: %s", type(exc).__name__)
             return None
         try:
-            found = _object(json.loads(data)).get("data")
+            found = _object(jsontext.loads(data)).get("data")
         except (ValueError, TypeError):
             return None
         if not isinstance(found, list):
@@ -1196,7 +1196,7 @@ class ModelGateway:
             _log.warning("the model gateway describes no models: %s", type(exc).__name__)
             return None
         try:
-            found = _object(json.loads(data)).get("data")
+            found = _object(jsontext.loads(data)).get("data")
         except (ValueError, TypeError):
             return None
         if not isinstance(found, list):
@@ -1412,7 +1412,7 @@ def _terminal(name: str, payload: bytes, terminal: bytes | None, limit: int) -> 
     """A Responses stream's terminal response, as compact JSON, after one more event: the
     one before it, unless the event is the terminal one."""
     try:
-        raw: object = json.loads(payload)
+        raw: object = jsontext.loads(payload)
     except (ValueError, UnicodeDecodeError):
         raise ModelError("the model gateway sent invalid Responses SSE data") from None
     if not isinstance(raw, dict):

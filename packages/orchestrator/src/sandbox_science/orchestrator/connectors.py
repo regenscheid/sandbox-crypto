@@ -52,6 +52,9 @@ runtime's sandbox (``mcp_direct``). The MCP proxy that stood there before retire
   later, with the same arguments, which the client sends in one order;
 - a call sent whose answer cannot be read is ``no_usable_answer``: the server may have
   done the work, so the harness leaves its intent pending for reconciliation;
+- a result whose brackets nest deeper than ``MAX_NESTING`` is ``result_too_nested``, and
+  its text is neither shown nor kept: the archive's readers parse what it keeps
+  (``jsontext``);
 - with a ``BinarySink`` (``mcp_binaries``), each image, audio block or blob of a result
   is withheld (``policy.mcp_answers``) and kept as an artifact, and the model sees the
   sink's note naming it instead; the toolbox bounds the text as it bounds any tool result.
@@ -73,6 +76,7 @@ from typing import Any, Final, Protocol, cast
 from sandbox_science.policy.mcp_answers import binary_contents, withhold_binary
 from sandbox_science.policy.mcp_wire import tool_digest
 
+from . import jsontext
 from .delegation.effects import EFFECT_CLASSES, connector_reach
 from .delegation.narrowing import Narrowing
 from .documents.agent_text import hidden_characters
@@ -133,6 +137,8 @@ MAX_FAILURE: Final = 300
 """Characters of the reason a server's listing failed."""
 CALL_SECONDS: Final = 330.0
 """How long one call may take, from start to end."""
+MAX_NESTING: Final = 200
+"""How deep a result's brackets may nest, outside its strings, for its text to be kept."""
 NAME: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 """A tool name a model can call, and that a run's records can hold."""
 
@@ -784,6 +790,13 @@ class Connectors:
         if self.binaries is not None:
             result = await self._keep_binaries(tool.server, name, result, record)
         text = _text(result)
+        if jsontext.deeper_than(text, MAX_NESTING):
+            record["error"] = "result_too_nested"
+            message = (
+                f"{name}'s result nests deeper than {MAX_NESTING} levels, so it is neither "
+                "shown nor kept. The call was made: check its effect before calling it again."
+            )
+            return dump({"error": {"kind": "result_too_nested", "message": message}}), record
         if result.get("isError") is True:
             record["error"] = "tool_error"
             return dump({"error": {"kind": "tool_error", "message": text}}), record

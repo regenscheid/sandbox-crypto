@@ -10,9 +10,10 @@ framings installed when the run started.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from typing import Any, Final, cast
+
+from . import jsontext
 
 
 @dataclass(frozen=True)
@@ -35,10 +36,10 @@ REQUESTS: Final = Framing(
 def requests(content: str) -> list[dict[str, Any]]:
     """The work requests a comment notice delivered, as its archived message holds them:
     a framing of any version, then the payload's JSON list, which runs to the end."""
-    decoder, start = json.JSONDecoder(), content.find("[")
+    start = content.find("[")
     while start >= 0:
         try:
-            found, end = decoder.raw_decode(content, start)
+            found, end = jsontext.raw_decode(content, start)
         except ValueError:
             found, end = None, -1
         if end == len(content) and isinstance(found, list):

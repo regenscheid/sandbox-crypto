@@ -21,6 +21,7 @@ from pydantic import ValidationError
 
 from sandbox_science.contracts import new_id
 from sandbox_science.contracts.artifact_inventory import ArtifactRevisionRef
+from sandbox_science.orchestrator import jsontext
 from sandbox_science.orchestrator.artifacts import ArtifactInventory
 from sandbox_science.orchestrator.control import EventLog
 from sandbox_science.orchestrator.control.feeds import FeedCursor
@@ -1520,7 +1521,7 @@ class ReviewStore:
             record = stored_json(payload)
             result = record.get("result")
             try:
-                arguments: object = json.loads(str(record.get("arguments") or "{}"))
+                arguments: object = jsontext.loads(str(record.get("arguments") or "{}"))
             except ValueError:
                 continue
             if not isinstance(arguments, dict) or not isinstance(result, dict):

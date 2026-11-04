@@ -34,6 +34,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final, cast
 
+from sandbox_science.orchestrator import jsontext
 from sandbox_science.orchestrator.purpose import purpose_of, without
 
 from .archive import Archived
@@ -367,7 +368,7 @@ def _inconclusive(span: _Span, content: str, at: str) -> None:
     if not starts:
         return
     try:  # the JSON after a notice's framing
-        found, _ = json.JSONDecoder().raw_decode(content, min(starts))
+        found, _ = jsontext.raw_decode(content, min(starts))
     except ValueError:
         return
     stack: list[object] = [cast(object, found)]
@@ -463,9 +464,9 @@ def _json(text: str) -> Json:
     """A tool result or arguments as an object, notices that rode on a result taken off;
     ``{}`` for anything else."""
     try:
-        found: object = json.loads(text)
+        found: object = jsontext.loads(text)
         if isinstance(found, dict) and isinstance(cast(Json, found).get("tool_result"), str):
-            found = json.loads(cast(Json, found)["tool_result"])
+            found = jsontext.loads(cast(Json, found)["tool_result"])
     except ValueError:
         return {}
     return cast(Json, found) if isinstance(found, dict) else {}

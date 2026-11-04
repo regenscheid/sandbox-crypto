@@ -90,7 +90,7 @@ from typing import Any, Final, cast
 
 import aiohttp
 
-from . import images
+from . import images, jsontext
 from .model import (
     COMPACTION,
     FALLBACKS,
@@ -1243,7 +1243,7 @@ def _assistant(
     content = [{"type": "text", "text": text}] if (text := _text(message)) else []
     for call in _chat_calls(message):
         try:
-            given: object = json.loads(call.arguments)
+            given: object = jsontext.loads(call.arguments)
         except ValueError:
             given = None
         content.append(

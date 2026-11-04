@@ -24,12 +24,12 @@ the embedding is cancelled.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from collections.abc import Awaitable, Iterable, Sequence
 from typing import Any, Final, TypeVar, cast
 
 from sandbox_science.contracts.clock import SYSTEM_CLOCK, Clock
+from sandbox_science.orchestrator import jsontext
 from sandbox_science.orchestrator.hooks import Notice, Point, RunView, TurnHook
 from sandbox_science.orchestrator.notices import SKILLS, SKILLS_WORDS
 
@@ -76,7 +76,7 @@ def shown_in(notices: Iterable[str]) -> set[str]:
     for text in notices:
         framing = next((f.text for f in (SKILLS, SKILLS_WORDS) if text.startswith(f.text)), None)
         try:
-            payload: object = json.loads(text[len(framing) :]) if framing is not None else {}
+            payload: object = jsontext.loads(text[len(framing) :]) if framing is not None else {}
         except ValueError:
             continue
         if not isinstance(payload, dict):
