@@ -116,14 +116,6 @@ DELEGATIONS_RUNNING: Final = Framing(
     "Wait for them with wait_delegations, or end one with cancel_delegation, then answer "
     "with their outcomes. ",
 )
-OUTCOME_CORRECTION: Final = Framing(
-    "outcome-correction",
-    "sandbox-notice-outcome-correction-1",
-    "Platform notice: your final answer is not a valid result, for the errors below. "
-    "Answer again with only the JSON object the format gives; this is the only "
-    "correction, and an invalid answer is kept as you wrote it, with no result. ",
-)
-
 SKILLS: Final = Framing(
     "skills",
     "sandbox-notice-skills-3",
@@ -379,6 +371,16 @@ DELEGATIONS_UNSUBMITTED: Final = Framing(
 )
 """A parent's closing answer while returned tasks with the platform's result await its
 review (PD-46)."""
+OUTCOME_REPORT: Final = Framing(
+    "outcome-report",
+    "sandbox-notice-outcome-report-1",
+    "Platform notice: no tool runs in this last call, so submit_result cannot. Write, as "
+    "your answer, the JSON object you would have submitted, in the form below, alone or in "
+    "a ```json block: your parent receives it as your result, partial at this limit, in "
+    "place of one you submitted. Without it, a result you submitted stands, partial; with "
+    "neither, your parent gets a blocked result, the platform's. ",
+)
+"""A delegated run's report round at a limit, beside the report's own notice (PD-19)."""
 
 FRAMINGS: Final = (
     REQUESTS,
@@ -392,7 +394,6 @@ FRAMINGS: Final = (
     DELEGATIONS,
     DELEGATIONS_ATTACHED,
     DELEGATIONS_RUNNING,
-    OUTCOME_CORRECTION,
     SKILLS,
     SKILLS_WORDS,
     STATE_BLOCK,
@@ -413,4 +414,5 @@ FRAMINGS: Final = (
     OUTCOME_SUBMIT,
     OUTCOME_LAST_CALL,
     DELEGATIONS_UNSUBMITTED,
+    OUTCOME_REPORT,
 )

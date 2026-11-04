@@ -282,7 +282,7 @@ How long each request may wait:
 
 | Request | Direction | Limit |
 | --- | --- | --- |
-| A hook's calls (`hook_enter`, `hook_exit`, `notices`, `turn_limit`, `last_call`, `consumption`, `model_returned`, `gate`, `observe_tool`, `closing`, `accept`, `finishing`), `tool`, `fold_before`, `fold_overflow` | runtime to host | patience: a parent's `finishing` and lease exit wait for its children, a tool may run or wait for hours, a gate or call may be held for the user |
+| A hook's calls (`hook_enter`, `hook_exit`, `notices`, `turn_limit`, `last_call`, `report_notices`, `consumption`, `model_returned`, `gate`, `observe_tool`, `closing`, `accept`, `finishing`), `tool`, `fold_before`, `fold_overflow` | runtime to host | patience: a parent's `finishing` and lease exit wait for its children, a tool may run or wait for hours, a gate or call may be held for the user |
 | `halt` | runtime to host | 2,400 s: a check-in's 1,800 s wait for its parent, then the automatic decision ([adaptive resources](adaptive-research-resources.md#check-ins)) |
 | `model` | host to runtime | patience: the runtime's client retries a slow gateway, 600 s a try |
 | `cancel` | host to runtime | patience: the cancelled loop exits its hooks' leases |

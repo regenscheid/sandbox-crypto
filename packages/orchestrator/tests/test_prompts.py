@@ -175,6 +175,7 @@ GOLDEN = {
     "sandbox-notice-delegations-running-2": (
         "c9a8bab83313d421f56598703924f57397727a0983b4c9156bcff6df39a9970a"
     ),
+    # Retired 2026-11-03 with the one correction (PD-18): kept for the records that pin it.
     "sandbox-notice-outcome-correction-1": (
         "4d308ab03dd3549555c60202b1690a59e7025667f6189cdb5abb4aa25cf6eae1"
     ),
@@ -226,6 +227,9 @@ GOLDEN = {
     ),
     "sandbox-notice-outcome-last-call-1": (
         "a35ef2d0859a3578d237cfc0db7d7133bd675054c8c964bc78e955d285df7a24"
+    ),
+    "sandbox-notice-outcome-report-1": (
+        "6e5f18df2d96551b357a6f779fde1ae6ad04057975c24f46f04772478105f8af"
     ),
     "sandbox-notice-delegations-unsubmitted-1": (
         "762699801f144af1954d5f9e6affbb564f6b52e7e13435658eb999cc8556544f"

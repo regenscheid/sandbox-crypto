@@ -149,6 +149,11 @@ class RemoteHook(TurnHook):
     async def last_call(self, run: RunView) -> str | None:
         return TypeAdapter(str | None).validate_python(await self.ask(Capability.LAST_CALL, run))
 
+    async def report_notices(self, run: RunView, limit: str) -> Sequence[Notice]:
+        return TypeAdapter(tuple[Notice, ...]).validate_python(
+            await self.ask(Capability.REPORT_NOTICES, run, stopped=limit)
+        )
+
     async def consumption(self) -> Sequence[str]:
         return typed(Consumed, await self.ask(Capability.CONSUMPTION)).ids
 

@@ -36,9 +36,11 @@ result goes through ``submit_result``, with its form, at most ``NUDGES`` times i
 An answer that holds a valid result as JSON, read leniently (``candidates``: the last
 fenced ``json`` block, or the last top-level JSON object, prose around it allowed), is
 the result instead, its ``platform_notes`` saying it came in the answer; so is a report a
-limit's last call gives, where no tool runs. A submission or an answer that checks but
-leaves deliverables out stands, unless a later one checks, as the child's result with the
-platform's status ``blocked`` and its obstacle, marked ``set_by: platform`` (PD-45).
+limit's last call gives, where no tool runs, and before which the hook's notice asks the run
+to write the JSON it would have submitted (``report_notices``). A submission or an answer
+that checks but leaves deliverables out stands, unless a later one checks, as the child's
+result with the platform's status ``blocked`` and its obstacle, marked ``set_by: platform``
+(PD-45).
 Without any, the parent still gets a result, the platform's, never stronger than the
 records: ``blocked``, its obstacle that the run submitted none, the run's answer as its
 summary, each deliverable ``not_produced``, no result files, and a note naming the files
@@ -68,7 +70,7 @@ from sandbox_science.orchestrator.hooks import Closing, Notice, Point, RunView, 
 from sandbox_science.orchestrator.ledger.gate import supporting
 from sandbox_science.orchestrator.ledger.models import EvidenceLink
 from sandbox_science.orchestrator.model import ToolSpec
-from sandbox_science.orchestrator.notices import OUTCOME_LAST_CALL, OUTCOME_SUBMIT
+from sandbox_science.orchestrator.notices import OUTCOME_LAST_CALL, OUTCOME_REPORT, OUTCOME_SUBMIT
 from sandbox_science.orchestrator.purpose import without
 from sandbox_science.orchestrator.worker_client import dump
 
@@ -1476,6 +1478,17 @@ class Outcome(TurnHook):
     @property
     def _submitted(self) -> bool:
         return self.valid and self.source == SUBMIT
+
+    async def report_notices(self, run: RunView, limit: str) -> Sequence[Notice]:
+        """The report round at a limit, where no tool runs: the run writes, as its answer,
+        the JSON object it would have submitted, which is read leniently as its result
+        (PD-19); with a result recorded, the notice says so."""
+        payload: dict[str, JsonValue] = {
+            "limit": limit,
+            "recorded": self._submitted,
+            "form": self.form,
+        }
+        return (Notice(self.name, (), OUTCOME_REPORT.text, payload),)
 
     async def model_returned(self, run: RunView) -> None:
         """A report round's answer at a limit, where no tool runs: its text is the run's

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
 
@@ -41,12 +42,15 @@ from sandbox_science.orchestrator.delegation.outcome import (
 from sandbox_science.orchestrator.delegation.prompt import CHECK_PROMPT, TASK_PROMPT
 from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords, Ending
 from sandbox_science.orchestrator.delegation.specs import SPECS
-from sandbox_science.orchestrator.loop import Transcript
-from sandbox_science.orchestrator.model import ToolCall
+from sandbox_science.orchestrator.hooks import Notice, RunView, TurnHook
+from sandbox_science.orchestrator.loop import IN_ORDER, Transcript, run_task
+from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel, ToolCall
 from sandbox_science.orchestrator.notices import (
     DELEGATIONS_UNSUBMITTED,
     OUTCOME_LAST_CALL,
+    OUTCOME_REPORT,
     OUTCOME_SUBMIT,
+    REPORT,
 )
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.responses import ResponsesModel
@@ -69,12 +73,24 @@ from .test_delegation import (
     wait,
 )
 from .test_delegation import delegating as delegating
-from .test_delegation_deliverables import ASKED, D1, D2, D3, recorded, submit
+from .test_delegation_deliverables import (
+    ASKED,
+    D1,
+    D2,
+    D3,
+    IN_AREA,
+    RECHECK,
+    WRITE,
+    recorded,
+    submit,
+)
+from .test_delegation_deliverables import TASK as DELIVERABLES_TASK
 from .test_delegation_tasks import DONE, KEPT, TASK
 from .test_parent_review import _store, _task
 from .test_responses_model import Fake, response, said
 from .test_responses_model import fake as fake
 from .test_responses_model import gpt as gpt
+from .test_tool_journal import toolbox
 
 EACH_KIND = (
     Asked("d1", "The table", "artifact"),
@@ -183,6 +199,7 @@ async def test_the_gpt_route_sends_the_schema_whole_and_not_strict(
 
 def test_only_a_delegated_run_is_offered_submit_result_and_its_name_is_reserved() -> None:
     assert SUBMIT in caps.RESERVED_NAMES
+    assert SUBMIT in IN_ORDER  # a later submission replaces an earlier one: in order
     assert SUBMIT in HARNESS_TOOL_NAMES
     child = Toolbox(cast(WorkerClient, object()), CONTEXT, delegated=True, outcome=Outcome())
     main = Toolbox(cast(WorkerClient, object()), CONTEXT)
@@ -617,3 +634,117 @@ def test_a_version_88_store_keeps_a_limit_reached_result_once_migrated(tmp_path:
         assert failed.result is None
     finally:
         migrated.close()
+
+
+# --- The report round's notice and the order of a reply's calls --------------------------
+
+
+class Reporting(TurnHook):
+    """A hook with a notice of its own for the report round."""
+
+    name = "reporting"
+
+    def __init__(self, size: int = 10) -> None:
+        self.size = size
+        self.asked: list[str] = []
+
+    async def report_notices(self, run: RunView, limit: str) -> Sequence[Notice]:
+        self.asked.append(limit)
+        return (Notice(self.name, (), "Write the result: ", {"pad": "x" * self.size}),)
+
+
+async def unused(request: Any) -> Any:
+    raise AssertionError("no tool runs in these fixtures")
+
+
+@pytest.mark.parametrize("size", [10, 200_000])
+async def test_the_report_round_offers_a_hooks_notices_after_its_own(size: int) -> None:
+    """RS-6f, PD-19: before the report round at a limit, each hook gives its notices for
+    that call, which follow the report's own; with no room for them, the report's goes
+    alone."""
+    hook = Reporting(size)
+    first = ModelTurn(None, tool_calls=(ToolCall("c1", "arithmetic", "{}"),))
+    result = await run_task(
+        ScriptedModel([first, ModelTurn("My report.")]),
+        toolbox(unused),
+        task="Fixture",
+        run_id="run",
+        max_turns=1,
+        max_input_chars=150_000,
+        hooks=(hook,),
+    )
+    assert (result.stopped, result.final_text) == ("turn_limit", "My report.")
+    assert hook.asked == ["turn_limit"]
+    told = [str(m.get("content")) for m in result.context.messages if m.get("role") == "user"]
+    reported = [n for n, text in enumerate(told) if text.startswith(REPORT.text)]
+    written = [n for n, text in enumerate(told) if text.startswith("Write the result: ")]
+    assert len(reported) == 1
+    assert written == ([reported[0] + 1] if size == 10 else [])
+
+
+async def test_a_delegated_report_round_asks_for_the_json_and_takes_it(
+    delegating: Harness,
+) -> None:
+    """PD-19: a task its parent stopped at a check-in, which submitted nothing, is told
+    in its report round, after the report's notice, to write the JSON it would have
+    submitted; the JSON its report gives is its result, partial at the limit."""
+    configure(delegating, depth=1, task_tokens=50_000, max_token_grant=100_000)
+    report = "Stopped here. My result:\n```json\n" + json.dumps(DONE) + "\n```"
+    root = await delegating.run(
+        "root",
+        [Reply(calls=[TASK]), wait(), decide("stop"), wait(), Reply("Done.")],
+        delegated=[
+            Reply(calls=[call("no_such_tool")], tokens=60_000),
+            Reply(calls=[call("no_such_tool")], tokens=60_000),
+            Reply(report),
+        ],
+        status=3,
+    )
+    last = [
+        body(str(m.get("content")))
+        for m in delegating.gateway.children[-1]
+        if m.get("role") == "user"
+    ]
+    assert last[-2].startswith(REPORT.text)
+    assert last[-1].startswith(OUTCOME_REPORT.text)
+    payload = json.loads(last[-1][len(OUTCOME_REPORT.text) :])
+    assert (payload["limit"], payload["recorded"]) == ("resource_report", False)
+    assert payload["form"]["required"] == ["status", "summary"]
+    (delegation_id,) = started(root)
+    found = delegation(delegating, delegation_id)
+    assert (found.ended, found.report) == ("limit_reached", report)
+    assert found.result is not None
+    assert (found.result["status"], found.result["child_status"]) == ("partial", "complete")
+    assert found.result["platform_notes"] == [CAME["report"]]
+
+
+async def test_a_file_written_in_a_reply_is_recorded_before_its_submit_result_runs(
+    delegating: Harness,
+) -> None:
+    """A reply that writes a file and records a ledger entry, then submits the result
+    naming both, in the same reply: the calls that change something run alone, in the
+    reply's order, and each is observed before the next runs, so the submission sees what
+    they made (RS-6f's calls of one reply, PD-45)."""
+    result = {**PARTIAL, "deliverables": [IN_AREA, D2, D3], "result_files": [IN_AREA["path"]]}
+    root = await delegating.run(
+        "root",
+        [Reply(calls=[DELIVERABLES_TASK]), wait(), Reply("Done.")],
+        delegated=[
+            Reply(calls=[WRITE, RECHECK, call(SUBMIT, **result)]),
+            Reply("Done: the table and the recheck task."),
+        ],
+    )
+    (child,) = children(delegating, root)
+    summary = summary_of(child)
+    assert (summary["submissions"], summary["errors"], summary["source"]) == (
+        1,
+        [],
+        "submit_result",
+    )
+    (delegation_id,) = started(root)
+    found = delegation(delegating, delegation_id)
+    assert found.result is not None
+    assert found.result["status"] == "partial"
+    assert found.files is not None
+    (pinned,) = cast(list[dict[str, Any]], found.files["results"])
+    assert pinned["path"] == f"work/{delegation_id}/table.txt"
