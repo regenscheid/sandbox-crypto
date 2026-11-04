@@ -485,16 +485,6 @@ class ReviewStore:
                     (project, session),
                 ).fetchone()
                 is not None
-                # Work a review covered without a verdict: a limit ended it after it read
-                # them (CR-31 as amended). It is not reviewed again, nor passed.
-                or db.execute(
-                    "SELECT 1 FROM review_records c JOIN review_runs r USING(review_id) "
-                    "WHERE r.project=? AND r.session=? AND c.kind='coverage' "
-                    "AND json_extract(c.payload,'$.verdict')=0 "
-                    "AND json_extract(c.payload,'$.through') IS NOT NULL LIMIT 1",
-                    (project, session),
-                ).fetchone()
-                is not None
             )
         return {
             "watermark": watermark,
@@ -1370,21 +1360,17 @@ class ReviewStore:
         exhausted: bool = False,
     ) -> None:
         """End a review. An author-work review that ends with a verdict covers its window
-        up to the first new item it names ``unreviewed``; one that ends without a verdict
-        (a limit ended it), or after it was told its budget was running out
-        (``exhausted``), covers only the new items it examined, up to the first it did
-        not (CR-31 as amended). The watermark moves to the end of what it covered, and a
-        later review continues from there; what is left stays pending and the review's
-        coverage is incomplete.
+        up to the first new item it names ``unreviewed``, and, when it was told its budget
+        was running out (``exhausted``), up to the first it did not examine (CR-31 as
+        amended). The watermark moves to the end of what it covered, and a later review
+        continues from there; its coverage stays complete, if it was, for what it covered:
+        the ledger gate leaves out the items its coverage names unreviewed.
 
-        A verdict keeps the review's coverage complete, if it was, for the items it
-        covered: the ledger gate leaves out those its coverage names unreviewed. A review
-        without a verdict, or that covered nothing, has incomplete coverage.
-
-        A review that covered nothing, or failed or was dropped, keeps its window: the
+        A review without a verdict (a limit ended it, or it failed or was dropped), or
+        whose verdict covered nothing, keeps its window, with incomplete coverage: the
         next attempt shrinks its evidence allowance based on the failure count, and three
-        failures defer further attempts. Failure never silently certifies or skips
-        evidence.
+        failures defer further attempts. Its window stays pending until a review with a
+        verdict covers it; failure never silently certifies or skips evidence.
         """
         if outcome == "running":
             raise DocumentError(INVALID_REQUEST, "a review must end with an outcome")
@@ -1409,11 +1395,7 @@ class ReviewStore:
             coverage: Json | None = None
             if found["kind"] != "confirmation" and outcome not in ("failed", "dropped"):
                 coverage = self._coverage(
-                    db,
-                    found,
-                    verdict=verdict,
-                    examined_only=not verdict or exhausted,
-                    named=unreviewed,
+                    db, found, verdict=verdict, examined_only=exhausted, named=unreviewed
                 )
                 if coverage["through"] is None:
                     # Nothing covered: no verdict on anything, whatever the reviewer said.
@@ -1481,8 +1463,9 @@ class ReviewStore:
                 coverage is None or not verdict or coverage["through"] is None
             ):
                 # No verdict, or nothing covered: what the review held is reviewed for no
-                # ledger entry. A verdict credits what it covered, the gate leaving out
-                # what its coverage names unreviewed (CR-31 as amended).
+                # ledger entry, and its window is reviewed again. A verdict credits what it
+                # covered, the gate leaving out what its coverage names unreviewed (CR-31
+                # as amended).
                 db.execute(
                     "UPDATE review_runs SET coverage_complete=0 WHERE review_id=?", (review,)
                 )
@@ -1569,9 +1552,10 @@ class ReviewStore:
     ) -> Json:
         """What an ending author-work review covered: ``through``, the feed position up to
         which it covered its window (its end when it covered every new item), or None when
-        it covered none; the new items it covered and those it left unreviewed. A new item
-        is covered when the reviewer did not name it unreviewed and, when only what it
-        examined counts, examined it (``_examined``)."""
+        it covered none; the new items it covered, those it left unreviewed and those it
+        examined. Without a verdict it covered none. With one, a new item is covered when
+        the reviewer did not name it unreviewed and, when only what it examined counts,
+        examined it (``_examined``)."""
         items = self._window_items(db, run)
         examined = self._examined(db, run["review_id"])
         unnamed = set(named)
@@ -1580,7 +1564,8 @@ class ReviewStore:
         through: int | None = None
         for seq, copies in items:
             if (
-                not unreviewed
+                verdict
+                and not unreviewed
                 and not unnamed & set(copies)
                 and (not examined_only or examined & set(copies))
             ):
@@ -1588,7 +1573,7 @@ class ReviewStore:
                 through = seq
             else:
                 unreviewed.extend(copies)
-        if not unreviewed and (items or not examined_only or examined):
+        if verdict and not unreviewed:
             through = run["end_seq"]
         return {
             "through": through,
@@ -1597,6 +1582,7 @@ class ReviewStore:
             "examined_only": examined_only,
             "covered": covered,
             "unreviewed": unreviewed,
+            "examined": [e for _, copies in items for e in copies if e in examined],
             "named": sorted(unnamed),
         }
 

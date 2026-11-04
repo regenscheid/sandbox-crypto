@@ -767,9 +767,9 @@ class ReviewerRunner:
         unreviewed: Sequence[str] = (),
     ) -> None:
         """End the review. With a verdict it covers its window up to the first item it
-        names ``unreviewed``; without one (a limit ended it), or once it was given a budget
-        notice, only what it examined counts; a review that covered nothing leaves its
-        window to be reviewed again (CR-31, CR-34 as amended)."""
+        names ``unreviewed``, and once it was given a budget notice, up to the first it did
+        not examine; a review without a verdict, or that covered nothing, leaves its window
+        to be reviewed again (CR-31, CR-34 as amended)."""
         try:
             await threaded(
                 self.store.finish,

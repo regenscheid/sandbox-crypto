@@ -234,28 +234,30 @@ async def test_the_manifest_marks_the_windows_new_evidence(store) -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_capped_window_is_continued_never_reviewed_again_from_its_start(store) -> None:
+async def test_a_window_the_budget_cuts_is_continued_never_reviewed_again_from_its_start(
+    store,
+) -> None:
     """The SNOVA defect: each review of a window that capped began it again. A reviewer
-    that heeds no notice, with two calls, a manifest and a read of two items, now covers
-    the window in three reviews, each going on from the last, and reads no item twice as
-    new."""
+    with four calls, which reads two items, is told its budget is running out and gives a
+    verdict on them, now covers a six-item window in three reviews, each going on from
+    the last, and reads no item twice as new."""
     reviews, _, now = store
-    reviews.defaults = ReviewConfig(max_turns=2, max_feed_items=16)
+    reviews.defaults = ReviewConfig(max_turns=4, max_feed_items=16)
     seqs = claims(reviews, 6)
     spans: list[tuple[int, int]] = []
     read_as_new: list[str] = []
     while reviews.progress("p", "s")["remaining"]:
         review = dispatch(reviews)
-        reviewer = Reviewer(per_turn=2, ignore=True)
-        await ReviewerRunner(reviews, "p", "s", review, "owner", reviewer).run()
+        await ReviewerRunner(reviews, "p", "s", review, "owner", Reviewer(per_turn=2)).run()
         run = reviews.run("p", "s", review)
-        assert run["state"] == "capped"
+        assert run["state"] == "passed"
         spans.append((run["start_seq"], run["coverage"]["through"]))
         read_as_new.extend(run["coverage"]["covered"])
         now[0] += 200
         assert len(spans) <= 3
     assert spans == [(seqs[0], seqs[1]), (seqs[2], seqs[3]), (seqs[4], seqs[5])]
-    assert reviews.progress("p", "s")["failures"] == 0
+    progress = reviews.progress("p", "s")
+    assert (progress["failures"], progress["historical_holes"]) == (0, False)
     with reviews.documents.control.read() as tx:
         payloads = [
             json.loads(p)["content"]
@@ -266,13 +268,34 @@ async def test_a_capped_window_is_continued_never_reviewed_again_from_its_start(
             )
         ]
     assert sorted(payloads) == sorted(f"claim {n} gave 16." for n in range(6))
-    # Covered without a verdict: no later pass hides it.
-    assert reviews.progress("p", "s")["historical_holes"]
+
+
+@pytest.mark.asyncio
+async def test_a_review_without_a_verdict_keeps_its_window_whatever_it_read(store) -> None:
+    """A reviewer that heeds no notice reads four items and makes tool calls with its last
+    call: no verdict, so its window is kept, smaller next time, not passed over."""
+    reviews, _, _ = store
+    reviews.defaults = ReviewConfig(max_turns=3, max_feed_items=16)
+    claims(reviews, 6)
+    first = dispatch(reviews)
+    await ReviewerRunner(reviews, "p", "s", first, "owner", Reviewer(ignore=True)).run()
+    run = reviews.run("p", "s", first)
+    assert (run["state"], run["coverage"]["through"], run["coverage_complete"]) == (
+        "capped",
+        None,
+        0,
+    )
+    assert len(run["coverage"]["examined"]) == 4
+    progress = reviews.progress("p", "s")
+    assert (progress["watermark"], progress["retry_end"], progress["failures"]) == (0, 6, 1)
+    assert not progress["historical_holes"]
+    second = reviews.run("p", "s", dispatch(reviews))
+    assert (second["start_seq"], second["end_seq"]) == (1, 4)
 
 
 @pytest.mark.asyncio
 async def test_a_review_that_covered_nothing_keeps_its_window_and_shrinks(store) -> None:
-    """Only a review that covered nothing is tried again, as before, smaller."""
+    """A review that covered nothing is tried again, as before, smaller."""
     reviews, _, _ = store
     reviews.defaults = ReviewConfig(max_turns=1, max_feed_items=16)
     claims(reviews, 20)
@@ -318,11 +341,11 @@ async def test_the_context_bound_is_announced_before_it_ends_the_review(store) -
 
 
 @pytest.mark.asyncio
-async def test_terminal_catch_up_continues_a_capped_window(store) -> None:
-    """At a run's close, a review a limit ended after it covered part of its window does
-    not end the catch-up: the next review continues from where it stopped."""
+async def test_terminal_catch_up_continues_a_window_the_budget_cut(store) -> None:
+    """At a run's close, a review whose verdict covered part of its window does not end
+    the catch-up: the next review continues from where it stopped."""
     reviews, _, _ = store
-    reviews.defaults = ReviewConfig(max_turns=2, max_feed_items=16, max_terminal_windows=6)
+    reviews.defaults = ReviewConfig(max_turns=4, max_feed_items=16, max_terminal_windows=6)
     claims(reviews, 6)
 
     class Fresh(Reviewer):
@@ -332,23 +355,19 @@ async def test_terminal_catch_up_continues_a_capped_window(store) -> None:
             return await super().complete(messages, tools)
 
     controller = ReviewController(
-        reviews,
-        context_for(reviews),
-        run_id="author-1",
-        model=Fresh(per_turn=2, ignore=True),
-        alias="reviewer",
+        reviews, context_for(reviews), run_id="author-1", model=Fresh(), alias="reviewer"
     )
     summary = await controller.terminal([], "The task is complete.")
     assert summary["reviews_total"] == 3
     assert not reviews.progress("p", "s")["remaining"]
     assert not summary.get("pending")
-    # Covered without a verdict, so no pass is claimed for the session.
-    assert summary["outcome"] == "capped"
+    assert summary["outcome"] == "passed"
 
 
 @pytest.mark.asyncio
 async def test_what_a_finding_names_is_examined(store) -> None:
-    """A capped review that raised a finding on an item it never read examined it."""
+    """A review told its budget was running out that raised a finding on an item it never
+    read examined it."""
     reviews, _, _ = store
     seqs = claims(reviews, 3)
     review = dispatch(reviews)
@@ -363,7 +382,7 @@ async def test_what_a_finding_names_is_examined(store) -> None:
     runner = ReviewerRunner(reviews, "p", "s", review, "owner", None)
     raised = json.loads(await runner.tool(ToolCall("f", "review_finding", json.dumps(finding))))
     assert raised["status"] == "open"
-    reviews.finish("p", "s", review, "owner", "capped", "A limit ended it.", cap_reached=True)
+    reviews.finish("p", "s", review, "owner", "findings", "One finding.", exhausted=True)
     assert reviews.run("p", "s", review)["coverage"]["through"] == seqs[0]
     assert reviews.progress("p", "s")["watermark"] == seqs[0]
 
@@ -460,12 +479,15 @@ async def test_a_verdict_credits_the_entries_it_covered_and_the_next_review_the_
 
 
 @pytest.mark.parametrize("outcome", ["capped", "failed", "dropped"])
-def test_without_a_verdict_a_review_credits_no_entry(store, outcome: ReviewOutcome) -> None:
-    """What a review examined without a verdict is reviewed for no ledger entry."""
+def test_without_a_verdict_a_review_credits_no_entry_and_keeps_its_window(
+    store, outcome: ReviewOutcome
+) -> None:
+    """What a review examined without a verdict is reviewed for no ledger entry, and its
+    window is kept: the next review covers the entry again and credits it."""
     from sandbox_science.orchestrator.ledger import gate
 
     reviews, _, _ = store
-    reviews.observe(
+    seq = reviews.observe(
         "p", "s", "entry-1:1", "ledger", {"entry": "entry-1", "revision": 1}, {"claim": "16."}
     )
     review = dispatch(reviews)
@@ -473,5 +495,16 @@ def test_without_a_verdict_a_review_credits_no_entry(store, outcome: ReviewOutco
     reviews.read_evidence("p", "s", review, item["evidence"], owner="owner")
     reviews.finish("p", "s", review, "owner", outcome, "Ended without a verdict.")
     assert reviews.run("p", "s", review)["coverage_complete"] == 0
+    progress = reviews.progress("p", "s")
+    assert (progress["watermark"], progress["retry_end"], progress["failures"]) == (0, seq, 1)
     with reviews.documents.control.read() as tx:
         assert gate.reviewed(tx.sql, "entry-1") == []
+    again = dispatch(reviews)
+    assert (reviews.run("p", "s", again)["start_seq"], reviews.run("p", "s", again)["end_seq"]) == (
+        seq,
+        seq,
+    )
+    reviews.finish("p", "s", again, "owner", "passed", "Checked the entry.")
+    with reviews.documents.control.read() as tx:
+        assert gate.reviewed(tx.sql, "entry-1") == [1]
+    assert reviews.progress("p", "s")["watermark"] == seq

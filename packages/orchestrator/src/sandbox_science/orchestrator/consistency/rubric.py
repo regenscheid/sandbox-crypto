@@ -120,7 +120,7 @@ dig no further: record what you checked and the findings you have, and finish wi
 verdict on what you covered. Name in unreviewed each new item you did not examine; the
 review covers its window up to the first of them, and a later review continues from there.
 An item you looked at and found needs no check is reviewed. A review that ends without a
-verdict covers only the new items it read, up to the first it did not.
+verdict covers nothing, and its whole window is reviewed again.
 
 Finish with JSON {"outcome":"passed"|"findings"|"inconclusive","summary":"...",
 "cap_reached":false,"unreviewed":[]}. A passed review means only that no inconsistency was
