@@ -93,8 +93,8 @@ What each input does:
   instead ([responses.py](../packages/orchestrator/src/sandbox_science/orchestrator/responses.py),
   CM-40), the same messages rendered as its items, or through Claude's Messages API
   ([messages.py](../packages/orchestrator/src/sandbox_science/orchestrator/messages.py),
-  CM-38), whose progress notes are the answer's text. MAIN retries a rate limit or an unavailable upstream up to three
-  times and stops with `context_limit` past `--max-input-chars`. A run's view holds the session's earlier runs' messages as sent; until folds are built, past half of `--max-input-chars` it leaves out the oldest and keeps the user's words ([context management](specs/context-management.md), CM-29, CM-30).
+  CM-38), whose progress notes are the answer's text. MAIN retries a rate limit or an unavailable upstream up to nine
+  times, ten attempts in all ([run service](specs/run-service.md), RS-6e), and stops with `context_limit` past `--max-input-chars`. A run's view holds the session's earlier runs' messages as sent; until folds are built, past half of `--max-input-chars` it leaves out the oldest and keeps the user's words ([context management](specs/context-management.md), CM-29, CM-30).
 - **Run records.** Saved runs keep the rendered messages and the prompt provenance;
   failed runs keep fixed failure metadata and partial outcomes
   ([projects.py](../packages/orchestrator/src/sandbox_science/orchestrator/projects.py) `RunRecord`).
@@ -357,7 +357,7 @@ These design rules hold for what is built and for the proposals below.
   Child contexts receive pinned briefs, not the parent's unbounded transcript. The approved [context management](specs/context-management.md) spec meets these rules (CM-15 to CM-26); its archive, view and adapters are built and its folds are not.
 - **Capacity and provider failure:** harness errors keep a safe failed run, with no
   automatic retry of its tool effects. The model client retries a rate limit or an
-  unavailable upstream up to three times. Any other future retry must enforce configured or user-authorized
+  unavailable upstream up to nine times, ten attempts in all. Any other future retry must enforce configured or user-authorized
   timing, bounded attempts and model selection, with no silent alias switch and with
   tool effects reconciled first. Prompts cannot implement a durable timer or the
   authority to wake an offline session.
