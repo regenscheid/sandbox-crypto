@@ -11,7 +11,8 @@ is configured.
 The admin-only actions call ``require_admin``: accepting or editing an MCP service's
 classification and re-accepting its tool list after drift (CL-3, CL-4), a project-scope
 grant, clearing a hold, resolving a recovery, deciding a resource extension and changing
-the agents' model settings. Each is logged with the user's name. Turning a configured MCP
+the agents' model settings. Each is logged with the user's name, and so is each answer to
+a permission request and each revoked grant (``log_action``). Turning a configured MCP
 service back on is admin-only too; the connector settings refuse it in the transaction
 that writes them (``widen``), so that no change between a check and the write slips by.
 
@@ -105,6 +106,13 @@ def require_admin(request: web.Request, action: str) -> None:
             f"{action} is for the workspace's admins: members of the Authentik group {group}",
         )
     _log.info("admin action: %s by %s (%s login)", action, found.user, found.login)
+
+
+def log_action(request: web.Request, action: str) -> None:
+    """Log ``action``, which the request's user took, with their name, as ``require_admin``
+    logs an admin's."""
+    found = identity(request)
+    _log.info("user action: %s by %s (%s login)", action, found.user, found.login)
 
 
 async def me(request: web.Request) -> web.Response:

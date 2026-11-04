@@ -9,6 +9,7 @@ the relay answers from grants (D97). The MCP proxy, a second source until it ret
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -379,6 +380,40 @@ async def test_revoking_a_grant_stops_it_covering_at_once(
     await asyncio.sleep(0.3)
     assert [seq for seq, _ in fake.answers] == [1]  # the user is asked again
     assert 2 in await shown(client)
+
+
+async def test_each_answer_and_revoke_is_logged_with_its_user(
+    aiohttp_client: ClientFactory,
+    state_dir: Path,
+    static_dir: Path,
+    worker: tuple[FakeWorker, str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # The worker's record of an answer names no user: the workspace's log does.
+    fake, url = worker
+    client = await client_for(aiohttp_client, state_dir, static_dir, url)
+    fake.hold(1, "crawl")
+    fake.hold(2, "notify", server="notes", effect="communicate", max_grant="session")
+    fake.hold(3, "x", server="other")
+    with caplog.at_level(logging.INFO, logger="sandbox_science.workspace.identity"):
+        await post(client, ANSWER.format(1), {"decision": "once"})
+        [grant] = (await post(client, ANSWER.format(2), {"decision": "session"}))["granted"]
+        await post(client, ANSWER.format(3), {"decision": "deny"})
+        await post(client, f"/api/v0/projects/p1/grants/{grant['grant_id']}/revoke", {})
+        await post(client, "/api/v0/projects/p1/grants/grant-nope/revoke", {}, status=404)
+        await post(client, ANSWER.format(9), {"decision": "once"}, status=409)  # none waits
+    logged = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "sandbox_science.workspace.identity"
+    ]
+    assert logged == [
+        "user action: answered mcp permission request 1 of project p1: once by user (token login)",
+        "user action: answered mcp permission request 2 of project p1: session by user "
+        "(token login)",
+        "user action: answered mcp permission request 3 of project p1: deny by user (token login)",
+        f"user action: revoked grant {grant['grant_id']} of project p1 by user (token login)",
+    ]
 
 
 async def test_a_revoke_the_worker_cannot_withdraw_says_so_and_is_retried(

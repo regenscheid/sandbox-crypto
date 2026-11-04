@@ -43,7 +43,9 @@ Routes:
 
 A project grant and clearing a hold are admin-only actions (identity.py, D104): with an
 admin group configured, only its members may take them, while every user may allow once,
-for the session, deny or stop. A grant's author is the user who gave or revoked it.
+for the session, deny or stop. A grant's author is the user who gave or revoked it. The
+worker's record of an answer names no user: the workspace logs each answer and each
+revoke with the user's name, the request's number and the choice.
 
 The relay answers each new request a grant covers, and notes the grant's use. It answers
 the request itself (an MCP call with its exact arguments, so a grant never stretches to a
@@ -98,7 +100,7 @@ from sandbox_science.policy import normalize_host
 from sandbox_science.policy.approvals import offered
 
 from .context import CONTEXT, WorkspaceContext, identifier, json_answer, json_body, session_record
-from .identity import author, require_admin
+from .identity import author, log_action, require_admin
 from .requests import document_answer, dumps
 
 _log = logging.getLogger(__name__)
@@ -547,6 +549,7 @@ async def answer(request: web.Request) -> web.Response:
     except BaseException:
         config.release(project, seq)
         raise
+    _log_answer(request, project, held, decision)
     if granted:
         await asyncio.to_thread(
             ProjectGrants(context.writer).used,
@@ -581,8 +584,17 @@ async def _answer_hold(
 
         await asyncio.to_thread(stop)
     await _send(config, held, approve=decision.decision == "clear", scope="session", hours=None)
+    _log_answer(request, project, held, decision)
     result = AnswerResult(seq=held.seq, decision=decision.decision, kind="hold", source="worker")
     return json_answer(dumps(result.model_dump(mode="json")))
+
+
+def _log_answer(
+    request: web.Request, project: str, held: PendingApproval, decision: Decision
+) -> None:
+    """Log who answered the request and how: the worker's record of it names no user."""
+    action = f"answered {held.kind} permission request {held.seq} of project {project}"
+    log_action(request, f"{action}: {decision.decision}")
 
 
 async def grants(request: web.Request) -> web.Response:
@@ -601,6 +613,8 @@ async def revoke(request: web.Request) -> web.Response:
         return ProjectGrants(store).revoke(project, grant, by, clock.now())
 
     answered = await document_answer(request, write, access="write")
+    if answered.status == 200:
+        log_action(request, f"revoked grant {grant} of project {project}")
     config = request.app.get(APPROVALS)
     if answered.status != 200 or config is None or config.worker is None:
         return answered

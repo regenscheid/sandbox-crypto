@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from dataclasses import dataclass
@@ -444,6 +445,7 @@ async def test_with_an_admin_group_a_project_grant_is_the_admins(
     static_dir: Path,
     middleware: Middleware,
     worker_url: str,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """D104: a member allows once or for the session; a project grant needs the admin
     group, and every grant names the user who gave it."""
@@ -455,6 +457,7 @@ async def test_with_an_admin_group_a_project_grant_is_the_admins(
     member = as_user(authentik.token("bob"))
     admin = as_user(authentik.token("carol", (USERS, ADMINS)))
     seq = request_of(middleware.call({"id": "monitor-9"}))
+    caplog.set_level(logging.INFO, logger="sandbox_science.workspace.identity")
     refused = await _answer(client, seq, "project", "mcp", member, 403)
     assert refused["error"]["kind"] == "policy_denied"
     assert ADMINS in refused["error"]["message"]
@@ -467,6 +470,15 @@ async def test_with_an_admin_group_a_project_grant_is_the_admins(
         rows = dict(tx.sql.execute("SELECT grant_id, author FROM project_grants").fetchall())
     assert json.loads(rows[session_grant["grant_id"]])["user"] == "authentik:bob"
     assert json.loads(rows[project_grant["grant_id"]])["user"] == "authentik:carol"
+    # The log names who answered each request, and how.
+    assert (
+        f"user action: answered mcp permission request {seq} of project p1: session by bob "
+        "(forward login)"
+    ) in caplog.messages
+    assert (
+        f"user action: answered mcp permission request {other} of project p1: project by carol "
+        "(forward login)"
+    ) in caplog.messages
 
 
 async def test_with_an_admin_group_clearing_a_hold_is_the_admins(
@@ -475,6 +487,7 @@ async def test_with_an_admin_group_clearing_a_hold_is_the_admins(
     static_dir: Path,
     hammered: Middleware,
     worker_url: str,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """D104: a member may stop a held session but not clear the hold; an admin may."""
     authentik = Authentik()
@@ -487,9 +500,18 @@ async def test_with_an_admin_group_clearing_a_hold_is_the_admins(
     assert search(hammered) == ""
     assert search(hammered) == ""
     held = held_seq(search(hammered))
+    caplog.set_level(logging.INFO, logger="sandbox_science.workspace.identity")
     await _answer(client, held, "clear", "hold", member, 403)
     await _answer(client, held, "clear", "hold", admin, 200)
     await until(lambda: search(hammered) == "")
     assert search(hammered) == ""
     again = held_seq(search(hammered))
     await _answer(client, again, "stop", "hold", member, 200)
+    assert (
+        f"user action: answered hold permission request {held} of project p1: clear by carol "
+        "(forward login)"
+    ) in caplog.messages
+    assert (
+        f"user action: answered hold permission request {again} of project p1: stop by bob "
+        "(forward login)"
+    ) in caplog.messages
