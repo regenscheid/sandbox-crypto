@@ -5,12 +5,12 @@
 The policy middleware records research code's escalated HTTP and git requests and the
 agent's escalated MCP calls straight to a server, and the worker its provisioning
 operations' file sets, in one event store. An operator client (the workspace) lists the
-unanswered ones of a project, with what their cards show, and relays the user's answers
-to them. Requests of other projects' sandboxes are not found, and a request no
-environment of the worker owns is no one's; an MCP request is its key's project's, which
-the middleware takes from the sandbox's compiled config. A download from the package
-cache is a package request, answered for that file only: a ``host`` answer would cover
-the whole cache.
+ones of a project that wait for an answer, with what their cards show, and relays the
+user's answers to them; one that timed out is not listed. Requests of other projects'
+sandboxes are not found, and a request no environment of the worker owns is no one's; an
+MCP request is its key's project's, which the middleware takes from the sandbox's compiled
+config. A download from the package cache is a package request, answered for that file
+only: a ``host`` answer would cover the whole cache.
 
 When the user revokes a grant, the workspace has the desk withdraw the requests its live
 answers cover (``withdraw_grant``, D97).
@@ -42,6 +42,7 @@ from sandbox_science.contracts.permission_requests import (
     PermissionConfirmation,
     WorkerPermissionAnswer,
     WorkerPermissionAnswered,
+    WorkerPermissionListing,
     WorkerPermissionRequest,
 )
 from sandbox_science.policy.approvals import (
@@ -82,15 +83,23 @@ class PermissionDesk:
         self.environments = environments
         self.clock = clock
 
-    def listing(self, project_id: str, now: datetime) -> list[WorkerPermissionRequest]:
-        """The project's unanswered requests, oldest first. Blocking."""
+    def listing(self, project_id: str, now: datetime) -> WorkerPermissionListing:
+        """The project's requests that wait for an answer: holds first, then the others,
+        each oldest first, up to ``MAX_LISTED``, with how many more wait. A request that
+        timed out is left out: its timeout decided it, and nothing answers it, so it would
+        take the place of one that waits (a hold waits until it is answered). Blocking."""
         self.permissions.refresh()
         owners = self._owners()
-        mine = [
-            request
-            for request in self.permissions.unanswered()
-            if self._project(request, owners) == project_id
-        ][:MAX_LISTED]
+        waiting = sorted(
+            (
+                request
+                for request in self.permissions.unanswered()
+                if (request.key.kind == "hold" or not request.expired(now))
+                and self._project(request, owners) == project_id
+            ),
+            key=lambda request: request.key.kind != "hold",
+        )
+        mine = waiting[:MAX_LISTED]
         payloads = self.permissions.escalations(request.seq for request in mine)
         listed: list[WorkerPermissionRequest] = []
         for request in mine:
@@ -104,7 +113,7 @@ class PermissionDesk:
                 found = _described(request, payload, owner, now)
             if found is not None:
                 listed.append(found)
-        return listed
+        return WorkerPermissionListing(requests=listed, truncated=len(waiting) - len(mine))
 
     def confirm(
         self,

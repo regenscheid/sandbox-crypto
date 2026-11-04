@@ -4,8 +4,9 @@
 // request's ceiling allows, and each choice sends its decision.
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import ChatPanel from '../views/ChatPanel.svelte';
 import ChatPermission from '../views/ChatPermission.svelte';
-import type { PendingApproval, RunEvent } from './api-types';
+import type { PendingApproval, PendingListing, RunEvent } from './api-types';
 import { awaitingApproval, chatEntries } from './chat';
 import { heldCall } from './conversation';
 
@@ -13,6 +14,7 @@ const mounted: ReturnType<typeof mount>[] = [];
 afterEach(() => {
   for (const component of mounted.splice(0)) unmount(component);
   document.body.innerHTML = '';
+  vi.unstubAllGlobals();
 });
 
 const request: PendingApproval = {
@@ -275,5 +277,48 @@ describe('the transcript of a held call', () => {
     expect(chatEntries(ended).map((entry) => ('text' in entry ? entry.text : ''))).toContain(
       'The wait for approval ended.',
     );
+  });
+});
+
+describe("the chat's permission cards", () => {
+  /** The chat panel, with the workspace answering ``listing`` for its permission requests. */
+  async function panel(listing: PendingListing) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('/permission-requests')) return new Response(JSON.stringify(listing));
+        if (url.includes('/messages'))
+          return new Response(
+            JSON.stringify({ messages: [], run: null, service: true, environment: null }),
+          );
+        if (url.includes('/questions'))
+          return new Response(JSON.stringify({ questions: [], run: null }));
+        if (url.includes('/recovery/resources'))
+          return new Response(JSON.stringify({ requests: [], next_after: null }));
+        return new Response(JSON.stringify({ state: 'active', events: [], runs: [] }));
+      }),
+    );
+    const target = document.createElement('div');
+    document.body.append(target);
+    mounted.push(
+      mount(ChatPanel, { target, props: { projectId: 'p1', sessionId: 'main', closed: false } }),
+    );
+    for (let i = 0; i < 8; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+    }
+    return target;
+  }
+
+  it('says how many more requests wait than the listing carries', async () => {
+    const target = await panel({ requests: [request], truncated: 3 });
+    expect(target.querySelectorAll('.permission')).toHaveLength(1);
+    expect(target.textContent).toContain('3 more requests not shown');
+  });
+
+  it('says nothing more when the listing carries them all', async () => {
+    const target = await panel({ requests: [request], truncated: 0 });
+    expect(target.querySelectorAll('.permission')).toHaveLength(1);
+    expect(target.textContent).not.toContain('not shown');
   });
 });

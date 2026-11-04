@@ -194,6 +194,8 @@
   // Requests that wait for the user's answer (D76, D97): connector calls the middleware holds,
   // and research code's network and package requests, polled with the chat.
   let permissions = $state<PendingApproval[]>([]);
+  /** How many more of the project's requests wait than the listing carries. */
+  let unlisted = $state(0);
   $effect(() => {
     const project = projectId,
       session = sessionId;
@@ -203,6 +205,8 @@
         // A workspace without approvals answers no list: none wait.
         const requests = value.data?.requests;
         if (Array.isArray(requests)) permissions = requests.filter((item) => !item.timed_out);
+        const truncated = value.data?.truncated;
+        if (value.data) unlisted = typeof truncated === 'number' && truncated > 0 ? truncated : 0;
       },
       { intervalMs: 2000 },
     ).watch();
@@ -407,6 +411,10 @@
         />
       {/if}
     {/each}
+    {#if unlisted}<p role="status" class="muted unlisted">
+        {unlisted} more {unlisted === 1 ? 'request' : 'requests'} not shown: the project has more waiting
+        than one listing carries, and they show as earlier ones are answered.
+      </p>{/if}
     {#each open as question (question.question_id)}
       <ChatQuestion
         {question}
@@ -545,6 +553,9 @@
   }
   label {
     display: block;
+  }
+  .unlisted {
+    margin: 12px 0 0;
   }
   .attach-menu {
     left: 0;
