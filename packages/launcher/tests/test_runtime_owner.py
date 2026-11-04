@@ -41,6 +41,8 @@ class FakeCli(OpenShell):
         self.create_fails = False
         self.makes = True
         self.gateway_down = False
+        self.get_error: Exception | None = None
+        """What every ``get`` raises, other than the gateway's NotFound."""
         self.deletes = True
 
     async def run(self, *args: str, timeout: float = 120.0) -> str:
@@ -50,6 +52,8 @@ class FakeCli(OpenShell):
                 name = args[2]
                 if self.gateway_down:
                     raise OpenShellError(GATEWAY_DOWN)
+                if self.get_error is not None:
+                    raise self.get_error
                 if name not in self.sandboxes:
                     raise SandboxMissingError("openshell sandbox get failed: NotFound")
                 found = self.sandboxes[name]
@@ -249,9 +253,87 @@ async def test_an_uncertain_create_keeps_the_name_and_refuses_to_forget_it(
         assert await delete(store, cli)
         assert store.read() is None
     else:
-        with pytest.raises(LauncherError, match="creation outcome is unknown"):
+        with pytest.raises(LauncherError, match="creation outcome is unknown") as refused:
             await delete(store, cli)
+        assert record.name in str(refused.value)
+        assert "confirm that none was made" in str(refused.value)
         assert store.read() == record
+
+
+async def test_a_refused_create_is_cleared_once_the_gateway_has_no_such_sandbox(
+    store: FileOwnership, cli: FakeCli
+) -> None:
+    cli.create_fails, cli.makes = True, False
+    with pytest.raises(OpenShellError, match="create failed"):
+        await create(store, cli)
+    refused = store.read()
+    assert refused is not None
+    assert refused.id is None
+    binding = Bindings(store)
+    calls = len(cli.calls)
+    # The gateway's NotFound for the name: nothing exists to delete, so the record goes.
+    assert await delete(store, cli, binding=binding, reconcile_absent=True)
+    assert store.read() is None
+    assert cli.calls[calls:] == [("sandbox", "get", refused.name, "-o", "json")]
+    assert binding.calls == []
+    # The next create starts from nothing, under a name of its own.
+    cli.create_fails, cli.makes = False, True
+    cli.phases = iter(("Ready",))
+    owned = await create(store, cli)
+    assert owned.name != refused.name
+    assert store.read() == owned
+
+
+async def test_a_record_without_an_id_is_adopted_and_deleted_when_the_gateway_has_the_sandbox(
+    store: FileOwnership, cli: FakeCli
+) -> None:
+    cli.create_fails = True
+    with pytest.raises(OpenShellError, match="create failed"):
+        await create(store, cli)
+    record = store.read()
+    assert record is not None
+    assert await delete(store, cli, reconcile_absent=True)
+    assert ("sandbox", "delete", record.name) in cli.calls
+    assert store.read() is None
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        OpenShellError(GATEWAY_DOWN),
+        OpenShellError("openshell sandbox get gave no answer within 120 s"),
+        FileNotFoundError("openshell"),
+        ValueError("openshell printed no JSON"),
+    ],
+    ids=["unavailable", "timeout", "no-cli", "bad-output"],
+)
+async def test_a_record_without_an_id_is_kept_when_the_gateway_gives_no_definite_answer(
+    store: FileOwnership, cli: FakeCli, failure: Exception
+) -> None:
+    store.write(Owned("ss-orch-0123456789", None))
+    cli.get_error = failure
+    for reconcile_absent in (False, True):
+        with pytest.raises(LauncherError, match="creation outcome is unknown") as refused:
+            await delete(store, cli, reconcile_absent=reconcile_absent)
+        said = str(refused.value)
+        assert "no definite answer" in said
+        assert str(failure) in said
+        assert "`openshell sandbox get ss-orch-0123456789`" in said
+        assert refused.value.__cause__ is failure
+        assert store.read() == ("ss-orch-0123456789", None)
+    assert not [call for call in cli.calls if call[:2] == ("sandbox", "delete")]
+
+
+async def test_a_sandbox_reported_without_an_id_is_not_taken_for_absence(
+    store: FileOwnership, cli: FakeCli
+) -> None:
+    store.write(Owned("ss-orch-0123456789", None))
+    cli.sandboxes["ss-orch-0123456789"] = {"id": "", "phase": "Provisioning"}
+    for reconcile_absent in (False, True):
+        with pytest.raises(LauncherError, match="reports it without an ID"):
+            await delete(store, cli, reconcile_absent=reconcile_absent)
+        assert store.read() == ("ss-orch-0123456789", None)
+    assert not [call for call in cli.calls if call[:2] == ("sandbox", "delete")]
 
 
 async def test_a_gateway_failure_before_create_records_nothing(
