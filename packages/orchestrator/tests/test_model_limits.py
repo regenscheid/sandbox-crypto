@@ -26,6 +26,7 @@ from sandbox_science.orchestrator import cli
 from sandbox_science.orchestrator.hooks import Closing, Notice, RunView, TurnHook
 from sandbox_science.orchestrator.loop import run_task
 from sandbox_science.orchestrator.model import (
+    MAX_RATE_WAIT,
     MAX_RETRY_WAIT,
     REQUEST_BYTES_PER_SECOND,
     ContextLimitError,
@@ -267,6 +268,37 @@ async def test_a_gateway_asking_for_a_longer_wait_than_the_cap_is_not_waited_for
     with pytest.raises(ModelError) as failed:
         await complete(fake, waits)
     assert (failed.value.status, waits.slept, fake.calls) == (429, [], 1)
+
+
+@pytest.mark.parametrize(("status", "after"), [(429, "240"), (529, "300")])
+async def test_a_rate_limit_is_waited_for_as_long_as_it_asks_up_to_five_minutes(
+    fake: Gateway, caplog: pytest.LogCaptureFixture, status: int, after: str
+) -> None:
+    """A rate limit's or an overloaded upstream's ask past a minute is waited for, and
+    said, up to ``MAX_RATE_WAIT``."""
+    fake.answers = [(status, "slow down", {"Retry-After": after}), (200, ANSWER, {})]
+    waits = Waits()
+    with caplog.at_level(logging.WARNING, logger="sandbox_science.orchestrator.model"):
+        turn = await complete(fake, waits)
+    assert (turn.text, waits.slept, turn.retried) == ("done", [float(after)], (f"HTTP {status}",))
+    assert f"trying again in {float(after):.1f} s, as its Retry-After asks" in caplog.text
+    assert MAX_RATE_WAIT == 300 > MAX_RETRY_WAIT
+
+
+@pytest.mark.parametrize(("status", "after"), [(429, "301"), (529, "600"), (503, "120")])
+async def test_a_longer_ask_than_its_status_allows_fails_the_call_at_once(
+    fake: Gateway, caplog: pytest.LogCaptureFixture, status: int, after: str
+) -> None:
+    """Past five minutes for a rate limit or a 529, past one for any other status."""
+    fake.answers = [(status, "later", {"Retry-After": after}), (200, ANSWER, {})]
+    waits = Waits()
+    with (
+        caplog.at_level(logging.WARNING, logger="sandbox_science.orchestrator.model"),
+        pytest.raises(ModelError) as failed,
+    ):
+        await complete(fake, waits)
+    assert (failed.value.status, waits.slept, fake.calls) == (status, [], 1)
+    assert f"asks for a wait of {float(after):.0f} s" in caplog.text
 
 
 async def test_an_unrelated_400_quoting_the_request_is_not_a_context_error(

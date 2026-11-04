@@ -13,8 +13,9 @@ loop alone applies the delivery rules:
   response round only while response rounds remain, and either only with notices.
   Hooks check this too, before doing work for a turn that cannot come.
 - At a limit, the run's last model call is its report round (``loop._report``): no hook
-  offers notices before it, no tool it asks for runs, and its closing has no turn to
-  give.
+  offers notices before it but those it gives for that call (``report_notices``), after
+  the report's own; it may call no tool (``tool_choice: none``), no tool it asks for all
+  the same runs, and its closing has no turn to give.
 - Notices at the ``tool`` point ride on the tool result, bounded with it, each under
   a key of its own. A hook that fails there, or a notice whose key is taken or that is
   too long, offers nothing: the result stands and the notice waits for a later safe
@@ -232,6 +233,12 @@ class TurnHook:
         ``None`` to go on (run-service spec, RS-6f)."""
         return None
 
+    async def report_notices(self, run: RunView, limit: str) -> Sequence[Notice]:
+        """Before the run's report round at ``limit``, once no hook halted it: this hook's
+        notices for that last call, which follow the report's own, such as what a delegated
+        run's report must hold; no other notice of the hook reaches that call."""
+        return ()
+
     async def consumption(self) -> Sequence[str]:
         """Input IDs already shown by tools, under this hook's source; no display change."""
         return ()
@@ -260,15 +267,18 @@ class TurnHook:
         self, run: RunView, call: ToolCall, operation: str, handler: ToolHandler
     ) -> ToolOutcome:
         """Around each tool call the run makes, once its intent is saved: ``handler`` runs
-        it, through the gates. What a wrap returns is the outcome the runaway guard, the
-        tool point's notices and the transcript see. The report round's calls, which do
-        not run, pass no wrap. The default calls it once. ``call`` is as the model wrote
+        it, through the gates. Read-class calls of one reply may run at once, each in a
+        wrap of its own (``loop._batches``). What a wrap returns is the outcome the runaway
+        guard, the tool point's notices and the transcript see, in the reply's order. The
+        report round's calls, and one the output limit cut off, which do not run, pass no
+        wrap. The default calls it once. ``call`` is as the model wrote
         it, its ``purpose_note`` included: the toolbox checks the purpose and takes it
         out before any gate or handler, and a wrap decides nothing on it (Purpose 3)."""
         return await handler(call, operation)
 
     async def observe_tool(self, run: RunView, record: dict[str, Any]) -> None:
-        """After each tool call, with the outcome the transcript keeps."""
+        """After each tool call that ran, with the outcome the transcript keeps, in the
+        reply's order whatever order its calls ended in."""
 
     async def closing(self, run: RunView, answer: str | None) -> Closing:
         return Closing()

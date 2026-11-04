@@ -7,12 +7,14 @@ The gateway is a fake LiteLLM in this process. It answers from a script, as Anth
 API would: signed thinking blocks, empty unless ``display`` asks for summaries or
 progress notes; usage that counts the replayed thinking; and Anthropic's rules for a
 request, the binding of thinking to the history before it among them, which it checks on
-every request and refuses with Anthropic's errors. Its key is synthetic, and retries
-sleep on a clock that only records the waits.
+every request and refuses with Anthropic's errors. A request that streams gets the
+answer's events (``loop_harness.message_events``), cut where a reply says. Its key is
+synthetic, and retries sleep on a clock that only records the waits.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator, Callable, Sequence
@@ -20,14 +22,18 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, cast
 
+import aiohttp
 import pytest
 import pytest_asyncio
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
+from sandbox_science.contracts import ExecutionContext
 from sandbox_science.orchestrator import cli
 from sandbox_science.orchestrator.context.history import Archive, entry_of
+from sandbox_science.orchestrator.continuity.transient import classify
 from sandbox_science.orchestrator.hooks import Appended
+from sandbox_science.orchestrator.loop import run_task
 from sandbox_science.orchestrator.messages import (
     _TOOL_CHANGES,
     _UPDATES,
@@ -41,11 +47,16 @@ from sandbox_science.orchestrator.messages import (
     ThinkingReplay,
     _decide,
     _efforts,
+    failed,
 )
 from sandbox_science.orchestrator.model import (
+    LENGTH,
+    MAX_STREAM_SECONDS,
+    REQUEST_BYTES_PER_SECOND,
     AssistantMessage,
     ContextLimitError,
     GatewayBudgetError,
+    IncompleteStreamError,
     Message,
     ModelError,
     ModelGateway,
@@ -58,8 +69,19 @@ from sandbox_science.orchestrator.model_profiles import ModelProfile
 from sandbox_science.orchestrator.pairing import ABORTED
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.responses import ResponsesModel
+from sandbox_science.orchestrator.tools import Toolbox
+from sandbox_science.orchestrator.worker_client import WorkerClient
 
-from .loop_harness import API_KEY, GATEWAY_VERSION, PROJECT, SESSION, Harness, call
+from .loop_harness import (
+    API_KEY,
+    GATEWAY_VERSION,
+    PROJECT,
+    SESSION,
+    Harness,
+    call,
+    message_events,
+    server_sent,
+)
 from .loop_harness import Reply as Scripted
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
@@ -80,6 +102,7 @@ SETTING = ThinkingReplay("sha256:" + "a" * 64, VERSION, TODAY, "cm-f30-test-run"
 THINKING = {"thinking", "redacted_thinking"}
 COMPACTED = "compaction"
 COMPACT_BETA = "compact-2026-01-12"
+HOUR = {"type": "ephemeral", "ttl": "1h"}
 
 
 @dataclass
@@ -102,6 +125,13 @@ class Reply:
     compact: str | None = None
     """The API compacts the request first, with this summary (CM-38b), or with none, the
     content null, for ""; the request must carry the compaction edit."""
+    cut: Callable[[list[Json]], int] | None = None
+    """The stream stops after as many of its events as this says, as ``cut_by`` says."""
+    cut_by: str = "close"
+    """How a cut stream stops: the connection ``close``d, the stream's ``end``, an
+    ``error`` event of the type ``failure`` after the events sent, or a ``stall`` of a
+    second before its end."""
+    failure: str = "overloaded_error"
 
 
 def unthought(content: Sequence[Json]) -> list[Json]:
@@ -152,6 +182,13 @@ class Fake:
     """Strips every thinking block before the model sees it, as LiteLLM 1.102.1 may."""
     info_status: int = 200
     info_calls: int = 0
+    stream_cost: str | None = "0.01"
+    """The cost header of a streamed answer, as of one sent whole; LiteLLM 1.102.1 sends
+    none on a stream, which ``None`` stands for."""
+    described: dict[str, Json] = field(default_factory=dict[str, Json])
+    """More of each alias's model information, such as its ``max_output_tokens``."""
+    said: str = "it failed"
+    """What a stream's ``error`` event says."""
     bound: dict[str, tuple[str, str | None]] = field(
         default_factory=dict[str, tuple[str, str | None]]
     )
@@ -168,7 +205,8 @@ class Fake:
         if self.info_status != 200:
             return web.Response(status=self.info_status, text="no")
         data = [{"model_name": alias, "litellm_params": {"model": model},
-                 "model_info": {"litellm_provider": model.partition("/")[0]}}
+                 "model_info": {"litellm_provider": model.partition("/")[0],
+                                **self.described.get(alias, {})}}
                 for alias, model in self.models.items()]  # fmt: skip
         return web.json_response({"data": data})
 
@@ -188,7 +226,7 @@ class Fake:
             )
         return web.json_response({"choices": [{"message": {"content": "ok"}}]})
 
-    async def handle(self, request: web.Request) -> web.Response:
+    async def handle(self, request: web.Request) -> web.StreamResponse:
         assert request.headers["Authorization"] == f"Bearer {KEY}"
         self.paths.append(request.path)
         body = cast(Json, await request.json())
@@ -217,7 +255,29 @@ class Fake:
         self.script.pop(0)
         text = json.dumps(self.answer(body, reply))
         self.answered.append(text)
-        return web.Response(text=text, headers={**headers, "x-litellm-response-cost": "0.01"})
+        if body.get("stream") is not True:
+            return web.Response(text=text, headers={**headers, "x-litellm-response-cost": "0.01"})
+        if self.stream_cost is not None:
+            headers["x-litellm-response-cost"] = self.stream_cost
+        events = message_events(json.loads(text))
+        if reply.cut is None:
+            return web.Response(
+                text=server_sent(events), headers={**headers, "Content-Type": "text/event-stream"}
+            )
+        stream = web.StreamResponse(headers={**headers, "Content-Type": "text/event-stream"})
+        await stream.prepare(request)
+        await stream.write(server_sent(events[: reply.cut(events)]).encode())
+        if reply.cut_by == "error":
+            failed = {"type": "error", "error": {"type": reply.failure, "message": self.said}}
+            await stream.write(server_sent([failed]).encode())
+        elif reply.cut_by == "close":
+            assert request.transport is not None
+            request.transport.close()  # the connection lost mid-stream
+            return stream
+        elif reply.cut_by == "stall":
+            await asyncio.sleep(1)
+        await stream.write_eof()
+        return stream
 
     def fingerprint(self, body: Json, upto: int) -> str:
         """What a thinking block is bound to: the system message, the tools as a set
@@ -233,6 +293,12 @@ class Fake:
     def refused(self, body: Json, betas: set[str]) -> str | None:
         """Why Anthropic's API would refuse the request, if it would."""
         thinking = body.get("thinking", {})
+        choice = body.get("tool_choice")
+        if choice is not None and "tools" not in body:
+            return "tool_choice: tool_choice may only be specified while providing tools"
+        if thinking and isinstance(choice, dict) and choice.get("type") in ("any", "tool"):
+            # Only auto and none take thinking (Anthropic's extended thinking with tools).
+            return "Thinking may not be enabled when tool_choice forces tool use."
         if thinking.get("display") == "updates" and UPDATES_BETA not in betas:
             return self.undisplayed
         if "block_binding" in thinking and BINDING_BETA not in betas:
@@ -418,7 +484,8 @@ DONE = Reply(text="x has 42 lines.")
 async def test_requests_ask_for_progress_notes_on_the_models_that_have_them(fake: Fake) -> None:
     """CM-F10, CM-38: Opus 5.5 is asked for ``display: "updates"`` with its beta
     header, a model without it for ``"summarized"``; nothing is replayed, by default;
-    the system message, the tools and the last user turn carry cache breakpoints."""
+    the request streams; the system message and the tools carry 1-hour cache breakpoints,
+    and the last user turn a five-minute one."""
     for alias, display in (("claude", "updates"), ("older", "summarized")):
         model = claude(fake, alias)
         try:
@@ -429,14 +496,12 @@ async def test_requests_ask_for_progress_notes_on_the_models_that_have_them(fake
         assert fake.paths[-1] == "/v1/messages"
         assert body["thinking"] == {"type": "adaptive", "display": display}
         assert betas == ({UPDATES_BETA} if display == "updates" else set())
-        assert (body["model"], body["max_tokens"]) == (alias, MAX_TOKENS)
-        assert body["system"] == [
-            {"type": "text", "text": SYSTEM, "cache_control": {"type": "ephemeral"}}
-        ]
+        assert (body["model"], body["max_tokens"], body["stream"]) == (alias, MAX_TOKENS, True)
+        assert body["system"] == [{"type": "text", "text": SYSTEM, "cache_control": HOUR}]
         assert [t["name"] for t in body["tools"]] == ["shell", "read"]
         assert body["tools"][0] == {"name": "shell", "description": "Run a script.",
                                     "input_schema": SHELL.parameters}  # fmt: skip
-        assert body["tools"][1]["cache_control"] == {"type": "ephemeral"}
+        assert body["tools"][1]["cache_control"] == HOUR
         assert body["messages"] == [{"role": "user", "content": [
             {"type": "text", "text": TASK, "cache_control": {"type": "ephemeral"}}]}]  # fmt: skip
     assert fake.info_calls == 2  # once for each model
@@ -509,7 +574,7 @@ async def test_the_chosen_features_are_logged_once_for_the_alias(
     assert listed.getMessage() == (
         "Messages adapter for claude: gateway model anthropic/claude-opus-5.5; progress "
         "notes (display updates) on (on the CM-38 list); mid-run tool changes on (on the "
-        "CM-38 list); adaptive thinking on"
+        "CM-38 list); adaptive thinking on; answers of up to 64,000 tokens"
     )
     assert odd.levelno == logging.WARNING
     assert "anthropic/claude-opus-5.6 is not on the CM-38 list" in odd.getMessage()
@@ -1179,8 +1244,9 @@ async def test_a_run_on_an_alias_the_setting_names_goes_through_messages(
 ) -> None:
     """The run service's way in: ``--api main=messages`` sends the run's calls to
     ``/v1/messages``; the next call sends the first answer's progress note as text and
-    no thinking; the archive keeps each answer as the gateway sent it and finds the note;
-    and the run record says thinking replay was off, and why."""
+    no thinking; the archive keeps each answer as the message its stream made, the message
+    the gateway would have sent unstreamed, and finds the note; and the run record says
+    thinking replay was off, and why."""
     harness.gateway.served = {"main": "anthropic/claude-opus-5-5"}
     looking = Scripted("Looking around.", calls=[call("shell", script="echo hello")])
     record = await harness.run(
@@ -1204,8 +1270,8 @@ async def test_a_run_on_an_alias_the_setting_names_goes_through_messages(
     finally:
         projects.close()
     answers = [a.entry for a in kept if a.entry.kind == "assistant"]
-    assert [(a.native_format, a.native) for a in answers] == [
-        (MESSAGES, text.encode()) for text in found.claude_answers
+    assert [(a.native_format, json.loads(a.native or b"")) for a in answers] == [
+        (MESSAGES, json.loads(text)) for text in found.claude_answers
     ]
     assert {a.gateway_version for a in answers} == {GATEWAY_VERSION}
     assert hits[0].message.entry.kind == "assistant"
@@ -1343,3 +1409,418 @@ async def test_working_projection_preserves_signed_thinking_and_calibration(fake
     assert fake.bodies[-2] == fake.bodies[-1]
     assert thoughts(fake.bodies[-1])
     assert original.native == full_native
+
+
+# --- Failed results and the report round ---------------------------------------------
+
+FAILURE = '{"error":{"kind":"invalid_request","message":"there is no tool named \'nope\'"}}'
+
+
+def test_a_failed_calls_result_is_told_from_one_that_ran() -> None:
+    """The error every tool reports when a call fails, however the platform carried it,
+    is a failure; an execution whose code raised, and any other text, is not."""
+    header = '[msg-0123456789abcdef · tool result · shell · purpose: "Count lines."]\n'
+    riding = json.dumps({"tool_result": FAILURE, "job_notices": [{"job": "j1"}]})
+    noticed = json.dumps({**json.loads(FAILURE), "platform_notices": ["doc changed"]})
+    ledger = json.dumps({"error": {"kind": "conflict", "message": "stale", "current": 3}})
+    for text in (FAILURE, header + FAILURE, riding, header + riding, noticed, ledger, ABORTED):
+        assert failed(text), text
+    raised = json.dumps({"state": "failed", "error": {"kind": "exception", "message": "1/0"}})
+    for text in (raised, '{"ran": true}', "plain text", "[1, 2]", header + "ok", ""):
+        assert not failed(text), text
+    assert not failed(json.dumps({"tool_result": "plain text", "job_notices": []}))
+
+
+async def test_a_failed_calls_result_is_sent_marked_as_an_error(fake: Fake) -> None:
+    model = claude(fake)
+    try:
+        messages, turns = await converse(model, [LOOKING], fake)
+        first, second = turns[0].tool_calls
+        messages[-2:] = [tool(first.id, FAILURE), tool(second.id, "x holds 42 lines")]
+        fake.then(DONE)
+        await model.complete(messages, TOOLS)
+    finally:
+        await model.close()
+    results = [b for m in fake.bodies[-1]["messages"] for b in m["content"]
+               if b["type"] == "tool_result"]  # fmt: skip
+    assert [result.get("is_error") for result in results] == [True, None]
+
+
+async def test_the_report_rounds_call_takes_thinking_and_no_tool_choice_but_none(
+    fake: Fake,
+) -> None:
+    """RS-6f: the report round's request keeps the tools, and adaptive thinking, with
+    ``tool_choice: none``, which Anthropic's API takes with thinking as it takes ``auto``
+    (LiteLLM 1.102.1 passes it on unchanged; only ``any`` and ``tool`` are refused)."""
+    fake.then(Reply(calls=[("nope", {})]), Reply(text="So far: one lead."))
+    model = claude(fake)
+    context = ExecutionContext(project_id="p", session_id="s", environment_id="env")
+    try:
+        transcript = await run_task(
+            model, Toolbox(cast(WorkerClient, object()), context), "go", run_id="r", max_turns=1
+        )
+    finally:
+        await model.close()
+    assert (transcript.stopped, transcript.final_text) == ("turn_limit", "So far: one lead.")
+    working, report = fake.bodies
+    assert "tool_choice" not in working
+    assert report["tool_choice"] == {"type": "none"}
+    assert report["thinking"]["type"] == "adaptive"
+    assert [t["name"] for t in report["tools"]] == [t["name"] for t in working["tools"]]
+    # The failed call's result went back marked as an error.
+    (result,) = [b for b in report["messages"][-1]["content"] if b["type"] == "tool_result"]
+    assert result["is_error"] is True
+
+
+# --- The stream ---------------------------------------------------------------------------
+
+
+def after(test: Callable[[Json], bool], nth: int = 1) -> Callable[[list[Json]], int]:
+    """A cut just after the ``nth`` event that passes ``test``."""
+
+    def where(events: list[Json]) -> int:
+        seen = [index for index, event in enumerate(events) if test(event)]
+        return seen[nth - 1] + 1
+
+    return where
+
+
+def delta(kind: str) -> Callable[[Json], bool]:
+    return lambda event: event["type"] == "content_block_delta" and event["delta"]["type"] == kind
+
+
+def kind(name: str) -> Callable[[Json], bool]:
+    return lambda event: event["type"] == name
+
+
+def stop_of(block: str) -> Callable[[list[Json]], int]:
+    """A cut just after the first block of the type ``block`` stopped."""
+
+    def where(events: list[Json]) -> int:
+        started = {e["index"]: e["content_block"]["type"] for e in events
+                   if e["type"] == "content_block_start"}  # fmt: skip
+        return next(
+            index + 1
+            for index, event in enumerate(events)
+            if event["type"] == "content_block_stop" and started[event["index"]] == block
+        )
+
+    return where
+
+
+async def test_a_streamed_answer_is_the_message_it_would_be_unstreamed(fake: Fake) -> None:
+    """CM-5, CM-38: the request streams, and its answer is the message the stream's events
+    build: the message the gateway would send whole, field for field, its thinking with
+    the signatures that came in deltas of their own, and a call whose input came in pieces
+    of five characters, split mid-key and mid-string, whole."""
+    arguments = {"script": "for n in range(10):\n    print(n ** 2)",
+                 "limits": {"seconds": 30, "env": ["A", "B=é"]}}  # fmt: skip
+    model = claude(fake)
+    try:
+        _, (turn,) = await converse(
+            model, [Reply(text="Squared.", calls=[("shell", arguments)], notes=["Squaring."])], fake
+        )
+    finally:
+        await model.close()
+    assert fake.bodies[-1]["stream"] is True
+    answer = json.loads(fake.answered[-1])
+    events = message_events(answer)
+    assert sum(delta("input_json_delta")(e) for e in events) > 10
+    assert json.loads(turn.native or b"") == answer
+    (made,) = turn.tool_calls
+    assert (made.name, json.loads(made.arguments)) == ("shell", arguments)
+    signatures = [b["signature"] for b in answer["content"] if b["type"] == "thinking"]
+    assert len(signatures) == 2
+    assert all(signatures)
+    assert (turn.text, turn.notes, turn.finish_reason) == (
+        "Squared.",
+        ("Squaring.",),
+        "tool_calls",
+    )
+    assert (turn.output_tokens, turn.cost) == (answer["usage"]["output_tokens"], 0.01)
+
+
+async def test_streamed_signatures_go_back_as_they_came(fake: Fake) -> None:
+    """CM-39 through the stream: each thinking block's signature, which comes in a delta
+    of its own after its text, goes back with its block when the next request replays
+    it, and the fake's binding check takes it."""
+    model = claude(fake, replay=SETTING)
+    try:
+        _, turns = await converse(model, [LOOKING, DONE], fake)
+    finally:
+        await model.close()
+    made = [b for b in json.loads(fake.answered[0])["content"] if b["type"] == "thinking"]
+    kept = [b for b in json.loads(turns[0].native or b"")["content"] if b["type"] == "thinking"]
+    assert kept == made
+    assert all(b["signature"] for b in made)
+    assert thoughts(fake.bodies[1]) == made
+    assert [t.thinking_replay for t in turns] == ["on", "on"]
+
+
+@pytest.mark.parametrize(
+    ("reply", "finish", "text", "calls"),
+    [
+        # The connection lost after a call: the call stands, and the answer called it.
+        (Reply(calls=[("shell", {"script": "ls"})], text="Listed.", cut=stop_of("tool_use")),
+         "tool_calls", None, ["shell"]),
+        # Lost within the text: the text so far, as an answer the output limit cut off.
+        (Reply(text="The answer is forty-two.", cut=after(delta("text_delta"), 3)),
+         LENGTH, "The answer is f", []),
+        # Lost within the second call's input: the first call alone.
+        (Reply(calls=[("shell", {"script": "ls"}), ("read", {"path": "a/long/path"})],
+               cut=after(delta("input_json_delta"), 6)),
+         "tool_calls", None, ["shell"]),
+        # The stream's end before its message_stop, the text whole.
+        (Reply(text="All of it.", cut=stop_of("text"), cut_by="end"), LENGTH, "All of it.", []),
+        # An overloaded upstream after part of the text.
+        (Reply(text="Halfway there.", cut=after(delta("text_delta")), cut_by="error"),
+         LENGTH, "Halfw", []),
+    ],
+)  # fmt: skip
+async def test_a_cut_stream_keeps_the_part_of_an_answer_it_left(
+    fake: Fake, reply: Reply, finish: str, text: str | None, calls: list[str]
+) -> None:
+    """A stream cut after text or a finished call: what came whole stands as the answer,
+    its cut call left out, without a call as one the output limit cut off; its native
+    message is the part, its stop reason null and no output count, so its cost is
+    unknown, and it is not tried again."""
+    fake.stream_cost = None  # as LiteLLM streams
+    model = claude(fake)
+    try:
+        _, (turn,) = await converse(model, [reply], fake)
+    finally:
+        await model.close()
+    assert (turn.finish_reason, turn.text, [c.name for c in turn.tool_calls]) == (
+        finish,
+        text,
+        calls,
+    )
+    native = json.loads(turn.native or b"")
+    answer = json.loads(fake.answered[-1])
+    assert native["stop_reason"] is None
+    assert "output_tokens" not in native["usage"]
+    assert native["content"][0] == answer["content"][0]  # the signed thinking, whole
+    assert (turn.input_tokens, turn.output_tokens, turn.cost) == (
+        sum(answer["usage"][k] for k in ("input_tokens", "cache_read_input_tokens",
+                                         "cache_creation_input_tokens")),
+        None,
+        None,
+    )  # fmt: skip
+    assert turn.retried == ()
+    assert len(fake.bodies) == 1
+
+
+async def test_a_stream_that_lost_only_its_message_stop_is_the_whole_answer(fake: Fake) -> None:
+    """A stream whose ``message_delta`` came, every block stopped, but not its
+    ``message_stop``: the message whole, with its stop reason and usage."""
+    model = claude(fake)
+    try:
+        _, (turn,) = await converse(
+            model, [Reply(text="Done.", cut=after(kind("message_delta")))], fake
+        )
+    finally:
+        await model.close()
+    assert json.loads(turn.native or b"") == json.loads(fake.answered[-1])
+    assert (turn.finish_reason, turn.text, turn.retried) == ("stop", "Done.", ())
+
+
+@pytest.mark.parametrize(
+    ("cut_by", "failure", "retried"),
+    [
+        ("close", "overloaded_error", "incomplete response"),  # the connection lost
+        ("end", "overloaded_error", "incomplete response"),  # the stream ended
+        ("error", "overloaded_error", "failed response"),
+        ("error", "rate_limit_error", "failed response"),
+        ("error", "api_error", "incomplete response"),  # LiteLLM's, for a cut upstream
+    ],
+)
+async def test_a_stream_cut_before_any_answer_is_tried_again(
+    fake: Fake, cut_by: str, failure: str, retried: str
+) -> None:
+    """A stream cut before text or a finished call (here, after its signed thinking) left
+    no answer: the call is tried again, as a stream without its end is."""
+    waits = Waits()
+    model = MessagesModel(fake.url, "claude", KEY, clock=waits)
+    fake.then(
+        Reply(text="Never seen.", cut=stop_of("thinking"), cut_by=cut_by, failure=failure),
+        Reply(text="Seen."),
+    )
+    try:
+        turn = await model.complete([{"role": "user", "content": TASK}], [])
+    finally:
+        await model.close()
+    assert (turn.text, turn.retried) == ("Seen.", (retried,))
+    assert waits.slept == [2.0]
+
+
+async def test_a_streams_other_error_is_that_error_never_tried_again(fake: Fake) -> None:
+    """An ``error`` event that a later attempt cannot get past ends the call with its
+    error, after part of an answer too, and never quotes the key."""
+    failing = Reply(text="Partly.", cut=after(delta("text_delta")), cut_by="error")
+    fake.then(replace(failing, failure="invalid_request_error"))
+    fake.said = f"messages.0: a problem with {KEY}"
+    model = claude(fake)
+    try:
+        with pytest.raises(ModelError) as caught:
+            await model.complete([{"role": "user", "content": TASK}], [])
+    finally:
+        await model.close()
+    assert type(caught.value) is ModelError
+    assert "invalid_request_error" in str(caught.value)
+    assert KEY not in str(caught.value)
+    assert "[the gateway key]" in str(caught.value)
+    assert len(fake.bodies) == 1
+
+
+async def test_a_cut_answer_is_continued_by_the_loop(fake: Fake) -> None:
+    """RS-6f through a cut stream: the text that came is the answer's first part, the
+    loop asks for the rest, and the parts together are the run's answer."""
+    fake.then(
+        Reply(text="The first half ", cut=after(delta("text_delta"), 2)),
+        Reply(text="and the rest."),
+    )
+    model = claude(fake)
+    context = ExecutionContext(project_id="p", session_id="s", environment_id="env")
+    try:
+        transcript = await run_task(
+            model, Toolbox(cast(WorkerClient, object()), context), "go", run_id="r", max_turns=4
+        )
+    finally:
+        await model.close()
+    assert transcript.final_text == "The first and the rest."
+    assert transcript.summaries["length"]["continued"] == 1
+    asked = fake.bodies[1]["messages"]
+    assert asked[1]["content"][-1]["text"] == "The first "
+    assert "reached its output limit" in str(asked[2]["content"])
+
+
+@pytest.mark.parametrize(
+    ("most", "own", "asked"),
+    [
+        (None, None, 64_000),  # the gateway does not say: the adapter's own
+        (32_000, None, 32_000),  # a model that allows less
+        (128_000, None, 64_000),
+        (32_000, 4_096, 4_096),  # the role's own
+        (32_000, 100_000, 32_000),  # but never more than the model's
+    ],
+)
+async def test_an_answer_takes_64000_tokens_or_the_models_most(
+    fake: Fake, most: int | None, own: int | None, asked: int
+) -> None:
+    """An answer's length: the role's own, or ``MAX_TOKENS``, never more than the model's
+    ``max_output_tokens``; ``max_output`` says so once the gateway has said."""
+    assert MAX_TOKENS == 64_000
+    if most is not None:
+        fake.described["claude"] = {"max_output_tokens": most}
+    model = MessagesModel(fake.url, "claude", KEY, clock=Waits(), max_tokens=own)
+    assert model.max_output == (own or MAX_TOKENS)  # before the gateway is asked
+    try:
+        await converse(model, [Reply(text="ok")], fake)
+    finally:
+        await model.close()
+    assert fake.bodies[-1]["max_tokens"] == asked
+    assert model.max_output == asked
+
+
+class Timeouts:
+    """A session that notes each request's timeout."""
+
+    def __init__(self) -> None:
+        self.session = aiohttp.ClientSession()
+        self.timeouts: list[aiohttp.ClientTimeout] = []
+
+    def post(self, url: str, **kwargs: Any) -> Any:
+        self.timeouts.append(kwargs["timeout"])
+        return self.session.post(url, **kwargs)
+
+    def get(self, url: str, **kwargs: Any) -> Any:
+        return self.session.get(url, **kwargs)
+
+
+async def test_a_stream_waits_its_timeout_for_each_part_and_longer_for_all(fake: Fake) -> None:
+    """A streamed answer may run past the client's timeout, which bounds each wait for
+    its next part, up to ``MAX_STREAM_SECONDS`` more in all."""
+    session = Timeouts()
+    model = MessagesModel(fake.url, "claude", KEY, clock=Waits(), session=cast(Any, session),
+                          timeout=100)  # fmt: skip
+    try:
+        await converse(model, [Reply(text="ok")], fake)
+    finally:
+        await session.session.close()
+    (timeout,) = session.timeouts
+    assert timeout.sock_read is not None
+    size = len(json.dumps(fake.bodies[-1]))
+    assert timeout.sock_read == pytest.approx(100 + size / REQUEST_BYTES_PER_SECOND)
+    assert timeout.total == pytest.approx(timeout.sock_read + MAX_STREAM_SECONDS)
+
+
+async def test_a_stream_without_a_cost_is_priced_from_the_model_information(fake: Fake) -> None:
+    """LiteLLM 1.102.1 reports no cost on a stream: the call is priced from the gateway's
+    model information, as any unpriced call is."""
+    fake.stream_cost = None
+    fake.described["claude"] = {"input_cost_per_token": 5e-6, "output_cost_per_token": 25e-6,
+                                "cache_read_input_token_cost": 5e-7,
+                                "cache_creation_input_token_cost": 6.25e-6}  # fmt: skip
+    model = claude(fake)
+    try:
+        _, (turn,) = await converse(model, [Reply(text="ok")], fake)
+    finally:
+        await model.close()
+    usage = json.loads(fake.answered[-1])["usage"]
+    expected = (usage["input_tokens"] * 5e-6 + usage["output_tokens"] * 25e-6
+                + usage["cache_read_input_tokens"] * 5e-7
+                + usage["cache_creation_input_tokens"] * 6.25e-6)  # fmt: skip
+    assert (turn.cost, turn.cost_source) == (pytest.approx(expected), "model_info")
+
+
+async def test_the_answers_size_bound_is_the_messages_not_its_streams(fake: Fake) -> None:
+    """``max_response_bytes`` bounds the message a stream builds, not the stream, whose
+    events wrap each few characters in about a hundred bytes (``FRAMING``): a message
+    within it is read however large its stream, and one past it is refused."""
+    text = "A finding worth a line. " * 40  # about 1,000 characters, in some 200 deltas
+    model = MessagesModel(fake.url, "claude", KEY, clock=Waits(), max_response_bytes=4096)
+    try:
+        _, (turn,) = await converse(model, [Reply(text=text)], fake)
+        assert len(server_sent(message_events(json.loads(fake.answered[-1])))) > 4 * 4096
+        assert turn.text == text
+        fake.then(Reply(text=text * 4))
+        with pytest.raises(ModelError, match="larger than 4096 bytes"):
+            await model.complete([{"role": "user", "content": TASK}], [])
+    finally:
+        await model.close()
+
+
+async def test_a_stream_that_stalls_keeps_its_part_or_times_out(fake: Fake) -> None:
+    """A stream that sends nothing for the client's timeout is cut there: after text, its
+    part stands; before any, the call fails as one with no answer does, not tried again,
+    and the run's recovery takes it, by its text alone as across the confined runtime's
+    wire, for the timeout it is (``continuity.transient``)."""
+    model = MessagesModel(fake.url, "claude", KEY, clock=Waits(), timeout=0.2)
+    fake.then(Reply(text="Some of it.", cut=after(delta("text_delta")), cut_by="stall"))
+    fake.then(Reply(text="None of it.", cut=stop_of("thinking"), cut_by="stall"))
+    try:
+        turn = await model.complete([{"role": "user", "content": TASK}], [])
+        with pytest.raises(ModelError) as caught:
+            await model.complete([{"role": "user", "content": TASK}], [])
+    finally:
+        await model.close()
+    assert (turn.text, turn.finish_reason) == ("Some ", LENGTH)
+    assert "of its last bytes" in str(caught.value)
+    assert classify(ModelError(str(caught.value))) == "model_timeout"
+    assert len(fake.bodies) == 2
+
+
+async def test_a_stream_cut_on_every_attempt_is_an_incomplete_stream(fake: Fake) -> None:
+    """A stream that never leaves an answer, on every attempt, ends as an incomplete
+    stream, which recovery takes as transient by its text alone too."""
+    model = MessagesModel(fake.url, "claude", KEY, clock=Waits(), retries=1)
+    cut = Reply(text="Never.", cut=stop_of("thinking"), cut_by="end")
+    failing = replace(cut, cut_by="error", failure="api_error")
+    fake.then(cut, cut, failing, failing)
+    try:
+        for _ in range(2):
+            with pytest.raises(IncompleteStreamError) as caught:
+                await model.complete([{"role": "user", "content": TASK}], [])
+            assert classify(ModelError(str(caught.value))) == "incomplete_stream"
+    finally:
+        await model.close()

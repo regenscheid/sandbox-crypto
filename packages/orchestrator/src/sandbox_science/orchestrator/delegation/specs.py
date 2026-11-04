@@ -186,7 +186,11 @@ SPECS: Final = (
     ToolSpec(
         "delegate",
         "Start a delegated run, which works with a fresh context: it sees none of your "
-        "conversation, only its brief, and has kernels of its own. Its brief is a check or "
+        "conversation, only its brief, and has kernels of its own. Delegate a finite piece "
+        "of work of another kind than yours, or one that can run while you go on, not "
+        "volume: fewer children is usually right. When new work relates to what a child did, "
+        "message that child (message_child) rather than start a new one; checks are the "
+        "exception, each a new delegation with a fresh context. Its brief is a check or "
         "a task. A check (check) independently checks one ledger entry at one revision, "
         "such as a proved result before you establish it: the platform writes its task, "
         "check whether the entry holds at that revision, and lists the entry's evidence as "
@@ -204,7 +208,8 @@ SPECS: Final = (
         "reaches you as a delegation notice, or as the result of wait_delegations. You "
         "cannot give your final answer while it runs. Its result is its claim: a status "
         "and a summary, and for a check a verdict; the outcome says how the platform saw "
-        "it end. A check that returned confirmed counts as the entry's independent check "
+        "it end, and a result the child did not submit is the platform's, marked set_by. "
+        "A check that returned confirmed counts as the entry's independent check "
         "once you add it as evidence: role independent_check, delegation its ID, checked "
         "the revision it checked; one of the same material that refuted it, or completed "
         "inconclusive, keeps any from counting. "

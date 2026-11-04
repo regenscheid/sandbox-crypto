@@ -57,7 +57,9 @@ SPECS: Final = tuple(
             (
                 "Reply to a thread. Name its expected thread revision. Optionally "
                 "name this run's document revision; the server reports changed "
-                "blocks and changes outside the anchor. A request_id answers only "
+                "blocks and changes outside the anchor. Answer a document work "
+                "request in its thread with its request_id, naming the revision "
+                "you made if you changed the document. A request_id answers only "
                 "this session's main-agent request."
             ),
             {

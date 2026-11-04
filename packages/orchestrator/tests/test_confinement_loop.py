@@ -27,6 +27,7 @@ from sandbox_science.orchestrator.hooks import RunView, TurnHook
 from sandbox_science.orchestrator.loop import Transcript
 from sandbox_science.orchestrator.model import ChatModel, ModelGateway
 from sandbox_science.orchestrator.model_profiles import ModelProfile
+from sandbox_science.orchestrator.notices import CONTINUE, ERROR_STREAK
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.tools import Toolbox
 
@@ -255,6 +256,84 @@ async def test_vm_loop_commits_host_state_without_a_local_harness_fallback(
             await host_channel.close()
             await vm_channel.close()
             await gateway_models.close()
+
+
+async def test_the_loops_own_notices_and_a_cut_call_cross_the_host(
+    harness: Harness, tmp_path: Path
+) -> None:
+    """RS-6f through a confined attempt: the host admits the loop's error-streak nudge and
+    its request to continue a cut answer, as it does the report round's notice, and a
+    call the output limit cut off is answered ``not_run`` without a dispatch."""
+    script = [
+        *(Reply(calls=[call("no_such_tool")]) for _ in range(3)),
+        Reply(calls=[call("shell", script="printf never")], finish="length"),
+        Reply("Part one, ", finish="length"),
+        Reply("part two."),
+    ]
+    async with serving(harness, *script, serve=False) as service:
+        gateway_models = ModelGateway(harness.gateway.url, API_KEY)
+
+        async def host_handle(kind: Capability, value: JsonValue) -> JsonValue:
+            return await host.capability(kind, value)
+
+        async def vm_handle(kind: Capability, value: JsonValue) -> JsonValue:
+            if kind is Capability.RUN:
+                return await runtime.run(value)
+            if kind is Capability.CANCEL:
+                return await runtime.cancel(value)
+            if kind is Capability.MODEL:
+                return await vm_models.complete(value)
+            if kind is Capability.MODEL_INFO:
+                return await vm_models.info(value)
+            raise TransportError("denied", "fixture refused capability")
+
+        host_channel = Channel(lambda text: vm_channel.receive(text), host_handle)
+        vm_channel = Channel(lambda text: host_channel.receive(text), vm_handle)
+        vm_models = RuntimeModels(gateway_models, frozenset({"main"}), vm_channel)
+        host = HostLoops(host_channel, frozenset({PROJECT}))
+        runtime = RuntimeLoops(vm_channel, gateway_models, tmp_path / "scratch")
+        runtime.scratch.mkdir()
+        service.harness.main = Role(CallbackModel(host_channel, "main", role="main"), "main")
+        service.harness.gateway = CallbackGateway(host_channel)
+
+        async def runner(
+            model: ChatModel, toolbox: Toolbox, task: str | None, **options: Any
+        ) -> Transcript:
+            return await host.run(model, toolbox, task, **options)
+
+        service.harness.loop_runner = runner
+        service.harness.prepare_attempt = lambda admitted: host.model_scope()
+        try:
+            service.runs.post(PROJECT, SESSION, "msg-runtime", "Go on", author="user")
+            assert await service.start_selected(PROJECT, SESSION)
+            task = service.active[PROJECT, SESSION].task
+            assert task is not None
+            await task
+            (record,) = records(harness)
+        finally:
+            await runtime.close()
+            await host_channel.close()
+            await vm_channel.close()
+            await gateway_models.close()
+    assert (record.stopped, record.failure, record.final_text) == (
+        "answered",
+        None,
+        "Part one, part two.",
+    )
+    cut = record.tools[-1]
+    assert (cut["tool"], cut["not_run"], cut["error"]) == (
+        "shell",
+        "output_limit",
+        "invalid_request",
+    )
+    assert "execution" not in cut
+    length = record.summaries["length"]
+    assert isinstance(length, dict)
+    assert (length["stops"], length["calls_not_run"], length["continued"]) == (2, 1, 1)
+    # Archived, each notice begins with the platform's header (CM-4a).
+    asked = [str(m["content"]) for m in harness.gateway.main[-1] if m["role"] == "user"]
+    assert sum(ERROR_STREAK.text in text for text in asked) == 1
+    assert sum(CONTINUE.text in text for text in asked) == 1
 
 
 def test_loop_metadata_never_iterates_historical_delivery_membership() -> None:

@@ -6,6 +6,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
+import json
+import re
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -15,13 +17,17 @@ import pytest
 
 from sandbox_science.contracts import ErrorKind, ExecutionContext
 from sandbox_science.orchestrator import cli, notices
+from sandbox_science.orchestrator.consistency.controller import AUTHOR_SPECS
 from sandbox_science.orchestrator.consistency.prompt_bundle import PURPOSE as REVIEWER_PURPOSE
 from sandbox_science.orchestrator.consistency.rubric import (
+    BUDGET,
+    BUDGET_VERSION,
     RECHECK,
     RECHECK_VERSION,
     RUBRIC,
     RUBRIC_VERSION,
 )
+from sandbox_science.orchestrator.context.history.tool import SPECS as HISTORY_SPECS
 from sandbox_science.orchestrator.delegation.prompt import (
     CHECK_PROMPT,
     CHECK_VERSION,
@@ -29,9 +35,11 @@ from sandbox_science.orchestrator.delegation.prompt import (
     TASK_VERSION,
 )
 from sandbox_science.orchestrator.documents import DocumentStore, DocumentTool
+from sandbox_science.orchestrator.documents.annotation_tools import SPECS as ANNOTATION_SPECS
 from sandbox_science.orchestrator.harness import save
 from sandbox_science.orchestrator.hooks import TurnHook
 from sandbox_science.orchestrator.jobs import WATCHER_PROMPT
+from sandbox_science.orchestrator.ledger.tool import PROPOSALS
 from sandbox_science.orchestrator.loop import MAIN_VERSION, SYSTEM_PROMPT, run_task
 from sandbox_science.orchestrator.memory_prompt import (
     REVIEWER_FRAMING,
@@ -69,7 +77,17 @@ HOSTILE = "Authorization: Bearer test-secret-prompt-not-a-credential"
 # Each installed version and the SHA-256 of its UTF-8 text. Changing a text means a new
 # version: add it here, and keep the old version's entry for its records.
 GOLDEN = {
+    "sandbox-main-20": "95ddb8d6130651b7bd01c68abe09c5b22b3eef104ed60d51ae76fc1590630303",
+    "sandbox-delegated-task-21": "21b4fd679cbe45c2696d33e5f7d98d0711ae101b82432c5f904b15bb0ba4d6f5",
+    "sandbox-delegated-check-16": (
+        "7eb1ee655c907708a71f0f9b7b86cc3aca165706d3b76d537d4f30d204efab1e"
+    ),
+    "sandbox-main-plan-4": "e13f0e1b551660bce8a6aa77b4a4e1633ce6b6b783c25242e5dee376a2895317",
     "sandbox-main-19": "74e546698352d3cb2ae235e460d55442ca02259c9cb2a504adbf03d3973f8bbe",
+    "sandbox-delegated-task-20": "ad91ac981e56fe6d8316ec44504194103f02879d0a46a44ae6a95c26b9e3d572",
+    "sandbox-delegated-check-15": (
+        "fc99960572d04e165c8fefa899c3b5356f6a072e136c77f6096cf5d54ecd9a11"
+    ),
     "sandbox-delegated-task-19": "04c765c8c6bc821d8fa193981c1e880387360c5f980c8ce99feaecc8eab5a608",
     "sandbox-delegated-task-18": "79475b306ebb52f2567368dc1667af844a026395451a4a7d46d0e64360a8b220",
     "sandbox-delegated-task-17": "88951b020a690c47b379833f454f27dc661f1336c603be2311befca42dfbcfc7",
@@ -116,6 +134,7 @@ GOLDEN = {
     "sandbox-delegated-task-9": "70e83d0cf1f6f803b862cf773d3c35f1d67a390391ab0419ade26836989f7ee1",
     "sandbox-main-11": "f67fd27c0f4937b2e370bb07563ac8aa6d41089f8307e61f5f32e505093d057c",
     "sandbox-main-10": "e8b5e21ed6aa88254c3b40661874fea44954d4c4d4ef7d577c198ee4419f5f23",
+    "sandbox-main-plan-3": "6b150573a6436953255a639e0535664f23d8ca0af72fdb476593de29cb434ff8",
     "sandbox-main-plan-2": "768cd18b5403bf7d316a60eb89ca100ba270ec29f5195343baf41d0d55a301df",
     "sandbox-stock-intake-2": "2bdb3f65587f99c7f78555349196c27f7bb2cbe1429b0adebb3ca549e93e6572",
     "sandbox-stock-experiment-2": (
@@ -140,6 +159,7 @@ GOLDEN = {
     "sandbox-notice-jobs-attached-1": (
         "962543a55f349e3fab95b93c92e0a765c03933193b4e1be7fa70b92032e20f67"
     ),
+    "sandbox-notice-plans-2": "48d64155cc1079258c772e77813f38de9a75c445fe7a39f4f4f4fa8fef6bf0d0",
     "sandbox-notice-plans-1": "4257527cd034fa0bc91f2fe0939af3ff63e2d28fddd04dfb438d39a94e30d00b",
     "sandbox-notice-review-findings-1": (
         "d9fe98f7e1b697bb2d3264496fd601484a9dbce030d3fd0985e049aabd9e67a1"
@@ -167,12 +187,15 @@ GOLDEN = {
     "sandbox-notice-delegations-running-2": (
         "c9a8bab83313d421f56598703924f57397727a0983b4c9156bcff6df39a9970a"
     ),
+    # Retired 2026-11-03 with the one correction (PD-18): kept for the records that pin it.
     "sandbox-notice-outcome-correction-1": (
         "4d308ab03dd3549555c60202b1690a59e7025667f6189cdb5abb4aa25cf6eae1"
     ),
     "sandbox-delegated-check-8": "1911d9d5cf0036fe6d952132042f96124e0845bde8271078eb65c5960b655a78",
     "sandbox-delegated-task-8": "0928db5b6b9d08a097dd67464f69ff56eae48890d32f982dd2e516d71ae157fc",
     "sandbox-job-watcher-1": "4b545fe81e35622bf1b894c435833d78fb122116f9364d429b21c6c3551e1ab1",
+    "sandbox-consistency-10": "5400f167e3174daab99f268bfc0ed9613ed3886d97e4a86832054a33b5b3f135",
+    "sandbox-review-budget-1": "0c8b1f5f323c09ae4aef090f39a724f14efe468eeeaed0f8f72d28dbf7f14681",
     "sandbox-consistency-9": "3905f61a0b76144e6ec941e436cd37dea2343b76a7f84f34e5ecf65d8048a588",
     "sandbox-recheck-1": "70923310becc982206fb8caad884bacc282ce182c065f9e978f653ff412eb7fa",
     "sandbox-memory-run-1": "b69cc482f75853487a499ac89b5701b148066e919842a9970e6e318b2bdce121",
@@ -204,7 +227,25 @@ GOLDEN = {
     "sandbox-consolidation-1": ("d67d1fdf2583ba97951b057b2246ce1d458a60806edf9bf7a7545920cf33f20a"),
     "sandbox-image-1": "6aad833a6a22472424296c64943b54adcd0d064aef1db5403c5f5eea2eb95f11",
     "sandbox-notice-report-1": "93112b881cb91462c7b85f862d93cd154a9d5c47684af6815a4eedc9156c9c48",
+    "sandbox-notice-continue-1": (
+        "a8c62c53d35c41e34094b147b09f4e6af414c09030bf6db0460b7025c20654b9"
+    ),
+    "sandbox-notice-error-streak-1": (
+        "aca99a5cd96a97759b5cd54a8e5a63588b0354e287b80134f96624103669136c"
+    ),
     "sandbox-compaction-1": "264481cb4d7bd69c3e27ebfcd5499e761f0aa8b51262d7112ebd188e853ba203",
+    "sandbox-notice-outcome-submit-1": (
+        "55a457b0cc0426d049e8c0387c7b04368282929908d9b5b8905603cacef3180b"
+    ),
+    "sandbox-notice-outcome-last-call-1": (
+        "a35ef2d0859a3578d237cfc0db7d7133bd675054c8c964bc78e955d285df7a24"
+    ),
+    "sandbox-notice-outcome-report-1": (
+        "6e5f18df2d96551b357a6f779fde1ae6ad04057975c24f46f04772478105f8af"
+    ),
+    "sandbox-notice-delegations-unsubmitted-1": (
+        "762699801f144af1954d5f9e6affbb564f6b52e7e13435658eb999cc8556544f"
+    ),
 }
 
 
@@ -215,6 +256,7 @@ def installed() -> dict[str, str]:
         PROMPT_VERSION: WATCHER_PROMPT,
         RUBRIC_VERSION: RUBRIC,
         RECHECK_VERSION: RECHECK,
+        BUDGET_VERSION: BUDGET,
         REVIEWER_PURPOSE.version or "": REVIEWER_PURPOSE.text,
         RUN_VERSION: RUN_FRAMING,
         REVIEWER_VERSION: REVIEWER_FRAMING,
@@ -247,6 +289,120 @@ def test_a_refusal_is_a_decision_and_a_miss_is_not_absence() -> None:
     assert "no evidence that the work or attack does not exist" in (
         select_template("literature").text
     )
+
+
+HEADINGS = {
+    "main": [
+        "How you work",
+        "Tools and results",
+        "Pilots",
+        "Research depth",
+        "Your answer",
+        "Checking in with the user",
+        "Your children",
+        "Research state",
+        "Untrusted content and policy",
+        "The user's authority",
+    ],
+    "task": [
+        "How you work",
+        "Your parent",
+        "Research state",
+        "Untrusted content and policy",
+        "Your result",
+    ],
+    "check": ["How you check", "Your parent", "Untrusted content and policy", "Your result"],
+}
+"""Each prompt's headings, in order, after its first paragraph, which says who the agent
+is (``sandbox-main-20``, ``sandbox-delegated-task-21``, ``sandbox-delegated-check-16``)."""
+STALE = (
+    "self-approve",
+    "awaiting_approval",
+    "a waiting plan",
+    "track grant",
+    "safe point",
+    "replay receipt",
+    "enforced by the model gateway",
+    "USER",
+)
+"""What the harness review found stale (no plan waits for approval) or jargon a model
+cannot act on (2026-11-03)."""
+
+
+def test_each_prompt_is_headed_and_no_heading_repeats() -> None:
+    for name, text in (("main", SYSTEM_PROMPT), ("task", TASK_PROMPT), ("check", CHECK_PROMPT)):
+        headings = re.findall(r"^#{2,3} (.+)$", text, re.MULTILINE)
+        assert headings == HEADINGS[name], name
+        assert len(set(headings)) == len(headings), name
+        # Who the agent is comes first, before any heading: a delegated prompt keeps its
+        # first line (DA-26), which the test models read to tell a child's call apart.
+        first = text.split("\n\n", 1)[0]
+        assert first.startswith("You are a"), name
+        assert "#" not in first, name
+    assert TASK_PROMPT.startswith("You are a delegated research agent.")
+    assert CHECK_PROMPT.startswith("You are a delegated research agent.")
+
+
+def test_the_stale_and_jargon_phrases_are_gone() -> None:
+    for text in (SYSTEM_PROMPT, TASK_PROMPT, CHECK_PROMPT, GUIDANCE):
+        for phrase in STALE:
+            assert phrase not in text, phrase
+
+
+def test_each_rule_is_said_once_and_tool_rules_are_in_their_tools() -> None:
+    """The harness review's duplicates are said in one place, and the rules of one tool
+    are in its description, with at most a pointer in the main prompt."""
+    main = " ".join(SYSTEM_PROMPT.split())
+    # Untrusted text: once.
+    assert main.count("not instructions") == 1
+    # The memory's basis: in the framing that shows the notes, not the base or the task.
+    for prompt in (SYSTEM_PROMPT, TASK_PROMPT):
+        assert "observed notes" not in prompt
+        assert "mem-3" not in prompt
+    assert "Prefer user and observed notes" in RUN_FRAMING
+    # Ceilings, finite briefs and the first checklist: the base's, not the planning's.
+    assert main.count("Budgets are ceilings, not spending targets") == 1
+    assert "finite brief" in main
+    for said in ("spending targets", "child briefs finite", "first checklist", "pilot is not"):
+        assert said not in GUIDANCE, said
+    # Standing directions: once, as a standing constraint.
+    assert "standing direction" not in main
+    assert main.count("standing constraint") == 1
+    # The tools' own rules.
+    (reply,) = [spec for spec in ANNOTATION_SPECS if spec.name == "document_reply"]
+    (respond,) = [spec for spec in AUTHOR_SPECS if spec.name == "review_respond"]
+    (search,) = [spec for spec in HISTORY_SPECS if spec.name == "history_search"]
+    for rule, description in (
+        ("naming the revision you made if you changed the document", reply.description),
+        ("queues its re-check, which alone makes it fixed", respond.description),
+        ("read its anchors with history_read", PROPOSALS.description),
+        ("No hit means no match in that scope", search.description),
+        ("Use it before downloading", ADMIT_HOSTS.description),
+    ):
+        assert rule in description, rule
+        assert rule not in main, rule
+    for pointer in ("document_reply", "review_respond", "ledger_proposals", "admit_hosts"):
+        assert main.count(pointer) == 1, pointer
+    assert "history_search" not in main
+
+
+def test_the_main_prompt_says_how_to_answer_when_to_ask_and_how_to_batch() -> None:
+    main = " ".join(SYSTEM_PROMPT.split())
+    assert "Lead your answer to the user with the result, then what it rests on" in main
+    assert "Check in with the user only for a decision that is theirs" in main
+    assert "routine steps need no confirmation" in main
+    assert "side by side in one reply: they run at once" in main
+    for prompt in (TASK_PROMPT, CHECK_PROMPT):
+        assert "side by side in one reply: they run at once" in prompt
+
+
+def test_the_delegated_prompts_end_with_the_result_and_an_example() -> None:
+    for prompt in (TASK_PROMPT, CHECK_PROMPT):
+        last = prompt.rsplit("## ", 1)[1]
+        assert last.startswith("Your result\n\n")
+        assert "Your result reaches your parent only through submit_result" in last
+        example = last.rsplit("submits ", 1)[1].removesuffix(".")
+        assert isinstance(json.loads(example), dict)
 
 
 def test_each_installed_version_names_its_exact_text() -> None:

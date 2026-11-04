@@ -76,7 +76,7 @@ def check_decisions(db: sqlite3.Connection, planned: list[Planned], role: str) -
                 INVALID_REQUEST,
                 f"{p.row.handle} is {p.status}: its statement, fields, assumptions and "
                 "evidence change only with its status, or in a change that puts in "
-                "effect a decision that affects it",
+                f"effect a decision that affects it: {_deciding(p.row.handle)}",
             )
         if not any(
             d is not p
@@ -88,11 +88,14 @@ def check_decisions(db: sqlite3.Connection, planned: list[Planned], role: str) -
         ):
             raise DocumentError(
                 INVALID_REQUEST,
-                f"{p.row.handle} leaves {p.status_before} only in a change that puts in "
-                "effect a decision that affects it"
-                if p.status_before in SET_ASIDE
-                else f"{p.row.handle} becomes {p.status} only in a change that puts in "
-                "effect a decision that affects it",
+                (
+                    f"{p.row.handle} leaves {p.status_before} only in a change that puts in "
+                    "effect a decision that affects it"
+                    if p.status_before in SET_ASIDE
+                    else f"{p.row.handle} becomes {p.status} only in a change that puts in "
+                    "effect a decision that affects it"
+                )
+                + f": {_deciding(p.row.handle)}",
             )
         if role != "main":
             continue
@@ -117,6 +120,15 @@ def check_decisions(db: sqlite3.Connection, planned: list[Planned], role: str) -
         elif p.status == "obstructed":
             check_obstruction(db, p, deciding)
     return gated
+
+
+def _deciding(handle: str) -> str:
+    """How a change puts in effect a decision that affects ``handle``."""
+    return (
+        'give in this change a new decision with "status": "in_effect" whose links hold '
+        f'{{"kind": "affects", "entry": "{handle}"}}, or move a proposed one that holds that '
+        'link to "in_effect"'
+    )
 
 
 def check_obstruction(db: sqlite3.Connection, p: Planned, deciding: list[Planned]) -> None:
@@ -341,8 +353,10 @@ def check_published(db: sqlite3.Connection, planned: list[Planned]) -> None:
         if not evidence.cites_reference(p.evidence or [], references):
             raise DocumentError(
                 INVALID_REQUEST,
-                f"{p.row.handle} is published: it cites its reference with a supports "
-                "link of type source_claim",
+                f"{records.shown(p)} is published: it cites its reference with a supports "
+                'link of type source_claim: give it evidence {"role": "supports", "type": '
+                '"source_claim", "entry": "REF-1"} (new:<key> for a reference this change '
+                "records)",
             )
 
 
@@ -497,7 +511,9 @@ def check_links(db: sqlite3.Connection, planned: list[Planned]) -> None:
             if status(link.target_id) != "superseded":
                 raise DocumentError(
                     INVALID_REQUEST,
-                    f"{link.handle} becomes superseded in the change that supersedes it",
+                    f"{link.handle} becomes superseded in the change that supersedes it: give "
+                    f'a change {{"entry": "{link.handle}", "expected": <its revision>, '
+                    '"status": "superseded"} in this one',
                 )
         superseding += [link.target_id for link in records.links_dropped(p, "supersedes")]
     moved = [p.row.entry_id for p in planned if "status" in p.changed]
@@ -544,61 +560,86 @@ def check_research(
         for d in planned
         if d.row.type == "decision" and d.status == "in_effect" and d.status_before != d.status
     ]
+    # Each entry is checked on its own, and the invalid ones are refused together.
+    problems = records.Problems()
     for p in planned:
-        links = preparation.final_links(db, p)
-        if p.row.type == "issue" and p.fields.get("kind") == "contradiction":
-            sides = {(k.target, k.target_id, k.block) for k in links if k.kind == "concerns"}
-            if len(sides) < 2:
-                raise DocumentError(
-                    INVALID_REQUEST,
-                    f"{p.row.handle} is a contradiction: it concerns the entries, findings "
-                    "or document blocks that disagree, at least two",
-                )
-        if p.row.type == "issue" and p.status == "obstructed" != p.status_before:
-            deciders = [
-                d
-                for d in deciding
-                if any(
-                    k.kind == "affects" and k.target_id == p.row.entry_id
-                    for k in preparation.final_links(db, d)
-                )
-            ]
-            if len(deciders) > 1:
-                raise DocumentError(
-                    INVALID_REQUEST, f"one decision makes {p.row.handle} obstructed"
-                )
-            if author.kind == "user" and deciders and not deciders[0].fields.get("excluded_scope"):
-                raise DocumentError(
-                    INVALID_REQUEST,
-                    f"the decision that makes {p.row.handle} obstructed names the scope it "
-                    "excludes (fields.excluded_scope)",
-                )
-        dropped = set(p.fields_before.get("caveats", ())) - set(p.fields.get("caveats", ()))
-        if author.kind != "user" and dropped:
-            raise records.refused(
-                f"an agent adds caveats to {p.row.handle} and removes none: the user may remove one"
+        with problems.check():
+            check_entry(db, project, p, author, by_id, deciding, problems)
+    problems.stop()
+
+
+def check_entry(
+    db: sqlite3.Connection,
+    project: str,
+    p: Planned,
+    author: Author,
+    by_id: dict[str, Planned],
+    deciding: list[Planned],
+    problems: records.Problems,
+) -> None:
+    """``check_research``'s rules for one entry, ``p``, of the change: ``by_id`` its
+    entries, ``deciding`` the decisions it puts in effect. A decision's condition and
+    what it keeps are checked apart, into ``problems``."""
+    links = preparation.final_links(db, p)
+    if p.row.type == "issue" and p.fields.get("kind") == "contradiction":
+        sides = {(k.target, k.target_id, k.block) for k in links if k.kind == "concerns"}
+        if len(sides) < 2:
+            raise DocumentError(
+                INVALID_REQUEST,
+                f"{records.shown(p)} is a contradiction: it concerns the entries, findings "
+                "or document blocks that disagree, at least two: add to its links "
+                '{"kind": "concerns", "entry": "C-3"} for each side',
             )
-        if p.row.type != "decision":
-            continue
+    if p.row.type == "issue" and p.status == "obstructed" != p.status_before:
+        deciders = [
+            d
+            for d in deciding
+            if any(
+                k.kind == "affects" and k.target_id == p.row.entry_id
+                for k in preparation.final_links(db, d)
+            )
+        ]
+        if len(deciders) > 1:
+            raise DocumentError(INVALID_REQUEST, f"one decision makes {p.row.handle} obstructed")
+        if author.kind == "user" and deciders and not deciders[0].fields.get("excluded_scope"):
+            raise DocumentError(
+                INVALID_REQUEST,
+                f"the decision that makes {p.row.handle} obstructed names the scope it "
+                "excludes (fields.excluded_scope)",
+            )
+    kept = list(p.fields_before.get("caveats", ()))
+    dropped = [c for c in kept if c not in p.fields.get("caveats", ())]
+    if author.kind != "user" and dropped:
+        shown = ", ".join(repr(records.clip(c, 60)) for c in dropped[:3])
+        raise records.refused(
+            f"an agent adds caveats to {p.row.handle} and removes none: the user may remove "
+            f"one. Fields given replace them all: give fields.caveats with its {len(kept)} "
+            f"caveats as they read, then the new ones ({shown} would go); to correct one, add "
+            "a caveat that says so"
+        )
+    if p.row.type != "decision":
+        return
+    with problems.check():
         check_condition(db, p, links, by_id)
+    with problems.check():
         check_kept(db, p, author, deciding)
-        check_session(db, project, p, author)
-        named = [p.fields.get(k) for k in ("excluded_scope", "assessment")]
-        before = [p.fields_before.get(k) for k in ("excluded_scope", "assessment")]
-        if named != before and any(named):
-            obstructs = any(d is p for d in deciding) and any(
-                k.kind == "affects"
-                and (target := by_id.get(k.target_id)) is not None
-                and target.row.type == "issue"
-                and target.status == "obstructed" != target.status_before
-                for k in links
+    check_session(db, project, p, author)
+    named = [p.fields.get(k) for k in ("excluded_scope", "assessment")]
+    before = [p.fields_before.get(k) for k in ("excluded_scope", "assessment")]
+    if named != before and any(named):
+        obstructs = any(d is p for d in deciding) and any(
+            k.kind == "affects"
+            and (target := by_id.get(k.target_id)) is not None
+            and target.row.type == "issue"
+            and target.status == "obstructed" != target.status_before
+            for k in links
+        )
+        if not obstructs:
+            raise DocumentError(
+                INVALID_REQUEST,
+                f"{p.row.handle} names an excluded scope or an assessment only in the "
+                "change that puts it in effect and makes the issue it affects obstructed",
             )
-            if not obstructs:
-                raise DocumentError(
-                    INVALID_REQUEST,
-                    f"{p.row.handle} names an excluded scope or an assessment only in the "
-                    "change that puts it in effect and makes the issue it affects obstructed",
-                )
 
 
 def check_condition(
@@ -613,31 +654,39 @@ def check_condition(
     condition, ``none`` when nothing would reopen it (CM-10)."""
     condition = p.fields.get("reopen_condition")
     watched = [k for k in links if k.kind == "reopen_on"]
+    name = records.shown(p)
     if condition is None and watched:
         raise DocumentError(
             INVALID_REQUEST,
-            f"{p.row.handle}'s reopen_on links watch for its reopen condition: give "
-            "fields.reopen_condition",
+            f"{name}: its reopen_on links watch for its reopen condition: give "
+            "fields.reopen_condition, what would justify reconsidering it",
         )
     if condition is not None and condition.strip().casefold() == NO_CONDITION:
         if watched:
             raise DocumentError(
                 INVALID_REQUEST,
-                f"{p.row.handle}'s reopen condition is none, so it watches nothing",
+                f"{name}: its reopen condition is none, so it watches nothing: leave out its "
+                "reopen_on links, or state the condition they watch for",
             )
     elif condition is not None and not watched:
         raise DocumentError(
             INVALID_REQUEST,
-            f"{p.row.handle}'s reopen condition names what it watches with reopen_on "
+            f"{name}: its reopen condition names what it watches with reopen_on "
             "links: an open issue of kind question that states the condition, or the "
-            "assumption, claim or result whose change would matter",
+            "assumption, claim or result whose change would matter. Add to its links "
+            '{"kind": "reopen_on", "entry": "A-1"} for each (new:<key> for one this change '
+            "creates, such as a new issue of kind question stating the condition), or make "
+            f'the condition "{NO_CONDITION}" if nothing would reopen it',
         )
     moved = p.created or "status" in p.changed
     if p.status in ("rejected", "reversed") and moved and condition is None:
         raise DocumentError(
             INVALID_REQUEST,
-            f"{p.row.handle} becomes {p.status}: state what would justify reopening "
-            f"it (fields.reopen_condition), or {NO_CONDITION}",
+            f"{name} becomes {p.status}: state what would justify reopening "
+            f"it (fields.reopen_condition), or {NO_CONDITION}. Give it "
+            f'"fields": {{"reopen_condition": "{NO_CONDITION}"}} if nothing would reopen it; '
+            "or the condition, with reopen_on links to what it watches in its links "
+            "(links replaces its links: give those it holds too)",
         )
     for link in records.links_added(p, "reopen_on"):
         target = by_id.get(link.target_id)
@@ -655,7 +704,8 @@ def check_condition(
             raise DocumentError(
                 INVALID_REQUEST,
                 f"{link.handle} is not an open question: a reopen condition watches an "
-                "open issue of kind question",
+                "open issue of kind question: link the assumption, claim or result whose "
+                "change would matter instead, or a new issue of kind question",
             )
 
 
@@ -705,11 +755,14 @@ def check_kept(db: sqlite3.Connection, p: Planned, author: Author, deciding: lis
             for d in deciding
         )
     ):
+        reverse = ', or reverse it, "status": "reversed"' if p.status_before == "in_effect" else ""
         raise DocumentError(
             INVALID_REQUEST,
             f"{p.row.handle} is {p.status_before}: its statement, fields, links and "
             "evidence change only with its status, or in a change that puts in effect a "
-            "decision that affects it",
+            "decision that affects it. To change them, put in effect in this change a new "
+            f'decision whose links hold {{"kind": "affects", "entry": "{p.row.handle}"}}, '
+            f"which may keep {p.row.handle} {p.status_before}{reverse}",
         )
 
 

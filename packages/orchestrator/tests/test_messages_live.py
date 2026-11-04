@@ -13,16 +13,20 @@ skip them; a lab runs them with:
 
 CM-F30 gates turning thinking replay on: when it passes, it prints the setting that
 names the image it ran against, for ``[model.thinking_replay]``. CM-F31 and the refusal
-check report what they found and gate nothing.
+check report what they found and gate nothing. The streaming check gates the streamed
+answer's shape, the replay of its signed thinking and the 1-hour cache of the prefix,
+and reports what a call the output limit cuts inside a call holds.
 """
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import aiohttp
 import pytest
@@ -37,6 +41,7 @@ from sandbox_science.orchestrator.model import (
     run_fallbacks,
 )
 from sandbox_science.orchestrator.model_profiles import requested
+from sandbox_science.orchestrator.pricing import cost, messages_tokens
 
 pytestmark = pytest.mark.live
 
@@ -220,3 +225,151 @@ async def test_a_declined_call_is_answered_by_the_fallback_through_the_real_gate
     finally:
         await model.close()
     print(json.dumps(found, indent=2))
+
+
+class Recording(MessagesModel):
+    """The adapter, keeping each request's body and each answer's headers."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.bodies: list[dict[str, Any]] = []
+
+    async def _post(self, body: dict[str, Any]) -> tuple[str, str | None, str | None]:
+        self.bodies.append(copy.deepcopy(body))
+        return await super()._post(body)
+
+
+def shape(message: dict[str, Any]) -> dict[str, Any]:
+    """What a message is made of: its fields, its usage's, and each block's by type."""
+    blocks: dict[str, list[str]] = {}
+    for block in message["content"]:
+        blocks.setdefault(block["type"], sorted(block))
+    return {"fields": sorted(message), "usage": sorted(message["usage"]), "blocks": blocks}
+
+
+PREFIX_NOTES = "\n".join(
+    f"Reference note {n:04d}: a calculator check sums two integers with the tool, never "
+    "by hand, and reports the sum once the tool has answered."
+    for n in range(260)
+)
+"""Enough of a system message (about 7,000 tokens) for Anthropic to cache it: Opus caches a
+prefix of 4,096 tokens or more."""
+
+
+async def test_a_streamed_answer_keeps_its_signatures_and_reads_the_hour_cache() -> None:
+    """A streamed call with thinking and one tool through the real gateway: its answer is
+    a message of the fields, usage and block fields of the same request unstreamed, its
+    thinking signed; the request marks the system message and the tools for the 1-hour
+    cache; a second call that replays the thinking is accepted with replay on and reads
+    the prefix from the cache; and the model information prices the unstreamed call as
+    the gateway did, since a streamed call's cost comes from it. Reports the calls' usage,
+    cost and its source, the answer length asked for, and what a call the output limit
+    cuts inside a call holds, streamed and unstreamed."""
+    url, key, alias = gateway()
+    system = SYSTEM + "\n\n" + PREFIX_NOTES
+    messages: list[Message] = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": TASK},
+    ]
+    probe = Recording(url, alias, key)
+    try:
+        first = await probe.complete(messages, [ADD])
+        described = await probe._models()
+        prices = await probe._prices.prices(alias, probe._client)
+    finally:
+        await probe.close()
+    sent = probe.bodies[0]
+    assert sent["stream"] is True
+    assert sent["system"][-1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+    assert sent["tools"][-1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+    assert sent["messages"][-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+    assert first.native is not None
+    assert first.tool_calls, "the first answer called no tool"
+    streamed = json.loads(first.native)
+    signed = [b for b in streamed["content"] if b["type"] == "thinking"]
+    assert signed, "no thinking came"
+    assert all(b["signature"] for b in signed), "a thinking block came unsigned"
+    # The same request unstreamed, for its shape.
+    whole = {**sent, "stream": False}
+    headers = {"Authorization": f"Bearer {key}", **probe._headers(whole)}
+    async with (
+        aiohttp.ClientSession() as session,
+        session.post(f"{url.rstrip('/')}/messages", json=whole, headers=headers) as response,
+    ):
+        said = await response.text()
+        unstreamed_cost = response.headers.get("x-litellm-response-cost")
+    assert response.status == 200, said[:300]
+    unstreamed = json.loads(said)
+    tokens = messages_tokens(unstreamed["usage"])
+    assert prices is not None
+    assert tokens is not None
+    assert unstreamed_cost is not None
+    assert cost(prices, tokens) == pytest.approx(float(unstreamed_cost), rel=0.01)
+    assert shape(streamed)["fields"] == shape(unstreamed)["fields"]
+    assert shape(streamed)["usage"] == shape(unstreamed)["usage"]
+    common = shape(streamed)["blocks"].keys() & shape(unstreamed)["blocks"].keys()
+    assert {k: shape(streamed)["blocks"][k] for k in common} == {
+        k: shape(unstreamed)["blocks"][k] for k in common
+    }
+    answered(messages, first)
+    today = datetime.now(UTC).date()
+    assert first.gateway_version
+    replay = ThinkingReplay("live-streaming-check", first.gateway_version, today, "stream-check")
+    model = Recording(url, alias, key, replay=replay)
+    try:
+        second = await model.complete(messages, [ADD])
+    finally:
+        await model.close()
+    replayed = [
+        b for m in model.bodies[0]["messages"] for b in m["content"] if b.get("type") == "thinking"
+    ]
+    assert [b["signature"] for b in replayed] == [b["signature"] for b in signed]
+    assert second.thinking_replay == "on", second.thinking_replay
+    assert second.native is not None
+    assert (second.cache_read_input_tokens or 0) > 0, "the second call read nothing cached"
+    usage = [json.loads(turn.native or b"")["usage"] for turn in (first, second)]
+    # What a call the output limit cuts inside a call holds.
+    cut = {
+        "model": alias,
+        "max_tokens": 24,
+        "tools": [{"name": "note", "description": "Keep a note.", "input_schema": {
+            "type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}}],
+        "tool_choice": {"type": "tool", "name": "note"},
+        "messages": [{"role": "user", "content": "Keep a note of the first 40 primes, in words."}],
+    }  # fmt: skip
+    found: dict[str, object] = {}
+    async with aiohttp.ClientSession() as session:
+        auth = {"Authorization": f"Bearer {key}"}
+        async with session.post(f"{url.rstrip('/')}/messages", json=cut, headers=auth) as response:
+            found["unstreamed"] = (await response.json())["content"]
+        streaming = {**cut, "stream": True}
+        async with session.post(
+            f"{url.rstrip('/')}/messages", json=streaming, headers=auth
+        ) as response:
+            events = await response.text()
+    found["streamed_input_json"] = "".join(
+        json.loads(line[5:])["delta"]["partial_json"]
+        for line in events.splitlines()
+        if line.startswith("data:") and '"input_json_delta"' in line
+    )
+    print(
+        json.dumps(
+            {
+                "model": first.model,
+                "gateway": first.gateway_version,
+                "described": described,
+                "max_tokens": sent["max_tokens"],
+                "unstreamed_usage": unstreamed["usage"],
+                "unstreamed_priced": cost(prices, tokens),
+                "usage": usage,
+                "costs": [(t.cost, t.cost_source) for t in (first, second)],
+                "unstreamed_cost_header": unstreamed_cost,
+                "shape": shape(streamed),
+                "unstreamed_shape": shape(unstreamed),
+                "finish": [first.finish_reason, second.finish_reason],
+                "answer": second.text,
+                "cut_call": found,
+            },
+            indent=2,
+        )
+    )

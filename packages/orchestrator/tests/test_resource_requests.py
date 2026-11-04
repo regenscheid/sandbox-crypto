@@ -68,6 +68,14 @@ def setup(projects, *, turns=5, tokens=20_000_000):
     return works, parent, child, ResourceRequests(projects.control)
 
 
+def went_on(store: ResourceRequests, child) -> None:
+    """The child's first check-in at a soft cap, which went on for one bounded step
+    (D102): its next check-in at a cap waits for its parent's decision."""
+    request = store.observe(child, "cost", used=1, total=1, revision=1, force=True)
+    assert request is not None
+    assert store.first_step(child, request) is not None
+
+
 def granted(projects, owner, resource, original):
     with projects.control.read() as tx:
         return soft_grant(tx.sql, owner, resource, original)
@@ -172,8 +180,10 @@ def test_extension_supersedes_other_requests_for_the_old_allowance(projects):
 
 async def test_parent_turn_extension_reaches_running_loop(projects):
     """At its soft turn cap the child checks in and waits, making no model call, until its
-    parent extends it by one bounded step; then it goes on and answers."""
+    parent extends it by one bounded step; then it goes on and answers. Its first check-in
+    at a soft cap went on before (``went_on``)."""
     _, parent, child, requests = setup(projects)
+    went_on(requests, child)
     seen: list[int] = []
 
     class Continue(TurnHook):
@@ -211,7 +221,7 @@ async def test_parent_turn_extension_reaches_running_loop(projects):
     assert result.stopped == "answered"
     assert result.turns == 7
     assert seen == [0] * 7  # no model call while the check-in waited
-    (request,) = requests.page("p", "s").requests
+    request, _ = requests.page("p", "s").requests  # latest first; then the one that went on
     assert request.resource == "turns"
     assert request.summary is not None
     assert request.summary.brief == "Derive and verify a lemma"

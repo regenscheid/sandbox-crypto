@@ -16,8 +16,8 @@ import hashlib
 import json
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import AsyncGenerator, Callable, Generator, Iterable, Mapping, Sequence
+from contextlib import aclosing, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from typing import Any, ClassVar, Final, Protocol, Self, cast
@@ -134,6 +134,24 @@ class ModelTurn:
     ``model``, ``alias``, the tokens and the rest are the answering call's."""
 
 
+LENGTH: Final = "length"
+"""The finish reason of an answer the output limit cut off, as every adapter names it:
+chat completions' own, Claude's ``max_tokens`` (and ``model_context_window_exceeded``),
+and a response incomplete for its ``max_output_tokens``."""
+_WHOLE_CALLS: Final = frozenset({"responses"})
+"""The native formats whose adapter keeps only an answer's completed calls: a call the
+limit cut off is left out of the turn (``responses.py``)."""
+
+
+def cut_call(turn: ModelTurn) -> ToolCall | None:
+    """The call the output limit may have cut off in ``turn``: the last of an answer that
+    stopped at its length, whose arguments may be incomplete, unless its adapter keeps
+    only completed calls; ``None`` for any other answer."""
+    if turn.finish_reason != LENGTH or not turn.tool_calls or turn.native_format in _WHOLE_CALLS:
+        return None
+    return turn.tool_calls[-1]
+
+
 COST_HEADER: Final = "x-litellm-response-cost"
 """The header in which LiteLLM's proxy reports a call's cost."""
 VERSION_HEADER: Final = "x-litellm-version"
@@ -197,12 +215,21 @@ class AssistantMessage(dict[str, Any]):
 
     @classmethod
     def of(cls, reply: ModelTurn) -> AssistantMessage:
-        """A turn's answer, its calls in the chat format."""
+        """A turn's answer, its calls in the chat format. A call the output limit cut off
+        (``cut_call``) whose arguments are not a JSON object is held with none (``{}``):
+        an API that reads a call's arguments, as the gateway does to send it on to
+        another provider, would refuse every later request with it."""
+        cut = cut_call(reply)
         calls = [
             {
                 "id": call.id,
                 "type": "function",
-                "function": {"name": call.name, "arguments": call.arguments},
+                "function": {
+                    "name": call.name,
+                    "arguments": "{}"
+                    if call is cut and not _json_object(call.arguments)
+                    else call.arguments,
+                },
             }
             for call in reply.tool_calls
         ]
@@ -236,6 +263,13 @@ class AssistantMessage(dict[str, Any]):
             prefix=self.prefix,
             adapter_state=self.adapter_state,
         )
+
+
+def _json_object(text: str) -> bool:
+    try:
+        return isinstance(json.loads(text), dict)
+    except (ValueError, RecursionError):
+        return False
 
 
 def prefix_digest(parts: Mapping[str, object]) -> str:
@@ -411,11 +445,22 @@ OVERLOADED: Final = frozenset({"overloaded", "overloaded_error", "server_error"}
 Anthropic's ``overloaded_error``, and OpenAI's ``server_error`` with which a response
 fails ("Our servers are currently overloaded", lab 43, B3)."""
 MAX_RETRY_WAIT: Final = 60.0
-"""The longest wait before a retry, whatever the gateway's ``Retry-After`` asks."""
+"""The longest wait before a retry, whatever the gateway's ``Retry-After`` asks, but a
+rate limit's or an overloaded upstream's (``MAX_RATE_WAIT``)."""
+RATE_LIMITED: Final = frozenset({429, 529})
+"""The statuses of a gateway that asks the client to slow down: a rate limit, and
+Anthropic's overloaded upstream."""
+MAX_RATE_WAIT: Final = 300.0
+"""The longest ``Retry-After`` that a rate limit or an overloaded upstream
+(``RATE_LIMITED``) is waited for; a longer ask fails the call at once."""
 REQUEST_BYTES_PER_SECOND: Final = 5_000
 """How much of a request the client allows a second of its timeout for, beyond the
 timeout itself: a conversation of 450,000 tokens (about 1.8 MB) gets 360 s more, since
 the gateway reads all of it before it answers (lab 44, B3)."""
+MAX_STREAM_SECONDS: Final = 3_600.0
+"""How much longer than its timeout a streamed answer may take in all, while no wait for
+its next part is longer than the timeout: an answer of 64,000 tokens takes about half an
+hour at Claude's slower speeds."""
 
 
 class GatewayModel(ABC):
@@ -427,17 +472,21 @@ class GatewayModel(ABC):
     another address), and any other status but 2xx are errors. A gateway that refuses
     the call because a spending budget is exhausted raises ``GatewayBudgetError``, never
     tried again, whatever its status. A rate limit (429) or an unavailable upstream (502,
-    503, 504, or Cloudflare's 524) is tried again up to ``retries`` times, after
-    ``Retry-After`` or ``backoff`` seconds doubling each time, at most a minute, and so
-    is another 5xx, or an answer whose response failed (``OverloadedError``), that says
-    the upstream is overloaded; the body of such an error need not be JSON. So are a lost
+    503, 504, 529, or Cloudflare's 524) is tried again up to ``retries`` times, after
+    ``Retry-After`` or ``backoff`` seconds doubling each time, and so is another 5xx, or
+    an answer whose response or stream failed (``OverloadedError``), that says the
+    upstream is overloaded; the body of such an error need not be JSON. So are a lost
     connection and an answer cut off before its end, a truncated body or a stream with no
-    final event, whose charge is unknown; an error answer cut off is not, since it may
-    hide a budget refusal. Only the
-    HTTP call is tried again, before anything of it is recorded: the turn that results
-    names the attempts that failed (``retried``). The client's ``timeout`` is for a
-    request of any size; a larger one is allowed more (``REQUEST_BYTES_PER_SECOND``). A
-    gateway that says the conversation exceeds the model's context raises
+    final event, whose charge is unknown, unless the adapter keeps what arrived as part of
+    an answer (``_read_stream``); an error answer cut off is not, since it may hide a
+    budget refusal. The backoff is at most a minute, and so is a ``Retry-After`` waited
+    for, but a rate limit's or a 529's, which is waited for up to ``MAX_RATE_WAIT``: a
+    longer ask fails the call at once. Only the HTTP call is tried again, before anything
+    of it is recorded: the turn that results names the attempts that failed (``retried``).
+    The client's ``timeout`` is for a request of any size; a larger one is allowed more
+    (``REQUEST_BYTES_PER_SECOND``). A streamed request (``stream: true``) waits that long
+    for each part of its answer, and its answer may take up to ``MAX_STREAM_SECONDS``
+    more in all. A gateway that says the conversation exceeds the model's context raises
     ``ContextLimitError``. An error's message quotes
     the gateway's answer, with the key replaced if the answer holds it. Each turn keeps
     the answer as the gateway sent it (``native``, in ``FORMAT``), the gateway's version,
@@ -610,6 +659,11 @@ class GatewayModel(ABC):
         """An answer's tokens as they are priced, from its usage object."""
         return chat_tokens(usage)
 
+    async def _read_stream(self, response: aiohttp.ClientResponse, limit: int) -> bytes:
+        """A streamed answer's text, as the adapter's ``parse`` reads it: by default the
+        complete terminal response of a Responses stream (``read_response_stream``)."""
+        return await read_response_stream(response, limit)
+
     def _client(self) -> aiohttp.ClientSession:
         if self._session is None:
             self._session = aiohttp.ClientSession()
@@ -670,10 +724,6 @@ class GatewayModel(ABC):
                     retried=tuple(retried),
                 )
             except _RetryableError as retry:
-                # A gateway that asks for a longer wait than the cap is not waited for.
-                if attempt == self._retries or (retry.after or 0) > MAX_RETRY_WAIT:
-                    raise retry.error from None
-                delay = retry.after if retry.after is not None else min(wait, MAX_RETRY_WAIT)
                 # The status only: the error, with the gateway's text, is the caller's to
                 # report once if the retries end.
                 failed = retry.outcome or (
@@ -681,11 +731,26 @@ class GatewayModel(ABC):
                     if retry.error.status is None
                     else f"HTTP {retry.error.status}"
                 )
+                said = f"a {failed}" if retry.error.status is None else failed
+                # A gateway that asks for a longer wait than the cap is not waited for.
+                cap = MAX_RATE_WAIT if retry.error.status in RATE_LIMITED else MAX_RETRY_WAIT
+                if attempt == self._retries or (retry.after or 0) > cap:
+                    if attempt < self._retries:
+                        _log.warning(
+                            "the model gateway answered %s and asks for a wait of %.0f s, "
+                            "longer than %.0f s; the call fails",
+                            said,
+                            retry.after,
+                            cap,
+                        )
+                    raise retry.error from None
+                delay = retry.after if retry.after is not None else min(wait, MAX_RETRY_WAIT)
                 retried.append(failed)
                 _log.warning(
-                    "the model gateway answered %s; trying again in %.1f s",
-                    f"a {failed}" if retry.error.status is None else failed,
+                    "the model gateway answered %s; trying again in %.1f s%s",
+                    said,
                     delay,
+                    ", as its Retry-After asks" if retry.after is not None else "",
                 )
                 await self._clock.sleep(delay)
                 wait *= 2
@@ -698,18 +763,25 @@ class GatewayModel(ABC):
         added = {k: v for k, v in self._headers(body).items() if k.lower() != "authorization"}
         size = len(json.dumps(body))  # as the client sends it
         total = self._timeout + size / REQUEST_BYTES_PER_SECOND
+        streamed = body.get("stream") is True
+        # A stream goes on for as long as its parts keep coming, up to MAX_STREAM_SECONDS.
+        timeout = (
+            aiohttp.ClientTimeout(total=total + MAX_STREAM_SECONDS, sock_read=total)
+            if streamed
+            else aiohttp.ClientTimeout(total=total)
+        )
         try:
             async with self._session.post(
                 f"{self.base_url}{self.PATH}",
                 json=body,
                 headers={**added, "Authorization": f"Bearer {self._api_key}"},
-                timeout=aiohttp.ClientTimeout(total=total),
+                timeout=timeout,
                 allow_redirects=False,
             ) as response:
                 try:
                     data = await (
-                        read_response_stream(response, self._max_response_bytes)
-                        if body.get("stream") is True and 200 <= response.status < 300
+                        self._read_stream(response, self._max_response_bytes)
+                        if streamed and 200 <= response.status < 300
                         else read_limited(response, self._max_response_bytes)
                     )
                 except aiohttp.ClientPayloadError:
@@ -729,8 +801,14 @@ class GatewayModel(ABC):
                     ) from None
                 except IncompleteStreamError as error:
                     # A stream cut off before its final event, as a truncated body is.
+                    self._unquoted(error)
                     raise _RetryableError(error, None, outcome="incomplete response") from None
+                except OverloadedError as error:
+                    # A stream whose upstream failed for a moment, as a failed response.
+                    self._unquoted(error)
+                    raise _RetryableError(error, None) from None
                 except ModelError as error:
+                    self._unquoted(error)
                     if 200 <= response.status < 300:  # charged, though too long to read
                         error.cost = reported_cost(response.headers.get(COST_HEADER))
                     raise
@@ -755,7 +833,10 @@ class GatewayModel(ABC):
                     raise ContextLimitError(str(error), status=status)
                 raise error
         except TimeoutError as exc:  # not tried again: the wait was already long
-            raise ModelError(f"the model gateway gave no answer within {total:,.0f} s") from exc
+            said = f"the model gateway gave no answer within {total:,.0f} s"
+            if streamed:  # "gave no answer within" is what continuity.transient reads
+                said += f" of its last bytes, or no whole answer within {timeout.total:,.0f} s"
+            raise ModelError(said) from exc
         except aiohttp.ClientError as exc:
             # An exception about a response holds the request, with its Authorization
             # header; only one without it is chained.
@@ -767,6 +848,14 @@ class GatewayModel(ABC):
                 # call's charge is unknown, as a truncated answer's is.
                 raise _RetryableError(error, None, outcome="lost connection") from None
             raise error from cause
+
+    def _unquoted(self, error: ModelError) -> None:
+        """``error`` without the key, which a stream's own error, as the gateway wrote it,
+        may quote."""
+        if self._api_key and any(self._api_key in str(arg) for arg in error.args):
+            error.args = tuple(
+                str(arg).replace(self._api_key, "[the gateway key]") for arg in error.args
+            )
 
 
 class OpenAICompatibleModel(GatewayModel):
@@ -1252,6 +1341,53 @@ async def read_limited(response: aiohttp.ClientResponse, limit: int) -> bytes:
     return b"".join(chunks)
 
 
+async def server_events(
+    response: aiohttp.ClientResponse, limit: int, api: str
+) -> AsyncGenerator[tuple[str, bytes]]:
+    """The server-sent events of a bounded stream, in order: each one's ``event:`` name
+    ("" without one) and its data lines joined. A comment, as a keepalive is, and an event
+    without data are none; a ModelError names ``api`` once the stream is larger than
+    ``limit`` bytes or an event's name is not ASCII. What the transport raises, as when the
+    connection is lost, is the caller's."""
+    line_buffer = bytearray()
+    data_lines: list[bytes] = []
+    event_name = ""
+    size = 0
+
+    def line(raw: bytes) -> tuple[str, bytes] | None:
+        """The event a line ends, if it ends one."""
+        nonlocal event_name
+        raw = raw.removesuffix(b"\r")
+        if not raw:
+            found = (event_name, b"\n".join(data_lines)) if data_lines else None
+            data_lines.clear()
+            event_name = ""
+            return found
+        if raw.startswith(b"data:"):
+            value = raw[5:]
+            data_lines.append(value[1:] if value.startswith(b" ") else value)
+        elif raw.startswith(b"event:"):
+            try:
+                event_name = raw[6:].strip().decode("ascii")
+            except UnicodeDecodeError:
+                raise ModelError(f"the model gateway sent an invalid {api} SSE event") from None
+        return None
+
+    async for chunk in response.content.iter_chunked(64 * 1024):
+        size += len(chunk)
+        if size > limit:
+            raise ModelError(f"the model gateway's answer is larger than {limit} bytes")
+        line_buffer.extend(chunk)
+        while (end := line_buffer.find(b"\n")) >= 0:
+            found = line(bytes(line_buffer[:end]))
+            del line_buffer[: end + 1]
+            if found is not None:
+                yield found
+    for raw in (bytes(line_buffer), b"") if line_buffer else (b"",):
+        if (found := line(raw)) is not None:
+            yield found
+
+
 async def read_response_stream(response: aiohttp.ClientResponse, limit: int) -> bytes:
     """Read bounded Responses SSE and keep only its complete terminal response.
 
@@ -1260,77 +1396,73 @@ async def read_response_stream(response: aiohttp.ClientResponse, limit: int) -> 
     """
     if response.content_type != "text/event-stream":
         raise ModelError("the model gateway did not stream its Responses answer")
-    line_buffer = bytearray()
-    data_lines: list[bytes] = []
-    event_name = ""
     terminal: bytes | None = None
-    size = 0
-
-    def dispatch() -> None:
-        nonlocal event_name, terminal
-        if not data_lines:
-            event_name = ""
-            return
-        payload = b"\n".join(data_lines)
-        data_lines.clear()
-        if payload == b"[DONE]":
-            event_name = ""
-            return
-        try:
-            raw: object = json.loads(payload)
-        except (ValueError, UnicodeDecodeError):
-            raise ModelError("the model gateway sent invalid Responses SSE data") from None
-        if not isinstance(raw, dict):
-            raise ModelError("the model gateway sent a non-object Responses SSE event")
-        event = cast(dict[str, object], raw)
-        named = event.get("type")
-        kind = named if isinstance(named, str) else event_name
-        event_name = ""
-        if kind == "error":
-            raise ModelError("the model gateway's Responses stream failed")
-        if kind not in {"response.completed", "response.failed", "response.incomplete"}:
-            return
-        if terminal is not None or not isinstance(event.get("response"), dict):
-            raise ModelError("the model gateway sent an invalid terminal Responses event")
-        final = cast(dict[str, object], event["response"])
-        if final.get("status") != kind.removeprefix("response."):
-            raise ModelError(
-                "the model gateway's terminal Responses status does not match its event"
-            )
-        terminal = json.dumps(final, ensure_ascii=False, separators=(",", ":")).encode()
-        if len(terminal) > limit:
-            raise ModelError(f"the model gateway's answer is larger than {limit} bytes")
-
-    def line(raw: bytes) -> None:
-        nonlocal event_name
-        raw = raw.removesuffix(b"\r")
-        if not raw:
-            dispatch()
-        elif raw.startswith(b"data:"):
-            value = raw[5:]
-            data_lines.append(value[1:] if value.startswith(b" ") else value)
-        elif raw.startswith(b"event:"):
-            try:
-                event_name = raw[6:].strip().decode("ascii")
-            except UnicodeDecodeError:
-                raise ModelError("the model gateway sent an invalid Responses SSE event") from None
-
-    async for chunk in response.content.iter_chunked(64 * 1024):
-        size += len(chunk)
-        if size > limit:
-            raise ModelError(f"the model gateway's answer is larger than {limit} bytes")
-        line_buffer.extend(chunk)
-        while (end := line_buffer.find(b"\n")) >= 0:
-            line(bytes(line_buffer[:end]))
-            del line_buffer[: end + 1]
-    if line_buffer:
-        line(bytes(line_buffer))
-    dispatch()
+    async with aclosing(server_events(response, limit, "Responses")) as events:
+        async for event_name, payload in events:
+            if payload != b"[DONE]":
+                terminal = _terminal(event_name, payload, terminal, limit)
     if terminal is None:
         raise IncompleteStreamError(
             "the model gateway's Responses stream ended without a final response"
         )
     return terminal
+
+
+def _terminal(name: str, payload: bytes, terminal: bytes | None, limit: int) -> bytes | None:
+    """A Responses stream's terminal response, as compact JSON, after one more event: the
+    one before it, unless the event is the terminal one."""
+    try:
+        raw: object = json.loads(payload)
+    except (ValueError, UnicodeDecodeError):
+        raise ModelError("the model gateway sent invalid Responses SSE data") from None
+    if not isinstance(raw, dict):
+        raise ModelError("the model gateway sent a non-object Responses SSE event")
+    event = cast(dict[str, object], raw)
+    named = event.get("type")
+    kind = named if isinstance(named, str) else name
+    if kind == "error":
+        raise ModelError("the model gateway's Responses stream failed")
+    if kind not in {"response.completed", "response.failed", "response.incomplete"}:
+        return terminal
+    if terminal is not None or not isinstance(event.get("response"), dict):
+        raise ModelError("the model gateway sent an invalid terminal Responses event")
+    final = cast(dict[str, object], event["response"])
+    if final.get("status") != kind.removeprefix("response."):
+        raise ModelError("the model gateway's terminal Responses status does not match its event")
+    found = json.dumps(final, ensure_ascii=False, separators=(",", ":")).encode()
+    if len(found) > limit:
+        raise ModelError(f"the model gateway's answer is larger than {limit} bytes")
+    return found
+
+
+STREAM_RETRIED: Final = frozenset({"overloaded_error", "api_error", "rate_limit_error"})
+"""The error types of a stream's ``error`` event that a later attempt can get past:
+Anthropic's overloaded upstream, its internal error (which LiteLLM also sends when its
+upstream's stream ended before its last event) and a rate limit."""
+
+
+def stream_failure(text: str) -> ModelError:
+    """What a stream's ``error`` event, as its data's JSON ``text``, stands for: an
+    ``OverloadedError`` for an overloaded upstream or a rate limit, an
+    ``IncompleteStreamError`` for another error a later attempt can get past
+    (``STREAM_RETRIED``), and otherwise the error a gateway's answer of that text would
+    be: a spent budget, the model's context exceeded, or another, none tried again."""
+    fields = _error_fields(text)
+    kind = fields.get("type")
+    said = f"the model gateway's stream failed: {gateway_said(text)}"
+    if kind in ("overloaded_error", "rate_limit_error") or (
+        kind not in STREAM_RETRIED and overloaded(fields)
+    ):
+        return OverloadedError(said)
+    if kind in STREAM_RETRIED:
+        return IncompleteStreamError(
+            f"the model gateway's stream ended without a final response: {gateway_said(text)}"
+        )
+    if _budget_exceeded(text):
+        return GatewayBudgetError(said)
+    if _context_exceeded(text):
+        return ContextLimitError(said)
+    return ModelError(said)
 
 
 def reported_cost(value: object) -> float | None:

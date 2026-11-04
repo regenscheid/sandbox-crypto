@@ -3,9 +3,10 @@
 say (plans-and-delegation spec, PD-18 as amended 2026-11-01, PD-45): ``deliverables``
 keyed by number becomes the list in the brief's order, and an artifact given by its path
 alone gets the one revision the run's calls recorded of it, each with the platform's
-note; every other form stays an error, and nothing is filled in. An answer the schema
-refuses has its deliverables checked as far as they can be read, so that its one
-correction names every problem; and the brief shows each deliverable's produced form."""
+note; every other form stays an error, and nothing is filled in. A submission the schema
+refuses has its deliverables checked as far as they can be read, so that its refusal
+names every problem, each by its place; and the brief shows each deliverable's produced
+form, as submit_result's schema takes it."""
 
 from __future__ import annotations
 
@@ -18,12 +19,13 @@ from pydantic import JsonValue
 from sandbox_science.orchestrator.delegation.outcome import (
     ERROR_CHARS,
     KEYED_NOTE,
-    MAX_ERRORS,
+    MAX_PROBLEMS,
     TASK_BYTES,
     Asked,
     Outcome,
     parse,
     parse_task,
+    task_schema,
 )
 from sandbox_science.orchestrator.delegation.prompt import (
     TASK_PROMPT,
@@ -34,7 +36,7 @@ from sandbox_science.orchestrator.delegation.prompt import (
 from sandbox_science.orchestrator.delegation.records import RESULT_BYTES
 
 from .test_delegation import RESULT as CHECKED
-from .test_delegation_deliverables import ASKED, D1, D2, D3, listed_of, recorded, run
+from .test_delegation_deliverables import ASKED, D1, D2, D3, listed_of, recorded, run, submit
 from .test_delegation_tasks import DONE
 
 PARTIAL = {**DONE, "status": "partial"}
@@ -48,12 +50,12 @@ def keyed(*items: dict[str, Any]) -> dict[str, Any]:
 
 
 async def closed(answer: dict[str, Any] | str, *, asked: tuple[Asked, ...] = ASKED) -> Outcome:
-    """An outcome after one closing answer, with table.txt recorded at revision 1 and the
+    """An outcome after one submission, with table.txt recorded at revision 1 and the
     entry T-1 revised."""
     found = Outcome(task=True, deliverables=asked)
     await found.observe_tool(run(), recorded("table.txt"))
     await found.observe_tool(run(), CHANGED)
-    await found.closing(run(), answer if isinstance(answer, str) else json.dumps(answer))
+    await submit(found, answer)
     return found
 
 
@@ -233,23 +235,23 @@ async def test_the_longest_result_with_the_notes_and_the_mark_fits_its_record() 
         longest["open_questions"].append("x" * 1000)
     longest["open_questions"].append("x" * (TASK_BYTES - size() - 20))
     assert TASK_BYTES - 20 <= size() <= TASK_BYTES
-    await found.closing(run(), json.dumps(longest))
+    await submit(found, longest)
     kept = kept_of(found)
     assert kept["status"] == "blocked"
     assert len(cast(list[str], kept["platform_notes"])) == 2
     assert len(json.dumps(kept, ensure_ascii=False, separators=(",", ":")).encode()) <= RESULT_BYTES
 
 
-# --- One correction for every problem -----------------------------------------------
+# --- A refusal names every problem -------------------------------------------------
 
 RESULTS = "work/dlg-1/out/results.json"
 PRIMES = ("d1", "out/results.json", "file")
 
 
-async def test_an_extra_field_and_a_file_given_a_revision_are_corrected_at_once() -> None:
-    """The schema refuses the answer for its extra field, and its file deliverable gives a
-    revision, which a file does not: the one correction names both, and an answer that
-    still gives the revision is the result's last, missing with its error."""
+async def test_an_extra_field_and_a_file_given_a_revision_are_refused_at_once() -> None:
+    """The schema refuses the submission for its extra field, and its file deliverable
+    gives a revision, which a file does not: the refusal names both, each by its place,
+    and one that still gives the revision is refused again, until one gives the form."""
     found = Outcome(task=True, deliverables=(Asked(*PRIMES),))
     await found.observe_tool(run(), recorded(RESULTS))
     item = {"id": "d1", "status": "produced", "path": RESULTS, "revision": 1}
@@ -259,89 +261,101 @@ async def test_an_extra_field_and_a_file_given_a_revision_are_corrected_at_once(
         "deliverables": [item],
         "result_files": [RESULTS],
     }
-    closing = await found.closing(run(), json.dumps(first))
-    assert closing.action == "continue"
-    (notice,) = closing.notices
-    (error,) = cast(dict[str, Any], notice.payload)["errors"]
-    assert error == (
-        "content: Extra inputs are not permitted; d1 is a file: it gives path, not revision"
-    )
+    refused = await submit(found, first)
+    assert refused["error"]["problems"] == [
+        {"at": "content", "problem": "Extra inputs are not permitted"},
+        {"at": "deliverables[0]", "problem": "d1 is a file: it gives path, not revision"},
+    ]
+    assert refused["error"]["form"] == {
+        "required": ["status", "summary", "deliverables"],
+        "deliverables": ['{"id": "d1", "status": "produced", "path": "<its path>"}'],
+        "otherwise": 'each one partial, with "missing", or not_produced, with "reason"',
+    }
     assert found.result is None
     second = {k: v for k, v in first.items() if k != "content"}
-    closing = await found.closing(run(), json.dumps(second))
-    assert (closing.action, closing.notices) == ("accept", ())
-    assert (found.result, found.kept()) == (None, None)
-    assert found.errors[-1] == "d1 is a file: it gives path, not revision"
-    fixed = Outcome(task=True, deliverables=(Asked(*PRIMES),))
-    await fixed.observe_tool(run(), recorded(RESULTS))
-    await fixed.closing(run(), json.dumps({**second, "deliverables": [{**item, "revision": None}]}))
-    assert fixed.result is not None, fixed.errors
+    refused = await submit(found, second)
+    assert [p["at"] for p in refused["error"]["problems"]] == ["deliverables[0]"]
+    assert (found.result, found.submissions) == (None, 2)
+    assert found.errors[-1] == "deliverables[0]: d1 is a file: it gives path, not revision"
+    recorded_ = await submit(found, {**second, "deliverables": [{**item, "revision": None}]})
+    assert recorded_["recorded"].startswith("status complete, 1 deliverables accounted for")
+    assert recorded_["values"]["result_files"] == [{"path": RESULTS, "revision": 1}]
+    assert found.result is not None, found.errors
 
 
-async def test_a_refused_answer_names_what_it_leaves_out_and_stays_invalid() -> None:
-    """A deliverable no item names is listed in the correction, but an answer the schema
-    refuses is never the platform's block: it stays missing; an item that does not
+async def test_a_refused_submission_names_what_it_leaves_out_and_stays_invalid() -> None:
+    """A deliverable no item names is listed in the refusal, but a submission the schema
+    refuses is never the platform's block: it replaces nothing; an item that does not
     validate counts as given, and its own errors are the schema's."""
     found = Outcome(task=True, deliverables=ASKED)
     await found.observe_tool(run(), recorded("table.txt"))
     await found.observe_tool(run(), CHANGED)
     unread = {"id": "d2", "status": "produced", "entry": "T-1", "note": "x"}
-    closing = await found.closing(
-        run(), json.dumps({**PARTIAL, "extra": 1, "deliverables": [D1, unread]})
-    )
-    payload = cast(dict[str, Any], closing.notices[0].payload)
-    assert payload["missing"] == [{"id": "d3", "title": "Whether every value is 1"}]
-    (error,) = payload["errors"]
-    assert "extra: Extra inputs are not permitted" in error
-    assert "deliverables.1.note: Extra inputs are not permitted" in error
+    refused = await submit(found, {**PARTIAL, "extra": 1, "deliverables": [D1, unread]})
+    assert refused["error"]["problems"] == [
+        {
+            "at": "deliverables",
+            "problem": "your result does not account for d3 (Whether every value is 1)",
+        },
+        {"at": "extra", "problem": "Extra inputs are not permitted"},
+        {"at": "deliverables[1].note", "problem": "Extra inputs are not permitted"},
+    ]
     assert (found.result, found.marked) == (None, None)
-    await found.closing(run(), json.dumps({**PARTIAL, "deliverables": [D1, D2]}))
-    assert found.kept() is not None  # the second answer alone is read for the block
+    await submit(found, {**PARTIAL, "deliverables": [D1, D2]})
+    assert found.kept() is not None  # the second submission alone is read for the block
 
 
-async def test_a_refused_answer_whose_deliverables_cannot_be_read_names_only_its_errors() -> None:
+async def test_a_refused_submission_whose_deliverables_cannot_be_read_names_only_its_errors() -> (
+    None
+):
     for deliverables in ("d1, d2, d3", None, 3):
         found = Outcome(task=True, deliverables=ASKED)
         answer = {**PARTIAL, "extra": 1, "deliverables": deliverables}
-        closing = await found.closing(run(), json.dumps(answer))
-        payload = cast(dict[str, Any], closing.notices[0].payload)
-        assert payload["errors"][0].startswith("extra: Extra inputs are not permitted")
-        assert ("missing" in payload) == (deliverables is None)
+        problems = (await submit(found, answer))["error"]["problems"]
+        assert {"at": "extra", "problem": "Extra inputs are not permitted"} in problems
+        missing = any("does not account for" in p["problem"] for p in problems)
+        assert missing == (deliverables is None)
 
 
-async def test_a_refused_answers_correction_keeps_its_bounds() -> None:
+async def test_a_refusal_names_every_problem_within_its_bounds() -> None:
     asked = tuple(Asked(f"d{n}", "Table", "file") for n in range(1, 13))
     found = Outcome(task=True, deliverables=asked)
-    items = [{"id": f"d{n}", "status": "produced", "path": "p" * 400} for n in range(1, 13)]
-    await found.closing(run(), json.dumps({**DONE, "extra": 1, "deliverables": items}))
+    items = [{"id": f"d{n}", "status": "produced", "path": "p" * 600} for n in range(1, 13)]
+    problems = (await submit(found, {**DONE, "extra": 1, "deliverables": items}))["error"][
+        "problems"
+    ]
+    assert len(problems) == 13 <= MAX_PROBLEMS
+    assert [p["at"] for p in problems[:3]] == ["extra", "deliverables[0]", "deliverables[1]"]
+    assert all(len(p["problem"]) <= ERROR_CHARS for p in problems)
     (error,) = found.errors
     assert len(error) == ERROR_CHARS
-    assert error.startswith("extra: Extra inputs are not permitted; d1: your calls wrote")
-    wide = Outcome(task=True, deliverables=asked)
-    short = [{**item, "path": "t"} for item in items]
-    await wide.closing(run(), json.dumps({**DONE, "extra": 1, "deliverables": short}))
-    assert wide.errors[0].count("; ") == MAX_ERRORS - 1
+    assert error.startswith("extra: Extra inputs are not permitted; deliverables[0]: d1: your")
 
 
 # --- What the child is told ----------------------------------------------------------
 
 
-def test_the_prompt_and_the_brief_say_deliverables_is_a_list() -> None:
-    assert "deliverables is a list, not an object keyed by number" in TASK_PROMPT
-    assert '{"id": "d1", "status": "produced", ...}' in TASK_PROMPT
-    assert "the revision number your calls" in TASK_PROMPT
+def test_the_schema_and_the_brief_say_deliverables_is_a_list() -> None:
+    """submit_result's schema takes ``deliverables`` as a list of one item for each, each
+    of its kind's form, and the brief says so; the prompt names no kind's fields."""
+    schema = task_schema(ASKED)
+    listed = schema["properties"]["deliverables"]
+    assert (listed["type"], listed["minItems"], listed["maxItems"]) == ("array", 3, 3)
+    branches = {b["properties"]["id"]["enum"][0]: b for b in listed["items"]["oneOf"]}
+    assert set(branches["d1"]["properties"]) == {"id", "status", "path", "missing", "reason"}
+    assert set(branches["d2"]["properties"]) == {"id", "status", "entry", "missing", "reason"}
+    assert all(b["additionalProperties"] is False for b in branches.values())
     brief = task_text("Tabulate.", "", (), deliverables=[("d1", "The table", "file", "")])
-    assert "your result's deliverables is a list with one object for each" in brief
+    assert "your submit_result accounts for each in its deliverables, one item for each" in brief
 
 
-def test_the_task_prompts_example_is_of_no_one_kind() -> None:
-    """The prompt's one example gives no kind's fields, which a child copied into another
-    kind's; it names each kind's fields in words, and the brief shows each form."""
-    assert TASK_VERSION == "sandbox-delegated-task-19"
+def test_the_task_prompts_rule_is_of_no_one_kind() -> None:
+    """The prompt gives no kind's fields, which a child copied into another kind's: the
+    schema and each line of the brief give each kind's form."""
+    assert TASK_VERSION == "sandbox-delegated-task-21"
     assert '"revision": 2' not in TASK_PROMPT
     assert '"path"' not in TASK_PROMPT
     assert "in the fields of its kind and no others" in TASK_PROMPT
-    assert "for a file its path alone" in TASK_PROMPT
 
 
 def test_the_brief_shows_each_kinds_produced_form() -> None:
@@ -359,14 +373,14 @@ def test_the_brief_shows_each_kinds_produced_form() -> None:
     lines = brief.splitlines()
     assert "produced in the form its line shows" in brief
     assert lines[-4:] == [
-        '- d1 (artifact): The table. Produced: {"id": "d1", "status": "produced", '
-        '"path": "<its path>", "revision": <the revision your calls recorded>}',
-        "- d2 (file): out/results.json. What counts: the primes and their sum. Produced: "
-        '{"id": "d2", "status": "produced", "path": "<its path>"}',
-        '- d3 (entry): A task to recheck C-1. Produced: {"id": "d3", "status": "produced", '
-        '"entry": "<its handle>"}',
-        '- d4 (answer): Whether every value is 1. Produced: {"id": "d4", "status": '
-        '"produced", "answer": "<the answer itself>"}',
+        '- d1 (artifact): The table. In submit_result, produced: {"id": "d1", "status": '
+        '"produced", "path": "<its path>", "revision": <the revision your calls recorded>}',
+        "- d2 (file): out/results.json. What counts: the primes and their sum. In "
+        'submit_result, produced: {"id": "d2", "status": "produced", "path": "<its path>"}',
+        '- d3 (entry): A task to recheck C-1. In submit_result, produced: {"id": "d3", '
+        '"status": "produced", "entry": "<its handle>"}',
+        '- d4 (answer): Whether every value is 1. In submit_result, produced: {"id": "d4", '
+        '"status": "produced", "answer": "<the answer itself>"}',
     ]
     filled = {"<its path>": "t", "<the revision your calls recorded>": "2"}
     filled |= {"<its handle>": "T-1", "<the answer itself>": "Yes."}
@@ -375,3 +389,18 @@ def test_the_brief_shows_each_kinds_produced_form() -> None:
         for placeholder, value in filled.items():
             form = form.replace(placeholder, value)
         assert parse_task(json.dumps({**DONE, "deliverables": [json.loads(form)]})).deliverables
+
+
+def test_a_line_whose_parts_end_with_their_own_stop_is_joined_cleanly() -> None:
+    """A title or a description that ends with a stop gets no second one: the brief once
+    read "their sum.. Produced"."""
+    brief = task_text(
+        "Tabulate.",
+        "",
+        (),
+        deliverables=[("d1", "Is every value 1?", "file", "the primes and their sum.")],
+    )
+    assert brief.splitlines()[-1].startswith(
+        "- d1 (file): Is every value 1? What counts: the primes and their sum. In submit_result"
+    )
+    assert ".." not in brief

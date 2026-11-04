@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: MIT
 """A confined child's turns (D102): its soft turn cap checks in, and only its
 ``turn_ceiling`` stops it, as in an unconfined run. The resource hook's turn limit crosses
-the control boundary (``turn_limit``), and the host holds the runtime to it."""
+the control boundary (``turn_limit``), and the host holds the runtime to it; so do the
+report round's notices of the child's hooks (``report_notices``), which the host admits."""
 
 from __future__ import annotations
 
@@ -25,6 +26,7 @@ from sandbox_science.orchestrator.hooks import RunView, TurnHook
 from sandbox_science.orchestrator.loop import Transcript
 from sandbox_science.orchestrator.model import ChatModel, ModelGateway
 from sandbox_science.orchestrator.model_profiles import ModelProfile
+from sandbox_science.orchestrator.notices import OUTCOME_REPORT
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord
 from sandbox_science.orchestrator.tools import Toolbox
 
@@ -33,7 +35,7 @@ from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
 from .test_confinement_drain import prepared_attempt
-from .test_delegation import configure, decide, wait
+from .test_delegation import configure, wait
 from .test_delegation_tasks import DONE
 from .test_run_service import records, serving
 from .test_tool_journal import projects as projects
@@ -51,17 +53,12 @@ def step(n: int) -> Reply:
 async def confined_tree(
     harness: Harness, tmp_path: Path, delegated: Sequence[Reply]
 ) -> tuple[RunRecord, RunRecord, list[Capability]]:
-    """A root that delegates one task, waits, extends the task's check-in, and waits again,
-    with every run's loop in the runtime; the root's record, the child's, and the
-    capabilities the runtime asked of the host."""
+    """A root that delegates one task and waits for it, with every run's loop in the
+    runtime: the task's first check-in at its soft cap goes on for one step by itself
+    (D102). The root's record, the child's, and the capabilities the runtime asked of the
+    host."""
     asked: list[Capability] = []
-    main = [
-        Reply(calls=[call("delegate", task="Take three steps.")]),
-        wait(),
-        decide("extend", "Go on."),
-        wait(),
-        Reply("Done."),
-    ]
+    main = [Reply(calls=[call("delegate", task="Take three steps.")]), wait(), Reply("Done.")]
     async with serving(harness, *main, serve=False) as service:
         harness.gateway.delegated = list(delegated)
         models = ModelGateway(harness.gateway.url, API_KEY)
@@ -132,11 +129,12 @@ def check_ins(harness: Harness) -> tuple[ResourceRequest, ...]:
         store.close()
 
 
-async def test_a_confined_child_extended_at_its_soft_turn_cap_goes_on_and_answers(
+async def test_a_confined_child_at_its_first_soft_turn_cap_goes_on_and_answers(
     harness: Harness, tmp_path: Path
 ) -> None:
-    """At its soft cap of two turns the child checks in, its parent extends it, and it
-    takes its third turn and answers, rather than ending at two."""
+    """At its soft cap of two turns the child checks in, the platform gives it one step,
+    as its first check-in at a soft cap, and it takes its third turn and answers, rather
+    than ending at two."""
     configure(harness, depth=1, task_turns=2)
     _, child, asked = await confined_tree(harness, tmp_path, [step(1), step(2), Reply(ANSWER)])
     assert child.stopped == "answered"
@@ -145,7 +143,7 @@ async def test_a_confined_child_extended_at_its_soft_turn_cap_goes_on_and_answer
     (request,) = check_ins(harness)
     assert (request.resource, request.used, request.total) == ("turns", 2, 2)
     assert request.decision is not None
-    assert request.decision.total == 302
+    assert (request.decision.total, request.decision.automatic) == (302, True)
     assert Capability.TURN_LIMIT in asked
 
 
@@ -153,13 +151,21 @@ async def test_a_confined_childs_turn_ceiling_still_stops_it(
     harness: Harness, tmp_path: Path
 ) -> None:
     """Past the extension, its ``turn_ceiling`` of three turns is a hard limit: the child
-    makes its report round there and stops ``turn_limit``."""
+    makes its report round there and stops ``turn_limit``. Its outcome's notice for that
+    round crosses the host, which admits it, and the JSON the report gives is its result,
+    partial at the limit (PD-19)."""
     configure(harness, depth=1, task_turns=2, turn_ceiling=3)
-    _, child, _ = await confined_tree(
-        harness, tmp_path, [step(1), step(2), step(3), Reply("Partial: three steps.")]
+    report = "Out of turns. My result:\n" + ANSWER
+    _, child, asked = await confined_tree(
+        harness, tmp_path, [step(1), step(2), step(3), Reply(report)]
     )
     assert child.stopped == "turn_limit"
-    assert child.final_text == "Partial: three steps."
+    assert child.final_text == report
+    assert Capability.REPORT_NOTICES in asked
+    last = [str(m.get("content")) for m in harness.gateway.children[-1] if m["role"] == "user"]
+    assert any(OUTCOME_REPORT.text in text for text in last)
+    result = cast(dict[str, Any], child.summaries["outcome"])["result"]
+    assert (result["status"], result["child_status"]) == ("partial", "complete")
     assert [t["tool"] for t in child.tools] == ["shell", "shell", "shell"]
     (request,) = check_ins(harness)
     assert request.decision is not None

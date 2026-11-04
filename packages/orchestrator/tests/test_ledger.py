@@ -147,7 +147,7 @@ def test_a_mutation_commits_all_or_nothing(ledger: Ledger) -> None:
     with pytest.raises(DocumentError, match="a new task starts todo"):
         change(ledger, NEW["issue"], {**NEW["task"], "status": "done"})
     change(ledger, NEW["task"], op="op-2")
-    with pytest.raises(DocumentError, match="a issue holds no answers"):
+    with pytest.raises(DocumentError, match="an issue holds no answers link: remove it"):
         change(
             ledger,
             {"entry": "T-1", "expected": 1, "status": "done"},
@@ -241,8 +241,8 @@ def test_a_link_names_its_target_as_evidence_does_and_a_wrong_type_says_what_is_
     wrong = (
         ({"kind": "builds_on", "entry": "new:r"},
          "a builds_on link cannot point to REF-1, a reference: it points to a claim or a "
-         "result (to cite a reference, give the claim or result supports evidence of type "
-         "source_claim that names it"),
+         "result (to cite a reference, remove the link and give the claim or result evidence "
+         '{"role": "supports", "type": "source_claim", "entry": "REF-1"} (LG-8))'),
         ({"kind": "assumes", "entry": "C-1"},
          "an assumes link cannot point to C-1, a claim: it points to an assumption (to rest "
          "on another claim, link it with builds_on)"),

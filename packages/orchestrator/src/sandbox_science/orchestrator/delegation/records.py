@@ -3,8 +3,9 @@
 
 A delegation is written when its parent starts it, with its brief, and once more when
 its child ends, with its outcome: how the child ended, as the harness observed it; the
-child's final answer as it returned it, its report; the result that answer gives, if it
-validated, and the validation errors; the model alias and the models the child ran on;
+child's final answer as it returned it, its report; its result, as it submitted it or the
+platform wrote it, for a child that returned or reached a limit, and the validation
+errors; the model alias and the models the child ran on;
 and why the plan fence refused its calls, if it did (PD-17, PD-20, PD-29, PD-34).
 Neither changes afterwards. The run that received the outcome is written once that run's
 record is saved (PD-35); until then, the outcome waits for the session's next main run.
@@ -60,6 +61,8 @@ PD-43)."""
 REPORT_CHARS: Final = 16_000
 """The longest report a delegation keeps whole; the child's record keeps all of it."""
 RESULT_BYTES: Final = 32768
+RESULT_ENDINGS: Final = ("returned", "limit_reached")
+"""The endings whose delegation keeps a result (PD-17, PD-19)."""
 ERROR_BYTES: Final = 2000
 PAGE: Final = 50
 FILES_BYTES: Final = 131072
@@ -261,9 +264,10 @@ class Delegation(Contract):
     acknowledged: str | None = None
     """The run whose saved record says a model call of it saw the outcome."""
     result: dict[str, JsonValue] | None = None
-    """The child's result, as its output schema validated it; ``None`` when missing."""
+    """The child's result, as its output schema validated it or the platform wrote it;
+    ``None`` for a delegation that did not return or reach a limit."""
     errors: tuple[str, ...] = ()
-    """Why the child's answers did not validate, in order."""
+    """Why the child's submissions and answers did not validate, in order."""
     alias: str | None = None
     """The model alias the child ran under."""
     models: tuple[str, ...] = ()
@@ -587,15 +591,15 @@ class DelegationRecords:
         run never writes over its next (PD-46).
 
         Every value is bounded here to the table's checks, so that the write cannot be
-        refused and the outcome lost: a result only for a delegation that returned, and
-        only within its bound; the errors and the models, each clipped, the oldest left
-        out until they fit; the alias and the fence's refusal, clipped. A task that
-        returned awaits its parent's review; the outcome is kept as the delegation's next
-        result."""
+        refused and the outcome lost: a result only for a delegation that returned or
+        reached a limit (PD-19), and only within its bound; the errors and the models,
+        each clipped, the oldest left out until they fit; the alias and the fence's
+        refusal, clipped. A task that returned awaits its parent's review; the outcome is
+        kept as the delegation's next result."""
         result = _json(ending.result) if ending.result is not None else None
         errors = list(ending.errors)
         if result is not None and (
-            ending.ended != "returned" or len(result.encode()) > RESULT_BYTES
+            ending.ended not in RESULT_ENDINGS or len(result.encode()) > RESULT_BYTES
         ):
             errors.append("the result was not kept: it ended otherwise, or was too long")
             result = None

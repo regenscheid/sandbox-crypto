@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: MIT
 """A check's outcome as the ledger's gate will trust it (plans-and-delegation spec,
-PD-17 to PD-20; LG-17): a result names the entry and revision of its brief, stands only
-for a run that ended with it, is kept only for a delegation that returned, and every
-value of an outcome fits its table, so that writing it never fails."""
+PD-17 to PD-20; LG-17): a result names the entry and revision of its brief, stands for a
+run that ended with it or at a limit, is kept only for a delegation that returned or
+reached one, and every value of an outcome fits its table, so that writing it never
+fails."""
 
 from __future__ import annotations
 
@@ -24,7 +25,16 @@ from .loop_harness import PROJECT, SESSION, Harness, Reply, call
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
-from .test_delegation import CHECK, REPORT, RESULT, children, delegation, started, wait
+from .test_delegation import (
+    CHECK,
+    REPORT,
+    RESULT,
+    children,
+    delegation,
+    started,
+    submitted,
+    wait,
+)
 from .test_delegation import delegating as delegating
 from .test_delegation_lifecycle import BRIEF, _delegations
 
@@ -74,7 +84,7 @@ async def test_a_check_that_never_read_its_entry_says_so(delegating: Harness) ->
     root = await delegating.run(
         "root",
         [Reply(calls=[CHECK]), wait(), Reply("Confirmed.")],
-        delegated=[Reply(calls=[call("ledger_read", entry="C-1", revision=9)]), Reply(REPORT)],
+        delegated=[Reply(calls=[call("ledger_read", entry="C-1", revision=9)]), *submitted()],
     )
     (delegation_id,) = started(root)
     assert delegation(delegating, delegation_id).read_entry is False
@@ -86,6 +96,9 @@ async def test_a_check_that_never_read_its_entry_says_so(delegating: Harness) ->
         "read": False,
         "read_proofs": True,  # C-1 at revision 1 rests on no proof
         "result_files": [],
+        "submissions": 1,
+        "nudges": 0,
+        "source": "submit_result",
     }
 
 
@@ -93,15 +106,18 @@ async def test_a_check_that_never_read_its_entry_says_so(delegating: Harness) ->
     ("stopped", "failed", "kept"),
     [
         ("answered", False, True),
-        ("turn_limit", False, False),
+        ("turn_limit", False, True),
+        ("resource_report", False, True),
         ("cancelled", False, False),
+        ("interrupted", False, False),
         ("answered", True, False),
     ],
 )
-async def test_a_result_stands_only_for_a_run_that_ended_with_it(
+async def test_a_result_stands_for_a_run_that_ended_with_it_or_at_a_limit(
     stopped: str, failed: bool, kept: bool
 ) -> None:
-    """A valid answer, then a response round and a limit, keeps no result."""
+    """A valid answer, then a limit, keeps its result (PD-19); a cancel, an interruption
+    or a failure keeps none."""
     outcome = Outcome(TARGET)
     closing = await outcome.closing(Transcript(context=AgentContext(messages=[])), REPORT)
     assert closing.action == "accept"
@@ -109,21 +125,25 @@ async def test_a_result_stands_only_for_a_run_that_ended_with_it(
     assert (result_of(outcome, stopped, failed) is not None) == kept
 
 
-def test_a_result_is_kept_only_for_a_delegation_that_returned(tmp_path: Path) -> None:
+def test_a_result_is_kept_only_for_a_delegation_that_returned_or_reached_a_limit(
+    tmp_path: Path,
+) -> None:
     async def unused(child: Child, stop: asyncio.Event) -> ChildEnd:
         raise AssertionError
 
     _, records, projects, documents = _delegations(tmp_path, unused)
     try:
-        for n, ended in enumerate(("cancelled", "returned")):
+        for n, ended in enumerate(("cancelled", "returned", "limit_reached")):
             records.start(PROJECT, SESSION, _made(n))
             found = records.end(
                 PROJECT, SESSION, _made(n).delegation_id, Ending(ended, "x", result=RESULT)
             )
-            assert (found.result is not None) == (ended == "returned")
+            assert (found.result is not None) == (ended != "cancelled")
             if ended == "cancelled":
                 assert found.errors[-1].startswith("the result was not kept")
-        records.start(PROJECT, SESSION, _made(2))
+            kept = records.results(PROJECT, SESSION, _made(n).delegation_id)
+            assert [r.result is not None for r in kept] == [ended != "cancelled"]
+        records.start(PROJECT, SESSION, _made(3))
         with (
             pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed: delegations"),
             projects.control.write() as tx,

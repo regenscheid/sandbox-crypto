@@ -6,7 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from typing import Final, cast
+from typing import Final, cast, get_args
 
 from pydantic import BaseModel, ValidationError
 
@@ -30,17 +30,22 @@ from . import provenance as anchoring
 from .models import (
     FIELDS,
     LINKS,
+    NO_CONDITION,
     STATUSES,
     THIS_SESSION,
     AnchorInput,
+    ClaimKind,
     EntryChange,
     EntryLink,
     EvidenceInput,
     EvidenceLink,
+    IssueKind,
     LinkInput,
     Mutation,
     ReferenceFields,
     WorkInput,
+    a,
+    wrong_link_holder,
     wrong_link_target,
 )
 from .records import TEXTS, Json, MutationInput, Planned, PreparedMutation, Row
@@ -65,22 +70,62 @@ def normalized(text: str) -> str:
     return normalize(parse(text, documents=False)).text
 
 
-def validated_fields(kind: str, raw: Json) -> Json:
+def field_hints(kind: str, raw: Json) -> list[str]:
+    """What to give instead of fields an entry of type ``kind`` does not take: the types
+    whose field a key is, and the type a kind of another type's belongs to."""
+    hints: list[str] = []
+    for name in raw:
+        if name not in FIELDS[kind].model_fields:
+            takers = [t for t, model in FIELDS.items() if name in model.model_fields]
+            if takers:
+                hints.append(f"{name} is a field of {' or '.join(a(t) for t in takers)}")
+    given = raw.get("kind")
+    if kind == "issue" and given in get_args(ClaimKind):
+        hints.append(
+            f"{given} is a claim's kind: give fields.kind one of those, or to record a "
+            'finding, create a claim instead, "type": "claim", "origin": "project"'
+        )
+    elif kind in ("claim", "result") and given in get_args(IssueKind):
+        hints.append(
+            f'{given} is the kind of an issue: to ask or propose it, create one, "type": "issue"'
+        )
+    if raw.get("reopen_condition") == "":
+        hints.append(
+            "state what would justify reconsidering the decision, or "
+            f'"{NO_CONDITION}" when nothing would'
+        )
+    return hints
+
+
+def validated_fields(kind: str, raw: Json, where: str = "") -> Json:
+    """``raw`` as the fields of an entry of type ``kind``; a refusal names ``where`` the
+    change is, such as ``changes.2 (D-5): ``, and what to give."""
     model: type[BaseModel] = FIELDS[kind]
     try:
         value = model.model_validate(raw)
     except ValidationError as error:
+        hints = "".join(f" ({hint})" for hint in field_hints(kind, raw))
         raise DocumentError(
-            INVALID_REQUEST, f"{kind} fields: {records.validation_error(error)}"
+            INVALID_REQUEST,
+            f"{where}{kind} {records.validation_error(error, model, 'fields.')}{hints}",
         ) from None
     if isinstance(value, ReferenceFields):
         # LG-15: a citation has a locator, and a date: published, versioned or retrieved.
         if not (value.identifiers or value.pdf):
-            raise DocumentError(INVALID_REQUEST, "a reference names a locator or its PDF")
+            raise DocumentError(
+                INVALID_REQUEST,
+                f"{where}a reference names a locator or its PDF: give fields.identifiers, "
+                'such as {"doi": "10.1007/…"} (doi, eprint, arxiv, nist, isbn or url), or '
+                'fields.pdf, {"artifact_id": "artifact-…", "revision": 1}, a PDF the project '
+                "recorded",
+            )
         if not (value.published or value.version or value.retrieved):
             raise DocumentError(
                 INVALID_REQUEST,
-                "a reference gives its publication or version date, or when it was retrieved",
+                f"{where}a reference gives its publication or version date, or when it was "
+                'retrieved: give fields.published (such as "2021" or "2021-06-30"), '
+                'fields.version (such as "v2", or the date stamp the e-print tools gave) or '
+                'fields.retrieved (the day you read it, such as "2026-11-03")',
             )
     fields = value.model_dump(mode="json", exclude_defaults=True)
     if len(records.encoded(fields).encode()) > MAX_FIELDS:
@@ -294,15 +339,28 @@ def plan_entry(
     role: str,
     numbers: dict[str, int],
     session: str | None = None,
+    number: int = 0,
 ) -> Planned:
+    """``change``, the mutation's ``number``-th from 0, planned: the entry it creates or
+    the revision it makes."""
     if change.entry is None:
         if change.repin is not None:
             raise DocumentError(INVALID_REQUEST, "a new entry's references are pinned anew")
-        return create_entry(db, project, change, role, numbers)
+        return create_entry(db, project, change, role, numbers, f"changes.{number}")
+    where = f"changes.{number} ({change.entry})"
     if change.type is not None or change.origin is not None or change.key is not None:
-        raise DocumentError(INVALID_REQUEST, "a revision keeps the entry's type and origin")
+        given = [k for k in ("type", "origin", "key") if getattr(change, k) is not None]
+        raise DocumentError(
+            INVALID_REQUEST,
+            f"{where}: a revision keeps the entry's type and origin: leave out "
+            f"{' and '.join(given)}; to create a new entry instead, leave out entry and expected",
+        )
     if change.expected is None:
-        raise DocumentError(INVALID_REQUEST, "a revision names the revision it expects")
+        raise DocumentError(
+            INVALID_REQUEST,
+            f"{where}: a revision names the revision it expects: give expected, the "
+            "revision ledger_read showed",
+        )
     row = queries.find(db, project, change.entry)
     if role == "delegated" and (
         not change.evidence
@@ -346,7 +404,7 @@ def plan_entry(
             # A decision rejected or reversed states its reopen condition and keeps its
             # other fields, such as an obstruction's excluded scope (CM-10).
             given = {**planned.fields, **given}
-        fields = validated_fields(row.type, given)
+        fields = validated_fields(row.type, given, f"changes.{number} ({row.handle}): ")
         check_pdf(db, project, fields)
         frontier.check_result(db, project, fields)
         if fields != planned.fields:
@@ -384,14 +442,32 @@ def create_entry(
     change: EntryChange,
     role: str,
     numbers: dict[str, int],
+    where: str = "a change",
 ) -> Planned:
     if change.type is None or change.expected is not None:
-        raise DocumentError(INVALID_REQUEST, "a new entry names its type and no revision")
+        raise DocumentError(
+            INVALID_REQUEST,
+            f"{where}: a new entry names its type and no revision: give type and leave out "
+            "expected, or give entry to revise one",
+        )
     if change.title is None or change.statement is None:
-        raise DocumentError(INVALID_REQUEST, "a new entry has a title and a statement")
+        missing = " and ".join(k for k in ("title", "statement") if getattr(change, k) is None)
+        raise DocumentError(
+            INVALID_REQUEST,
+            f"{where}: a new entry has a title and a statement: give {missing} (a "
+            "reference's statement is its citation)",
+        )
     kind = change.type
+    where = f"{where} (new {kind})"
     if (kind in ("claim", "result")) != (change.origin is not None):
-        raise DocumentError(INVALID_REQUEST, "claims and results, and only they, have an origin")
+        fix = (
+            f'give "origin": "project" for your own {kind}, or "published" for one a source states'
+            if change.origin is None
+            else f"leave out origin for {a(kind)}"
+        )
+        raise DocumentError(
+            INVALID_REQUEST, f"{where}: claims and results, and only they, have an origin: {fix}"
+        )
     status = first_status(kind, change.origin)
     if kind == "decision" and change.status in ("in_effect", "rejected"):
         # LG-17: the user or the main agent records a decision in effect at once, and
@@ -400,7 +476,12 @@ def create_entry(
             raise records.refused("a delegated agent's decision is proposed")
         status = change.status
     if change.status is not None and change.status != status:
-        raise DocumentError(INVALID_REQUEST, f"a new {kind} starts {status}")
+        also = ", or in_effect, or rejected for an approach abandoned" if kind == "decision" else ""
+        raise DocumentError(
+            INVALID_REQUEST,
+            f"{where}: a new {kind} starts {status}{also}: leave out status, or change it in "
+            "a later change",
+        )
     # Handles count per project and type; a mutation's new entries take the next ones.
     number = (
         numbers.get(kind)
@@ -421,7 +502,7 @@ def create_entry(
         fields=result_fields(
             db,
             project,
-            check_pdf(db, project, validated_fields(kind, change.fields or {})),
+            check_pdf(db, project, validated_fields(kind, change.fields or {}, f"{where}: ")),
         ),
         links=[] if change.links is None else None,
     )
@@ -438,14 +519,26 @@ def resolve_link(
 ) -> EntryLink:
     holders, targets = LINKS[link.kind]
     if planned.row.type not in holders:
-        raise DocumentError(INVALID_REQUEST, f"a {planned.row.type} holds no {link.kind} link")
+        raise DocumentError(
+            INVALID_REQUEST,
+            f"{records.shown(planned)}: {wrong_link_holder(link.kind, planned.row.type)}",
+        )
     if link.kind == "dominates" and link.note is None:
-        raise DocumentError(INVALID_REQUEST, "a dominates link states its reason")
+        raise DocumentError(
+            INVALID_REQUEST, "a dominates link states its reason: give it a note saying why"
+        )
     if link.kind == "compares_to" and link.note is None:
-        raise DocumentError(INVALID_REQUEST, "a compares_to link states the difference")
+        raise DocumentError(
+            INVALID_REQUEST,
+            "a compares_to link states the difference: give it a note saying how the two differ",
+        )
     named = [link.entry, link.finding, link.document]
     if sum(value is not None for value in named) != 1:
-        raise DocumentError(INVALID_REQUEST, "a link names one entry, finding or block")
+        raise DocumentError(
+            INVALID_REQUEST,
+            "a link names one entry, finding or block: give entry (a handle, an ID or "
+            "new:<key>), finding (a review finding's ID), or document with revision and block",
+        )
     if link.finding is not None:
         if "finding" not in targets or link.revision is not None or link.block is not None:
             raise DocumentError(INVALID_REQUEST, f"a {link.kind} link names no finding")
@@ -479,12 +572,7 @@ def resolve_link(
     assert link.entry is not None  # noqa: S101 - one of the three is named
     if link.block is not None:
         raise DocumentError(INVALID_REQUEST, "an entry link names no block")
-    if link.entry.startswith("new:"):
-        target = keys.get(link.entry.removeprefix("new:"))
-        if target is None:
-            raise DocumentError(INVALID_REQUEST, f"no new entry is keyed {link.entry}")
-    else:
-        target = queries.find(db, project, link.entry)
+    target = queries.named(db, project, link.entry, keys)
     head = heads.get(target.entry_id, target.head)
     if target.entry_id == planned.row.entry_id:
         raise DocumentError(INVALID_REQUEST, "an entry does not link to itself")
@@ -533,12 +621,7 @@ def resolve_evidence(
     for item in p.change.evidence or ():
         target = None
         if item.entry is not None:
-            if item.entry.startswith("new:"):
-                row = keys.get(item.entry.removeprefix("new:"))
-                if row is None:
-                    raise DocumentError(INVALID_REQUEST, f"no new entry is keyed {item.entry}")
-            else:
-                row = queries.find(db, project, item.entry)
+            row = queries.named(db, project, item.entry, keys)
             target = evidence.EntryTarget(
                 row.entry_id, row.handle, row.type, heads.get(row.entry_id, row.head)
             )
@@ -649,9 +732,22 @@ def resolve_provenance(
         )
     )
     if needs and not p.anchors and not held:
+        if p.created:
+            why = "it is new"
+        elif {"statement", "fields"} <= set(p.changed):
+            why = "its statement and fields change"
+        elif "statement" in p.changed:
+            why = "its statement changes"
+        elif "fields" in p.changed:
+            why = "its fields change"
+        else:
+            why = f"it becomes {p.status}"
         raise anchoring.refused(
-            f"{p.row.handle} names no anchor: a message by its ID, a tool result by its "
-            "call, an artifact, a document block or an entry revision, or evidence it holds"
+            f"{records.shown(p)} names no anchor: give it anchors saying where it comes from, "
+            f"which it needs since {why}: a tool result by its call, "
+            '[{"call": "<call ID>"}], a message by its ID, [{"message": "msg-…"}], an '
+            'artifact revision, [{"artifact": "artifact-…", "revision": 1}], a document '
+            'block or an entry revision, [{"entry": "C-4"}]; or evidence it holds'
         )
     statement = p.statement
     if statement is None and not p.created:
@@ -667,27 +763,49 @@ def prepare_mutation(inputs: MutationInput) -> PreparedMutation:
     db, project, mutation, author = inputs.db, inputs.project, inputs.mutation, inputs.author
     role, pinned = inputs.role, inputs.pinned
     numbers: dict[str, int] = {}
-    planned = [
-        plan_entry(db, project, change, role, numbers, author.session_id)
-        for change in mutation.changes
-    ]
+    # Each change is planned, and each one's links and evidence resolved, on its own:
+    # the invalid ones are refused together, so that one retry can fix them all.
+    problems = records.Problems()
+    planned: list[Planned] = []
+    for number, change in enumerate(mutation.changes):
+        with problems.check():
+            planned.append(
+                plan_entry(db, project, change, role, numbers, author.session_id, number)
+            )
+    problems.stop()
     keys = {p.change.key: p.row for p in planned if p.created and p.change.key}
     if len(keys) != sum(1 for p in planned if p.created and p.change.key):
-        raise DocumentError(INVALID_REQUEST, "two created entries share a key")
+        raise DocumentError(
+            INVALID_REQUEST, "two created entries share a key: give each its own key"
+        )
     ids = [p.row.entry_id for p in planned]
     if len(set(ids)) != len(ids):
-        raise DocumentError(INVALID_REQUEST, "a mutation changes an entry once")
+        raise DocumentError(
+            INVALID_REQUEST,
+            "a mutation changes an entry once: give all of an entry's changes in one change",
+        )
     # An entry the mutation also revises is linked as the mutation leaves it.
     heads = {p.row.entry_id: p.row.head + 1 for p in planned}
+    linker = evidence.Linker(role, author.session_id)
     for p in planned:
+        failed = len(problems.found)
         if p.change.links is not None:
-            p.links = [
-                resolve_link(db, project, p, link, keys, pinned, heads) for link in p.change.links
-            ]
+            resolved: list[EntryLink] = []
+            for link in p.change.links:
+                with problems.check():
+                    resolved.append(resolve_link(db, project, p, link, keys, pinned, heads))
+            p.links = resolved
             if not p.created and p.links != p.previous:
                 p.changed = [*p.changed, "links"]
-        linker = evidence.Linker(role, author.session_id)
-        resolve_evidence(db, project, p, keys, heads, pinned, linker)
-        if not p.created and not p.changed:
-            raise DocumentError(INVALID_REQUEST, f"the change to {p.row.handle} changes nothing")
+        with problems.check():
+            resolve_evidence(db, project, p, keys, heads, pinned, linker)
+        if len(problems.found) == failed and not p.created and not p.changed:
+            problems.found.append(
+                DocumentError(
+                    INVALID_REQUEST,
+                    f"the change to {p.row.handle} changes nothing: give what changes, or "
+                    "leave the change out",
+                )
+            )
+    problems.stop()
     return PreparedMutation(inputs, planned, keys)

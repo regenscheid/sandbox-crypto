@@ -176,7 +176,7 @@ def test_cr_f16_a_findings_lifecycle(store) -> None:
     assert fixed["reviewer"] == {
         "alias": "reviewer",
         "resolved_model": None,
-        "rubric": "sandbox-consistency-9",
+        "rubric": "sandbox-consistency-10",
     }
 
     # Every change is an attributed record of the finding's history.

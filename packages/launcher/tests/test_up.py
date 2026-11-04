@@ -226,6 +226,34 @@ def test_a_part_that_fails_stops_the_rest_and_is_reported(
     assert journal(site["journal"])[-len(stops) :] == stops
 
 
+def test_up_after_a_refused_orchestrator_create_clears_the_record_and_creates_again(
+    site: dict[str, Any],
+) -> None:
+    """A create the gateway refused leaves a name with no ID; no sandbox of that name exists,
+    so neither the stop that follows nor the next ``up`` is blocked by the record."""
+    refused = site["launch"](parts={"openshell": "create-fails"})
+    assert refused.finish() == 1
+    assert "create failed" in refused.output
+    assert "creation outcome is unknown" not in refused.output
+    layout = Layout(load_config(refused.config).state_dir)
+    record = layout.root / "orchestrator/sandbox.json"
+    assert not record.exists()
+    # A record an earlier launcher left behind, as when it was killed before it could stop.
+    record.write_text(json.dumps({"name": "ss-orch-0123456789", "id": None}) + "\n")
+    record.chmod(0o600)
+    again = site["launch"]()
+    again.expect("Sandbox Science is running.")
+    made = json.loads(record.read_text())
+    assert made["id"]
+    assert made["name"] != "ss-orch-0123456789"
+    lines = site["journal"].read_text().splitlines()
+    assert not any("sandbox delete" in line for line in lines)
+    assert any(line.startswith(f"openshell sandbox create {made['name']} ") for line in lines)
+    assert again.command("down").returncode == 0
+    assert again.finish() == 0
+    assert not record.exists()
+
+
 def test_an_address_something_else_holds_is_refused_before_starting(
     site: dict[str, Any],
 ) -> None:

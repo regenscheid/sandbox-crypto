@@ -67,7 +67,7 @@ def advisory(reviews: Any, review: str, **overrides: Any) -> dict[str, Any]:
 
 
 def test_the_main_and_task_prompts_ask_for_the_handle_in_fixed_text() -> None:
-    assert (MAIN_VERSION, TASK_VERSION) == ("sandbox-main-19", "sandbox-delegated-task-19")
+    assert (MAIN_VERSION, TASK_VERSION) == ("sandbox-main-20", "sandbox-delegated-task-21")
 
     assert SYSTEM_PROMPT.count(CITE) == 1
     assert "relies on a ledger entry, or declines or reopens something because of one" in (
@@ -96,7 +96,7 @@ async def test_the_instruction_is_in_the_system_message_of_every_run_and_does_no
 
 
 def test_the_rubric_and_its_tool_ask_for_a_note_of_the_category() -> None:
-    assert RUBRIC_VERSION == "sandbox-consistency-9"
+    assert RUBRIC_VERSION == "sandbox-consistency-10"
     assert "handle_citation" in RUBRIC
     assert "severity note" in RUBRIC
     assert "It is a suggestion only" in RUBRIC
