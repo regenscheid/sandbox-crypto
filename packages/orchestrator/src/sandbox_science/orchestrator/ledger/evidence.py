@@ -204,11 +204,21 @@ def resolve(
         # a revision of it, which vouches for the PDF that revision names (LG-16).
         if item.role != "independent_check" or entry is None or entry.entry_id != holder.entry_id:
             raise DocumentError(
-                INVALID_REQUEST, "a reference holds no evidence but checks of itself"
+                INVALID_REQUEST,
+                "a reference holds no evidence but checks of itself: a claim or result "
+                "cites a reference with source_claim evidence that names it",
             )
     elif holder.type not in EVIDENCE_HOLDERS:
         article = "an" if holder.type[0] in "aeiou" else "a"
-        raise DocumentError(INVALID_REQUEST, f"{article} {holder.type} holds no evidence")
+        about = (
+            "; an issue names what it is about with concerns links"
+            if holder.type == "issue"
+            else ""
+        )
+        raise DocumentError(
+            INVALID_REQUEST,
+            f"{article} {holder.type} holds no evidence: claims, results and decisions do{about}",
+        )
     if item.type == "unclassified":
         raise DocumentError(INVALID_REQUEST, "unclassified evidence comes only from imports")
     named = (
@@ -223,7 +233,9 @@ def resolve(
         raise DocumentError(
             INVALID_REQUEST,
             "evidence names one target: an entry, an artifact, a document block, a review "
-            "or a delegation",
+            "or a delegation: give entry (a handle, an ID or new:<key>; the reference, for "
+            "a quote), artifact with revision, document with revision and block, review, "
+            "or delegation",
         )
     if item.execution is not None:
         raise DocumentError(
@@ -241,7 +253,11 @@ def resolve(
         raise DocumentError(INVALID_REQUEST, "only an independent_check names a checked revision")
     if item.quote is not None:
         if entry is None or entry.type != "reference":
-            raise DocumentError(INVALID_REQUEST, "a quote names the reference it quotes")
+            raise DocumentError(
+                INVALID_REQUEST,
+                "a quote names the reference it quotes: give the evidence entry, the "
+                'handle of the reference, or new:<key>, with "type": "source_claim"',
+            )
         if item.type != "source_claim":
             raise DocumentError(INVALID_REQUEST, "a quote is source_claim evidence")
     if item.type == "source_claim" and (

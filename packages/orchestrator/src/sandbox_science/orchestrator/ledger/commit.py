@@ -336,7 +336,8 @@ def record_work(
         if row.type not in WORK_HOLDERS:
             raise DocumentError(
                 INVALID_REQUEST,
-                f"{where} is on {row.handle}: work is recorded on an issue, a claim or a result",
+                f"{where} is on {row.handle}: work is recorded on an issue, a claim or a "
+                "result: name in entry the issue, claim or result the work was for",
             )
         (held,) = db.execute(
             "SELECT count(*) FROM ledger_work WHERE entry_id=?", (row.entry_id,)
@@ -571,12 +572,7 @@ def resolve_produced(
 def work_entry(db: sqlite3.Connection, project: str, reference: str, keys: dict[str, Row]) -> Row:
     """The entry a work record names: one the change creates, by ``new:<key>``, or
     one of the project's."""
-    if reference.startswith("new:"):
-        found = keys.get(reference.removeprefix("new:"))
-        if found is None:
-            raise DocumentError(INVALID_REQUEST, f"no new entry is keyed {reference}")
-        return found
-    return queries.find(db, project, reference)
+    return queries.named(db, project, reference, keys)
 
 
 def resolve_work_references(
@@ -682,10 +678,24 @@ def clear_flags(
             (entry.entry_id, scope.cause, scope.cause, MAX_CLEARED + 1),
         ).fetchall()
         if not rows:
+            causes = [
+                cause
+                for (cause,) in db.execute(
+                    "SELECT DISTINCT cause FROM ledger_flags WHERE entry_id=? AND cleared IS NULL "
+                    "ORDER BY cause",
+                    (entry.entry_id,),
+                )
+            ]
+            fix = (
+                f"its open flags are of cause {', '.join(causes)}: name one, or leave out cause"
+                if causes
+                else f"leave {entry.handle} out of flags_cleared_on"
+            )
             raise DocumentError(
                 CONFLICT,
                 f"{entry.handle} has no open flag"
-                + (f" of cause {scope.cause}" if scope.cause else ""),
+                + (f" of cause {scope.cause}" if scope.cause else "")
+                + f": {fix}",
             )
         for flag, cause, source in rows:
             found[flag] = (entry.entry_id, entry.handle, cause, json.loads(source)["handle"])
