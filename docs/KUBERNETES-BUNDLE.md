@@ -401,8 +401,10 @@ not a promise that arbitrary OpenShell Pods have the template's labels. Sandbox 
 `network.runtimes` must select supervisor Pods; their labels are fixed by OpenShell, so
 the rule admits every supervisor of the gateway, and the runtime token decides which
 connection control accepts ([runtime bootstrap](specs/kubernetes-runtime-bootstrap.md)).
-A selector peer in `network.runtimes` must therefore carry the pod labels
-`openshell.ai/component = "supervisor"` and this gateway's `openshell.ai/gateway-id`.
+A selector peer in `network.runtimes`, or in `network.sandboxes` (the research sandboxes
+that reach the cache, whose traffic leaves through their supervisors too), must therefore
+carry the pod labels `openshell.ai/component = "supervisor"` and this gateway's
+`openshell.ai/gateway-id`.
 
 Every peer uses either a canonical non-default CIDR or explicit namespace labels
 with optional Pod labels. Empty selectors and `0.0.0.0/0` / `::/0` are refused. DNS
