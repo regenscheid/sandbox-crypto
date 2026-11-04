@@ -78,6 +78,7 @@ from sandbox_science.orchestrator.notices import (
     DELEGATIONS,
     DELEGATIONS_ATTACHED,
     DELEGATIONS_RUNNING,
+    DELEGATIONS_UNSUBMITTED,
 )
 from sandbox_science.orchestrator.projects import RunRecord, run_id_of, run_name, run_started
 from sandbox_science.orchestrator.runstate import RunState
@@ -88,7 +89,7 @@ from .child_inputs import reference_files
 from .environments import NOT_OFFERED, ChildPlacement, placement, reconcile, waiting_notice
 from .models import Choice, ModelChoice
 from .narrowing import narrow
-from .outcome import Asked, Target, asked_of, proof_reads
+from .outcome import LIMITS, Asked, Target, asked_of, by_platform, proof_reads
 from .prompt import (
     REOPENED_TASK,
     brief_text,
@@ -248,21 +249,9 @@ def observed(end: ChildEnd) -> Ended:
             # A continuation an automatic Resume could not start under changed pins waits
             # for the user's Resume, as an interrupted run does (D100).
             return "interrupted"
-        case (
-            "turn_limit"
-            | "context_limit"
-            | "run_budget"
-            | "budget"
-            | "runaway"
-            | "resource_pause"
-            | "resource_report"
-            | "resource_time"
-            | "resource_storage"
-            | "resource_retention"
-            | "environment_time"
-        ):
+        case stopped if stopped in LIMITS:
             # A limit, or the runaway guard: the answer of its report round, if it took
-            # one, is the delegation's report (RS-6f).
+            # one, is the delegation's report (RS-6f), and its result stands (PD-19).
             return "limit_reached"
         case _:
             return "failed"
@@ -378,6 +367,9 @@ class Delegations(TurnHook):
         scope = (self.context.project_id, self.context.session_id, parent)
         self.received = Members(records.control, scope, "delegations:received")
         """Outcomes a wait returned that a model call saw."""
+        self.unsubmitted: set[str] = set()
+        """The returned tasks with the platform's result a closing notice named, by
+        their outcomes' keys."""
 
     async def live(self) -> set[str]:
         """The run IDs of the running children, and for a main run of every delegated run
@@ -1421,7 +1413,34 @@ class Delegations(TurnHook):
                 # A task can end after every outcome write failed. Its disappearance
                 # from the live set is not evidence that its parent may finish.
                 return Closing("stop", tuple(notices), stopped="child_outcome_unavailable")
+        if run.turns_left > 0 and run.halted is None and (left := await self._unsubmitted()):
+            notices.append(Notice(self.name, (), DELEGATIONS_UNSUBMITTED.text, left))
         return Closing("continue", tuple(notices)) if notices else Closing()
+
+    async def _unsubmitted(self) -> list[dict[str, object]]:
+        """This run's returned tasks that await its review with the platform's result,
+        their child having submitted none, each named once: the run's end accepts them
+        as they are (PD-46)."""
+        context = self.context
+        try:
+            found = await threaded(
+                self.records.awaiting,
+                context.project_id,
+                context.session_id,
+                parent=self.parent,
+                work=self.work,
+            )
+        except Exception:
+            _log.exception("the returned tasks of run %s were not read", self.parent)
+            return []
+        named: list[dict[str, object]] = []
+        for delegation in found:
+            key = notice_key(delegation)
+            if key in self.unsubmitted or not by_platform(delegation.result):
+                continue
+            self.unsubmitted.add(key)
+            named.append(_named(delegation))
+        return named
 
     async def finishing(self, run: RunView, stopped: str) -> str | None:
         """A limit pauses this parent's model work, not the authorized children's.
@@ -1604,8 +1623,9 @@ def _ending(delegation: Delegation) -> dict[str, object]:
 
 def outcome(delegation: Delegation, left: Sequence[Delegation] = ()) -> dict[str, object]:
     """A delegation's whole outcome as its parent receives it (PD-20): how it ended,
-    whether it read the entry it checked, and its result, or, when that is missing, its
-    answer as returned and why it did not validate; then the files its calls recorded,
+    whether it read the entry it checked, and its result, with why the child's own did
+    not validate when the result is the platform's, or, when that is missing, its answer
+    as returned and why it did not validate; then the files its calls recorded,
     the platform's list apart from the child's own claims (RA-36); and the outcomes of
     its own children that it never received, ``left``, each summarized (PD-15)."""
     files: dict[str, object] = {}
@@ -1628,6 +1648,9 @@ def outcome(delegation: Delegation, left: Sequence[Delegation] = ()) -> dict[str
         lessons = result.pop("lessons", None)
         if isinstance(lessons, list) and lessons:
             shown["lessons"] = {"framing": LESSONS_FRAMING, "notes": lessons}
+        if by_platform(delegation.result) and delegation.errors:
+            # The child submitted none that checked: what was wrong with those it gave.
+            shown["errors"] = list(delegation.errors)
         return {**_ending(delegation), "result": result, **shown, **files}
     unaccounted: dict[str, object] = {}
     if asked:
@@ -1694,8 +1717,9 @@ def _counted(delegation: Delegation) -> str | None:
 
 def summarized(delegation: Delegation, left: Sequence[Delegation] = ()) -> dict[str, object]:
     """A delegation's outcome as a notice gives it: a check's verdict and status, a
-    task's status and the head of its summary, or without a result the head of its
-    answer; and the IDs of its own children's outcomes it never received, ``left``."""
+    task's status and the head of its summary, marked ``result_by: platform`` when the
+    result is the platform's, or without a result the head of its answer; and the IDs of
+    its own children's outcomes it never received, ``left``."""
     found: dict[str, object] = _ending(delegation)
     if left:
         found["unreceived"] = [d.delegation_id for d in left[:10]]
@@ -1710,6 +1734,8 @@ def summarized(delegation: Delegation, left: Sequence[Delegation] = ()) -> dict[
         found["deliverables"] = counted
     if delegation.result is not None:
         result = delegation.result
+        if by_platform(result):
+            found["result_by"] = "platform"  # the child submitted none (PD-18)
         if delegation.kind == "task":
             summary = str(result.get("summary") or "")
             head = summary if len(summary) <= SUMMARY_CHARS else summary[:SUMMARY_CHARS] + "…"

@@ -361,6 +361,12 @@ class Prepared:
                 return await hook.halt(run)
             if kind is Capability.LAST_CALL:
                 return await hook.last_call(run)
+            if kind is Capability.REPORT_NOTICES:
+                if request.stopped is None:
+                    raise TransportError("invalid_request", "report notices require the limit")
+                found = tuple(await hook.report_notices(run, request.stopped))
+                self.notices.extend(found)  # admitted as the hook's, when the runtime adds them
+                return json_value(TypeAdapter(tuple[Notice, ...]).dump_python(found, mode="json"))
             if kind is Capability.MODEL_RETURNED:
                 await hook.model_returned(run)
             elif kind is Capability.OBSERVE_TOOL:

@@ -36,7 +36,13 @@ from sandbox_science.orchestrator.confinement.transport import Capability, Chann
 from sandbox_science.orchestrator.consistency.controller import AUTHOR_SPECS, Reviews
 from sandbox_science.orchestrator.context.history import SPECS as HISTORY_SPECS
 from sandbox_science.orchestrator.continuity.resources import ResourceRequest
-from sandbox_science.orchestrator.delegation.prompt import CHECK_PROMPT, TASK_PROMPT
+from sandbox_science.orchestrator.delegation.outcome import SUBMIT, Asked, Outcome, Target
+from sandbox_science.orchestrator.delegation.prompt import (
+    CHECK_PROMPT,
+    TASK_PROMPT,
+    processes_text,
+    write_area_text,
+)
 from sandbox_science.orchestrator.delegation.specs import SPECS as DELEGATION_SPECS
 from sandbox_science.orchestrator.delegation.tracks import SPECS as TRACK_SPECS
 from sandbox_science.orchestrator.documents import annotation_tools
@@ -104,8 +110,17 @@ def domain(specs: Sequence[ToolSpec] = (), **kwargs: Any) -> Any:
     )
 
 
-def bundles(main: bool, *, plans: bool = True) -> tuple[caps.Capability, ...]:
-    """Every domain a run of the harness has, bound as the harness binds them."""
+EACH_KIND = (
+    Asked("d1", "The table", "artifact"),
+    Asked("d2", "The notes", "file"),
+    Asked("d3", "A task to recheck C-1", "entry"),
+)
+"""A task brief's deliverables, one of each kind, which ``submit_result``'s schema takes."""
+
+
+def bundles(role: str, *, plans: bool = True) -> tuple[caps.Capability, ...]:
+    """Every domain a run of ``role`` has, bound as the harness binds them."""
+    main = role == "main"
     kwargs: dict[str, Any] = {
         "documents": domain((*DOCUMENT_SPECS, *annotation_tools.SPECS)),
         "jobs": domain(JOB_SPECS),
@@ -139,6 +154,10 @@ def bundles(main: bool, *, plans: bool = True) -> tuple[caps.Capability, ...]:
         kwargs.update(
             mailbox=domain((PARENT_SPEC, STATUS_SPEC, WAIT_SPEC), name="agent_messages"),
             tracks=domain(TRACK_SPECS),
+            # A delegated run returns its result through submit_result (PD-18).
+            outcome=Outcome(task=True, deliverables=EACH_KIND)
+            if role == "task"
+            else Outcome(Target("ent-1", "C-1", 1)),
         )
     found = Toolbox(cast(WorkerClient, object()), CONTEXT, features=FEATURES, **kwargs)
     return found.capabilities.bundles
@@ -147,9 +166,7 @@ def bundles(main: bool, *, plans: bool = True) -> tuple[caps.Capability, ...]:
 def full(role: str) -> Toolbox:
     """A role's every tool, offered from the start, as a direct caller's toolbox is."""
     selected = caps.CapabilitySet(
-        {"main": caps.main, "task": caps.task, "check": caps.check}[role](
-            bundles(role == "main")
-        ).bundles
+        {"main": caps.main, "task": caps.task, "check": caps.check}[role](bundles(role)).bundles
     )
     return toolbox(role, selected)
 
@@ -161,7 +178,7 @@ def toolbox(
     main run without ``plans`` has no plan tools, whose hook the loop would need."""
     if selected is None:
         select = {"main": caps.main, "task": caps.task, "check": caps.check}[role]
-        selected = select(bundles(role == "main", plans=plans))
+        selected = select(bundles(role, plans=plans))
     return Toolbox(
         cast(WorkerClient, object()),
         CONTEXT,
@@ -200,7 +217,8 @@ CORE: dict[str, list[str]] = {
         *("ledger_list", "ledger_read", "ledger_change"),
         *("memory_list", "memory_propose", "track_read", "track_progress"),
         *("message_parent", "agent_message_status", "wait_agent_message"),
-        *("skills", "history_search", "history_read", "view_image", LOAD_TOOLS),
+        *("skills", "history_search", "history_read", "view_image", "submit_result"),
+        LOAD_TOOLS,
     ],
     "check": [
         *("python", "sage", "shell", "read_file", "write_file", "edit_file", "list_files"),
@@ -209,7 +227,8 @@ CORE: dict[str, list[str]] = {
         *("document_list", "document_read", "show_outline"),
         *("ledger_list", "ledger_read", "memory_list", "track_read", "track_progress"),
         *("message_parent", "agent_message_status", "wait_agent_message"),
-        *("skills", "history_search", "history_read", "view_image", LOAD_TOOLS),
+        *("skills", "history_search", "history_read", "view_image", "submit_result"),
+        LOAD_TOOLS,
     ],
 }
 """Each role's core tools, in the order its model reads them."""
@@ -221,6 +240,8 @@ def test_the_groups_hold_harness_tools_each_in_one_group() -> None:
     assert len({group.name for group in GROUPS}) == len(GROUPS)
     assert set(grouped) <= HARNESS_TOOL_NAMES
     assert {LOAD_TOOLS, MCP_TOOLS} <= HARNESS_TOOL_NAMES
+    # A delegated run's result has one way back, which is never deferred (PD-18).
+    assert SUBMIT not in GROUP_OF
     for group in GROUPS:
         assert re.fullmatch(r"[a-z_]+", group.name)
         assert "\n" not in group.description
@@ -482,18 +503,26 @@ words of the prompt's sentence that name that notice, and the notice's own text 
 names the tool too."""
 
 
+WHERE_OFFERED: dict[str, str] = {"provision": "when you have it"}
+"""The deferred tools a prompt names only for a run that has them, with the words that
+say so: ``load_tools`` lists their group to every run that has it."""
+
+
 def test_every_tool_a_prompt_names_is_core_or_loaded_by_the_notice_that_mentions_it() -> None:
     every = set().union(*(names(full(role).specs) for role in ("main", "task", "check")))
+    brief = [processes_text(False), processes_text(True)]
+    brief += [write_area_text("work/d", own_environment=own) for own in (False, True)]
     texts = {
         "main": SYSTEM_PROMPT,
         "task": TASK_PROMPT,
         "check": CHECK_PROMPT,
         "planning": GUIDANCE,
         "memory": RUN_FRAMING,
+        "brief": " ".join(brief),
     }
+    named = {label: _named(text, every) for label, text in texts.items()}
     deferred = {
-        label: {tool for tool in _named(text, every) if tool in GROUP_OF}
-        for label, text in texts.items()
+        label: {tool for tool in found if tool in GROUP_OF} for label, found in named.items()
     }
     assert deferred == {
         "main": {"document_reply", "review_respond", "resource_decide"},
@@ -501,7 +530,19 @@ def test_every_tool_a_prompt_names_is_core_or_loaded_by_the_notice_that_mentions
         "check": set(),
         "planning": set(),
         "memory": set(),
+        "brief": {"provision"},
     }
+    # What a prompt tells the model to use unprompted is core, offered from the start.
+    started = {role: set(names(toolbox(role).specs)) for role in ("main", "task", "check")}
+    unprompted = {"ledger_proposals", "memory_propose", "admit_hosts", "ask_user", "plan_read"}
+    assert unprompted <= named["main"] | named["planning"] | named["memory"]
+    assert unprompted <= started["main"]
+    assert {SUBMIT, "message_parent"} <= named["task"] & named["check"]
+    assert {SUBMIT, "message_parent"} <= started["task"] & started["check"]
+    for role in ("main", "task", "check"):
+        # Every core tool a role's own prompt names that the role has, it has from the start.
+        offer = set(names(full(role).specs))
+        assert {tool for tool in named[role] - set(GROUP_OF) if tool in offer} <= started[role]
     assert check_in().source == RESOURCES
     for tool in deferred["main"]:
         source, words, notice = NOTICED[tool]
@@ -510,6 +551,11 @@ def test_every_tool_a_prompt_names_is_core_or_loaded_by_the_notice_that_mentions
         assert words in sentence
         if notice is not None:
             assert tool in notice
+    for tool in deferred["brief"]:
+        assert WHERE_OFFERED[tool] in next(s for s in brief[0].split(". ") if tool in s)
+        load = next(spec for spec in toolbox("task").specs if spec.name == LOAD_TOOLS)
+        assert f"- {GROUP_OF[tool]}: " in load.description
+        assert tool in load.description
 
 
 def test_no_core_tool_names_a_tool_the_run_may_not_be_offered_yet() -> None:

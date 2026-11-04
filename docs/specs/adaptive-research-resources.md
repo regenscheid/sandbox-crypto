@@ -55,9 +55,19 @@ revisions its attempts published, children that completed), its last eight tool 
 (tool and whether it failed), the head of its latest answer, the loop rule if any, and
 its recorded tokens, turns, active seconds, cost and evidence counter.
 
-**A child** then waits at that safe point without model calls. Its check-in reaches its
-direct parent as a notice, wakes the parent's delegation or message wait, and makes a
-parent that is closing take another turn. The parent answers with `resource_decide`:
+**A child's first check-in at a soft cap** (tokens, turns, active time or cost) does not
+wait (built 2026-11-03): the platform answers it with one bounded step, an automatic
+`extend` (operation `first-step:<request>`), and the child goes on, told so at its next
+safe point. Its summary reaches its direct parent as a progress notice
+(`progress-<request>`), once, which asks for no decision and wakes no wait: the parent
+that wants another course sends the child corrected instructions with `message_child`, or
+cancels it. A work that already had a soft cap's decision, a cap whose step its ceiling
+refuses, and every loop check-in wait as below.
+
+**A child** at any other check-in waits at that safe point without model calls. Its
+check-in reaches its direct parent as a notice, wakes the parent's delegation or message
+wait, and makes a parent that is closing take another turn. The parent answers with
+`resource_decide`:
 
 - `extend` gives one bounded step of the cap, or lets a loop check-in go on;
 - `redirect` sends the reason as the child's corrected instruction, with one step;

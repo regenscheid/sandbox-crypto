@@ -52,13 +52,19 @@ async def test_a_checks_outcome_is_work_on_the_entry_it_checked(delegating: Harn
 
 
 async def test_a_check_without_a_result_ends_its_work_at_a_limit(delegating: Harness) -> None:
-    """The child used its one soft turn on a call and checked in; its parent stopped it,
-    with no result, and its work ended ``limit``: its time ran out (D102)."""
-    configure(delegating, check_turns=1)
+    """The child went on past its first soft token cap, up to the project's ceiling for a
+    grant, and checked in at the next; its parent stopped it, with no result of its own,
+    and its work ended ``limit``: its time ran out (D102)."""
+    configure(delegating, check_tokens=50_000, max_token_grant=100_000)
+    read = call("ledger_read", entry="C-1", revision=1)
     root = await delegating.run(
         "root",
         [Reply(calls=[CHECK]), wait(), decide("stop"), wait(), Reply("Done.")],
-        delegated=[Reply(calls=[call("ledger_read", entry="C-1", revision=1)]), Reply(None)],
+        delegated=[
+            Reply(calls=[read], tokens=60_000),
+            Reply(calls=[read], tokens=60_000),
+            Reply(None),
+        ],
         status=3,
     )
     assert root.stopped == "unfinished_children"

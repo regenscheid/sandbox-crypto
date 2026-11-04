@@ -116,14 +116,6 @@ DELEGATIONS_RUNNING: Final = Framing(
     "Wait for them with wait_delegations, or end one with cancel_delegation, then answer "
     "with their outcomes. ",
 )
-OUTCOME_CORRECTION: Final = Framing(
-    "outcome-correction",
-    "sandbox-notice-outcome-correction-1",
-    "Platform notice: your final answer is not a valid result, for the errors below. "
-    "Answer again with only the JSON object the format gives; this is the only "
-    "correction, and an invalid answer is kept as you wrote it, with no result. ",
-)
-
 SKILLS: Final = Framing(
     "skills",
     "sandbox-notice-skills-3",
@@ -351,6 +343,45 @@ COMPACTION: Final = Framing(
 ``instructions``; docs/specs/context-management.md, CM-38b). Without it, a request with
 tools may get a compaction with no summary, the model having called a tool instead."""
 
+OUTCOME_SUBMIT: Final = Framing(
+    "outcome-submit",
+    "sandbox-notice-outcome-submit-1",
+    "Platform notice: your run has no recorded result, as it submitted none that checked. "
+    "Your parent receives your result only through submit_result, in the form below: "
+    "submit it now, fix what its answer names, then end with a short final answer. "
+    "Otherwise your parent gets a blocked result, the platform's. ",
+)
+"""A delegated run's closing answer with no result submitted, at most three times
+(plans-and-delegation spec, PD-18)."""
+OUTCOME_LAST_CALL: Final = Framing(
+    "outcome-last-call",
+    "sandbox-notice-outcome-last-call-1",
+    "Platform notice: this is your run's last model call with tools before its turn limit; "
+    "the call after it is your report, where no tool runs. Submit your result with "
+    "submit_result now, in the form below. ",
+)
+"""A delegated run's last call with tools before its turn limit, with no result
+submitted (PD-18)."""
+DELEGATIONS_UNSUBMITTED: Final = Framing(
+    "delegations-unsubmitted",
+    "sandbox-notice-delegations-unsubmitted-1",
+    "Returned tasks whose child submitted no result, so that the platform wrote each one's "
+    "blocked result from its answer; your run's end accepts them as they are. Read each "
+    "with delegation_status, then accept it or message_child, before you end: ",
+)
+"""A parent's closing answer while returned tasks with the platform's result await its
+review (PD-46)."""
+OUTCOME_REPORT: Final = Framing(
+    "outcome-report",
+    "sandbox-notice-outcome-report-1",
+    "Platform notice: no tool runs in this last call, so submit_result cannot. Write, as "
+    "your answer, the JSON object you would have submitted, in the form below, alone or in "
+    "a ```json block: your parent receives it as your result, partial at this limit, in "
+    "place of one you submitted. Without it, a result you submitted stands, partial; with "
+    "neither, your parent gets a blocked result, the platform's. ",
+)
+"""A delegated run's report round at a limit, beside the report's own notice (PD-19)."""
+
 FRAMINGS: Final = (
     REQUESTS,
     JOBS,
@@ -363,7 +394,6 @@ FRAMINGS: Final = (
     DELEGATIONS,
     DELEGATIONS_ATTACHED,
     DELEGATIONS_RUNNING,
-    OUTCOME_CORRECTION,
     SKILLS,
     SKILLS_WORDS,
     STATE_BLOCK,
@@ -381,4 +411,8 @@ FRAMINGS: Final = (
     CONTINUE,
     ERROR_STREAK,
     COMPACTION,
+    OUTCOME_SUBMIT,
+    OUTCOME_LAST_CALL,
+    DELEGATIONS_UNSUBMITTED,
+    OUTCOME_REPORT,
 )

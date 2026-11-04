@@ -1,39 +1,54 @@
 # SPDX-License-Identifier: MIT
-"""A delegated run's result: its final answer, checked against its output schema
-(plans-and-delegation spec, PD-17 to PD-19, PD-41).
+"""A delegated run's result: what it submits with ``submit_result``, checked against its
+output schema (plans-and-delegation spec, PD-17 to PD-19, PD-41, PD-45).
 
-A check's final answer is a JSON object (``CheckResult``). Its texts are checked as any
-agent text is: no character the user may not see. It names the entry and revision it
-checked, which must be those of its brief, and ``confirmed`` comes only with a complete
-check. The ``Outcome`` hook reads each closing answer: a valid one is the result; an
-invalid one gets one correction, a turn with the errors (PD-18). If the correction does
-not validate either, or the run has no turn left, the answer stands and the result is
-missing, with the errors; nothing is filled in. The answer itself is kept unchanged as
-the raw payload. The hook also notes whether the run read the entry at that revision
-with ``ledger_read``, and the target of each of its proofs at the revision its link pins
-(``Read``), which the ledger's gate asks for (LG-17).
+A delegated run, a check or a task, returns its result through ``submit_result``, a tool
+only delegated runs are offered, whose input schema is made for the run: a check's
+(``check_schema``) is ``CheckResult``'s, naming the entry and revision of its brief; a
+task's (``task_schema``) is ``TaskResult``'s, its ``deliverables``, when the brief lists
+any, a list of one item for each, each item of its deliverable's kind with that kind's
+fields alone and its ``id`` among the brief's numbers of that kind. The ``Outcome`` hook
+checks a submission inside the call, with the checks below, and answers it: every
+problem, by its place in the result and in words, with the form the brief asked for; or
+what it recorded, for the run to check. A run submits as often as it needs: a submission
+that checks replaces the one before, and one that does not replaces nothing.
+
+A check's result is a JSON object (``CheckResult``). Its texts are checked as any agent
+text is: no character the user may not see. It names the entry and revision it checked,
+which must be those of its brief, and ``confirmed`` comes only with a complete check. The
+hook also notes whether the run read the entry at that revision with ``ledger_read``, and
+the target of each of its proofs at the revision its link pins (``Read``), which the
+ledger's gate asks for (LG-17).
 
 A task's result (``sandbox-task-result-3``) accounts for the deliverables its brief
 lists, exactly when it lists any (PD-45): one item for each, by its number, whose
 reference the hook checks against what the run's calls recorded, as it checks a result
-file (RA-38). A result that leaves one out gets the one correction, naming it; if the
-answer that stands still leaves one out, and fails no other check, the result is the
-child's with the platform's status ``blocked`` and its obstacle, marked ``set_by:
-platform``, the child's own status kept beside them. An answer the schema refuses has its
-deliverables checked too, as far as they can be read, so that its one correction names
-every problem, within ``MAX_ERRORS`` and ``ERROR_CHARS``; it stays invalid. Its
-``lessons`` are the child's notes on operating the tools (DA-27): agent text, data for the
-parent, read by no code.
+file (RA-38). Its ``lessons`` are the child's notes on operating the tools (DA-27):
+agent text, data for the parent, read by no code. Two forms models keep giving are read
+as what they unambiguously say, and the kept result's ``platform_notes`` says so (PD-18
+as amended 2026-11-01): ``deliverables`` given as an object keyed by number becomes the
+list, in the brief's order, each key the item's ``id`` (a value that is not an object, or
+names another ``id``, stays an error); and an artifact produced with its path alone gets
+the one revision the run's calls recorded of that path (none or several stay an error).
 
-Two forms models keep giving are read as what they unambiguously say, and the kept
-result's ``platform_notes`` says so (PD-18 as amended 2026-11-01): ``deliverables`` given
-as an object keyed by number becomes the list, in the brief's order, each key the item's
-``id`` (a value that is not an object, or names another ``id``, stays an error); and an
-artifact produced with its path alone gets the one revision the run's calls recorded of
-that path (none or several stay an error). Nothing else is filled in.
+A closing answer that comes with no result submitted gets the platform's notice that the
+result goes through ``submit_result``, with its form, at most ``NUDGES`` times in a run.
+An answer that holds a valid result as JSON, read leniently (``candidates``: the last
+fenced ``json`` block, or the last top-level JSON object, prose around it allowed), is
+the result instead, its ``platform_notes`` saying it came in the answer; so is a report a
+limit's last call gives, where no tool runs, and before which the hook's notice asks the run
+to write the JSON it would have submitted (``report_notices``). A submission or an answer
+that checks but leaves deliverables out stands, unless a later one checks, as the child's
+result with the platform's status ``blocked`` and its obstacle, marked ``set_by: platform``
+(PD-45).
+Without any, the parent still gets a result, the platform's, never stronger than the
+records: ``blocked``, its obstacle that the run submitted none, the run's answer as its
+summary, each deliverable ``not_produced``, no result files, and a note naming the files
+the run's calls wrote or published.
 
-A result stands only for a run that ended with that answer (``result_of``): one stopped
-by a limit, a cancel or a failure has none, whatever it answered before.
+A result stands for a run that ended with an answer or at a limit (``result_of``): at a
+limit, one that said ``complete`` is ``partial``, with an obstacle naming the limit, both
+the platform's. A run cancelled, interrupted or failed has none.
 """
 
 from __future__ import annotations
@@ -48,12 +63,18 @@ from typing import Annotated, Any, Final, Literal, Self, cast
 from pydantic import BeforeValidator, Field, JsonValue, ValidationError, model_validator
 
 from sandbox_science.contracts.model import StrictContract
+from sandbox_science.orchestrator.context.history.archive import body
 from sandbox_science.orchestrator.documents.agent_text import agent_text
 from sandbox_science.orchestrator.documents.errors import DocumentError
-from sandbox_science.orchestrator.hooks import Closing, Notice, RunView, TurnHook
+from sandbox_science.orchestrator.hooks import Closing, Notice, Point, RunView, TurnHook
 from sandbox_science.orchestrator.ledger.gate import supporting
 from sandbox_science.orchestrator.ledger.models import EvidenceLink
-from sandbox_science.orchestrator.notices import OUTCOME_CORRECTION
+from sandbox_science.orchestrator.model import ToolSpec
+from sandbox_science.orchestrator.notices import OUTCOME_LAST_CALL, OUTCOME_REPORT, OUTCOME_SUBMIT
+from sandbox_science.orchestrator.purpose import without
+from sandbox_science.orchestrator.worker_client import dump
+
+from .prompt import PRODUCED, produced_form
 
 FORMAT: Final = "sandbox-check-result-2"
 TASK_FORMAT: Final = "sandbox-task-result-3"
@@ -73,6 +94,47 @@ it, a task's longest result stays within the table's 32 KiB."""
 ERROR_CHARS: Final = 500
 KEPT_ERRORS: Final = 4
 _FENCED: Final = re.compile(r"^```(?:json)?\s*\n(.*)\n```$", re.DOTALL)
+SUBMIT: Final = "submit_result"
+"""The tool a delegated run submits its result with."""
+NUDGES: Final = 3
+"""The closing answers with no result submitted that get the platform's notice, in a
+run; the next one stands."""
+MAX_PROBLEMS: Final = 20
+"""The most problems the answer to a refused submission names."""
+SUMMARY_BYTES: Final = 16384
+"""The most of a run's answer, as UTF-8, that the platform's result keeps as its summary:
+with the rest, it stays within the table's 32 KiB."""
+NOTE_CHARS: Final = 3000
+"""The longest note the platform writes of the files a run's calls wrote."""
+LIMITS: Final = frozenset(
+    {
+        "turn_limit",
+        "context_limit",
+        "run_budget",
+        "budget",
+        "runaway",
+        "resource_pause",
+        "resource_report",
+        "resource_time",
+        "resource_storage",
+        "resource_retention",
+        "environment_time",
+    }
+)
+"""The stops of a run at a limit, or by the runaway guard (PD-19): its delegation ends
+``limit_reached``, and the answer of its report round, if it took one, is its report
+(RS-6f)."""
+NO_SUBMISSION: Final = "the run ended without submitting a result"
+"""The obstacle of the platform's result for a run that submitted none."""
+ANSWER: Final = "answer"
+REPORT: Final = "report"
+CAME: Final = {
+    ANSWER: "the result came in the run's closing answer, not through submit_result",
+    REPORT: "the result came in the run's report at its limit, not through submit_result",
+}
+"""The platform's note on a result read from a run's text, by where it came from."""
+LIMIT_OBSTACLE: Final = "the run reached a limit ({limit}) before it ended"
+"""The obstacle of a run's result at a limit, which the platform marks as its own."""
 
 
 def _text(value: object, *, limit: int) -> object:
@@ -118,24 +180,6 @@ def _line(value: object, *, limit: int) -> object:
 Item = Annotated[str, _texts(1000)]
 _ITEMS = Field(default=(), max_length=10)
 
-SHAPE: Final[dict[str, JsonValue]] = {
-    "entry": "the entry you checked, as the brief names it",
-    "revision": "the revision you checked, as the brief names it",
-    "status": "complete | partial | blocked",
-    "verdict": "confirmed (only with complete coverage) | refuted | inconclusive",
-    "summary": "what you checked, how, and what you found (at most 8000 characters)",
-    "coverage": {
-        "examined": ["each part of what the entry rests on that you examined (1 to 20)"],
-        "not_examined": ["each part you did not examine; empty only when you examined all"],
-    },
-    "refutation": "only and always when refuted: the step, value or counterexample that "
-    "contradicts the entry",
-    "obstacle": "only and always when blocked: what prevents the check",
-    "deviations": ["where you departed from the brief, and why (at most 10)"],
-    "open_questions": ["what you could not settle, such as a question for the user"],
-}
-"""The result's fields, as the correction notice describes them."""
-
 
 class Coverage(StrictContract):
     """What a check examined of what the entry rests on, and what it did not: its
@@ -178,40 +222,6 @@ class CheckResult(StrictContract):
                 "that contradicts the entry, and only a refuted one does"
             )
         return self
-
-
-TASK_SHAPE: Final[dict[str, JsonValue]] = {
-    "status": "complete | partial | blocked",
-    "summary": "what you did, how, and what you found or made (at most 8000 characters)",
-    "obstacle": "only and always when blocked: what prevents the task",
-    "deviations": ["where you departed from the brief, and why (at most 10)"],
-    "open_questions": ["what you could not settle, such as a question for the user"],
-    "dismissals": [
-        {"what": "a line of work you dropped", "limit": "time | tools | context | ideas"}
-    ],
-    "obstructions": [
-        {"claim": "what you claim cannot be done", "evidence": "why, as you found it"}
-    ],
-    "result_files": ["the path of each file that is a result, which your calls wrote or published"],
-    "deliverables": [
-        {
-            "id": "only and always when the brief lists deliverables: one item for each, "
-            "by its number, such as d1",
-            "status": "produced | partial | not_produced",
-            "path": "for an artifact or a file: the path your calls wrote or published",
-            "revision": "for an artifact: the revision your calls recorded",
-            "entry": "for an entry: the handle of the entry you created or revised",
-            "answer": "for an answer: the answer itself (at most 1000 characters)",
-            "missing": "only and always when partial: what is missing",
-            "reason": "only and always when not_produced: why",
-        }
-    ],
-    "lessons": [
-        "at most 5, one line of at most 200 characters each: what you learned "
-        "operating the tools, as an observation"
-    ],
-}
-"""A task's result's fields, as the correction notice describes them."""
 
 
 class Dismissal(StrictContract):
@@ -459,11 +469,27 @@ def _listed(answer: str | None, order: Sequence[str]) -> tuple[str | None, tuple
 
 
 class SchemaError(ValueError):
-    """An answer its schema refuses, with each of its errors, at most ``MAX_ERRORS``."""
+    """An answer its schema refuses, with each of its errors, at most ``MAX_ERRORS``, and
+    each of them, at most ``MAX_PROBLEMS``, by its place in the result (``located``)."""
 
-    def __init__(self, errors: Sequence[str]) -> None:
+    def __init__(self, errors: Sequence[str], located: Sequence[tuple[str, str]] = ()) -> None:
         super().__init__("; ".join(errors))
         self.errors = tuple(errors)
+        self.located = tuple(located)
+
+
+def _path(loc: Sequence[int | str]) -> str:
+    """A place in a result as a JSON path reads it, such as ``deliverables[0].revision``;
+    ``result`` for the whole."""
+    found = ""
+    for part in loc:
+        found += f"[{part}]" if isinstance(part, int) else (f".{part}" if found else str(part))
+    return found or "result"
+
+
+def _plain(message: str) -> str:
+    """A validation message in plain words, without pydantic's prefix."""
+    return message.removeprefix("Value error, ")
 
 
 def _parsed[R: CheckResult | TaskResult](
@@ -475,11 +501,13 @@ def _parsed[R: CheckResult | TaskResult](
     try:
         result = schema.model_validate_json(text)
     except ValidationError as error:
+        listed = error.errors()
         found = [
             f"{'.'.join(str(part) for part in e['loc']) or 'result'}: {e['msg']}"
-            for e in error.errors()[:MAX_ERRORS]
+            for e in listed[:MAX_ERRORS]
         ]
-        raise SchemaError(found) from None
+        located = [(_path(e["loc"]), _plain(e["msg"])) for e in listed[:MAX_PROBLEMS]]
+        raise SchemaError(found, located) from None
     if len(result.model_dump_json().encode()) > limit:
         raise ValueError(f"the result is longer than {limit} bytes")
     return result
@@ -512,9 +540,366 @@ def parse(answer: str | None, target: Target | None = None) -> CheckResult:
     return result
 
 
+def _fenced(text: str) -> list[str]:
+    """The contents of an answer's fenced blocks marked ``json``, or not marked, in order:
+    a block opens with a line that begins with three backticks and closes at the next."""
+    found: list[str] = []
+    lines: list[str] | None = None
+    marked = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("```"):
+            if lines is not None:
+                lines.append(line)
+            continue
+        if lines is None:
+            lines, marked = [], stripped[3:].strip().lower() in ("", "json")
+            continue
+        if marked:
+            found.append("\n".join(lines))
+        lines = None
+    return found
+
+
+def _last_object(text: str) -> str | None:
+    """The text of the last top-level JSON object in ``text``: each ``{`` that begins an
+    object, outside an object read before it, read whole."""
+    decoder = json.JSONDecoder()
+    last: str | None = None
+    start = text.find("{")
+    while start >= 0:
+        try:
+            found, end = decoder.raw_decode(text, start)
+        except (ValueError, RecursionError):
+            start = text.find("{", start + 1)
+            continue
+        if isinstance(found, dict):
+            last = text[start:end]
+        start = text.find("{", end)
+    return last
+
+
+def _object(text: str) -> bool:
+    try:
+        return isinstance(json.loads(text), dict)
+    except (ValueError, RecursionError):
+        return False
+
+
+def candidates(answer: str | None) -> tuple[str, ...]:
+    """The JSON objects an answer may give its result in, read leniently, most likely
+    first: its last fenced ``json`` block, then its last top-level JSON object, prose
+    before or after either allowed (lab round 2: every child wrote a sentence before its
+    JSON, and one a stub block before it)."""
+    text = answer or ""
+    found: list[str] = []
+    blocks = [block.strip() for block in _fenced(text) if _object(block.strip())]
+    if blocks:
+        found.append(blocks[-1])
+    last = _last_object(text)
+    if last is not None and last not in found:
+        found.append(last)
+    return tuple(found)
+
+
+def _string(description: str, limit: int, *, least: int = 0) -> dict[str, Any]:
+    found: dict[str, Any] = {"type": "string", "maxLength": limit}
+    if least:
+        found["minLength"] = least
+    return {**found, "description": description}
+
+
+def _strings(description: str, most: int, limit: int = 1000) -> dict[str, Any]:
+    return {
+        "type": "array",
+        "maxItems": most,
+        "description": description,
+        "items": {"type": "string", "minLength": 1, "maxLength": limit},
+    }
+
+
+_STATUSES: Final[list[Any]] = ["complete", "partial", "blocked"]
+_LISTS: Final[dict[str, Any]] = {
+    "deviations": _strings("where you departed from the brief, and why", 10),
+    "open_questions": _strings(
+        "what you could not settle, such as a question your parent did not answer", 10
+    ),
+}
+
+
+def check_schema(target: Target | None = None) -> dict[str, Any]:
+    """``submit_result``'s schema for a check: ``CheckResult``'s, its entry and revision
+    those of its brief (``target``)."""
+    entry = _string("the entry you checked, as the brief names it", 128, least=1)
+    revision: dict[str, Any] = {
+        "type": "integer",
+        "minimum": 1,
+        "description": "the revision you checked, as the brief names it",
+    }
+    if target is not None:
+        entry["enum"] = [target.handle]
+        revision["enum"] = [target.revision]
+    return {
+        "type": "object",
+        "properties": {
+            "entry": entry,
+            "revision": revision,
+            "status": {
+                "type": "string",
+                "enum": _STATUSES,
+                "description": "complete, partial, or blocked when something prevents the check",
+            },
+            "verdict": {
+                "type": "string",
+                "enum": ["confirmed", "refuted", "inconclusive"],
+                "description": "confirmed only from a complete check that examined everything "
+                "the entry rests on; refuted only with its refutation",
+            },
+            "summary": _string("what you checked, how, and what you found", 8000, least=1),
+            "coverage": {
+                "type": "object",
+                "description": "what you examined of what the entry rests on, and what not",
+                "properties": {
+                    "examined": {
+                        **_strings(
+                            "each part of what the entry rests on that you examined, such as "
+                            "its statement, an assumption, a proof's step or a computed value",
+                            20,
+                        ),
+                        "minItems": 1,
+                    },
+                    "not_examined": _strings(
+                        "each part you did not examine; empty only when you examined all", 20
+                    ),
+                },
+                "required": ["examined"],
+                "additionalProperties": False,
+            },
+            "refutation": _string(
+                "only and always when refuted: the step, value or counterexample that "
+                "contradicts the entry, as you found it",
+                2000,
+            ),
+            "obstacle": _string("only and always when blocked: what prevents the check", 1000),
+            **_LISTS,
+        },
+        "required": ["entry", "revision", "status", "verdict", "summary", "coverage"],
+        "additionalProperties": False,
+    }
+
+
+_REFERENCES: Final[dict[str, dict[str, Any]]] = {
+    "artifact": {
+        "path": _string("its path, as your calls wrote or published it", 4096, least=1),
+        "revision": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "the revision of it your calls recorded or published",
+        },
+    },
+    "file": {"path": _string("its path, as your calls wrote it", 4096, least=1)},
+    "entry": {
+        "entry": _string(
+            "the handle of the entry you created or revised, such as T-3", 128, least=1
+        )
+    },
+    "answer": {"answer": _string("the answer itself", 1000, least=1)},
+}
+"""The fields that name what a deliverable of each kind produced (PD-45)."""
+
+
+def _accounted(kind: str, ids: Sequence[str]) -> dict[str, Any]:
+    """The form of an item accounting for the brief's deliverables of one kind, ``ids``:
+    that kind's fields, and no other kind's."""
+    references = _REFERENCES[kind]
+    gives = " and ".join(references)
+    return {
+        "type": "object",
+        "description": f"{', '.join(ids)}: {_KINDS[kind]}{' each' if len(ids) > 1 else ''}; "
+        f"produced gives its {gives}, partial what exists and what is missing, not_produced "
+        "why",
+        "properties": {
+            "id": {"type": "string", "enum": list(ids)},
+            "status": {"type": "string", "enum": ["produced", "partial", "not_produced"]},
+            **references,
+            "missing": _string("only and always when partial: what is missing", 500),
+            "reason": _string("only and always when not_produced: why", 500),
+        },
+        "required": ["id", "status"],
+        "additionalProperties": False,
+    }
+
+
+def task_schema(asked: Sequence[Asked] = ()) -> dict[str, Any]:
+    """``submit_result``'s schema for a task: ``TaskResult``'s, with ``deliverables`` when
+    its brief lists any (``asked``), one item for each, a ``oneOf`` by their kinds."""
+    properties: dict[str, Any] = {
+        "status": {
+            "type": "string",
+            "enum": _STATUSES,
+            "description": "complete only when every deliverable of your brief was produced; "
+            "blocked when something prevents the task",
+        },
+        "summary": _string(
+            "what you did, how, and what you found or made, naming the files and entries",
+            8000,
+            least=1,
+        ),
+        "obstacle": _string("only and always when blocked: what prevents the task", 1000),
+        **_LISTS,
+        "dismissals": {
+            "type": "array",
+            "maxItems": 10,
+            "description": "each line of work you dropped, and what ran out",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "what": _string("the line of work", 1000, least=1),
+                    "limit": {"type": "string", "enum": ["time", "tools", "context", "ideas"]},
+                },
+                "required": ["what", "limit"],
+                "additionalProperties": False,
+            },
+        },
+        "obstructions": {
+            "type": "array",
+            "maxItems": 5,
+            "description": "each claim that something cannot be done, with its evidence",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "claim": _string("what you claim cannot be done", 2000, least=1),
+                    "evidence": _string("why, as you found it", 4000, least=1),
+                },
+                "required": ["claim", "evidence"],
+                "additionalProperties": False,
+            },
+        },
+        "result_files": {
+            "type": "array",
+            "maxItems": MAX_RESULT_FILES,
+            "description": "the paths of the files that are your results, as your calls wrote "
+            "or published them; the platform pins each to the revision your calls made",
+            "items": {"type": "string", "minLength": 1, "maxLength": 4096},
+        },
+        "lessons": {
+            "type": "array",
+            "maxItems": MAX_LESSONS,
+            "description": "what you learned operating the tools that a later run could use, "
+            "each one line, stated as an observation",
+            "items": {"type": "string", "minLength": 1, "maxLength": LESSON_CHARS},
+        },
+    }
+    required: list[Any] = ["status", "summary"]
+    if asked:
+        kinds: dict[str, list[str]] = {}
+        for item in asked:
+            if item.kind in _REFERENCES:
+                kinds.setdefault(item.kind, []).append(item.id)
+        branches = [_accounted(kind, ids) for kind, ids in kinds.items()]
+        items: dict[str, Any] = branches[0] if len(branches) == 1 else {"oneOf": branches}
+        properties["deliverables"] = {
+            "type": "array",
+            "minItems": len(asked),
+            "maxItems": len(asked),
+            "description": "one item for each deliverable of your brief, its number as id, "
+            "honestly: produced with what you produced, partial with what exists and what is "
+            "missing, or not_produced with why, rather than left out",
+            "items": items,
+        }
+        required.append("deliverables")
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": required,
+        "additionalProperties": False,
+    }
+
+
+DESCRIPTION: Final = (
+    "Submit your result to your parent: your final answer does not carry it. The platform "
+    "checks it at once against your brief and your calls, and answers with each problem, "
+    "by its place in the result, or with what it recorded. Submit again as often as you "
+    "need: a submission that checks replaces the one before. Once it is recorded, check "
+    "the values it echoes, then end your run with a short final answer."
+)
+SPEC: Final = ToolSpec(SUBMIT, DESCRIPTION, {"type": "object"})
+"""``submit_result`` as the capabilities reserve its name; each run is offered its own
+schema (``Outcome.spec``)."""
+
+
+@dataclass(frozen=True)
+class Reading:
+    """What the checks make of one JSON text offered as a run's result."""
+
+    result: CheckResult | TaskResult | None = None
+    pinned: tuple[dict[str, JsonValue], ...] = ()
+    """A task's result files, pinned to the revisions its calls made (RA-38)."""
+    notes: tuple[str, ...] = ()
+    """The platform's notes on the forms it read (PD-18)."""
+    missing: tuple[Asked, ...] = ()
+    """The brief's deliverables it leaves out (PD-45)."""
+    problems: tuple[tuple[str, str], ...] = ()
+    """What else is wrong with it, each by its place in the result."""
+
+    @property
+    def valid(self) -> bool:
+        return self.result is not None and not self.missing and not self.problems
+
+    @property
+    def omits(self) -> bool:
+        """Whether it checks but for the deliverables it leaves out."""
+        return self.result is not None and bool(self.missing) and not self.problems
+
+    def listed(self) -> list[tuple[str, str]]:
+        """Every problem, the deliverables left out first."""
+        found = list(self.problems)
+        if self.missing:
+            named = ", ".join(asked.named for asked in self.missing)
+            found.insert(0, ("deliverables", f"your result does not account for {named}"))
+        return found
+
+
+_FIELDS: Final = ("result_files", "deliverables", "status", "entry", "revision")
+
+
+def _placed(problems: Sequence[str], ids: Sequence[str]) -> list[tuple[str, str]]:
+    """The accounting's problems, each by its place: the item of the deliverable it names,
+    the field it begins with, or the result."""
+    found: list[tuple[str, str]] = []
+    for problem in problems:
+        named = next((i for i in re.findall(r"\bd\d+\b", problem) if i in ids), None)
+        field_name, _, rest = problem.partition(": ")
+        if named is not None:
+            found.append((f"deliverables[{ids.index(named)}]", problem))
+        elif field_name in _FIELDS and rest:
+            found.append((field_name, rest))
+        else:
+            found.append(("result", problem))
+    return found
+
+
+def _given(text: str) -> list[str]:
+    """The ``id`` of each item of a result's ``deliverables``, in order, as far as the text
+    gives them, for placing problems; an empty string for an item that names none."""
+    try:
+        loaded: object = json.loads(text)
+    except (ValueError, RecursionError):
+        return []
+    given = (
+        cast(dict[str, object], loaded).get("deliverables") if isinstance(loaded, dict) else None
+    )
+    if not isinstance(given, list):
+        return []
+    return [
+        str(cast(dict[str, object], item).get("id") or "") if isinstance(item, dict) else ""
+        for item in cast(list[object], given)
+    ]
+
+
 class Outcome(TurnHook):
-    """A delegated run's result, read from its closing answers, and whether it read the
-    entry it checks."""
+    """A delegated run's result, as it submits it with ``submit_result`` or, failing that,
+    as its closing answers give it, and whether it read the entry it checks."""
 
     name = "outcome"
 
@@ -535,13 +920,31 @@ class Outcome(TurnHook):
         self.deliverables = tuple(deliverables)
         self.entry_made = entry_made
         self.result: CheckResult | TaskResult | None = None
+        """The result that stands: the latest that checked, or, without one, the latest
+        that checked but for the deliverables it left out."""
+        self.valid = False
+        """Whether ``result`` checked whole: it is not one that left deliverables out."""
+        self.source: str | None = None
+        """Where ``result`` came from: ``submit_result``, the run's closing answer
+        (``answer``) or its report at a limit (``report``)."""
         self.marked: dict[str, JsonValue] | None = None
         """The platform's status and obstacle for a result that left deliverables
         unaccounted for (PD-45), which the kept result shows over the child's."""
         self.errors: list[str] = []
+        """The problems of the latest submissions and answers that did not check."""
         self.notes: tuple[str, ...] = ()
-        """The platform's notes on the forms it read in the result that stands (PD-18)."""
-        self.corrected = False
+        """The platform's notes on the result that stands: the forms it read (PD-18), and
+        where it came from when not through ``submit_result``."""
+        self.submissions = 0
+        """The run's calls of ``submit_result``."""
+        self.nudges = 0
+        """The platform's notices to the run that it submitted no result."""
+        self.answer: str | None = None
+        """The run's latest closing answer, which the platform's result keeps."""
+        self.stopped: str | None = None
+        """How the run ended, once its loop ended normally (``finishing``)."""
+        self.reminded = False
+        """Whether the run was told that its last call with tools had come."""
         self.read = False
         """Whether a ``ledger_read`` of the run showed the target's whole statement at its
         revision."""
@@ -598,6 +1001,37 @@ class Outcome(TurnHook):
         if self.target is None:
             return None
         return all(p.evidence_id in self.shown and p.read in self.seen for p in self.target.proofs)
+
+    @property
+    def spec(self) -> ToolSpec:
+        """``submit_result`` as this run is offered it, its schema the brief's."""
+        schema = task_schema(self.deliverables) if self.task else check_schema(self.target)
+        return ToolSpec(SUBMIT, DESCRIPTION, schema)
+
+    @property
+    def form(self) -> dict[str, JsonValue]:
+        """The form the brief asks for, as a refused submission and the platform's notices
+        show it: the fields a result must give, and each deliverable's produced form."""
+        if not self.task:
+            found: dict[str, JsonValue] = {
+                "required": ["entry", "revision", "status", "verdict", "summary", "coverage"]
+            }
+            if self.target is not None:
+                found |= {"entry": self.target.handle, "revision": self.target.revision}
+            return found
+        required: list[JsonValue] = ["status", "summary"]
+        if not self.deliverables:
+            return {"required": required, "deliverables": "none: leave the field out"}
+        return {
+            "required": [*required, "deliverables"],
+            "deliverables": [
+                produced_form(asked.id, asked.kind) if asked.kind in PRODUCED else asked.id
+                for asked in self.deliverables
+            ],
+            "otherwise": 'each one partial, with "missing", or not_produced, with "reason"',
+        }
+
+    # --- What the run's calls showed and made -------------------------------------------
 
     async def observe_tool(self, run: RunView, record: dict[str, Any]) -> None:
         self._created(record)
@@ -707,6 +1141,8 @@ class Outcome(TurnHook):
         revision = found.get("revision")
         if isinstance(revision, int) and found.get("deleted") is not True:
             self.revisions.setdefault(path, set()).add(revision)
+
+    # --- The checks ---------------------------------------------------------------------
 
     def _pin(self, result: TaskResult) -> list[dict[str, JsonValue]]:
         """The task's result files, each pinned to the latest revision its calls made, or
@@ -824,60 +1260,13 @@ class Outcome(TurnHook):
                 )
         return problems
 
-    def _invalid(self, error: str, missing: Sequence[Asked] = ()) -> Closing:
-        """An answer that is no result: one correction (PD-18), naming the deliverables it
-        left out; with no turn or room left, or the correction spent, the answer stands
-        with no result."""
-        self.result, self.marked, self.pinned, self.notes = None, None, [], ()
-        self.errors = [*self.errors, error[:ERROR_CHARS]][-KEPT_ERRORS:]
-        return self._correction(missing)
-
-    def _correction(self, missing: Sequence[Asked]) -> Closing:
-        if self.corrected:
-            return Closing()
-        self.corrected = True
-        found: dict[str, JsonValue] = {
-            "errors": list[JsonValue](self.errors[-1:]),
-            "format": self.format,
-            "fields": self.shape,
-        }
-        if missing:
-            found["missing"] = [{"id": a.id, "title": a.title} for a in missing]
-        return Closing("continue", (Notice(self.name, (), OUTCOME_CORRECTION.text, found),))
-
-    def _omitted(
-        self, result: TaskResult, pinned: list[dict[str, JsonValue]], missing: Sequence[Asked]
-    ) -> Closing:
-        """A result that leaves deliverables out and is otherwise valid: corrected once;
-        the answer that stands is the child's, blocked by the platform (PD-45). The block
-        is kept already as the correction is asked for, so that it stands if no turn is
-        left to take it."""
-        named = ", ".join(a.named for a in missing)
-        error = f"deliverables: your result does not account for {named}"
-        self.errors = [*self.errors, error[:ERROR_CHARS]][-KEPT_ERRORS:]
-        self.result, self.pinned = result, pinned
-        obstacle = f"deliverables not accounted for: {named}"
-        if len(obstacle.encode()) > OBSTACLE_BYTES:
-            # Twelve long titles of wide characters: cut, so that the mark keeps the
-            # result within the table's bound.
-            obstacle = obstacle.encode()[: OBSTACLE_BYTES - 3].decode(errors="ignore") + "…"
-        self.marked = {
-            "status": "blocked",
-            "obstacle": obstacle,
-            "set_by": {"status": "platform", "obstacle": "platform"},
-            "child_status": result.status,
-        }
-        if result.obstacle is not None:
-            self.marked["child_obstacle"] = result.obstacle
-        return self._correction(missing)
-
     async def _leniently(self, answer: str | None) -> tuple[list[Asked], list[str]]:
         """What the accounting finds wrong with an answer the schema refuses, as far as
         its deliverables can be read: each item that validates on its own is checked as
         a valid result's is, and the brief's deliverables that no item names are left
         out; an item that does not validate counts as given and is not checked, and
         ``deliverables`` that is no list is not read (PD-18, PD-45). The answer stays
-        invalid: this only lets its one correction name every problem at once."""
+        invalid: this only lets its problems be named at once."""
         order = [asked.id for asked in self.deliverables]
         try:
             text, _ = _listed(answer, order)
@@ -911,13 +1300,31 @@ class Outcome(TurnHook):
         problems.extend(await self._entries(read))
         return [asked for asked in missing if asked.id not in unread], problems
 
-    async def _task_closing(self, answer: str | None) -> Closing:
+    async def _reading(self, text: str) -> Reading:
+        """What the checks make of ``text``, a JSON object offered as the result: for a
+        task, its schema's, its accounting's, its result files' and its entries' (PD-45,
+        RA-38); for a check, its schema's and its brief's entry and revision."""
+        if not self.task:
+            try:
+                return Reading(parse(text, self.target))
+            except SchemaError as error:
+                return Reading(problems=error.located)
+            except ValueError as error:
+                return Reading(problems=(("result", str(error)),))
+        order = [asked.id for asked in self.deliverables]
         try:
-            found, listed = read_task(answer, [asked.id for asked in self.deliverables])
+            found, listed = read_task(text, order)
         except ValueError as error:
-            errors = list(error.errors) if isinstance(error, SchemaError) else [str(error)]
-            missing, problems = await self._leniently(answer)
-            return self._invalid("; ".join([*errors, *problems][:MAX_ERRORS]), missing)
+            if isinstance(error, SchemaError):
+                located = list(error.located)
+            else:
+                located = _placed([str(error)], [])
+            missing, problems = await self._leniently(text)
+            try:
+                ids = _given(_listed(text, order)[0] or "")
+            except ValueError:
+                ids = []
+            return Reading(missing=tuple(missing), problems=(*located, *_placed(problems, ids)))
         found, resolved = self._resolved(found)
         missing, problems = self._unaccounted(found)
         pinned: list[dict[str, JsonValue]] = []
@@ -926,56 +1333,439 @@ class Outcome(TurnHook):
         except ValueError as error:
             problems.insert(0, str(error))
         problems.extend(await self._entries(found))
-        if problems:
-            return self._invalid("; ".join(problems[:MAX_ERRORS]), missing)
-        self.notes = (*listed, *resolved)
-        if missing:
-            return self._omitted(found, pinned, missing)
-        self.result, self.marked, self.pinned = found, None, pinned
-        return Closing()
+        ids = [item.id for item in found.deliverables or ()]
+        return Reading(
+            found,
+            tuple(pinned),
+            (*listed, *resolved),
+            tuple(missing),
+            tuple(_placed(problems, ids)),
+        )
+
+    async def _answered(self, answer: str | None) -> Reading | None:
+        """The best reading of the JSON an answer holds (``candidates``): the first that
+        checks, else the first that checks but for deliverables it leaves out, else the
+        first; ``None`` for an answer that holds none."""
+        readings = [await self._reading(text) for text in candidates(answer)]
+        found = next((r for r in readings if r.valid), None)
+        found = found or next((r for r in readings if r.omits), None)
+        return found or (readings[0] if readings else None)
+
+    # --- The result that stands --------------------------------------------------------
+
+    def _stand(self, reading: Reading, source: str) -> None:
+        """``reading`` as the result that stands, from ``source``: whole, or blocked by the
+        platform for the deliverables it leaves out, the block kept already, so that it
+        stands if no turn is left to amend it (PD-45)."""
+        result = reading.result
+        if result is None:
+            return
+        self.result, self.valid, self.source = result, reading.valid, source
+        self.pinned = list(reading.pinned)
+        self.notes = (*reading.notes, *((CAME[source],) if source in CAME else ()))
+        self.marked = None
+        if isinstance(result, TaskResult) and reading.missing:
+            self.marked = _blocked(result, reading.missing)
+
+    def _refused(self, reading: Reading) -> list[tuple[str, str]]:
+        """A reading's problems, at most ``MAX_PROBLEMS``, each cut to ``ERROR_CHARS``,
+        and kept as the run's latest errors."""
+        found = [(at, text[:ERROR_CHARS]) for at, text in reading.listed()[:MAX_PROBLEMS]]
+        said = "; ".join(f"{at}: {text}" for at, text in found) or "no result"
+        self.errors = [*self.errors, said[:ERROR_CHARS]][-KEPT_ERRORS:]
+        return found
+
+    async def submit(self, arguments: str) -> tuple[str, dict[str, Any]]:
+        """``submit_result``: the run's result, checked now. One that checks is recorded,
+        replacing the one before, and echoed for the run to check; one that does not is
+        refused with each of its problems and the brief's form, and replaces nothing, but
+        one that checks but for deliverables it leaves out stands while none checks."""
+        self.submissions += 1
+        reading = await self._reading(arguments)
+        if reading.valid:
+            self._stand(reading, SUBMIT)
+            return dump(self._echo()), {
+                "submitted": {"submission": self.submissions, "recorded": True}
+            }
+        if reading.omits and not self.valid:
+            self._stand(reading, SUBMIT)
+        found = self._refused(reading)
+        said = f"{len(found)} problem{'' if len(found) == 1 else 's'}"
+        refused: dict[str, JsonValue] = {
+            "kind": "invalid_request",
+            "message": f"not recorded, for the {said} below: fix each and submit the whole "
+            "result again",
+            "problems": [{"at": at, "problem": text} for at, text in found],
+            "form": self.form,
+        }
+        return dump({"error": refused}), {
+            "error": "invalid_request",
+            "submitted": {
+                "submission": self.submissions,
+                "recorded": False,
+                "problems": len(found),
+            },
+        }
+
+    def _echo(self) -> dict[str, JsonValue]:
+        """What a recorded submission says back: its values, for the run to check."""
+        result = self.result
+        values: dict[str, JsonValue]
+        if isinstance(result, CheckResult):
+            coverage = result.coverage
+            said = (
+                f"verdict {result.verdict}, status {result.status}, "
+                f"{len(coverage.examined)} parts examined and {len(coverage.not_examined)} not"
+            )
+            values = {
+                "entry": result.entry,
+                "revision": result.revision,
+                "status": result.status,
+                "verdict": result.verdict,
+                "examined": list[JsonValue](coverage.examined),
+                "not_examined": list[JsonValue](coverage.not_examined),
+            }
+        else:
+            result = cast(TaskResult, result)
+            accounted = result.deliverables or ()
+            statuses = [item.status for item in accounted]
+            counted = ", ".join(
+                f"{statuses.count(s)} {s.replace('_', ' ')}"
+                for s in ("produced", "partial", "not_produced")
+                if s in statuses
+            )
+            said = f"status {result.status}"
+            if accounted:
+                said += f", {len(accounted)} deliverables accounted for ({counted})"
+            said += f", {len(self.pinned)} result file{'' if len(self.pinned) == 1 else 's'} pinned"
+            values = {"status": result.status}
+            if accounted:
+                values["deliverables"] = [
+                    {
+                        k: v
+                        for k, v in item.model_dump(mode="json").items()
+                        if v is not None and k not in ("missing", "reason")
+                    }
+                    for item in accounted
+                ]
+            values["result_files"] = [
+                {"path": pinned.get("path"), "revision": pinned.get("revision")}
+                for pinned in self.pinned
+            ]
+        echoed: dict[str, JsonValue] = {
+            "recorded": f"{said}; your run can end now",
+            "submission": self.submissions,
+            "values": values,
+        }
+        if self.notes:
+            echoed["platform_notes"] = list[JsonValue](self.notes)
+        echoed["next"] = (
+            "Check these values against your work. Submit again to change any; otherwise end "
+            "your run with a short final answer."
+        )
+        return echoed
+
+    # --- The run's closings --------------------------------------------------------------
+
+    async def notices(self, point: Point, run: RunView) -> Sequence[Notice]:
+        """Before a run's last call with tools at its turn limit, when it submitted no
+        result: that the call after it, its report, runs no tool."""
+        if point != "turn" or self.reminded or run.turns_left != 1 or self._submitted:
+            return ()
+        self.reminded = True
+        return (Notice(self.name, (), OUTCOME_LAST_CALL.text, {"tool": SUBMIT, "form": self.form}),)
+
+    @property
+    def _submitted(self) -> bool:
+        return self.valid and self.source == SUBMIT
+
+    async def report_notices(self, run: RunView, limit: str) -> Sequence[Notice]:
+        """The report round at a limit, where no tool runs: the run writes, as its answer,
+        the JSON object it would have submitted, which is read leniently as its result
+        (PD-19); with a result recorded, the notice says so."""
+        payload: dict[str, JsonValue] = {
+            "limit": limit,
+            "recorded": self._submitted,
+            "form": self.form,
+        }
+        return (Notice(self.name, (), OUTCOME_REPORT.text, payload),)
+
+    async def model_returned(self, run: RunView) -> None:
+        """A report round's answer at a limit, where no tool runs: its text is the run's
+        latest answer, whose JSON, read leniently, is the report's result, as is a call
+        of ``submit_result`` in it, which does not run. A hook that stops the run at its
+        closing, as a parent's stop does, asks this hook nothing more."""
+        if run.halted is None:
+            return
+        messages = run.context.messages
+        last = messages[-1] if messages else None
+        if last is None or last.get("role") != "assistant":
+            return
+        text = last.get("content")
+        calls = cast(list[dict[str, Any]], last.get("tool_calls") or [])
+        submitted = [
+            cast(dict[str, Any], call.get("function") or {})
+            for call in calls
+            if cast(dict[str, Any], call.get("function") or {}).get("name") == SUBMIT
+        ]
+        readings: list[Reading] = []
+        if submitted:
+            arguments = without(str(submitted[-1].get("arguments") or ""))
+            readings.append(await self._reading(arguments))
+        if isinstance(text, str) and text.strip():
+            self.answer = body(text)
+            if (found := await self._answered(self.answer)) is not None:
+                readings.append(found)
+        for reading in sorted(readings, key=lambda r: not r.valid):
+            if reading.valid or (reading.omits and not self.valid):
+                self._stand(reading, REPORT)
+                return
 
     async def closing(self, run: RunView, answer: str | None) -> Closing:
-        if self.task:
-            return await self._task_closing(answer)
-        try:
-            self.result = parse(answer, self.target)
-        except ValueError as error:
-            return self._invalid(str(error))
-        return Closing()
+        """A closing answer: it stands once a result was submitted. Without one, a result
+        the answer holds as JSON is taken (a report's at a limit too); otherwise the run
+        is told, at most ``NUDGES`` times, that its result goes through ``submit_result``,
+        and then the answer stands (PD-18)."""
+        self.answer = answer
+        limited = run.halted is not None
+        if self._submitted and not limited:
+            return Closing()
+        reading = await self._answered(answer)
+        source = REPORT if limited else ANSWER
+        if reading is not None and reading.valid:
+            self._stand(reading, source)
+            return Closing()
+        if self.valid:
+            return Closing()
+        if reading is not None and reading.omits:
+            self._stand(reading, source)
+        if limited or self.nudges >= NUDGES:
+            return Closing()
+        self.nudges += 1
+        payload: dict[str, JsonValue] = {
+            "tool": SUBMIT,
+            "notice": self.nudges,
+            "of": NUDGES,
+            "form": self.form,
+        }
+        if reading is not None:
+            payload["answer_problems"] = [
+                {"at": at, "problem": text} for at, text in self._refused(reading)
+            ]
+        return Closing("continue", (Notice(self.name, (), OUTCOME_SUBMIT.text, payload),))
 
-    def kept(self) -> dict[str, JsonValue] | None:
-        """The result as the delegation keeps it: a task's with the platform's mark over
-        the child's status when deliverables were left out (PD-45), and its notes on the
-        forms it read, when it read any (PD-18)."""
-        if self.result is None:
+    async def finishing(self, run: RunView, stopped: str) -> str | None:
+        self.stopped = stopped
+        return None
+
+    # --- The result the delegation keeps ------------------------------------------------
+
+    def kept(self, stopped: str = "answered") -> dict[str, JsonValue] | None:
+        """The result as the delegation keeps it, for a run that stopped as ``stopped``:
+        the one that stands, a task's with the platform's mark over the child's status
+        when deliverables were left out (PD-45), and its notes, when there are any
+        (PD-18); at a limit, ``complete`` made ``partial`` with an obstacle naming the
+        limit, both the platform's; without one, the platform's (``NO_SUBMISSION``). A run
+        that stopped otherwise, cancelled or interrupted, keeps none."""
+        if stopped != "answered" and stopped not in LIMITS:
             return None
-        if isinstance(self.result, CheckResult):
-            return cast(dict[str, JsonValue], self.result.model_dump(mode="json"))
-        notes: dict[str, JsonValue] = {}
-        if self.notes:
-            notes["platform_notes"] = list[JsonValue](self.notes)
-        return {**self.result.kept(), **(self.marked or {}), **notes}
+        limit = stopped if stopped in LIMITS else None
+        if self.result is None:
+            return self._platform(limit)
+        found: dict[str, JsonValue] = (
+            cast(dict[str, JsonValue], self.result.model_dump(mode="json"))
+            if isinstance(self.result, CheckResult)
+            else self.result.kept()
+        )
+        marks = dict(self.marked or {})
+        notes = list[JsonValue](self.notes)
+        if limit is not None:
+            marks, noted = _limited(found, marks, limit)
+            notes.extend(noted)
+        kept = {**found, **marks}
+        if notes:
+            kept["platform_notes"] = notes
+        return kept
+
+    def _platform(self, limit: str | None) -> dict[str, JsonValue]:
+        """The platform's result for a run that submitted none, never stronger than the
+        records: ``blocked``, with the obstacle that it submitted none, the run's answer as
+        its summary, each deliverable not produced for that reason, no result files, and
+        the files its calls wrote or published named in a note (PD-45)."""
+        obstacle = (
+            NO_SUBMISSION
+            if limit is None
+            else f"the run reached a limit ({limit}) without submitting a result"
+        )
+        summary, said = self._summary()
+        found: dict[str, JsonValue]
+        if self.task:
+            found = {
+                "status": "blocked",
+                "summary": summary,
+                "obstacle": obstacle,
+                "deviations": [],
+                "open_questions": [],
+                "dismissals": [],
+                "obstructions": [],
+                "result_files": [],
+            }
+            marked = ["status", "obstacle", "summary"]
+            if self.deliverables:
+                found["deliverables"] = [
+                    {
+                        "id": asked.id,
+                        "status": "not_produced",
+                        **dict.fromkeys(("path", "revision", "entry", "answer", "missing")),
+                        "reason": obstacle,
+                    }
+                    for asked in self.deliverables
+                ]
+                marked.append("deliverables")
+        else:
+            target = self.target
+            found = {
+                **(
+                    {"entry": target.handle, "revision": target.revision}
+                    if target is not None
+                    else {}
+                ),
+                "status": "blocked",
+                "verdict": "inconclusive",
+                "summary": summary,
+                "coverage": {"examined": [], "not_examined": []},
+                "refutation": None,
+                "obstacle": obstacle,
+                "deviations": [],
+                "open_questions": [],
+            }
+            marked = ["status", "verdict", "obstacle", "summary", "coverage"]
+        return {
+            **found,
+            "set_by": dict.fromkeys(marked, "platform"),
+            "platform_notes": [said, self._written()],
+        }
+
+    def _summary(self) -> tuple[str, str]:
+        """The platform's result's summary, the run's latest closing answer within a
+        summary's bounds, and its note saying so."""
+        text = (self.answer or "").strip()
+        if not text:
+            return "The run gave no closing answer.", (
+                "no result was submitted: the platform wrote this result, and the run gave no "
+                "closing answer"
+            )
+        cut = text[:8000]
+        if len(cut.encode()) > SUMMARY_BYTES:
+            cut = cut.encode()[: SUMMARY_BYTES - 3].decode(errors="ignore")
+        if cut != text:
+            cut = cut[:-1] + "…"
+        try:
+            kept = agent_text(cut, "the summary")
+        except DocumentError:
+            return (
+                "The run's closing answer holds characters a summary may not; the delegation "
+                "keeps it as its report.",
+                "no result was submitted: the platform wrote this result",
+            )
+        return kept, (
+            "no result was submitted: the platform wrote this result, its summary the run's "
+            "closing answer as the run wrote it"
+        )
+
+    def _written(self) -> str:
+        """The platform's note naming the files the run's calls wrote or published, with
+        their revisions, so that the parent can look."""
+        files = [
+            (path, found.get("revision"))
+            for path, found in self.recorded.items()
+            if found.get("deleted") is not True
+        ]
+        if not files:
+            return "the run's calls wrote or published no file"
+        shown: list[str] = []
+        used = 0
+        for path, revision in files:
+            item = f"{path} (revision {revision})" if isinstance(revision, int) else path
+            if shown and used + len(item) > NOTE_CHARS:
+                break
+            shown.append(item[:NOTE_CHARS])
+            used += len(item) + 2
+        rest = len(files) - len(shown)
+        more = f", and {rest} more" if rest else ""
+        return f"the run's calls wrote or published {', '.join(shown)}{more}"
 
     @property
     def format(self) -> str:
         return TASK_FORMAT if self.task else FORMAT
 
-    @property
-    def shape(self) -> dict[str, JsonValue]:
-        return TASK_SHAPE if self.task else SHAPE
-
     def summary(self) -> object | None:
+        kept = self.kept(self.stopped) if self.stopped is not None else None
+        source = self.source if self.result is not None else "platform" if kept else None
         return {
             "format": self.format,
-            "result": self.kept(),
+            "result": kept,
             "errors": list(self.errors),
             "read": self.read,
             "read_proofs": self.read_proofs,
             "result_files": list(self.pinned),
+            "submissions": self.submissions,
+            "nudges": self.nudges,
+            "source": source,
         }
 
 
-def result_of(outcome: Outcome, stopped: str, failed: bool) -> CheckResult | TaskResult | None:
-    """The result of a run that ended with the answer it gave: ``None`` for one stopped by
-    a limit, a cancel or a failure, whatever an earlier closing parsed."""
-    return outcome.result if stopped == "answered" and not failed else None
+def _blocked(result: TaskResult, missing: Sequence[Asked]) -> dict[str, JsonValue]:
+    """The platform's mark over a result that leaves deliverables out (PD-45): status
+    ``blocked`` and its obstacle naming them, the child's status kept beside them."""
+    named = ", ".join(a.named for a in missing)
+    obstacle = f"deliverables not accounted for: {named}"
+    if len(obstacle.encode()) > OBSTACLE_BYTES:
+        # Twelve long titles of wide characters: cut, so that the mark keeps the result
+        # within the table's bound.
+        obstacle = obstacle.encode()[: OBSTACLE_BYTES - 3].decode(errors="ignore") + "…"
+    marked: dict[str, JsonValue] = {
+        "status": "blocked",
+        "obstacle": obstacle,
+        "set_by": {"status": "platform", "obstacle": "platform"},
+        "child_status": result.status,
+    }
+    if result.obstacle is not None:
+        marked["child_obstacle"] = result.obstacle
+    return marked
+
+
+def _limited(
+    found: Mapping[str, JsonValue], marks: dict[str, JsonValue], limit: str
+) -> tuple[dict[str, JsonValue], list[JsonValue]]:
+    """The platform's mark over a result of a run stopped at ``limit``: ``complete`` made
+    ``partial`` (and a check's ``confirmed``, which only a complete check gives, made
+    ``inconclusive``), with an obstacle naming the limit, the child's own beside them; a
+    blocked result keeps its obstacle, and a note names the limit."""
+    status = marks.get("status", found.get("status"))
+    if status == "blocked":
+        return marks, [f"the run reached a limit ({limit}) before it ended"]
+    mark: dict[str, JsonValue] = {"obstacle": LIMIT_OBSTACLE.format(limit=limit)}
+    set_by: dict[str, JsonValue] = {"obstacle": "platform"}
+    if status == "complete":
+        mark |= {"status": "partial", "child_status": "complete"}
+        set_by["status"] = "platform"
+    if found.get("verdict") == "confirmed":
+        mark |= {"verdict": "inconclusive", "child_verdict": "confirmed"}
+        set_by["verdict"] = "platform"
+    earlier = marks.get("set_by")
+    given = cast(dict[str, JsonValue], earlier) if isinstance(earlier, dict) else {}
+    return {**marks, **mark, "set_by": {**given, **set_by}}, []
+
+
+def by_platform(result: Mapping[str, JsonValue] | None) -> bool:
+    """Whether a kept result is the platform's, written for a run that submitted none."""
+    marked = result.get("set_by") if result is not None else None
+    return isinstance(marked, dict) and marked.get("summary") == "platform"
+
+
+def result_of(outcome: Outcome, stopped: str, failed: bool) -> dict[str, JsonValue] | None:
+    """The result a delegated run keeps (``Outcome.kept``): for a run that ended with its
+    answer, or at a limit, where a limit no longer discards a result; ``None`` for one
+    cancelled, interrupted or failed."""
+    return None if failed else outcome.kept(stopped)

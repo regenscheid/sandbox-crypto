@@ -26,7 +26,7 @@ from sandbox_science.testing import FakeClock, eventually
 
 from .scripted import ScriptedModel
 from .test_artifact_inventory import record as publish
-from .test_resource_requests import decide, setup
+from .test_resource_requests import decide, setup, went_on
 from .test_tool_journal import CONTEXT, RUN, toolbox
 from .test_tool_journal import projects as projects
 from .test_work_ownership import CHILD, record
@@ -64,6 +64,7 @@ def sample(store, owner, *, seconds, resource="elapsed_seconds"):
 
 async def test_active_time_checks_in_without_a_call_then_the_parent_extends_it(projects):
     _, parent, child, store = setup(projects)
+    went_on(store, child)  # its first check-in at a soft cap went on
     DelegationRecords(projects.control).configure("p", research_seconds=10, time_ceiling_seconds=30)
     clock = FakeClock()
     hook = Resources(store, child, turns=300, tokens=20_000_000, delegated=True, clock=clock)

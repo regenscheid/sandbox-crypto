@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: MIT
 """A task's deliverables and lessons (plans-and-delegation spec, PD-45, PD-F13; delegated
 agents spec, DA-27): what the brief lists, numbered by the platform; the result's
-accounting for each, checked against the child's calls; one correction for one left
-out, and the platform's ``blocked`` for a second omission; the notice to a brief that
-lists none while the user's plan names outputs; and the child's lessons, its notes."""
+accounting for each, checked against the child's calls as it submits it; a submission
+that leaves one out refused, naming it, and the platform's ``blocked`` over the child's
+result when none that checked followed; the notice to a brief that lists none while the
+user's plan names outputs; and the child's lessons, its notes."""
 
 from __future__ import annotations
 
@@ -26,6 +27,7 @@ from sandbox_science.orchestrator.delegation.hook import (
     summarized,
 )
 from sandbox_science.orchestrator.delegation.outcome import (
+    NO_SUBMISSION,
     TASK_BYTES,
     Asked,
     Outcome,
@@ -41,14 +43,23 @@ from sandbox_science.orchestrator.delegation.records import (
 )
 from sandbox_science.orchestrator.delegation.specs import SPECS, TaskBrief, brief_of
 from sandbox_science.orchestrator.loop import SYSTEM_PROMPT, Transcript
-from sandbox_science.orchestrator.notices import OUTCOME_CORRECTION
+from sandbox_science.orchestrator.notices import OUTCOME_SUBMIT
 from sandbox_science.orchestrator.session_plans import PlanOutput, SessionPlans
 
 from .loop_harness import AREA, PROJECT, SESSION, Harness, Reply, call
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
-from .test_delegation import REPORT, children, delegation, results, started, wait
+from .test_delegation import (
+    REPORT,
+    children,
+    delegation,
+    results,
+    started,
+    submitted,
+    summary_of,
+    wait,
+)
 from .test_delegation import RESULT as CHECKED
 from .test_delegation import delegating as delegating
 from .test_delegation_lifecycle import _delegations
@@ -107,15 +118,38 @@ GIVEN_UP = [
 OMITTED = {**DONE, "status": "partial", "deliverables": GIVEN_UP}
 
 
-def corrections(harness: Harness) -> list[dict[str, Any]]:
-    """The correction notices the children's model calls were given, each once."""
+def nudges(harness: Harness) -> list[dict[str, Any]]:
+    """The platform's notices that no result was recorded, which the children's model
+    calls were given, each once."""
     found: dict[str, dict[str, Any]] = {}
     for messages in harness.gateway.children:
         for message in messages:
             text = body(str(message.get("content", "")))
-            if text.startswith(OUTCOME_CORRECTION.text):
-                found[text] = json.loads(text[len(OUTCOME_CORRECTION.text) :])
+            if text.startswith(OUTCOME_SUBMIT.text):
+                found[text] = json.loads(text[len(OUTCOME_SUBMIT.text) :])
     return list(found.values())
+
+
+def submissions(record: Any) -> list[dict[str, Any]]:
+    """What each of a child's submit_result calls answered, in order."""
+    calls = {
+        str(call["id"]): call["function"]["name"]
+        for message in record.messages
+        if message["role"] == "assistant"
+        for call in message.get("tool_calls") or ()
+    }
+    return [
+        json.loads(body(str(message["content"])))
+        for message in record.messages
+        if message["role"] == "tool"
+        and calls.get(str(message.get("tool_call_id"))) == "submit_result"
+    ]
+
+
+async def submit(found: Outcome, result: dict[str, Any] | str) -> dict[str, Any]:
+    """``result`` submitted to ``found`` as submit_result's arguments: its answer, read."""
+    text, _ = await found.submit(result if isinstance(result, str) else json.dumps(result))
+    return cast(dict[str, Any], json.loads(text))
 
 
 def listed_of(value: object) -> list[dict[str, Any]]:
@@ -138,19 +172,19 @@ def recorded(path: str, revision: int = 1) -> dict[str, Any]:
 # --- PD-F13 ------------------------------------------------------------------------
 
 
-async def test_an_omitted_deliverable_is_corrected_once_and_the_three_are_kept(
+async def test_an_omitted_deliverable_is_refused_at_once_and_the_three_are_kept(
     delegating: Harness,
 ) -> None:
-    """PD-F13: the first answer accounts for d1 and d2 only and gets one correction
-    naming d3; the corrected result, d3 not produced with its reason, is kept with the
-    three statuses, and the parent's notice counts them."""
+    """PD-F13: the first submission accounts for d1 and d2 only and is refused, naming
+    d3 with its place and the brief's form; the next, d3 not produced with its reason, is
+    recorded with the three statuses, and the parent's notice counts them."""
     root = await delegating.run(
         "root",
         [Reply(calls=[TASK]), wait(), Reply("Done.")],
         delegated=[
             Reply(calls=[WRITE, RECHECK]),
-            Reply(json.dumps(FIRST)),
-            Reply(json.dumps(CORRECTED)),
+            Reply(calls=[call("submit_result", **FIRST)]),
+            *submitted(CORRECTED, "Done: d3 is not produced."),
         ],
     )
     began = json.loads(results(root)[0])
@@ -163,9 +197,23 @@ async def test_an_omitted_deliverable_is_corrected_once_and_the_three_are_kept(
     assert "- d3 (answer): Whether every value is 1. What counts: Yes or no" in body(
         str(first[1]["content"])
     )
-    (correction,) = corrections(delegating)
-    assert correction["missing"] == [{"id": "d3", "title": "Whether every value is 1"}]
-    assert "d3 (Whether every value is 1)" in correction["errors"][0]
+    (child,) = children(delegating, root)
+    refused, recorded_ = submissions(child)
+    assert refused["error"]["kind"] == "invalid_request"
+    assert refused["error"]["problems"] == [
+        {
+            "at": "deliverables",
+            "problem": "your result does not account for d3 (Whether every value is 1)",
+        }
+    ]
+    assert refused["error"]["form"]["deliverables"][2] == (
+        '{"id": "d3", "status": "produced", "answer": "<the answer itself>"}'
+    )
+    assert recorded_["recorded"].startswith(
+        "status partial, 3 deliverables accounted for (2 produced, 1 not produced)"
+    )
+    assert nudges(delegating) == []
+    assert summary_of(child)["submissions"] == 2
     assert found.result is not None
     assert (found.ended, found.result["status"]) == ("returned", "partial")
     accounted = listed_of(found.result["deliverables"])
@@ -194,21 +242,30 @@ async def test_an_omitted_deliverable_is_corrected_once_and_the_three_are_kept(
     }
 
 
-async def test_a_second_omission_ends_the_task_blocked_by_the_platform(
+async def test_a_task_that_never_accounts_for_one_ends_blocked_by_the_platform(
     delegating: Harness,
 ) -> None:
-    """PD-F13: the child leaves d3 out twice: the task ends returned, status blocked, the
-    obstacle naming d3, both marked as the platform's, the child's status and answer kept."""
+    """PD-F13: the child leaves d3 out each time it submits, and is told three times that
+    no result is recorded: the task ends returned, status blocked, the obstacle naming
+    d3, both marked as the platform's, the child's status and answer kept."""
+    omitted = call("submit_result", **OMITTED)
     root = await delegating.run(
         "root",
         [Reply(calls=[TASK]), wait(), Reply("Done.")],
-        delegated=[Reply(json.dumps(OMITTED)), Reply(json.dumps(OMITTED))],
+        delegated=[
+            Reply(calls=[omitted]),
+            Reply("Done."),
+            Reply(calls=[omitted]),
+            Reply("Done."),
+            Reply("Done, as I said."),
+            Reply("Done, really."),
+        ],
     )
     (delegation_id,) = started(root)
     found = delegation(delegating, delegation_id)
-    assert len(corrections(delegating)) == 1
+    assert [n["notice"] for n in nudges(delegating)] == [1, 2, 3]
     assert found.ended == "returned"
-    assert found.report == json.dumps(OMITTED)
+    assert found.report == "Done, really."
     result = found.result
     assert result is not None
     assert (result["status"], result["obstacle"]) == (
@@ -235,7 +292,7 @@ async def test_a_small_task_lists_none_and_its_outcome_is_as_before(delegating: 
     """PD-F13: a brief without deliverables is valid; its result has no deliverables
     field, its outcome is as before, and with no plan there is no notice."""
     root = await delegating.run(
-        "root", [Reply(calls=[SMALL]), wait(), Reply("Done.")], delegated=[Reply(json.dumps(DONE))]
+        "root", [Reply(calls=[SMALL]), wait(), Reply("Done.")], delegated=submitted(DONE)
     )
     began = json.loads(results(root)[0])
     assert "notice" not in began
@@ -262,8 +319,8 @@ async def test_a_brief_without_deliverables_is_told_of_the_users_outputs(
         "root",
         [READ, Reply(calls=[SMALL]), wait(), Reply(calls=[listed]), wait(), READ, Reply("Done.")],
         delegated=[
-            Reply(json.dumps(DONE)),
-            Reply(json.dumps({**DONE, "deliverables": [{**D3, "id": "d1"}], "status": "partial"})),
+            *submitted(DONE),
+            *submitted({**DONE, "deliverables": [{**D3, "id": "d1"}], "status": "partial"}),
         ],
     )
     began = json.loads(results(root)[1])
@@ -343,18 +400,30 @@ def test_a_message_to_a_child_cannot_change_its_deliverables() -> None:
 
 
 async def test_a_file_the_childs_calls_did_not_write_is_invalid() -> None:
-    """PD-F13: a deliverable naming a file its calls did not write is a validation error,
-    corrected once; then the result is missing."""
+    """PD-F13: a deliverable naming a file its calls did not write is refused at
+    submission, each problem by its place; a run that ends with none recorded gets the
+    platform's result, blocked, with nothing of the child's filled in."""
     found = Outcome(task=True, deliverables=ASKED)
-    answer = json.dumps({**DONE, "status": "partial", "deliverables": [D1, D2, D3]})
+    answer = {**DONE, "status": "partial", "deliverables": [D1, D2, D3]}
     await found.observe_tool(run(), {"ledger": "ledger_change", "result": {"entries": []}})
-    closing = await found.closing(run(), answer)
-    assert closing.action == "continue"
+    refused = await submit(found, answer)
+    assert refused["error"]["problems"] == [
+        {"at": "deliverables[0]", "problem": "d1: your calls wrote or published no file table.txt"},
+        {
+            "at": "deliverables[1]",
+            "problem": "d2: your ledger changes made no revision or work record of T-1",
+        },
+    ]
     assert found.result is None
     assert "d1: your calls wrote or published no file table.txt" in found.errors[0]
-    assert "d2: your ledger changes made no revision or work record of T-1" in found.errors[0]
-    await found.closing(run(), answer)
-    assert (found.result, found.kept()) == (None, None)
+    kept = found.kept()
+    assert kept is not None
+    assert (kept["status"], kept["obstacle"], kept["result_files"]) == (
+        "blocked",
+        NO_SUBMISSION,
+        [],
+    )
+    assert [d["status"] for d in listed_of(kept["deliverables"])] == ["not_produced"] * 3
 
 
 async def test_a_reference_must_be_what_the_childs_calls_made() -> None:
@@ -372,7 +441,7 @@ async def test_a_reference_must_be_what_the_childs_calls_made() -> None:
         await found.observe_tool(run(), recorded("table.txt", 2))
         changed = {"entries": [{"entry_id": "e-1", "handle": "T-1"}], "work": ["w-1"]}
         await found.observe_tool(run(), {"ledger": "ledger_change", "result": changed})
-        await found.closing(run(), json.dumps({**DONE, "deliverables": list(items)}))
+        await submit(found, {**DONE, "deliverables": list(items)})
         return found
 
     artifact = {"id": "d1", "status": "produced", "path": "table.txt", "revision": 2}
@@ -412,8 +481,8 @@ async def test_the_accounting_agrees_with_the_brief_and_the_status(
     changed = {"entries": [{"entry_id": "e-1", "handle": "T-1"}]}
     await found.observe_tool(run(), {"ledger": "ledger_change", "result": changed})
     answer = {**DONE, "status": status, "deliverables": deliverables}
-    closing = await found.closing(run(), json.dumps(answer))
-    assert closing.action == "continue"
+    refused = await submit(found, answer)
+    assert any(error in item["problem"] for item in refused["error"]["problems"])
     assert found.result is None
     assert error in found.errors[0]
 
@@ -427,7 +496,8 @@ async def test_a_produced_answer_and_a_partial_file_are_accounted_for() -> None:
     partial = {"id": "d1", "status": "partial", "path": "table.txt", "missing": "a = 0"}
     answer = {"id": "d3", "status": "produced", "answer": "Yes, for every nonzero a."}
     result = {**DONE, "status": "partial", "deliverables": [partial, D2, answer]}
-    assert (await found.closing(run(), json.dumps(result))).action == "accept"
+    assert "recorded" in await submit(found, result)
+    assert (await found.closing(run(), "Done.")).action == "accept"
     kept = found.kept()
     assert kept is not None
     statuses = [d["status"] for d in listed_of(kept["deliverables"])]
@@ -436,14 +506,17 @@ async def test_a_produced_answer_and_a_partial_file_are_accounted_for() -> None:
 
 async def test_deliverables_in_the_result_of_a_brief_without_any_are_invalid() -> None:
     found = Outcome(task=True)
-    await found.closing(run(), json.dumps({**DONE, "deliverables": [D3]}))
+    refused = await submit(found, {**DONE, "deliverables": [D3]})
+    assert refused["error"]["problems"] == [
+        {"at": "deliverables", "problem": "the brief lists none; leave the field out"}
+    ]
     assert found.result is None
     assert "the brief lists none" in found.errors[0]
 
 
-async def test_with_no_turn_left_for_the_correction_the_platform_blocks_it() -> None:
-    """PD-45: the first omission already holds the platform's block, which stands when
-    the loop has no turn to give for the correction."""
+async def test_with_no_turn_left_an_answer_that_leaves_one_out_is_blocked() -> None:
+    """PD-45: an answer that leaves a deliverable out already holds the platform's block,
+    which stands when the loop has no turn to give for the notice."""
     found = Outcome(task=True, deliverables=ASKED)
     closing = await found.closing(run(), json.dumps(OMITTED))
     assert closing.action == "continue"
@@ -452,9 +525,10 @@ async def test_with_no_turn_left_for_the_correction_the_platform_blocks_it() -> 
     assert (kept["status"], kept["child_status"]) == ("blocked", "partial")
 
 
-async def test_an_omission_after_another_correction_is_blocked_and_with_other_errors_missing() -> (
-    None
-):
+async def test_an_omission_stands_blocked_until_a_result_checks() -> None:
+    """PD-45: a result that leaves a deliverable out stands, blocked by the platform, after
+    an answer with no JSON, and a later answer or submission with other errors replaces
+    nothing; one that checks replaces it."""
     found = Outcome(task=True, deliverables=ASKED)
     await found.closing(run(), "Not JSON.")
     await found.closing(run(), json.dumps(OMITTED))
@@ -464,7 +538,15 @@ async def test_an_omission_after_another_correction_is_blocked_and_with_other_er
     other = Outcome(task=True, deliverables=ASKED)
     await other.closing(run(), json.dumps(OMITTED))
     await other.closing(run(), json.dumps({**OMITTED, "deliverables": [{**GIVEN_UP[0]}, D1]}))
-    assert (other.result, other.kept()) == (None, None)
+    assert "error" in await submit(other, {**OMITTED, "deliverables": [GIVEN_UP[0], D1]})
+    kept = other.kept()
+    assert kept is not None
+    assert (kept["status"], kept["child_status"]) == ("blocked", "partial")
+    third = {**OMITTED, "deliverables": [*GIVEN_UP, {**D3, "reason": "No time."}]}
+    assert "recorded" in await submit(other, third)
+    kept = other.kept()
+    assert kept is not None
+    assert (kept["status"], "set_by" in kept) == ("partial", False)
 
 
 def test_a_task_without_a_result_accounts_for_nothing() -> None:
@@ -614,7 +696,7 @@ async def test_a_childs_lessons_reach_its_parent_as_its_notes(delegating: Harnes
     root = await delegating.run(
         "root",
         [Reply(calls=[SMALL]), wait(), Reply("Done.")],
-        delegated=[Reply(json.dumps({**DONE, "lessons": lessons}))],
+        delegated=submitted({**DONE, "lessons": lessons}),
     )
     (delegation_id,) = started(root)
     found = delegation(delegating, delegation_id)
