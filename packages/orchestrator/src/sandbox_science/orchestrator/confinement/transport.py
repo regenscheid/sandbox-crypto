@@ -67,6 +67,9 @@ class Capability(StrEnum):
     then holds the runtime's loop state to (a child's ``turn_ceiling``, D102)."""
     HALT = "halt"
     LAST_CALL = "last_call"
+    REPORT_NOTICES = "report_notices"
+    """Runtime to host: a hook's notices for the report round at a limit, which the host
+    then admits as it admits a hook's other notices."""
     MODEL_RETURNED = "model_returned"
     CONSUMPTION = "consumption"
     GATE = "gate"

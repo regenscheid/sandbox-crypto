@@ -23,6 +23,8 @@ from .context.history import SPECS as HISTORY_SPECS
 from .context.history import HistoryTool
 from .delegation import specs as delegation_specs
 from .delegation.hook import Delegations
+from .delegation.outcome import SPEC as SUBMIT_SPEC
+from .delegation.outcome import Outcome
 from .delegation.tracks import EFFECTS as TRACK_EFFECTS
 from .delegation.tracks import SPECS as TRACK_SPECS
 from .delegation.tracks import TrackTools
@@ -161,6 +163,9 @@ FILES = Definition[FileRecorder](
     "recorder", 170, hook_order=110, hook=lambda current, _: RecordedFiles(current)
 )
 ARTIFACTS = Definition[ArtifactPublisher]("artifacts", 180)
+RESULT = Definition[Outcome]("result", 190, (SUBMIT_SPEC,))
+"""A delegated run's ``submit_result``, its last tool; the ``Outcome`` hook that reads its
+closings is the run's own, after the others (``Harness._chat_hooks``)."""
 
 DEFINITIONS = (
     JOBS,
@@ -181,6 +186,7 @@ DEFINITIONS = (
     KERNELS,
     FILES,
     ARTIFACTS,
+    RESULT,
 )
 RESERVED_NAMES = frozenset(spec.name for definition in DEFINITIONS for spec in definition.specs)
 
@@ -490,3 +496,17 @@ def files(recorder: FileRecorder) -> Capability:
 def artifacts(publisher: ArtifactPublisher, on_close: OnClose | None = None) -> Capability:
     """Own an artifact publisher used by worker file operations."""
     return ARTIFACTS.bind(publisher, close=lambda: publisher.aclose(), on_close=on_close)
+
+
+def result(outcome: Outcome) -> Capability:
+    """Bind a delegated run's ``submit_result``, its schema the run's brief's; it changes
+    nothing a plan governs, so the plan fence lets it pass (PD-17, PD-18)."""
+    return RESULT.bind(
+        outcome,
+        group(
+            (outcome.spec,),
+            lambda _, call: outcome.submit(call.call.arguments),
+            {SUBMIT_SPEC.name: "read"},
+            raw=True,
+        ),
+    )

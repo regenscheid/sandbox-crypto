@@ -26,8 +26,9 @@ from sandbox_science.orchestrator.context.agent import AgentContext
 from sandbox_science.orchestrator.context.history import Archive, body, geometry, session_view
 from sandbox_science.orchestrator.context.history.limits import WorkingMemoryLimitError
 from sandbox_science.orchestrator.context.history.log import RunArchive
+from sandbox_science.orchestrator.continuity.resources import FIRST_STEP, ResourceRequests
 from sandbox_science.orchestrator.control import migrations
-from sandbox_science.orchestrator.delegation.outcome import parse
+from sandbox_science.orchestrator.delegation.outcome import CAME, NO_SUBMISSION, NUDGES, parse
 from sandbox_science.orchestrator.delegation.records import (
     Delegation,
     DelegationRecords,
@@ -38,7 +39,7 @@ from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.memory import ProjectMemory
 from sandbox_science.orchestrator.notices import (
     DELEGATIONS,
-    OUTCOME_CORRECTION,
+    OUTCOME_SUBMIT,
 )
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord, run_name
 from sandbox_science.orchestrator.prompts import PromptPins
@@ -73,6 +74,20 @@ RESULT: dict[str, Any] = {
     "open_questions": [],
 }
 REPORT = json.dumps(RESULT)
+CLOSED = "C-1 holds: I submitted a confirmed verdict."
+"""A child's closing answer once it submitted its result."""
+
+
+def summary_of(record: RunRecord) -> dict[str, Any]:
+    """What a delegated run's record keeps of its outcome (``Outcome.summary``)."""
+    return cast(dict[str, Any], record.summaries["outcome"])
+
+
+def submitted(result: dict[str, Any] = RESULT, then: str = CLOSED) -> list[Reply]:
+    """A child's last replies: its result through submit_result, then its closing answer."""
+    return [Reply(calls=[call("submit_result", **result)]), Reply(then)]
+
+
 _ID = re.compile(r"dlg-[0-9a-f]{24}")
 
 
@@ -120,10 +135,16 @@ _RESOURCE = re.compile(r"resource-[0-9a-f]{24}")
 
 
 def decide(action: str = "stop", reason: str = "Report what you found.") -> Reply:
-    """A call that answers the latest child check-in the run was shown (D102)."""
+    """A call that answers the latest child check-in the run was shown that waits for it
+    (D102): not a first check-in at a soft cap, which only reports progress."""
 
     def calls(messages: list[Message]) -> list[tuple[str, dict[str, Any]]]:
-        found = [found for message in messages for found in _RESOURCE.findall(str(message))]
+        found = [
+            found
+            for message in messages
+            if "so nothing waits for you" not in str(message)  # a progress notice
+            for found in _RESOURCE.findall(str(message))
+        ]
         return [call("resource_decide", request_id=found[-1], action=action, reason=reason)]
 
     return Reply(calls_from=calls)
@@ -243,10 +264,10 @@ async def test_a_check_starts_fresh_and_its_outcome_reaches_its_parent(
     root = await delegating.run(
         "root",
         [Reply(calls=[CHECK], before=accept), wait(), Reply("C-1 holds: the check confirms it.")],
-        delegated=[Reply(REPORT)],
+        delegated=submitted(),
     )
     (child,) = children(delegating, root)
-    (first,) = delegating.gateway.children
+    first, _ = delegating.gateway.children  # its submission, then its closing answer
     assert str(first[0]["content"]).startswith(DELEGATED)
     assert KNOWN in str(first[0]["content"])
     assert LATER not in str(first[0]["content"])
@@ -258,7 +279,7 @@ async def test_a_check_starts_fresh_and_its_outcome_reaches_its_parent(
 
     (delegation_id,) = started(root)
     assert (child.role, child.parent, child.delegation) == ("delegated", name(root), delegation_id)
-    assert (child.stopped, child.final_text) == ("answered", REPORT)
+    assert (child.stopped, child.final_text) == ("answered", CLOSED)
     assert child.ended_at <= root.ended_at  # a parent's record is kept after its children's
     pins = child.prompt_provenance
     assert isinstance(pins, PromptPins)
@@ -267,10 +288,13 @@ async def test_a_check_starts_fresh_and_its_outcome_reaches_its_parent(
     assert pins.memory is not None
     assert pins.memory.version == 1
     assert not {"delegate", "review_findings", "plan_read"} & set(pins.tools.names)
-    assert {"ledger_read", "python", "document_read"} <= set(pins.tools.names)
+    assert {"ledger_read", "python", "document_read", "submit_result"} <= set(pins.tools.names)
+    assert "submit_result" not in tools(root)  # a delegated run's alone
+    assert summary_of(child)["submissions"] == 1
+    assert summary_of(child)["source"] == "submit_result"
 
     outcome = delegation(delegating, delegation_id)
-    assert (outcome.ended, outcome.stopped, outcome.report) == ("returned", "answered", REPORT)
+    assert (outcome.ended, outcome.stopped, outcome.report) == ("returned", "answered", CLOSED)
     assert outcome.result == {**RESULT, "obstacle": None, "refutation": None}
     assert (outcome.errors, outcome.alias, outcome.models) == ((), "main", ("scripted-main",))
     check = cast(dict[str, Any], outcome.brief["check"])
@@ -543,21 +567,28 @@ async def test_a_session_runs_at_most_its_cap_of_checks_at_once(delegating: Harn
     assert len(started(root)) == 1
 
 
-async def test_a_check_past_its_soft_token_cap_checks_in_and_its_parent_extends_it(
+async def test_a_check_past_its_soft_token_cap_goes_on_for_one_step_at_its_first_check_in(
     delegating: Harness,
 ) -> None:
-    """PD-38, D102: no estimate refuses a check's call; at its soft token cap it checks
-    in, its parent extends it by one step, and it answers."""
+    """PD-38, D102: no estimate refuses a check's call; at its first soft token cap it
+    checks in and goes on for one bounded step, the platform's decision, and answers; its
+    parent decided nothing (a later check-in waits for it, ``test_check_ins``)."""
     configure(delegating, check_tokens=50_000)
     root = await delegating.run(
         "root",
-        [Reply(calls=[CHECK]), wait(), decide("extend", "Finish the check."), wait(), Reply("Ok.")],
-        delegated=[Reply(calls=[call("ledger_read", entry="C-1")], tokens=60_000), Reply(REPORT)],
+        [Reply(calls=[CHECK]), wait(), Reply("Ok.")],
+        delegated=[Reply(calls=[call("ledger_read", entry="C-1")], tokens=60_000), *submitted()],
     )
     (child,) = children(delegating, root)
     assert child.stopped == "answered"
-    decided = json.loads(results(root)[2])
-    assert (decided["request"]["action"], decided["total"]) == ("extend", 20_050_000)
+    store = ProjectStore(delegating.state)
+    try:
+        (request,) = ResourceRequests(store.control).page(PROJECT, SESSION).requests
+    finally:
+        store.close()
+    assert request.decision is not None
+    assert (request.decision.automatic, request.decision.total) == (True, 20_050_000)
+    assert request.decision.operation.startswith(FIRST_STEP)
 
 
 def test_a_delegations_outcome_is_written_once(tmp_path: Path) -> None:
@@ -738,49 +769,79 @@ def test_a_result_may_come_in_one_fenced_block() -> None:
     assert parse(f"  {REPORT}\n").status == "complete"
 
 
-async def test_an_invalid_result_gets_one_correction_and_stays_as_returned(
+async def test_a_check_that_never_submits_is_told_three_times_then_gets_the_platforms_result(
     delegating: Harness,
 ) -> None:
-    """PD-F5, PD-18: one correction; then the answer stands, the result is missing, the
-    errors are kept, and nothing is filled in."""
+    """PD-F5, PD-18: each closing answer without a submission is told that the result goes
+    through submit_result, three times; the next answer stands, and the parent gets the
+    platform's result, blocked, never stronger than the records: nothing is filled in."""
+    answers = ["Verdict: confirmed", "Still not JSON.", "I am sure.", "Confirmed, really."]
     root = await delegating.run(
         "root",
         [Reply(calls=[CHECK]), wait(), Reply("The check returned no result.")],
-        delegated=[Reply("Verdict: confirmed"), Reply("Still not JSON.")],
+        delegated=[Reply(text) for text in answers],
     )
-    first, second = delegating.gateway.children
-    corrections = [
-        m for m in second if body(str(m.get("content", ""))).startswith(OUTCOME_CORRECTION.text)
+    calls = delegating.gateway.children
+    told = [
+        json.loads(text[len(OUTCOME_SUBMIT.text) :])
+        for m in calls[-1]
+        if (text := body(str(m.get("content", "")))).startswith(OUTCOME_SUBMIT.text)
     ]
-    assert len(corrections) == 1
-    assert not any(
-        body(str(m.get("content", ""))).startswith(OUTCOME_CORRECTION.text) for m in first
-    )
+    assert [notice["notice"] for notice in told] == [1, 2, 3] == list(range(1, NUDGES + 1))
+    assert told[0]["tool"] == "submit_result"
+    assert told[0]["form"] == {
+        "required": ["entry", "revision", "status", "verdict", "summary", "coverage"],
+        "entry": "C-1",
+        "revision": 1,
+    }
     (child,) = children(delegating, root)
-    assert [m["content"] for m in child.messages if m["role"] == "assistant"] == [
-        "Verdict: confirmed",
-        "Still not JSON.",
-    ]
+    assert [m["content"] for m in child.messages if m["role"] == "assistant"] == answers
+    assert summary_of(child)["nudges"] == NUDGES
+    assert summary_of(child)["source"] == "platform"
     (delegation_id,) = started(root)
     outcome = delegation(delegating, delegation_id)
-    assert (outcome.ended, outcome.result, outcome.report) == ("returned", None, "Still not JSON.")
-    assert len(outcome.errors) == 2
+    assert (outcome.ended, outcome.report) == ("returned", "Confirmed, really.")
+    assert outcome.result == {
+        "entry": "C-1",
+        "revision": 1,
+        "status": "blocked",
+        "verdict": "inconclusive",
+        "summary": "Confirmed, really.",
+        "coverage": {"examined": [], "not_examined": []},
+        "refutation": None,
+        "obstacle": NO_SUBMISSION,
+        "deviations": [],
+        "open_questions": [],
+        "set_by": dict.fromkeys(
+            ("status", "verdict", "obstacle", "summary", "coverage"), "platform"
+        ),
+        "platform_notes": [
+            "no result was submitted: the platform wrote this result, its summary the run's "
+            "closing answer as the run wrote it",
+            "the run's calls wrote or published no file",
+        ],
+    }
+    assert outcome.errors == ()  # no answer held a JSON object to check
     received = json.loads(results(root)[-1])["delegations"][0]
-    assert (received["result"], received["answer"]) == (None, "Still not JSON.")
-    assert received["errors"] == list(outcome.errors)
+    assert received["result"]["status"] == "blocked"
 
 
-async def test_a_corrected_result_is_kept(delegating: Harness) -> None:
+async def test_a_result_in_an_answer_after_the_notice_is_kept_with_its_note(
+    delegating: Harness,
+) -> None:
+    """For one release, a closing answer that holds a valid result as JSON is the result,
+    its note saying it came in the answer, not through submit_result."""
     root = await delegating.run(
         "root",
         [Reply(calls=[CHECK]), wait(), Reply("Confirmed.")],
-        delegated=[Reply("Verdict: confirmed"), Reply(f"```json\n{REPORT}\n```")],
+        delegated=[Reply("Verdict: confirmed"), Reply(f"Here it is.\n```json\n{REPORT}\n```")],
     )
     (delegation_id,) = started(root)
     outcome = delegation(delegating, delegation_id)
     assert outcome.result is not None
     assert outcome.result["verdict"] == "confirmed"
-    assert len(outcome.errors) == 1
+    assert outcome.result["platform_notes"] == [CAME["answer"]]
+    assert outcome.errors == ()
 
 
 async def test_a_blocked_check_names_its_obstacle_and_its_question(delegating: Harness) -> None:
@@ -795,7 +856,7 @@ async def test_a_blocked_check_names_its_obstacle_and_its_question(delegating: H
     root = await delegating.run(
         "root",
         [Reply(calls=[CHECK]), wait(), Reply("The check is blocked.")],
-        delegated=[Reply(json.dumps(blocked))],
+        delegated=submitted(blocked, "Blocked: sage is missing."),
     )
     (delegation_id,) = started(root)
     outcome = delegation(delegating, delegation_id)

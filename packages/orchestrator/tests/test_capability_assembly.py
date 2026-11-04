@@ -19,6 +19,7 @@ from sandbox_science.orchestrator.agent_messages import (
 )
 from sandbox_science.orchestrator.consistency.controller import AUTHOR_SPECS
 from sandbox_science.orchestrator.context.history import SPECS as HISTORY_SPECS
+from sandbox_science.orchestrator.delegation.outcome import Asked, Outcome, Target
 from sandbox_science.orchestrator.delegation.specs import SPECS as DELEGATION_SPECS
 from sandbox_science.orchestrator.delegation.tracks import SPECS as TRACK_SPECS
 from sandbox_science.orchestrator.documents.tool import SPECS as DOCUMENT_SPECS
@@ -37,6 +38,14 @@ from sandbox_science.orchestrator.worker_client import WorkerClient
 from .scripted import ToolCall
 
 CONTEXT = ExecutionContext(project_id="p", session_id="s", environment_id="e", actor="agent")
+
+
+EACH_KIND = (
+    Asked("d1", "The table", "artifact"),
+    Asked("d2", "The notes", "file"),
+    Asked("d3", "A task to recheck C-1", "entry"),
+    Asked("d4", "Whether every value is 1", "answer"),
+)
 
 
 def domain(specs: tuple[ToolSpec, ...] = (), **kwargs) -> Any:
@@ -68,6 +77,11 @@ def offered(role: str) -> Toolbox:
             plans=domain(PLAN_SPECS),
             questions=domain(QUESTION_SPECS, name="questions"),
         )
+    elif role == "task":
+        # submit_result, its schema a brief's with one deliverable of each kind (PD-45).
+        kwargs["outcome"] = Outcome(task=True, deliverables=EACH_KIND)
+    else:
+        kwargs["outcome"] = Outcome(Target("ent-1", "C-1", 1))
     return Toolbox(
         cast(WorkerClient, object()),
         CONTEXT,
@@ -99,9 +113,9 @@ def test_offered_schemas_effects_and_entry_flags(role: str) -> None:
         sort_keys=True,
     )
     expected = {
-        "main": "92b32222caf12a09107ddcfd9177bce0a62b1cf81a5ba357a749325d703a2f38",
-        "task": "4d8608a8cd5ea886e45f0ff6e29ddda7034d776b969dcefaed59fee84b158af4",
-        "check": "fd46e6ebff1d2c63efca464618fd13a04661fdc22e3a62e77ae0c5e0463be707",
+        "main": "fd932d7e798800e5f6611dba62d00e9390543189e3c411809aca939b2f7ab8b8",
+        "task": "ef00a5da85c98eab0c4d69a3ec9c79e7b187006f9fa3d49eb91cd1d177318661",
+        "check": "bc9f784aac5e2d3764dbf4c0517e8bd541ff9248d0e7023ec19ab37ce1ba9704",
     }
     assert hashlib.sha256(encoded.encode()).hexdigest() == expected[role]
     # Each as the model is offered it, with the required purpose_note (Purpose 1).

@@ -31,6 +31,7 @@ from .context.history.collections import Collection, Members
 from .context.history.limits import WorkingMemoryLimitError
 from .context.history.memory import RunMemory
 from .continuity.transient import classify
+from .delegation.outcome import SUBMIT
 from .hooks import (
     RESPONSE_ROUNDS,
     Appended,
@@ -112,11 +113,20 @@ OUTPUT_LIMIT: Final = "output_limit"
 CONCURRENT: Final = 8
 """The most read-class calls of one reply that run at once."""
 IN_ORDER: Final = frozenset(
-    {ASK_USER, CHILD_SPEC.name, PARENT_SPEC.name, DECIDE_SPEC.name, SKILLS_TOOL, MCP_TOOLS}
+    {
+        ASK_USER,
+        CHILD_SPEC.name,
+        PARENT_SPEC.name,
+        DECIDE_SPEC.name,
+        SKILLS_TOOL,
+        MCP_TOOLS,
+        SUBMIT,
+    }
 )
 """The read-class tools whose calls run in the reply's order all the same: they reach
 someone else (a question to the user, a message to a parent or a child, the decision on a
-child's check-in), stage a skill's files, or change the run's tools."""
+child's check-in), stage a skill's files, change the run's tools, or record a delegated
+run's result, which a later submission replaces (``submit_result``)."""
 MAIN_VERSION: Final = "sandbox-main-19"
 """The version of ``SYSTEM_PROMPT``'s text."""
 SYSTEM_PROMPT: Final = (
@@ -765,7 +775,9 @@ async def _report(
     ``stopped``, and an answer its closing lets stand its ``final_text``.
 
     A hook that halts the run first, as a spent cost limit does, stops it without one. No
-    hook offers notices before the call, so the user's messages wait for the next run.
+    hook offers notices before the call but those it gives for it (``report_notices``),
+    after the report's own, so the user's messages wait for the next run; with no room for
+    them, the report's own notice goes alone.
     The call offers the tools but may not call them (``_answering``); a tool a reply asks
     for all the same does not run, each answered as not run; and the closing has no turn
     to give. A run that made no model call has nothing to report.
@@ -787,12 +799,19 @@ async def _report(
         transcript.stopped = "context_limit"
         return
     notice = Notice(REPORT_SOURCE, (), REPORT.text, {"limit": reason, "detail": detail})
-    if (
-        transcript.context.size + len(dump([notice_message(notice)]))
-        > transcript.context.max_input_chars
-    ):
-        return  # no room for the call: the run stops as before, without a report
-    await _offer(transcript, (notice,))
+    notices = [notice]
+    for hook in hooks:
+        notices.extend(await hook.report_notices(transcript, reason))
+
+    def fits(offered: Sequence[Notice]) -> bool:
+        added = len(dump([notice_message(n) for n in offered]))
+        return transcript.context.size + added <= transcript.context.max_input_chars
+
+    if not fits(notices):
+        notices = [notice]
+        if not fits(notices):
+            return  # no room for the call: the run stops as before, without a report
+    await _offer(transcript, notices)
     transcript.turns += 1
     await _consumption(hooks, transcript)
     reply = await _model_call(_answering(model), toolbox, transcript, hooks)()

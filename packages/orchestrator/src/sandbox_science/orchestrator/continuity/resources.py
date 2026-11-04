@@ -4,7 +4,9 @@
 A work's soft caps on tokens, turns, active time and cost, and the loop heuristics, ask
 for a check-in: a request with a bounded state summary that its direct parent answers
 (extend by one step, redirect, or stop), or that the root answers itself against its
-plan, with a notice to the user. Nothing here enforces spending; LiteLLM's budget does.
+plan, with a notice to the user. A child's first check-in at a soft cap is answered by
+the platform with one step, its summary a progress report for its parent (``first_step``).
+Nothing here enforces spending; LiteLLM's budget does.
 
 The root's turn limit is the one soft cap the root does not decide for itself: reaching it
 pauses the research and asks the user to continue for another block of the configured
@@ -17,7 +19,7 @@ import json
 import math
 import sqlite3
 from dataclasses import dataclass
-from typing import Literal
+from typing import Final, Literal
 
 from pydantic import Field
 
@@ -178,6 +180,14 @@ class SafePoint:
     turn_block: int = 0
     """A root's pinned turn limit, the block each accepted continuation adds; 0 for a child."""
 
+
+FIRST_STEP: Final = "first-step:"
+"""The operation of the platform's step for a child's first check-in at a soft cap."""
+FIRST_REASON: Final = (
+    "First check-in at a soft cap: the child goes on for one bounded step while its parent "
+    "reads its summary; the parent may send corrected instructions, and the child's next "
+    "check-in at a cap waits for the parent's decision."
+)
 
 SUPERSEDED = (
     "EXISTS (SELECT 1 FROM research_observations t WHERE t.project={o}.project "  # noqa: S608
@@ -819,6 +829,87 @@ class ResourceRequests:
                 progress=progress,
                 automatic=True,
             )
+
+    def first_step(self, owner: Ownership, request: ResourceRequest) -> ResourceDecision | None:
+        """Answer a child's first check-in at a soft cap for its parent: one bounded step,
+        the platform's, so that the child goes on while its parent reads its summary as a
+        progress report (``progressed``) and may redirect it with a message. ``None`` for a
+        loop check-in, the root's, a work that had a soft cap's decision before, or a cap at
+        its ceiling: that check-in waits for the parent's decision, as every later one does."""
+        if request.resource not in CAPS or request.parent is None:
+            return None
+        with self.control.write() as tx:
+            db = tx.sql
+            check_owner(db, owner)
+            existing = db.execute(
+                "SELECT detail FROM research_observations WHERE project=? AND session=? "
+                "AND work=? AND kind='resource_decision' AND identity=?",
+                (owner.project, owner.session, owner.work, request.request_id),
+            ).fetchone()
+            if existing is not None:
+                found = ResourceDecision.model_validate_json(existing[0])
+                return found if found.operation.startswith(FIRST_STEP) else None
+            earlier = db.execute(
+                "SELECT 1 FROM research_observations WHERE project=? AND session=? AND work=? "
+                "AND kind='resource_decision' AND (json_extract(detail,'$.resource') IN "
+                "('tokens','turns','elapsed_seconds','cost') OR "
+                "json_extract(detail,'$.request.action') IN "
+                "('extend_turns','extend_time','extend_tokens','extend_cost')) LIMIT 1",
+                (owner.project, owner.session, owner.work),
+            ).fetchone()
+            if earlier is not None:
+                return None
+            try:
+                total = _extended(settings_in(db, owner.project), request, "extend")
+            except ControlError:
+                return None  # at its ceiling: the parent decides
+            return self._record(
+                db,
+                owner,
+                request,
+                ResourceDecisionRequest(
+                    request_id=request.request_id, action="extend", reason=FIRST_REASON
+                ),
+                parent_run=owner.run,
+                operation=FIRST_STEP + request.request_id,
+                total=total,
+                progress=work_progress(db, owner),
+                automatic=True,
+            )
+
+    def progressed(
+        self, owner: Ownership, *, seen: frozenset[str] = frozenset()
+    ) -> list[ResourceRequest]:
+        """The direct children's first check-ins at a soft cap, each with the platform's
+        step (``first_step``), for their parent's progress notice: those of children still
+        at work whose notice, ``progress-<request>``, ``seen`` does not hold."""
+        with self.control.read() as tx:
+            rows = tx.sql.execute(
+                "SELECT o.detail, d.detail FROM research_observations o JOIN research_work w "
+                "USING(project,session,work) JOIN research_observations d "
+                "ON d.project=o.project AND d.session=o.session AND d.work=o.work "
+                "AND d.kind='resource_decision' "
+                "AND d.identity=json_extract(o.detail,'$.request_id') "
+                "WHERE o.project=? AND o.session=? AND o.kind='resource_request' AND w.parent=? "
+                "AND w.state NOT IN ('completed','stopped') "
+                "AND substr(json_extract(d.detail,'$.operation'),1,?)=? "
+                "AND ('progress-' || json_extract(o.detail,'$.request_id')) "
+                "NOT IN (SELECT value FROM json_each(?)) ORDER BY o.observed LIMIT 4",
+                (
+                    owner.project,
+                    owner.session,
+                    owner.work,
+                    len(FIRST_STEP),
+                    FIRST_STEP,
+                    json.dumps(sorted(seen)),
+                ),
+            ).fetchall()
+        return [
+            ResourceRequest.model_validate_json(request).model_copy(
+                update={"decision": ResourceDecision.model_validate_json(decision)}
+            )
+            for request, decision in rows
+        ]
 
     def accept(self, owner: Ownership, request: ResourceRequest, reason: str) -> ResourceDecision:
         """The user's explicit Resume of a root at its turn limit: the same decision as the

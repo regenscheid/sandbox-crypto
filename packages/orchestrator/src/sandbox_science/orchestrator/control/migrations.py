@@ -3949,6 +3949,51 @@ BEGIN INSERT INTO delegation_results VALUES (NEW.delegation_id, NEW.results, NEW
     )
 
 
+def _limit_results(schema: Schema) -> None:
+    """Version 89: a delegation that reached a limit keeps a result too, as its child
+    submitted it or the platform wrote it, ``partial`` at the limit (plans-and-delegation
+    spec, PD-19): the outcome's triggers and ``delegation_results`` take a result for
+    ``limit_reached`` as for ``returned``. Every other ending still has none."""
+    outcome = (
+        "(NEW.result IS NULL OR (NEW.ended IN ('returned', 'limit_reached') "
+        "AND json_valid(NEW.result) AND json_type(NEW.result) = 'object' "
+        "AND length(CAST(NEW.result AS BLOB)) <= 32768)) "
+        "AND (NEW.errors IS NULL OR (json_valid(NEW.errors) AND json_type(NEW.errors) = "
+        "'array' AND length(CAST(NEW.errors AS BLOB)) <= 16384)) "
+        "AND (NEW.alias IS NULL OR length(CAST(NEW.alias AS BLOB)) BETWEEN 1 AND 256) "
+        "AND (NEW.models IS NULL OR (json_valid(NEW.models) AND json_type(NEW.models) = "
+        "'array' AND length(CAST(NEW.models AS BLOB)) <= 4096)) "
+        "AND (NEW.read_entry IS NULL OR NEW.read_entry IN (0, 1)) "
+        "AND (NEW.ended IS NOT NULL OR (NEW.result IS NULL AND NEW.errors IS NULL "
+        "AND NEW.alias IS NULL AND NEW.models IS NULL AND NEW.read_entry IS NULL))"
+    )
+    for statement in (
+        "DROP TRIGGER delegations_outcome_insert",
+        "DROP TRIGGER delegations_outcome_update",
+        f"""CREATE TRIGGER delegations_outcome_insert BEFORE INSERT ON delegations
+WHEN NOT ({outcome}) BEGIN SELECT RAISE(ABORT, 'CHECK constraint failed: delegations'); END""",
+        f"""CREATE TRIGGER delegations_outcome_update BEFORE UPDATE ON delegations
+WHEN NOT ({outcome}) BEGIN SELECT RAISE(ABORT, 'CHECK constraint failed: delegations'); END""",
+    ):
+        schema.execute(statement)
+    (create,) = schema.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='delegation_results'"
+    ).fetchone()
+    old = "result TEXT CHECK (result IS NULL OR (ended = 'returned' AND json_valid(result)"
+    if old not in create:
+        raise ControlError(INTERNAL, "delegation_results is not as version 88 made it")
+    rebuild(
+        schema,
+        "delegation_results",
+        create.replace(
+            old,
+            "result TEXT CHECK (result IS NULL OR (ended IN ('returned', 'limit_reached') "
+            "AND json_valid(result)",
+            1,
+        ),
+    )
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -4037,6 +4082,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _mcp_canaries,
     _delegation_environments,
     _parent_review,
+    _limit_results,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""
