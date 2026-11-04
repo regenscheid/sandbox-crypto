@@ -44,7 +44,8 @@ retain their original pins and do not receive a live prompt replacement.
 ## Pins
 
 [`prompts.py`](../packages/orchestrator/src/sandbox_science/orchestrator/prompts.py)
-builds `PromptPins` (format `sandbox-prompt-pins-1`) once, before the first model call:
+builds `PromptPins` (format `sandbox-prompt-pins-1`) once, before the first model call,
+and the run adds the tool groups it loaded as it ends:
 
 - `sections`: each section's ID, version, UTF-8 byte count and SHA-256;
 - `tools`: the offered tool names, in order, and the byte count and SHA-256 of their
@@ -57,6 +58,10 @@ builds `PromptPins` (format `sandbox-prompt-pins-1`) once, before the first mode
   `cancel_delegation`'s descriptions say what they do to a returned task, so its tool
   pins differ from a run's before
   ([plans and delegation](specs/plans-and-delegation.md#parent-review));
+- `groups`: each tool group the run loaded after it started, in the order it loaded
+  them, with its tools pinned as `tools` pins them; `tools` is what the run started
+  with, its core tools ([tools spec](specs/tools.md#tool-groups)). A run that loaded
+  none, or older than the groups, has none.
 - `notices`: the ID, version, byte count and SHA-256 of every notice framing in
   [`notices.py`](../packages/orchestrator/src/sandbox_science/orchestrator/notices.py);
 - `memory`, for a run with the project's stores: the memory framing's version, the

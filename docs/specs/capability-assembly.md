@@ -15,6 +15,14 @@ direct callers. Excluded child capabilities gain no empty hook slot. The catalog
 feature does not offer the capability. Worker specifications remain with their
 handlers and contribute their names to the same reservation calculation.
 
+The trusted role factories also defer the tool groups (`CapabilitySet.groups`): the
+run is offered its core tools from its start and loads the others by group with
+`load_tools`, by calling one of them, or when a notice that needs a group enters its
+conversation. `Toolbox` keeps a run's groups beside its offered entries, and a group
+holds only the entries the role's selection offers. The catalog of groups and the
+mapping from notice source to group are `tool_entry.GROUPS` and `NOTICE_GROUPS`
+([tools spec](tools.md#tool-groups)). A direct caller's set defers nothing.
+
 Main agents may receive reviews, plans, questions and connectors. Delegated tasks
 receive only capabilities constructed from their admitted scope; delegated checks
 additionally receive only read effects from document, ledger and memory tools.

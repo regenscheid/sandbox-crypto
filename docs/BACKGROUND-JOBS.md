@@ -3,7 +3,9 @@
 The worker runs long shell computations as executions of kind `job` (D83,
 [tools specification](specs/tools.md#background-jobs), [worker API](WORKER.md)).
 The harness offers `start_job`, `list_jobs`, `job_status`, `cancel_job` and
-`wait_jobs` when the worker advertises the `jobs` feature. Jobs keep running
+`wait_jobs` when the worker advertises the `jobs` feature, as the `jobs` tool group:
+a run loads it with `load_tools`, by calling one of them, or when a job's notice or the
+shell's note on a computation loads it ([tool groups](specs/tools.md#tool-groups)). Jobs keep running
 when the harness exits, the turn ends, or the GUI closes. [OpenShell lab 19](../.agents/docs/agent-reports/babbage-openshell-lab-19-2026-10-12.md) records worker, harness and browser acceptance checks.
 
 `start_job` takes a script or argv, a purpose and `expected_progress`, with an
