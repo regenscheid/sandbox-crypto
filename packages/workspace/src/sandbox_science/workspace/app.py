@@ -13,10 +13,12 @@ request without a session whose Authentik token is believed gets one, named by t
 token's user, and the answer sets its cookie as the login does. The session ends when
 the token expires; a request that brings another token (a new login, or Authentik's
 refresh) ends it and opens the token's own, and one whose new token is refused ends it
-and is refused. A session the login link opened is the operator's, and an Authentik
-token never replaces it. The plain ``X-authentik-*`` headers are never read. Each API
-request carries its session's ``Identity`` (identity.py), which the admin-only actions
-check. A request with any method other than GET or HEAD
+and is refused. Logging out ends the sessions of the token and refuses the token until it
+expires, since the outpost sends it until the user signs out of Authentik; the answer
+names Authentik's sign-out. A session the login link opened is the operator's, and an
+Authentik token never replaces it. The plain ``X-authentik-*`` headers are never read.
+Each API request carries its session's ``Identity`` (identity.py), which the admin-only
+actions check. A request with any method other than GET or HEAD
 also needs an ``Origin`` that is this server's own, so that a page on another site
 cannot act through the user's browser; nothing here answers CORS. The API's routes,
 POST ones included, are listed in docs/WORKSPACE.md. This module adds logout and
@@ -131,6 +133,9 @@ MAX_SESSIONS: Final = 64
 """Sessions kept at once; logging in beyond it ends the oldest Authentik session, or the
 oldest one when every session is the login link's."""
 MAX_TOKEN: Final = 256
+MAX_LOGGED_OUT: Final = 4096
+"""Logged-out Authentik tokens remembered at once; past it, the one that expires first is
+forgotten."""
 SAFE_METHODS: Final = frozenset({hdrs.METH_GET, hdrs.METH_HEAD})
 
 CONTENT_SECURITY_POLICY: Final = "; ".join(
@@ -196,6 +201,9 @@ class Sessions:
             raise ValueError("a login token needs at least 32 characters")
         self._token = login_token.encode()
         self._sessions: OrderedDict[bytes, Identity] = OrderedDict()
+        self._logged_out: dict[bytes, float] = {}
+        """The digests of the Authentik tokens whose user logged out, with when each
+        expires: until then the token opens no session."""
         self._clock = clock
 
     def login(self, presented: str) -> str | None:
@@ -236,6 +244,34 @@ class Sessions:
     def end(self, session: str | None) -> None:
         if session is not None and len(session) <= MAX_TOKEN:
             self._sessions.pop(_digest(session), None)
+
+    def log_out(self, identity: Identity) -> None:
+        """End every session opened from ``identity``'s Authentik token, and refuse the
+        token until it expires: Authentik's outpost sends it again with each request until
+        the user signs out of Authentik, and it would open a new session."""
+        if identity.login != "forward" or not identity.token or identity.expires is None:
+            return
+        for key, kept in list(self._sessions.items()):
+            if kept.login == "forward" and hmac.compare_digest(kept.token, identity.token):
+                del self._sessions[key]
+        now = self._clock()
+        for digest, expires in list(self._logged_out.items()):
+            if expires <= now:
+                del self._logged_out[digest]
+        if identity.expires > now:
+            self._logged_out[identity.token] = identity.expires
+        while len(self._logged_out) > MAX_LOGGED_OUT:
+            del self._logged_out[min(self._logged_out, key=self._logged_out.__getitem__)]
+
+    def logged_out(self, token: bytes) -> bool:
+        """Whether the Authentik token with this digest was logged out and has not expired."""
+        expires = self._logged_out.get(token)
+        if expires is None:
+            return False
+        if expires <= self._clock():
+            del self._logged_out[token]
+            return False
+        return True
 
 
 def _digest(value: str) -> bytes:
@@ -337,6 +373,12 @@ def create_app(
             return found
         if found is not None:
             sessions.end(presented)  # the token changed: the session is the new token's or none
+        if sessions.logged_out(digest):
+            where = f" ({forward_auth.sign_out})" if forward_auth.sign_out else ""
+            return (
+                "this Authentik login was logged out of the workspace: sign out of "
+                f"Authentik{where} and sign in again"
+            )
         try:
             claimed = await forward_auth.verify(token)
         except TokenRefusedError as refused:
@@ -425,7 +467,20 @@ def create_app(
         sessions.end(request.cookies.get(name))
         sessions.end(request.get(OPENED))
         request.pop(OPENED, None)  # a session this very request opened sets no cookie
-        response = web.Response(status=204, headers={hdrs.CACHE_CONTROL: "no-store"})
+        found = request.get(IDENTITY)
+        response: web.Response
+        if found is not None and found.login == "forward":
+            # The outpost keeps sending the same token until the user signs out of
+            # Authentik: it opens no session again until it expires. The answer says where
+            # to sign out of Authentik, the way to log in again.
+            sessions.log_out(found)
+            _log.info("%s logged out; their Authentik token opens no session again", found.user)
+            sign_out = forward_auth.sign_out if forward_auth is not None else None
+            response = web.json_response(
+                {"sign_out": sign_out}, headers={hdrs.CACHE_CONTROL: "no-store"}
+            )
+        else:
+            response = web.Response(status=204, headers={hdrs.CACHE_CONTROL: "no-store"})
         if reached.public is not None:
             response.del_cookie(name, path="/", secure=True)  # a __Host- cookie needs it
         else:
