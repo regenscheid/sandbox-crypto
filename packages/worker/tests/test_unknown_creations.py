@@ -612,6 +612,17 @@ def test_inherited_openshell_variables_do_not_reach_the_cli(
     assert env["PATH"] == os.environ["PATH"]
 
 
+def test_the_cli_inherits_no_ssh_agent_or_x_display(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    setup = Setup(tmp_path)
+    for name in ("SSH_AUTH_SOCK", "DISPLAY", "XAUTHORITY"):
+        monkeypatch.setenv(name, f"/worker/{name.lower()}")
+    env = OpenShellBackend(setup.settings, setup.state_dir).cli_env()
+    assert not {"SSH_AUTH_SOCK", "DISPLAY", "XAUTHORITY"} & set(env)
+    assert env["PATH"] == os.environ["PATH"]
+
+
 async def test_creations_carry_no_label_by_default(paused: Setup) -> None:
     await paused.environments.create(paused.request())
     [create] = paused.fake.calls("sandbox", "create")

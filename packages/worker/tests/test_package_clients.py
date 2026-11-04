@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import configparser
 import dataclasses
+import json
 import os
 import re
 import sys
@@ -543,6 +544,40 @@ async def test_the_worker_says_which_files_it_left_alone(
         f"environment env1: left {cargo} as it is (the executor did not write it); "
         "check that its client uses the package cache"
     ]
+
+
+@pytest.mark.asyncio
+async def test_the_ssh_bridge_forwards_nothing_and_inherits_no_agent_or_display(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The worker user's SSH agent or X display, offered to a sandbox, would be reachable
+    # from it: ssh gets neither variable, and forwarding is off whatever the config says.
+    for name in ("SSH_AUTH_SOCK", "DISPLAY", "XAUTHORITY"):
+        monkeypatch.setenv(name, f"/worker/{name.lower()}")
+    settings = openshell_settings(tmp_path)
+    record = tmp_path / "ssh-call.json"
+    (tmp_path / "ssh").write_text(
+        f"#!/bin/sh\nexec '{sys.executable}' -I -c "
+        "'import json,os,shlex,sys; args=sys.argv[1:]; "
+        f'open("{record}","w").write(json.dumps({{"args":args,"env":sorted(os.environ)}})); '
+        'cmd=shlex.split(args[-1]); os.execvp(cmd[0],cmd)\' "$@"\n'
+    )
+    (shell,) = await with_manager(
+        tmp_path, settings, ShellRequest(operation_id="op-shell", context=CONTEXT, script="true")
+    )
+    assert shell.result is not None
+    assert shell.result.exit_code == 0
+    call = json.loads(record.read_text())
+    options = [call["args"][i + 1] for i, arg in enumerate(call["args"]) if arg == "-o"]
+    for option in (
+        "BatchMode=yes",
+        "ClearAllForwardings=yes",
+        "ForwardAgent=no",
+        "ForwardX11=no",
+        "PermitLocalCommand=no",
+    ):
+        assert option in options
+    assert not {"SSH_AUTH_SOCK", "DISPLAY", "XAUTHORITY"} & set(call["env"])
 
 
 def test_the_package_cache_setting_is_checked(tmp_path: Path) -> None:
