@@ -10,10 +10,12 @@ from pathlib import Path
 
 LAYOUTS = {
     "app": ("control",),
-    "pool": ("worker", "middleware"),
+    "pool": ("worker", "worker-config", "middleware"),
     "runtime-manager": ("runtime",),
 }
-"""Each Pod's fixed state directories; the runtime manager's is its own PVC (KRB-9)."""
+"""Each Pod's fixed state directories; the runtime manager's is its own PVC (KRB-9). The
+containers mount them one by one, so each exists, owned by the service, before they start;
+the worker's OpenShell CLI tree (``worker-config``) is the operator's to fill."""
 
 
 def initialize(root: Path, component: str, *, package_cache: bool = False) -> None:

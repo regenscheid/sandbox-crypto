@@ -20,8 +20,8 @@ def initialize(root, component, *, package_cache=False):
     ("component", "cache", "expected"),
     [
         ("app", False, {"control"}),
-        ("pool", False, {"worker", "middleware"}),
-        ("pool", True, {"worker", "middleware", "package-cache"}),
+        ("pool", False, {"worker", "worker-config", "middleware"}),
+        ("pool", True, {"worker", "worker-config", "middleware", "package-cache"}),
         ("runtime-manager", False, {"runtime"}),
     ],
 )

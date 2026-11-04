@@ -834,6 +834,59 @@ def test_app_containers_mount_only_their_own_state_directories():
     assert initialize["volumeMounts"] == [{"name": "data", "mountPath": "/var/lib/sandbox-science"}]
 
 
+def data_mounts(container: dict) -> list[tuple[str, str | None, bool]]:
+    return [
+        (mount["mountPath"], mount.get("subPath"), mount.get("readOnly", False))
+        for mount in container["volumeMounts"]
+        if mount["name"] == "data"
+    ]
+
+
+def test_pool_containers_mount_only_their_own_state_directories():
+    data = with_cache()
+    data["worker"] = {
+        "environment": {
+            "HOME": "/var/lib/sandbox-science/worker-home",
+            "XDG_CONFIG_HOME": "/var/lib/sandbox-science/worker-config",
+        }
+    }
+    data["middleware"] = {"environment": {"HOME": "/var/lib/sandbox-science/middleware-home"}}
+    containers = pool_containers(data)
+    root = "/var/lib/sandbox-science"
+    assert {name: data_mounts(container) for name, container in containers.items()} == {
+        # Its state, its OpenShell CLI tree (the gateway client's key) and the policy store
+        # it writes for the middleware; the selected home once, the CLI tree once.
+        "worker": [
+            (f"{root}/worker", "worker", False),
+            (f"{root}/worker-config", "worker-config", False),
+            (f"{root}/middleware", "middleware", False),
+            (f"{root}/worker-home", "worker-home", False),
+        ],
+        "middleware": [
+            (f"{root}/middleware", "middleware", False),
+            (f"{root}/middleware-home", "middleware-home", False),
+        ],
+        # Sandboxes reach the cache: it reads the worker's records, never writes them, and
+        # sees neither the CLI tree nor the middleware's stores.
+        "cache": [
+            (f"{root}/package-cache", "package-cache", False),
+            (f"{root}/worker", "worker", True),
+        ],
+    }
+    assert [data_mounts(container) for container in pool_containers().values()] == [
+        [
+            (f"{root}/worker", "worker", False),
+            (f"{root}/worker-config", "worker-config", False),
+            (f"{root}/middleware", "middleware", False),
+        ],
+        [(f"{root}/middleware", "middleware", False)],
+    ]
+    spec = pod(objects(configured(data)), "pool")
+    initialize = spec["initContainers"][0]
+    assert initialize["volumeMounts"] == [{"name": "data", "mountPath": root}]
+    assert initialize["args"][-1] == "--package-cache"
+
+
 def test_manager_port_is_reachable_only_from_the_manager_and_it_only_reaches_out():
     policies = {
         item["metadata"]["name"]: item["spec"]
@@ -1866,6 +1919,17 @@ def test_worker_operation_job_runs_the_command_on_the_pool_volume_like_the_relea
     assert volumes["worker-source"]["secret"]["secretName"] == "test-worker"
     assert [init["name"] for init in pod_spec["initContainers"]] == ["copy-worker"]
     assert {"name": "SS_LOG_FORMAT", "value": "json"} in container["env"]
+
+
+def test_offline_worker_jobs_mount_the_pool_workers_directories_only():
+    data = values()
+    data["worker"] = {"environment": {"HOME": "/var/lib/sandbox-science/worker-home"}}
+    config = configured(data)
+    worker = pool_containers(data)["worker"]
+    for job in (release(config), operation(["child-environments", "list"], config)):
+        (container,) = pod_of(job)["containers"]
+        assert data_mounts(container) == data_mounts(worker)
+        assert "/var/lib/sandbox-science" not in {m["mountPath"] for m in container["volumeMounts"]}
 
 
 def test_worker_operation_job_has_the_release_jobs_hardening_and_the_workers_environment():

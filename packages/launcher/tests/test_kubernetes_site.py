@@ -757,6 +757,49 @@ def test_the_script_names_files_only_and_the_bundle_holds_no_generated_value(tmp
     assert "sandbox-science-harness project create" in readme
 
 
+def test_each_pool_service_finds_its_state_on_its_own_mounts(tmp_path):
+    output = generate(tmp_path, cache=True)
+    secrets = output / "secrets"
+    items = json.loads(json.dumps(render(load_bundle(tmp_path / "inputs/bundle.toml"))))["items"]
+    pool = next(
+        item
+        for item in items
+        if item["kind"] == "Deployment" and item["metadata"]["name"] == f"{NAME}-pool"
+    )
+    mounts = {
+        container["name"]: {
+            mount["mountPath"]: mount.get("readOnly", False)
+            for mount in container["volumeMounts"]
+            if mount["name"] == "data"
+        }
+        for container in pool["spec"]["template"]["spec"]["containers"]
+    }
+
+    def access(service: str, path: Path) -> str | None:
+        """How ``service``'s container reaches ``path``: "rw", "ro" or not at all."""
+        for mount, read_only in mounts[service].items():
+            if path == Path(mount) or Path(mount) in path.parents:
+                return "ro" if read_only else "rw"
+        return None
+
+    worker = load_worker(secrets / "worker/worker.toml")
+    assert worker.openshell is not None
+    assert worker.openshell.environments is not None
+    assert access("worker", worker.state_dir) == "rw"
+    assert access("worker", Path(worker.openshell.env["XDG_CONFIG_HOME"])) == "rw"
+    assert access("worker", worker.openshell.environments.policy_store) == "rw"
+    middleware = load_middleware(secrets / "middleware/middleware.toml")
+    assert access("middleware", middleware.state_dir) == "rw"
+    assert access("middleware", Path(worker.openshell.env["XDG_CONFIG_HOME"])) is None
+    assert access("middleware", worker.state_dir) is None
+    cache = load_cache(secrets / "cache/cache.toml")
+    assert access("cache", cache.cache_dir) == "rw"
+    assert cache.worker_state_dir is not None
+    assert access("cache", cache.worker_state_dir) == "ro"
+    assert access("cache", Path(worker.openshell.env["XDG_CONFIG_HOME"])) is None
+    assert access("cache", middleware.state_dir) is None
+
+
 def test_a_non_empty_output_directory_is_refused(tmp_path):
     files = plan(*load(site_file(tmp_path)))
     used = tmp_path / "used"

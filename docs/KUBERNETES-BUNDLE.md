@@ -12,7 +12,12 @@ The trusted application image runs control and workspace in one Pod over one blo
 PVC; each container mounts only its own directories of it (`control/`, which the
 workspace also reads as the harness's state, and its managed home/config
 directories). A second Pod, the [worker-side unit](UNIT.md), runs worker and policy middleware over their shared block
-PVC; package cache is optional there. Each of its containers runs `sandbox-science-unit serve --config /etc/sandbox-science/unit.toml --only <service>`, on one unit config the renderer makes as a ConfigMap `<name>-pool-unit` (no credential in it): a section for each service naming the settings file that service's Secret projects at `/private`, and the container's variables as the service's `pass_env`. The local launcher's unit uses the same file shape. The containers stay apart so that each keeps its own credentials, limits and probes; the Pod is ready when all are. A third Pod, the
+PVC; package cache is optional there. Its containers too mount only their own directories of it: the worker its state
+(`worker/`), its OpenShell CLI tree with the gateway client's key (`worker-config/`) and the
+policy and event stores it writes for the middleware (`middleware/`); the middleware
+`middleware/`; the cache, which sandboxes reach, `package-cache/` and, read-only,
+`worker/`, whose records pin what environments use. Each also mounts the managed
+home/config directories its environment selects. Each of its containers runs `sandbox-science-unit serve --config /etc/sandbox-science/unit.toml --only <service>`, on one unit config the renderer makes as a ConfigMap `<name>-pool-unit` (no credential in it): a section for each service naming the settings file that service's Secret projects at `/private`, and the container's variables as the service's `pass_env`. The local launcher's unit uses the same file shape. The containers stay apart so that each keeps its own credentials, limits and probes; the Pod is ready when all are. A third Pod, the
 [runtime manager](specs/kubernetes-runtime-bootstrap.md), runs the same
 `trusted-app` image as `sandbox-science-runtime-manager serve` over a small PVC of its
 own (the image carries the OpenShell CLI and the OpenSSH client that its
@@ -31,9 +36,10 @@ and PVC a profile names must carry the `openshell.ai/sandbox-attachable` labels
 ([gateway settings](KUBERNETES.md#gateway-settings-for-profile-placement)).
 
 A first UID-1000 init container mounts only that Pod's data PVC and creates the
-fixed missing state directories: `control` for the application, `worker` and
-`middleware` for the pool, plus `package-cache` when enabled, and `runtime` for the
-runtime manager. This breaks the cold
+fixed missing state directories: `control` for the application, `worker`,
+`worker-config` and `middleware` for the pool, plus `package-cache` when enabled, and
+`runtime` for the runtime manager, so that each directory a service mounts exists, owned
+by UID 1000, before the service starts. This breaks the cold
 volume startup dependency: workspace can initialize its empty control database
 before any runtime has connected. Initialization is create-only, preserves existing
 directory modes and all content, refuses symlink/non-directory collisions and does
@@ -845,7 +851,7 @@ Each file is one Job (`batch/v1`) with `generateName: <name>-worker-release-`, s
 `kubectl create -f` makes a new one each time and `kubectl apply` refuses it. It runs
 `sandbox-science-worker artifact-retention --settings /private/worker.toml --limit 100`
 (`--apply` unless `--preview`; `--after` for the next page) on the worker image, with the
-pool PVC, the worker's Secret copied as in the pool Pod, `backoffLimit: 0`, a one-hour
+worker container's directories of the pool PVC and the worker's Secret copied as in the pool Pod, `backoffLimit: 0`, a one-hour
 deadline and a week before the finished Job is deleted. Its Pod is labelled
 `app.kubernetes.io/component: worker-release`: only the default-deny NetworkPolicy selects
 it, so it has no network, and no Service selects it.

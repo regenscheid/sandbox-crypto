@@ -591,22 +591,49 @@ def _mcp_services(config: BundleConfig) -> list[str]:
     ]  # fmt: skip
 
 
+DIRECTORIES: dict[str, tuple[str, ...]] = {
+    "control": ("control",),
+    # The workspace reads the harness's records in control's state directory (D80).
+    "workspace": ("control",),
+    # Its state, its OpenShell CLI tree (``openshell.env``, with the gateway client's key)
+    # and the policy and event stores it writes for the middleware.
+    "worker": ("worker", "worker-config", "middleware"),
+    "middleware": ("middleware",),
+    "cache": ("package-cache",),
+}
+"""The data PVC's directories each service mounts read-write, besides the managed
+home/config directories its environment selects."""
+READ_ONLY_DIRECTORIES: dict[str, tuple[str, ...]] = {"cache": ("worker",)}
+"""Directories a service only reads: the cache, which sandboxes reach, reads the worker's
+lockfile records (opened ``mode=ro``) to pin what environments use."""
+
+
 def _data_mounts(name: str, capacity: Capacity) -> list[dict[str, object]]:
-    """The PVC as a container sees it. In the app Pod each container mounts only the
-    directories it uses: control's state, which workspace reads as the harness's state
-    directory, and its own managed home/config directories."""
-    if name not in ("control", "workspace"):
+    """The PVC as a container sees it: each service's own directories of it, never the
+    whole volume, which holds the other services' state and the worker's gateway
+    credential. The runtime manager has a PVC of its own."""
+    if name not in DIRECTORIES:
         return [{"name": "data", "mountPath": DATA}]
     environment = capacity.environment if isinstance(capacity, Service) else {}
-    directories = ["control"]
+    directories = list(DIRECTORIES[name])
     directories += sorted(
-        environment[key].removeprefix(f"{DATA}/")
-        for key in ("HOME", "XDG_CONFIG_HOME")
-        if key in environment
+        {
+            environment[key].removeprefix(f"{DATA}/")
+            for key in ("HOME", "XDG_CONFIG_HOME")
+            if key in environment
+        }
+        - set(directories)
     )
+    access = [(directory, False) for directory in directories]
+    access += [(directory, True) for directory in READ_ONLY_DIRECTORIES.get(name, ())]
     return [
-        {"name": "data", "mountPath": f"{DATA}/{directory}", "subPath": directory}
-        for directory in directories
+        {
+            "name": "data",
+            "mountPath": f"{DATA}/{directory}",
+            "subPath": directory,
+            **({"readOnly": True} if read_only else {}),
+        }
+        for directory, read_only in access
     ]
 
 
@@ -1338,10 +1365,10 @@ def _offline_worker_job(
     extra_labels: dict[str, str],
     keep_seconds: int,
 ) -> dict[str, object]:
-    """A one-shot Job of the worker image on the pool's volume: the worker's Secret copied
-    as in the pool Pod, no service-account token, the Pods' security context, a deadline
-    and ``keep_seconds`` before the finished Job goes. Its Pod carries ``component``'s labels, which
-    decide the network it gets."""
+    """A one-shot Job of the worker image on the pool's volume: the worker's directories of
+    it and its Secret copied as in the pool Pod, no service-account token, the Pods'
+    security context, a deadline and ``keep_seconds`` before the finished Job goes. Its Pod
+    carries ``component``'s labels, which decide the network it gets."""
     image = config.images.worker
     init, private = _credentials(config, "worker", config.secrets.worker, image)
     capacity = config.worker
@@ -1357,7 +1384,7 @@ def _offline_worker_job(
         "resources": _resources(capacity),
         "env": [{"name": key, "value": environment[key]} for key in sorted(environment)],
         "volumeMounts": [
-            {"name": "data", "mountPath": DATA},
+            *_data_mounts("worker", capacity),
             {"name": "scratch", "mountPath": "/tmp"},  # noqa: S108 - bounded Pod volume
             {"name": "worker-credentials", "mountPath": PRIVATE, "readOnly": True},
         ],
