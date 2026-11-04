@@ -30,6 +30,8 @@ from sandbox_science.orchestrator.session_plans import (
     PlanStep,
     PlanTrack,
     SessionPlans,
+    StepChanges,
+    step_changes,
 )
 
 
@@ -975,3 +977,37 @@ def test_the_evidence_checks_keep_plans_and_their_accounting(tmp_path, monkeypat
         assert summary.progress_cursor == 2
     finally:
         documents.close()
+
+
+def test_step_changes_name_added_changed_and_removed_steps_by_stable_id():
+    before = body(step("one"), step("two"), step("three"))
+    after = body(step("two", description="Analyze again"), step("three"), step("four"))
+    assert step_changes(before, after) == StepChanges(
+        added=("four",), changed=("two",), removed=("one",)
+    )
+    # A step that moves to another phase changes: its progress no longer matches it.
+    moved = body(
+        phases=(
+            PlanPhase(phase_id="phase-one", title="Work", steps=(step("one"),)),
+            PlanPhase(phase_id="phase-two", title="Check", steps=(step("two"), step("three"))),
+        )
+    )
+    assert step_changes(before, moved).changed == ("two", "three")
+    assert step_changes(before, before) == StepChanges((), (), ())
+
+
+def test_compact_summary_reads_one_plan_state(plans):
+    assert plans.compact_summary(actor()) is None
+    receipt = made(plans)
+    plans.progress(actor(), "start", receipt.ref, "one", 0, "in_progress", "Started")
+    found = plans.compact_summary(actor())
+    assert found is not None
+    summary, compact = found
+    assert (summary.head, summary.status_revision, summary.progress_cursor) == (
+        compact.head.ref,
+        compact.head.status_revision,
+        compact.head.progress_cursor,
+    )
+    assert summary.event_cursor == compact.event_cursor == 2
+    assert summary.last_event.action == "progress"
+    assert compact.steps[0].latest is not None

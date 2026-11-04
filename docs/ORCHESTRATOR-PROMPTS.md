@@ -20,7 +20,7 @@ IDs are the version strings in the code.
 | Input | ID in code | Source | When it is sent |
 | --- | --- | --- | --- |
 | MAIN base system | `sandbox-main-19` (`loop.py` `MAIN_VERSION`) | [loop.py](../packages/orchestrator/src/sandbox_science/orchestrator/loop.py) `SYSTEM_PROMPT`; new user messages may mean root work, plan creation or revision, child steering, or feedback on a pinned result | Every MAIN run, unless the caller supplies a custom `system` |
-| MAIN planning guidance | `sandbox-main-plan-2` | [plan_tools.py](../packages/orchestrator/src/sandbox_science/orchestrator/plan_tools.py) `GUIDANCE` | Appended when the six plan tools are offered (stateful MAIN runs) |
+| MAIN planning guidance | `sandbox-main-plan-3` | [plan_tools.py](../packages/orchestrator/src/sandbox_science/orchestrator/plan_tools.py) `GUIDANCE` | Appended when the six plan tools are offered (stateful MAIN runs) |
 | Delegated check system | `sandbox-delegated-check-14` (`delegation/prompt.py` `CHECK_VERSION`) | [delegation/prompt.py](../packages/orchestrator/src/sandbox_science/orchestrator/delegation/prompt.py) `CHECK_PROMPT`; its first user message is the brief the platform writes (`check_task`, `evidence_line`, `brief_text`): the task, the entry's evidence and the parent's note, then the platform's line naming its write area (`write_area_text`, DA-19; one wording for a run in the session's environment, which reads every file of the session, and one for a run in an environment of its own, which does not), and for a run in an environment of its own the line mapping its inputs to their copies under `inputs/` (`inputs_text`, CE-7); later parent messages cannot predetermine its verdict; it says what its read-only connector tools are and that a call needing approval waits for the user | Every delegated run, which checks one ledger entry ([plans and delegation](specs/plans-and-delegation.md), PD-13) |
 | Delegated task system | `sandbox-delegated-task-19` (`delegation/prompt.py` `TASK_VERSION`) | [delegation/prompt.py](../packages/orchestrator/src/sandbox_science/orchestrator/delegation/prompt.py) `TASK_PROMPT`; its first user message is the parent's brief (`task_text`): the task, the context and the inputs, the deliverables, each with the produced form of its kind (`produced_form`), and a line when the brief has references, then the platform's line naming its write area (`write_area_text`, DA-19; one wording for a run in the session's environment, which reads every file of the session, and one for a run in an environment of its own, which does not), and for a run in an environment of its own the line mapping its inputs to their copies under `inputs/` (`inputs_text`, CE-7); later parent messages can steer it; it says what its connector tools are, that a call needing approval waits for the user, how a draft plan holds outward calls, that its parent may give it records by reference, and that a child lacking context asks its parent with `message_parent` (DA-15) | Every delegated run that does a task ([plans and delegation](specs/plans-and-delegation.md), PD-11) |
 
@@ -29,7 +29,7 @@ IDs are the version strings in the code.
 | Research templates | `sandbox-stock-intake-2`, `sandbox-stock-literature-2`, `sandbox-stock-experiment-2`, `sandbox-stock-proof-audit-1`, `sandbox-stock-report-2` | [stock_prompts.py](../packages/orchestrator/src/sandbox_science/orchestrator/stock_prompts.py) | Only with `--research-template` ([research framing](STOCK-RESEARCH-PROMPTS.md)) |
 | MAIN prompt pins | `sandbox-prompt-pins-1` | [prompts.py](../packages/orchestrator/src/sandbox_science/orchestrator/prompts.py) `assemble`; `loop.py` `_sections` | Every MAIN run's record: section, tool and notice-framing pins ([MAIN provenance](MAIN-PROMPT-PROVENANCE.md)) |
 | Offered tool descriptions and schemas | Pinned by hash, not versioned; each with the required `purpose_note` that [purpose.py](../packages/orchestrator/src/sandbox_science/orchestrator/purpose.py) `offered` adds | `tools.py` `SPECS`, `SAGE`, `PDF_SPECS`, `ADMIT_HOSTS` and `Toolbox` (`restart_kernel`); `jobs.py` `JOB_SPECS`; `provision.py` `PROVISION_SPECS`; `documents/tool.py` and `documents/annotation_tools.py` `SPECS`; `consistency/controller.py` `AUTHOR_SPECS`; `plan_tools.py` `SPECS`; `ledger/tool.py`, `memory_tools.py`, `delegation/specs.py`, `agent_messages.py`, `skills/tool.py` and `context/history/tool.py` `SPECS`; `view_image.py` `SPEC`; connector tools, which their MCP servers list when a run starts (`connectors.py`) | Every model call, filtered by the worker's features and the run's capabilities |
-| Platform notices | `sandbox-notice-requests-1`, `-jobs-1`, `-jobs-attached-1`, `-plans-1`, `-review-findings-2`, `-review-counts-3`, `-math-1`, `-delegations-2`, `-delegations-attached-1`, `-delegations-running-2`, `-outcome-correction-1`, `-skills-3`, `-skills-words-2`, `-redelivered-1`; the view's `sandbox-state-block-2`, `sandbox-digest-2`, `sandbox-fold-region-3` and `sandbox-kernel-lines-1`, a fold's enrichment instruction, `sandbox-fold-enrich-3`, an overview's update, `sandbox-fold-overview-2`, a consolidation run's instruction, `sandbox-consolidation-1`, a delegated task's `sandbox-task-constraints-1` and its referenced records' `sandbox-referenced-1` (CM-37b), an image's line, `sandbox-image-1`, the report round's instruction at a limit, `sandbox-notice-report-1`, the request to continue an answer the output limit cut off, `sandbox-notice-continue-1`, the nudge after three failed calls in a row of one tool with one kind of error, `sandbox-notice-error-streak-1`, and, in the provider-compaction context mode, the summarization prompt Claude's server-side compaction is sent, `sandbox-compaction-1` (CM-38b) | [notices.py](../packages/orchestrator/src/sandbox_science/orchestrator/notices.py) | User-role messages for document work requests, job completions, reviewer findings and counts, plan reread requirements, closing math findings, delegation outcomes, the delegated runs a closing answer waits for, a delegated run's one correction of its result, the skills that match a run's task or a user message, a user's message the run's view already holds, the state block a main run's view begins with once older messages are folded, the fold region holding its fold records, the line before each earlier run's part of a view naming its kernels ([context management](specs/context-management.md), CM-26, CM-29a, CM-29c), the instruction of a run's last call at a limit to report what it found, the request to continue a cut answer (at most twice a run) and the error-streak nudge (once a streak) ([run service](specs/run-service.md), RS-6f); job completions and delegation outcomes also ride on tool results |
+| Platform notices | `sandbox-notice-requests-1`, `-jobs-1`, `-jobs-attached-1`, `-plans-2`, `-review-findings-2`, `-review-counts-3`, `-math-1`, `-delegations-2`, `-delegations-attached-1`, `-delegations-running-2`, `-outcome-correction-1`, `-skills-3`, `-skills-words-2`, `-redelivered-1`; the view's `sandbox-state-block-2`, `sandbox-digest-2`, `sandbox-fold-region-3` and `sandbox-kernel-lines-1`, a fold's enrichment instruction, `sandbox-fold-enrich-3`, an overview's update, `sandbox-fold-overview-2`, a consolidation run's instruction, `sandbox-consolidation-1`, a delegated task's `sandbox-task-constraints-1` and its referenced records' `sandbox-referenced-1` (CM-37b), an image's line, `sandbox-image-1`, the report round's instruction at a limit, `sandbox-notice-report-1`, the request to continue an answer the output limit cut off, `sandbox-notice-continue-1`, the nudge after three failed calls in a row of one tool with one kind of error, `sandbox-notice-error-streak-1`, and, in the provider-compaction context mode, the summarization prompt Claude's server-side compaction is sent, `sandbox-compaction-1` (CM-38b) | [notices.py](../packages/orchestrator/src/sandbox_science/orchestrator/notices.py) | User-role messages for document work requests, job completions, reviewer findings and counts, plan reread requirements, closing math findings, delegation outcomes, the delegated runs a closing answer waits for, a delegated run's one correction of its result, the skills that match a run's task or a user message, a user's message the run's view already holds, the state block a main run's view begins with once older messages are folded, the fold region holding its fold records, the line before each earlier run's part of a view naming its kernels ([context management](specs/context-management.md), CM-26, CM-29a, CM-29c), the instruction of a run's last call at a limit to report what it found, the request to continue a cut answer (at most twice a run) and the error-streak nudge (once a streak) ([run service](specs/run-service.md), RS-6f); job completions and delegation outcomes also ride on tool results |
 | Kernel package notice | `sandbox-kernels-1` | [notices.py](../packages/orchestrator/src/sandbox_science/orchestrator/notices.py) `KERNELS` | Before a model call in a stateful MAIN run, once per kernel and package revision ([kernel check](KERNEL-REVISIONS.md#kernel-check-before-each-turn)) |
 | Job watcher | `sandbox-job-watcher-1` | [jobs.py](../packages/orchestrator/src/sandbox_science/orchestrator/jobs.py) `WATCHER_PROMPT`; `watcher_prompt.py` | Each due check-in when a watcher alias is configured ([background jobs](BACKGROUND-JOBS.md), [watcher provenance](WATCHER-PROMPT-PROVENANCE.md)) |
 | Consistency reviewer | Rubric `sandbox-consistency-9`, then the re-check instructions `sandbox-recheck-1`, then the purpose guidance `sandbox-reviewer-purpose-1`; assembly `sandbox-reviewer-bundle-3` | [consistency/rubric.py](../packages/orchestrator/src/sandbox_science/orchestrator/consistency/rubric.py) `RUBRIC`, `RECHECK`; [consistency/prompt_bundle.py](../packages/orchestrator/src/sandbox_science/orchestrator/consistency/prompt_bundle.py) `PURPOSE`; `consistency/runner.py` `SPECS` (the read-only review tools) | Each reviewer call ([consistency review](CONSISTENCY-REVIEW.md), [reviewer provenance](REVIEWER-PROMPT-PROVENANCE.md)) |
@@ -136,10 +136,12 @@ the original actor. The tool-call identity is kept in the run's tool record.
 
 The [harness](../packages/orchestrator/src/sandbox_science/orchestrator/harness.py) offers the
 tools only to a stateful MAIN run with a recorded open session. Stateless runs, the
-watcher and the reviewer get no plan tools or guidance. The `sandbox-main-plan-2`
+watcher and the reviewer get no plan tools or guidance. The `sandbox-main-plan-3`
 guidance is appended to the MAIN system message only when the tools are offered. It
 asks substantive work to create or resume a short plan and record progress as work
-happens; small factual answers need no plan.
+happens; small factual answers need no plan. It says that a plans notice shows the plan
+when someone else changed it and counts as reading it, and that `plan_read` gives step
+details and the counters a change needs.
 
 **Activation and approval.** Activating a draft records workflow state under
 existing task authorization; it is neither USER approval nor a permission grant.
@@ -163,16 +165,39 @@ not an atomic control-store-to-guest launch guarantee; admitted work may settle
 without automatic cancellation or kernel restart.
 
 **Reread fence.** At active safe points the tools read a bounded summary and at most
-four scoped event pages of 16 items. Another actor's event (including a USER edit
-through the [workspace](SESSION-PLAN-EDITING.md)), an unread existing plan, corrupt
-history or an incomplete event scan requires a current reread before new effects.
+four scoped event pages of 16 items. Another actor's event (the user's, including a
+USER edit through the [workspace](SESSION-PLAN-EDITING.md), another main run's or a
+delegated run's), an unread existing plan, corrupt history or an incomplete event scan
+requires a current read before new effects; the run's own changes do not. A plans
+notice (`sandbox-notice-plans-2`) or `plan_read(current)` is that read.
 `plan_read(current)` returns the full bounded body and, for every current step, a
 compact status, fingerprint, attribution and CAS projection; long notes, evidence
-and history are explicit pages. The read satisfies the fence only after a successful
-model call includes that result and its ref, status, progress and event pins still
-match. Historical reads, mutation or replay receipts, a failed model call, or a read
-and an effect in the same assistant batch do not satisfy it. A GUI read or save does
-not clear it.
+and history are explicit pages. Either satisfies the fence only after a successful
+model call includes it and its plan state (ref, status, progress and event pins) is
+still current; otherwise the next safe point shows the plan again. Historical reads,
+mutation or replay receipts, a failed model call, or a read and an effect in the same
+assistant batch do not satisfy it. A GUI read or save does not clear it. A refused
+effect or plan change says `plan_reread_required` and that the plans notice before the
+next turn shows the plan as it now stands.
+
+**Plans notice.** Before a model call, the plans hook gives the plan, when the run has
+an unread change or has not seen the existing plan, as a notice whose payload is text
+a model reads (`_render` in
+[plan_tools.py](../packages/orchestrator/src/sandbox_science/orchestrator/plan_tools.py)):
+`status`; `plan`, its ID, version, status and goal (at most 400 characters; a draft
+says that effect tools wait for `plan_activate`); `steps`, one line per step with its
+track, its status (`pending` when it changed since its progress) and its title;
+`current`, the steps in progress or else the next open one; `changed`, in a line, who
+changed what since the last notice, the latest eight changes by author and action
+(created, revised to a version with the steps it added, changed and removed and its
+reason, recorded a step's status, set the plan's status), the earlier ones counted,
+or else the plan's last change; and a finished plan's `outcome`. It carries no
+digests, cursors or operation IDs, which the record and `plan_read` keep. The same
+plan state is not shown twice, and a session with no plan, a run that has seen the
+plan, or the run's own changes bring no notice. When the plan cannot be read, the
+notice says so once (`status` `unavailable`) and effects wait. The plan has no
+comments or pending requests of its own to show: document work requests come in
+their own notice.
 
 **Tool classes.** Each tool's entry in the
 [Toolbox](../packages/orchestrator/src/sandbox_science/orchestrator/tools.py) has an
@@ -199,12 +224,16 @@ reread requirement.
 [plan_tools.py](../packages/orchestrator/src/sandbox_science/orchestrator/plan_tools.py))
 checks plan state before each model call and, as a veto on a closing answer, before
 the other hooks and again immediately before the loop accepts the answer, after
-closing review and math awaits. A pending reread holds an answer back only while the current plan has open steps
-(pending, in progress, or changed since their progress): a finished plan, or one whose
-steps are all completed, blocked or skipped, holds none (lab 41, B2). A held answer gets
-a plans notice saying why (`answer_held`, with the open steps) and at most one more
-turn within the remaining budget, then the run stops with `plan_unread` and no stale
-final answer. It adds no reviewer or math response rounds. Plan commits are
+closing review and math awaits. An unread change holds an answer back only while the
+current plan has open steps (pending, in progress, or changed since their progress): a
+finished plan, or one whose steps are all completed, blocked or skipped, holds none
+(lab 41, B2). The hook holds a run's answer once: a retry whose plans notice shows
+the plan and says why (`answer_held`); its delivery reads the plan, and the run's next
+closing answer is taken. A run with no turn to give, at its turn limit, in its report
+round or halted, keeps its answer. `plan_unread` remains for one case: the
+conversation has no room for the held answer's notice, where the loop stops a retry it
+cannot fit and a hook cannot see that room. It adds no reviewer or math response
+rounds. Plan commits are
 durable during the run, independent of a later model failure, cancellation or
 failed run save; progress is not a claim that an interrupted effect succeeded.
 Threaded plan work is drained before the borrowed store closes, including on

@@ -84,7 +84,7 @@ NOTHING: dict[str, list[str]] = {source: [] for source in SOURCES}
 async def test_a_normal_answer(harness: Harness) -> None:
     record = await harness.run("run-1", [Reply("Here is the answer.")])
     (seen,) = harness.gateway.main
-    assert shape(seen) == [SYSTEM, TASK_MESSAGE, plans("no_current_plan", False)]
+    assert shape(seen) == [SYSTEM, TASK_MESSAGE]
     assert shape(record.messages) == [*shape(seen), ANSWER]
     assert (record.stopped, record.final_text, record.failure) == (
         "answered",
@@ -124,19 +124,18 @@ async def test_all_six_sources_in_todays_order_then_acknowledged_after_save(
         TASK_MESSAGE,
         notice("requests", sources.request),
         notice("jobs", sources.job),
-        plans("draft", True),
+        plans("draft"),
         # The owner, 2026-10-16: an earlier run's finding comes as a count, not a notice.
         counts(fail_open=1),
         notice("kernels", kernel),
     ]
     assert shape(first) == start
     assert shape(second) == [*start, calls("plan_read"), RESULT]
-    # Closing: the plan read was delivered (a new plan state), then the math response
-    # round; the job, request and review sources had nothing new. A-04 changed this:
+    # Closing: the math response round; the plan, which the first call read in its
+    # notice, the job, request and review sources had nothing new. A-04 changed this:
     # the kernel check before the response round tells of the revision-3 observation.
     assert shape(third) == [
-        *shape(second), ANSWER, plans("draft", False), notice("math", sources.math),
-        notice("kernels", newer),
+        *shape(second), ANSWER, notice("math", sources.math), notice("kernels", newer),
     ]  # fmt: skip
     assert shape(record.messages) == [*shape(third), ANSWER]
     assert (record.stopped, record.final_text) == ("answered", "Answer B.")
@@ -167,15 +166,12 @@ async def test_all_six_sources_in_todays_order_then_acknowledged_after_save(
     assert shape(first) == [
         SYSTEM,
         TASK_MESSAGE,
-        plans("draft", True),
+        plans("draft"),
         counts(fail_open=1),
         notice("kernels", newer),  # A-04 changes this: the revision-3 observation.
     ]
-    # A-02 may change this: a closing plan notice is recorded after the final answer
-    # although no model call sees it.
-    assert shape(again.messages) == [
-        *shape(first), calls("plan_read"), RESULT, ANSWER, plans("draft", False)
-    ]  # fmt: skip
+    # The plan is not shown again once read: the closing brings no plans notice.
+    assert shape(again.messages) == [*shape(first), calls("plan_read"), RESULT, ANSWER]
     assert all_delivered(again) == {**NOTHING, "kernels": [newer]}
 
 
@@ -241,7 +237,7 @@ async def test_a_failed_response_round_keeps_only_what_earlier_calls_delivered(
     # A-04 changed this: each run is told again while a kernel predates the packages.
     (kernel,) = delivered(failed, "kernels")
     assert shape(first) == [
-        SYSTEM, TASK_MESSAGE, plans("draft", True), counts(fail_open=1), notice("kernels", kernel)
+        SYSTEM, TASK_MESSAGE, plans("draft"), counts(fail_open=1), notice("kernels", kernel)
     ]  # fmt: skip
     assert shape(third)[-1] == notice("math", sources.math)
     assert all_delivered(record) == {**NOTHING, "math": [sources.math], "kernels": [kernel]}
@@ -272,17 +268,16 @@ async def test_closing_sources_take_turns_in_todays_order(harness: Harness) -> N
     )
     job, request = arrived
     calls_seen = [shape(messages) for messages in harness.gateway.main]
-    assert calls_seen[0] == [SYSTEM, TASK_MESSAGE, plans("no_current_plan", False)]
-    # Closing 1: the unread plan wins and gets a response turn; the request that
-    # arrived with it is picked up before the next model call, not at the closing.
+    assert calls_seen[0] == [SYSTEM, TASK_MESSAGE]
+    # Closing 1: the unread plan wins and holds the answer once, showing the plan; the
+    # request that arrived with it is picked up before the next model call, not at the
+    # closing.
     assert calls_seen[1] == [
-        *calls_seen[0], ANSWER, plans("draft", True), notice("requests", request)
+        *calls_seen[0], ANSWER, plans("draft", held=True), notice("requests", request)
     ]  # fmt: skip
     assert calls_seen[2] == [*calls_seen[1], calls("plan_read"), RESULT]
-    # Closing 2: the delivered read changes the plan state, then the ended job.
-    assert calls_seen[3] == [
-        *calls_seen[2], ANSWER, plans("draft", False), notice("jobs", job)
-    ]  # fmt: skip
+    # Closing 2: the plan was read in its notice; the ended job.
+    assert calls_seen[3] == [*calls_seen[2], ANSWER, notice("jobs", job)]
     # Closing 3: the terminal review and the math check share one response round.
     (flagged,) = calls_seen[4][-3][2]
     assert calls_seen[4] == [
@@ -292,8 +287,10 @@ async def test_closing_sources_take_turns_in_todays_order(harness: Harness) -> N
     # Closing 4: nothing new; both delivered findings are bounded.
     assert shape(record.messages) == [*calls_seen[4], ANSWER]
     assert (record.stopped, record.final_text) == ("answered", "Answer 4.")
-    # An inconclusive review leaves its evidence queued for a later window.
-    assert reviewer.windows == 3
+    # An inconclusive review leaves its evidence queued for a later window. Two windows:
+    # the plan notices no longer repeat the plan's state after each read, so less evidence
+    # comes due.
+    assert reviewer.windows == 2
     assert all_delivered(record) == {
         **NOTHING,
         "requests": [request],
@@ -325,14 +322,13 @@ async def test_a_job_ending_at_closing_continues_the_run_with_its_notice(
     (job,) = ended
     *_, last = harness.gateway.main
     assert shape(last) == [
-        SYSTEM, TASK_MESSAGE, plans("no_current_plan", False), calls("start_job"), RESULT,
-        ANSWER, notice("jobs", job),
+        SYSTEM, TASK_MESSAGE, calls("start_job"), RESULT, ANSWER, notice("jobs", job),
     ]  # fmt: skip
     assert (record.stopped, record.final_text) == ("answered", "The job ended.")
     assert all_delivered(record) == {**NOTHING, "jobs": [job]}
     await harness.run("run-2", [Reply("Nothing new.")])
     (seen,) = harness.gateway.main
-    assert shape(seen) == [SYSTEM, TASK_MESSAGE, plans("no_current_plan", False)]
+    assert shape(seen) == [SYSTEM, TASK_MESSAGE]
 
 
 async def test_job_and_document_notices_ride_on_tool_results(harness: Harness) -> None:
@@ -364,7 +360,7 @@ async def test_job_and_document_notices_ride_on_tool_results(harness: Harness) -
     first, second = ended
     *_, last = harness.gateway.main
     assert shape(last) == [
-        SYSTEM, TASK_MESSAGE, plans("no_current_plan", False),
+        SYSTEM, TASK_MESSAGE,
         calls("start_job", "start_job", "document_read"), RESULT, RESULT, RESULT,
         calls("shell"), ("tool", "result+jobs+documents", (first,)),
         calls("shell"), ("tool", "result+jobs", (second,)),
@@ -390,7 +386,7 @@ async def test_a_review_response_round_then_the_bound(harness: Harness) -> None:
         reviewer=True,
     )
     first, second, third = harness.gateway.main
-    assert shape(first) == [SYSTEM, TASK_MESSAGE, plans("no_current_plan", False)]
+    assert shape(first) == [SYSTEM, TASK_MESSAGE]
     flagged = shape(second)[-2][2]
     (finding,) = {notice_id.rsplit("-r", 1)[0] for notice_id in flagged}
     assert shape(second) == [
@@ -417,40 +413,38 @@ async def test_a_review_response_round_then_the_bound(harness: Harness) -> None:
 
     again = await harness.run("run-2", [Reply("Fine.")], reviewer=True)
     (seen,) = harness.gateway.main
-    assert shape(seen) == [
-        SYSTEM, TASK_MESSAGE, plans("no_current_plan", False), counts(fail_open=1)
-    ]  # fmt: skip
+    assert shape(seen) == [SYSTEM, TASK_MESSAGE, counts(fail_open=1)]
     assert all_delivered(again) == NOTHING
     assert reviewer.windows == 3  # a conversational answer starts no review
 
 
-async def test_a_user_plan_edit_mid_run_needs_a_reread_or_stops_for_the_user(
+async def test_a_user_plan_edit_mid_run_holds_the_answer_once_with_the_plan(
     harness: Harness,
 ) -> None:
     async def steer() -> None:
         harness.user_plan()
 
-    stopped = await harness.run(
-        "run-1", [Reply("First answer.", before=steer), Reply("Second answer.")], status=3
+    record = await harness.run(
+        "run-1", [Reply("First answer.", before=steer), Reply("Second answer.")]
     )
     first, second = harness.gateway.main
-    assert shape(first) == [SYSTEM, TASK_MESSAGE, plans("no_current_plan", False)]
-    assert shape(second) == [*shape(first), ANSWER, plans("draft", True)]
-    assert shape(stopped.messages) == [*shape(second), ANSWER]
-    # The unread USER plan wins over the answer: no stale final answer is presented.
-    assert (stopped.stopped, stopped.final_text, stopped.failure) == ("plan_unread", None, None)
-
-    record = await harness.run(
-        "run-2", [Reply("Ignoring the plan."), Reply(calls=[call("plan_read")]), Reply("Read.")]
+    assert shape(first) == [SYSTEM, TASK_MESSAGE]
+    # The unread USER plan holds the answer once, with the plan in the notice, whose
+    # delivery reads it; the next answer is taken.
+    assert shape(second) == [*shape(first), ANSWER, plans("draft", held=True)]
+    assert shape(record.messages) == [*shape(second), ANSWER]
+    assert (record.stopped, record.final_text, record.failure) == (
+        "answered",
+        "Second answer.",
+        None,
     )
-    first, second, third = harness.gateway.main
-    assert shape(first) == [SYSTEM, TASK_MESSAGE, plans("draft", True)]
-    # The first closing gets one response turn, with a notice that says why.
-    assert shape(second) == [*shape(first), ANSWER, plans("draft", True)]
-    assert shape(third) == [*shape(second), calls("plan_read"), RESULT]
-    # A-02 may change this: the closing plan notice after the read is recorded only.
-    assert shape(record.messages) == [*shape(third), ANSWER, plans("draft", False)]
-    assert (record.stopped, record.final_text) == ("answered", "Read.")
+
+    record = await harness.run("run-2", [Reply("Read from the notice.")])
+    (first,) = harness.gateway.main
+    # The next run's first call sees the plan in its notice: its answer is not held.
+    assert shape(first) == [SYSTEM, TASK_MESSAGE, plans("draft")]
+    assert shape(record.messages) == [*shape(first), ANSWER]
+    assert (record.stopped, record.final_text) == ("answered", "Read from the notice.")
 
 
 async def test_on_the_last_turn_closing_notices_wait_and_the_answer_stands(
@@ -466,7 +460,7 @@ async def test_on_the_last_turn_closing_notices_wait_and_the_answer_stands(
     record = await harness.run("run-1", [Reply("Last answer.", before=arrive)], max_turns=1)
     job, request = arrived
     (seen,) = harness.gateway.main
-    assert shape(seen) == [SYSTEM, TASK_MESSAGE, plans("no_current_plan", False)]
+    assert shape(seen) == [SYSTEM, TASK_MESSAGE]
     # A-10: the job, the request and the math finding wait for the next run.
     assert shape(record.messages) == [*shape(seen), ANSWER]
     assert (record.stopped, record.final_text) == ("answered", "Last answer.")
@@ -477,7 +471,6 @@ async def test_on_the_last_turn_closing_notices_wait_and_the_answer_stands(
     first, second = harness.gateway.main
     assert shape(first) == [
         SYSTEM, TASK_MESSAGE, notice("requests", request), notice("jobs", job),
-        plans("no_current_plan", False),
     ]  # fmt: skip
     assert shape(second) == [*shape(first), ANSWER, notice("math", math)]
     assert all_delivered(later) == {

@@ -116,6 +116,7 @@ GOLDEN = {
     "sandbox-delegated-task-9": "70e83d0cf1f6f803b862cf773d3c35f1d67a390391ab0419ade26836989f7ee1",
     "sandbox-main-11": "f67fd27c0f4937b2e370bb07563ac8aa6d41089f8307e61f5f32e505093d057c",
     "sandbox-main-10": "e8b5e21ed6aa88254c3b40661874fea44954d4c4d4ef7d577c198ee4419f5f23",
+    "sandbox-main-plan-3": "6b150573a6436953255a639e0535664f23d8ca0af72fdb476593de29cb434ff8",
     "sandbox-main-plan-2": "768cd18b5403bf7d316a60eb89ca100ba270ec29f5195343baf41d0d55a301df",
     "sandbox-stock-intake-2": "2bdb3f65587f99c7f78555349196c27f7bb2cbe1429b0adebb3ca549e93e6572",
     "sandbox-stock-experiment-2": (
@@ -140,6 +141,7 @@ GOLDEN = {
     "sandbox-notice-jobs-attached-1": (
         "962543a55f349e3fab95b93c92e0a765c03933193b4e1be7fa70b92032e20f67"
     ),
+    "sandbox-notice-plans-2": "48d64155cc1079258c772e77813f38de9a75c445fe7a39f4f4f4fa8fef6bf0d0",
     "sandbox-notice-plans-1": "4257527cd034fa0bc91f2fe0939af3ff63e2d28fddd04dfb438d39a94e30d00b",
     "sandbox-notice-review-findings-1": (
         "d9fe98f7e1b697bb2d3264496fd601484a9dbce030d3fd0985e049aabd9e67a1"
