@@ -349,6 +349,78 @@ def written_area(messages: list[Message]) -> str | None:
     return None
 
 
+_STARTED: Final = {
+    "text": {"text": ""},
+    "thinking": {"thinking": "", "signature": ""},
+    "tool_use": {"input": {}},
+    "compaction": {"content": None},
+}
+"""What each kind of block starts as in a stream, before its deltas: the rest of a block,
+as a redacted thinking block's data, starts whole."""
+_FINAL: Final = ("stop_reason", "stop_sequence", "stop_details")
+"""What a stream's ``message_delta`` gives of the message, with its usage."""
+
+
+def message_events(message: Json, *, piece: int = 5) -> list[Json]:
+    """The events in which Anthropic's API streams ``message``: ``message_start`` with the
+    message's fields but its content, a stop reason of null and its input counts, then each
+    block from what it starts as (``_STARTED``), its text, thinking and input JSON in
+    deltas of ``piece`` characters, its signature and a compaction's summary in a delta of
+    their own; then ``message_delta`` with the stop reason, ``stop_details`` and the whole
+    usage, and ``message_stop``, with ``ping`` events between."""
+    usage = cast(Json, message.get("usage") or {})
+    opening = {k: v for k, v in message.items() if k not in ("content", "usage", *_FINAL)}
+    started = {k: v for k, v in usage.items() if k != "iterations"} | {"output_tokens": 1}
+    opening |= {"content": [], "stop_reason": None, "usage": started}
+    if "stop_sequence" in message:
+        opening["stop_sequence"] = None
+    events: list[Json] = [{"type": "message_start", "message": opening}, {"type": "ping"}]
+
+    def pieces(text: str) -> list[str]:
+        return [text[i : i + piece] for i in range(0, len(text), piece)] or [""]
+
+    for index, block in enumerate(cast(list[Json], message["content"])):
+        kind = str(block["type"])
+        start = {**block, **_STARTED.get(kind, {})}
+        events.append({"type": "content_block_start", "index": index, "content_block": start})
+        deltas: list[Json] = []
+        if kind == "text":
+            deltas = [{"type": "text_delta", "text": part} for part in pieces(block["text"])]
+        elif kind == "thinking":
+            if block["thinking"]:
+                deltas = [
+                    {"type": "thinking_delta", "thinking": part}
+                    for part in pieces(block["thinking"])
+                ]
+            deltas.append({"type": "signature_delta", "signature": block["signature"]})
+        elif kind == "tool_use":
+            deltas = [
+                {"type": "input_json_delta", "partial_json": part}
+                for part in pieces(json.dumps(block["input"]))
+            ]
+        elif kind == "compaction":
+            deltas = [{"type": "compaction_delta", "content": block["content"]}]
+        events.extend(
+            {"type": "content_block_delta", "index": index, "delta": delta} for delta in deltas
+        )
+        events.append({"type": "content_block_stop", "index": index})
+        if index % 2:
+            events.append({"type": "ping"})
+    ending: Json = {
+        "type": "message_delta",
+        "delta": {k: message[k] for k in _FINAL if k in message},
+        "usage": usage,
+    }
+    if "context_management" in message:
+        ending["context_management"] = message["context_management"]
+    return [*events, ending, {"type": "message_stop"}]
+
+
+def server_sent(events: Sequence[Json]) -> str:
+    """Events as an SSE stream: each named by its type, its data its JSON."""
+    return "".join(f"event: {e['type']}\ndata: {json.dumps(e)}\n\n" for e in events)
+
+
 def call(name: str, /, **arguments: Any) -> tuple[str, Json]:
     return name, arguments
 
@@ -536,6 +608,11 @@ class Gateway:
              "stop_reason": "tool_use" if made else "end_turn", "usage": usage}
         )  # fmt: skip
         self.claude_answers.append(text)
+        if body.get("stream") is True:
+            return web.Response(
+                text=server_sent(message_events(json.loads(text))),
+                headers={"x-litellm-version": self.version, "Content-Type": "text/event-stream"},
+            )
         headers = {"x-litellm-version": self.version, "Content-Type": "application/json"}
         return web.Response(text=text, headers=headers)
 
