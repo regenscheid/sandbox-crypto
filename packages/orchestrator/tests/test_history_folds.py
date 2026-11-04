@@ -74,6 +74,10 @@ ENRICHED = ["--context-ceiling", "120000", "--fold-chunk", "10000"]
 the tools, every tool with its purpose_note (Purpose 5), stay under a fifth of C."""
 SMALL = [*ENRICHED, "--skeleton-only-folds"]
 """The same, its folds skeleton-only and applied at once."""
+PAST_TRIGGER = 16
+"""Seeded earlier calls (``seed``) that put a main run's first call past ``ENRICHED``'s
+trigger, with room before its wall for two of ``PRINT``'s results: the run is offered its
+core tools, its groups not loaded (docs/specs/tools.md, tool groups)."""
 ROOMY_ENRICHED = ["--context-ceiling", "130000", "--fold-chunk", "10000"]
 """``ENRICHED`` with room for a system message and tools past 24,000 tokens, up to 26,000,
 20% of 130,000 (CM-27), as the MAIN prompt, the delegate tools and every tool's
@@ -303,7 +307,7 @@ async def test_between_rebuilds_a_request_only_grows_at_its_end(harness: Harness
     """CM-F14, CM-32: after the fold at the run's first call, the next request sends the
     first one unchanged, then what was added; no stub is made between rebuilds."""
     harness.gateway.per_token = 4.0
-    seed(harness, 14)
+    seed(harness, PAST_TRIGGER)
     record = await harness.run(
         "run-1", [Reply(calls=[("plan_read", {})]), Reply("Done.")], options=SMALL
     )
@@ -1121,7 +1125,7 @@ async def test_a_fold_enriched_while_the_run_goes_on_is_applied_by_the_wall(
     run goes on, by the run's own model sent the run's request unchanged and one
     instruction; past the wall the run waits for it and applies it with its narrative."""
     harness.gateway.per_token = 4.0
-    seed(harness, 14)
+    seed(harness, PAST_TRIGGER)
     outputs = Reply(calls=[("shell", {"script": PRINT}), ("shell", {"script": PRINT})])
     record = await harness.run("run-1", [outputs, Reply("Done.")], options=ENRICHED)
     (made,) = folds(record)["folds"]
@@ -1154,7 +1158,7 @@ async def test_a_fold_enrichment_reads_the_prompt_cache_of_the_run_it_follows(
     before it did, and then the one instruction: the gateway can read all of the run's
     view from the cache the run wrote."""
     harness.gateway.per_token = 4.0
-    seed(harness, 14)
+    seed(harness, PAST_TRIGGER)
     outputs = Reply(calls=[("shell", {"script": PRINT}), ("shell", {"script": PRINT})])
     options = [*ENRICHED, "--api", "main=responses"]
     record = await harness.run("run-1", [outputs, Reply("Done.")], options=options)
@@ -1180,7 +1184,7 @@ async def test_a_failed_enrichment_is_tried_once_more_then_the_fold_is_skeleton_
     skeleton-only, the view unchanged until it is applied."""
     harness.gateway.per_token = 4.0
     harness.gateway.enrich = [Reply(calls=[("plan_read", {})]), Reply("Not JSON at all.")]
-    seed(harness, 14)
+    seed(harness, PAST_TRIGGER)
     outputs = Reply(calls=[("shell", {"script": PRINT}), ("shell", {"script": PRINT})])
     record = await harness.run("run-1", [outputs, Reply("Done.")], options=ENRICHED)
     (made,) = folds(record)["folds"]
@@ -1203,7 +1207,7 @@ async def test_a_fold_ready_when_its_run_ends_is_kept_for_the_next_run(
     harness.gateway.per_token = 4.0
     narrative = json.dumps({"narrative": "Earlier work, as its outline shows.", "keys": []})
     harness.gateway.enrich = [Reply(narrative, cost="0.0042")]
-    seed(harness, 14)
+    seed(harness, PAST_TRIGGER)
 
     async def kept() -> None:
         for _ in range(200):
@@ -1977,7 +1981,7 @@ async def test_fold_size_repair_runs_through_gateway_and_keeps_cached_prefix(
     harness: Harness,
 ) -> None:
     harness.gateway.per_token = 4.0
-    seed(harness, 14)
+    seed(harness, PAST_TRIGGER)
     harness.gateway.enrich = [
         Reply(answer_with("x" * 20_000)),
         Reply(answer_with("Earlier work remains conditional.", keys=[])),

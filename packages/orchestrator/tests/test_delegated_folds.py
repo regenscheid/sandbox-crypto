@@ -173,8 +173,10 @@ async def test_production_child_narrates_on_its_own_alias_and_grant(delegating: 
         Reply(json.dumps({"narrative": "Exact child evidence remains available.", "keys": []}))
     ] * 8
     # Distinct answers: the same text again and again would be a loop check-in (D102).
+    # Each is long enough that the child folds, and the trigger falls where a fold's
+    # narrative has a call's room before the wall (with the core tools of a task).
     notes = [
-        Reply(f"Child-only evidence {n}. " + "observation " * 9000, calls=[("plan_read", {})])
+        Reply(f"Child-only evidence {n}. " + "observation " * 10000, calls=[("plan_read", {})])
         for n in range(6)
     ]
     root = await delegating.run(

@@ -31,7 +31,7 @@ from sandbox_science.orchestrator.loop import Transcript, run_task
 from sandbox_science.orchestrator.model import Message, ModelGateway, ToolCall, ToolSpec
 from sandbox_science.orchestrator.plan_tools import Plans, PlanTools
 from sandbox_science.orchestrator.skills.tool import SkillTool
-from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome
+from sandbox_science.orchestrator.tools import Toolbox, ToolEntry, ToolOutcome
 
 from .paid import PaidModel
 from .transport import PATIENCE_SECONDS as PATIENCE
@@ -206,10 +206,17 @@ class RemoteToolbox(Toolbox):
         self.connectors = None
         self.image_offer = given.toolbox.image_offer
         self.tool_mix = None  # the host's toolbox runs the calls and counts them
+        # The host's toolbox loads the tool groups, and its replies give what it offers.
+        self.groups: dict[str, tuple[ToolEntry, ...]] = {}
+        self.loaded: dict[str, dict[str, str]] = {}
 
     @property
     def specs(self) -> tuple[ToolSpec, ...]:
         return self._given.specs
+
+    def retool(self, given: ToolboxGiven) -> None:
+        """The host's toolbox as its reply gives it: the tools it offers now."""
+        self._given, self.revision = given, given.revision
 
     async def call(
         self,
@@ -232,7 +239,7 @@ class RemoteToolbox(Toolbox):
                 patience=PATIENCE,
             ),
         )
-        self._given, self.revision = result.toolbox, result.toolbox.revision
+        self.retool(result.toolbox)
         return result.outcome
 
 
@@ -240,6 +247,8 @@ class RemoteLog(MessageLog):
     def __init__(self, channel: Channel, attempt: str) -> None:
         self.channel, self.attempt = channel, attempt
         self._retained: dict[str, Any] | None = None
+        self.toolbox: RemoteToolbox | None = None
+        """Given the host's toolbox when an appended notice loaded a tool group."""
 
     async def started(self, run: Transcript) -> None:
         self.run = run
@@ -283,6 +292,8 @@ class RemoteLog(MessageLog):
             ),
         )
         self._retained = reply.retained
+        if reply.toolbox is not None and self.toolbox is not None:
+            self.toolbox.retool(reply.toolbox)
         return reply.message.message()
 
     async def observed_tool(self, name: str, arguments: str, outcome: ToolOutcome) -> None:
@@ -353,6 +364,7 @@ class RuntimeLoops:
         scratch = self.scratch / (given.attempt + ".sqlite3")
         memory = RunMemory.scratch(scratch, ("runtime", "attempt", given.attempt))
         log = RemoteLog(self.channel, given.attempt)
+        toolbox = log.toolbox = RemoteToolbox(self.channel, given)
         hooks = tuple(
             (RemotePlans if hook.planning else RemoteHook)(self.channel, given.attempt, slot, hook)
             for slot, hook in enumerate(given.hooks)
@@ -373,7 +385,7 @@ class RuntimeLoops:
                     given.model,
                     "delegated" if given.role == "delegated" else "main",
                 ),
-                RemoteToolbox(self.channel, given),
+                toolbox,
                 given.task,
                 run_id=given.run_id,
                 history=[message.message() for message in given.history],

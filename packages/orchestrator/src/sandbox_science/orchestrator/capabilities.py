@@ -47,6 +47,7 @@ from .question_tool import SPECS as QUESTION_SPECS
 from .question_tool import QuestionTool
 from .recording import FileRecorder, RecordedFiles
 from .resource_hooks import SPEC as RESOURCE_SPEC
+from .resource_hooks import USAGE_SPEC as RESOURCE_USAGE_SPEC
 from .resource_hooks import Resources
 from .skills.tool import SPEC as SKILL_SPEC
 from .skills.tool import SkillTool
@@ -139,7 +140,9 @@ TRACKS = Definition[TrackTools]("tracks", 70, tuple(TRACK_SPECS))
 DELEGATIONS = Definition[Delegations](
     "delegations", 80, tuple(delegation_specs.SPECS), 30, lambda current, _: current
 )
-RESOURCES = Definition[Resources]("resources", 90, (RESOURCE_SPEC,), 50, lambda current, _: current)
+RESOURCES = Definition[Resources](
+    "resources", 90, (RESOURCE_SPEC, RESOURCE_USAGE_SPEC), 50, lambda current, _: current
+)
 MAILBOX = Definition[AgentMailbox](
     "mailbox",
     100,
@@ -197,6 +200,10 @@ class CapabilitySet:
 
     bundles: tuple[Capability, ...]
     allow_main: bool = True
+    groups: bool = False
+    """Whether the run is offered its core tools at its start and loads the rest by group
+    (``tool_entry.GROUPS``), as every role a trusted factory selects is; a direct caller's
+    set offers every tool from the start."""
 
     def with_hook_slots(self) -> CapabilitySet:
         """Retain absent controller slots without granting excluded role capabilities."""
@@ -243,14 +250,18 @@ class CapabilitySet:
 
 
 def main(bundles: Iterable[Capability], *, read_only_records: bool = False) -> CapabilitySet:
-    """Select capabilities constructed for a trusted main-agent scope."""
-    selected = CapabilitySet(tuple(bundles))
+    """Select capabilities constructed for a trusted main-agent scope, its tool groups
+    deferred."""
+    selected = CapabilitySet(tuple(bundles), groups=True)
     return record_reads(selected) if read_only_records else selected
 
 
 def task(bundles: Iterable[Capability]) -> CapabilitySet:
-    """Select delegated task capabilities, withholding all main-only domains."""
-    return CapabilitySet(tuple(b for b in bundles if not b.main_only), allow_main=False)
+    """Select delegated task capabilities, withholding all main-only domains, its tool
+    groups deferred."""
+    return CapabilitySet(
+        tuple(b for b in bundles if not b.main_only), allow_main=False, groups=True
+    )
 
 
 def record_reads(selected: CapabilitySet) -> CapabilitySet:

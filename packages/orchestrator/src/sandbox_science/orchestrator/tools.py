@@ -68,7 +68,7 @@ from .continuity.kernels import MAX_SAVED_FILES, LostGeneration, LostKernels
 from .documents.errors import DocumentError
 from .documents.tool import DocumentTool, with_notices
 from .effects import UnknownEffectError
-from .hooks import Effect, TurnHook
+from .hooks import Effect, Notice, TurnHook
 from .jobs import BACKGROUND, STOP_AT_FAILURE, JobTools
 from .kernel_check import KernelCheck
 from .ledger.tool import LedgerTool
@@ -76,12 +76,14 @@ from .mathchecks.controller import MathController
 from .memory_tools import MemoryTool
 from .model import ToolCall, ToolSpec
 from .plan_tools import Plans, PlanTools
+from .prompts import GroupPin, pin_tools
 from .provision import PROVISION_SPECS, PROVISIONING, ProvisionTools
 from .purpose import COLLISION, PurposeError, collides, offered, split, without
 from .question_tool import QuestionTool
 from .recording import FileRecorder, Written, with_recorded
 from .resource_hooks import Resources
 from .skills.tool import SkillTool
+from .tool_entry import GROUPS, LOAD_TOOLS, NOTICE_GROUPS, deferred
 from .tool_entry import Handler as Handler
 from .tool_entry import Request as Request
 from .tool_entry import ToolEntry as ToolEntry
@@ -476,18 +478,24 @@ RESTART_KERNEL_DESCRIPTION: Final = (
 MCP_TOOLS: Final = "mcp_tools"
 
 
-def mcp_tools_spec(index: str) -> ToolSpec:
+def mcp_tools_spec(index: str, *, groups: bool = False) -> ToolSpec:
     """The tool that loads connector tools, with their index in its description: what
-    every model call carries of them until they are loaded (lab 39, B5)."""
+    every model call carries of them until they are loaded (lab 39, B5). With ``groups``,
+    the run loads groups of the harness's own tools with ``load_tools``."""
+    own = (
+        "are the harness's own and are not in the index: load_tools loads the groups of them "
+        "you are not offered yet"
+        if groups
+        else "are the harness's own, need no loading and are not in the index"
+    )
     return ToolSpec(
         MCP_TOOLS,
         "Load tools of the project's MCP servers by name, from the index below, before you "
         "call them. A loaded tool joins your tools, with its parameters, for the rest of the "
         "run; call it by its name. It runs on its server through the platform, not in your "
         "sandbox: it needs no shell and no admit_hosts. A query lists the tools that match it "
-        "and loads none. Your other tools, such as ledger_*, document_* and plan_*, are the "
-        "harness's own, need no loading and are not in the index. Pick the server the index "
-        "says is for the job, such as "
+        f"and loads none. Your other tools, such as ledger_*, document_* and plan_*, {own}. "
+        "Pick the server the index says is for the job, such as "
         "a paper archive's own search before a general web search. The policy decides each "
         "call: a refused call is its decision, not to be repeated unchanged or made through "
         "another tool or server. A search that finds nothing found nothing for that query in "
@@ -514,10 +522,39 @@ def mcp_tools_spec(index: str) -> ToolSpec:
     )
 
 
+def load_tools_spec(groups: Mapping[str, Sequence[ToolEntry]]) -> ToolSpec:
+    """The tool that loads the run's tool groups, each named in its description on a line
+    of its own, with what it is for and its tools (docs/specs/tools.md, tool groups). The
+    description is the run's from its start to its end, so a load changes no schema the
+    model was given before."""
+    lines = "\n".join(
+        f"- {group.name}: {group.description} "
+        f"({', '.join(entry.spec.name for entry in groups[group.name])})"
+        for group in GROUPS
+        if group.name in groups
+    )
+    return ToolSpec(
+        LOAD_TOOLS,
+        "Load one of the groups of the harness's own tools below: its tools join yours, with "
+        "their parameters, for the rest of the run, and you call them by name from your next "
+        "turn. Load a group when the work needs its tools. A platform notice that needs a "
+        "group, such as a consistency finding or a document work request, loads it itself. "
+        "The groups:\n" + lines,
+        {
+            "type": "object",
+            "properties": {"group": {"type": "string", "enum": list(groups)}},
+            "required": ["group"],
+            "additionalProperties": False,
+        },
+    )
+
+
 def _harness_tool_names() -> frozenset[str]:
     specs = (*SPECS, FIND_ARTIFACTS, SAGE, *PDF_SPECS, ADMIT_HOSTS, *PROVISION_SPECS)
     return (
-        caps.RESERVED_NAMES | frozenset(spec.name for spec in specs) | {RESTART_KERNEL, MCP_TOOLS}
+        caps.RESERVED_NAMES
+        | frozenset(spec.name for spec in specs)
+        | {RESTART_KERNEL, MCP_TOOLS, LOAD_TOOLS}
     )
 
 
@@ -528,7 +565,10 @@ _WRITE_AREA: Final = TypeAdapter(WriteArea)
 
 class Toolbox:
     """The tools of one run. ``documents``, when given, adds the document tools, whose
-    calls go to the control store rather than the worker."""
+    calls go to the control store rather than the worker. A run whose capabilities defer
+    the tool groups, as the trusted role factories' do, is offered its core tools and
+    ``load_tools``, and loads its groups as it needs them (docs/specs/tools.md, tool
+    groups)."""
 
     def __init__(
         self,
@@ -714,6 +754,21 @@ class Toolbox:
             specs.extend(PROVISION_SPECS)
         entries = [ToolEntry(spec, *worker[spec.name]) for spec in specs]
         entries.extend(self.capabilities.entries)
+        self.groups: dict[str, tuple[ToolEntry, ...]] = {}
+        """The run's tool groups that it is not offered at its start, by name, in
+        ``GROUPS``' order (docs/specs/tools.md, tool groups): a loaded group's tools are
+        offered for the rest of the run."""
+        if self.capabilities.groups:
+            entries, self.groups = deferred(entries)
+            if self.groups:
+                load = ToolEntry(load_tools_spec(self.groups), "read", _plain(self._load_tools))
+                entries.append(load)
+        self._grouped = {e.spec.name: name for name, group in self.groups.items() for e in group}
+        self.loaded: dict[str, dict[str, str]] = {}
+        """The groups loaded, in the order they were, each with what loaded it: ``by``
+        ``load_tools``, ``call`` (a call of one of its tools, with its ``tool``),
+        ``mcp_tools``, ``note`` (the shell's note on a computation) or ``notice`` (with
+        its ``source``)."""
         if self.jobs is not None:
             self.jobs.bindings = lambda: self._bindings({})
             self.jobs.binding_inventory = self._binding_inventory
@@ -737,7 +792,8 @@ class Toolbox:
             taken = sorted({name for name in names if names.count(name) > 1})
             raise ValueError(f"two offered tools have one name: {', '.join(taken)}")
         self.revision = 0
-        """Counts the loads of connector tools, which change what a model call carries."""
+        """Counts the loads of connector tools and of tool groups, which change what a
+        model call carries."""
 
     def _defer(self, connectors: Connectors, names: set[str]) -> None:
         """Index the connector tools not yet indexed. A connector tool is never offered
@@ -761,7 +817,8 @@ class Toolbox:
                 self.deferred[entry.spec.name] = entry
 
     def _mcp_tools_entry(self, connectors: Connectors) -> ToolEntry:
-        return ToolEntry(mcp_tools_spec(connectors.index()), "read", _plain(self._mcp_tools))
+        spec = mcp_tools_spec(connectors.index(), groups=bool(self.groups))
+        return ToolEntry(spec, "read", _plain(self._mcp_tools))
 
     @property
     def specs(self) -> tuple[ToolSpec, ...]:
@@ -786,6 +843,68 @@ class Toolbox:
         if added:
             self.revision += 1
         return added, before, unknown, over
+
+    def load_group(self, name: str, by: str, **detail: str) -> tuple[str, ...]:
+        """Offer the run's tool group ``name`` for the rest of the run, recording what
+        loaded it (``loaded``): its tools, or none for a group the run lacks or has
+        loaded. Every later model call carries their schemas."""
+        group = self.groups.get(name)
+        if group is None or name in self.loaded:
+            return ()
+        for entry in group:
+            self.entries[entry.spec.name] = entry
+        self.loaded[name] = {"by": by, **detail}
+        self.revision += 1
+        return tuple(entry.spec.name for entry in group)
+
+    def notified(self, notices: Sequence[Notice]) -> None:
+        """Load the groups the notices entering the conversation make relevant, by their
+        sources (``tool_entry.NOTICE_GROUPS``): a consistency finding the review tools,
+        a document work request the document tools, and so on."""
+        for notice in notices:
+            if (group := NOTICE_GROUPS.get(notice.source)) is not None:
+                self.load_group(group, "notice", source=notice.source)
+
+    def groups_summary(self) -> dict[str, Any] | None:
+        """What the run's record keeps of its tool groups (``summaries.tool_groups``):
+        each group it was not offered at its start, with its tools, and those it loaded,
+        in order, with what loaded each; ``None`` for a run without groups."""
+        if not self.groups:
+            return None
+        return {
+            "deferred": {name: [e.spec.name for e in group] for name, group in self.groups.items()},
+            "loaded": [{"group": name, **how} for name, how in self.loaded.items()],
+        }
+
+    def group_pins(self) -> tuple[GroupPin, ...]:
+        """The loaded groups' pins, in the order they were loaded: each group's tools as
+        the model was offered them, from then on."""
+        return tuple(
+            GroupPin(group=name, tools=pin_tools([offered(e.spec) for e in self.groups[name]]))
+            for name in self.loaded
+        )
+
+    async def _load_tools(self, args: dict[str, Any], operation: str) -> ToolOutcome:
+        """Load one of the run's tool groups by name (docs/specs/tools.md, tool groups)."""
+        name = args.get("group")
+        if not isinstance(name, str) or name not in self.groups:
+            return _failure(ErrorKind.INVALID_REQUEST, f"group: one of {', '.join(self.groups)}")
+        loaded = bool(self.load_group(name, LOAD_TOOLS))
+        tools = [entry.spec.name for entry in self.groups[name]]
+        answer: dict[str, Any] = {
+            "loaded" if loaded else "already_loaded": name,
+            "tools": tools,
+            "note": "your tools include these from your next turn: call them by name"
+            if loaded
+            else "your tools include these: call them by name",
+        }
+        return ToolOutcome(dump(answer), {LOAD_TOOLS: {"group": name, "loaded": loaded}})
+
+    def _own_tools(self) -> str:
+        """What ``mcp_tools`` says of the harness's own tools."""
+        if self.groups:
+            return "not connector tools: load_tools loads the groups of them you lack"
+        return "not connector tools and need no loading"
 
     async def _mcp_tools(self, args: dict[str, Any], operation: str) -> ToolOutcome:
         """Load connector tools by name (lab 39, B5), and list a query's matches, which
@@ -831,6 +950,9 @@ class Toolbox:
         if before:
             answer["already_loaded"] = before
         harness = [name for name in unknown if name in HARNESS_TOOL_NAMES]
+        # A tool of one of the run's groups asked for here: its group is loaded.
+        wanted = dict.fromkeys(self._grouped[name] for name in harness if name in self._grouped)
+        groups = [group for group in wanted if self.load_group(group, MCP_TOOLS)]
         refused = [name for name in unknown if name in connectors.narrowed]
         if unknown := [name for name in unknown if name not in harness and name not in refused]:
             answer["unknown"] = unknown
@@ -844,9 +966,15 @@ class Toolbox:
         if harness:
             answer["harness_tools"] = harness
             notes.append(
-                "these are the harness's own tools, not connector tools: they need no "
+                "these are the harness's own tools, not connector tools: load_tools loads "
+                "their groups, which this call loaded, so call them by name from your next "
+                "turn"
+                if groups
+                else "these are the harness's own tools, not connector tools: they need no "
                 "loading, so call them by name when you have them"
             )
+        if groups:
+            answer["groups_loaded"] = groups
         if self.unloadable:
             answer["not_loadable"] = dict(self.unloadable)
             notes.append(
@@ -877,8 +1005,7 @@ class Toolbox:
                 if found
                 else "no connector tool matches the query well. Connector tools reach outside "
                 "services, such as paper archives and web search; the harness's own tools, "
-                "such as ledger_*, document_* and plan_*, are not connector tools and need "
-                "no loading"
+                f"such as ledger_*, document_* and plan_*, are {self._own_tools()}"
             )
         if notes:
             answer["note"] = "; ".join(notes)
@@ -929,11 +1056,18 @@ class Toolbox:
         gates: Sequence[TurnHook],
     ) -> ToolOutcome:
         entry = self.entries.get(call.name)
-        if entry is None and self.delegated and call.name not in self.deferred:
+        group = self._grouped.get(call.name) if entry is None else None
+        if entry is None and self.delegated and call.name not in self.deferred and group is None:
             return _failure(
                 ErrorKind.POLICY_DENIED,
                 f"not_permitted_for_role: a delegated run is not offered {call.name!r}",
             )
+        if group is not None:
+            # A tool of a group called before the group was loaded: loaded now, and
+            # called, as a connector tool is, so its parameters are in the model's tools
+            # from the next turn.
+            self.load_group(group, "call", tool=call.name)
+            entry = self.entries[call.name]
         if entry is None and call.name in self.deferred:
             # A connector tool called before it was loaded: loaded now, and called, so
             # its parameters are in the model's tools from the next turn.
@@ -1091,11 +1225,12 @@ class Toolbox:
         if tool is None:
             return None
         mix.nudged = True
-        jobs = (
-            ", and start_job runs a long computation in the background"
-            if self.jobs is not None
-            else ""
-        )
+        jobs = ""
+        if self.jobs is not None:
+            jobs = ", and start_job runs a long computation in the background"
+            # The note names start_job: a run that has not loaded its jobs group yet is
+            # offered it now.
+            self.load_group("jobs", "note")
         name = "Sage" if interpreter == "sage" else "Python"
         return (
             f"Platform note: this ran {name} through the shell: a {tool} cell keeps "

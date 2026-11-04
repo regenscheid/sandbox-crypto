@@ -808,6 +808,52 @@ async def test_a_query_lists_its_matches_and_loads_none(gated: Gated) -> None:
     assert [t["name"] for t in transcript.summaries["connectors"]["loaded"]] == ["notes_search"]
 
 
+async def test_a_harness_tool_asked_of_mcp_tools_has_its_group_loaded(gated: Gated) -> None:
+    """In a run that loads the harness's tool groups (docs/specs/tools.md, tool groups),
+    a tool of a group asked of mcp_tools has its group loaded, and mcp_tools says that
+    load_tools loads the harness's tools a run lacks."""
+    from types import SimpleNamespace
+    from typing import cast
+
+    from sandbox_science.orchestrator import capabilities as caps
+    from sandbox_science.orchestrator.jobs import JOB_SPECS, JobTools
+
+    client = gated.client()
+    connectors = Connectors(client, ["papers"], session="s-1")
+    jobs = cast(JobTools, SimpleNamespace(specs=JOB_SPECS, handlers={}))
+    model = Offered(
+        [
+            {"tool_calls": [{"name": "mcp_tools", "arguments": {"names": ["start_job"]}}]},
+            {"tool_calls": [{"name": "mcp_tools", "arguments": {"query": "ledger change"}}]},
+            {"text": "Done."},
+        ]
+    )
+    try:
+        await connectors.load()
+        async with WorkerClient("http://127.0.0.1:9", "test-secret-worker") as worker:
+            toolbox = Toolbox(
+                worker,
+                CONTEXT,
+                languages=("sage",),
+                features=("jobs",),
+                connectors=connectors,
+                capabilities=caps.main([caps.jobs(jobs)]),
+            )
+            transcript = await run_task(model, toolbox, "Find papers.", run_id="r1", hooks=())
+    finally:
+        await client.close()
+    named, none = transcript.tool_records
+    assert named["mcp_tools"]["harness_tools"] == ["start_job"]
+    assert named["mcp_tools"]["groups_loaded"] == ["jobs"]
+    assert "load_tools loads their groups, which this call loaded" in named["mcp_tools"]["note"]
+    assert "load_tools loads the groups of them you lack" in none["mcp_tools"]["note"]
+    assert "start_job" not in model.offered[0]
+    assert "start_job" in model.offered[1]
+    (described,) = [spec.description for spec in model.specs[0] if spec.name == "mcp_tools"]
+    assert "load_tools loads the groups of them you are not offered yet" in described
+    assert transcript.summaries["tool_groups"]["loaded"] == [{"group": "jobs", "by": "mcp_tools"}]
+
+
 async def test_a_query_finds_only_what_matches_it_well(gated: Gated) -> None:
     """Lab 40's run 4 looked for the ledger's tools through mcp_tools: a word shared by
     chance found ten attack-catalog and Firecrawl tools. A short query needs each of its

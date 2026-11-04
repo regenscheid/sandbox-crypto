@@ -45,6 +45,7 @@ from sandbox_science.orchestrator.loop import (
     attach_notices,
     not_run,
     notice_message,
+    record_groups,
 )
 from sandbox_science.orchestrator.mcp_direct import HeldCall, RequestCheck, parameters_digest
 from sandbox_science.orchestrator.model import AssistantMessage, ChatModel, ToolCall
@@ -150,12 +151,22 @@ class Prepared:
         its parameters."""
         self.observation: dict[str, Any] | None = None
         self.observed_slots: set[int] = set()
+        self.retooled = False
+        """Whether the notices of the append in progress loaded a tool group."""
         self._memory_close: Callable[[], None] | None = None
         self._lock = asyncio.Lock()
         self._closing = False
         self._child_wait = False
         self._passive_wait: asyncio.Task[Any] | None = None
         self._close_task: asyncio.Task[None] | None = None
+
+    def _notified(self, notices: Sequence[Notice]) -> None:
+        """The toolbox loads the tool groups the notices entering the conversation make
+        relevant; the reply to the append that carried them gives the runtime the
+        toolbox (``retooled``)."""
+        revision = self.toolbox.revision
+        self.toolbox.notified(notices)
+        self.retooled = self.retooled or self.toolbox.revision != revision
 
     def sync(self, state: LoopState) -> Transcript:
         """Apply loop metadata while retaining historical payloads at the host store."""
@@ -179,6 +190,8 @@ class Prepared:
                     usage=memory.usage(),
                 ),
                 tool_records=memory.tools(),
+                # The notices attached here load their tool groups in this toolbox.
+                notified=self._notified,
             )
         run = self.shadow
         if (
@@ -428,6 +441,8 @@ class Prepared:
                     self.images.remove((known, token))
                     break
             self.shadow.identities(notice.source).update(notice.ids)
+            # The tool groups it makes relevant, as the loop's own offer loads them.
+            self._notified((notice,))
         if request.kind == "tool_result":
             if self.tool_call is None or self.tool is None:
                 # A report round may decline a model's tool call without dispatch.
@@ -517,7 +532,13 @@ class Prepared:
             self.pending_calls.pop(call.id, None)
             self.tool = self.tool_call = self.intent = None
             self.tool_notices = []
-        return payload(AppendReply(message=WireMessage.of(message), retained=retained))
+        # A notice that loaded a tool group: the runtime's next model call carries it, as
+        # a tool call's reply carries the tools it loaded.
+        toolbox = toolbox_given(self.toolbox) if self.retooled else None
+        self.retooled = False
+        return payload(
+            AppendReply(message=WireMessage.of(message), retained=retained, toolbox=toolbox)
+        )
 
     @asynccontextmanager
     async def _active(self, kind: Capability, value: JsonValue) -> AsyncGenerator[None]:
@@ -929,6 +950,8 @@ class HostLoops:
             if toolbox.tool_mix is not None:
                 # The calls ran here, through this toolbox: its counts are the run's.
                 run.summaries["tool_mix"] = toolbox.tool_mix.summary()
+            # And it loaded the run's tool groups.
+            record_groups(toolbox, run)
             for hook in hooks:
                 if (summary := hook.summary()) is not None:
                     run.summaries[hook.name] = summary

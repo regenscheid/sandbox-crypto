@@ -67,6 +67,7 @@ from .question_tool import ASK_USER
 from .resource_hooks import SPEC as DECIDE_SPEC
 from .skills.tool import NAME as SKILLS_TOOL
 from .stock_prompts import select_template
+from .tool_entry import LOAD_TOOLS
 from .tool_mix import ToolMix
 from .tools import MCP_TOOLS, Toolbox, ToolOutcome, bound, operation_id
 from .worker_client import dump
@@ -120,6 +121,7 @@ IN_ORDER: Final = frozenset(
         DECIDE_SPEC.name,
         SKILLS_TOOL,
         MCP_TOOLS,
+        LOAD_TOOLS,
         SUBMIT,
     }
 )
@@ -342,6 +344,9 @@ class Transcript:
     """Each hook source's notice IDs in the messages, delivered or not."""
     overflowed: bool = field(default=False, repr=False)
     """Whether the last model call was refused for the conversation's length."""
+    notified: Callable[[Sequence[Notice]], object] | None = field(default=None, repr=False)
+    """Told the notices that enter the conversation, as they do: the run's toolbox loads
+    the tool groups they make relevant (docs/specs/tools.md, tool groups)."""
 
     def identities(self, source: str, *, delivered: bool = False) -> set[str] | Members:
         mapping = self.delivered if delivered else self.offered
@@ -389,10 +394,13 @@ async def _append(transcript: Transcript, message: Message, appended: Appended) 
 
 
 async def _offer(transcript: Transcript, notices: Sequence[Notice]) -> None:
-    """Notices as user messages; their IDs count as delivered once a model call sees them."""
+    """Notices as user messages; their IDs count as delivered once a model call sees them.
+    The tool groups they make relevant are loaded."""
     for notice in notices:
         await _append(transcript, notice_message(notice), Appended("notice", notice=notice))
         transcript.identities(notice.source).update(notice.ids)
+    if notices and transcript.notified is not None:
+        transcript.notified(notices)
 
 
 async def _notices(hooks: Sequence[TurnHook], point: Point, transcript: Transcript) -> None:
@@ -514,10 +522,13 @@ async def _attach(
 def attach_notices(
     transcript: Transcript, outcome: ToolOutcome, limit: int, notices: Sequence[Notice]
 ) -> None:
-    """Deterministic bounded tool attachment shared with the trusted capability handler."""
+    """Deterministic bounded tool attachment shared with the trusted capability handler.
+    The tool groups the attached notices make relevant are loaded; a notice not attached
+    loads none."""
     if outcome.whole:
         return
     extra: dict[str, object] = {}
+    attached: list[Notice] = []
     for notice in notices:
         taken = {"tool_result", "tool", "arguments", *outcome.record}
         if notice.user:
@@ -529,8 +540,11 @@ def attach_notices(
         else:
             extra[notice.framing] = notice.payload
             transcript.identities(notice.source).update(notice.ids)
+            attached.append(notice)
     if not extra:
         return
+    if transcript.notified is not None:
+        transcript.notified(attached)
     text, size = outcome.text, len(outcome.text)
     combined = dump({"tool_result": text, **extra})
     while len(combined) > limit and size > 100:
@@ -871,10 +885,10 @@ async def _run_task(
     tool with one kind of error bring a notice (``ERROR_STREAK``) after the reply's
     results.
     """
+    revision = toolbox.revision
     if task is not None:
         await _append(transcript, {"role": "user", "content": task}, Appended("task"))
     await _notices(hooks, "start", transcript)
-    revision = toolbox.revision
     complete = _model_call(model, toolbox, transcript, hooks)
     guard, streak, answer = Runaway(), ErrorStreak(), _Answer()
     while True:
@@ -888,6 +902,8 @@ async def _run_task(
             await _report(model, toolbox, transcript, hooks, *last)
             return transcript
         await _notices(hooks, "turn", transcript)
+        # The notices since the last call may have loaded tool groups.
+        revision = _retooled(toolbox, transcript, revision)
         transcript.turns = turn + 1
         if not await transcript.context.before_call(call_index=transcript.turns):
             await _out_of_room(hooks, transcript)
@@ -981,10 +997,7 @@ async def _run_task(
                 Appended("notice", notice=notice),
             )
         viewed.clear()
-        if toolbox.revision != revision:
-            # Connector tools loaded: every later model call carries their schemas.
-            revision = toolbox.revision
-            transcript.context.tools_chars = len(schema_json(toolbox.specs))
+        revision = _retooled(toolbox, transcript, revision)
         if guard.tripped is not None:
             await _runaway(model, toolbox, transcript, hooks, guard.tripped)
             return transcript
@@ -1009,6 +1022,29 @@ async def _run_task(
         f"its turn limit, {turns:,} model calls",
     )
     return transcript
+
+
+def _retooled(toolbox: Toolbox, transcript: Transcript, revision: int) -> int:
+    """The toolbox's revision now; when connector tools or a tool group were loaded since
+    ``revision``, every later model call carries their schemas, which the conversation's
+    size counts from now on."""
+    if toolbox.revision != revision:
+        transcript.context.tools_chars = len(schema_json(toolbox.specs))
+    return toolbox.revision
+
+
+def record_groups(toolbox: Toolbox, transcript: Transcript) -> None:
+    """The run's tool groups in its record (``summaries.tool_groups``), and those it
+    loaded in its pins (``groups``): what it was offered after it started."""
+    summary = toolbox.groups_summary()
+    if summary is None:
+        return
+    transcript.summaries["tool_groups"] = summary
+    pins = transcript.context.prompt_provenance
+    if pins is not None:
+        transcript.context.prompt_provenance = pins.model_copy(
+            update={"groups": toolbox.group_pins()}
+        )
 
 
 async def _result(
@@ -1194,6 +1230,7 @@ async def run_task(
                     context=context,
                     max_turns=max_turns,
                     tool_records=context.memory.tools() if context.memory is not None else [],
+                    notified=toolbox.notified,
                 )
                 if on_started is not None:
                     await on_started(transcript)
@@ -1262,6 +1299,7 @@ async def run_task(
                 transcript.summaries[hook.name] = summary
         if toolbox.connectors is not None:
             transcript.summaries["connectors"] = toolbox.connectors.summary()
+        record_groups(toolbox, transcript)
         # Counted where the calls run: a confined run's host counts them (Kernels 13).
         mix: ToolMix | None = getattr(toolbox, "tool_mix", None)
         if mix is not None:

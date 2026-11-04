@@ -48,6 +48,15 @@ class ToolsPin(Contract):
     sha256: Digest
 
 
+class GroupPin(Contract):
+    """A group of the harness's tools a run loaded after it started (docs/specs/tools.md,
+    tool groups): its name and its tools, pinned as the tools are, as the model was
+    offered them from then on."""
+
+    group: Identifier
+    tools: ToolsPin
+
+
 PinnedEntry = Annotated[str, Field(pattern=r"^mem-[1-9][0-9]{0,8}@[1-9][0-9]{0,8}$")]
 """A project memory entry at a revision: ``mem-3@2``."""
 
@@ -93,6 +102,10 @@ class PromptPins(Contract):
     stores, or older than the memory."""
     skills: SkillsPin | None = None
     """The skills the run was given; ``None`` for a run without pinned skills."""
+    groups: tuple[GroupPin, ...] = ()
+    """The tool groups the run loaded after it started, in the order it loaded them: with
+    ``tools``, what it was offered. Kept as the run ends; none for a run that loaded none,
+    or older than the groups."""
 
 
 @dataclass(frozen=True)

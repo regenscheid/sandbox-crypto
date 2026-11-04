@@ -44,6 +44,7 @@ from sandbox_science.orchestrator.model import (
 from sandbox_science.orchestrator.pairing import ABORTED
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.responses import RESPONSES, ResponsesModel
+from sandbox_science.orchestrator.tool_entry import GROUP_OF
 
 from .loop_harness import (
     API_KEY,
@@ -838,16 +839,25 @@ def parts(raw: bytes) -> tuple[str, str, list[str]]:
     )
 
 
-def only_grew(raws: Sequence[bytes]) -> None:
+def only_grew(raws: Sequence[bytes]) -> int:
     """CM-32: each request is the one before it, byte for byte, with items added at the
-    end: the same tools and instructions, every earlier item unchanged and in place."""
+    end: the same tools and instructions, every earlier item unchanged and in place. A
+    tool group the run loads adds its tools after the others, the one change earlier in a
+    request (docs/specs/tools.md, tool groups): how many requests changed their tools."""
     assert len(raws) > 1
+    grew = 0
     for before, after in itertools.pairwise(raws):
         (tools, instructions, items), (tools2, instructions2, items2) = parts(before), parts(after)
-        assert (tools2, instructions2) == (tools, instructions)
+        if tools2 != tools:
+            grew += 1
+            had, has = json.loads(tools), json.loads(tools2)
+            assert has[: len(had)] == had
+            assert all(tool["name"] in GROUP_OF for tool in has[len(had) :])
+        assert instructions2 == instructions
         assert items2[: len(items)] == items
         assert len(items2) > len(items)
         assert input_bytes(after).startswith(input_bytes(before)[:-1])
+    return grew
 
 
 async def test_a_runs_requests_only_grow_whatever_the_platform_adds_between_calls(
@@ -870,7 +880,7 @@ async def test_a_runs_requests_only_grow_whatever_the_platform_adds_between_call
         "run-2", [Reply(calls=parallel), Reply(calls=parallel), Reply("Done.")], options=options
     )
     assert len(found.raw) - before == 3
-    only_grew(found.raw[before:])
+    assert only_grew(found.raw[before:]) == 0
     await harness.math_finding()
     harness.configure_reviews(ReviewConfig())
     harness.gateway.reviewer = Reviewer(flags=1)
@@ -881,7 +891,7 @@ async def test_a_runs_requests_only_grow_whatever_the_platform_adds_between_call
         harness.work_request()
 
     first = len(found.raw)
-    await harness.run(
+    record = await harness.run(
         "run-1",
         [
             Reply("Answer 1.", before=arrive),
@@ -894,7 +904,12 @@ async def test_a_runs_requests_only_grow_whatever_the_platform_adds_between_call
         options=options,
     )
     assert len(found.raw) - first == 5
-    only_grew(found.raw[first:])
+    # The job's end, the work request and the review's findings load their groups,
+    # each changing the tools once, after the others.
+    groups = cast(Json, record.summaries["tool_groups"])
+    loaded = [entry["group"] for entry in cast(list[Json], groups["loaded"])]
+    assert sorted(loaded) == ["documents", "jobs", "reviews"]
+    assert 1 <= only_grew(found.raw[first:]) <= len(loaded)
     keys = {json.loads(raw).get("prompt_cache_key") for raw in found.raw}
     assert keys == {session_cache_key(PROJECT, SESSION)}
 

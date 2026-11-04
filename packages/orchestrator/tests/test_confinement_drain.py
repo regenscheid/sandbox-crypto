@@ -122,6 +122,9 @@ async def test_attempt_drains_before_its_publisher_closes(projects: ProjectStore
             await observe()
             return ToolOutcome("observed", {})
 
+        def notified(self, notices):
+            return None  # no tool group to load
+
     prepared = prepared_attempt(projects, cast(Toolbox, Box()), (Children(),))
     given = prepared.given
     await prepared.call(Capability.HOOK_ENTER, payload(HookRequest(attempt=given.attempt, slot=0)))
