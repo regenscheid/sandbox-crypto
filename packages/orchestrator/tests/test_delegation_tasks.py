@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 
 from sandbox_science.orchestrator.context.history import body
+from sandbox_science.orchestrator.continuity.resources import FIRST_STEP, ResourceRequests
 from sandbox_science.orchestrator.delegation.outcome import CAME, TASK_FORMAT, parse_task
 from sandbox_science.orchestrator.delegation.prompt import TASK_PROMPT, write_area_text
 from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords
@@ -284,22 +285,24 @@ def made(n: int, kind: str) -> Delegation:
 PARTIAL = "Partial: a^16 mod 17 is 1 for a = 1..8; a = 9..16 is not done yet."
 
 
-@pytest.mark.parametrize(
-    ("limits", "replies"),
-    [
-        # Its soft turn cap is reached while it works.
-        ({"task_turns": 2}, [Reply(calls=[call("no_such_tool")]), Reply(calls=[call("other")])]),
-        # Its soft token cap is reached by its first call.
-        ({"task_tokens": 50_000}, [Reply(calls=[call("no_such_tool")], tokens=60_000)]),
-    ],
-)
+# Its soft token cap is reached by its first call, which goes on for one step, here up to
+# the project's ceiling for a grant; its next call reaches the cap that step set.
+SECOND_CAP = [
+    Reply(calls=[call("no_such_tool")], tokens=60_000),
+    Reply(calls=[call("other")], tokens=60_000),
+]
+CEILING = {"task_tokens": 50_000, "max_token_grant": 100_000}
+
+
+@pytest.mark.parametrize(("limits", "replies"), [(CEILING, SECOND_CAP)])
 async def test_a_task_at_a_soft_cap_checks_in_and_reports_when_stopped(
     delegating: Harness, limits: dict[str, int], replies: list[Reply]
 ) -> None:
-    """D102, RS-6f, PD-19: a task at a soft cap checks in and waits; its parent's stop
-    makes its next call its report round, whose answer reaches the parent as the
-    delegation's report; it ended ``limit_reached``, with the platform's result, as it
-    submitted none, its report the summary."""
+    """D102, RS-6f, PD-19: a task's first check-in at a soft cap goes on for one step; at
+    its next cap it checks in and waits; its parent's stop makes its next call its report
+    round, whose answer reaches the parent as the delegation's report; it ended
+    ``limit_reached``, with the platform's result, as it submitted none, its report the
+    summary."""
     configure(delegating, depth=1, **limits)
     root = await delegating.run(
         "root",
@@ -326,3 +329,29 @@ async def test_a_task_at_a_soft_cap_checks_in_and_reports_when_stopped(
     assert checked_in.get("reason", "resource_request") == "resource_request"
     decided = json.loads(results(root)[2])
     assert decided["request"]["action"] == "stop"
+
+
+async def test_a_tasks_first_check_in_at_its_turn_cap_goes_on(delegating: Harness) -> None:
+    """D102: at its first soft cap the task goes on for one bounded step, the platform's
+    decision, and returns its result; nothing waited for its parent."""
+    configure(delegating, depth=1, task_turns=2)
+    root = await delegating.run(
+        "root",
+        [Reply(calls=[TASK]), wait(), Reply("Done.")],
+        delegated=[
+            Reply(calls=[call("no_such_tool")]),
+            Reply(calls=[call("other")]),
+            *submitted(DONE, "Done."),
+        ],
+    )
+    (delegation_id,) = started(root)
+    found = delegation(delegating, delegation_id)
+    assert (found.ended, found.result) == ("returned", KEPT)
+    projects = ProjectStore(delegating.state)
+    try:
+        (request,) = ResourceRequests(projects.control).page(PROJECT, SESSION).requests
+    finally:
+        projects.close()
+    assert request.resource == "turns"
+    assert request.decision is not None
+    assert request.decision.operation.startswith(FIRST_STEP)

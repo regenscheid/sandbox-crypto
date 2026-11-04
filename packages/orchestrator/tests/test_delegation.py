@@ -26,6 +26,7 @@ from sandbox_science.orchestrator.context.agent import AgentContext
 from sandbox_science.orchestrator.context.history import Archive, body, geometry, session_view
 from sandbox_science.orchestrator.context.history.limits import WorkingMemoryLimitError
 from sandbox_science.orchestrator.context.history.log import RunArchive
+from sandbox_science.orchestrator.continuity.resources import FIRST_STEP, ResourceRequests
 from sandbox_science.orchestrator.control import migrations
 from sandbox_science.orchestrator.delegation.outcome import CAME, NO_SUBMISSION, NUDGES, parse
 from sandbox_science.orchestrator.delegation.records import (
@@ -560,21 +561,28 @@ async def test_a_session_runs_at_most_its_cap_of_checks_at_once(delegating: Harn
     assert len(started(root)) == 1
 
 
-async def test_a_check_past_its_soft_token_cap_checks_in_and_its_parent_extends_it(
+async def test_a_check_past_its_soft_token_cap_goes_on_for_one_step_at_its_first_check_in(
     delegating: Harness,
 ) -> None:
-    """PD-38, D102: no estimate refuses a check's call; at its soft token cap it checks
-    in, its parent extends it by one step, and it answers."""
+    """PD-38, D102: no estimate refuses a check's call; at its first soft token cap it
+    checks in and goes on for one bounded step, the platform's decision, and answers; its
+    parent decided nothing (a later check-in waits for it, ``test_check_ins``)."""
     configure(delegating, check_tokens=50_000)
     root = await delegating.run(
         "root",
-        [Reply(calls=[CHECK]), wait(), decide("extend", "Finish the check."), wait(), Reply("Ok.")],
-        delegated=[Reply(calls=[call("ledger_read", entry="C-1")], tokens=60_000), Reply(REPORT)],
+        [Reply(calls=[CHECK]), wait(), Reply("Ok.")],
+        delegated=[Reply(calls=[call("ledger_read", entry="C-1")], tokens=60_000), *submitted()],
     )
     (child,) = children(delegating, root)
     assert child.stopped == "answered"
-    decided = json.loads(results(root)[2])
-    assert (decided["request"]["action"], decided["total"]) == ("extend", 20_050_000)
+    store = ProjectStore(delegating.state)
+    try:
+        (request,) = ResourceRequests(store.control).page(PROJECT, SESSION).requests
+    finally:
+        store.close()
+    assert request.decision is not None
+    assert (request.decision.automatic, request.decision.total) == (True, 20_050_000)
+    assert request.decision.operation.startswith(FIRST_STEP)
 
 
 def test_a_delegations_outcome_is_written_once(tmp_path: Path) -> None:

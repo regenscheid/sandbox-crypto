@@ -558,7 +558,7 @@ async def test_a_leads_turn_limit_keeps_its_child_and_hands_the_unconsumed_outco
 ) -> None:
     """A lead its parent stopped at a check-in waits for its child, whose unconsumed
     result accompanies its own (D102)."""
-    configure(delegating, depth=2, task_turns=2)
+    configure(delegating, depth=2, task_tokens=50_000, max_token_grant=100_000)
     working, free, part_answer = _working()
 
     async def after_it_started() -> None:
@@ -570,9 +570,10 @@ async def test_a_leads_turn_limit_keeps_its_child_and_hands_the_unconsumed_outco
             [Reply(calls=[LEAD]), wait(), decide("stop"), wait(), Reply("Done.")],
             status=3,
             routed={
+                # Its first soft cap goes on for one step; the next waits for the root.
                 "Lead the work.": [
-                    Reply(calls=[PART]),
-                    Reply("Finished.", before=after_it_started),
+                    Reply(calls=[PART], tokens=60_000),
+                    Reply("Finished.", before=after_it_started, tokens=60_000),
                 ],
                 "Do a part.": [part_answer],
             },

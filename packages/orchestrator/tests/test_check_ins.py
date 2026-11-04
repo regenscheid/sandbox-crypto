@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: MIT
 """Soft caps are check-ins (D102): a child asks its parent, the root checks itself.
 
-A child at a soft cap, or one a loop heuristic caught, waits without model calls for its
-parent to extend it by one bounded step, redirect it or stop it. After repeated
+A child's first check-in at a soft cap goes on for one bounded step, its summary a
+progress report for its parent; at a later one, or one a loop heuristic caught, it waits
+without model calls for its parent to extend it by one bounded step, redirect it or stop
+it. After repeated
 extensions without new evidence the parent must stop or redirect. The root decides its
 own check-ins while it produces evidence, with a notice to the user, and pauses for the
 user only after repeated extensions without any.
@@ -16,6 +18,7 @@ import pytest
 
 from sandbox_science.orchestrator.context.agent import AgentContext
 from sandbox_science.orchestrator.continuity.resources import (
+    FIRST_STEP,
     Resource,
     ResourceApprovalRequest,
     ResourceDecisionRequest,
@@ -36,7 +39,7 @@ from sandbox_science.orchestrator.runstate import RunState
 
 from .test_cost_enforcement import spend
 from .test_resource_policy import artifact
-from .test_resource_requests import decide, granted, setup
+from .test_resource_requests import decide, granted, setup, went_on
 from .test_tool_journal import RUN, toolbox
 from .test_tool_journal import projects as projects
 from .test_work_ownership import CHILD, record
@@ -72,8 +75,61 @@ async def as_parent(requests, parent, action, reason="Use the saved counterexamp
     )
 
 
+async def test_a_childs_first_check_in_at_a_soft_cap_goes_on_as_progress_for_its_parent(projects):
+    """D102: a child's first check-in at a soft cap does not wait: the platform gives it one
+    bounded step, the child is told so, and its parent reads its summary as a progress
+    notice, once, which asks for no decision; it may redirect the child with a message."""
+    _, parent, child, requests = setup(projects)
+    hook = Resources(requests, child, turns=5, tokens=20_000_000, delegated=True, poll_seconds=0.01)
+    result = await run_task(
+        ScriptedModel([ModelTurn(f"Progress {n}") for n in range(7)]),
+        toolbox(unused),
+        task="Fixture",
+        run_id="child",
+        max_turns=5,
+        hooks=(hook, Continue(7)),
+    )
+    assert (result.stopped, result.turns) == ("answered", 7)
+    (request,) = requests.page("p", "s").requests
+    decision = request.decision
+    assert decision is not None
+    assert (decision.automatic, decision.request.action, decision.total) == (True, "extend", 305)
+    assert decision.operation == FIRST_STEP + request.request_id
+    assert requests.pending(parent) == []  # nothing waits for the parent
+    told = [str(m.get("content")) for m in result.context.messages if m.get("role") == "user"]
+    assert any("You go on for one bounded step while your parent reads" in t for t in told)
+    as_parent = Resources(requests, parent, turns=100, tokens=None, delegated=False)
+    (notice,) = await as_parent.notices("turn", empty())
+    assert notice.ids == ("progress-" + request.request_id,)
+    assert "nothing waits for you" in notice.framing
+    assert "message_child" in notice.framing
+    seen = empty()
+    seen.offered["resources"] = {"progress-" + request.request_id}
+    assert await as_parent.notices("turn", seen) == ()
+
+
+async def test_only_the_first_check_in_at_a_soft_cap_goes_on(projects):
+    """A later check-in at a cap, a loop check-in and the root's are not the platform's to
+    answer this way: they wait for their decision as before."""
+    _, parent, child, requests = setup(projects)
+    loop = requests.observe(child, "loop", used=8, total=8, revision=0, force=True)
+    assert loop is not None
+    assert requests.first_step(child, loop) is None
+    first = requests.observe(child, "turns", used=5, total=5, revision=5, force=True)
+    assert first is not None
+    assert requests.first_step(child, first) is not None  # the loop's did not count
+    assert requests.first_step(child, first) is not None  # the same answer, once recorded
+    later = requests.observe(child, "tokens", used=30, total=20, revision=20, force=True)
+    assert later is not None
+    assert requests.first_step(child, later) is None
+    root = requests.observe(parent, "tokens", used=30, total=20, revision=20, force=True)
+    assert root is not None
+    assert requests.first_step(parent, root) is None
+
+
 async def test_parent_redirect_reaches_the_waiting_child_as_its_instruction(projects):
     _, parent, child, requests = setup(projects)
+    went_on(requests, child)  # its first check-in at a soft cap went on
     seen: list[str] = []
 
     class Reading(ScriptedModel):
@@ -103,6 +159,7 @@ async def test_parent_stop_ends_the_child_with_its_report(projects):
     """A stop makes the child's next call its report round; an answer it already gave
     and held for another turn stands as that report instead (RS-6f)."""
     _, parent, child, requests = setup(projects)
+    went_on(requests, child)  # its first check-in at a soft cap went on
     hook = Resources(requests, child, turns=5, tokens=20_000_000, delegated=True, poll_seconds=0.01)
     deciding = asyncio.create_task(as_parent(requests, parent, "stop"))
     result = await run_task(
@@ -123,6 +180,7 @@ async def test_parent_stop_ends_the_child_with_its_report(projects):
 
 async def test_a_parent_that_does_not_answer_gets_the_roots_rule(projects):
     _, parent, child, requests = setup(projects)
+    went_on(requests, child)  # its first check-in at a soft cap went on
     hook = Resources(
         requests,
         child,
@@ -141,7 +199,7 @@ async def test_a_parent_that_does_not_answer_gets_the_roots_rule(projects):
         hooks=(hook, Continue(6)),
     )
     assert result.stopped == "answered"
-    (request,) = requests.page("p", "s").requests
+    request, _ = requests.page("p", "s").requests  # latest first: the turns check-in
     assert request.decision is not None
     assert request.decision.automatic
     assert (request.decision.request.action, request.decision.total) == ("extend", 305)

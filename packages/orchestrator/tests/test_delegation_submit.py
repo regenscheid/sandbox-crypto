@@ -470,13 +470,14 @@ async def test_a_task_stopped_by_its_parent_keeps_its_submitted_result_partial(
     """PD-19, D102: a task submits a complete result, goes on, checks in at its soft
     cap, and its parent stops it: its report round's answer is its report, and its
     result stands, partial at the limit, the platform's mark beside the child's status."""
-    configure(delegating, depth=1, task_turns=2)
+    configure(delegating, depth=1, task_tokens=50_000, max_token_grant=100_000)
     root = await delegating.run(
         "root",
         [Reply(calls=[TASK]), wait(), decide("stop"), wait(), Reply("Done.")],
         delegated=[
-            Reply(calls=[call(SUBMIT, **DONE)]),
-            Reply(calls=[call("no_such_tool")]),
+            # Its first soft cap goes on for one step; its next waits for its parent.
+            Reply(calls=[call(SUBMIT, **DONE)], tokens=60_000),
+            Reply(calls=[call("no_such_tool")], tokens=60_000),
             Reply("Stopped: the table is saved."),
         ],
         status=3,

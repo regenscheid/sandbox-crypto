@@ -23,7 +23,7 @@ from sandbox_science.orchestrator.resource_hooks import WAIT_SECONDS, Resources
 from sandbox_science.orchestrator.tools import Toolbox
 from sandbox_science.testing import FakeClock, eventually
 
-from .test_resource_requests import setup
+from .test_resource_requests import setup, went_on
 from .test_tool_journal import CONTEXT, RUN
 from .test_tool_journal import projects as projects
 from .test_work_ownership import CHILD
@@ -41,6 +41,7 @@ async def test_an_unanswered_check_in_gets_the_automatic_decision_before_the_tim
 ) -> None:
     clock = FakeClock()
     _, parent, child, requests = setup(projects, turns=1)
+    went_on(requests, child)  # its first check-in at a soft cap went on
     hook = Resources(requests, child, turns=1, tokens=None, delegated=True, clock=clock)
     given = RunGiven(
         attempt=ATTEMPT,
@@ -89,7 +90,7 @@ async def test_an_unanswered_check_in_gets_the_automatic_decision_before_the_tim
             await asyncio.sleep(0)
         assert await halted is None  # the child goes on, no failed control request
         assert DECISION_WAIT_SECONDS <= clock.elapsed < HALT_TIMEOUT_SECONDS
-        (request,) = requests.page("p", "s").requests
+        request, _ = requests.page("p", "s").requests  # latest first; then the one that went on
         assert request.decision is not None
         assert request.decision.automatic
         assert request.decision.request.action == "extend"

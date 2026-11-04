@@ -4,11 +4,14 @@
 Before each model call the hook reads the work's soft caps (tokens, turns, active time,
 cost) and recorded use. At a cap, or when a loop heuristic trips, the work checks in:
 
-- a child records a request with a bounded state summary, which reaches its parent as a
-  notice and wakes the parent's wait, then waits without model calls for the decision:
-  ``extend`` by one bounded step, ``redirect`` (the reason is the new guidance, with one
-  step), or ``stop`` (its next call is its report). A parent that does not answer
-  within ``wait_seconds`` gets the root's rule applied for it;
+- a child records a request with a bounded state summary. Its first at a soft cap goes
+  on for one bounded step, the platform's decision, and reaches its parent as a progress
+  notice, which waits for nothing: the parent may redirect it with a message. Every later
+  one, and every loop check-in, reaches its parent as a notice and wakes the parent's
+  wait, then waits without model calls for the decision: ``extend`` by one bounded step,
+  ``redirect`` (the reason is the new guidance, with one step), or ``stop`` (its next call
+  is its report). A parent that does not answer within ``wait_seconds`` gets the root's
+  rule applied for it;
 - the root checks itself: one step while it keeps producing evidence, with a notice to
   the user and to itself to compare its progress with its plan. After
   ``max_idle_extensions`` steps in a row without evidence it pauses and the user is asked;
@@ -37,6 +40,7 @@ from sandbox_science.orchestrator.artifacts import ArtifactInventory
 from sandbox_science.orchestrator.continuity.records import Ownership
 from sandbox_science.orchestrator.continuity.resource_policy import STOPPING
 from sandbox_science.orchestrator.continuity.resources import (
+    FIRST_STEP,
     Resource,
     ResourceDecision,
     ResourceDecisionRequest,
@@ -475,6 +479,12 @@ class Resources(TurnHook):
                 f"(cap now {decision.total:,}); nothing was stopped.",
             )
             return None
+        if request.resource != "loop" and (
+            await threaded(self.store.first_step, self.owner, request) is not None
+        ):
+            # Its first check-in at a soft cap goes on for one bounded step, while its
+            # parent reads its summary as progress and may redirect it (D102).
+            return None
         found = await self._decided(request, halting)
         if found == "ended":
             return "cancelled"
@@ -502,6 +512,10 @@ class Resources(TurnHook):
             self.store.pending, self.owner, seen=frozenset(run.offered.get(self.name, ()))
         )
         notices = [self._request_notice(r) for r in requests if r.work != self.owner.work]
+        progressed = await threaded(
+            self.store.progressed, self.owner, seen=frozenset(run.offered.get(self.name, ()))
+        )
+        notices.extend(self._progress_notice(r) for r in progressed)
         for decision in await threaded(self.store.decisions, self.owner):
             identity = "decision-" + decision.request.request_id
             if identity not in run.offered.get(self.name, ()):
@@ -509,7 +523,13 @@ class Resources(TurnHook):
         return tuple(notices)
 
     def _decision_notice(self, identity: str, decision: ResourceDecision) -> Notice:
-        if decision.automatic and not self.delegated:
+        if decision.operation.startswith(FIRST_STEP):
+            text = (
+                "You reached a soft cap: a check-in, not a stop. You go on for one bounded step "
+                "while your parent reads your summary; it may send you corrected instructions, "
+                "and at your next cap you wait for its decision. Save evidence as you go. "
+            )
+        elif decision.automatic and not self.delegated:
             text = (
                 "You reached a soft cap: a check-in, not a stop. Compare your progress with "
                 "the session plan; continue only with work that advances it, revise the plan, "
@@ -523,6 +543,18 @@ class Resources(TurnHook):
                 "security policy or deadline."
             )
         return Notice(self.name, (identity,), text, decision.model_dump(mode="json"))
+
+    @staticmethod
+    def _progress_notice(request: ResourceRequest) -> Notice:
+        return Notice(
+            SOURCE,
+            ("progress-" + request.request_id,),
+            "A child reached a soft cap and goes on for one bounded step, so nothing waits for "
+            "you: its summary is a progress report. To change its course, send it corrected "
+            "instructions with message_child; at its next cap it checks in and waits for your "
+            "resource_decide. This is not scientific completion. ",
+            request.model_dump(mode="json"),
+        )
 
     @staticmethod
     def _request_notice(request: ResourceRequest) -> Notice:
