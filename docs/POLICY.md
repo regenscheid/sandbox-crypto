@@ -342,7 +342,7 @@ The middleware path has these limits, checked against a real gateway on babbage 
 | `escalate` | A denial with `approval_required` and a durable permission request ([policy middleware](POLICY-MIDDLEWARE.md#permission-requests)); the agent retries after approval |
 | `alert`, `monitors` | Middleware findings and request records |
 | `packages` | The policy middleware, with this library, for every request to the package cache; registries are reachable only through the cache ([package cache](PACKAGE-CACHE.md)) |
-| `resources` | The compute driver, capped by the pool ceiling; model budget through the LiteLLM virtual key (D61) |
+| `resources` | Capped by the pool ceiling. `cpu` and `memory`: the sandbox Pod's limits, only where the pool places sandboxes on Kubernetes ([worker](WORKER.md#environments)); the VM driver applies neither. `pids` and `workspace_disk`: not enforced yet. The compiler reports each of these four limits a pool cannot apply, and the worker logs them when it admits an environment. `wall_time`: package installs (CP-14); model budget through the LiteLLM virtual key (D61) |
 
 Create a research sandbox with the whole compiled document. Apply each later revision with `openshell policy set`, carrying the sandbox's live filesystem section, so that it replaces the network sections entirely; an entry left over from an earlier compilation could admit what the policy no longer allows. Every compilation records the project policy's revision (its SHA-256 digest), which the middleware checks against the policy it evaluates.
 

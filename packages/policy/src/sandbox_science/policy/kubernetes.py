@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import re
 from decimal import ROUND_FLOOR, Decimal
-from typing import Annotated, Self, cast
+from typing import Annotated, Final, Self, cast
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -20,6 +20,24 @@ from .model import Resources
 _LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,61}[A-Za-z0-9])?")
 _DNS_PART = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 Positive = Annotated[int, Field(strict=True, gt=0, le=2**31 - 1)]
+
+COMPUTE_LIMITS: Final = ("cpu", "memory", "pids", "workspace_disk")
+"""The policy's resources that only the compute driver could apply to a sandbox."""
+PLACED_LIMITS: Final = frozenset({"cpu", "memory"})
+"""Those a Kubernetes placement applies (``KubernetesProfile.driver_json``), as the Pod's
+CPU and memory limits. Its ephemeral-storage limit is the profile's own, not
+``workspace_disk``. Nothing applies ``pids`` or ``workspace_disk`` yet, and without a
+placement (the VM driver, or a gateway's defaults) none of the four is applied."""
+
+
+def unapplied_limits(resources: Resources, *, placed: bool) -> tuple[str, ...]:
+    """The compute limits ``resources`` sets that a sandbox does not get: those a
+    Kubernetes placement does not apply, or every one when the pool has no placement."""
+    return tuple(
+        name
+        for name in COMPUTE_LIMITS
+        if getattr(resources, name) is not None and not (placed and name in PLACED_LIMITS)
+    )
 
 
 def _field(value: object, *path: str) -> object:

@@ -7,6 +7,7 @@ from sandbox_science.policy.kubernetes import (
     KubernetesProfile,
     KubernetesResources,
     check_pinned_policy,
+    unapplied_limits,
 )
 
-__all__ = ["KubernetesProfile", "KubernetesResources", "check_pinned_policy"]
+__all__ = ["KubernetesProfile", "KubernetesResources", "check_pinned_policy", "unapplied_limits"]
