@@ -468,6 +468,27 @@ def _steps(body: PlanBody) -> dict[str, tuple[PlanStep, str]]:
     }
 
 
+@dataclass(frozen=True)
+class StepChanges:
+    """How one plan body's steps differ from an earlier one's, by stable step ID."""
+
+    added: tuple[str, ...]
+    changed: tuple[str, ...]
+    """Steps in both whose phase or content differ, which reopens their progress."""
+    removed: tuple[str, ...]
+
+
+def step_changes(before: PlanBody, after: PlanBody) -> StepChanges:
+    """The steps ``after`` adds, changes and removes relative to ``before``, each in its
+    body's order."""
+    old, new = _steps(before), _steps(after)
+    return StepChanges(
+        added=tuple(step for step in new if step not in old),
+        changed=tuple(step for step in new if step in old and old[step][1] != new[step][1]),
+        removed=tuple(step for step in old if step not in new),
+    )
+
+
 class SessionPlans:
     """Bounded internal plans sharing, but never owning, DocumentStore lifetime.
 
@@ -1359,6 +1380,19 @@ class SessionPlans:
         )
         _json(result, MAX_PAGE)
         return result
+
+    def compact_summary(self, authority: PlanAuthority) -> tuple[PlanSummary, CompactPlan] | None:
+        """``summary`` and ``compact_current`` from one read of the control store, so the
+        identity names exactly the plan state the compact view shows."""
+        authority = _checked(PlanAuthority, authority)
+        if self.documents.control.missing:
+            return None
+        with self.documents.control.read() as tx:
+            summary = self.summary_in(tx.sql, authority)
+            compact = self.compact_in(tx.sql, authority)
+        if summary is None or compact is None:
+            return None
+        return summary, compact
 
     def version(self, authority: PlanAuthority, ref: PlanRef) -> PlanVersion:
         """Resolve one exact immutable version within the trusted project/session scope."""

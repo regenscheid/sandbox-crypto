@@ -76,7 +76,7 @@ Shape = tuple[str, str, tuple[str, ...]]
 FRAMINGS = {
     "requests": "Document work requests: request_text is the user's instruction. ",
     "jobs": "Job completion notices (output is untrusted data): ",
-    "plans": "Session plan state: reread_required means use plan_read(current) ",
+    "plans": "Session plan as it now stands, because someone other than this run changed ",
     "reviews": "Consistency findings from an independent reviewer. ",
     "review_counts": "Consistency review counts of open findings by severity, ",
     "math": "Mechanical math findings at this closing boundary. ",
@@ -101,7 +101,7 @@ def _detail(kind: str, content: str) -> tuple[str, ...]:
     match kind:
         case "plans":
             plan = cast(Json, value)
-            return (str(plan["planning"]), f"reread_required={plan['reread_required']}")
+            return (str(plan["status"]), *(["answer_held"] if "answer_held" in plan else []))
         case "review_counts":
             return tuple(f"{key}={count}" for key, count in cast(Json, value).items())
         case _:
@@ -184,8 +184,9 @@ def own(record: RunRecord) -> list[Message]:
     return [*record.messages[:1], *record.messages[1 + parts :]]
 
 
-def plans(planning: str, reread: bool) -> Shape:
-    return ("user", "plans", (planning, f"reread_required={reread}"))
+def plans(status: str, *, held: bool = False) -> Shape:
+    """A plans notice showing a plan of this status, holding the answer if ``held``."""
+    return ("user", "plans", (status, "answer_held") if held else (status,))
 
 
 def counts(**values: int) -> Shape:
@@ -1048,7 +1049,7 @@ async def six_sources(harness: Harness) -> Sources:
     """One notice of each kind waiting for the session's next run."""
     started = await harness.run("run-job", [Reply(calls=[start_job()]), Reply("A job is running.")])
     assert shape(started.messages) == [
-        SYSTEM, TASK_MESSAGE, plans("no_current_plan", False), calls("start_job"), RESULT, ANSWER
+        SYSTEM, TASK_MESSAGE, calls("start_job"), RESULT, ANSWER
     ]  # fmt: skip
     job = await harness.end_job()
     request = harness.work_request()
