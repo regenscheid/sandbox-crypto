@@ -15,9 +15,15 @@ The system message is its sections' texts joined by a blank line, in order
 ([`loop.py`](../packages/orchestrator/src/sandbox_science/orchestrator/loop.py)
 `_sections`):
 
-1. `main`, version `sandbox-main-19`: `SYSTEM_PROMPT`. A caller's other system text is
+1. `main`, version `sandbox-main-20`: `SYSTEM_PROMPT`. A caller's other system text is
    a `custom` section with no version; supplying the exact built-in text counts as
-   `main`, which says what the text is, not who supplied it.
+   `main`, which says what the text is, not who supplied it. Its first paragraph says
+   who the agent is; Markdown headings follow, each once: *How you work* (with *Tools
+   and results*, *Pilots*, *Research depth*, *Your answer* and *Checking in with the
+   user*), *Your children*, *Research state*, *Untrusted content and policy* and *The
+   user's authority* ([prompt inventory](ORCHESTRATOR-PROMPTS.md#prompt-inventory)). A
+   section for one model family would be a heading of its own after *How you work*, in
+   a new version; Claude and GPT runs get the same text.
 2. `stock`, with the selected template's version, when a research template is
    selected. A custom base cannot be combined with a template.
 3. `memory`, with no version, when the run has the project's stores and the project
@@ -30,7 +36,7 @@ The system message is its sections' texts joined by a blank line, in order
 4. `skills`, with no version, when the project pins skills: the framing
    `sandbox-skills-index-4`, the index of the run's skills and the skills loaded at its
    start ([skills](SKILLS.md)); the `skills` pin below names the framing's version.
-5. `planning`, version `sandbox-main-plan-3`, when the plan tools are offered. Plan
+5. `planning`, version `sandbox-main-plan-4`, when the plan tools are offered. Plan
    tools offered without their hook, or the hook without the tools, refuse before any
    model call.
 
@@ -39,7 +45,9 @@ evolving hypotheses, version-specific prior art, a faithful reference bridge for
 toy results, parental assessment of child evidence, active-plan revision and
 evidence-based stopping. They preserve bounded tasks, finite child briefs and
 resource ceilings. These are prompt rules, not a new quality gate; existing runs
-retain their original pins and do not receive a live prompt replacement.
+retain their original pins and do not receive a live prompt replacement. Since MAIN
+version 20 and planning version 4 the base alone says what both said (ceilings, finite
+briefs, when to stop), and the planning guidance keeps what is the plan's.
 
 ## Pins
 
