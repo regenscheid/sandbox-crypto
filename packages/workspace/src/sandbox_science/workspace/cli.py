@@ -29,11 +29,12 @@ its issuer and audience and the user group (forward_auth.py, D104); a secret fil
 missing, empty or open to others stops the server; with an admin group,
 only its members may take the admin-only actions (identity.py). The login URL keeps
 working, as the operator's own login, which counts as an admin: with forward auth on it
-is not printed, since the log reaches whoever reads the logs, but written to
-``LOGIN_URL_FILE`` in the state directory (mode 600) for ``login-url`` to print:
+is not printed, since the log reaches whoever reads the logs, but written (mode 600) to
+``--login-url-file``, by default ``LOGIN_URL_FILE`` in the state directory, for
+``login-url`` to print:
 
 ```
-sandbox-science-workspace login-url --state-dir DIR
+sandbox-science-workspace login-url --state-dir DIR | --login-url-file FILE
 ```
 
 With ``--model-url``, ``--reviewer-model`` and ``--api-key-file``, the page may ask the
@@ -83,7 +84,9 @@ from .proxy import Exposure, Network, PublicOrigin, parse_network
 _log = logging.getLogger("sandbox_science.workspace")
 DEFAULT_LISTEN: Final = "127.0.0.1:8200"
 LOGIN_URL_FILE: Final = "workspace-login-url"
-"""With forward auth on, where in the state directory ``serve`` writes the login URL."""
+"""With forward auth on, where in the state directory ``serve`` writes the login URL unless
+``--login-url-file`` names another file (the Kubernetes bundle's is on a memory volume,
+since the state directory is on the backed-up PVC)."""
 
 
 def write_private(path: Path, text: str) -> None:
@@ -102,9 +105,9 @@ def write_private(path: Path, text: str) -> None:
         raise
 
 
-def print_login_url(state_dir: Path) -> int:
-    """``login-url``: print the login URL the running server wrote, or say why not."""
-    path = state_dir / LOGIN_URL_FILE
+def print_login_url(path: Path) -> int:
+    """``login-url``: print the login URL the running server wrote to ``path``, or say why
+    not."""
     try:
         print(path.read_text(encoding="utf-8").strip())
     except FileNotFoundError:
@@ -393,7 +396,7 @@ async def serve(
             write_private(login_file, login_url + "\n")
             print(
                 f"Log in through Authentik; the operator's login URL is in {login_file} "
-                f"(sandbox-science-workspace login-url --state-dir {login_file.parent})",
+                f"(sandbox-science-workspace login-url --login-url-file {login_file})",
                 flush=True,
             )
         await stopping.wait()
@@ -433,7 +436,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="print the operator's login URL, which serve writes with forward auth on",
         allow_abbrev=False,
     )
-    reading.add_argument("--state-dir", type=Path, required=True, help="serve's --state-dir")
+    source = reading.add_mutually_exclusive_group(required=True)
+    source.add_argument(
+        "--state-dir", type=Path, help=f"serve's --state-dir: read {LOGIN_URL_FILE} in it"
+    )
+    source.add_argument("--login-url-file", type=Path, help="serve's --login-url-file")
     command = commands.add_parser(
         "serve", help="serve the workspace GUI and its API", allow_abbrev=False
     )
@@ -518,6 +525,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--forward-auth-header", metavar="NAME", help=f"the token's header (default {HEADER})"
     )
     command.add_argument(
+        "--login-url-file",
+        type=Path,
+        metavar="FILE",
+        help="with forward auth: the file the operator's login URL is written to, mode 600, "
+        f"in an existing directory (default {LOGIN_URL_FILE} in --state-dir)",
+    )
+    command.add_argument(
         "--log-level", default="INFO", choices=("DEBUG", "INFO", "WARNING", "ERROR")
     )
     command.add_argument("--worker", help="worker URL for live jobs and cancellation")
@@ -587,7 +601,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     repairs.add_argument("--reviewer-effort")
     args = parser.parse_args(argv)
     if args.command == "login-url":
-        return print_login_url(args.state_dir)
+        return print_login_url(args.login_url_file or args.state_dir / LOGIN_URL_FILE)
     configure_logging("workspace", level=args.log_level)
     try:
         host, port = parse_listen(args.listen)
@@ -691,8 +705,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         verifier = Verifier(forward_settings) if forward_settings is not None else None
     except ValueError as exc:
         parser.error(str(exc))
+    if args.login_url_file is not None and forward_settings is None:
+        parser.error("--login-url-file needs forward auth: without it the login URL is printed")
     if not args.state_dir.is_dir():
         print(f"error: there is no state directory {args.state_dir}", file=sys.stderr)
+        return 1
+    login_file = args.login_url_file or args.state_dir / LOGIN_URL_FILE
+    if forward_settings is not None and not login_file.parent.is_dir():
+        print(
+            f"error: there is no directory {login_file.parent} for the login URL", file=sys.stderr
+        )
         return 1
     job_worker = None
     job_state = None
@@ -852,7 +874,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 login_token,
                 (viewer_app, preview, preview_host, preview_port, name),
                 public,
-                args.state_dir / LOGIN_URL_FILE if forward_settings is not None else None,
+                login_file if forward_settings is not None else None,
             )
         )
     except KeyboardInterrupt:  # before the signal handlers are in place

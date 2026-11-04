@@ -667,7 +667,7 @@ async def test_with_forward_auth_the_login_url_stays_out_of_the_log(
     assert re.fullmatch(rf"http://127\.0\.0\.1:\d+/login\?token={token}", url)
     printed = capsys.readouterr()
     assert token not in printed.out + printed.err
-    assert str(login_file) in printed.out
+    assert f"login-url --login-url-file {login_file}" in printed.out
     assert cli.main(["login-url", "--state-dir", str(tmp_path)]) == 0
     assert capsys.readouterr().out.strip() == url
     os.kill(os.getpid(), signal.SIGTERM)
@@ -689,6 +689,40 @@ def test_forward_auth_passes_the_login_file_to_serve(
     served.clear()
     assert cli.main(["serve", "--state-dir", str(state_dir), "--static", str(static_dir)]) == 0
     assert served[6] is None  # without forward auth the URL is printed, as before
+
+
+def test_the_login_url_file_may_be_kept_off_the_state_directory(
+    state_dir: Path,
+    static_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The bundle's state directory is on the backed-up PVC: the login URL, which logs in
+    as the operator, goes to a file on a memory volume instead (``--login-url-file``)."""
+    _, served = captured_app(monkeypatch)
+    memory = tmp_path / "memory"
+    memory.mkdir()
+    chosen = memory / "login-url"
+    base = ["serve", "--state-dir", str(state_dir), "--static", str(static_dir)]
+    flags = [*REMOTE, *PUBLIC, *PREVIEW_PUBLIC, *RS256, *FORWARD]
+    assert cli.main([*base, *flags, "--login-url-file", str(chosen)]) == 0
+    assert served[6] == chosen
+    served.clear()
+    absent = tmp_path / "absent" / "login-url"
+    assert cli.main([*base, *flags, "--login-url-file", str(absent)]) == 1
+    assert f"no directory {absent.parent}" in capsys.readouterr().err
+    assert not served
+    with pytest.raises(SystemExit):
+        cli.main([*base, "--login-url-file", str(chosen)])
+    assert "--login-url-file needs forward auth" in capsys.readouterr().err
+    chosen.write_text("http://127.0.0.1:1/login?token=test-login-token\n")
+    assert cli.main(["login-url", "--login-url-file", str(chosen)]) == 0
+    assert capsys.readouterr().out == "http://127.0.0.1:1/login?token=test-login-token\n"
+    with pytest.raises(SystemExit):
+        cli.main(["login-url", "--state-dir", str(state_dir), "--login-url-file", str(chosen)])
+    with pytest.raises(SystemExit):
+        cli.main(["login-url"])
 
 
 SECRET = "test-secret-authentik-client-secret-0123456789abcdefghijklmnop"

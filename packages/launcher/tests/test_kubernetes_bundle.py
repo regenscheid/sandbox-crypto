@@ -1283,6 +1283,7 @@ def test_forward_auth_reaches_the_workspace_command():
         "--forward-auth-user-group": "atlas-users",
         "--forward-auth-admin-group": "atlas-admins",
         "--forward-auth-header": "X-authentik-jwt",
+        "--login-url-file": "/run/sandbox-science/workspace-login/login-url",
     }
     for flag, value in expected.items():
         assert command[command.index(flag) + 1] == value
@@ -1297,7 +1298,39 @@ def test_forward_auth_reaches_the_workspace_command():
     for off in (with_forward_auth(enabled=False), with_ingress()):
         items = objects(configured(off))
         assert not any(a.startswith("--forward-auth") for a in workspace_command(items))
+        assert "--login-url-file" not in workspace_command(items)
         assert "egress" not in named(items, "NetworkPolicy", "research-ingress")["spec"]
+
+
+def test_the_login_url_is_written_to_the_workspaces_memory_volume_not_the_pvc():
+    """With forward auth the workspace writes the operator's login URL, an admin's login,
+    to a file: on a memory volume of its own, not in the state directory on the backed-up
+    app PVC, where control could read it too."""
+    spec = pod(objects(configured(with_forward_auth())), "app")
+    volumes = {volume["name"]: volume for volume in spec["volumes"]}
+    assert volumes["workspace-login"] == {
+        "name": "workspace-login",
+        "emptyDir": {"medium": "Memory", "sizeLimit": "1Mi"},
+    }
+    mounting = {
+        container["name"]: mount
+        for container in spec["containers"] + spec["initContainers"]
+        for mount in container["volumeMounts"]
+        if mount["name"] == "workspace-login"
+    }
+    assert mounting == {
+        "workspace": {
+            "name": "workspace-login",
+            "mountPath": "/run/sandbox-science/workspace-login",
+        }
+    }
+    command = workspace_command(objects(configured(with_forward_auth())))
+    written = command[command.index("--login-url-file") + 1]
+    assert written.startswith(mounting["workspace"]["mountPath"] + "/")
+    assert not written.startswith(command[command.index("--state-dir") + 1])
+    for off in (with_forward_auth(enabled=False), with_ingress(), values()):
+        spec = pod(objects(configured(off)), "app")
+        assert "workspace-login" not in {volume["name"] for volume in spec["volumes"]}
 
 
 def test_forward_auth_adds_only_the_egress_to_authentiks_server_pods():

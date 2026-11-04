@@ -38,6 +38,11 @@ XDG = f"{PRIVATE}/xdg"
 """The manager's OpenShell CLI tree (``XDG_CONFIG_HOME``), built by its copy init."""
 RUNTIME_CREDENTIALS = "/run/sandbox-science/runtime-credentials"
 """Control's memory volume for the runtime token it mints; no other container mounts it."""
+WORKSPACE_LOGIN = "/run/sandbox-science/workspace-login"
+"""With forward auth, the workspace's memory volume for the operator's login URL, which
+logs in as an admin: off the app PVC, which is backed up, and no other container mounts
+it."""
+LOGIN_URL_FILE = f"{WORKSPACE_LOGIN}/login-url"
 WORKSPACE_PORT = 8200
 PREVIEW_PORT = 8201
 LOOPBACK = "127.0.0.1"
@@ -280,6 +285,12 @@ def _policies(config: BundleConfig) -> list[dict[str, object]]:
 def _forward_auth(ingress: Ingress) -> ForwardAuth | None:
     found = ingress.forward_auth
     return found if found is not None and found.enabled else None
+
+
+def _login_volume(config: BundleConfig) -> bool:
+    """Whether the workspace writes the login URL to a file (``WORKSPACE_LOGIN``): with
+    forward auth on, when it does not print it."""
+    return config.ingress is not None and _forward_auth(config.ingress) is not None
 
 
 def _ingress_policy(config: BundleConfig, ingress: Ingress) -> dict[str, object]:
@@ -539,6 +550,8 @@ def _command(config: BundleConfig, name: str) -> list[str]:
                     if forward.admin_group is not None
                     else []
                 ),
+                "--login-url-file",
+                LOGIN_URL_FILE,
             ]
             if forward is not None
             else []
@@ -676,6 +689,8 @@ def _container(
     ]
     if name == "control":
         mounts.append({"name": "runtime-credentials", "mountPath": RUNTIME_CREDENTIALS})
+    if name == "workspace" and _login_volume(config):
+        mounts.append({"name": "workspace-login", "mountPath": WORKSPACE_LOGIN})
     if name in POOL_SERVICES:
         mounts.append({"name": UNIT_VOLUME, "mountPath": UNIT_DIR, "readOnly": True})
     result: dict[str, object] = {
@@ -779,6 +794,10 @@ def _deployment(config: BundleConfig, component: str) -> dict[str, object]:
         volumes.append(
             {"name": "runtime-credentials", "emptyDir": {"medium": "Memory", "sizeLimit": "1Mi"}}
         )
+        if _login_volume(config):
+            volumes.append(
+                {"name": "workspace-login", "emptyDir": {"medium": "Memory", "sizeLimit": "1Mi"}}
+            )
     if component == "pool":
         volumes.append(
             {

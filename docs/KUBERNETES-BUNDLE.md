@@ -664,7 +664,7 @@ The renderer passes no `--trust-proxy-from`: Traefik's Pods have no fixed addres
 with `Host` passed through no forwarded header is needed. Authentik is checked before
 the workspace's own login token, which the workspace still needs unless
 [login through Authentik](#login-through-authentik-opt-in) is on
-(`kubectl logs deploy/<name>-app -c workspace` prints the login URL on the public origin; with login through Authentik it is not in the log, and `kubectl -n <namespace> exec deploy/<name>-app -c workspace -- sandbox-science-workspace login-url --state-dir /var/lib/sandbox-science/control` prints it);
+(`kubectl logs deploy/<name>-app -c workspace` prints the login URL on the public origin; with login through Authentik it is not in the log, and `kubectl -n <namespace> exec deploy/<name>-app -c workspace -- sandbox-science-workspace login-url --login-url-file /run/sandbox-science/workspace-login/login-url` prints it);
 Authentik's plain headers open no workspace session. Nothing here is qualified on a cluster.
 
 ### Login through Authentik (opt-in)
@@ -725,8 +725,11 @@ Pods, not containers, so that rule admits every container of the application Pod
 Authentik's; narrowing it to the JWKS path would need a proxy in front of Authentik. The
 JWKS crosses the Pod network in plain HTTP, as every request from Traefik to the workspace
 does, so this adds no new exposure ([threat model](THREAT-MODEL.md)). The workspace no
-longer prints its login URL, which logs in as the operator, an admin:
-`kubectl -n <namespace> exec deploy/<name>-app -c workspace -- sandbox-science-workspace login-url --state-dir /var/lib/sandbox-science/control` prints it.
+longer prints its login URL, which logs in as the operator, an admin: it writes it to
+`/run/sandbox-science/workspace-login/login-url` (`--login-url-file`), on a 1 MiB memory
+volume only the workspace container mounts, not in the state directory on the app PVC,
+which is backed up and which control mounts too, and
+`kubectl -n <namespace> exec deploy/<name>-app -c workspace -- sandbox-science-workspace login-url --login-url-file /run/sandbox-science/workspace-login/login-url` prints it.
 
 **Who can mint a login.** With HS256, whoever holds the client secret can make a token for
 any user and group: Authentik's administrators, and whoever can read the workspace's
