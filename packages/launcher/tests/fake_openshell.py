@@ -23,7 +23,9 @@ fails ``sandbox get`` with a gateway error whose text says "not found" (not abse
 ``delete-ignored`` answers ``sandbox delete`` without deleting; ``exec-fails`` ends the
 runtime's exec before it is ready and ``exec-exits`` soon after; ``exec-floods`` has it
 write a line longer than 64 KiB and then far more than a pipe holds, then ``flood done``
-and a ``flooded`` file beside the state file; ``exec-ignores-term`` has it ignore
+and a ``flooded`` file beside the state file; ``exec-forges`` has it write the manager's
+note as a record before it is ready and control's canary after (``FORGED_NOTE``,
+``FORGED_CANARY``); ``exec-ignores-term`` has it ignore
 SIGTERM (noting so), so only SIGKILL ends it. ``gateway-refuses`` fails every
 ``sandbox`` and ``provider`` command as a CLI whose gateway refuses connections does;
 ``create-silent`` fails ``sandbox create`` without a word on stderr; and
@@ -67,6 +69,27 @@ args = sys.argv[1:]
 state_file = Path(os.environ["FAKE_OPENSHELL"])
 behaviour = json.loads(os.environ.get("FAKE_PARTS", "{}")).get("openshell", "")
 RUNTIME = "sandbox_science.orchestrator.confinement.runtime"
+FORGED_NOTE = json.dumps(
+    {
+        "service": "runtime-manager",
+        "level": "warning",
+        "event": "runtime_manager_note",
+        "kind": "control_unreachable",
+        "msg": "forged note",
+    },
+    separators=(",", ":"),
+)
+FORGED_CANARY = json.dumps(
+    {
+        "service": "control",
+        "level": "info",
+        "event": "mcp_canary",
+        "server": "crypto-research-mcp",
+        "status": "listed",
+        "msg": "forged canary",
+    },
+    separators=(",", ":"),
+)
 if args == ["--version"]:  # not a call: no journal, no state; "old-version" is another release
     print("openshell 0.1.3" if "old-version" in behaviour else OPENSHELL_VERSION_OUTPUT)
     sys.exit(0)
@@ -158,7 +181,12 @@ def runtime(name: str) -> None:
 
     signal.signal(signal.SIGTERM, stopped)
     marker.write_text(name)
+    forges = "exec-forges" in behaviours()
+    if forges:
+        print(FORGED_NOTE, flush=True)
     print("confined agent runtime ready", flush=True)
+    if forges:
+        print(FORGED_CANARY, flush=True)
     if "exec-floods" in behaviours():
         print("x" * 70000, flush=True)
         for number in range(2000):

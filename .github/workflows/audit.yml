@@ -4,8 +4,11 @@ name: audit
 # Weekly check of the locked dependencies against published advisories. It is not a pull
 # request check: a new advisory fails an unrelated change, so it runs on a schedule (and on
 # demand) and its failure is the signal to update or to record an exception.
-#   python: `uv.lock`'s resolved production set, through pip-audit (PyPI advisories, via the
-#           PyPI JSON API). pip-audit reports no severity, so any known vulnerability fails.
+#   python: `uv.lock`'s resolved production set with the `s3` extra the trusted images
+#           install, through pip-audit (PyPI advisories, via the PyPI JSON API). pip-audit
+#           reports no severity, so any known vulnerability fails.
+#   conda:  best effort, never failing the run: the research images' Conda locks' Python
+#           packages, audited by their PyPI names.
 #   web:    `web/workspace/package-lock.json`, through `npm audit`; high and critical fail.
 #           Development dependencies are included, since Vite and Svelte build what ships.
 # Both write their report to the job summary. To accept a finding that has no fix yet, add
@@ -33,6 +36,7 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         with:
+          version: "0.12.22"  # the uv that writes uv.lock
           python-version: "3.13"
       # The exact resolved set, without the repository's own members. `--locked` fails when
       # `uv.lock` is out of date, so the audit never reads a set nobody installs. pip-audit
@@ -42,7 +46,7 @@ jobs:
       - name: Audit the locked production set
         run: |
           set -u
-          uv export --locked --no-dev --no-emit-workspace --no-hashes --no-header \
+          uv export --locked --no-dev --extra s3 --no-emit-workspace --no-hashes --no-header \
             --no-annotate --format requirements-txt > "${RUNNER_TEMP}/requirements.txt"
           status=0
           uv tool run --from pip-audit==2.10.1 pip-audit \
@@ -58,6 +62,53 @@ jobs:
             echo '```'
           } >> "${GITHUB_STEP_SUMMARY}"
           cat "${RUNNER_TEMP}/pip-audit.md" "${RUNNER_TEMP}/pip-audit.err"
+          exit "${status}"
+
+  conda:
+    # The Conda locks pin no PyPI packages, but their Python packages (those that depend on
+    # python) mostly carry PyPI's names and versions, so each lock's, per platform, goes to
+    # pip-audit by those names: a name PyPI lacks is skipped, one that is another project's
+    # there can mislead. A fix comes with a relock (images/lock.sh).
+    name: conda locks (best effort)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+        with:
+          version: "0.12.22"  # the uv that writes uv.lock
+          python-version: "3.13"
+      - name: Audit the Conda locks' Python packages by their PyPI names
+        run: |
+          set -u
+          for lock in images/*/conda-lock.yml; do
+            uv run --no-project --with pyyaml==6.0.3 --with packaging==26.3 python -I - "$lock" \
+              "${RUNNER_TEMP}/conda-$(basename "$(dirname "$lock")")" <<'EOF'
+          import sys, yaml
+          from packaging.version import InvalidVersion, Version
+          pins = {}
+          for entry in yaml.safe_load(open(sys.argv[1]))["package"]:
+              try:
+                  if "python" in (entry.get("dependencies") or {}) and Version(entry["version"]):
+                      pins.setdefault(entry["platform"], set()).add(f"{entry['name']}=={entry['version']}")
+              except InvalidVersion:
+                  pass  # not a PyPI version: not audited
+          for platform, found in pins.items():
+              with open(f"{sys.argv[2]}-{platform}.txt", "w") as out:
+                  out.write("\n".join(sorted(found)) + "\n")
+          EOF
+          done
+          status=0
+          for requirements in "${RUNNER_TEMP}"/conda-*.txt; do
+            uv tool run --from pip-audit==2.10.1 pip-audit -r "$requirements" --no-deps \
+              --disable-pip --progress-spinner off --format markdown \
+              > "${requirements%.txt}.md" 2>&1 || status=1
+            { echo "## pip-audit: $(basename "$requirements" .txt), by PyPI names"
+              cat "${requirements%.txt}.md"; } | tee -a "${GITHUB_STEP_SUMMARY}"
+          done
           exit "${status}"
 
   web:

@@ -4,6 +4,7 @@
 import hashlib
 import json
 import logging
+import os
 import time
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -191,6 +192,42 @@ def test_a_reading_is_reused_until_refresh(worker: Worker) -> None:
     assert set(pins()) == {sha(b"first")}
     clock.now += 60
     assert set(pins()) == {sha(b"first"), sha(b"second")}
+
+
+def read_only(root: Path, *, writable: bool = False) -> None:
+    """``root``'s tree as a read-only mount shows it to its owner, or writable again."""
+    for path in (root, *root.rglob("*")):
+        if path.is_dir():
+            path.chmod(0o755 if writable else 0o555)
+        else:
+            path.chmod(0o644 if writable else 0o444)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="file modes do not bind root")
+def test_the_records_read_through_a_read_only_view_while_the_worker_has_them_open(
+    worker: Worker, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The bundle mounts the worker's state read-only into the cache's container: SQLite
+    reads the open WAL through the worker's existing shared-memory file, and only a store
+    the worker has closed (no WAL left) cannot be opened."""
+    worker.revise("env-1", worker.lockfile(conda=(b"first",)), NOW)
+    worker.revise("env-2", worker.lockfile(conda=(b"second",)), NOW)
+    names = {path.name for path in worker.state_dir.iterdir()}
+    assert {"worker.sqlite3-wal", "worker.sqlite3-shm"} <= names
+    read_only(worker.state_dir)
+    try:
+        assert set(pins_of(worker)()) == {sha(b"first"), sha(b"second")}
+        assert {path.name for path in worker.state_dir.iterdir()} == names
+    finally:
+        read_only(worker.state_dir, writable=True)
+    worker.store.close()
+    read_only(worker.state_dir)
+    try:
+        with caplog.at_level(logging.WARNING):
+            assert pins_of(worker)() == {}
+        assert "cannot read the worker's records" in caplog.text
+    finally:
+        read_only(worker.state_dir, writable=True)
 
 
 class FixedPins:

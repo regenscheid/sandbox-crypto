@@ -12,7 +12,12 @@ The trusted application image runs control and workspace in one Pod over one blo
 PVC; each container mounts only its own directories of it (`control/`, which the
 workspace also reads as the harness's state, and its managed home/config
 directories). A second Pod, the [worker-side unit](UNIT.md), runs worker and policy middleware over their shared block
-PVC; package cache is optional there. Each of its containers runs `sandbox-science-unit serve --config /etc/sandbox-science/unit.toml --only <service>`, on one unit config the renderer makes as a ConfigMap `<name>-pool-unit` (no credential in it): a section for each service naming the settings file that service's Secret projects at `/private`, and the container's variables as the service's `pass_env`. The local launcher's unit uses the same file shape. The containers stay apart so that each keeps its own credentials, limits and probes; the Pod is ready when all are. A third Pod, the
+PVC; package cache is optional there. Its containers too mount only their own directories of it: the worker its state
+(`worker/`), its OpenShell CLI tree with the gateway client's key (`worker-config/`) and the
+policy and event stores it writes for the middleware (`middleware/`); the middleware
+`middleware/`; the cache, which sandboxes reach, `package-cache/` and, read-only,
+`worker/`, whose records pin what environments use. Each also mounts the managed
+home/config directories its environment selects. Each of its containers runs `sandbox-science-unit serve --config /etc/sandbox-science/unit.toml --only <service>`, on one unit config the renderer makes as a ConfigMap `<name>-pool-unit` (no credential in it): a section for each service naming the settings file that service's Secret projects at `/private`, and the container's variables as the service's `pass_env`. The local launcher's unit uses the same file shape. The containers stay apart so that each keeps its own credentials, limits and probes; the Pod is ready when all are. A third Pod, the
 [runtime manager](specs/kubernetes-runtime-bootstrap.md), runs the same
 `trusted-app` image as `sandbox-science-runtime-manager serve` over a small PVC of its
 own (the image carries the OpenShell CLI and the OpenSSH client that its
@@ -31,9 +36,10 @@ and PVC a profile names must carry the `openshell.ai/sandbox-attachable` labels
 ([gateway settings](KUBERNETES.md#gateway-settings-for-profile-placement)).
 
 A first UID-1000 init container mounts only that Pod's data PVC and creates the
-fixed missing state directories: `control` for the application, `worker` and
-`middleware` for the pool, plus `package-cache` when enabled, and `runtime` for the
-runtime manager. This breaks the cold
+fixed missing state directories: `control` for the application, `worker`,
+`worker-config` and `middleware` for the pool, plus `package-cache` when enabled, and
+`runtime` for the runtime manager, so that each directory a service mounts exists, owned
+by UID 1000, before the service starts. This breaks the cold
 volume startup dependency: workspace can initialize its empty control database
 before any runtime has connected. Initialization is create-only, preserves existing
 directory modes and all content, refuses symlink/non-directory collisions and does
@@ -658,7 +664,7 @@ The renderer passes no `--trust-proxy-from`: Traefik's Pods have no fixed addres
 with `Host` passed through no forwarded header is needed. Authentik is checked before
 the workspace's own login token, which the workspace still needs unless
 [login through Authentik](#login-through-authentik-opt-in) is on
-(`kubectl logs deploy/<name>-app -c workspace` prints the login URL on the public origin; with login through Authentik it is not in the log, and `kubectl -n <namespace> exec deploy/<name>-app -c workspace -- sandbox-science-workspace login-url --state-dir /var/lib/sandbox-science/control` prints it);
+(`kubectl logs deploy/<name>-app -c workspace` prints the login URL on the public origin; with login through Authentik it is not in the log, and `kubectl -n <namespace> exec deploy/<name>-app -c workspace -- sandbox-science-workspace login-url --login-url-file /run/sandbox-science/workspace-login/login-url` prints it);
 Authentik's plain headers open no workspace session. Nothing here is qualified on a cluster.
 
 ### Login through Authentik (opt-in)
@@ -719,8 +725,11 @@ Pods, not containers, so that rule admits every container of the application Pod
 Authentik's; narrowing it to the JWKS path would need a proxy in front of Authentik. The
 JWKS crosses the Pod network in plain HTTP, as every request from Traefik to the workspace
 does, so this adds no new exposure ([threat model](THREAT-MODEL.md)). The workspace no
-longer prints its login URL, which logs in as the operator, an admin:
-`kubectl -n <namespace> exec deploy/<name>-app -c workspace -- sandbox-science-workspace login-url --state-dir /var/lib/sandbox-science/control` prints it.
+longer prints its login URL, which logs in as the operator, an admin: it writes it to
+`/run/sandbox-science/workspace-login/login-url` (`--login-url-file`), on a 1 MiB memory
+volume only the workspace container mounts, not in the state directory on the app PVC,
+which is backed up and which control mounts too, and
+`kubectl -n <namespace> exec deploy/<name>-app -c workspace -- sandbox-science-workspace login-url --login-url-file /run/sandbox-science/workspace-login/login-url` prints it.
 
 **Who can mint a login.** With HS256, whoever holds the client secret can make a token for
 any user and group: Authentik's administrators, and whoever can read the workspace's
@@ -845,7 +854,7 @@ Each file is one Job (`batch/v1`) with `generateName: <name>-worker-release-`, s
 `kubectl create -f` makes a new one each time and `kubectl apply` refuses it. It runs
 `sandbox-science-worker artifact-retention --settings /private/worker.toml --limit 100`
 (`--apply` unless `--preview`; `--after` for the next page) on the worker image, with the
-pool PVC, the worker's Secret copied as in the pool Pod, `backoffLimit: 0`, a one-hour
+worker container's directories of the pool PVC and the worker's Secret copied as in the pool Pod, `backoffLimit: 0`, a one-hour
 deadline and a week before the finished Job is deleted. Its Pod is labelled
 `app.kubernetes.io/component: worker-release`: only the default-deny NetworkPolicy selects
 it, so it has no network, and no Service selects it.
@@ -1392,8 +1401,8 @@ own sandbox namespace (and select it in `network.runtimes`) where OpenShell allo
 The first deployment collects every service's logs into Loki through Alloy (D103). The bundle renders nothing for Loki or Alloy: the operator installs both ([preparation, step 11](KUBERNETES-PREP.md#11-log-collection)). The bundle makes the logs collectable.
 
 - **JSON on the container's output.** Every container sets `SS_LOG_FORMAT=json`, so each service writes one JSON object per line on standard error, which the kubelet keeps with standard output as the container's log. The shared setup is `sandbox_science.contracts.logs`: `ts` (UTC), `level`, `service`, `logger`, `msg`, `event` when the call names one, and, when known, `project`, `session`, `run`, `environment` and `request`; an exception is one `exc` field. A message, field or traceback passes the redaction first (URL user information, `Authorization` and `Bearer` values, `name=value` where the name ends in `token`, `secret`, `password`, `api_key`, `credential` or `cookie`, and a few credential formats), and a field named like a secret is never written. Local runs keep the text line unless `SS_LOG_FORMAT=json` is set ([the unit](UNIT.md#how-it-runs)).
-- **`service`** is `control`, `workspace`, `harness`, `agent-runtime`, `worker`, `middleware`, `cache`, `runtime-manager` or `unit` (`mcp-proxy` in older lines, before the proxy retired). In the pool Pod each container runs one service of the unit (`--only`), so a line's `service` is the container's; a line a service wrote that is not a record (a traceback, a library's output) becomes a record of its service. The runtime manager passes on the agent runtime's output as records of the service `runtime` when the runtime wrote none.
-- **Pod labels.** Every Pod the renderer makes (`app`, `pool`, `runtime-manager`) carries `app.kubernetes.io/name: sandbox-science`, `app.kubernetes.io/instance: <name>` (the bundle's `name`), `app.kubernetes.io/part-of: <name>` and `app.kubernetes.io/component: app|pool|runtime-manager`; the container name (`control`, `workspace`, `worker`, `middleware`, `cache`, `manager`) tells the service apart within a Pod. The log labels are on the Pods and objects only: selectors and NetworkPolicies keep to `part-of` and `component`. Alloy reads logs through the Kubernetes API or the nodes' files, so no NetworkPolicy needs an ingress rule for it.
+- **`service`** is `control`, `workspace`, `harness`, `agent-runtime`, `worker`, `middleware`, `cache`, `runtime-manager` or `unit` (`mcp-proxy` in older lines, before the proxy retired). In the pool Pod each container runs one service of the unit (`--only`), so a line's `service` is the container's; a line a service wrote that is not a record of its own (a traceback, a library's output, a record naming another service) becomes a record of its service. The runtime manager passes on every line of the agent runtime's output as a record of the service `runtime`, whatever the line holds: the runtime is research-facing, so a line it writes as another service's record is only text in one of `runtime`'s.
+- **Pod labels.** Every Pod the renderer makes (`app`, `pool`, `runtime-manager`) carries `app.kubernetes.io/name: sandbox-science`, `app.kubernetes.io/instance: <name>` (the bundle's `name`), `app.kubernetes.io/part-of: <name>` and `app.kubernetes.io/component: app|pool|runtime-manager`; the container name (`control`, `workspace`, `worker`, `middleware`, `cache`, `runtime-manager`) tells the service apart within a Pod. The log labels are on the Pods and objects only: selectors and NetworkPolicies keep to `part-of` and `component`. Alloy reads logs through the Kubernetes API or the nodes' files, so no NetworkPolicy needs an ingress rule for it.
 - **OpenShell's events.** The gateway's and the sandbox supervisors' OCSF events are OpenShell's to export, from its own configuration: `ocsf_json_enabled` makes the supervisors write `OCSF-JSON` lines on their Pod's standard error and the gateway write JSONL (`[openshell.gateway.ocsf_log]`), and `[openshell.gateway.otlp]` with `[openshell.gateway.otlp.ocsf]` sends the events, and the traces, to an OTLP/gRPC collector that the sandboxes can reach too. OpenShell's pages on [observability](https://github.com/NVIDIA/OpenShell/blob/v0.1.5/docs/observability/overview.mdx), [OCSF JSON export](https://github.com/NVIDIA/OpenShell/blob/v0.1.5/docs/observability/ocsf-json-export.mdx) and [telemetry](https://github.com/NVIDIA/OpenShell/blob/v0.1.5/docs/observability/telemetry.mdx) (its anonymous usage data, separate from these signals) name every setting. The gateway's Prometheus listener (`metrics_bind_address`) is scraped, not logged.
 - **A sample Alloy configuration** is [alloy-config.alloy](../examples/kubernetes/alloy-config.alloy): the bundle's Pods selected by `app.kubernetes.io/name`, the JSON fields `level` and `service` as labels and the identifiers as structured metadata (a project, session, run or request is a filter, not a stream), an optional pipeline for the supervisors' `OCSF-JSON` lines, and an optional OTLP receiver. It has not run on a cluster. Retention, the Loki URL and Alloy's own access are the operator's.
 
@@ -1410,7 +1419,7 @@ The first alerts over the structured logs (D103), six rules, are rendered only w
 # canary_window_minutes = 20        # every canary in it failed: longer than the canaries' interval
 ```
 
-The ConfigMap carries `configmap_labels` and the annotation `k8s-sidecar-target-directory: /rules/<tenant>`, the directory per tenant the ruler reads. Every rule selects only this instance's lines, `{namespace="<namespace>", instance="<name>"}`, the labels the [sample Alloy configuration](../examples/kubernetes/alloy-config.alloy) sets, and finds an event by its compact JSON text (`` |= `"event":"…"` ``), so the rule does not depend on how a pipeline labels `event`. `project` and `environment` come from the lines' structured metadata, as the sample keeps them; the other fields are parsed from the line (`| json kind="kind"`). Each alert has the labels `severity`, `namespace` and `instance`, and those it is grouped by:
+The ConfigMap carries `configmap_labels` and the annotation `k8s-sidecar-target-directory: /rules/<tenant>`, the directory per tenant the ruler reads. Every rule selects only this instance's lines, `{namespace="<namespace>", instance="<name>"}`, the labels the [sample Alloy configuration](../examples/kubernetes/alloy-config.alloy) sets. A rule over one service's events also selects that service's `container` with its `service` (`container="control", service="control"` for the canaries, `runtime-manager`, `worker` and `middleware` for the others): `service` is a field of the line, while Alloy takes `container` from the Pod, so a line another container's process wrote in the service's name cannot raise or silence the alert. A rule finds an event by its compact JSON text (`` |= `"event":"…"` ``), so the rule does not depend on how a pipeline labels `event`. `project` and `environment` come from the lines' structured metadata, as the sample keeps them; the other fields are parsed from the line (`| json kind="kind"`). Each alert has the labels `severity`, `namespace` and `instance`, and those it is grouped by:
 
 | Alert | Fires when | Grouped by |
 | --- | --- | --- |

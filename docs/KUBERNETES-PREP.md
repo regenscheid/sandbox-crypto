@@ -52,11 +52,16 @@ Verify: each digest resolves for both `linux/amd64` and `linux/arm64` (`docker b
 ```sh
 for ns in research openshell research-runtimes; do kubectl create namespace "$ns"; done
 
-# One pull secret per namespace that pulls a private image. Read the token from a file or prompt, never from shell history.
+# One pull secret per namespace that pulls a private image, made from the registry config `docker login` writes.
+# The token goes in from a file (or the prompt), never on a command line or into shell history; the config is
+# written to an empty directory of its own, so that no credential helper keeps the token in place of the file.
+export DOCKER_CONFIG="$(mktemp -d)"
+docker login ghcr.io --username <github-user> --password-stdin < ghcr-token.txt
 for ns in research research-runtimes; do
   kubectl -n "$ns" create secret docker-registry ghcr-pull \
-    --docker-server=ghcr.io --docker-username=<github-user> --docker-password-stdin < ghcr-token.txt
+    --from-file=.dockerconfigjson="$DOCKER_CONFIG/config.json"
 done
+rm -r "$DOCKER_CONFIG"; unset DOCKER_CONFIG
 
 # The bundle's Pods name it themselves (bundle image_pull_secret, default ghcr-pull). Optionally attach it to the
 # default ServiceAccount too, for Pods made by hand (the throwaway pull test below):
@@ -541,7 +546,7 @@ D103: structured JSON logs from every service, OpenShell's OCSF events and the p
    - **with the Loki chart's rules sidecar** (`sidecar.rules.enabled`), which loads every ConfigMap carrying its label (`sidecar.rules.label`, `loki_rule` by default) into the ruler's directory: set `[alerts] configmap_labels` to that label, `namespace` to the namespace the sidecar watches (`sidecar.rules.searchNamespace`) and `tenant` to the tenant (`fake` for a single-tenant Loki), and apply the bundle as usual; the annotation `k8s-sidecar-target-directory` puts the file in `/rules/<tenant>`; or
    - **by hand**: take the file out, `kubectl -n <namespace> get configmap <name>-alert-rules -o jsonpath='{.data.sandbox-science-alerts\.yaml}' > sandbox-science-alerts.yaml`, check it if you have Loki's `lokitool` (`lokitool rules lint`; `promtool` cannot, since it parses PromQL, not LogQL) and put it where the ruler reads rules for the tenant, `<ruler_storage.local.directory>/<tenant>/`, by the ConfigMap mounted there or with `lokitool rules load`.
 
-   Check it: the ruler's `/loki/api/v1/rules` lists the group `sandbox-science-<name>`; stopping the control container for over 10 minutes makes `SandboxScienceManagerUnreachable` fire, and starting it again resolves it. The rules assume the sample Alloy labels; with another pipeline, adjust the selectors. Run on the first cluster (2026-10-27 and 2026-10-31, the app Deployment scaled to 0): the rule went pending at the manager's first note, fired 10 minutes later, Alertmanager sent the firing email and, about 10 minutes after control was back (the rule's 8-minute window, then Alertmanager's group interval), the resolved one (`alertmanager_notifications_total{integration="email"}` +2, no failures).
+   Check it: the ruler's `/loki/api/v1/rules` lists the group `sandbox-science-<name>`; stopping the control container for over 10 minutes makes `SandboxScienceManagerUnreachable` fire, and starting it again resolves it. The rules assume the sample Alloy labels (`namespace`, `instance` and `container` from the Pod, `service` and `level` from the line); with another pipeline, adjust the selectors, keeping a label from the Pod beside `service`. Run on the first cluster (2026-10-27 and 2026-10-31, the app Deployment scaled to 0): the rule went pending at the manager's first note, fired 10 minutes later, Alertmanager sent the firing email and, about 10 minutes after control was back (the rule's 8-minute window, then Alertmanager's group interval), the resolved one (`alertmanager_notifications_total{integration="email"}` +2, no failures).
 
 ## 12. Workspace through the load balancer (optional)
 
@@ -581,7 +586,7 @@ kubectl -n research get certificate,ingressroute,svc,networkpolicy -l app.kubern
 kubectl -n research wait certificate/<name>-workspace certificate/<name>-preview --for=condition=Ready --timeout=300s
 curl -sI https://workspace.<domain>/ | head -3        # a redirect to Authentik, never the workspace
 kubectl -n research logs deploy/<name>-app -c workspace | grep 'login?token'   # without [ingress.forward_auth]
-kubectl -n research exec deploy/<name>-app -c workspace -- sandbox-science-workspace login-url --state-dir /var/lib/sandbox-science/control   # with it
+kubectl -n research exec deploy/<name>-app -c workspace -- sandbox-science-workspace login-url --login-url-file /run/sandbox-science/workspace-login/login-url   # with it
 ```
 
 Log in to Authentik in a browser, then open `https://workspace.<domain>/login?token=<token from the log>` (with `[ingress.forward_auth]`, `https://workspace.<domain>/` alone, and the sidebar names the Authentik user); the app should load, a document should save and a PDF open in the viewer. Negative checks: `curl -sk --resolve workspace.<domain>:443:<controller-ip> https://other.<domain>/` is not served (404); from a throwaway Pod in `research` (an approved image with `curl`, outside the bundle's labels), `curl -m 3 http://<app-pod-ip>:8200/` times out, since only the controller's Pods are admitted. The browser's developer tools show the session cookie as `__Host-…-8200`, Secure.

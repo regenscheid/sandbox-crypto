@@ -38,6 +38,11 @@ XDG = f"{PRIVATE}/xdg"
 """The manager's OpenShell CLI tree (``XDG_CONFIG_HOME``), built by its copy init."""
 RUNTIME_CREDENTIALS = "/run/sandbox-science/runtime-credentials"
 """Control's memory volume for the runtime token it mints; no other container mounts it."""
+WORKSPACE_LOGIN = "/run/sandbox-science/workspace-login"
+"""With forward auth, the workspace's memory volume for the operator's login URL, which
+logs in as an admin: off the app PVC, which is backed up, and no other container mounts
+it."""
+LOGIN_URL_FILE = f"{WORKSPACE_LOGIN}/login-url"
 WORKSPACE_PORT = 8200
 PREVIEW_PORT = 8201
 LOOPBACK = "127.0.0.1"
@@ -280,6 +285,12 @@ def _policies(config: BundleConfig) -> list[dict[str, object]]:
 def _forward_auth(ingress: Ingress) -> ForwardAuth | None:
     found = ingress.forward_auth
     return found if found is not None and found.enabled else None
+
+
+def _login_volume(config: BundleConfig) -> bool:
+    """Whether the workspace writes the login URL to a file (``WORKSPACE_LOGIN``): with
+    forward auth on, when it does not print it."""
+    return config.ingress is not None and _forward_auth(config.ingress) is not None
 
 
 def _ingress_policy(config: BundleConfig, ingress: Ingress) -> dict[str, object]:
@@ -539,6 +550,8 @@ def _command(config: BundleConfig, name: str) -> list[str]:
                     if forward.admin_group is not None
                     else []
                 ),
+                "--login-url-file",
+                LOGIN_URL_FILE,
             ]
             if forward is not None
             else []
@@ -591,22 +604,49 @@ def _mcp_services(config: BundleConfig) -> list[str]:
     ]  # fmt: skip
 
 
+DIRECTORIES: dict[str, tuple[str, ...]] = {
+    "control": ("control",),
+    # The workspace reads the harness's records in control's state directory (D80).
+    "workspace": ("control",),
+    # Its state, its OpenShell CLI tree (``openshell.env``, with the gateway client's key)
+    # and the policy and event stores it writes for the middleware.
+    "worker": ("worker", "worker-config", "middleware"),
+    "middleware": ("middleware",),
+    "cache": ("package-cache",),
+}
+"""The data PVC's directories each service mounts read-write, besides the managed
+home/config directories its environment selects."""
+READ_ONLY_DIRECTORIES: dict[str, tuple[str, ...]] = {"cache": ("worker",)}
+"""Directories a service only reads: the cache, which sandboxes reach, reads the worker's
+lockfile records (opened ``mode=ro``) to pin what environments use."""
+
+
 def _data_mounts(name: str, capacity: Capacity) -> list[dict[str, object]]:
-    """The PVC as a container sees it. In the app Pod each container mounts only the
-    directories it uses: control's state, which workspace reads as the harness's state
-    directory, and its own managed home/config directories."""
-    if name not in ("control", "workspace"):
+    """The PVC as a container sees it: each service's own directories of it, never the
+    whole volume, which holds the other services' state and the worker's gateway
+    credential. The runtime manager has a PVC of its own."""
+    if name not in DIRECTORIES:
         return [{"name": "data", "mountPath": DATA}]
     environment = capacity.environment if isinstance(capacity, Service) else {}
-    directories = ["control"]
+    directories = list(DIRECTORIES[name])
     directories += sorted(
-        environment[key].removeprefix(f"{DATA}/")
-        for key in ("HOME", "XDG_CONFIG_HOME")
-        if key in environment
+        {
+            environment[key].removeprefix(f"{DATA}/")
+            for key in ("HOME", "XDG_CONFIG_HOME")
+            if key in environment
+        }
+        - set(directories)
     )
+    access = [(directory, False) for directory in directories]
+    access += [(directory, True) for directory in READ_ONLY_DIRECTORIES.get(name, ())]
     return [
-        {"name": "data", "mountPath": f"{DATA}/{directory}", "subPath": directory}
-        for directory in directories
+        {
+            "name": "data",
+            "mountPath": f"{DATA}/{directory}",
+            "subPath": directory,
+            **({"readOnly": True} if read_only else {}),
+        }
+        for directory, read_only in access
     ]
 
 
@@ -649,6 +689,8 @@ def _container(
     ]
     if name == "control":
         mounts.append({"name": "runtime-credentials", "mountPath": RUNTIME_CREDENTIALS})
+    if name == "workspace" and _login_volume(config):
+        mounts.append({"name": "workspace-login", "mountPath": WORKSPACE_LOGIN})
     if name in POOL_SERVICES:
         mounts.append({"name": UNIT_VOLUME, "mountPath": UNIT_DIR, "readOnly": True})
     result: dict[str, object] = {
@@ -752,6 +794,10 @@ def _deployment(config: BundleConfig, component: str) -> dict[str, object]:
         volumes.append(
             {"name": "runtime-credentials", "emptyDir": {"medium": "Memory", "sizeLimit": "1Mi"}}
         )
+        if _login_volume(config):
+            volumes.append(
+                {"name": "workspace-login", "emptyDir": {"medium": "Memory", "sizeLimit": "1Mi"}}
+            )
     if component == "pool":
         volumes.append(
             {
@@ -835,6 +881,13 @@ def _streams(config: BundleConfig, **matchers: str) -> str:
     return "{" + ", ".join(fields) + "}"
 
 
+def _service_streams(config: BundleConfig, service: str, container: str) -> str:
+    """The selector of ``service``'s own records: its ``container`` too, a label Alloy takes
+    from the Pod, not from the line, so that a record another container's process wrote in
+    the service's name (``service`` is a field of the line) cannot satisfy a rule."""
+    return _streams(config, container=f'="{container}"', service=f'="{service}"')
+
+
 def _event(name: str) -> str:
     """A line filter for one structured log event, as the services' JSON lines write it
     (``"event":"<name>"``, compact): it finds the event however a pipeline labels it."""
@@ -865,9 +918,12 @@ def alert_rules(config: BundleConfig, alerts: Alerts) -> dict[str, object]:
         return found
 
     errors = _streams(config, level='=~"error|critical"')
-    manager = _streams(config, service='="runtime-manager"')
-    worker = _streams(config, service='="worker"')
-    middleware = _streams(config, service='="middleware"')
+    manager = _service_streams(config, "runtime-manager", MANAGER)
+    worker = _service_streams(config, "worker", "worker")
+    middleware = _service_streams(config, "middleware", "middleware")
+    # Control runs the canaries; the runtime, which lists for them, is not trusted to say
+    # how they went (its output reaches Loki only as records of the service "runtime").
+    control = _service_streams(config, "control", "control")
     rules = [
         rule(
             ALERTS[0],
@@ -901,7 +957,7 @@ def alert_rules(config: BundleConfig, alerts: Alerts) -> dict[str, object]:
         ),
         rule(
             ALERTS[3],
-            f"sum by (service, server, status) (count_over_time({_streams(config)} "
+            f"sum by (service, server, status) (count_over_time({control} "
             f"{_event('mcp_canary_changed')}"
             ' | json server="server", status="status" | status!="listed" [20m])) > 0',
             "MCP canary of {{ $labels.server }} changed to {{ $labels.status }}",
@@ -912,10 +968,10 @@ def alert_rules(config: BundleConfig, alerts: Alerts) -> dict[str, object]:
         rule(
             ALERTS[4],
             # Every canary result in the window failed: no listed one among them.
-            f"(sum by (service, server) (count_over_time({_streams(config)} "
+            f"(sum by (service, server) (count_over_time({control} "
             f'{_event("mcp_canary")} | json server="server", status="status" '
             f'| status!="listed" [{canary}m])) > 0) unless (sum by (service, server) '
-            f"(count_over_time({_streams(config)} {_event('mcp_canary')} "
+            f"(count_over_time({control} {_event('mcp_canary')} "
             f'| json server="server", status="status" | status="listed" [{canary}m])) > 0)',
             "MCP canary of {{ $labels.server }} keeps failing",
             f"Every scheduled MCP canary of the server within {canary} minutes failed "
@@ -1338,10 +1394,10 @@ def _offline_worker_job(
     extra_labels: dict[str, str],
     keep_seconds: int,
 ) -> dict[str, object]:
-    """A one-shot Job of the worker image on the pool's volume: the worker's Secret copied
-    as in the pool Pod, no service-account token, the Pods' security context, a deadline
-    and ``keep_seconds`` before the finished Job goes. Its Pod carries ``component``'s labels, which
-    decide the network it gets."""
+    """A one-shot Job of the worker image on the pool's volume: the worker's directories of
+    it and its Secret copied as in the pool Pod, no service-account token, the Pods'
+    security context, a deadline and ``keep_seconds`` before the finished Job goes. Its Pod
+    carries ``component``'s labels, which decide the network it gets."""
     image = config.images.worker
     init, private = _credentials(config, "worker", config.secrets.worker, image)
     capacity = config.worker
@@ -1357,7 +1413,7 @@ def _offline_worker_job(
         "resources": _resources(capacity),
         "env": [{"name": key, "value": environment[key]} for key in sorted(environment)],
         "volumeMounts": [
-            {"name": "data", "mountPath": DATA},
+            *_data_mounts("worker", capacity),
             {"name": "scratch", "mountPath": "/tmp"},  # noqa: S108 - bounded Pod volume
             {"name": "worker-credentials", "mountPath": PRIVATE, "readOnly": True},
         ],
