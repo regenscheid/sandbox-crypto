@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
@@ -27,6 +28,7 @@ from sandbox_science.orchestrator.context.history import body
 from sandbox_science.orchestrator.delegation.hook import outcome, summarized
 from sandbox_science.orchestrator.delegation.outcome import (
     CAME,
+    LENIENT_CHARS,
     LIMIT_OBSTACLE,
     NO_SUBMISSION,
     NUDGES,
@@ -306,6 +308,30 @@ def test_the_lenient_reader_takes_the_last_fenced_block_then_the_last_object() -
         '{"c": 3}',
     )
     assert candidates('{"a": {"b": 1}} and {"c": 2}') == ('{"c": 2}',)
+
+
+def test_the_lenient_reader_looks_only_near_the_end_and_at_once() -> None:
+    """The orchestrator audit: reading every ``{`` of a 300 KB answer took 14 seconds,
+    on the event loop. The reader looks in the answer's last 64 KiB, at the last 64
+    places there that may begin an object, in a thread."""
+    pathological = '{"a":' * (1024 * 1024 // 5)
+    started = time.perf_counter()
+    assert candidates(pathological) == ()
+    assert time.perf_counter() - started < 0.1
+    # A result of the most objects a task's has, LaTeX in its summary and in the prose
+    # before it, at the end of a long answer, is still read.
+    result = {
+        "status": "complete",
+        "summary": r"Over $\mathbb{F}_{2^{8}}$ the map $x \mapsto \{x\}$ holds. " * 40,
+        "dismissals": [{"what": f"line {n}", "limit": "time"} for n in range(10)],
+        "obstructions": [{"claim": f"claim {n}", "evidence": "{none}"} for n in range(5)],
+        "deliverables": [{"id": f"d{n}", "status": "produced", "path": "t"} for n in range(12)],
+    }
+    whole = json.dumps(result)
+    prose = "Work notes. " * 200_000 + r"Each $\{0,1\}^{n}$ case {checked}." + "\n"
+    assert candidates(prose + whole + "\nThat is all.") == (whole,)
+    # One that ends before the answer's last 64 KiB is not.
+    assert candidates(whole + "\n" + "x" * LENIENT_CHARS) == ()
 
 
 async def test_an_answer_with_no_result_is_told_three_times_then_the_platform_writes_one() -> None:
