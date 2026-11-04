@@ -52,11 +52,16 @@ Verify: each digest resolves for both `linux/amd64` and `linux/arm64` (`docker b
 ```sh
 for ns in research openshell research-runtimes; do kubectl create namespace "$ns"; done
 
-# One pull secret per namespace that pulls a private image. Read the token from a file or prompt, never from shell history.
+# One pull secret per namespace that pulls a private image, made from the registry config `docker login` writes.
+# The token goes in from a file (or the prompt), never on a command line or into shell history; the config is
+# written to an empty directory of its own, so that no credential helper keeps the token in place of the file.
+export DOCKER_CONFIG="$(mktemp -d)"
+docker login ghcr.io --username <github-user> --password-stdin < ghcr-token.txt
 for ns in research research-runtimes; do
   kubectl -n "$ns" create secret docker-registry ghcr-pull \
-    --docker-server=ghcr.io --docker-username=<github-user> --docker-password-stdin < ghcr-token.txt
+    --from-file=.dockerconfigjson="$DOCKER_CONFIG/config.json"
 done
+rm -r "$DOCKER_CONFIG"; unset DOCKER_CONFIG
 
 # The bundle's Pods name it themselves (bundle image_pull_secret, default ghcr-pull). Optionally attach it to the
 # default ServiceAccount too, for Pods made by hand (the throwaway pull test below):
