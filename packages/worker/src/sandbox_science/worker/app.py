@@ -107,7 +107,6 @@ from sandbox_science.contracts.permission_requests import (
     PermissionConfirmation,
     PermissionConfirmed,
     WorkerPermissionAnswer,
-    WorkerPermissionListing,
 )
 from sandbox_science.contracts.provision_observations import MAX_OBSERVATION_BYTES
 from sandbox_science.contracts.readiness import WorkerReadiness
@@ -1204,7 +1203,7 @@ async def permission_requests(request: web.Request) -> web.Response:
         found = await asyncio.to_thread(desk.listing, project_id, now)
     except PermissionStoreError as exc:
         raise WorkerError(ErrorKind.UNAVAILABLE, str(exc)) from None
-    return _json(WorkerPermissionListing(requests=found))
+    return _json(found)
 
 
 async def answer_permission_request(request: web.Request) -> web.Response:

@@ -5,7 +5,7 @@ the worker's routes over the policy middleware's event store."""
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -14,6 +14,7 @@ import pytest_asyncio
 from aiohttp.test_utils import TestClient
 
 from sandbox_science.contracts import EnvironmentInfo, EnvironmentState
+from sandbox_science.contracts.permission_requests import MAX_LISTED
 from sandbox_science.contracts.worker import PROTOCOL_HEADER, PROTOCOL_VERSION
 from sandbox_science.event_store import EventStore, StoreReader
 from sandbox_science.policy.approvals import KINDS, Approvals, RequestKey, body_digest
@@ -125,8 +126,10 @@ async def test_a_projects_network_and_package_requests_are_listed_with_their_car
     )  # fmt: skip
     listed = await client.get("/v1/permission-requests?project=p1", headers=headers("workspace"))
     assert listed.status == 200, await listed.text()
-    requests = (await listed.json())["requests"]
+    body = await listed.json()
+    requests = body["requests"]
     assert [item["seq"] for item in requests] == [first, second, third, push]
+    assert body["truncated"] == 0
     network, download, install, git = requests
     assert (git["http"]["git_service"], network["http"]["git_service"]) == ("receive-pack", None)
     assert (network["kind"], network["caller_kind"], network["max_grant"]) == (
@@ -356,10 +359,10 @@ async def test_a_refusal_is_confirmed_only_for_its_own_call_and_project(
     assert malformed.status == 400
 
 
-def hold(store: EventStore, key: RequestKey, caller: str) -> int:
+def hold(store: EventStore, key: RequestKey, caller: str, timeout: int = 30 * 86400) -> int:
     payload = {
         "target": key.payload(),
-        "escalation": {"timeout_seconds": 30 * 86400, "on_timeout": "deny"},
+        "escalation": {"timeout_seconds": timeout, "on_timeout": "deny"},
         "rule": "detect.same-url",
         "reason": "101 calls to a.org within 600 s",
         "caller_kind": caller,
@@ -412,3 +415,44 @@ async def test_holds_of_a_sessions_calls_are_listed_and_cleared_or_stopped(
     assert answers == ["approval", "denial"]
     left = await client.get("/v1/permission-requests?project=p1", headers=headers("workspace"))
     assert (await left.json())["requests"] == []
+
+
+def test_requests_that_timed_out_leave_the_listing_to_those_that_wait(tmp_path: Path) -> None:
+    # Nothing answers a request that timed out: 256 of them must not crowd out a new one,
+    # nor a hold, which waits until it is answered whatever its record's timeout says.
+    later = NOW + timedelta(minutes=10)
+    events = tmp_path / "events.db"
+    short = {"timeout_seconds": 60, "on_timeout": "deny"}
+    with EventStore(events, timeout=5, clock=lambda: NOW) as sink:
+        for i in range(256):
+            key = RequestKey.http("sbx-1", DIGEST, "POST", "data.org", 443, f"/t{i}", ARGS)
+            escalate(sink, key, escalation=short)
+        new = escalate(
+            sink, RequestKey.http("sbx-1", DIGEST, "POST", "data.org", 443, "/new", ARGS),
+            escalation=LONG,
+        )  # fmt: skip
+        stamp = "2026-10-24T12:00:00.000000+00:00"
+        held = hold(sink, RequestKey.hold("p1", "sbx-a", "s-1", "same-url", stamp), "agent", 60)
+        permissions = Permissions(events)
+        try:
+            desk = PermissionDesk(
+                permissions, lambda: [environment("env1", "p1", "sbx-1")], FakeClock(later)
+            )
+            listing = desk.listing("p1", later)
+            assert [(item.seq, item.kind) for item in listing.requests] == [
+                (held, "hold"), (new, "network"),
+            ]  # fmt: skip
+            assert listing.truncated == 0
+            assert not any(item.timed_out for item in listing.requests)
+            # More than one listing carries: holds and the oldest are listed, and the rest
+            # are counted.
+            waiting = [new]
+            for i in range(256):
+                key = RequestKey.http("sbx-1", DIGEST, "POST", "w.org", 443, f"/w{i}", ARGS)
+                waiting.append(escalate(sink, key, escalation=LONG))
+            listing = desk.listing("p1", later)
+            assert len(listing.requests) == MAX_LISTED
+            assert [item.seq for item in listing.requests] == [held, *waiting[: MAX_LISTED - 1]]
+            assert listing.truncated == 2
+        finally:
+            permissions.close()

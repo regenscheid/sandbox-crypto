@@ -4,13 +4,14 @@
      structured summary (the tool or endpoint, the destination, the effect class and the
      significant arguments, or method, host, path, content type and size), the agent's own
      words (marked as the agent's), and for a delegated agent the brief its parent gave it
-     (D99); the raw arguments or a JSON body's top-level fields fold away. Allow offers only
-     the scopes the request's ceiling allows, which the server checks again; Deny refuses.
-     Every text is shown as text. -->
+     (D99); the raw arguments (from the transcript of the call's own run, and only when one
+     pending call of the tool there can be it) or a JSON body's top-level fields fold away.
+     Allow offers only the scopes the request's ceiling allows, which the server checks
+     again; Deny refuses. Every text is shown as text. -->
 <script lang="ts">
   import type { PermissionDecision } from '../lib/api';
   import type { PendingApproval } from '../lib/api-types';
-  import { clock, firstLine } from '../lib/conversation';
+  import { clock, firstLine, type HeldCall } from '../lib/conversation';
   import { askedBy, cardTitle, scopeChoices, summaryRows } from '../lib/permissionCards';
   import { idle, submit } from '../lib/submit';
   import { visible } from '../lib/text';
@@ -24,8 +25,8 @@
     answer,
   }: {
     request: PendingApproval;
-    /** The held call's arguments and its step's words, from the transcript. */
-    call?: { arguments: string; text: string } | null;
+    /** The held call's arguments and its step's words, from its run's transcript. */
+    call?: HeldCall | null;
     answer: (decision: PermissionDecision) => Promise<void>;
   } = $props();
   const scopes = $derived(scopeChoices(request));
@@ -114,9 +115,11 @@
   {#if request.kind === 'mcp'}
     <details>
       <summary>Arguments <span class="muted mono">({visible(request.tool)})</span></summary>
-      {#if pretty}<pre>{visible(pretty)}</pre>{:else}<p class="muted">
-          The transcript does not show this call's arguments yet.
-        </p>{/if}
+      {#if pretty}<pre>{visible(pretty)}</pre>{:else if call && call.pending > 1}<p class="muted">
+          Which of {call.pending} pending calls this is cannot be told, so no arguments are shown.
+        </p>{:else if !request.run}<p class="muted">
+          The request does not name the run that made it, so its arguments are not shown.
+        </p>{:else}<p class="muted">The transcript does not show this call's arguments yet.</p>{/if}
     </details>
   {:else if fields.length}
     <details>

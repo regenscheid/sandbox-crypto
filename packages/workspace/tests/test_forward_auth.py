@@ -324,15 +324,49 @@ async def test_logging_out_ends_an_authentik_session(
     token = authentik.token()
     assert (await client.get(PROJECTS, headers=as_user(token))).status == 200
     response = await client.post("/api/v0/logout", headers=origin(client))
-    assert response.status == 204
+    # The answer names Authentik's own sign-out, on the issuer's host.
+    assert response.status == 200
+    sign_out = "https://auth.example.org/outpost.goauthentik.io/sign_out"
+    assert await response.json() == {"sign_out": sign_out}
+    assert response.headers["Cache-Control"] == "no-store"
     assert (await client.get(PROJECTS)).status == 401
-    # Logging out with the token on the request opens nothing that outlives the answer.
-    response = await client.post("/api/v0/logout", headers={**origin(client), **as_user(token)})
-    assert response.status == 204
+    # The outpost sends the same token with the next request: it opens no session again,
+    # and the refusal says how to log in again.
+    again = await client.get(PROJECTS, headers=as_user(token))
+    assert again.status == 401
+    assert f"sign out of Authentik ({sign_out})" in (await again.json())["error"]["message"]
+    assert cookie(client) not in again.cookies
+    # An unrelated token, such as the one Authentik signs after a new login, does.
+    other = authentik.token("bob")
+    assert (await client.get(PROJECTS, headers=as_user(other))).status == 200
+    # Logging out with the token on the request opens nothing that outlives the answer,
+    # and that token is refused after it too.
+    response = await client.post("/api/v0/logout", headers={**origin(client), **as_user(other)})
+    assert response.status == 200
     assert cookie(client) not in response.cookies or not response.cookies[cookie(client)].value
+    assert (await client.get(PROJECTS, headers=as_user(other))).status == 401
     # Changes still need the workspace's own Origin, whatever the token.
-    refused = await client.post("/api/v0/logout", headers=as_user(token))
+    refused = await client.post("/api/v0/logout", headers=as_user(authentik.token("carol")))
     assert refused.status == 403
+
+
+def test_a_logged_out_token_is_refused_until_it_expires() -> None:
+    now = [1000.0]
+    sessions = Sessions(TOKEN, clock=lambda: now[0])
+    alice = Identity("alice", "forward", True, expires=1600.0, token=b"a" * 32)
+    first, second = sessions.open(alice), sessions.open(alice)
+    bob = sessions.open(Identity("bob", "forward", True, expires=1600.0, token=b"b" * 32))
+    operator_session = sessions.open(OPERATOR)
+    sessions.log_out(alice)
+    # Every session of that token ends; another token's, and the operator's, stay.
+    assert [sessions.valid(first), sessions.valid(second)] == [False, False]
+    assert [sessions.valid(bob), sessions.valid(operator_session)] == [True, True]
+    assert sessions.logged_out(b"a" * 32)
+    assert not sessions.logged_out(b"b" * 32)
+    now[0] = 1600.0  # past its expiry nothing believes the token: it need not be kept
+    assert not sessions.logged_out(b"a" * 32)
+    sessions.log_out(OPERATOR)  # the login link's session names no token to refuse
+    assert sessions.valid(operator_session)
 
 
 @pytest.mark.asyncio

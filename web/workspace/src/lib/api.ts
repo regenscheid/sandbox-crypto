@@ -790,12 +790,23 @@ export const api = {
   mathRepair: (request: MathRepairRequest) => post<MathRepairAnswer>('/math-repair', request),
   /** Who the session is: its user, how it logged in, and whether it is an admin (D104). */
   me: () => get<Viewer>('/me'),
-  /** Ends the page's session at once, even when the server cannot be told. */
-  async logout(): Promise<void> {
+  /**
+   * Ends the page's session at once, even when the server cannot be told. For an Authentik
+   * login, the answer names Authentik's sign-out (D104), the way to log in again.
+   */
+  async logout(): Promise<{ sign_out: string | null }> {
     signOut();
     const response = await fetch('/api/v0/logout', { method: 'POST' });
     if (!response.ok && response.status !== 401) {
       throw new ApiError(response.status, 'unavailable', 'logging out failed');
     }
+    // An Authentik login's logout answers 200 with where to sign out; others, 204.
+    const answer: unknown =
+      response.status === 200 ? await response.json().catch(() => null) : null;
+    const where =
+      answer !== null && typeof answer === 'object'
+        ? (answer as { sign_out?: unknown }).sign_out
+        : null;
+    return { sign_out: typeof where === 'string' && where.startsWith('https://') ? where : null };
   },
 };

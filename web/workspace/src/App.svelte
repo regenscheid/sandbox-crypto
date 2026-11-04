@@ -28,6 +28,7 @@
   import RunTreeView from './views/RunTreeView.svelte';
   import SessionView from './views/SessionView.svelte';
   import ProjectMath from './views/ProjectMath.svelte';
+  import LoggedOut from './views/LoggedOut.svelte';
   import DocumentsPage from './views/DocumentsPage.svelte';
   import ArtifactsPage from './views/ArtifactsPage.svelte';
   import SettingsPage from './views/SettingsPage.svelte';
@@ -41,6 +42,8 @@
   const routeProject = $derived('project' in route ? route.project : '');
   const routeSession = $derived('session' in route ? route.session : '');
   let loggedOut = $state(false);
+  /** Authentik's sign-out, when the session was an Authentik login's (D104). */
+  let signOutAt = $state<string | null>(null);
   let navigationOpen = $state(window.innerWidth > 760);
   let narrow = $state(window.innerWidth <= 760);
   const inSession = $derived(
@@ -67,7 +70,7 @@
   });
 
   async function logout() {
-    await api.logout();
+    signOutAt = (await api.logout()).sign_out;
     loggedOut = true;
   }
 </script>
@@ -157,11 +160,7 @@
     >
       <ProjectMath projectId={routeProject || null}>
         {#if loggedOut}
-          <p>
-            Logged out. To log in again, reload the page if you came through Authentik, or open the
-            login URL that sandbox-science-workspace printed. Signing out of Authentik is
-            Authentik's own.
-          </p>
+          <LoggedOut signOut={signOutAt} />
         {:else if route.view === 'projects'}
           <ProjectList />
         {:else if route.view === 'project'}

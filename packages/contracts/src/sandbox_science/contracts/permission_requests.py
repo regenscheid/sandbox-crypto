@@ -21,7 +21,7 @@ from pydantic import AwareDatetime, Field, StringConstraints
 from .model import Contract, Identifier
 
 MAX_LISTED: Final = 256
-"""Requests one listing carries, oldest first."""
+"""Requests one listing carries: holds first, then the others, each oldest first."""
 MAX_ANSWER_HOURS: Final = 24 * 30
 MAX_ANSWER_GRANTS: Final = 16
 """Grants one answer may name as its source (the policy library's bound)."""
@@ -138,7 +138,12 @@ class WorkerPermissionRequest(Contract):
 
 
 class WorkerPermissionListing(Contract):
+    """A project's requests that wait for an answer. One that timed out is not listed:
+    its timeout decided it, and no answer reaches it (protocol 20)."""
+
     requests: list[WorkerPermissionRequest] = Field(max_length=MAX_LISTED)
+    truncated: Annotated[int, Field(ge=0)] = 0
+    """How many more wait than the listing carries (protocol 20)."""
 
 
 class WorkerPermissionAnswer(Contract):

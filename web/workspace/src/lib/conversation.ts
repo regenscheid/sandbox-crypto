@@ -818,33 +818,62 @@ export function elapsed(from: string, now: number): string {
     : `${minutes}:${String(seconds % 60).padStart(2, '0')}`;
 }
 
+/** A held call as its card shows it, from its run's transcript. */
+export interface HeldCall {
+  /** The call's arguments; null when more than one pending call could be it. */
+  arguments: string | null;
+  /** Its step's words; empty when the pending calls it could be are of different steps. */
+  text: string;
+  /** How many pending calls of its tool the run has: the card's call is one of them. */
+  pending: number;
+}
+
 /**
- * The call a held permission request is for, as the run's transcript has it: the latest
+ * The call a held permission request is for, as the run's transcript has it: the run's
  * call of ``tool`` with no result yet, its arguments and its step's words. The middleware
- * keeps only a digest of the arguments, so the page shows them from here; null when the
- * transcript has no such call.
+ * keeps only a digest of the arguments, so the page shows them from here. With more than
+ * one such call (concurrent calls of one tool), which one the request is cannot be told,
+ * and no arguments are given; null when the transcript has no such call.
  */
-export function heldCall(
-  events: readonly RunEvent[],
-  tool: string,
-): { arguments: string; text: string } | null {
+export function heldCall(events: readonly RunEvent[], tool: string): HeldCall | null {
   const answered = new Set(
     events
       .filter((event) => event.kind === 'tool')
       .map((event) => String(event.data['call_id'] ?? '')),
   );
-  for (let index = events.length - 1; index >= 0; index--) {
-    const event = events[index]!;
+  const found: { arguments: string; text: string }[] = [];
+  for (const event of events) {
     if (event.kind !== 'assistant') continue;
     const calls = Array.isArray(event.data['tool_calls']) ? event.data['tool_calls'] : [];
     for (const raw of calls) {
       const call = (raw ?? {}) as Record<string, unknown>;
       if (call['name'] !== tool || answered.has(String(call['id'] ?? ''))) continue;
-      return {
+      found.push({
         arguments: typeof call['arguments'] === 'string' ? call['arguments'] : '',
         text: typeof event.data['text'] === 'string' ? event.data['text'] : '',
-      };
+      });
     }
   }
-  return null;
+  if (!found.length) return null;
+  const text = found.every((call) => call.text === found[0]!.text) ? found[0]!.text : '';
+  return {
+    arguments: found.length === 1 ? found[0]!.arguments : null,
+    text,
+    pending: found.length,
+  };
+}
+
+/**
+ * The held call of an MCP permission request, from the transcript of the run that made it
+ * (``request.run``, as the middleware recorded it): never another run's call of the same
+ * tool, such as a delegated run's beside the main run's. Null for a request that names no
+ * run or a run the chat does not show.
+ */
+export function requestCall(
+  runs: readonly { run: string; events: readonly RunEvent[] }[],
+  request: { kind: string; run: string | null; tool: string },
+): HeldCall | null {
+  if (request.kind !== 'mcp' || !request.run) return null;
+  const run = runs.find((item) => item.run === request.run);
+  return run ? heldCall(run.events, request.tool) : null;
 }
