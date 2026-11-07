@@ -995,6 +995,15 @@ class Environments:
             raise WorkerError(ErrorKind.POLICY_DENIED, "no ready environment policy for jobs")
         return effective_resources(governing.policy.policy, governing.ceiling)[0]
 
+    def call_resources(self, environment_id: str) -> Resources:
+        """The limits of the environment's policy for a shell call or cell, within the
+        pool's ceiling. Unlike ``job_resources`` it does not wait out a change under way:
+        it reads the stored revision, and an environment without one gets the ceiling's."""
+        governing = self.governing(environment_id)
+        if governing is None:
+            return self.ceiling.resources
+        return effective_resources(governing.policy.policy, governing.ceiling)[0]
+
     def governing(self, environment_id: str) -> Governing | None:
         """What decides the environment's packages, for provisioning: its stored policy
         revision, the pool's ceiling and floor, and its sandbox's ID, by which the policy

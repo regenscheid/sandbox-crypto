@@ -48,6 +48,9 @@ class EnvironmentLifecycle:
     """Whether the original allocation requires the durable research prefix layout."""
     job_resources: JobResources | None = None
     """Without it, jobs get the default limits."""
+    call_resources: JobResources | None = None
+    """The limits of the environment's policy for a shell call or cell, its ``wall_time``
+    above all; without it, calls keep their own time limits."""
 
 
 UNMANAGED: Final = EnvironmentLifecycle()

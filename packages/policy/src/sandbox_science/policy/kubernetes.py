@@ -25,9 +25,12 @@ COMPUTE_LIMITS: Final = ("cpu", "memory", "pids", "workspace_disk")
 """The policy's resources that only the compute driver could apply to a sandbox."""
 PLACED_LIMITS: Final = frozenset({"cpu", "memory"})
 """Those a Kubernetes placement applies (``KubernetesProfile.driver_json``), as the Pod's
-CPU and memory limits. Its ephemeral-storage limit is the profile's own, not
-``workspace_disk``. Nothing applies ``pids`` or ``workspace_disk`` yet, and without a
-placement (the VM driver, or a gateway's defaults) none of the four is applied."""
+CPU and memory limits. OpenShell 0.1.5's driver configuration carries no process limit
+(a node's ``podPidsLimit`` is the kubelet's, alike for every Pod) and no workspace size
+(the workspace is a claim the gateway sizes alike for every sandbox), so nothing applies
+``pids`` or ``workspace_disk``. The placement's ephemeral-storage limit is the profile's
+own: it bounds the container's writable layer and logs, not the workspace claim. Without
+a placement (the VM driver, or a gateway's defaults) none of the four is applied."""
 
 
 def unapplied_limits(resources: Resources, *, placed: bool) -> tuple[str, ...]:

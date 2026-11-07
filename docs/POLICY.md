@@ -196,7 +196,7 @@ Policy and ceiling files use a strict YAML dialect, so that what a reviewer read
 
 ### Background job resources
 
-Background shell jobs (D83) have limits separate from a call's `wall_time`:
+`wall_time` bounds each shell call and cell: the worker cuts a call's time limit (120 s unless the call gives one) to it, and the call ends `timed_out` there. It bounds package installs too (CP-14), but not the sandbox's lifetime. Background shell jobs (D83) have limits separate from it:
 
 | Resource | Default when omitted at both layers | Meaning |
 | --- | --- | --- |
@@ -214,7 +214,7 @@ value. Durations are positive whole-second policy strings and cannot exceed seve
 Concurrency limits are strict positive integers, at most 1,024. If the default exceeds
 the effective maximum, the worker uses the maximum. A request can ask for a shorter
 positive limit; requesting more than the maximum is refused, as is exceeding either
-concurrency bound. Call `wall_time` does not shorten a job's separate limit. Limits are
+concurrency bound. `wall_time` does not shorten a job's separate limit. Limits are
 checked when a job is accepted; policy changes do not silently rerun or shorten existing
 jobs. The same sandbox policy, network path and environment resource limits apply.
 
@@ -344,7 +344,7 @@ The middleware path has these limits, checked against a real gateway on babbage 
 | `escalate` | A denial with `approval_required` and a durable permission request ([policy middleware](POLICY-MIDDLEWARE.md#permission-requests)); the agent retries after approval |
 | `alert`, `monitors` | Middleware findings and request records |
 | `packages` | The policy middleware, with this library, for every request to the package cache; registries are reachable only through the cache ([package cache](PACKAGE-CACHE.md)) |
-| `resources` | Capped by the pool ceiling. `cpu` and `memory`: the sandbox Pod's limits, only where the pool places sandboxes on Kubernetes ([worker](WORKER.md#environments)); the VM driver applies neither. `pids` and `workspace_disk`: not enforced yet. The compiler reports each of these four limits a pool cannot apply, and the worker logs them when it admits an environment. `wall_time`: package installs (CP-14); model budget through the LiteLLM virtual key (D61) |
+| `resources` | Capped by the pool ceiling. `cpu` and `memory`: the sandbox Pod's limits, only where the pool places sandboxes on Kubernetes ([worker](WORKER.md#environments)); the VM driver applies neither. `pids` and `workspace_disk`: not enforced, since OpenShell 0.1.5's driver configuration has no per-sandbox process limit or workspace size (a Kubernetes node's PID limit and the workspace claim's size are the same for every sandbox). The compiler reports each of these four limits a pool cannot apply, and the worker logs them when it admits an environment. `wall_time`: each shell call and cell, and package installs (CP-14), applied by the worker on any pool, not the sandbox's lifetime; model budget through the LiteLLM virtual key (D61) |
 
 Create a research sandbox with the whole compiled document. Apply each later revision with `openshell policy set`, carrying the sandbox's live filesystem section, so that it replaces the network sections entirely; an entry left over from an earlier compilation could admit what the policy no longer allows. Every compilation records the project policy's revision (its SHA-256 digest), which the middleware checks against the policy it evaluates.
 

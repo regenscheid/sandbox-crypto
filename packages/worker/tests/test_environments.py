@@ -539,8 +539,9 @@ async def test_kubernetes_creation_pins_trusted_settings_and_resume_keeps_alloca
 async def test_admission_warns_of_each_resource_limit_the_pool_cannot_apply(
     setup: Setup, placed: bool, caplog: pytest.LogCaptureFixture
 ) -> None:
-    # The example policy sets cpu, memory, pids and workspace_disk. Only a Kubernetes
-    # placement carries any of them to the sandbox, and then only cpu and memory.
+    # The example policy sets cpu, memory, pids and workspace_disk (and wall_time, which
+    # the worker applies itself). Only a Kubernetes placement carries any of the four to
+    # the sandbox, and then only cpu and memory.
     if placed:
         resources = KubernetesResources(
             cpu_millicores=1000, memory_mib=512, ephemeral_storage_mib=256
@@ -570,7 +571,7 @@ async def test_admission_warns_of_each_resource_limit_the_pool_cannot_apply(
     assert reported == {
         f"resources.{name}": "warning" if name in unapplied else "info"
         for name in ("cpu", "memory", "pids", "workspace_disk")
-    }
+    } | {"resources.wall_time": "info"}  # the worker's own, on any pool
     # Asking again for the environment it has admits nothing new and warns no more.
     caplog.clear()
     with caplog.at_level(logging.WARNING, logger=environments_module.__name__):

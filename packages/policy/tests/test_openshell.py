@@ -992,18 +992,24 @@ def test_without_a_kubernetes_placement_no_compute_limit_is_applied() -> None:
         "resources.memory",
         "resources.pids",
         "resources.workspace_disk",
+        "resources.wall_time",
     ]
     for name in ("cpu", "memory"):
         severity, message = findings[f"resources.{name}"]
         assert severity is Severity.WARNING
         assert message.startswith("not applied: this pool places its sandboxes without Kubernetes")
-    assert findings["resources.pids"] == (
-        Severity.WARNING,
-        "not applied: no compute driver this worker configures sets a process limit yet",
+    severity, message = findings["resources.pids"]
+    assert severity is Severity.WARNING
+    assert message.startswith(
+        "not applied: no compute driver this worker configures sets a process limit per sandbox"
     )
+    assert "podPidsLimit" in message
     severity, message = findings["resources.workspace_disk"]
     assert severity is Severity.WARNING
     assert message.startswith("not applied: no compute driver this worker configures limits")
+    # The ephemeral-storage limit is not the workspace's: the finding must not suggest it is.
+    assert "ephemeral-storage limit, its profile's own, bounds the container's" in message
+    assert message.endswith("not the workspace")
 
 
 def test_a_kubernetes_placement_applies_cpu_and_memory_only() -> None:
@@ -1022,11 +1028,25 @@ def test_a_kubernetes_placement_applies_cpu_and_memory_only() -> None:
 def test_resource_findings_cover_the_ceilings_caps_and_only_set_limits() -> None:
     # A limit the project leaves unset takes the ceiling's cap, which the pool must apply
     # as well; an unset limit with no cap is no finding.
-    policy = parse_policy(HEADER + "resources: {wall_time: 1h}\n")
-    assert resource_findings(compile_research(policy)) == {}
+    policy = parse_policy(HEADER + "resources: {memory: 1Gi}\n")
+    assert list(resource_findings(compile_research(policy))) == ["resources.memory"]
     capped = resource_findings(compile_research(policy, resources={"pids": 512, "cpu": 2}))
-    assert list(capped) == ["resources.cpu", "resources.pids"]
+    assert list(capped) == ["resources.cpu", "resources.memory", "resources.pids"]
     assert all(severity is Severity.WARNING for severity, _ in capped.values())
+
+
+@pytest.mark.parametrize("placed", [False, True])
+def test_wall_time_bounds_installs_and_each_call_not_the_sandbox(placed: bool) -> None:
+    policy = parse_policy(HEADER + "resources: {wall_time: 1h}\n")
+    compiled = compile_sandbox(policy, TARGETS.sandbox, ceiling=OPEN, kubernetes_placement=placed)
+    assert resource_findings(compiled) == {
+        "resources.wall_time": (
+            Severity.INFO,
+            "applied by the worker to each package install and to each shell call or cell, "
+            "which times out at it; not to a job, whose limits are job_wall_time_default and "
+            "job_wall_time_max, nor to the sandbox's lifetime",
+        )
+    }
 
 
 # The agent runtime's MCP egress (D98): the fence the MCP proxy's sandbox had before.
