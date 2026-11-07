@@ -585,7 +585,7 @@ Verify:
 kubectl -n research get certificate,ingressroute,svc,networkpolicy -l app.kubernetes.io/part-of=<name>
 kubectl -n research wait certificate/<name>-workspace certificate/<name>-preview --for=condition=Ready --timeout=300s
 curl -sI https://workspace.<domain>/ | head -3        # a redirect to Authentik, never the workspace
-kubectl -n research logs deploy/<name>-app -c workspace | grep 'login?token'   # without [ingress.forward_auth]
+kubectl -n research logs deploy/<name>-app -c workspace | grep 'login?token' | tail -1   # without [ingress.forward_auth]; each URL works once
 kubectl -n research exec deploy/<name>-app -c workspace -- sandbox-science-workspace login-url --login-url-file /run/sandbox-science/workspace-login/login-url   # with it
 ```
 

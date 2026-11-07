@@ -617,8 +617,9 @@ application Pod and forward both ports directly:
 kubectl -n research port-forward pod/EXACT_APPLICATION_POD 8200:8200 8201:8201
 ```
 
-Open the workspace's existing login URL (its token is visible only through the
-trusted operator's logs/workflow); retain the separate preview origin. Do not expose
+Open the workspace's current login URL (its token is visible only through the
+trusted operator's logs/workflow; each URL works once, and the workspace prints the next
+after each login); retain the separate preview origin. Do not expose
 this loopback login by other means or add `--allow-remote` to work around it: the
 only supported route off loopback is the opt-in
 [ingress](#workspace-through-the-clusters-ingress-opt-in).
@@ -702,7 +703,7 @@ The renderer passes no `--trust-proxy-from`: Traefik's Pods have no fixed addres
 with `Host` passed through no forwarded header is needed. Authentik is checked before
 the workspace's own login token, which the workspace still needs unless
 [login through Authentik](#login-through-authentik-opt-in) is on
-(`kubectl logs deploy/<name>-app -c workspace` prints the login URL on the public origin; with login through Authentik it is not in the log, and `kubectl -n <namespace> exec deploy/<name>-app -c workspace -- sandbox-science-workspace login-url --login-url-file /run/sandbox-science/workspace-login/login-url` prints it);
+(`kubectl logs deploy/<name>-app -c workspace` prints the login URL on the public origin, the last one printed being the current one, since each works once; with login through Authentik it is not in the log, and `kubectl -n <namespace> exec deploy/<name>-app -c workspace -- sandbox-science-workspace login-url --login-url-file /run/sandbox-science/workspace-login/login-url` prints the current one);
 Authentik's plain headers open no workspace session. Nothing here is qualified on a cluster.
 
 ### Login through Authentik (opt-in)
@@ -766,8 +767,9 @@ does, so this adds no new exposure ([threat model](THREAT-MODEL.md)). The worksp
 longer prints its login URL, which logs in as the operator, an admin: it writes it to
 `/run/sandbox-science/workspace-login/login-url` (`--login-url-file`), on a 1 MiB memory
 volume only the workspace container mounts, not in the state directory on the app PVC,
-which is backed up and which control mounts too, and
-`kubectl -n <namespace> exec deploy/<name>-app -c workspace -- sandbox-science-workspace login-url --login-url-file /run/sandbox-science/workspace-login/login-url` prints it.
+which is backed up and which control mounts too. The link works once: each login with
+it, and the operator's logout, replaces the file's URL with a new one, and
+`kubectl -n <namespace> exec deploy/<name>-app -c workspace -- sandbox-science-workspace login-url --login-url-file /run/sandbox-science/workspace-login/login-url` prints the current one.
 
 **Who can mint a login.** With HS256, whoever holds the client secret can make a token for
 any user and group: Authentik's administrators, and whoever can read the workspace's

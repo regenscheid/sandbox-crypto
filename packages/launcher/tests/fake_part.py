@@ -327,7 +327,8 @@ match (name, args[:2]):
             [
                 f"PDF viewer origin on http://{option('--preview-listen')}/",
                 f"Sandbox Science workspace on http://{listen}/",
-                "Log in by opening this URL; it works until the server stops:",
+                "Log in by opening this URL; it works once, and the next one is printed "
+                "here after each login:",
                 f"    http://{listen}/login?token={LOGIN_TOKEN}",
             ],
         )

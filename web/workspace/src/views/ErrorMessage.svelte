@@ -7,8 +7,8 @@
 
 {#if error instanceof ApiError && error.loggedOut}
   <p class="problem">
-    Not logged in. Reload the page to sign in through Authentik, or open the login URL that
-    <code>sandbox-science-workspace serve</code> printed when it started.
+    Not logged in. Reload the page to sign in through Authentik, or open the current login link,
+    which <code>sandbox-science-workspace login-url</code> prints; each link works once.
     {#if error.message !== 'signed out'}<span class="muted">({error.message})</span>{/if}
   </p>
 {:else if error instanceof ApiError}

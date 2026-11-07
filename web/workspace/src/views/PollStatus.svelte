@@ -20,7 +20,7 @@
   <p class="problem" role="status">This session or project is not recorded.</p>
 {:else if phase === 'signed_out'}
   <p class="problem" role="status">
-    Not logged in. Reload the page to sign in through Authentik, or open the login URL that
-    <code>sandbox-science-workspace serve</code> printed when it started.
+    Not logged in. Reload the page to sign in through Authentik, or open the current login link,
+    which <code>sandbox-science-workspace login-url</code> prints; each link works once.
   </p>
 {/if}

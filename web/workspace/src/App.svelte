@@ -3,7 +3,8 @@
   import { guardPendingUploads } from './lib/uploadDrafts.svelte';
   import { focusPanel } from './lib/focusPanel';
   import { api } from './lib/api';
-  import { setViewer } from './lib/viewer.svelte';
+  import { setViewer, viewer } from './lib/viewer.svelte';
+  import { onSignOut } from './lib/session';
   import WorkspaceSidebar from './views/WorkspaceSidebar.svelte';
   import Icon from './views/Icon.svelte';
   import { parseRoute } from './lib/router';
@@ -41,7 +42,12 @@
   // entry emptied the ledger list). '' where the route has none.
   const routeProject = $derived('project' in route ? route.project : '');
   const routeSession = $derived('session' in route ? route.session : '');
-  let loggedOut = $state(false);
+  /** Why the page's session ended: the user logged out, or the server answered 401 (the
+   *  session timed out, was logged out elsewhere, or the server restarted). */
+  let ended = $state<'logout' | 'ended' | null>(null);
+  const loggedOut = $derived(ended !== null);
+  /** How the session had logged in, as `/me` answered before it ended. */
+  let endedLogin = $state<'token' | 'forward' | null>(null);
   /** Authentik's sign-out, when the session was an Authentik login's (D104). */
   let signOutAt = $state<string | null>(null);
   let navigationOpen = $state(window.innerWidth > 760);
@@ -69,9 +75,16 @@
     api.me().then(setViewer, () => setViewer(null));
   });
 
+  $effect(() =>
+    onSignOut(() => {
+      endedLogin = viewer.current?.login ?? null;
+      ended ??= 'ended';
+    }),
+  );
+
   async function logout() {
+    ended = 'logout';
     signOutAt = (await api.logout()).sign_out;
-    loggedOut = true;
   }
 </script>
 
@@ -160,7 +173,7 @@
     >
       <ProjectMath projectId={routeProject || null}>
         {#if loggedOut}
-          <LoggedOut signOut={signOutAt} />
+          <LoggedOut reason={ended ?? 'logout'} login={endedLogin} signOut={signOutAt} />
         {:else if route.view === 'projects'}
           <ProjectList />
         {:else if route.view === 'project'}
