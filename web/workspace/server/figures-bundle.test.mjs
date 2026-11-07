@@ -29,7 +29,7 @@ test('the figure frame holds its own code and the chart libraries, with their no
   // Vega's, Vega-Lite's and the interpreter's code, at the pinned versions, with notices.
   const report = JSON.parse(output.find((item) => item.fileName === 'license-manifest.json').source);
   const versions = Object.fromEntries(report.packages.map((item) => [item.name, item.version]));
-  expect(versions).toMatchObject({ vega: '6.4.0', 'vega-lite': '6.4.3', 'vega-interpreter': '2.3.2' });
+  expect(versions).toMatchObject({ vega: '6.4.0', 'vega-lite': '6.5.0', 'vega-interpreter': '2.3.2' });
   expect(output.find((item) => item.fileName === 'THIRD-PARTY-NOTICES.txt')).toBeDefined();
   for (const chunk of chunks) {
     expect(chunk.code).not.toContain('/api/v0');
@@ -70,5 +70,5 @@ test("the figure checker holds the frame's chart code and libraries, with its la
   expect(statements).not.toMatch(/\bimport\s*\(|\bimport\.meta\b|\brequire\s*\(/);
   expect(statements).not.toMatch(/\bprocess\s*[.[]|globalThis|\bgetBuiltinModule\b|\bnode:/);
   const versions = Object.fromEntries(report.packages.map((item) => [item.name, item.version]));
-  expect(versions).toMatchObject({ vega: '6.4.0', 'vega-lite': '6.4.3', 'vega-interpreter': '2.3.2' });
+  expect(versions).toMatchObject({ vega: '6.4.0', 'vega-lite': '6.5.0', 'vega-interpreter': '2.3.2' });
 }, 60000);

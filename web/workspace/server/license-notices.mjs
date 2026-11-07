@@ -114,7 +114,7 @@ export function collectNotices(root, bundle, distribution = 'gui', sourceRoot = 
     }
     if (name.startsWith('node_modules/')) {
       // A package another one needs at its own version sits in that one's node_modules;
-      // the manifest names it by that place, such as `vega-lite/node_modules/vega-expression`.
+      // the manifest names it by that place, as `<parent>/node_modules/<package>`.
       const match = /^node_modules\/((?:@[^/]+\/)?[^/]+)\/(?:node_modules\/((?:@[^/]+\/)?[^/]+)\/)?/.exec(name);
       const packageName = match?.[2] ? `${match[1]}/node_modules/${match[2]}` : match?.[1];
       const rest = match ? name.slice(match[0].length) : '';

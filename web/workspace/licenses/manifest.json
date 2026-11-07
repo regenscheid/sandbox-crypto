@@ -190,7 +190,7 @@
       }
     },
     "pdfjs-dist": {
-      "version": "6.3.289",
+      "version": "6.4.299",
       "license": "Apache-2.0",
       "notices": {
         "LICENSE": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
@@ -217,7 +217,7 @@
       }
     },
     "rolldown": {
-      "version": "1.2.12",
+      "version": "1.2.16",
       "license": "MIT",
       "notices": {
         "LICENSE": "23ecfff35a5a2e80d92142f75228912c3b1abc4b5a8337a821ff4397e2f9f734",
@@ -225,7 +225,7 @@
       }
     },
     "svelte": {
-      "version": "5.57.1",
+      "version": "5.57.3",
       "license": "MIT",
       "notices": {
         "LICENSE.md": "06257f4847b13a49a039efb17b944c141e71b12fd8d231b362d86919067d77a3"
@@ -344,17 +344,10 @@
       }
     },
     "vega-lite": {
-      "version": "6.4.3",
+      "version": "6.5.0",
       "license": "BSD-3-Clause",
       "notices": {
         "LICENSE": "f618900fd0d64046963b29f40590cdd1e341a2f41449f99110d82fd81fea808c"
-      }
-    },
-    "vega-lite/node_modules/vega-expression": {
-      "version": "6.1.0",
-      "license": "BSD-3-Clause",
-      "notices": {
-        "LICENSE": "63727832aaf62004a2b249c933e327f3c90caf49e41a72f4bf436edf632cbda8"
       }
     },
     "vega-loader": {
@@ -470,10 +463,10 @@
       }
     },
     "vite": {
-      "version": "8.3.3",
+      "version": "8.3.5",
       "license": "MIT",
       "notices": {
-        "LICENSE.md": "a47172e44a86a7e2cd1c16282341f7726ec60caafe3a6166fe3e0602005b6fa6"
+        "LICENSE.md": "a22152baa1aef74402443008e767e7c689a524c0909d19b0431d97f5ab066a13"
       }
     }
   },
@@ -592,7 +585,7 @@
     }
   },
   "pdfjsAssets": {
-    "build/pdf.worker.min.mjs": "8ab0e5e30031b4a06ecfddd5ae9562f0227f830ee7ec9ed1a968b134243d2386",
+    "build/pdf.worker.min.mjs": "9536359f1b8367850d485731ca1d5e45c159a7b7a0912325e539937aa21ceb18",
     "cmaps/78-EUC-H.bcmap": "d92a261336dc18b8c03a46eb4d462382d33f4338fa195d303256b2031434c874",
     "cmaps/78-EUC-V.bcmap": "61670bebc4e4827b67230c054fd0d820d6e30c3584d02e386804e62bbedc032a",
     "cmaps/78-H.bcmap": "ece6415b853d61e1b2560165151407d35cf16e6556932b85a13ea75276b77402",
@@ -771,10 +764,10 @@
     "standard_fonts/FoxitSerifBoldItalic.pfb": "a406cac82583bf98175cb62c87ed5e95c45fbb34eece63a10b0a13e793cb2e10",
     "standard_fonts/FoxitSerifItalic.pfb": "610ae0687198045c4db5d1a6650fd5e92536631706382eb8b72e38df578d0ae9",
     "standard_fonts/FoxitSymbol.pfb": "47967d055530e7357088a08403115425643ec2cdfd6201ba8af0fbd7116c1539",
-    "wasm/jbig2_nowasm_fallback.js": "04c795a6657a4553a64b781ea3e85256203d913c3b71b72b85fa3ce00622f458",
-    "wasm/openjpeg_nowasm_fallback.js": "0f998419819da4491d8302222aa9e2ff2494685641aa2a6c21c3760c29f3e319"
+    "wasm/jbig2_nowasm_fallback.js": "68686ced624a48c42f84cdaa482ec44b72b0de4dc84a0df903af1fb7b45b5d9a",
+    "wasm/openjpeg_nowasm_fallback.js": "9047b34b6bc142d85e4b0aa1b08b0b9baad4c6f8b7ac87641b9e8f90eb6fd23e"
   },
   "pdfjsRuntime": {
-    "build/pdf.mjs": "495588717f62303a839e91a5343deebf1b41f52e2f9f6361e73dee6ea6a4355e"
+    "build/pdf.mjs": "dd13af821c9c3e1778653340d6539a1ba07bc56cba40073a4c727864cf0c232a"
   }
 }
