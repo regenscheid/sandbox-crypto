@@ -22,7 +22,13 @@ from pydantic import ValidationError
 from sandbox_science.contracts.workspace_checkpoint import CheckpointPlan, RestorePlan
 
 from . import kubernetes_site, kubernetes_site_config
-from .kubernetes_bundle import CHILD_PHASES, release_job, render, worker_operation_job
+from .kubernetes_bundle import (
+    CHILD_PHASES,
+    notices,
+    release_job,
+    render,
+    worker_operation_job,
+)
 from .kubernetes_checkpoint import checkpoint_job, restore_job
 from .kubernetes_config import BundleError, load
 from .kubernetes_operations import OperationError, Operator, report, run_command, whoami
@@ -222,7 +228,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "(docs/KUBERNETES-BUNDLE.md#offline-worker-replica-release)"
             )
             return 0
-        bundle = render(load(args.config))
+        config = load(args.config)
+        bundle = render(config)
+        for notice in notices(config):
+            print(f"warning: {notice}", file=sys.stderr)
         if args.command == "render":
             write_bundle(
                 args.output, (json.dumps(bundle, indent=2, sort_keys=True) + "\n").encode()

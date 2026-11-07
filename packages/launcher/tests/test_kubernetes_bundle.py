@@ -13,7 +13,7 @@ import pytest
 from pydantic import ValidationError
 
 from sandbox_science.launcher import toml, unit
-from sandbox_science.launcher.kubernetes_bundle import render
+from sandbox_science.launcher.kubernetes_bundle import notices, render
 from sandbox_science.launcher.kubernetes_cli import main, write_bundle
 from sandbox_science.launcher.kubernetes_config import (
     BundleConfig,
@@ -1809,10 +1809,30 @@ def test_maintenance_without_a_profile_passes_no_aws_profile():
     assert "AWS_PROFILE" not in {item["name"] for item in container["env"]}
 
 
+def test_maintenance_without_a_read_only_key_leaves_out_only_the_trim_job(tmp_path, capsys):
+    config = configured(with_maintenance(control_with_storage()))
+    items = objects(config)
+    assert not any("maintenance" in item["metadata"]["name"] for item in items)
+    # Everything else renders as without the section.
+    assert items == objects(configured(control_with_storage()))
+    (notice,) = notices(config)
+    assert "cache-trim job was left out" in notice
+    assert "storage_credentials" in notice
+    assert "writer key" in notice
+    path = tmp_path / "bundle.toml"
+    path.write_text(toml.dumps(with_maintenance(control_with_storage())))
+    output = tmp_path / "bundle.json"
+    assert main(["render", "--config", str(path), "--output", str(output)]) == 0
+    assert f"warning: {notice}" in capsys.readouterr().err
+    assert "CronJob" not in output.read_text()
+    # With the key, no notice and the job is there.
+    fixed = with_maintenance(control_with_storage(), storage_credentials="s3-reader-credentials")
+    assert notices(configured(fixed)) == ()
+
+
 @pytest.mark.parametrize(
     ("maintenance", "message"),
     [
-        ({}, "needs storage_credentials"),
         ({"storage_credentials": "s3-missing"}, "not one of secrets.control.extra_files"),
         ({"storage_credentials": "s3-credentials"}, "one of control's own SDK files"),
         ({"storage_credentials": "s3-config"}, "one of control's own SDK files"),
@@ -2368,3 +2388,17 @@ def test_no_extra_files_names_the_client_secret():
     data["secrets"]["control"]["extra_files"] = ["authentik-client-secret"]
     with pytest.raises(ValidationError, match="no extra_files names Authentik's client secret"):
         configured(data)
+
+
+@pytest.mark.parametrize("cache", [False, True])
+def test_with_a_cache_the_middleware_and_the_cache_get_the_attribution_key(cache: bool):
+    spec = pod(objects(configured(with_cache() if cache else values())), "pool")
+    sources = {
+        volume["name"]: [item["key"] for item in volume["secret"]["items"]]
+        for volume in spec["volumes"]
+        if "secret" in volume
+    }
+    assert ("cache-attribution.key" in sources["middleware-source"]) == cache
+    if cache:
+        assert "cache-attribution.key" in sources["cache-source"]
+    assert "cache-attribution.key" not in sources["worker-source"]

@@ -1028,6 +1028,18 @@ def _alert_config_map(config: BundleConfig, alerts: Alerts) -> dict[str, object]
     return found
 
 
+def notices(config: BundleConfig) -> tuple[str, ...]:
+    """What ``render`` leaves out of a valid configuration, in plain words, for the operator
+    to read beside the rendered bundle."""
+    if _trim_left_out(config):
+        return (
+            "the cache-trim job was left out: [maintenance] names no read-only "
+            "storage_credentials, so the control cache is not trimmed until it does, and "
+            "never with control's writer key (docs/KUBERNETES-BUNDLE.md#cache-trimming-opt-in)",
+        )
+    return ()
+
+
 def render(config: BundleConfig) -> dict[str, object]:
     """Return deterministic API objects, without reading credentials or contacting a cluster."""
     items = [
@@ -1049,7 +1061,7 @@ def render(config: BundleConfig) -> dict[str, object]:
         items.extend(_routes(config, config.ingress))
     if config.checkpoint is not None:
         items.append(kubernetes_checkpoint.network_policy(config))
-    if config.maintenance is not None:
+    if config.maintenance is not None and not _trim_left_out(config):
         items.extend(_maintenance(config, config.maintenance))
     if config.alerts is not None:
         items.append(_alert_config_map(config, config.alerts))
@@ -1133,6 +1145,17 @@ def maintenance_cursor(maintenance: Maintenance) -> str:
     failing every pass on the old one."""
     digest = hashlib.sha256(_maintenance_policy(maintenance).encode()).hexdigest()[:16]
     return f"{DATA}/control/maintenance-apply-{digest}.json"
+
+
+def _trim_left_out(config: BundleConfig) -> bool:
+    """Whether ``[maintenance]``'s objects are left out: control names its own credentials
+    file and the section no read-only key, and the pass never gets control's."""
+    maintenance = config.maintenance
+    return (
+        maintenance is not None
+        and maintenance.storage_credentials is None
+        and STORAGE_CREDENTIALS in config.control.environment
+    )
 
 
 def _storage_credentials(

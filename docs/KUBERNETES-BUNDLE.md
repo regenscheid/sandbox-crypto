@@ -364,7 +364,11 @@ What it generates: a private CA (ECDSA P-256) and server certificates for
 `.<namespace>.svc.<cluster_domain>`; a 32-byte random token for each link, without a
 newline (control's `worker-token`, the workspace's, the worker's `pool-token` and the
 manager's `manager-control.token`, whose lowercase SHA-256 hex is control's
-`runtime-manager-token.sha256`); and the settings with the bindings above, through the
+`runtime-manager-token.sha256`); with `secrets.cache`, one more such key,
+`cache-attribution.key`, written into both the middleware's and the cache's Secret, which
+`middleware.toml`'s `cache_attribution_key_file` and `cache.toml`'s `attribution_key_file`
+name at `/private/cache-attribution.key`, so the cache serves only requests the middleware
+attributed ([package cache](PACKAGE-CACHE.md#logging-and-limits)); and the settings with the bindings above, through the
 launcher's own builders (`control.json`'s model part and run settings, the worker's
 client entries, the runtime's OpenShell target) and models (`RuntimeManagerSettings`).
 `control-models.json` is `control.json`'s model part. The worker declares
@@ -373,7 +377,10 @@ each base profile; `control.json` names the `trusted-app` image's Node and math 
 (`/usr/local/bin/node`, `/usr/share/sandbox-science/math`). The
 middleware verifies the gateway's tokens with the given public key. The CA's key is
 never written: renewing a certificate or rotating a token means generating a new
-directory, replacing every Secret and recreating the Pods. The tests load each settings
+directory, replacing every Secret and recreating the Pods. A deployment generated before
+the attribution key gets it the same way: replace the middleware's and the cache's
+Secrets together, since a key on one side only refuses every package request, and
+restart the pool Pod. The tests load each settings
 file through the model its service starts with.
 
 What it cannot generate, each a `TODO(operator)` in the README: applying the gateway's
@@ -822,9 +829,11 @@ The Pod gets no control credential. It verifies remote copies with a read-only k
 artifact store: `storage_credentials` names the key of control's Secret (one of
 `secrets.control.extra_files`) that holds that key's SDK credentials file, and
 `storage_profile` its profile. When control's `environment` names its own
-`AWS_SHARED_CREDENTIALS_FILE`, the renderer refuses `[maintenance]` without
-`storage_credentials`, or with one that names a file control's environment names, rather
-than give the pass control's writer key. A `copy-storage` init container copies that file,
+`AWS_SHARED_CREDENTIALS_FILE` and the section names no `storage_credentials`, `check` and
+`render` print a warning and leave the section's three objects out, rendering the rest:
+the cache is not trimmed until the section names a read-only key, and never with
+control's writer key. They refuse a `storage_credentials` that is not one of
+`secrets.control.extra_files`, or that names a file control's environment names. A `copy-storage` init container copies that file,
 and the files of control's `AWS_CONFIG_FILE` and `AWS_CA_BUNDLE`, into the Pod's memory
 volume; the container gets `AWS_SHARED_CREDENTIALS_FILE` naming the read-only file,
 control's `AWS_CONFIG_FILE`, `AWS_CA_BUNDLE` and `AWS_REGION`, and `AWS_PROFILE` only from

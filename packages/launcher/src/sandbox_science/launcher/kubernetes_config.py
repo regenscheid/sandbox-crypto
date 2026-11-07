@@ -64,6 +64,9 @@ REQUIRED_FILES: dict[str, tuple[str, ...]] = {
         "active-gateway",
     ),
 }
+CACHE_ATTRIBUTION_KEY = "cache-attribution.key"
+"""With a package cache, the key the middleware and the cache share
+(``sandbox_science.policy.cache_attribution``): a key of both their Secrets."""
 GATEWAY_PROFILE: dict[str, str] = {
     "active-gateway": "active_gateway",
     "gateway-metadata.json": "metadata.json",
@@ -849,7 +852,8 @@ class BundleConfig(Model):
 def projected_files(config: BundleConfig, role: str) -> tuple[str, ...]:
     """The keys ``role``'s Secret must hold: ``REQUIRED_FILES``'s, and with ``[mcp_direct]``
     the runtime manager's direct MCP ones and the availability check's token (the
-    workspace's) and its digest (control's)."""
+    workspace's) and its digest (control's); with a package cache, the attribution key the
+    middleware and the cache share."""
     files = REQUIRED_FILES[role]
     if config.checkpoint is not None and role == "worker":
         files = (*files, *CHECKPOINT_WORKER_FILES)
@@ -861,6 +865,8 @@ def projected_files(config: BundleConfig, role: str) -> tuple[str, ...]:
     forward = ingress.forward_auth if ingress is not None else None
     if role == "workspace" and forward is not None and forward.shared_secret:
         files = (*files, FORWARD_AUTH_SECRET)
+    if role == "cache" or (role == "middleware" and config.secrets.cache is not None):
+        files = (*files, CACHE_ATTRIBUTION_KEY)
     return files
 
 
