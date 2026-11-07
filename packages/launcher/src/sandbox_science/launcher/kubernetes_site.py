@@ -56,6 +56,7 @@ from .kubernetes_bundle import (
 )
 from .kubernetes_checkpoint import storage_settings
 from .kubernetes_config import (
+    CACHE_ATTRIBUTION_KEY,
     CHECK_DIGEST,
     CHECK_TOKEN,
     CHECKPOINT_UPLOAD_KEYS,
@@ -386,6 +387,8 @@ def middleware_settings(site: Site, bundle: BundleConfig) -> dict[str, Any]:
     }
     if bundle.secrets.cache is not None:
         settings["package_cache_url"] = f"http://127.0.0.1:{CACHE_PORT}"  # the same Pod
+        # The key the cache checks its attributions with (docs/PACKAGE-CACHE.md).
+        settings["cache_attribution_key_file"] = f"{PRIVATE}/{CACHE_ATTRIBUTION_KEY}"
     if bundle.mcp_direct is not None:
         # The direct path's listings: read whole when OpenShell offers them (D98).
         settings["mcp_listings"] = True
@@ -405,6 +408,8 @@ def cache_settings(site: Site, bundle: BundleConfig) -> dict[str, Any]:
         # known-good lockfiles pin are protected from eviction, up to a ceiling
         # (docs/PACKAGE-CACHE.md, "Storage and eviction").
         "worker_state_dir": f"{DATA}/worker",
+        # Only requests the middleware attributed, with the key both Secrets hold.
+        "attribution_key_file": f"{PRIVATE}/{CACHE_ATTRIBUTION_KEY}",
     }
 
 
@@ -632,7 +637,13 @@ def plan(site: Site, bundle: BundleConfig) -> dict[str, bytes]:
         },
     }
     if bundle.secrets.cache is not None:
-        content["cache"] = {"cache.toml": toml.dumps(cache_settings(site, bundle)).encode()}
+        # One key in both Secrets: a key on one side only refuses every package request.
+        attribution = _token().encode()
+        content["middleware"][CACHE_ATTRIBUTION_KEY] = attribution
+        content["cache"] = {
+            "cache.toml": toml.dumps(cache_settings(site, bundle)).encode(),
+            CACHE_ATTRIBUTION_KEY: attribution,
+        }
     if (site.checkpoint is None) != (bundle.checkpoint is None):
         raise BundleError("give [checkpoint] exactly when the bundle has [checkpoint]")
     upload: dict[str, bytes] = {}

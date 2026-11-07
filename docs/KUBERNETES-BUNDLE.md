@@ -367,7 +367,11 @@ What it generates: a private CA (ECDSA P-256) and server certificates for
 `.<namespace>.svc.<cluster_domain>`; a 32-byte random token for each link, without a
 newline (control's `worker-token`, the workspace's, the worker's `pool-token` and the
 manager's `manager-control.token`, whose lowercase SHA-256 hex is control's
-`runtime-manager-token.sha256`); and the settings with the bindings above, through the
+`runtime-manager-token.sha256`); with `secrets.cache`, one more such key,
+`cache-attribution.key`, written into both the middleware's and the cache's Secret, which
+`middleware.toml`'s `cache_attribution_key_file` and `cache.toml`'s `attribution_key_file`
+name at `/private/cache-attribution.key`, so the cache serves only requests the middleware
+attributed ([package cache](PACKAGE-CACHE.md#logging-and-limits)); and the settings with the bindings above, through the
 launcher's own builders (`control.json`'s model part and run settings, the worker's
 client entries, the runtime's OpenShell target) and models (`RuntimeManagerSettings`).
 `control-models.json` is `control.json`'s model part. The worker declares
@@ -376,7 +380,10 @@ each base profile; `control.json` names the `trusted-app` image's Node and math 
 (`/usr/local/bin/node`, `/usr/share/sandbox-science/math`). The
 middleware verifies the gateway's tokens with the given public key. The CA's key is
 never written: renewing a certificate or rotating a token means generating a new
-directory, replacing every Secret and recreating the Pods. The tests load each settings
+directory, replacing every Secret and recreating the Pods. A deployment generated before
+the attribution key gets it the same way: replace the middleware's and the cache's
+Secrets together, since a key on one side only refuses every package request, and
+restart the pool Pod. The tests load each settings
 file through the model its service starts with.
 
 What it cannot generate, each a `TODO(operator)` in the README: applying the gateway's
@@ -827,6 +834,8 @@ commands](#offline-worker-commands)).
 # max_bytes = 1073741824       # (1 B to 64 GiB)
 # min_age_seconds = 86400      # keep local copies younger than this
 # deadline_seconds = 3600      # the Job's activeDeadlineSeconds (60 to 86400)
+storage_credentials = "s3-reader-credentials"  # key of control's Secret: a read-only store key
+# storage_profile = "artifact-reader"          # that key's profile; the SDK default without it
 ```
 
 With the section, the bundle adds three objects in its namespace:
@@ -847,11 +856,21 @@ With the section, the bundle adds three objects in its namespace:
   and the `network.app_egress` flows, where the object store is. Without the store the
   pass reports `unavailable` and keeps every local copy.
 
-The Pod gets no control credential. When control's `environment` names object-store SDK
-files (`AWS_SHARED_CREDENTIALS_FILE`, `AWS_CONFIG_FILE`, `AWS_CA_BUNDLE`), a `copy-storage`
-init container copies exactly those keys of control's Secret into the Pod's memory volume,
-and the container gets those variables and `AWS_PROFILE`/`AWS_REGION`; `control.key`,
-the tokens and `control.json` stay in the app Pod.
+The Pod gets no control credential. It verifies remote copies with a read-only key on the
+artifact store: `storage_credentials` names the key of control's Secret (one of
+`secrets.control.extra_files`) that holds that key's SDK credentials file, and
+`storage_profile` its profile. When control's `environment` names its own
+`AWS_SHARED_CREDENTIALS_FILE` and the section names no `storage_credentials`, `check` and
+`render` print a warning and leave the section's three objects out, rendering the rest:
+the cache is not trimmed until the section names a read-only key, and never with
+control's writer key. They refuse a `storage_credentials` that is not one of
+`secrets.control.extra_files`, or that names a file control's environment names. A `copy-storage` init container copies that file,
+and the files of control's `AWS_CONFIG_FILE` and `AWS_CA_BUNDLE`, into the Pod's memory
+volume; the container gets `AWS_SHARED_CREDENTIALS_FILE` naming the read-only file,
+control's `AWS_CONFIG_FILE`, `AWS_CA_BUNDLE` and `AWS_REGION`, and `AWS_PROFILE` only from
+`storage_profile`. Control's config file is shared with the pass, so it holds the store's
+settings, never a key. `control.key`, control's credentials file, the tokens and
+`control.json` stay in the app Pod.
 
 `--at-use-percent` makes the schedule implement "trim at about 70% use" without a
 controller: each pass measures the control volume (`statvfs` of the database's directory,
@@ -1439,7 +1458,7 @@ The first deployment collects every service's logs into Loki through Alloy (D103
 
 ## Alert rules
 
-The first alerts over the structured logs (D103), six rules, are rendered only with an `[alerts]` section: one ConfigMap, `<name>-alert-rules`, whose key `sandbox-science-alerts.yaml` is a rule file in the Prometheus rule format that Loki's ruler reads, with LogQL expressions. Without the section, nothing is rendered. How to load it into the ruler is [preparation, step 11](KUBERNETES-PREP.md#11-log-collection).
+The first alerts over the structured logs (D103), seven rules, are rendered only with an `[alerts]` section: one ConfigMap, `<name>-alert-rules`, whose key `sandbox-science-alerts.yaml` is a rule file in the Prometheus rule format that Loki's ruler reads, with LogQL expressions. Without the section, nothing is rendered. How to load it into the ruler is [preparation, step 11](KUBERNETES-PREP.md#11-log-collection).
 
 ```toml
 [alerts]
@@ -1460,6 +1479,7 @@ The ConfigMap carries `configmap_labels` and the annotation `k8s-sidecar-target-
 | `SandboxScienceMcpCanaryChanged` | A scheduled [MCP canary](MCP-CONNECTORS.md#canaries) changed from `listed` (or no earlier result) to `unavailable`, `denied` or `timeout` (`event: mcp_canary_changed`): the notification. It resolves 20 minutes after the change | `service`, `server`, `status` |
 | `SandboxScienceMcpCanaryFailing` | Every canary of a server within `canary_window_minutes` (20) failed (`event: mcp_canary`, `status` not `listed`, and no listed one): it holds while the server keeps failing and resolves at its first listed result. The window must exceed the canaries' interval (15 minutes by default). With `[mcp_direct]` the bundle's control runs the canaries (`[mcp_direct.canaries]`): both canary rules fire from their logs where Alloy collects them | `service`, `server` |
 | `SandboxSciencePolicyHold` | A detect-and-hold rule opened a hold: the middleware's `event: detect_finding` with `outcome` `hold` (a session's outward calls held, [detect and hold](POLICY-MIDDLEWARE.md#detect-and-hold-d103)) or `hold_call` (one call held for approval). Not grouped by project: a held call's record, and an HTTP detection's, carry none | `service`, `rule`, `outcome` |
+| `SandboxScienceRuntimeBlocked` (critical) | No agent runtime, and the runtime manager will not bring one up: it has noted `blocked` for over 10 minutes (its automatic actions exhausted or refused, or the runtime exited with `recover_infrastructure` off), until an operator requests `replace` or `bootstrap`. The manager logs a held note's `runtime_manager_note` every 5 minutes, whether or not it noted it again, and the rule asks for a `blocked` record within each 8 minutes, held for 10 (`for: 10m`). It resolves up to 8 minutes after the block clears; `request status` says why it holds | `service`, `kind` |
 
 **Network-policy drops are not alerted on.** The services' logs do not carry them: a Kubernetes NetworkPolicy drop is the CNI's to report, and OpenShell's sandbox network denials reach Loki only as OCSF events through the sample's optional OCSF pipeline, whose `class_uid` and `action` values have not been seen on a cluster. The rule file ends with that rule commented out, for once they have. None of the rules has run in a Loki ruler yet.
 

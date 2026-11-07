@@ -11,6 +11,7 @@ ceiling = "/etc/sandbox-science/pool-ceiling.yaml"
 admin_hosts = ["gateway.sandbox-science.internal", "10.0.0.2"]
 owner_addresses = ["192.0.2.7", "2001:db8:1::/48"]  # the deployment's own public addresses
 package_cache_url = "http://127.0.0.1:8090"   # optional: names opam packages in escalations
+cache_attribution_key_file = "cache-attribution.key"  # optional: the key shared with the cache
 mcp_listings = true                           # for direct MCP: filter tool listings (D98)
 # listing_report_grace = 30                    # seconds the runtime has to report an unread listing
 mcp_tool_pins = "mcp-tools.json"              # optional: {"<server>": ["<tool>", ...]}
@@ -49,6 +50,7 @@ from pydantic import (
     model_validator,
 )
 
+from sandbox_science.policy.cache_attribution import AttributionKeyError, read_key
 from sandbox_science.policy.floor import OwnerAddresses
 from sandbox_science.policy.model import MAX_INSPECTION_PATTERNS, InspectionPattern
 
@@ -130,6 +132,11 @@ class Settings(_Model):
     package_cache_url: _ServiceUrl | None = None
     """The package cache as this host reaches it, without a path. With it, the record of an
     escalated opam archive names the packages the cache's opam index lists for its digest."""
+    cache_attribution_key_file: Path | None = None
+    """A private file with the key this service shares with the package cache. With it, each
+    request the middleware allows to the cache also carries an HMAC of its sandbox, method,
+    path and time (``sandbox_science.policy.cache_attribution``), without which a cache that
+    has the key refuses it."""
     mcp_listings: bool = False
     """Read the answers to the ``tools/list`` requests of sandboxes that call MCP servers
     directly (``HttpResponsePreReturn``), whole: the tools the policy denies are dropped
@@ -159,6 +166,15 @@ class Settings(_Model):
     """Read every response's status (``HttpResponsePreReturn`` preflight, which costs one
     exchange per response), so that 4xx and 5xx answers count towards the ``host-failures``
     detection rule (D103). Without it, only the middleware's own refusals count."""
+
+    def cache_attribution_key(self) -> bytes | None:
+        """The key shared with the package cache, if one is configured."""
+        if self.cache_attribution_key_file is None:
+            return None
+        try:
+            return read_key(self.cache_attribution_key_file)
+        except AttributionKeyError as exc:
+            raise SettingsError(str(exc)) from exc
 
     @property
     def mcp_listings_on(self) -> bool:
@@ -192,7 +208,13 @@ def load_settings(path: Path) -> Settings:
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise SettingsError(f"cannot read settings {path}: {exc}") from exc
     base = path.parent
-    for key in ("state_dir", "event_store", "ceiling", "mcp_tool_pins"):
+    for key in (
+        "state_dir",
+        "event_store",
+        "ceiling",
+        "mcp_tool_pins",
+        "cache_attribution_key_file",
+    ):
         _resolve(data, key, base)
     for section, keys in (("tls", ("certificate", "private_key")), ("tokens", ("public_key",))):
         table = data.get(section)

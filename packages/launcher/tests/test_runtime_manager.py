@@ -491,6 +491,29 @@ async def test_sigterm_keeps_the_sandbox_and_reconnects_at_start_and_new_control
     assert site.record() == record
 
 
+async def test_a_held_block_is_logged_again_while_it_holds(
+    site: Site, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A runtime that exited without recover_infrastructure is noted once; its record
+    repeats every NOTE_REPEAT all the same, which the no-runtime alert reads
+    (docs/KUBERNETES-BUNDLE.md#alert-rules)."""
+    from sandbox_science.launcher.runtime_manager import manager as manager_module
+
+    await bootstrapped(site)
+    async with serving(site.manager()):
+        await eventually(running(site))
+        (pid,) = live_runtimes(site.tmp_path)
+        os.kill(pid, signal.SIGKILL)
+        await eventually(noted(site, "blocked"))
+        since = site.status()["note_since"]
+        capsys.readouterr()
+        monkeypatch.setattr(manager_module, "NOTE_REPEAT", 0.0)
+        await site.ticks(3)
+        repeated = capsys.readouterr().out.count("note blocked since ")
+        assert repeated >= 2
+        assert site.status()["note_since"] == since
+
+
 async def test_a_runtime_exit_is_reattached_with_recover_infrastructure(site: Site) -> None:
     record = await bootstrapped(site)
     async with serving(site.manager(recover_infrastructure=True)):

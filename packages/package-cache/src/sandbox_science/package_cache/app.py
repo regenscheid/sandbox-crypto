@@ -11,6 +11,12 @@ Routes, all on one listener:
   until the index has been read, 404 when opam is not enabled;
 - ``GET|HEAD /<prefix>/<path>`` is answered through the adapter for ``<prefix>``.
 
+With an attribution key (``attribution_key_file``), a package request is served only
+when the policy middleware attributed it to the sandbox it names
+(``sandbox_science.policy.cache_attribution``); any other is answered 403, so that nothing
+that reaches the cache's port around the middleware gets a package or spends a sandbox's
+budget. The status and archive routes need no attribution.
+
 Any other method is answered 405. A path must be a plain URL path: one with
 characters outside the URL syntax, malformed or non-UTF-8 percent escapes,
 control characters, backslashes, or ``.`` or ``..`` segments (encoded or not)
@@ -62,6 +68,7 @@ from urllib.parse import unquote
 import aiohttp
 from aiohttp import web
 
+from sandbox_science.policy.cache_attribution import ATTRIBUTION_HEADER, verify
 from sandbox_science.policy.package_requests import SANDBOX_HEADER
 
 from .adapter import Adapter, Fetch, Kind, Rewrite, Static
@@ -187,12 +194,14 @@ class PackageCache:
         send_timeout: float = SEND_TIMEOUT,
         opam_archives: OpamArchives | None = None,
         budgets: SandboxBudgets | None = None,
+        attribution_key: bytes | None = None,
     ) -> None:
         if send_timeout <= 0:
             raise ValueError("send_timeout must be positive")
         self._adapters = dict(adapters)
         self._opam_archives = opam_archives
         self._budgets = budgets
+        self._attribution_key = attribution_key
         self._store = store
         self._upstream = upstream
         self._clock = clock
@@ -254,7 +263,8 @@ class PackageCache:
 
     async def handle(self, request: web.Request) -> web.StreamResponse:
         """Answer one request and log it; beyond ``max_requests`` at once, answer 503."""
-        log = _RequestLog(sandbox=_sandbox(request))
+        attributed, sandbox = self._attribution(request)
+        log = _RequestLog(sandbox=sandbox)
         # Upstream fetches for the request spend its sandbox's budget (``REQUESTER``).
         requester = REQUESTER.set(
             self._budgets.bucket(log.sandbox)
@@ -265,6 +275,8 @@ class PackageCache:
             path = request.raw_path.partition("?")[0]
             if path in _STATUS_PATHS or path.startswith(_ARCHIVES_PATH):
                 response = await self._dispatch(request, log)
+            elif not attributed:
+                response = _text(403, "the policy middleware did not attribute this request")
             elif self._active >= self._max_requests:
                 response = _text(
                     503, "too many requests, retry later", headers={"Retry-After": "1"}
@@ -283,6 +295,24 @@ class PackageCache:
         finally:
             REQUESTER.reset(requester)
             _log_request(request, log)
+
+    def _attribution(self, request: web.Request) -> tuple[bool, str | None]:
+        """Whether a package request may be served, and the sandbox it spends the budget of.
+
+        Without a key the sandbox header is taken as sent. With one, only a request the
+        middleware attributed, within ``ATTRIBUTION_WINDOW`` of this cache's clock, to the
+        sandbox it names may be.
+        """
+        sandbox = _sandbox(request)
+        key = self._attribution_key
+        if key is None:
+            return True, sandbox
+        value = request.headers.get(ATTRIBUTION_HEADER)
+        if sandbox is None or value is None:
+            return False, None
+        if not verify(key, value, sandbox, request.method, request.raw_path, self._clock()):
+            return False, None
+        return True, sandbox
 
     async def _write_answer(self, request: web.Request, response: web.StreamResponse) -> None:
         """Send an answer built in memory within ``send_timeout``, or close the connection.
@@ -656,6 +686,12 @@ def create_app(
     client may take to accept each ``SEND_CHUNK`` of a body.
     """
     checked = _check_adapters(adapters)
+    attribution_key = settings.attribution_key()
+    if attribution_key is None:
+        _log.warning(
+            "no attribution_key_file: the %s header is trusted as sent, unauthenticated",
+            SANDBOX_HEADER,
+        )
     if ssl_context is not None and connector is not None:
         raise ValueError("pass ssl_context or connector, not both")
     if connector is not None and 0 < connector.limit <= settings.max_artifact_downloads:
@@ -705,6 +741,7 @@ def create_app(
                     send_timeout=send_timeout,
                     opam_archives=archives,
                     budgets=budgets,
+                    attribution_key=attribution_key,
                 )
                 app[CACHE] = cache
                 cache.start()

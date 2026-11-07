@@ -17,6 +17,7 @@ from sandbox_science.policy import (
     parse_ceiling,
     reasons,
 )
+from sandbox_science.policy.cache_attribution import ATTRIBUTION_HEADER, verify
 from sandbox_science.policy.package_requests import SANDBOX_HEADER
 from sandbox_science.policy_middleware import evaluator, service
 from sandbox_science.policy_middleware.evaluator import (
@@ -846,6 +847,35 @@ def test_an_allowed_cache_request_names_its_sandbox(
     assert verdict.headers == ((SANDBOX_HEADER, facts.sandbox_id),)
     refused = middleware.evaluate_http(cache_facts(make_facts, example, "/npm/-/v1/search"))
     assert not refused.allowed
+    assert refused.headers == ()
+
+
+def test_with_the_shared_key_an_allowed_cache_request_is_attributed_to_its_sandbox(
+    store: PolicyStore, sink: Sink, make_facts: FactsFactory, example: LoadedPolicy
+) -> None:
+    # The cache trusts the sandbox's name only with the HMAC the shared key makes.
+    key = b"k" * 32
+    now = datetime(2026, 11, 7, 12, 0, tzinfo=UTC)
+    middleware = PolicyMiddleware(
+        store,
+        ceiling=PoolCeiling.unrestricted(),
+        floor=HardFloor(),
+        events=sink,
+        now=lambda: now,
+        cache_attribution_key=key,
+    )
+    forged = ((ATTRIBUTION_HEADER.lower(), "v1:0:" + "0" * 64),)
+    facts = cache_facts(make_facts, example, "/pypi/simple/numpy/", headers=forged)
+    verdict = middleware.evaluate_http(facts)
+    assert verdict.allowed
+    (named, (header, value)) = verdict.headers
+    assert named == (SANDBOX_HEADER, facts.sandbox_id)
+    assert header == ATTRIBUTION_HEADER
+    at = now.timestamp()
+    assert verify(key, value, facts.sandbox_id, "GET", "/pypi/simple/numpy/", at)
+    assert not verify(key, value, "other", "GET", "/pypi/simple/numpy/", at)
+    assert not verify(key, value, facts.sandbox_id, "GET", "/pypi/simple/scipy/", at)
+    refused = middleware.evaluate_http(cache_facts(make_facts, example, "/npm/-/v1/search"))
     assert refused.headers == ()
 
 

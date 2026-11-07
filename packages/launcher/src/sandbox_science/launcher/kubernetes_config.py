@@ -67,6 +67,9 @@ REQUIRED_FILES: dict[str, tuple[str, ...]] = {
         "active-gateway",
     ),
 }
+CACHE_ATTRIBUTION_KEY = "cache-attribution.key"
+"""With a package cache, the key the middleware and the cache share
+(``sandbox_science.policy.cache_attribution``): a key of both their Secrets."""
 GATEWAY_PROFILE: dict[str, str] = {
     "active-gateway": "active_gateway",
     "gateway-metadata.json": "metadata.json",
@@ -599,6 +602,11 @@ _SCHEDULE = (
 )
 
 
+_BUCKET = r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"
+_PROFILE = r"^[A-Za-z0-9][A-Za-z0-9_.@-]{0,63}$"
+_LEAF = r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+
+
 class Maintenance(Model):
     """Opt-in scheduled control-cache trimming (D92): a CronJob in the bundle's namespace
     runs one bounded ``sandbox-science-artifacts maintain --apply`` pass, which does nothing
@@ -615,6 +623,14 @@ class Maintenance(Model):
     deadline_seconds: Annotated[int, Field(strict=True, ge=60, le=86400)] = 3600
     """The Job's ``activeDeadlineSeconds``: a pass still running then is stopped; the next
     one resumes from the cursor."""
+    storage_credentials: Annotated[str, StringConstraints(pattern=_LEAF)] | None = None
+    """The key of control's Secret (one of its ``extra_files``) holding the SDK credentials
+    file of a read-only key on the artifact store, with which the pass verifies remote
+    copies before it evicts. The pass never gets control's own credentials file, so the
+    renderer refuses ``[maintenance]`` without it when control's environment names one."""
+    storage_profile: Annotated[str, StringConstraints(pattern=_PROFILE)] | None = None
+    """That key's profile, as ``AWS_PROFILE``; without it, the SDK's default profile
+    (control's ``AWS_PROFILE`` is not passed)."""
 
 
 CHECKPOINT_WORKER_FILES: tuple[str, ...] = (
@@ -628,8 +644,6 @@ CHECKPOINT_WORKER_FILES: tuple[str, ...] = (
 CHECKPOINT_UPLOAD_KEYS: tuple[str, ...] = ("credentials", "config")
 """The keys of the checkpoint Job's Secret in the sandbox namespace: the upload key's SDK
 credential and config files, and nothing else."""
-_BUCKET = r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"
-_PROFILE = r"^[A-Za-z0-9][A-Za-z0-9_.@-]{0,63}$"
 
 
 def _object_store(value: str) -> str:
@@ -930,7 +944,8 @@ def skipped_checks(config: BundleConfig) -> tuple[str, ...]:
 def projected_files(config: BundleConfig, role: str) -> tuple[str, ...]:
     """The keys ``role``'s Secret must hold: ``REQUIRED_FILES``'s, and with ``[mcp_direct]``
     the runtime manager's direct MCP ones and the availability check's token (the
-    workspace's) and its digest (control's)."""
+    workspace's) and its digest (control's); with a package cache, the attribution key the
+    middleware and the cache share."""
     files = REQUIRED_FILES[role]
     if config.checkpoint is not None and role == "worker":
         files = (*files, *CHECKPOINT_WORKER_FILES)
@@ -942,6 +957,8 @@ def projected_files(config: BundleConfig, role: str) -> tuple[str, ...]:
     forward = ingress.forward_auth if ingress is not None else None
     if role == "workspace" and forward is not None and forward.shared_secret:
         files = (*files, FORWARD_AUTH_SECRET)
+    if role == "cache" or (role == "middleware" and config.secrets.cache is not None):
+        files = (*files, CACHE_ATTRIBUTION_KEY)
     return files
 
 
