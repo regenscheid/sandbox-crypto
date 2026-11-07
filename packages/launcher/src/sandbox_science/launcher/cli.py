@@ -464,7 +464,7 @@ def _announce(config: LauncherConfig, path: Path, layout: Layout) -> None:
         f"  GUI:      http://{config.workspace.listen}/\n"
         f"  Log in:   open the address in {layout.login}, for example with\n"
         f'            {opener} "$(cat {layout.login})"\n'
-        "            It works until Sandbox Science stops.\n"
+        "            It works once; the file holds the next one after each login.\n"
         f"  Projects: {projects}\n"
         f"  Logs:     {layout.logs}\n"
         f"  Stop:     Ctrl-C, or sandbox-science down --config {path}\n",

@@ -23,7 +23,13 @@ from jwt.algorithms import ECAlgorithm
 
 from sandbox_science.orchestrator.documents import USER, Author
 from sandbox_science.workspace import forward_auth
-from sandbox_science.workspace.app import SESSION_COOKIE, Sessions
+from sandbox_science.workspace.app import (
+    SESSION_COOKIE,
+    SESSION_IDLE,
+    SESSION_LIFETIME,
+    SESSIONS,
+    Sessions,
+)
 from sandbox_science.workspace.forward_auth import (
     ForwardAuthSettings,
     KeySet,
@@ -165,6 +171,49 @@ async def test_a_session_lasts_exactly_as_long_as_its_token_is_believed(
     assert sessions.valid(opened)
     now[0] = 1030.0
     assert not sessions.valid(opened)
+
+
+def test_a_forward_session_ends_at_the_earliest_of_its_three_limits() -> None:
+    """The token's expiry, the idle limit and the lifetime: whichever comes first."""
+    now = [0.0]
+    sessions = Sessions(TOKEN, clock=lambda: now[0])
+
+    def alice(expires: float) -> str:
+        return sessions.open(Identity("alice", "forward", True, expires=expires, token=b"t"))
+
+    soon = alice(SESSION_IDLE / 2)  # the token expires first
+    idle = alice(2 * SESSION_LIFETIME)  # no request: the idle limit
+    busy = alice(2 * SESSION_LIFETIME)  # a request each hour: the lifetime
+    while now[0] < SESSION_LIFETIME - 3600:
+        now[0] += 3600
+        assert sessions.valid(busy)
+    assert [sessions.valid(soon), sessions.valid(idle)] == [False, False]
+    now[0] = SESSION_LIFETIME
+    assert not sessions.valid(busy)
+
+
+@pytest.mark.asyncio
+async def test_after_an_idle_timeout_a_believed_token_opens_a_new_session(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path, authentik: Authentik
+) -> None:
+    """A timed-out session is answered as no session: behind Authentik, the outpost's
+    token, while it is believed, opens a new one."""
+    client = await forwarded(aiohttp_client, state_dir, static_dir, authentik)
+    app = client.app
+    assert app is not None
+    shift = [0.0]
+    app[SESSIONS]._clock = lambda: time.time() + shift[0]  # the sessions' clock, for the test
+    token = authentik.token(exp=int(time.time()) + 3 * SESSION_IDLE)
+    first = await client.get(PROJECTS, headers=as_user(token))
+    assert first.status == 200
+    opened = first.cookies[cookie(client)].value
+    shift[0] = SESSION_IDLE + 1
+    again = await client.get(PROJECTS, headers=as_user(token))
+    assert again.status == 200
+    assert again.cookies[cookie(client)].value not in ("", opened)
+    # Without the token, the timed-out session is simply gone.
+    shift[0] = 2 * SESSION_IDLE + 2
+    assert (await client.get(PROJECTS)).status == 401
 
 
 def test_an_authentik_user_is_never_recorded_as_the_operator() -> None:

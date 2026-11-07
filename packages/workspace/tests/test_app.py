@@ -23,9 +23,13 @@ from sandbox_science.workspace.app import (
     MAX_SESSIONS,
     SECURITY_HEADERS,
     SESSION_COOKIE,
+    SESSION_IDLE,
+    SESSION_LIFETIME,
+    SESSIONS,
     Sessions,
     create_app,
 )
+from sandbox_science.workspace.identity import OPERATOR
 
 pytestmark = pytest.mark.asyncio
 
@@ -53,8 +57,15 @@ def cookie(client: TestClient[Any, Any]) -> str:
     return f"{SESSION_COOKIE}-{client.port}"
 
 
+def current(client: TestClient[Any, Any]) -> str:
+    """The login token that works now: each login replaces it."""
+    app = client.app
+    assert app is not None
+    return app[SESSIONS].token
+
+
 async def login(client: TestClient[Any, Any]) -> None:
-    response = await client.get("/login", params={"token": TOKEN}, allow_redirects=False)
+    response = await client.get("/login", params={"token": current(client)}, allow_redirects=False)
     assert response.status == 303
 
 
@@ -141,13 +152,95 @@ async def test_logging_out_ends_the_session(client: TestClient[Any, Any]) -> Non
     assert (await client.get("/api/v0/projects")).status == 401
 
 
+async def test_the_login_link_works_once(client: TestClient[Any, Any]) -> None:
+    await login(client)
+    fresh = current(client)
+    assert fresh != TOKEN
+    # The used link opens nothing, in this browser or another; the new one does.
+    client.session.cookie_jar.clear()
+    used = await client.get("/login", params={"token": TOKEN}, allow_redirects=False)
+    assert used.status == 403
+    assert "works once" in await used.text()
+    assert (await client.get("/api/v0/projects")).status == 401
+    await login(client)
+    assert current(client) not in (TOKEN, fresh)
+
+
+async def test_the_operators_logout_changes_the_login_link(client: TestClient[Any, Any]) -> None:
+    await login(client)
+    copied = current(client)  # a copy of the link, never used
+    response = await client.post("/api/v0/logout", headers={"Origin": origin(client)})
+    assert response.status == 204
+    refused = await client.get("/login", params={"token": copied}, allow_redirects=False)
+    assert refused.status == 403
+    await login(client)
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestWarning")
+def test_each_new_login_token_is_announced() -> None:
+    sessions = Sessions(TOKEN)
+    announced: list[str] = []
+    sessions.announce(announced.append)
+    assert sessions.login(TOKEN) is not None
+    assert announced == [sessions.token]
+    assert sessions.login(TOKEN) is None
+    sessions.rotate()
+    assert announced[-1] == sessions.token
+    assert len(set(announced)) == 2
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestWarning")
+def test_a_session_ends_when_idle_or_old() -> None:
+    now = [1000.0]
+    sessions = Sessions(TOKEN, clock=lambda: now[0])
+    idle = sessions.open(OPERATOR)
+    busy = sessions.open(OPERATOR)
+    now[0] += SESSION_IDLE - 1
+    assert sessions.valid(idle)  # a request: its idle limit starts again
+    now[0] += SESSION_IDLE
+    assert not sessions.valid(idle)
+    # Each request moves the idle limit; none moves the lifetime.
+    now[0] = 1000.0
+    while now[0] + SESSION_IDLE / 2 < 1000.0 + SESSION_LIFETIME:
+        now[0] += SESSION_IDLE / 2
+        assert sessions.valid(busy)
+    now[0] = 1000.0 + SESSION_LIFETIME - 1
+    assert sessions.valid(busy)
+    now[0] = 1000.0 + SESSION_LIFETIME
+    assert not sessions.valid(busy)
+    now[0] = 1000.0  # an ended session stays ended
+    assert not sessions.valid(busy)
+
+
+async def test_a_timed_out_session_is_refused_and_its_cookie_cleared(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
+) -> None:
+    app = create_app(ProjectStore(state_dir, readonly=True), static_dir, login_token=TOKEN)
+    now = [1000.0]
+    app[SESSIONS]._clock = lambda: now[0]  # the sessions' clock, for the test
+    client = await aiohttp_client(app)
+    await login(client)
+    now[0] += SESSION_IDLE - 1
+    assert (await client.get("/api/v0/projects")).status == 200
+    now[0] += SESSION_IDLE - 1  # within the idle limit of the last request
+    assert (await client.get("/api/v0/projects")).status == 200
+    now[0] += SESSION_IDLE
+    refused = await client.get("/api/v0/projects")
+    assert refused.status == 401
+    assert (await refused.json())["error"]["kind"] == "policy_denied"
+    assert refused.cookies[cookie(client)].value == ""
+    # No session at all clears nothing.
+    client.session.cookie_jar.clear()
+    assert cookie(client) not in (await client.get("/api/v0/projects")).cookies
+
+
 @pytest.mark.filterwarnings("ignore::pytest.PytestWarning")
 def test_sessions_beyond_the_limit_end_the_oldest() -> None:
     sessions = Sessions(TOKEN)
     first = sessions.login(TOKEN)
     assert sessions.valid(first)
     for _ in range(MAX_SESSIONS):
-        assert sessions.login(TOKEN) is not None
+        assert sessions.login(sessions.token) is not None
     assert not sessions.valid(first)
     with pytest.raises(ValueError, match="at least 32"):
         Sessions("test-secret-short")

@@ -88,7 +88,7 @@ Sandbox Science is running.
   GUI:      http://127.0.0.1:8200/
   Log in:   open the address in /home/you/.local/state/sandbox-science/workspace-login, for example with
             xdg-open "$(cat /home/you/.local/state/sandbox-science/workspace-login)"
-            It works until Sandbox Science stops.
+            It works once; the file holds the next one after each login.
   Projects: crypto (sessions main)
   Logs:     /home/you/.local/state/sandbox-science/logs
   Stop:     Ctrl-C, or sandbox-science down --config /…/examples/sandbox-science.toml
@@ -110,7 +110,7 @@ mean the original operation should be submitted again.
 
 ## Logging in
 
-The workspace makes a new login address each time it starts. The launcher puts it in `workspace-login` in the state directory (mode 600), never on the screen or in a log. Open that address in your browser. It takes you to the GUI and sets your session's cookie, and it works until Sandbox Science stops.
+The workspace makes a new login address each time it starts. The launcher puts it in `workspace-login` in the state directory (mode 600), never on the screen or in a log. Open that address in your browser. It takes you to the GUI and sets your session's cookie. It works once: each login, and each logout, makes a new address, which replaces the old one in `workspace-login`, so open the file again to log in again. A session ends 2 hours after its last request or 12 hours after it opened, whichever comes first, and when Sandbox Science stops.
 
 Open the GUI at the address the launcher printed. With `127.0.0.1`, the PDF viewer works; under `localhost`, the browser refuses to frame it ([the PDF viewer's origin](WORKSPACE.md#the-pdf-viewers-origin)).
 

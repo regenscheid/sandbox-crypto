@@ -32,7 +32,7 @@ from sandbox_science.orchestrator.model import (
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.testing import eventually
 from sandbox_science.workspace import cli
-from sandbox_science.workspace.app import create_app
+from sandbox_science.workspace.app import SESSIONS, create_app
 from sandbox_science.workspace.mathrepair import (
     MAX_ACTIVE,
     MAX_ANSWER_BYTES,
@@ -536,7 +536,10 @@ async def repairing(
 
 
 async def login(client: TestClient[Any, Any]) -> None:
-    response = await client.get("/login", params={"token": TOKEN}, allow_redirects=False)
+    app = client.app
+    assert app is not None
+    token = app[SESSIONS].token  # each login replaces it
+    response = await client.get("/login", params={"token": token}, allow_redirects=False)
     assert response.status == 303
 
 

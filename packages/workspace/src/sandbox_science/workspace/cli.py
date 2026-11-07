@@ -20,18 +20,20 @@ plain HTTP, so on another address the login URL and the session cookie cross the
 network unencrypted. Behind a TLS-terminating reverse proxy, ``--public-origin`` and
 ``--preview-public-origin`` name the ``https://`` origins the browser sees, and
 ``--trust-proxy-from`` the proxies whose forwarded scheme and host are believed
-(proxy.py). At each start it makes a new login token and prints the login URL once, on
-standard output. Behind Authentik's forward auth, the ``--forward-auth-*`` options (with
-``--public-origin``) let a user Authentik admitted in without the login URL: the server
-believes the signed token Authentik's proxy outpost sends, checked with the provider's
-client secret (HS256, from a file closed to other users) or its JWKS (RS256), and against
-its issuer and audience and the user group (forward_auth.py, D104); a secret file that is
-missing, empty or open to others stops the server; with an admin group,
-only its members may take the admin-only actions (identity.py). The login URL keeps
-working, as the operator's own login, which counts as an admin: with forward auth on it
-is not printed, since the log reaches whoever reads the logs, but written (mode 600) to
-``--login-url-file``, by default ``LOGIN_URL_FILE`` in the state directory, for
-``login-url`` to print:
+(proxy.py). At each start it makes a new login token and prints the login URL on standard
+output. The URL works once: each login with it, and the operator's logout, makes a new
+token, and the new URL is printed as the first was (app.py). Behind Authentik's forward
+auth, the ``--forward-auth-*`` options (with ``--public-origin``) let a user Authentik
+admitted in without the login URL: the server believes the signed token Authentik's proxy
+outpost sends, checked with the provider's client secret (HS256, from a file closed to
+other users) or its JWKS (RS256), and against its issuer and audience and the user group
+(forward_auth.py, D104); a secret file that is missing, empty or open to others stops the
+server; with an admin group, only its members may take the admin-only actions
+(identity.py). The login URL keeps working, as the operator's own login, which counts as
+an admin: with forward auth on it is not printed, since the log reaches whoever reads the
+logs, but written (mode 600) to ``--login-url-file``, by default ``LOGIN_URL_FILE`` in the
+state directory, and rewritten with each new token, for ``login-url`` to print the current
+one:
 
 ```
 sandbox-science-workspace login-url --state-dir DIR | --login-url-file FILE
@@ -71,7 +73,7 @@ from sandbox_science.orchestrator.model_settings import AgentModelRole
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
-from .app import create_app
+from .app import SESSIONS, create_app
 from .context import CONTEXT
 from .forward_auth import HEADER, ForwardAuthSettings, Verifier
 from .mathrepair import MathRepairService, gateway_service, reviewer_alias
@@ -84,7 +86,7 @@ from .proxy import Exposure, Network, PublicOrigin, parse_network
 _log = logging.getLogger("sandbox_science.workspace")
 DEFAULT_LISTEN: Final = "127.0.0.1:8200"
 LOGIN_URL_FILE: Final = "workspace-login-url"
-"""With forward auth on, where in the state directory ``serve`` writes the login URL unless
+"""With forward auth on, where in the state directory ``serve`` writes the current login URL unless
 ``--login-url-file`` names another file (the Kubernetes bundle's is on a memory volume,
 since the state directory is on the backed-up PVC)."""
 
@@ -106,8 +108,8 @@ def write_private(path: Path, text: str) -> None:
 
 
 def print_login_url(path: Path) -> int:
-    """``login-url``: print the login URL the running server wrote to ``path``, or say why
-    not."""
+    """``login-url``: print the current login URL, which the running server wrote to
+    ``path`` and rewrites after each login, or say why not."""
     try:
         print(path.read_text(encoding="utf-8").strip())
     except FileNotFoundError:
@@ -339,14 +341,14 @@ async def serve(
     app: web.Application,
     host: str,
     port: int,
-    login_token: str,
     preview: tuple[web.Application, Preview, str, int, str] | None = None,
     public: tuple[PublicOrigin, PublicOrigin] | None = None,
     login_file: Path | None = None,
 ) -> None:
-    """Serve until SIGTERM or SIGINT, after printing the login URL once, or with
-    ``login_file`` writing it there (mode 600) instead, removed when the server stops.
-    With ``preview`` (its application, its state, host, port and the name it is given
+    """Serve until SIGTERM or SIGINT, after printing the login URL of the app's sessions
+    (``SESSIONS``), and again each time its token changes; or with ``login_file``, writing
+    it there (mode 600) instead, rewritten at each change and removed when the server
+    stops. With ``preview`` (its application, its state, host, port and the name it is given
     by), the PDF viewer's origin is served too. With ``public`` (the workspace's and the
     preview's public origins), those are the origins announced and printed, with the
     addresses served at beside them."""
@@ -385,20 +387,39 @@ async def serve(
                 flush=True,
             )
             url = public[0].origin
-        login_url = f"{url}/login?token={login_token}"
+        sessions = app[SESSIONS]
+
+        def changed(token: str) -> None:
+            login_url = f"{url}/login?token={token}"
+            if login_file is None:
+                print(
+                    f"The login URL changed; the next one works once:\n    {login_url}", flush=True
+                )
+                return
+            try:
+                write_private(login_file, login_url + "\n")
+            except OSError as exc:
+                _log.error("cannot write the new login URL to %s: %s", login_file, exc.strerror)
+            else:
+                _log.info("the login URL changed; the current one is in %s", login_file)
+
+        login_url = f"{url}/login?token={sessions.token}"
         if login_file is None:
             print(
-                f"Log in by opening this URL; it works until the server stops:\n    {login_url}",
+                "Log in by opening this URL; it works once, and the next one is printed "
+                f"here after each login:\n    {login_url}",
                 flush=True,
             )
         else:
             # The link logs in as the operator, an admin: it stays out of the log.
             write_private(login_file, login_url + "\n")
             print(
-                f"Log in through Authentik; the operator's login URL is in {login_file} "
+                f"Log in through Authentik; the operator's login URL, which works once, is "
+                f"in {login_file} and changes after each login "
                 f"(sandbox-science-workspace login-url --login-url-file {login_file})",
                 flush=True,
             )
+        sessions.announce(changed)
         await stopping.wait()
         _log.info("stopping")
     finally:
@@ -741,7 +762,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         if public is not None or trusted
         else None
     )
-    login_token = secrets.token_urlsafe(32)
     preview = Preview(Capabilities())
     mcp_inventory: list[ServiceConfig] = []
     if args.mcp_service and args.mcp_project is None:
@@ -773,7 +793,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         app = create_app(
             ProjectStore(args.state_dir, readonly=True),
             args.static,
-            login_token=login_token,
+            login_token=secrets.token_urlsafe(32),
             # A public origin replaces the loopback names with its own host.
             check_host=loopback and public is None,
             math_repair=repair,
@@ -871,7 +891,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 app,
                 host,
                 port,
-                login_token,
                 (viewer_app, preview, preview_host, preview_port, name),
                 public,
                 login_file if forward_settings is not None else None,

@@ -42,7 +42,7 @@ from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.worker_client import WorkerClient
 from sandbox_science.testing import fake_worker_app
-from sandbox_science.workspace.app import create_app
+from sandbox_science.workspace.app import SESSIONS, create_app
 from sandbox_science.workspace.classifications import ClassificationSource
 from sandbox_science.workspace.context import TIMEOUTS, Timeouts
 from sandbox_science.workspace.forward_auth import Verifier
@@ -579,7 +579,11 @@ async def workspace(
 
 
 async def log_in(client: TestClient[Any, Any]) -> None:
-    response = await client.get("/login", params={"token": TOKEN}, allow_redirects=False)
+    """Log in with the login link that works now: each login replaces it."""
+    app = client.app
+    assert app is not None
+    token = app[SESSIONS].token
+    response = await client.get("/login", params={"token": token}, allow_redirects=False)
     assert response.status == 303
 
 
