@@ -28,21 +28,21 @@
     "@napi-rs/canvas": "file:stubs/no-canvas",
     "katex": "0.18.9",
     "markdown-it": "15.0.3",
-    "pdfjs-dist": "6.3.289",
-    "svelte": "5.57.1",
+    "pdfjs-dist": "6.4.299",
+    "svelte": "5.57.3",
     "vega": "6.4.0",
     "vega-interpreter": "2.3.2",
-    "vega-lite": "6.4.3"
+    "vega-lite": "6.5.0"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "7.3.1",
     "happy-dom": "21.0.4",
-    "prettier": "3.9.9",
+    "prettier": "3.9.10",
     "prettier-plugin-svelte": "4.1.1",
-    "svelte-check": "4.7.6",
+    "svelte-check": "4.7.7",
     "typescript": "6.0.3",
-    "vite": "8.3.3",
-    "vitest": "5.0.3"
+    "vite": "8.3.5",
+    "vitest": "5.0.5"
   },
   "overrides": {
     "@napi-rs/canvas": "$@napi-rs/canvas"
