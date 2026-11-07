@@ -43,7 +43,7 @@ MAX_FILES: Final = 16
 MAX_BUNDLE: Final = 16 * 1024 * 1024
 HEAP: Final = 512
 """MiB of V8 old space: a chart may read 100,000 rows."""
-ENGINE: Final = "vega-lite 6.4.3, vega 6.4.0"
+ENGINE: Final = "vega-lite 6.5.0, vega 6.4.0"
 """The frame's versions (FG-15), which the bundle must report."""
 NODE: Final = (22, 13)
 """The first Node whose permission model is ``--permission`` (23.0 to 23.4 lack it)."""
