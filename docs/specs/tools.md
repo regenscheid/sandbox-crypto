@@ -44,7 +44,7 @@ These belong to other specs: Conda provisioning ([conda-provisioning](conda-prov
    - A cell's printed output, and the text of its rich outputs, are saved the same way (`output-1.txt` for its first output).
    - When a file cannot be saved, the result says why, and still calls what it shows a sample. Saving never fails the call.
 6. **Ending.** The result carries the exit code or the terminating signal, the elapsed time, and whether the call timed out or was cancelled. Partial output is kept. A nonzero exit with no captured stdout or stderr includes a diagnostic to inspect redirected logs or rerun the failing step with visible output; the diagnostic does not reinterpret the exit status.
-7. **Timeouts.** Each call has a wall-time limit, with a default and a maximum set by policy. When it expires, each of the call's processes gets SIGTERM, then SIGKILL after a short grace period (OpenShell refuses signals to a whole process group, so the executor signals processes one by one; [worker](../WORKER.md#leftover-processes)).
+7. **Timeouts.** Each call has a wall-time limit: the request's (120 s unless it gives one, at most 24 hours), cut to the policy's `resources.wall_time` when that is shorter. When it expires, each of the call's processes gets SIGTERM, then SIGKILL after a short grace period (OpenShell refuses signals to a whole process group, so the executor signals processes one by one; [worker](../WORKER.md#leftover-processes)).
 8. **Leftover processes.** When a call ends, the processes it started that are still running are terminated, including those that left its process group or session. A shell call cannot leave daemons running ([worker](../WORKER.md#leftover-processes) says how far the executor can find them). A computation that should outlive the call is a background job.
 
 ## Background jobs
@@ -225,10 +225,10 @@ The worker's conformance suite runs these through the worker API against any bac
 
 ## Open questions
 
-The proposed answers below were adopted with the spec on 2026-10-14. Default limits for shell calls and cells remain open.
+The proposed answers below were adopted with the spec on 2026-10-14.
 
 - **Shell state.** Should the shell keep a working directory between calls, as some interactive harnesses do? This spec proposes no state, which makes calls independent and retries safe.
-- **Default limits.** Wall time and output size for shell calls and cells.
+- **Default limits.** Decided: a shell call or cell runs at most its request's time limit, 120 s unless it gives one, and at most the policy's `resources.wall_time`, which bounds each call and cell, not a job or the sandbox's lifetime ("Timeouts" above). Output size: each request's limit.
 - **Daemons.** May a shell call start a long-running process, such as a local server for a notebook? This spec says no. Long computations are background jobs (settled with the user on 2026-10-11, D83); a service tool, for servers that answer requests, could come later.
 - **Job limits.** Proposed defaults: a job runs at most 24 hours unless the policy raises it, up to 7 days; at most 4 jobs run at once in a session and 8 in an environment.
 - **Waiting and waking.** Settled with the user on 2026-10-11: the agent usually waits on the jobs whose results it needs, its turn open, while a low-cost watcher model checks each job 5 minutes after it starts and then every 30 minutes, and wakes the agent when a job needs attention; the user can message the agent during a wait. A detached job's end is a notice at the next turn unless the job asks to wake the session.
