@@ -1339,18 +1339,25 @@ def compile_sandbox(
 
 
 _UNAPPLIED: Final = {
-    "pids": "no compute driver this worker configures sets a process limit yet",
+    "pids": (
+        "no compute driver this worker configures sets a process limit per sandbox; on "
+        "Kubernetes a node's PID limit (the kubelet's podPidsLimit) is alike for every Pod"
+    ),
     "workspace_disk": (
-        "no compute driver this worker configures limits the workspace's disk yet; a "
-        "Kubernetes placement's ephemeral-storage limit is its profile's own"
+        "no compute driver this worker configures limits the workspace's disk per sandbox; "
+        "on Kubernetes the workspace is a claim the gateway sizes alike for every sandbox, "
+        "and a placement's ephemeral-storage limit, its profile's own, bounds the "
+        "container's writable layer, not the workspace"
     ),
 }
+"""Why the pool applies neither, with or without a Kubernetes placement: OpenShell
+0.1.5's driver configuration has no field for either (``kubernetes.PLACED_LIMITS``)."""
 
 
 def _resource_findings(policy: LoadedPolicy, ceiling: PoolCeiling, placed: bool) -> list[Finding]:
     """Per compute limit the project's policy sets or the ceiling caps, whether the pool
     applies it: a Kubernetes placement applies CPU and memory as the Pod's limits;
-    nothing applies the others yet, and without a placement none is applied."""
+    nothing applies the others (``_UNAPPLIED``), and without a placement none is applied."""
     resources = effective_resources(policy.policy, ceiling)[0]
     unapplied = unapplied_limits(resources, placed=placed)
     findings: list[Finding] = []

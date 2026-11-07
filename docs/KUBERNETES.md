@@ -33,7 +33,12 @@ map with missing profiles is refused. The [example fragment](../examples/kuberne
 sets a node selector and runtime class plus explicit CPU millicores, memory MiB
 and ephemeral-storage MiB requests/limits. CPU and memory limits narrow to the
 effective project/pool policy; requests that no longer fit are refused before
-allocation. Arbitrary pod JSON and volumes are not exposed. The selected JSON is
+allocation. The ephemeral-storage limit stays the profile's: it bounds the agent
+container's writable layer and logs, while the workspace is a claim the gateway sizes
+([below](#persistent-research-prefix-increment)), so a policy's `workspace_disk` does
+not narrow it. The driver configuration has no process limit; a node's PID limit is
+the kubelet's `podPidsLimit`, alike for every Pod on it, so a policy's `pids` is not
+applied either, and the compiler's findings say so. Arbitrary pod JSON and volumes are not exposed. The selected JSON is
 stored atomically with initial sandbox ownership, passed via
 `--driver-config-json`, and kept across worker restart and ordinary sandbox
 start/Resume. Changes to deployment settings apply to new allocations. Profiles

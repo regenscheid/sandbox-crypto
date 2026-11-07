@@ -969,13 +969,18 @@ def test_without_a_kubernetes_placement_no_compute_limit_is_applied() -> None:
         severity, message = findings[f"resources.{name}"]
         assert severity is Severity.WARNING
         assert message.startswith("not applied: this pool places its sandboxes without Kubernetes")
-    assert findings["resources.pids"] == (
-        Severity.WARNING,
-        "not applied: no compute driver this worker configures sets a process limit yet",
+    severity, message = findings["resources.pids"]
+    assert severity is Severity.WARNING
+    assert message.startswith(
+        "not applied: no compute driver this worker configures sets a process limit per sandbox"
     )
+    assert "podPidsLimit" in message
     severity, message = findings["resources.workspace_disk"]
     assert severity is Severity.WARNING
     assert message.startswith("not applied: no compute driver this worker configures limits")
+    # The ephemeral-storage limit is not the workspace's: the finding must not suggest it is.
+    assert "ephemeral-storage limit, its profile's own, bounds the container's" in message
+    assert message.endswith("not the workspace")
 
 
 def test_a_kubernetes_placement_applies_cpu_and_memory_only() -> None:

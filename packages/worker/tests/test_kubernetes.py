@@ -49,6 +49,13 @@ def test_rendering_narrows_limits_to_project_and_pool_cpu_memory() -> None:
     assert limits == {"cpu": "2500m", "memory": str(2 * 1024**3), "ephemeral-storage": "1024Mi"}
 
 
+def test_pids_and_workspace_disk_leave_the_rendering_unchanged() -> None:
+    # The workspace is a gateway-sized claim, not the container's ephemeral storage, so
+    # workspace_disk does not narrow it; and the driver configuration has no process limit.
+    plain = profile().driver_json(Resources())
+    assert profile().driver_json(Resources(pids=64, workspace_disk=2**20)) == plain
+
+
 def test_requests_above_effective_policy_are_refused() -> None:
     with pytest.raises(ValueError, match="requests exceed"):
         profile().driver_json(Resources(cpu=0.5))
@@ -66,6 +73,12 @@ def test_requests_above_effective_policy_are_refused() -> None:
         {"volumes": [{"hostPath": "/"}]},
         {"requests": {"cpu_millicores": True, "memory_mib": 512, "ephemeral_storage_mib": 256}},
         {"requests": {"cpu_millicores": 9000, "memory_mib": 512, "ephemeral_storage_mib": 256}},
+        # OpenShell 0.1.5 carries no process limit: a profile cannot declare one applied.
+        {"pids": 512},
+        {
+            "limits": {"cpu_millicores": 8000, "memory_mib": 8192, "ephemeral_storage_mib": 1024}
+            | {"pids": 512}
+        },
     ],
 )
 def test_invalid_or_arbitrary_pod_fields_are_refused(update: dict[str, object]) -> None:
