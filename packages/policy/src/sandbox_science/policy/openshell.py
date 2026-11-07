@@ -48,7 +48,14 @@ from typing import Annotated, Final, Literal
 from urllib.parse import urlsplit
 
 import yaml
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    model_validator,
+)
 
 from .ceiling import PoolCeiling, effective_resources
 from .classification import (
@@ -158,6 +165,19 @@ BASELINE_UNLISTED: Final = 1
 MAX_FILESYSTEM_PATHS: Final = 256
 """OpenShell's limit on ``read_only`` plus ``read_write`` paths, its baseline included."""
 
+GATEWAY_ROUTES: Final = (
+    ("POST", "/chat/completions"),  # OpenAICompatibleModel (orchestrator/model.py)
+    ("POST", "/responses"),  # ResponsesModel (orchestrator/responses.py)
+    ("POST", "/messages"),  # MessagesModel (orchestrator/messages.py)
+    ("POST", "/embeddings"),  # the runtime's skill Embedder (orchestrator/skills/embeddings.py)
+    ("GET", "/models"),  # ModelGateway.aliases (orchestrator/model.py)
+    ("GET", "/model/info"),  # model profiles, MessagesModel's providers, PriceList (pricing.py)
+)
+"""The model gateway routes the agent runtime calls, by method, under the gateway URL's
+path (``OrchestratorTarget.model_gateway_path``); its endpoint admits these alone, so that
+the runtime's key reaches none of LiteLLM's key, user, MCP or administration routes. A
+``GET`` rule also admits ``HEAD``."""
+
 OPAM_SOURCES: Final = (
     "https://github.com/ocaml/ocamlfind/archive/refs/tags/findlib-1.9.8.tar.gz",
     "https://github.com/jasmin-lang/jasmin/releases/download/v2026.09.0/"
@@ -196,9 +216,11 @@ class AnyOf(_OpenShellModel):
 
 
 class AllowEntry(_OpenShellModel):
-    """An allowed request: an MCP method, optionally limited to tools."""
+    """An allowed request: an MCP method, optionally limited to tools, or an HTTP method
+    on a path (a ``/``-delimited glob over the canonical path) of a ``rest`` endpoint."""
 
     method: str
+    path: str | None = None
     tool: str | AnyOf | None = None
 
 
@@ -556,6 +578,21 @@ class AgentMcpTarget(StrictModel):
     filesystem: SandboxFilesystem = SandboxFilesystem()
 
 
+def _gateway_path(value: str) -> str:
+    if any(part in {".", ".."} for part in value.split("/")):
+        raise ValueError("the model gateway's path has no '.' or '..' segments")
+    return value
+
+
+GatewayPath = Annotated[
+    str,
+    StringConstraints(pattern=r"^(/[A-Za-z0-9._~-]+)*$", max_length=256),
+    AfterValidator(_gateway_path),
+]
+"""The model gateway URL's path, without a trailing ``/``: plain segments only, so that it
+is already canonical and holds no glob character."""
+
+
 class OrchestratorTarget(StrictModel):
     """Settings for the orchestrator's own sandbox (Z2): the services it may reach.
 
@@ -565,6 +602,9 @@ class OrchestratorTarget(StrictModel):
 
     worker_api: ServiceEndpoint
     model_gateway: ServiceEndpoint | None = None
+    model_gateway_path: GatewayPath = "/v1"
+    """The path of the gateway URL, under which the gateway's routes (``GATEWAY_ROUTES``)
+    are admitted; empty for a gateway served at its root."""
     mcp_proxy: ServiceEndpoint | None = None
     """Where the harness reached the MCP proxy, retired with it (D98, 2026-10-26): read and
     ignored. The agent runtime's MCP egress is compiled from the project policy
@@ -574,6 +614,13 @@ class OrchestratorTarget(StrictModel):
     binaries: tuple[BinaryPattern, ...] = Field(min_length=1)
     filesystem: SandboxFilesystem = SandboxFilesystem()
     """Paths the harness's image provides outside the workdir, such as its interpreter's prefix."""
+
+    @model_validator(mode="after")
+    def _inspected_gateway(self) -> OrchestratorTarget:
+        # A relayed connection carries no route rules.
+        if self.model_gateway is not None and self.model_gateway.relay_tls:
+            raise ValueError("the model gateway is inspected, so that its routes can be limited")
+        return self
 
 
 class OpenShellTargets(StrictModel):
@@ -1405,8 +1452,8 @@ def _filesystem(read_only: Iterable[str], read_write: Iterable[str]) -> Filesyst
 
 
 def compile_orchestrator(target: OrchestratorTarget) -> OpenShellPolicy:
-    """Compile the orchestrator sandbox's policy: the worker API, the model gateway and the
-    control capability service only.
+    """Compile the orchestrator sandbox's policy: the worker API, the model gateway's
+    routes the runtime calls (``GATEWAY_ROUTES``) and the control capability service only.
 
     The orchestrator is semi-trusted (Z2 in the threat model): it chooses actions but
     holds no engine credentials, and its egress goes only to platform services. They
@@ -1434,6 +1481,17 @@ def compile_orchestrator(target: OrchestratorTarget) -> OpenShellPolicy:
         if service.relay_tls:
             endpoint = Endpoint(
                 host=service.host, ports=(service.port,), protocol="tcp", tls="skip"
+            )
+        elif key == "model-gateway":
+            endpoint = Endpoint(
+                host=service.host,
+                ports=(service.port,),
+                protocol="rest",
+                enforcement="enforce",
+                rules=tuple(
+                    Rule(allow=AllowEntry(method=method, path=target.model_gateway_path + route))
+                    for method, route in GATEWAY_ROUTES
+                ),
             )
         else:
             endpoint = Endpoint(

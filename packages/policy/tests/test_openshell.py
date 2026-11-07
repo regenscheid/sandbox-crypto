@@ -30,6 +30,7 @@ from sandbox_science.policy.openshell import (
     BASELINE_READ_ONLY,
     BASELINE_READ_WRITE,
     BASELINE_UNLISTED,
+    GATEWAY_ROUTES,
     HARD_LANDLOCK,
     KERNEL_INTERFACES_READ_ONLY,
     MAX_FILESYSTEM_PATHS,
@@ -1949,7 +1950,7 @@ def test_the_orchestrator_reaches_only_the_platform_services() -> None:
     ]
     assert endpoints == [
         ("worker.sandbox-science.internal", (8100,), "rest", "enforce", "full"),
-        ("litellm.sandbox-science.internal", (4000,), "rest", "enforce", "full"),
+        ("litellm.sandbox-science.internal", (4000,), "rest", "enforce", None),
     ]
     for entry in policy.network_policies.values():
         assert entry.binaries == (Binary(path="/opt/sandbox-science/bin/python*"),)
@@ -1986,6 +1987,75 @@ def test_a_service_with_its_own_tls_is_relayed_without_inspection() -> None:
         {"host": control.host, "ports": [8443], "protocol": "tcp", "tls": "skip"}
     ]
     assert schema_keys(document) <= ALLOWED_KEYS
+
+
+def test_the_model_gateway_admits_only_the_routes_the_runtime_calls() -> None:
+    assert TARGETS.orchestrator is not None
+    policy = compile_orchestrator(TARGETS.orchestrator)
+    (gateway,) = policy.network_policies["sandbox-science-model-gateway"].endpoints
+    assert gateway.access is None
+    assert gateway.deny_rules is None
+    assert gateway.rules is not None
+    admitted = [(rule.allow.method, rule.allow.path, rule.allow.tool) for rule in gateway.rules]
+    assert admitted == [
+        ("POST", "/v1/chat/completions", None),
+        ("POST", "/v1/responses", None),
+        ("POST", "/v1/messages", None),
+        ("POST", "/v1/embeddings", None),
+        ("GET", "/v1/models", None),
+        ("GET", "/v1/model/info", None),
+    ]
+    # LiteLLM's key, user, MCP and administration routes stay out of the runtime's reach.
+    for _, path, _ in admitted:
+        assert path is not None
+        assert not path.startswith(("/key", "/user", "/mcp", "/utils", "/v1/key", "/v1/mcp"))
+        assert not any(character in path for character in "*?[{")
+    document = yaml.safe_load(policy.to_yaml())
+    endpoint = document["network_policies"]["sandbox-science-model-gateway"]["endpoints"][0]
+    assert "access" not in endpoint
+    assert endpoint["rules"][0] == {"allow": {"method": "POST", "path": "/v1/chat/completions"}}
+    assert schema_keys(document) <= ALLOWED_KEYS
+
+
+@pytest.mark.parametrize(
+    ("base", "first"), [("", "/chat/completions"), ("/llm/v1", "/llm/v1/chat/completions")]
+)
+def test_the_gateway_routes_follow_the_gateway_urls_path(base: str, first: str) -> None:
+    assert TARGETS.orchestrator is not None
+    target = TARGETS.orchestrator.model_copy(update={"model_gateway_path": base})
+    rules = compile_orchestrator(target).network_policies["sandbox-science-model-gateway"]
+    assert rules.endpoints[0].rules is not None
+    assert rules.endpoints[0].rules[0].allow.path == first
+    assert len(rules.endpoints[0].rules) == len(GATEWAY_ROUTES)
+
+
+@pytest.mark.parametrize("base", ["/", "/v1/", "v1", "/v*", "/a/../v1", "/%761", "//v1"])
+def test_the_gateway_path_is_plain_segments(base: str) -> None:
+    with pytest.raises(ValidationError):
+        OrchestratorTarget.model_validate(
+            {
+                "worker_api": {"host": "worker.sandbox-science.internal", "port": 8100},
+                "model_gateway": {"host": "litellm.sandbox-science.internal", "port": 4000},
+                "model_gateway_path": base,
+                "binaries": ["/usr/bin/python3"],
+            }
+        )
+
+
+def test_the_model_gateway_is_never_relayed() -> None:
+    # A relayed connection carries no route rules, so the gateway would be wholly open.
+    with pytest.raises(ValidationError, match="the model gateway is inspected"):
+        OrchestratorTarget.model_validate(
+            {
+                "worker_api": {"host": "worker.sandbox-science.internal", "port": 8100},
+                "model_gateway": {
+                    "host": "litellm.sandbox-science.internal",
+                    "port": 4000,
+                    "relay_tls": True,
+                },
+                "binaries": ["/usr/bin/python3"],
+            }
+        )
 
 
 def test_the_model_gateway_is_optional_and_cannot_share_the_worker_api() -> None:
