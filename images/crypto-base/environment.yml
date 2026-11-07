@@ -38,7 +38,7 @@ dependencies:
   - networkx >=3.6.1,<4
   - notebook >=7.5.5,<8
   - palp >=2.21,<3
-  - pillow >=12.1.1,<13
+  - pillow >=12.1.1,<14
   - pkg-config
   - pkgconfig
   - pythran >=0.18.1,<0.19
