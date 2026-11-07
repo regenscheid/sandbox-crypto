@@ -20,10 +20,11 @@ expires, or earlier at either of the limits above, after which the next request 
 token is still believed opens a new one, so Authentik's own session decides how long its
 user stays signed in; a request that brings another token (a new login, or Authentik's
 refresh) ends it and opens the token's own, and one whose new token is refused ends it and
-is refused. Logging out ends the sessions of the token and refuses the token until it
-expires, since the outpost sends it until the user signs out of Authentik; the answer
-names Authentik's sign-out. A session the login link opened is the operator's, and an
-Authentik token never replaces it. The plain ``X-authentik-*`` headers are never read.
+is refused. Logging out ends every session of the user, as the token's ``sub`` names
+them, and refuses the token until it expires, since the outpost sends it until the user
+signs out of Authentik; the answer names Authentik's sign-out. A session the login link
+opened is the operator's, and an Authentik token never replaces it. The plain
+``X-authentik-*`` headers are never read.
 Each API request carries its session's ``Identity`` (identity.py), which the admin-only
 actions check. A request with any method other than GET or HEAD
 also needs an ``Origin`` that is this server's own, so that a page on another site
@@ -138,8 +139,9 @@ HOST_PREFIX: Final = "__Host-"
 only as set Secure, on Path ``/``, without ``Domain``, so no sibling host under the same
 parent domain (such as the preview origin's) can set or shadow it."""
 MAX_SESSIONS: Final = 64
-"""Sessions kept at once; logging in beyond it ends the oldest Authentik session, or the
-oldest one when every session is the login link's."""
+"""Sessions kept at once; logging in beyond it ends the oldest session of the same
+Authentik user (by ``sub``), else the oldest Authentik session, or the oldest one when
+every session is the login link's."""
 MAX_TOKEN: Final = 256
 SESSION_IDLE: Final = 2 * 60 * 60
 """Seconds a session lasts after its last API request."""
@@ -266,10 +268,12 @@ class Sessions:
         now = self._clock()
         self._sessions[_digest(session)] = _Session(identity, opened=now, seen=now)
         while len(self._sessions) > MAX_SESSIONS:
-            oldest = next(
-                (key for key, kept in self._sessions.items() if kept.identity.login == "forward"),
-                next(iter(self._sessions)),
-            )
+            # A user who opens many sessions ends their own before anyone else's.
+            forward = [
+                key for key, kept in self._sessions.items() if kept.identity.login == "forward"
+            ]
+            own = [key for key in forward if _same_user(self._sessions[key].identity, identity)]
+            oldest = next(iter(own[:-1] or forward), next(iter(self._sessions)))
             del self._sessions[oldest]
         return session
 
@@ -298,14 +302,13 @@ class Sessions:
             self._sessions.pop(_digest(session), None)
 
     def log_out(self, identity: Identity) -> None:
-        """End every session opened from ``identity``'s Authentik token, and refuse the
-        token until it expires: Authentik's outpost sends it again with each request until
-        the user signs out of Authentik, and it would open a new session."""
+        """End every session of ``identity``'s user, as their ``sub`` names them, and refuse
+        the token until it expires: Authentik's outpost sends it again with each request
+        until the user signs out of Authentik, and it would open a new session."""
         if identity.login != "forward" or not identity.token or identity.expires is None:
             return
         for key, kept in list(self._sessions.items()):
-            found = kept.identity
-            if found.login == "forward" and hmac.compare_digest(found.token, identity.token):
+            if _same_user(kept.identity, identity):
                 del self._sessions[key]
         now = self._clock()
         for digest, expires in list(self._logged_out.items()):
@@ -329,6 +332,16 @@ class Sessions:
 
 SESSIONS: Final = web.AppKey("workspace_sessions", Sessions)
 """The application's sessions and login token, which ``serve`` writes out as they change."""
+
+
+def _same_user(one: Identity, other: Identity) -> bool:
+    """Whether two Authentik sessions are one user's: the same ``sub``, never the same
+    username, which a user may be able to change; without a ``sub``, the same token."""
+    if one.login != "forward" or other.login != "forward":
+        return False
+    if one.sub and other.sub:
+        return one.sub == other.sub
+    return hmac.compare_digest(one.token, other.token)
 
 
 def _digest(value: str) -> bytes:
@@ -447,6 +460,7 @@ def create_app(
             admin=claimed.admin,
             expires=claimed.expires,
             token=digest,
+            sub=claimed.sub,
         )
         request[OPENED] = sessions.open(opened)
         _log.info("opened a session for %s through Authentik", claimed.user)

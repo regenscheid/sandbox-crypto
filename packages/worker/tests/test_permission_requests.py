@@ -17,7 +17,13 @@ from sandbox_science.contracts import EnvironmentInfo, EnvironmentState
 from sandbox_science.contracts.permission_requests import MAX_LISTED
 from sandbox_science.contracts.worker import PROTOCOL_HEADER, PROTOCOL_VERSION
 from sandbox_science.event_store import EventStore, StoreReader
-from sandbox_science.policy.approvals import KINDS, Approvals, RequestKey, body_digest
+from sandbox_science.policy.approvals import (
+    KINDS,
+    Approvals,
+    RequestKey,
+    body_digest,
+    request_lines,
+)
 from sandbox_science.testing import FakeClock
 from sandbox_science.worker.app import create_app
 from sandbox_science.worker.artifacts import Blobs
@@ -266,6 +272,62 @@ async def test_revoking_a_grant_withdraws_its_live_answers_and_nothing_else(
         headers=headers("workspace"),
     )  # fmt: skip
     assert late.status == 409  # a withdrawn request takes no answer again
+
+
+async def test_an_answer_and_a_withdrawal_keep_the_user_who_gave_them(
+    api: tuple[TestClient[Any, Any], EventStore, Permissions],
+) -> None:
+    """Protocol 21: the answer's ``by`` and the withdrawal's are stored with the record,
+    and the middleware's ``pending --request`` names them; an answer without one names
+    nobody."""
+    client, sink, _ = api
+    alice = {"kind": "user", "user": "authentik:alice", "sub": "sub-alice"}
+    granted = escalate(sink, RequestKey.http("sbx-1", DIGEST, "GET", "data.org", 443, "/a"))
+    denied = escalate(sink, RequestKey.http("sbx-1", DIGEST, "POST", "data.org", 443, "/b"))
+    relayed = escalate(sink, RequestKey.http("sbx-1", DIGEST, "GET", "data.org", 443, "/c"))
+    path = "/v1/permission-requests/{}/answer"
+    for seq, body in (
+        (granted, {"approve": True, "scope": "host", "hours": 1, "grants": [GRANT], "by": alice}),
+        (denied, {"approve": False, "scope": "request", "by": {"user": "user"}}),
+        (relayed, {"approve": True, "scope": "request", "hours": 1, "grants": [GRANT]}),
+    ):  # fmt: skip
+        answered = await client.post(path.format(seq), json=body, headers=headers("workspace"))
+        assert answered.status == 201, await answered.text()
+    nobody = await client.post(
+        path.format(denied), json={"approve": False, "scope": "request", "by": {"user": ""}},
+        headers=headers("workspace"),
+    )  # fmt: skip
+    assert nobody.status == 400  # a user is named, or no one is
+    bob = {"kind": "user", "user": "authentik:bob", "sub": "sub-bob"}
+    withdraw = {"project_id": "p1", "grant": GRANT, "by": bob}
+    done = await client.post(
+        "/v1/permission-grants/withdraw", json=withdraw, headers=headers("workspace")
+    )
+    assert done.status == 200, await done.text()
+    with StoreReader(sink.path) as reader:
+        records = list(reader.records(kinds=KINDS))
+    by = {
+        (record.kind, record.data()["request_seq"], record.data().get("withdrawn") is True):
+        record.data().get("by")
+        for record in records
+        if record.kind != "escalation"
+    }  # fmt: skip
+    assert by == {
+        ("approval", granted, False): alice,
+        ("denial", denied, False): {"kind": "user", "user": "user"},
+        ("approval", relayed, False): None,
+        ("denial", granted, True): bob,
+        ("denial", relayed, True): bob,
+    }
+    approvals = Approvals()
+    approvals.load(records)
+    denial = approvals.answer_to(denied)
+    assert denial is not None
+    assert denial.by is not None
+    assert (denial.by.user, denial.by.sub) == ("user", None)
+    shown = request_lines(approvals, granted)
+    assert shown is not None
+    assert shown[1].strip() == "withdrawn: its grant was revoked by authentik:bob"
 
 
 ARGS = "c" * 64

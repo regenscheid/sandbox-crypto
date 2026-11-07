@@ -11,7 +11,7 @@ from typing import Final
 
 from .keys import DEFAULT_SCOPES, check_scope
 from .ledger import APPROVAL, DENIAL, Approvals, RecordLike
-from .records import answer_payload
+from .records import AnsweredBy, answer_payload
 from .render import pending_lines, request_lines
 
 MAX_APPROVAL_HOURS: Final = 24 * 30
@@ -29,11 +29,12 @@ def prepare_answer(
     hours: float | None,
     now: datetime,
     grants: tuple[str, ...] = (),
+    by: AnsweredBy | None = None,
 ) -> tuple[str, dict[str, object]]:
     """The kind and payload of an approval or denial of request ``seq``; ValueError if invalid.
 
     The scope defaults to the request itself; an approval lasts ``hours``. ``grants`` names
-    the workspace's grants the answer comes from.
+    the workspace's grants the answer comes from, and ``by`` the user who gave it.
     """
     request = approvals.request(seq)
     if request is None:
@@ -59,7 +60,7 @@ def prepare_answer(
                 f"an approval lasts more than 0 and at most {MAX_APPROVAL_HOURS} hours"
             )
         expires = now + timedelta(hours=hours)
-    return (APPROVAL if approve else DENIAL), answer_payload(request, scope, expires, grants)
+    return (APPROVAL if approve else DENIAL), answer_payload(request, scope, expires, grants, by)
 
 
 def pending(records: Iterable[RecordLike], seq: int | None = None) -> int:

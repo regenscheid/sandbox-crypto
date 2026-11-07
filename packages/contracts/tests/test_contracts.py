@@ -24,6 +24,13 @@ from sandbox_science.contracts import (
     new_id,
     validate_relative_path,
 )
+from sandbox_science.contracts.model import UserName
+from sandbox_science.contracts.permission_requests import (
+    MAX_ANSWERER,
+    AnsweredBy,
+    GrantWithdrawal,
+    WorkerPermissionAnswer,
+)
 
 CONTEXT = ExecutionContext(project_id="p1", session_id="s1", environment_id="env1")
 REQUEST = TypeAdapter[ExecutionRequest](ExecutionRequest)
@@ -234,3 +241,42 @@ def test_provisioning_requests_refuse_what_is_no_package(
     request = {"operation_id": "op", "context": CONTEXT, "purpose": "x", **fields}
     with pytest.raises(ValidationError, match=message):
         ProvisionRequest.model_validate(request)
+
+
+def test_an_answer_and_a_withdrawal_may_name_the_user_who_gave_them() -> None:
+    """Protocol 21: ``by`` names the user, with an Authentik login's ``sub``; it is
+    optional, for an answer the workspace gives on its own."""
+    by = {"kind": "user", "user": "authentik:alice", "sub": "sub-alice"}
+    answer = WorkerPermissionAnswer.model_validate({"approve": True, "scope": "call", "by": by})
+    assert answer.by == AnsweredBy(user="authentik:alice", sub="sub-alice")
+    assert WorkerPermissionAnswer(approve=False, scope="call").by is None
+    withdrawal = GrantWithdrawal.model_validate(
+        {"project_id": "p1", "grant": "grant-" + "a" * 20, "by": {"user": "user"}}
+    )
+    assert withdrawal.by == AnsweredBy(user="user")
+    for wrong in ({"user": ""}, {"kind": "agent", "user": "x"}, {"user": "u", "role": "admin"}):
+        with pytest.raises(ValidationError):
+            AnsweredBy.model_validate(wrong)
+    with pytest.raises(ValidationError):
+        AnsweredBy(user="u", sub="s" * (MAX_ANSWERER + 1))
+
+
+@pytest.mark.parametrize(
+    ("name", "valid"),
+    [
+        ("user", True),
+        ("authentik:alice", True),
+        ("authentik:Ada Lovelace", True),
+        ("authentik:" + "é" * 59, True),  # 128 bytes
+        ("authentik:" + "é" * 60, False),
+        ("", False),
+        ("authentik:eve\nadmin", False),
+    ],
+)
+def test_a_user_name_is_printable_and_fits_the_records(name: str, valid: bool) -> None:
+    adapter = TypeAdapter(UserName)
+    if valid:
+        assert adapter.validate_python(name) == name
+    else:
+        with pytest.raises(ValidationError):
+            adapter.validate_python(name)

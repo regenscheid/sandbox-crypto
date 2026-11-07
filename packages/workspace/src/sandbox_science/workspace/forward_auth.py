@@ -26,7 +26,10 @@ user, a JWT. The settings pin how it is signed (``algorithm``), exactly one of:
 - the signature verifies, ``iss`` is exactly the configured issuer, ``aud`` names the
   configured audience (the provider's client ID), and ``exp`` has not passed, with
   ``LEEWAY_SECONDS`` of leeway (also for ``iat`` and ``nbf``);
-- ``preferred_username`` is a non-empty name without control characters, and ``groups``
+- ``sub`` is a non-empty name without control characters, at most ``MAX_SUB``
+  characters: the user's stable identifier, which names them whatever their username;
+- ``preferred_username`` is a non-empty name without control characters whose author,
+  ``authentik:<username>``, fits the records' names (``MAX_USER_BYTES``), and ``groups``
   is a list of names that contains the configured user group.
 
 The admin group, when configured, decides ``admin``; without one every admitted user is
@@ -74,6 +77,11 @@ MAX_JWKS_BYTES: Final = 64 * 1024
 MAX_KEYS: Final = 32
 MAX_USER: Final = 150
 """Authentik's own limit on a username."""
+MAX_USER_BYTES: Final = 118
+"""The longest username, in UTF-8, whose author ``authentik:<username>`` fits the 128 bytes
+the control store's records give a user's name."""
+MAX_SUB: Final = 255
+"""The longest ``sub`` believed: Authentik's are a hash, an ID, a username or an email."""
 MAX_GROUPS: Final = 512
 LEEWAY_SECONDS: Final = 30.0
 REFRESH_SECONDS: Final = 900.0
@@ -199,16 +207,18 @@ class Claimed:
     """Who a believed token names."""
 
     user: str
+    sub: str
+    """The token's ``sub``: who the user is, whatever their username."""
     admin: bool
     expires: float
     """Until when the token is believed, in seconds since the epoch: its ``exp`` with the
     leeway verification allows, so that a session opened from it lasts exactly as long."""
 
 
-def _name(value: object) -> bool:
+def _name(value: object, limit: int = MAX_USER) -> bool:
     return (
         isinstance(value, str)
-        and 0 < len(value) <= MAX_USER
+        and 0 < len(value) <= limit
         and value == value.strip()
         and not any(unicodedata.category(char).startswith("C") for char in value)
     )
@@ -380,8 +390,11 @@ class Verifier:
 
     def _claimed(self, claims: Mapping[str, object]) -> Claimed:
         settings = self.settings
+        sub = claims.get("sub")
+        if not _name(sub, MAX_SUB):
+            raise TokenRefusedError("the token names no usable subject (sub)")
         user = claims.get("preferred_username")
-        if not _name(user):
+        if not _name(user) or len(cast(str, user).encode()) > MAX_USER_BYTES:
             raise TokenRefusedError("the token names no usable username")
         groups = claims.get("groups")
         if not isinstance(groups, list):
@@ -396,4 +409,4 @@ class Verifier:
             raise TokenRefusedError("the token's expiry is not a time")
         admin = settings.admin_group is None or settings.admin_group in names
         believed = float(expires) + LEEWAY_SECONDS
-        return Claimed(user=cast(str, user), admin=admin, expires=believed)
+        return Claimed(user=cast(str, user), sub=cast(str, sub), admin=admin, expires=believed)

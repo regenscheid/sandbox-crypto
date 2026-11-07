@@ -28,7 +28,9 @@ Keys come in three kinds, each with the scopes an answer can take:
 An answer the workspace relays names the grants it comes from (D97). When the user
 revokes one, the worker withdraws each ``http`` or ``mcp`` request a live approval naming
 it answers: a denial marked ``withdrawn``, after which the request's approvals apply no
-longer. It denies nothing, so the next try is recorded as a new request.
+longer. It denies nothing, so the next try is recorded as a new request. An answer or a
+withdrawal the workspace relays also names the user who gave it (``by``): an operator sees
+it, and nothing an answer decides depends on it.
 
 The package's modules: ``keys`` (what a request asks for, and the scopes of answers),
 ``records`` (the typed payloads of the records), ``ledger`` (the fold of the records, and
@@ -69,6 +71,7 @@ from .records import (
     VALID_UNTIL,
     WITHDRAWN,
     Answer,
+    AnsweredBy,
     PermissionRequest,
     answer_payload,
     withdrawal_payload,
@@ -89,6 +92,7 @@ __all__ = [
     "VALID_UNTIL",
     "WITHDRAWN",
     "Answer",
+    "AnsweredBy",
     "Approvals",
     "Approved",
     "Denied",

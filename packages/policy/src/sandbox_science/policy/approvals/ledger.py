@@ -16,7 +16,7 @@ from sandbox_science.policy.reasons import APPROVAL_DENIED, APPROVAL_REQUIRED, E
 
 from . import grants
 from .keys import KEY_FIELDS, RequestKey
-from .records import Answer, AnswerPayload, PermissionRequest, RequestPayload
+from .records import Answer, AnsweredBy, AnswerPayload, PermissionRequest, RequestPayload
 
 ESCALATION: Final = "escalation"
 APPROVAL: Final = "approval"
@@ -91,6 +91,8 @@ class Approvals:
         self._answered: set[int] = set()
         self._withdrawn: set[int] = set()
         """The requests the worker withdrew: closed for good."""
+        self._revoked_by: dict[int, AnsweredBy] = {}
+        """Who revoked the grant a withdrawn request's approval came from, when named."""
 
     @property
     def last_seq(self) -> int:
@@ -144,11 +146,13 @@ class Approvals:
             # try is recorded as a new request.
             self._withdrawn.add(answer.request_seq)
             self._answered.add(answer.request_seq)
+            if answer.by is not None:
+                self._revoked_by[answer.request_seq] = answer.by
             return
         self._answers.append(
             Answer(
                 record.seq, answer.request_seq, kind, answer.target, answer.scope,
-                answer.expires, answer.grants,
+                answer.expires, answer.grants, answer.by,
             )
         )  # fmt: skip
         self._answered.add(answer.request_seq)
@@ -250,6 +254,11 @@ class Approvals:
         """Whether the worker withdrew request ``seq``: nothing grants it again."""
         with self._lock:
             return seq in self._withdrawn
+
+    def revoked_by(self, seq: int) -> AnsweredBy | None:
+        """Who revoked the grant whose withdrawal closed request ``seq``, when named."""
+        with self._lock:
+            return self._revoked_by.get(seq)
 
     def granted_by(self, grant: str, now: datetime) -> list[int]:
         """The ``http`` and ``mcp`` requests, not withdrawn, that a live approval naming the

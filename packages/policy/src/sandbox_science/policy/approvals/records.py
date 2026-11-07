@@ -37,6 +37,24 @@ MAX_ANSWER_GRANTS: Final = 16
 """Grants one answer may name as its source."""
 VALID_UNTIL: Final = "valid_until"
 """A ``packages`` request's own deadline: it grants nothing after it."""
+MAX_ANSWERER: Final = 255
+"""The longest name or ``sub`` an answer's user is shown with."""
+
+
+@dataclass(frozen=True, slots=True)
+class AnsweredBy:
+    """The user an answer's record names (``by``), as the workspace relayed them: their
+    name in its records and, for a login through Authentik, the token's ``sub``. Shown to
+    an operator only: nothing an answer decides depends on it."""
+
+    user: str
+    sub: str | None = None
+
+    def payload(self) -> dict[str, object]:
+        found: dict[str, object] = {"kind": "user", "user": self.user}
+        if self.sub is not None:
+            found["sub"] = self.sub
+        return found
 
 
 def _key(value: object) -> RequestKey:
@@ -76,6 +94,26 @@ def _integer(value: object) -> int:
     if not isinstance(value, int):
         raise ValueError("not an integer")
     return int(value)
+
+
+def _answerer_text(value: object) -> str | None:
+    if not isinstance(value, str) or not 0 < len(value) <= MAX_ANSWERER:
+        return None
+    return value if value.isprintable() else None
+
+
+def _answerer(value: object) -> AnsweredBy | None:
+    """An answer's ``by``; anything malformed is not shown, and does not make the answer
+    unreadable."""
+    if isinstance(value, AnsweredBy) or value is None:
+        return value
+    if not isinstance(value, dict):
+        return None
+    fields = cast(dict[str, object], value)
+    user = _answerer_text(fields.get("user"))
+    if fields.get("kind") != "user" or user is None:
+        return None
+    return AnsweredBy(user, _answerer_text(fields.get("sub")))
 
 
 MAX_TIMEOUT_SECONDS: Final = 10**12
@@ -149,7 +187,8 @@ class RequestPayload(_Payload):
 class AnswerPayload(_Payload):
     """An ``approval`` or ``denial`` record's payload. A denial marked ``withdrawn`` is the
     worker closing a request for good. ``grants`` names the workspace's grants an answer
-    comes from (D97), so that revoking one can end it."""
+    comes from (D97), so that revoking one can end it, and ``by`` the user who answered or
+    revoked the grant."""
 
     request_seq: Integer
     scope: str
@@ -157,6 +196,7 @@ class AnswerPayload(_Payload):
     expires: Time | None = None
     withdrawn: Annotated[bool, BeforeValidator(lambda value: value is True)] = False
     grants: Annotated[tuple[GrantName, ...], Field(max_length=MAX_ANSWER_GRANTS)] = ()
+    by: Annotated[AnsweredBy | None, BeforeValidator(_answerer)] = None
 
     @model_validator(mode="after")
     def _scope(self) -> Self:
@@ -214,6 +254,8 @@ class Answer:
     expires: datetime | None
     grants: tuple[str, ...] = ()
     """The workspace's grants the answer comes from."""
+    by: AnsweredBy | None = None
+    """The user who answered, when the workspace named one."""
 
     def live(self, now: datetime) -> bool:
         return self.expires is None or now < self.expires
@@ -227,9 +269,10 @@ def answer_payload(
     scope: str,
     expires: datetime | None,
     grants: tuple[str, ...] = (),
+    by: AnsweredBy | None = None,
 ) -> dict[str, object]:
     """The payload of an approval or a denial of ``request``, naming the grants it comes
-    from, if any."""
+    from and the user who gave it, if any."""
     payload: dict[str, object] = {
         "request_seq": request.seq,
         "scope": scope,
@@ -238,13 +281,18 @@ def answer_payload(
     }
     if grants:
         payload["grants"] = list(grants)
+    if by is not None:
+        payload["by"] = by.payload()
     return payload
 
 
-def withdrawal_payload(seq: int, key: RequestKey, reason: str) -> dict[str, object]:
+def withdrawal_payload(
+    seq: int, key: RequestKey, reason: str, by: AnsweredBy | None = None
+) -> dict[str, object]:
     """The payload of the denial with which the worker closes request ``seq`` for good,
-    built from its key alone, so that no read of the store is needed."""
-    return {
+    built from its key alone, so that no read of the store is needed, naming the user who
+    revoked its grant, if one did."""
+    payload: dict[str, object] = {
         "request_seq": seq,
         "scope": DEFAULT_SCOPES[key.kind],
         "target": key.payload(),
@@ -252,3 +300,6 @@ def withdrawal_payload(seq: int, key: RequestKey, reason: str) -> dict[str, obje
         "reason": reason[:500],
         WITHDRAWN: True,
     }
+    if by is not None:
+        payload["by"] = by.payload()
+    return payload
