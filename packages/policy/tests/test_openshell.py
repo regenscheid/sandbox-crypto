@@ -25,7 +25,7 @@ from sandbox_science.policy import (
     load_policy,
     parse_policy,
 )
-from sandbox_science.policy.hosts import floor_reason, is_public
+from sandbox_science.policy.hosts import IPNetwork, floor_reason, is_public
 from sandbox_science.policy.openshell import (
     BASELINE_READ_ONLY,
     BASELINE_READ_WRITE,
@@ -644,6 +644,33 @@ def test_admission_ranges_leave_out_addresses_the_library_always_denies() -> Non
     for ordinary in ("8.8.8.8", "1.2.3.5", "168.63.129.17", "2606:4700:4700::1111"):
         assert covered(ordinary), ordinary
     assert not covered("10.0.0.5")
+
+
+def test_public_ranges_leave_out_the_deployments_own_addresses() -> None:
+    # A name the sandbox picks may resolve to the owner's WAN address or IPv6 prefix;
+    # the ranges OpenShell checks the dialled address against leave them out.
+    floor = HardFloor(owner_addresses=frozenset({"34.120.0.0/16", "8.8.4.4", "2600:1f00::/32"}))
+    for ranges in (admission_ranges(EXAMPLE, OPEN, floor), mcp_server_ranges(OPEN, floor)):
+        networks = [ipaddress.ip_network(block) for block in ranges]
+
+        def covered(address: str, networks: list[IPNetwork] = networks) -> bool:
+            return any(ipaddress.ip_address(address) in network for network in networks)
+
+        for owner in ("34.120.0.1", "34.120.255.255", "8.8.4.4", "2600:1f00::1"):
+            assert not covered(owner), owner
+        for ordinary in ("34.121.0.1", "8.8.4.5", "8.8.8.8", "2600:1f01::1"):
+            assert covered(ordinary), ordinary
+    assert admission_ranges(EXAMPLE, OPEN, HardFloor()) == RANGES
+
+
+def test_the_deployments_own_addresses_are_never_admitted_on_demand() -> None:
+    floor = HardFloor(owner_addresses=frozenset({"93.184.215.0/24"}))
+
+    def refusal(host: str) -> str | None:
+        return admission_refusal(EXAMPLE, TARGETS.sandbox, host, 443, ceiling=OPEN, floor=floor)
+
+    assert "one of the deployment's own addresses" in (refusal("93.184.215.14") or "")
+    assert refusal("93.184.216.14") is None
 
 
 def test_compiled_names_are_exactly_its_endpoints() -> None:

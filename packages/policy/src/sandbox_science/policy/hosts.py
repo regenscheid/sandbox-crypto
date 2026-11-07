@@ -16,6 +16,7 @@ from enum import IntEnum
 from typing import Final
 
 IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
+IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
 
 _LABEL_RE: Final = re.compile(r"[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?")
 # inet_aton() and many resolvers read "2130706433", "0x7f.1" or "127.1" as IPv4
@@ -93,6 +94,24 @@ def parse_ip(host: str) -> IPAddress | None:
         return ipaddress.ip_address(host)
     except ValueError:
         return None
+
+
+def parse_network(raw: str) -> IPNetwork:
+    """Parse an IP address or CIDR, as the deployment's own addresses are listed.
+
+    An address is its single-address network. Raises ValueError for anything
+    else: names, CIDRs with host bits set, IPv6 zone IDs and the whole address
+    space (``0.0.0.0/0``, ``::/0``), which would leave nothing public.
+    """
+    try:
+        network = ipaddress.ip_network(raw, strict=True)
+    except ValueError:
+        network = None
+    if network is None or "%" in raw:
+        raise ValueError(f"invalid address {raw!r}; use an IP address or a CIDR without host bits")
+    if network.prefixlen == 0:
+        raise ValueError(f"invalid address {raw!r}; the whole address space is not an address")
+    return network
 
 
 def _embedded_ipv4(address: ipaddress.IPv6Address) -> list[ipaddress.IPv4Address]:

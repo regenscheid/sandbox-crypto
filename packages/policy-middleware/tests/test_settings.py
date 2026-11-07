@@ -48,6 +48,14 @@ def test_the_event_store_defaults_to_the_state_directory(tmp_path: Path) -> None
     assert elsewhere.event_store_path == tmp_path / "evidence" / "events.db"
 
 
+def test_owner_addresses_are_canonical_cidrs(tmp_path: Path) -> None:
+    text = DEV + 'owner_addresses = ["198.51.100.7", "2001:DB8:5::/48"]\n'
+    settings = load_settings(write(tmp_path, text))
+    assert settings.owner_addresses == ("198.51.100.7/32", "2001:db8:5::/48")
+    with pytest.raises(SettingsError, match="use an IP address or a CIDR"):
+        load_settings(write(tmp_path, DEV + 'owner_addresses = ["owner.example.org"]\n'))
+
+
 def test_local_development_without_tokens(tmp_path: Path) -> None:
     settings = load_settings(
         write(tmp_path, 'state_dir = "s"\nceiling = "c.yaml"\nallow_unauthenticated = true\n')

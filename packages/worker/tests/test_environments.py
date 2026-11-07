@@ -1531,6 +1531,29 @@ async def test_admitted_names_cannot_reach_the_deployments_admin_addresses(setup
     assert covered == []
 
 
+async def test_admitted_names_cannot_reach_the_deployments_own_addresses(setup: Setup) -> None:
+    settings = setup.environments.settings.model_copy(
+        update={"owner_addresses": ("34.120.0.0/16", "2600:1f00::/32")}
+    )
+    environments = Environments(
+        setup.settings, settings, setup.tmp / "other", {"PATH": os.environ["PATH"]}
+    )
+    assert [str(n) for n in environments.floor.owner_networks] == [
+        "34.120.0.0/16",
+        "2600:1f00::/32",
+    ]
+    setup.environments.floor = environments.floor
+    info, _ = await setup.environments.create(setup.request())
+    setup.fake.draft(info.sandbox, "34-120-9-9.sslip.io:443")
+    await DraftWatcher(setup.environments, 1.0).check("env-1", info.sandbox)
+    policies = setup.fake.read()["sandboxes"][info.sandbox]["policy"]["network_policies"]
+    [endpoint] = policies["sandbox-science-admitted"]["endpoints"]
+    blocks = [ipaddress.ip_network(block) for block in endpoint["allowed_ips"]]
+    for owner in ("34.120.9.9", "2600:1f00::1"):
+        assert not any(ipaddress.ip_address(owner) in block for block in blocks), owner
+    assert any(ipaddress.ip_address("34.121.0.1") in block for block in blocks)
+
+
 async def test_text_from_the_sandbox_is_made_printable(setup: Setup) -> None:
     info, _ = await setup.environments.create(setup.request())
     chunk = setup.fake.draft(info.sandbox, "evil\x01.example.org:443")

@@ -395,6 +395,82 @@ def test_admin_hosts_deny_only_themselves() -> None:
     assert without_admin_hosts.action == Action.ALLOW
 
 
+OWNER_FLOOR = HardFloor(owner_addresses=frozenset({"198.51.100.7", "2001:db8:5::/48"}))
+"""Documentation addresses standing for a deployment's WAN address and IPv6 prefix."""
+OPEN_POLICY = """
+    defaults: {action: allow}
+    network:
+      rules:
+        - name: owner-by-address
+          operation: http
+          match: {hosts: ["198.51.100.7", "198.51.100.8", "2001:db8:5::10", "2001:db8:6::1"]}
+          action: allow
+    """
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://198.51.100.7/",
+        "https://[2001:db8:5::10]/",
+    ],
+)
+def test_floor_denies_the_deployments_own_addresses_despite_an_exact_allow(url: str) -> None:
+    decision = decide_http(load(OPEN_POLICY), "GET", url, floor=OWNER_FLOOR)
+    assert decision.action == Action.DENY
+    assert decision.layer == "floor"
+    assert "one of the deployment's own addresses" in decision.reason
+
+
+@pytest.mark.parametrize(
+    "resolved", ["198.51.100.7", "::ffff:198.51.100.7", "64:ff9b::c633:6407", "2001:db8:5::1"]
+)
+def test_floor_denies_names_that_resolve_to_the_deployments_own_addresses(resolved: str) -> None:
+    decision = evaluate_request(
+        client_request("GET", "https://research.example.org/"),
+        load("defaults: {action: allow}\n"),
+        ceiling=PoolCeiling.unrestricted(),
+        floor=OWNER_FLOOR,
+        resolved=(resolved,),
+    )
+    assert decision.action == Action.DENY
+    assert decision.layer == "floor"
+    assert f"resolves to {resolved}" in decision.reason
+
+
+def test_owner_addresses_deny_only_their_own_ranges() -> None:
+    policy = load(OPEN_POLICY)
+    assert decide_http(policy, "GET", "https://198.51.100.8/", floor=OWNER_FLOOR).action == (
+        Action.ALLOW
+    )
+    assert decide_http(policy, "GET", "https://[2001:db8:6::1]/", floor=OWNER_FLOOR).action == (
+        Action.ALLOW
+    )
+    assert decide_http(policy, "GET", "https://198.51.100.7/").action == Action.ALLOW
+
+
+@pytest.mark.parametrize(
+    ("addresses", "message"),
+    [
+        ({"owner.example.org"}, "use an IP address or a CIDR"),
+        ({"198.51.100.7/24"}, "without host bits"),
+        ({"fe80::1%eth0"}, "use an IP address or a CIDR"),
+        ({"0.0.0.0/0"}, "the whole address space"),
+        ({f"198.51.100.{n}" for n in range(17)}, "at most 16"),
+    ],
+)
+def test_owner_addresses_are_addresses_or_canonical_cidrs(
+    addresses: set[str], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        HardFloor(owner_addresses=frozenset(addresses))
+
+
+def test_owner_addresses_take_their_canonical_cidr_form() -> None:
+    floor = HardFloor(owner_addresses=frozenset({"2001:DB8:5::/48", "198.51.100.7"}))
+    assert floor.owner_addresses == {"198.51.100.7/32", "2001:db8:5::/48"}
+
+
 def test_floor_applies_to_git_operations() -> None:
     policy = load(
         """

@@ -184,7 +184,7 @@ def _serve(settings: Settings) -> int:
         middleware = PolicyMiddleware(
             PolicyStore(settings.state_dir),
             ceiling=ceiling,
-            floor=HardFloor(frozenset(settings.admin_hosts)),
+            floor=HardFloor(frozenset(settings.admin_hosts), frozenset(settings.owner_addresses)),
             events=sink,
             requests=partial(_read_records, settings.event_store_path),
             archives=(

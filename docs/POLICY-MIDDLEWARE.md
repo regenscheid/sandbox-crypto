@@ -215,6 +215,7 @@ listen = "127.0.0.1:50051"
 state_dir = "state"
 ceiling = "pool-ceiling.yaml"
 admin_hosts = ["gateway.sandbox-science.internal"]   # added to the hard floor
+owner_addresses = ["192.0.2.7", "2001:db8:5::/48"]   # the deployment's own public addresses, IPs or CIDRs: added to the hard floor
 package_cache_url = "http://127.0.0.1:8090"          # optional: the cache from this host
 response_statuses = true                             # optional: 4xx/5xx count for detection (D103)
 

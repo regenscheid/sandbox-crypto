@@ -20,6 +20,7 @@ from sandbox_science.launcher.kubernetes_config import (
     BundleError,
     load,
     projected_files,
+    skipped_checks,
 )
 
 
@@ -474,6 +475,86 @@ def test_invalid_config_does_not_echo_sensitive_input_or_create_output(tmp_path,
     assert main(["render", "--config", str(config), "--output", str(output)]) == 1
     assert "test-secret" not in capsys.readouterr().err
     assert not output.exists()
+
+
+CLUSTER = {
+    "pod_cidrs": ["10.42.0.0/16", "fd00:42::/56"],
+    "service_cidrs": ["10.43.0.0/16"],
+    "api_server": "192.0.2.50",
+}
+"""A dual-stack cluster's own ranges, made up for the tests."""
+
+
+def with_network(**changes: object) -> dict:
+    data = values()
+    data["network"].update(changes)
+    return data
+
+
+def test_owner_addresses_take_their_canonical_form():
+    config = configured(with_network(owner_addresses=["2001:DB8:5::/48", "198.51.100.7"]))
+    assert config.network.owner_addresses == ("2001:db8:5::/48", "198.51.100.7/32")
+    assert configured().network.owner_addresses == ()
+
+
+@pytest.mark.parametrize(
+    "address", ["owner.example.org", "198.51.100.7/24", "0.0.0.0/0", "fe80::1%eth0"]
+)
+def test_an_owner_address_is_an_address_or_a_canonical_cidr_and_its_error_names_no_value(
+    tmp_path, address
+):
+    config = tmp_path / "deployment.toml"
+    config.write_text(toml.dumps(with_network(owner_addresses=["198.51.100.8", address])))
+    with pytest.raises(BundleError, match=r"network\.owner_addresses\.1: use an IP address") as e:
+        load(config)
+    assert address not in str(e.value)
+
+
+@pytest.mark.parametrize(
+    ("key", "cidr", "where"),
+    [
+        ("app_egress", "10.42.7.0/24", "network.cluster.pod_cidrs[0]"),
+        ("app_egress", "10.0.0.0/8", "network.cluster.pod_cidrs[0]"),
+        ("pool_egress", "fd00:42:0:1::/64", "network.cluster.pod_cidrs[1]"),
+        ("pool_egress", "10.43.0.1/32", "network.cluster.service_cidrs[0]"),
+        ("app_egress", "192.0.2.50/32", "network.cluster.api_server"),
+    ],
+)
+def test_an_egress_cidr_overlapping_the_clusters_own_ranges_is_refused(tmp_path, key, cidr, where):
+    entry = {"peer": {"cidr": cidr}, "ports": [443]}
+    data = with_network(cluster=CLUSTER, **{key: [entry]})
+    with pytest.raises(ValidationError, match="overlaps"):
+        configured(data)
+    config = tmp_path / "deployment.toml"
+    config.write_text(toml.dumps(data))
+    with pytest.raises(BundleError) as refused:
+        load(config)
+    assert f"network.{key}[0].peer.cidr overlaps {where}" in str(refused.value)
+    assert cidr not in str(refused.value)
+
+
+def test_egress_outside_the_clusters_ranges_passes_and_nothing_is_skipped():
+    data = with_network(
+        cluster=CLUSTER,
+        pool_egress=[
+            {"peer": {"cidr": "192.0.2.51/32"}, "ports": [443]},
+            {"peer": {"cidr": "2001:db8:7::/48"}, "ports": [443]},
+            {"peer": {"namespace_labels": {"kubernetes.io/metadata.name": "garage"}}, "ports": [1]},
+        ],
+    )
+    assert skipped_checks(configured(data)) == ()
+
+
+def test_without_the_clusters_ranges_the_overlap_check_is_skipped_and_said(tmp_path, capsys):
+    data = with_network(app_egress=[{"peer": {"cidr": "10.42.7.0/24"}, "ports": [443]}])
+    assert skipped_checks(configured(data))
+    config = tmp_path / "deployment.toml"
+    config.write_text(toml.dumps(data))
+    assert main(["check", "--config", str(config)]) == 0
+    assert "skipped: egress CIDRs not checked" in capsys.readouterr().out
+    config.write_text(toml.dumps(with_network(cluster=CLUSTER)))
+    assert main(["check", "--config", str(config)]) == 0
+    assert "skipped" not in capsys.readouterr().out
 
 
 def test_output_symlink_is_never_followed(tmp_path):

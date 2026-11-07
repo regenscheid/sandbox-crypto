@@ -332,6 +332,7 @@ def worker_settings(site: Site, bundle: BundleConfig, digests: dict[str, str]) -
             "targets": f"{PRIVATE}/targets.yaml",
             "ceiling": f"{PRIVATE}/ceiling.yaml",
             "admin_hosts": _admin_hosts(site),
+            "owner_addresses": list(bundle.network.owner_addresses),
             **site.worker.environments(),
             "profiles": {name: profile.image for name, profile in site.profiles.items()},
             "kubernetes": {
@@ -379,6 +380,7 @@ def middleware_settings(site: Site, bundle: BundleConfig) -> dict[str, Any]:
         "state_dir": f"{DATA}/middleware",
         "ceiling": f"{PRIVATE}/ceiling.yaml",
         "admin_hosts": _admin_hosts(site),
+        "owner_addresses": list(bundle.network.owner_addresses),
         "tls": _tls("middleware"),
         "tokens": tokens,
     }

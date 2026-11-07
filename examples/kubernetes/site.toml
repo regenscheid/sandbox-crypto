@@ -100,6 +100,7 @@ gateway_id = "openshell"                  # the chart's default
 # registration = "sandbox-science-policy" # the middleware's registration name
 jwt_public_key = "secure/gateway-jwt-public.pem"   # from OpenShell's own Secrets
 # admin_hosts = []                        # besides the gateway's host
+# the deployment's own public addresses go in the bundle's network.owner_addresses
 
 [openshell.manager]
 ca = "secure/manager/ca.crt"
