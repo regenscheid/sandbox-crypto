@@ -57,6 +57,21 @@ def test_local_development_without_tokens(tmp_path: Path) -> None:
     assert settings.package_cache_url is None
 
 
+def test_the_cache_attribution_key_is_optional_and_read_from_a_private_file(
+    tmp_path: Path,
+) -> None:
+    assert load_settings(write(tmp_path, DEV)).cache_attribution_key() is None
+    settings = load_settings(write(tmp_path, DEV + 'cache_attribution_key_file = "cache.key"\n'))
+    assert settings.cache_attribution_key_file == tmp_path / "cache.key"
+    key = tmp_path / "cache.key"
+    key.write_bytes(b"a-made-up-attribution-key-for-tests-only\n")
+    key.chmod(0o600)
+    assert settings.cache_attribution_key() == b"a-made-up-attribution-key-for-tests-only"
+    key.chmod(0o644)
+    with pytest.raises(SettingsError, match="private regular file"):
+        settings.cache_attribution_key()
+
+
 @pytest.mark.parametrize(
     "url", ["http://127.0.0.1:8090", "https://package-cache.internal", "http://[::1]:8090"]
 )

@@ -57,6 +57,7 @@ from sandbox_science.policy.approvals import (
     http_summary,
     network_max_grant,
 )
+from sandbox_science.policy.cache_attribution import ATTRIBUTION_HEADER, sign
 from sandbox_science.policy.classification import ServerClassification
 from sandbox_science.policy.detection import (
     ACTION_URL,
@@ -369,6 +370,7 @@ class PolicyMiddleware:
         response_statuses: bool = False,
         listing_report_grace: timedelta = LISTING_REPORT_GRACE,
         inspection: Inspection | None = None,
+        cache_attribution_key: bytes | None = None,
     ) -> None:
         """``archives``, when given, names the opam packages of escalated opam archives.
 
@@ -384,9 +386,12 @@ class PolicyMiddleware:
         before the server's non-read calls ask (D98). ``inspection``, when given, records
         the arguments and answers of the MCP calls sandboxes send servers directly, and
         checks the answers for the policy's patterns (it needs ``listings``, whose response
-        binding it uses).
+        binding it uses). ``cache_attribution_key``, when given, is the key shared with the
+        package cache: each request allowed to the cache is attributed to its sandbox with it
+        (``sandbox_science.policy.cache_attribution``).
         """
         self.listings = listings
+        self._cache_attribution_key = cache_attribution_key
         self.inspection = inspection if listings is not None else None
         self._store = store
         self._ceiling = ceiling
@@ -559,8 +564,19 @@ class PolicyMiddleware:
         verdict = self._verdict(facts, loaded, decision, operation)
         if verdict.allowed and destination == ref.package_cache:
             # The cache budgets upstream fetches by sandbox; a sandbox cannot name another.
-            verdict = dataclasses.replace(verdict, headers=((SANDBOX_HEADER, facts.sandbox_id),))
+            verdict = dataclasses.replace(verdict, headers=self._cache_headers(facts))
         return verdict
+
+    def _cache_headers(self, facts: HttpRequestFacts) -> tuple[tuple[str, str], ...]:
+        """The headers naming an allowed request's sandbox to the cache, and with the shared
+        key the HMAC that lets the cache trust the name."""
+        named = (SANDBOX_HEADER, facts.sandbox_id)
+        key = self._cache_attribution_key
+        if key is None:
+            return (named,)
+        target = facts.path + (f"?{facts.query}" if facts.query else "")
+        value = sign(key, facts.sandbox_id, facts.method, target, self._now().timestamp())
+        return (named, (ATTRIBUTION_HEADER, value))
 
     def _verdict(
         self,
