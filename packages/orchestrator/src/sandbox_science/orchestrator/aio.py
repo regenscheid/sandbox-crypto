@@ -17,6 +17,27 @@ from sandbox_science.contracts.clock import SYSTEM_CLOCK, Clock, wait_or_sleep
 _log = logging.getLogger(__name__)
 
 
+def _shielded[T](task: asyncio.Future[T]) -> asyncio.Future[T]:
+    """A future that settles as ``task`` does and whose cancellation leaves ``task``
+    running: ``asyncio.shield`` without the error it logs, from Python 3.14, when the
+    task fails after its waiter was cancelled. The callers here raise or log that
+    failure themselves, so asyncio's report would be a second one."""
+    waiter: asyncio.Future[T] = asyncio.get_running_loop().create_future()
+
+    def relay(done: asyncio.Future[T]) -> None:
+        if waiter.done():
+            return
+        if done.cancelled():
+            waiter.cancel()
+        elif (failure := done.exception()) is not None:
+            waiter.set_exception(failure)
+        else:
+            waiter.set_result(done.result())
+
+    task.add_done_callback(relay)
+    return waiter
+
+
 async def held[T](work: Awaitable[T]) -> tuple[T, bool]:
     """``work``'s result, waited for through repeated caller cancellation, and whether the
     caller was cancelled meanwhile: a caller that must clean up what ``work`` returned
@@ -27,7 +48,7 @@ async def held[T](work: Awaitable[T]) -> tuple[T, bool]:
     cancelled = False
     while True:
         try:
-            return await asyncio.shield(task), cancelled
+            return await _shielded(task), cancelled
         except asyncio.CancelledError:
             cancelled = True
             if task.done():
@@ -104,7 +125,7 @@ class OwnedExecutor:
         self._work.add(task)
         task.add_done_callback(self._finished)
         try:
-            return await asyncio.shield(task)
+            return await _shielded(task)
         except asyncio.CancelledError:
             if not task.done():
                 self._detached.add(task)  # nobody awaits it now; _finished reports it
