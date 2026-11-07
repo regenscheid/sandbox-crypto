@@ -1,6 +1,6 @@
 # Threat model and isolation tiers
 
-Date: 2026-10-10. Proposed by the plan review ([critical review](../.agents/critical-review.md), finding C1), revised the same day with the user's priorities. Confirmed on 2026-10-14 as D43, adopted under the owner's instruction to proceed with the refactoring plan's recommendations. It is the design the controls follow, not a list of what is built; the built controls are described in [worker](WORKER.md), [policy middleware](POLICY-MIDDLEWARE.md), [package cache](PACKAGE-CACHE.md), [MCP connectors](MCP-CONNECTORS.md) and [workspace](WORKSPACE.md). It states what the isolation, secrets and monitoring controls in [architecture](ARCHITECTURE.md) and [monitoring](MONITORING.md) protect, and from whom.
+Date: 2026-10-10. Proposed by the plan review ([critical review](../.agents/critical-review.md), finding C1), revised the same day with the user's priorities. Confirmed on 2026-10-14 as D43, adopted under the owner's instruction to proceed with the refactoring plan's recommendations. It is the design the controls follow, and each row says which of its controls are built and which are not; the built controls are described in detail in [worker](WORKER.md), [policy middleware](POLICY-MIDDLEWARE.md), [package cache](PACKAGE-CACHE.md), [MCP connectors](MCP-CONNECTORS.md) and [workspace](WORKSPACE.md). It states what the isolation, secrets and monitoring controls in [architecture](ARCHITECTURE.md) and [monitoring](MONITORING.md) protect, and from whom.
 
 ## Primary concern: agentic workers overreaching
 
@@ -37,7 +37,7 @@ Settled 2026-10-23 (D95):
 
 ## Reads and effects
 
-Settled 2026-10-23 (D95); not built. **Reads are free and recorded; effects are gated by approval.** What counts as an effect is set by effect classes and per-server classification (D96) and answered under admin ceilings and user grants (D97).
+Settled 2026-10-23 (D95). Built: the reads-free defaults and the lockdown modes below ([policy](POLICY.md#lockdown-modes-d95)), the owner-address floor and the cluster-range check ([scope](#scope-and-assumptions)), and the rate, shape and daily-ceiling holds as D103's detect-and-hold rules, offline ([policy middleware](POLICY-MIDDLEWARE.md#detect-and-hold-d103)). Not built: the reviewed list of POST endpoints that only read. **Reads are free and recorded; effects are gated by approval.** What counts as an effect is set by effect classes and per-server classification (D96) and answered under admin ceilings and user grants (D97).
 
 - Effects that a GET triggers are accepted and reviewed after the fact from the record.
 - POST endpoints that only read are admitted from a reviewed list.
