@@ -1747,35 +1747,83 @@ def test_the_rendered_maintain_command_parses():
     assert artifacts(command[1:]) == 1
 
 
-def test_maintenance_receives_only_controls_object_store_sdk_files():
-    data = values()
-    data["secrets"]["control"]["extra_files"] = ["s3-credentials", "s3-config", "s3-ca.crt"]
+def control_with_storage(data: dict | None = None) -> dict:
+    data = values() if data is None else data
+    data["secrets"]["control"]["extra_files"] = [
+        "s3-credentials",
+        "s3-config",
+        "s3-ca.crt",
+        "s3-reader-credentials",
+    ]
     data["control"] = {
         "environment": {
             "AWS_SHARED_CREDENTIALS_FILE": "/private/s3-credentials",
             "AWS_CONFIG_FILE": "/private/s3-config",
             "AWS_CA_BUNDLE": "/private/s3-ca.crt",
             "AWS_PROFILE": "artifact-writer",
+            "AWS_REGION": "garage",
             "HOME": "/var/lib/sandbox-science/control-home",
         }
     }
-    pod_spec = maintenance_pod(objects(configured(with_maintenance(data))))
+    return data
+
+
+def test_maintenance_verifies_with_a_read_only_key_never_controls_own():
+    data = with_maintenance(
+        control_with_storage(),
+        storage_credentials="s3-reader-credentials",
+        storage_profile="artifact-reader",
+    )
+    pod_spec = maintenance_pod(objects(configured(data)))
     (init,) = pod_spec["initContainers"]
     assert init["name"] == "copy-storage"
     volumes = {volume["name"]: volume for volume in pod_spec["volumes"]}
     secret = volumes["storage-source"]["secret"]
     assert secret["secretName"] == "test-control"
-    assert [item["key"] for item in secret["items"]] == ["s3-ca.crt", "s3-config", "s3-credentials"]
+    # Control's store settings and CA, and the reader's key: never control's credentials.
+    assert [item["key"] for item in secret["items"]] == [
+        "s3-ca.crt",
+        "s3-config",
+        "s3-reader-credentials",
+    ]
     assert volumes["storage-credentials"]["emptyDir"]["medium"] == "Memory"
     (container,) = pod_spec["containers"]
     environment = {item["name"]: item["value"] for item in container["env"]}
-    assert environment["AWS_PROFILE"] == "artifact-writer"
-    assert environment["AWS_SHARED_CREDENTIALS_FILE"] == "/private/s3-credentials"
+    assert environment["AWS_PROFILE"] == "artifact-reader"
+    assert environment["AWS_SHARED_CREDENTIALS_FILE"] == "/private/s3-reader-credentials"
+    assert environment["AWS_CONFIG_FILE"] == "/private/s3-config"
+    assert environment["AWS_REGION"] == "garage"
     assert environment["AWS_EC2_METADATA_DISABLED"] == "true"
     assert environment["HOME"] == "/tmp"
     private = next(m for m in container["volumeMounts"] if m["mountPath"] == "/private")
     assert private["readOnly"] is True
-    assert "control.key" not in json.dumps(pod_spec)
+    rendered = json.dumps(pod_spec)
+    assert "control.key" not in rendered
+    assert '"s3-credentials"' not in rendered
+    assert "artifact-writer" not in rendered
+
+
+def test_maintenance_without_a_profile_passes_no_aws_profile():
+    data = with_maintenance(control_with_storage(), storage_credentials="s3-reader-credentials")
+    (container,) = maintenance_pod(objects(configured(data)))["containers"]
+    assert "AWS_PROFILE" not in {item["name"] for item in container["env"]}
+
+
+@pytest.mark.parametrize(
+    ("maintenance", "message"),
+    [
+        ({}, "needs storage_credentials"),
+        ({"storage_credentials": "s3-missing"}, "not one of secrets.control.extra_files"),
+        ({"storage_credentials": "s3-credentials"}, "one of control's own SDK files"),
+        ({"storage_credentials": "s3-config"}, "one of control's own SDK files"),
+    ],
+)
+def test_maintenance_refuses_to_fall_back_to_controls_writer_key(
+    maintenance: dict, message: str
+) -> None:
+    config = configured(with_maintenance(control_with_storage(), **maintenance))
+    with pytest.raises(BundleError, match=message):
+        render(config)
 
 
 def test_maintenance_pods_reach_only_dns_and_the_apps_external_flows():

@@ -254,6 +254,16 @@ class RuntimeManager:
             self._note_logged[source] = now
             say_note(kind, text[:512], since)
 
+    def _repeat(self) -> None:
+        """Log again each logged note that still holds once ``NOTE_REPEAT`` has passed,
+        noted again or not since (a runtime that exited is noted once)."""
+        now = self.clock.monotonic()
+        for source, note in self._notes.items():
+            logged = self._note_logged.get(source)
+            if logged is not None and now - logged >= NOTE_REPEAT:
+                self._note_logged[source] = now
+                say_note(note.kind, note.text, note.since)
+
     def _cleared(self, *sources: str) -> None:
         for source in sources:
             self._notes.pop(source, None)
@@ -825,6 +835,7 @@ class RuntimeManager:
             )
         else:
             self._cleared("rolled_back")
+        self._repeat()
         found = sorted(self._notes.values(), key=lambda note: _PRIORITY.index(note.kind))
         return found[0] if found else None
 

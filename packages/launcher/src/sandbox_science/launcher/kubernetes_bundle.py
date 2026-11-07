@@ -18,6 +18,7 @@ from .kubernetes_config import (
     GATEWAY_PROFILE,
     Alerts,
     BundleConfig,
+    BundleError,
     Capacity,
     ForwardAuth,
     Ingress,
@@ -853,8 +854,12 @@ ALERTS: tuple[str, ...] = (
     "SandboxScienceMcpCanaryChanged",
     "SandboxScienceMcpCanaryFailing",
     "SandboxSciencePolicyHold",
+    "SandboxScienceRuntimeBlocked",
 )
 """The rendered rules' names, in order (docs/KUBERNETES-BUNDLE.md, "Alert rules")."""
+RUNTIME_BLOCKED_HOLD = "10m"
+"""How long the runtime manager must have noted ``blocked`` (no agent runtime, and no
+automatic action to bring one up) before ``SandboxScienceRuntimeBlocked`` fires."""
 NETWORK_DROPS_NOTE = """
 # Network-policy drops: not rendered. The services' logs do not carry them: Kubernetes
 # NetworkPolicy drops are the CNI's to report, and OpenShell's sandbox network denials
@@ -989,6 +994,21 @@ def alert_rules(config: BundleConfig, alerts: Alerts) -> dict[str, object]:
             "session's outward calls wait for the workspace's hold card, or one call waits "
             "for its approval.",
         ),
+        rule(
+            ALERTS[6],
+            # 8 minutes: longer than the manager's NOTE_REPEAT (5 minutes) between the
+            # records of a held note, so a block that holds stays in the window.
+            f"sum by (service, kind) (count_over_time({manager} {_event('runtime_manager_note')}"
+            ' | json kind="kind" | kind="blocked" [8m])) > 0',
+            f"no agent runtime: the runtime manager has been blocked for over "
+            f"{RUNTIME_BLOCKED_HOLD}",
+            "The runtime manager has noted blocked continuously: its automatic actions are "
+            "exhausted or refused, or the runtime exited with recover_infrastructure off, so "
+            "no agent runtime is connected and none will be until an operator acts "
+            "(request replace or bootstrap). Its status.json note says why.",
+            severity="critical",
+            hold=RUNTIME_BLOCKED_HOLD,
+        ),
     ]
     return {"groups": [{"name": f"sandbox-science-{config.name}", "rules": rules}]}
 
@@ -1057,9 +1077,11 @@ _OPERATION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 CONTROL_DATABASE = f"{DATA}/control/control.sqlite3"
 MAINTENANCE_DIR = f"{UNIT_DIR}/maintenance"
 MAINTENANCE_POLICY = "artifact-retention.toml"
-STORAGE_FILES = ("AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE", "AWS_CA_BUNDLE")
-"""Control's SDK file variables: the only keys of its Secret the trimming Pod receives."""
-STORAGE_ENVIRONMENT = (*STORAGE_FILES, "AWS_PROFILE", "AWS_REGION")
+STORAGE_FILES = ("AWS_CONFIG_FILE", "AWS_CA_BUNDLE")
+"""Control's SDK file variables whose files the trimming Pod receives: its object store's
+settings and CA, never its credentials file."""
+STORAGE_CREDENTIALS = "AWS_SHARED_CREDENTIALS_FILE"
+STORAGE_ENVIRONMENT = (*STORAGE_FILES, "AWS_REGION")
 RELEASE_DEADLINE = 3600
 RELEASE_KEEP = 7 * 86400
 OPERATION_KEEP = 3600
@@ -1114,19 +1136,37 @@ def maintenance_cursor(maintenance: Maintenance) -> str:
 
 
 def _storage_credentials(
-    config: BundleConfig, image: str
+    config: BundleConfig, maintenance: Maintenance, image: str
 ) -> tuple[list[dict[str, object]], list[dict[str, object]], dict[str, str]]:
-    """Copy only the object-store SDK files control's environment names, so the trimming
-    Pod can verify remote copies before evicting; never control's keys or tokens."""
+    """Copy the object-store SDK files the trimming Pod verifies remote copies with: the
+    read-only key's credentials file (``storage_credentials``) and control's store settings
+    and CA; never control's own credentials file, keys or tokens."""
     environment = config.control.environment
     passed = {key: environment[key] for key in STORAGE_ENVIRONMENT if key in environment}
-    files = sorted(
-        {
-            environment[key].removeprefix(f"{PRIVATE}/")
-            for key in STORAGE_FILES
-            if key in environment
-        }
-    )
+    files = {environment[key].removeprefix(f"{PRIVATE}/") for key in STORAGE_FILES if key in passed}
+    own = environment.get(STORAGE_CREDENTIALS)
+    reader = maintenance.storage_credentials
+    if reader is None and own is not None:
+        raise BundleError(
+            "[maintenance] needs storage_credentials: the key of control's Secret with a "
+            "read-only object store key for the trimming pass, which never gets control's "
+            f"own {STORAGE_CREDENTIALS} (docs/KUBERNETES-BUNDLE.md#maintenance)"
+        )
+    if reader is not None:
+        if reader not in config.secrets.control.extra_files:
+            raise BundleError(
+                f"maintenance.storage_credentials names {reader}, which is not one of "
+                "secrets.control.extra_files"
+            )
+        if own == f"{PRIVATE}/{reader}" or reader in files:
+            raise BundleError(
+                "maintenance.storage_credentials names one of control's own SDK files; "
+                "give the trimming pass a read-only key of its own"
+            )
+        files.add(reader)
+        passed[STORAGE_CREDENTIALS] = f"{PRIVATE}/{reader}"
+    if maintenance.storage_profile is not None:
+        passed["AWS_PROFILE"] = maintenance.storage_profile
     if not files:
         return [], [], passed
     init: dict[str, object] = {
@@ -1140,7 +1180,7 @@ def _storage_credentials(
             "--destination-root",
             PRIVATE,
             "--files",
-            json.dumps([[file, file] for file in files], separators=(",", ":")),
+            json.dumps([[file, file] for file in sorted(files)], separators=(",", ":")),
         ],
         "securityContext": _security(),
         "resources": _resources(_INIT),
@@ -1155,7 +1195,7 @@ def _storage_credentials(
             "secret": {
                 "secretName": config.secrets.control.name,
                 "defaultMode": 292,
-                "items": [{"key": file, "path": file} for file in files],
+                "items": [{"key": file, "path": file} for file in sorted(files)],
             },
         },
         {"name": "storage-credentials", "emptyDir": {"medium": "Memory", "sizeLimit": "4Mi"}},
@@ -1165,7 +1205,7 @@ def _storage_credentials(
 
 def _maintenance_pod(config: BundleConfig, maintenance: Maintenance) -> dict[str, object]:
     image = config.images.app
-    inits, volumes, passed = _storage_credentials(config, image)
+    inits, volumes, passed = _storage_credentials(config, maintenance, image)
     environment = {**_environment(Capacity()), **passed, **LOG_FORMAT}
     mounts: list[dict[str, object]] = [
         {"name": "data", "mountPath": f"{DATA}/control", "subPath": "control"},
