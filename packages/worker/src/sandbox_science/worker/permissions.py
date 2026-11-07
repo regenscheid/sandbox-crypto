@@ -15,10 +15,11 @@ denial is built from the request's key, which the worker holds, so a store it ca
 does not stop it; a withdrawal that fails is tried again, and the request's own deadline
 (``valid_until``) ends the grant in any case.
 
-The user's answers the workspace relays name the grants they come from (D97). When the
-user revokes a grant, the worker withdraws the HTTP and MCP requests a live approval
-naming it answers, with the same kind of denial, which for them only ends their approvals
-(``granted_by``, ``withdraw``): the middleware asks again on the next try.
+The user's answers the workspace relays name the grants they come from (D97) and the user
+who gave them (``by``), which the answer's record keeps. When the user revokes a grant,
+the worker withdraws the HTTP and MCP requests a live approval naming it answers, with the
+same kind of denial, naming the user who revoked it, which for them only ends their
+approvals (``granted_by``, ``withdraw``): the middleware asks again on the next try.
 
 The same store holds the middleware's tool-list drifts and their acceptances, which the
 classification review reads (``drifts``) and the user's acceptances, relayed by the
@@ -44,6 +45,7 @@ from sandbox_science.policy.approvals import (
     ESCALATION,
     KINDS,
     Answer,
+    AnsweredBy,
     Approvals,
     PermissionRequest,
     RequestKey,
@@ -185,14 +187,15 @@ class Permissions:
         hours: float | None,
         now: datetime,
         grants: tuple[str, ...] = (),
+        by: AnsweredBy | None = None,
     ) -> tuple[int, str]:
         """Record the user's answer to request ``seq``, which the workspace relays, as the
-        source ``workspace``, naming the grants it comes from: the record's number and
-        kind. ValueError if it cannot be answered so. Blocking."""
+        source ``workspace``, naming the grants it comes from and the user who gave it: the
+        record's number and kind. ValueError if it cannot be answered so. Blocking."""
         self.refresh()
         kind, payload = prepare_answer(
             self._approvals, seq, approve=approve, scope=scope, hours=hours, now=now,
-            grants=grants,
+            grants=grants, by=by,
         )  # fmt: skip
         try:
             record = self._store().append(kind, ANSWERS, payload)
@@ -204,9 +207,9 @@ class Permissions:
             _log.warning("request %d was answered, but the store cannot be read: %s", seq, exc)
         return record.seq, kind
 
-    def withdraw(self, seq: int, reason: str, now: datetime) -> None:
-        """Close request ``seq`` for good, answered or not, as its operation ends: a denial
-        marked ``withdrawn``. Blocking.
+    def withdraw(self, seq: int, reason: str, now: datetime, by: AnsweredBy | None = None) -> None:
+        """Close request ``seq`` for good, answered or not, as its operation ends or ``by``
+        revoked its grant: a denial marked ``withdrawn``. Blocking.
 
         The denial is built from the request's key, as this worker recorded it or the store
         holds it, so that a failed read does not stop it; a second one is harmless.
@@ -226,7 +229,7 @@ class Permissions:
                 raise PermissionStoreError(f"request {seq} is not known: it cannot be withdrawn")
             key = request.key
         try:
-            self._store().append(DENIAL, SOURCE, withdrawal_payload(seq, key, reason))
+            self._store().append(DENIAL, SOURCE, withdrawal_payload(seq, key, reason, by))
         except EventStoreError as exc:
             raise PermissionStoreError(f"request {seq} could not be withdrawn: {exc}") from exc
         try:

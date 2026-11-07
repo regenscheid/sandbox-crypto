@@ -8,7 +8,14 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from pydantic import ValidationError
 
-from sandbox_science.policy.approvals import PermissionRequest, RequestKey, files_digest
+from sandbox_science.policy.approvals import (
+    AnsweredBy,
+    PermissionRequest,
+    RequestKey,
+    answer_payload,
+    files_digest,
+    withdrawal_payload,
+)
 from sandbox_science.policy.approvals.records import AnswerPayload, RequestPayload
 
 NOW = datetime(2026, 10, 14, 12, 0, tzinfo=UTC)
@@ -186,3 +193,40 @@ def test_other_kinds_ignore_the_file_set_fields(extra: dict[str, object]) -> Non
 @pytest.mark.parametrize("kind", [[], {}, ["http"], 3])
 def test_a_key_whose_kind_is_not_text_is_no_key(kind: object) -> None:
     assert RequestKey.from_payload({**HTTP.payload(), "kind": kind}) is None
+
+
+@pytest.mark.parametrize(
+    ("by", "shown"),
+    [
+        (
+            {"kind": "user", "user": "authentik:alice", "sub": "s-1"},
+            AnsweredBy("authentik:alice", "s-1"),
+        ),
+        ({"kind": "user", "user": "user"}, AnsweredBy("user")),
+        ({"kind": "user", "user": "user", "sub": "x\x1b[2J"}, AnsweredBy("user")),  # not shown
+        ({"kind": "agent", "user": "user"}, None),
+        ({"kind": "user", "user": ""}, None),
+        ({"kind": "user", "user": "a" * 256}, None),
+        ("authentik:alice", None),
+        (None, None),
+    ],
+)
+def test_an_answers_user_is_read_or_left_out_never_making_it_unreadable(
+    by: object, shown: AnsweredBy | None
+) -> None:
+    # A denial whose ``by`` is malformed still denies: only the name is not shown.
+    raw = {"request_seq": 3, "scope": "request", "target": HTTP.payload(), "by": by}
+    assert AnswerPayload.model_validate(raw).by == shown
+
+
+def test_an_answers_and_a_withdrawals_payloads_name_their_user() -> None:
+    request = PermissionRequest.from_record(
+        3, NOW, RequestPayload.model_validate({"target": HTTP.payload(), "escalation": TERMS})
+    )
+    alice = AnsweredBy("authentik:alice", "s-1")
+    named = answer_payload(request, "request", None, by=alice)
+    assert named["by"] == {"kind": "user", "user": "authentik:alice", "sub": "s-1"}
+    assert "by" not in answer_payload(request, "request", None)
+    withdrawn = withdrawal_payload(3, HTTP, "grant g was revoked", AnsweredBy("user"))
+    assert withdrawn["by"] == {"kind": "user", "user": "user"}
+    assert AnswerPayload.model_validate(withdrawn).by == AnsweredBy("user")

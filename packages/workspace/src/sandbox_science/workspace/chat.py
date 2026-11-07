@@ -9,7 +9,9 @@ The workspace writes and reads the run service's records in the control store
   the message already written, so a retried write is safe. While the run that holds the
   session waits for the user's answer to a question, the message answers the oldest such
   question in the user's own words instead, and the answer names the question rather
-  than a message (PD-23). ``question_id`` is the question the page showed the message
+  than a message (PD-23). The message's author is the request's user, as the workspace
+  names its logins (identity.py); the run reads it as the user's, whoever sent it.
+  ``question_id`` is the question the page showed the message
   would answer, or null (or left out) when it showed none: another is a conflict
   (``question_changed``), and nothing is written.
 - ``GET …/sessions/{session}/messages?after=N`` lists the session's messages with their
@@ -20,8 +22,9 @@ The workspace writes and reads the run service's records in the control store
   to be made (``creating``), which takes a minute or more.
 - ``POST …/sessions/{session}/resume`` with ``{}`` resumes unfinished research work,
   or queues legacy held messages again (RS-12). Optional ``root`` selects its tree;
-  ``reasoning_effort`` plus an explicit operator ``reason`` audits effort changes
-  for new attempts only, preserving aliases, API kinds and original blueprints.
+  ``reasoning_effort`` plus an explicit operator ``reason`` audits effort changes, with the
+  request's user as their operator, for new attempts only, preserving aliases, API kinds
+  and original blueprints.
 - ``POST …/sessions/{session}/runs/{run}/cancel`` with ``{}`` asks the run service to
   cancel the run (RS-11).
 - ``GET …/sessions/{session}/runs/{run}/events?after=N&limit=M`` reads a run's events by
@@ -58,13 +61,13 @@ from sandbox_science.orchestrator.worker_client import WorkerAPIError
 from . import recovery_controls, uploads
 from .context import (
     CONTEXT,
-    USER_ID,
     WorkspaceContext,
     identifier,
     json_answer,
     json_body,
     session_record,
 )
+from .identity import operator
 from .requests import dumps
 
 PATH: Final = "/api/v0/projects/{project}/sessions/{session}"
@@ -193,7 +196,7 @@ async def post(request: web.Request) -> web.Response:
         session_record(context.projects, project, session)
         state = RunState(context.writer)
         found = state.say(
-            project, session, message_id, text, author=USER_ID or "user", answers=answers
+            project, session, message_id, text, author=operator(request), answers=answers
         )
         written = MessageAnswer(
             message=found if isinstance(found, ChatMessage) else None,
@@ -290,7 +293,7 @@ async def resume(request: web.Request) -> web.Response:
     def write() -> str:
         session_record(context.projects, project, session)
         recovery = WorkRecords(context.writer).request(
-            project, session, body.root, effort=body.effort(), operator=USER_ID or "user"
+            project, session, body.root, effort=body.effort(), operator=operator(request)
         )
         # Durable tree claims admit only their own inputs atomically. Global legacy
         # requeue here could release another tree's or a stopped branch's messages.

@@ -180,6 +180,16 @@ async def post(client: TestClient[Any, Any], path: str, body: object, status: in
     return await response.json()
 
 
+def answered_by(events: EventStore, seq: int) -> list[object]:
+    """Who each answer to request ``seq`` in the middleware's store names, oldest first."""
+    found = _read_records(events.path, 0)
+    return [
+        record.data().get("by")
+        for record in found
+        if record.kind in ("approval", "denial") and record.data().get("request_seq") == seq
+    ]
+
+
 async def until(condition: Callable[[], bool]) -> None:
     for _ in range(200):
         if condition():
@@ -445,10 +455,12 @@ async def test_with_an_admin_group_a_project_grant_is_the_admins(
     static_dir: Path,
     middleware: Middleware,
     worker_url: str,
+    events: EventStore,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """D104: a member allows once or for the session; a project grant needs the admin
-    group, and every grant names the user who gave it."""
+    group, and every grant, and every answer in the middleware's store, names the user who
+    gave it, with their Authentik ``sub``."""
     authentik = Authentik()
     client = await workspace(
         aiohttp_client, state_dir, static_dir, worker_url=worker_url, login=False,
@@ -470,6 +482,10 @@ async def test_with_an_admin_group_a_project_grant_is_the_admins(
         rows = dict(tx.sql.execute("SELECT grant_id, author FROM project_grants").fetchall())
     assert json.loads(rows[session_grant["grant_id"]])["user"] == "authentik:bob"
     assert json.loads(rows[project_grant["grant_id"]])["user"] == "authentik:carol"
+    assert answered_by(events, seq) == [{"kind": "user", "user": "authentik:bob", "sub": "sub-bob"}]
+    assert answered_by(events, other) == [
+        {"kind": "user", "user": "authentik:carol", "sub": "sub-carol"}
+    ]
     # The log names who answered each request, and how.
     assert (
         f"user action: answered mcp permission request {seq} of project p1: session by bob "
@@ -487,9 +503,11 @@ async def test_with_an_admin_group_clearing_a_hold_is_the_admins(
     static_dir: Path,
     hammered: Middleware,
     worker_url: str,
+    events: EventStore,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """D104: a member may stop a held session but not clear the hold; an admin may."""
+    """D104: a member may stop a held session but not clear the hold; an admin may. The
+    middleware's store names who cleared it, and who stopped it."""
     authentik = Authentik()
     client = await workspace(
         aiohttp_client, state_dir, static_dir, worker_url=worker_url, login=False,
@@ -507,6 +525,12 @@ async def test_with_an_admin_group_clearing_a_hold_is_the_admins(
     assert search(hammered) == ""
     again = held_seq(search(hammered))
     await _answer(client, again, "stop", "hold", member, 200)
+    assert answered_by(events, held) == [
+        {"kind": "user", "user": "authentik:carol", "sub": "sub-carol"}
+    ]
+    assert answered_by(events, again) == [
+        {"kind": "user", "user": "authentik:bob", "sub": "sub-bob"}
+    ]
     assert (
         f"user action: answered hold permission request {held} of project p1: clear by carol "
         "(forward login)"

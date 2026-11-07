@@ -13,7 +13,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import pytest
 from aiohttp import web
@@ -32,6 +32,8 @@ from .route_support import WORKER_TOKEN, workspace
 ClientFactory = Callable[..., Awaitable[TestClient[Any, Any]]]
 ServerFactory = Callable[..., Awaitable[TestServer]]
 ANSWER = "/api/v0/projects/p1/permission-requests/{}/answer"
+OPERATOR_BY: Final = {"kind": "user", "user": "user", "sub": None}
+"""The operator's login link as an answer names its user: no ``sub``."""
 
 
 class FakeWorker:
@@ -43,6 +45,8 @@ class FakeWorker:
         self.answers: list[tuple[int, dict[str, Any]]] = []
         self.named: dict[int, list[str]] = {}
         """The grants each answer names, kept apart from ``answers``."""
+        self.by: dict[int, dict[str, Any] | None] = {}
+        """The user each answer names, kept apart from ``answers``."""
         self.withdrawn: list[dict[str, Any]] = []
         self.unreachable = False
         """When set, the grant withdrawal route fails as a worker that cannot answer."""
@@ -133,6 +137,7 @@ class FakeWorker:
         seq = int(request.match_info["seq"])
         body = await request.json()
         self.named[seq] = body.pop("grants")
+        self.by[seq] = body.pop("by")
         if self.gate is not None and seq == self.gated:
             self.gated = None
             await self.gate.wait()
@@ -262,6 +267,8 @@ async def test_each_decision_sends_its_answer_and_stores_its_grant(
         (3, {"approve": True, "scope": "call", "hours": approvals.GRANT_HOURS}),
         (4, {"approve": False, "scope": "call", "hours": None}),
     ]
+    # Each answer the user gives names them, a denial too.
+    assert [fake.by[seq] for seq in (1, 2, 3, 4)] == [OPERATOR_BY] * 4
     listed = await grants(client)
     assert sorted((g["effect"], g["scope"]) for g in listed) == [
         ("communicate", "session"), ("write", "project"),
@@ -294,6 +301,9 @@ async def test_the_relay_leaves_a_request_to_the_user_answering_it(
     await asyncio.sleep(0.2)  # several relay passes more
     assert sorted(seq for seq, _ in fake.answers) == [1, 2]
     assert all(g["uses"] == 2 for g in await grants(client))
+    # The user's answer names them; the relay's names no user, only the grant.
+    assert (fake.by[1], fake.by[2]) == (OPERATOR_BY, None)
+    assert fake.named[2] == fake.named[1]
 
 
 async def test_a_scope_above_the_ceiling_is_refused_whatever_the_client_sends(
@@ -373,7 +383,7 @@ async def test_revoking_a_grant_stops_it_covering_at_once(
     revoke = f"/api/v0/projects/p1/grants/{grant['grant_id']}/revoke"
     assert (await post(client, revoke, {}))["grants"] == []
     # The answers the grant gave are withdrawn at the middleware too.
-    assert fake.withdrawn == [{"project_id": "p1", "grant": grant["grant_id"]}]
+    assert fake.withdrawn == [{"project_id": "p1", "grant": grant["grant_id"], "by": OPERATOR_BY}]
     assert (await post(client, revoke, {}))["grants"] == []  # again: nothing changes
     await post(client, "/api/v0/projects/p1/grants/grant-nope/revoke", {}, status=404)
     fake.hold(2, "submit_feedback")
@@ -440,9 +450,11 @@ async def test_a_revoke_the_worker_cannot_withdraw_says_so_and_is_retried(
     desk.network(20, "data.example.org", path="/other")
     desk.unreachable = False
     await until(lambda: bool(desk.withdrawn))  # the relay tried again
-    assert desk.withdrawn == [{"project_id": "p1", "grant": host["grant_id"]}]
+    # The retry names the user who revoked the grant, as the first try did.
+    assert desk.withdrawn == [{"project_id": "p1", "grant": host["grant_id"], "by": OPERATOR_BY}]
     await asyncio.sleep(0.2)
-    assert desk.withdrawn == [{"project_id": "p1", "grant": host["grant_id"]}]  # once only
+    once_only = [{"project_id": "p1", "grant": host["grant_id"], "by": OPERATOR_BY}]
+    assert desk.withdrawn == once_only
     assert [seq for seq, _ in desk.answers] == [10, 11]
 
 

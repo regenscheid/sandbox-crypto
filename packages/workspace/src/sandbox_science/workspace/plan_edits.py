@@ -4,8 +4,9 @@
 ``POST /api/v0/projects/{project}/sessions/{session}/plan/changes`` takes a JSON
 ``BodyChange``: an operation ID, the base version it edits, the new body and a reason.
 The plans store checks the base (a stale one is 409 with the current version) and
-replays a repeated operation. The user identity is the workspace's one USER, and the scope
-comes from the path, never from the body. Creating a plan, progress, status and approval are not
+replays a repeated operation. The edit's author is the request's user, as the workspace
+names its logins (identity.py), whom the agents read as the user; the scope comes from the
+path, never from the body. Creating a plan, progress, status and approval are not
 offered here, and a closed session's plan cannot be edited.
 """
 
@@ -33,7 +34,8 @@ from sandbox_science.orchestrator.session_plans import (
 )
 
 from . import errors
-from .context import CONTEXT, USER_ID, identifier, json_answer, read_body, session_record
+from .context import CONTEXT, identifier, json_answer, read_body, session_record
+from .identity import operator
 from .plans import PATH
 
 MAX_REQUEST_BYTES: Final = 128 * 1024
@@ -73,7 +75,7 @@ async def change(request: web.Request) -> web.Response:
     authority = PlanAuthority(
         scope=PlanScope(project_id=project, session_id=session),
         role="user",
-        user_id=USER_ID,
+        user_id=operator(request),
     )
 
     def write() -> str:

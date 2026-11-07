@@ -11,7 +11,7 @@ import re
 import secrets
 from typing import Annotated, Final
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints
 
 
 class Contract(BaseModel):
@@ -28,6 +28,20 @@ class StrictContract(Contract):
 
 Identifier = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")]
 """Project, session, environment, operation and generated IDs: printable, path-safe, short."""
+
+MAX_USER_NAME_BYTES: Final = 128
+"""The longest user's name a record keeps, in UTF-8: the control store's limit."""
+
+
+def _user_name(value: str) -> str:
+    if not value.isprintable() or not 0 < len(value.encode()) <= MAX_USER_NAME_BYTES:
+        raise ValueError(f"a user's name is printable, 1 to {MAX_USER_NAME_BYTES} bytes")
+    return value
+
+
+UserName = Annotated[str, AfterValidator(_user_name)]
+"""A user as a record names its author: ``user``, the workspace's operator, or a login's
+own name, such as ``authentik:<username>`` (D104)."""
 
 MAX_PROJECT_ID: Final = 63
 """The longest ID a new project gets: the agent runtime's sandbox is labelled with it on the

@@ -43,9 +43,13 @@ Routes:
 
 A project grant and clearing a hold are admin-only actions (identity.py, D104): with an
 admin group configured, only its members may take them, while every user may allow once,
-for the session, deny or stop. A grant's author is the user who gave or revoked it. The
-worker's record of an answer names no user: the workspace logs each answer and each
-revoke with the user's name, the request's number and the choice.
+for the session, deny or stop. A grant's author is the user who gave or revoked it. Each
+answer the user gives (once, a session or project grant, deny, clear or stop) and each
+revoke reaches the worker with the user (``by``: the name and, for an Authentik login,
+the token's ``sub``), and the worker's record of the answer, or of the withdrawal, keeps
+it; an answer the relay gives from grants names none, but names the grants, whose
+authors gave them. The workspace also logs each answer and each revoke with the user's
+name, the request's number and the choice.
 
 The relay answers each new request a grant covers, and notes the grant's use. It answers
 the request itself (an MCP call with its exact arguments, so a grant never stretches to a
@@ -72,6 +76,7 @@ from pydantic import Field, TypeAdapter, ValidationError
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, Contract, ErrorKind, Identifier
 from sandbox_science.contracts.permission_requests import (
+    AnsweredBy,
     GrantWithdrawal,
     HoldAsked,
     HttpSummary,
@@ -100,7 +105,7 @@ from sandbox_science.policy import normalize_host
 from sandbox_science.policy.approvals import offered
 
 from .context import CONTEXT, WorkspaceContext, identifier, json_answer, json_body, session_record
-from .identity import author, log_action, require_admin
+from .identity import answered_by, author, log_action, require_admin
 from .requests import document_answer, dumps
 
 _log = logging.getLogger(__name__)
@@ -209,9 +214,11 @@ class Configuration:
     relayed: set[tuple[str, int]] = field(default_factory=set[tuple[str, int]])
     """Requests answered or being answered, by project: the user's answer and the relay
     each claim a request here before they send theirs, so one request is answered once."""
-    withdrawing: set[tuple[str, str]] = field(default_factory=set[tuple[str, str]])
-    """Revoked grants, by project, whose answers the worker has not yet withdrawn: the
-    relay tries again."""
+    withdrawing: dict[tuple[str, str], AnsweredBy | None] = field(
+        default_factory=dict[tuple[str, str], AnsweredBy | None]
+    )
+    """Revoked grants, by project, whose answers the worker has not yet withdrawn, with the
+    user who revoked each: the relay tries again."""
 
     def claim(self, project: str, seq: int) -> bool:
         """Take the right to answer a request; false when someone else has it. No ``await``
@@ -470,15 +477,17 @@ async def _send(
     scope: str,
     hours: float | None,
     grants: Sequence[ProjectGrant] = (),
+    by: AnsweredBy | None = None,
 ) -> None:
-    """Send an answer, naming the grants it comes from, so that revoking one ends it."""
+    """Send an answer, naming the grants it comes from, so that revoking one ends it, and
+    the user who gave it; an answer the workspace gives on its own names none."""
     if config.worker is None:
         raise ProjectError(ErrorKind.NOT_FOUND, "permission requests are not answered here")
     named = [grant.grant_id for grant in grants] if approve else []
     await config.worker.answer_permission_request(
         item.seq,
         WorkerPermissionAnswer.model_validate(
-            {"approve": approve, "scope": scope, "hours": hours, "grants": named}
+            {"approve": approve, "scope": scope, "hours": hours, "grants": named, "by": by}
         ),
     )
 
@@ -544,7 +553,7 @@ async def answer(request: web.Request) -> web.Response:
         scope, hours = ledger_answer(held, decision.decision, granted, now)
         await _send(
             config, held, approve=decision.decision != "deny", scope=scope, hours=hours,
-            grants=granted,
+            grants=granted, by=answered_by(request),
         )  # fmt: skip
     except BaseException:
         config.release(project, seq)
@@ -583,7 +592,10 @@ async def _answer_hold(
                 RunState(context.writer).cancel(project, session, lease.run)
 
         await asyncio.to_thread(stop)
-    await _send(config, held, approve=decision.decision == "clear", scope="session", hours=None)
+    await _send(
+        config, held, approve=decision.decision == "clear", scope="session", hours=None,
+        by=answered_by(request),
+    )  # fmt: skip
     _log_answer(request, project, held, decision)
     result = AnswerResult(seq=held.seq, decision=decision.decision, kind="hold", source="worker")
     return json_answer(dumps(result.model_dump(mode="json")))
@@ -592,7 +604,7 @@ async def _answer_hold(
 def _log_answer(
     request: web.Request, project: str, held: PendingApproval, decision: Decision
 ) -> None:
-    """Log who answered the request and how: the worker's record of it names no user."""
+    """Log who answered the request and how, as the worker's record of it names them."""
     action = f"answered {held.kind} permission request {held.seq} of project {project}"
     log_action(request, f"{action}: {decision.decision}")
 
@@ -607,7 +619,7 @@ async def grants(request: web.Request) -> web.Response:
 async def revoke(request: web.Request) -> web.Response:
     project, grant = identifier(request, "project"), request.match_info["grant"]
     clock = request.app[APPROVALS].clock if APPROVALS in request.app else SYSTEM_CLOCK
-    by = author(request)
+    by, revoker = author(request), answered_by(request)
 
     def write(store: DocumentStore) -> GrantListing:
         return ProjectGrants(store).revoke(project, grant, by, clock.now())
@@ -621,7 +633,7 @@ async def revoke(request: web.Request) -> web.Response:
     # Revoked, the grant answers nothing new; the answers it gave end now too. Revoking it
     # again (a no-op in the store) tries this again.
     try:
-        await _withdraw(config, project, grant)
+        await _withdraw(config, project, grant, revoker)
     except WorkerAPIError as exc:
         raise ProjectError(
             ErrorKind.UNAVAILABLE,
@@ -632,18 +644,18 @@ async def revoke(request: web.Request) -> web.Response:
     return answered
 
 
-async def _withdraw(config: Configuration, project: str, grant: str) -> None:
-    """Have the worker withdraw the live answers revoked ``grant`` gave; until it has, the
-    relay tries again."""
+async def _withdraw(config: Configuration, project: str, grant: str, by: AnsweredBy | None) -> None:
+    """Have the worker withdraw the live answers revoked ``grant`` gave, naming the user who
+    revoked it; until it has, the relay tries again."""
     if config.worker is None:
         return
     try:
-        asked = GrantWithdrawal(project_id=project, grant=grant)
+        asked = GrantWithdrawal(project_id=project, grant=grant, by=by)
     except ValidationError:
         return  # no answer names a grant of another form
-    config.withdrawing.add((project, grant))
+    config.withdrawing[project, grant] = by
     await config.worker.withdraw_permission_grant(asked)
-    config.withdrawing.discard((project, grant))
+    config.withdrawing.pop((project, grant), None)
 
 
 async def _relay_one(
@@ -704,9 +716,9 @@ async def _relay(app: web.Application) -> None:
     config = app[APPROVALS]
     store, writer = app[CONTEXT].documents, app[CONTEXT].writer
     while True:
-        for project, grant in sorted(config.withdrawing):
+        for (project, grant), by in sorted(config.withdrawing.items()):
             try:
-                await _withdraw(config, project, grant)
+                await _withdraw(config, project, grant, by)
             except asyncio.CancelledError:
                 raise
             except Exception:
