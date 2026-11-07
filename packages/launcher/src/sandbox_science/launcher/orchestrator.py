@@ -98,13 +98,15 @@ def runtime_target(
     python: str,
     relay_tls: bool = False,
 ) -> OrchestratorTarget:
-    """The services the agent runtime's sandbox may reach, and nothing else. With
-    ``relay_tls``, OpenShell relays the runtime's own TLS to control and the worker,
-    whose certificates come from a private CA the runtime pins (Kubernetes)."""
+    """The services the agent runtime's sandbox may reach, and nothing else: of the model
+    gateway, only the routes the runtime calls under the URL's path. With ``relay_tls``,
+    OpenShell relays the runtime's own TLS to control and the worker, whose certificates
+    come from a private CA the runtime pins (Kubernetes)."""
     private = {"relay_tls": relay_tls}
     return OrchestratorTarget(
         worker_api=endpoint(worker).model_copy(update=private),
         model_gateway=endpoint(model),
+        model_gateway_path=urlsplit(model).path.rstrip("/"),
         state_service=endpoint(control).model_copy(update=private),
         binaries=(python + "*",),
         filesystem=SandboxFilesystem(

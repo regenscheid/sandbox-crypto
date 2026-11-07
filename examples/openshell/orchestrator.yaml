@@ -36,6 +36,24 @@ network_policies:
       - 4000
       protocol: rest
       enforcement: enforce
-      access: full
+      rules:
+      - allow:
+          method: POST
+          path: /v1/chat/completions
+      - allow:
+          method: POST
+          path: /v1/responses
+      - allow:
+          method: POST
+          path: /v1/messages
+      - allow:
+          method: POST
+          path: /v1/embeddings
+      - allow:
+          method: GET
+          path: /v1/models
+      - allow:
+          method: GET
+          path: /v1/model/info
     binaries:
     - path: /opt/sandbox-science/bin/python*

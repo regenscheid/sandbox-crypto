@@ -18,6 +18,7 @@ import yaml
 from sandbox_science.launcher import direct_mcp, orchestrator, parts
 from sandbox_science.launcher.config import LauncherError, McpDirectServer, load_config
 from sandbox_science.launcher.state import Layout
+from sandbox_science.policy.openshell import GATEWAY_ROUTES, compile_orchestrator
 from sandbox_science.policy.store import Acceptance, FenceClassifications, PolicyStore
 
 ROOT = Path(__file__).parents[3]
@@ -45,6 +46,31 @@ def direct_files(tmp_path: Path) -> Path:
         "apiVersion: sandbox-science/v0alpha1\nkind: PoolCeiling\n"
     )
     return site
+
+
+@pytest.mark.parametrize(
+    ("url", "first"),
+    [
+        ("https://gateway.example.invalid/v1", "/v1/chat/completions"),
+        ("https://gateway.example.invalid/llm/v1/", "/llm/v1/chat/completions"),
+        ("https://gateway.example.invalid", "/chat/completions"),
+    ],
+)
+def test_the_runtime_reaches_only_the_gateway_routes_under_its_urls_path(
+    url: str, first: str
+) -> None:
+    target = orchestrator.runtime_target(
+        worker="http://127.0.0.1:8100",
+        model=url,
+        control="http://127.0.0.1:8200",
+        python="/opt/sandbox-science/bin/python",
+    )
+    gateway = compile_orchestrator(target).network_policies["sandbox-science-model-gateway"]
+    (endpoint,) = gateway.endpoints
+    assert endpoint.access is None
+    assert endpoint.rules is not None
+    assert endpoint.rules[0].allow.path == first
+    assert len(endpoint.rules) == len(GATEWAY_ROUTES)
 
 
 def test_prepare_compiles_the_runtimes_egress_beside_its_platform_services(
