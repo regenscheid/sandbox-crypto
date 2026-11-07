@@ -72,6 +72,7 @@ from sandbox_science.contracts.worker import (
     DEFAULT_STAGE_MAX_BYTES,
     JobProfileName,
 )
+from sandbox_science.policy.floor import OwnerAddresses
 
 from .documents_catalog import CatalogLimits
 from .kubernetes import KubernetesProfile
@@ -218,6 +219,10 @@ class EnvironmentSettings(_Model):
     admin_hosts: tuple[str, ...] = ()
     """The deployment's administration endpoints, as the policy middleware's settings list
     them: the compiler and admission apply the same hard floor."""
+    owner_addresses: OwnerAddresses = ()
+    """The deployment's own public addresses and prefixes, as the policy middleware's
+    settings list them: the hard floor denies them, and the public address ranges the
+    compiler gives endpoints leave them out."""
     suspend_after: Annotated[float, Field(gt=0)] | None = None
     """Seconds an environment may go without executions, and without CPU use by its kernels,
     before the worker stops its sandbox; the next use starts it again (W3). Off when unset,

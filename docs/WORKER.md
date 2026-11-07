@@ -421,9 +421,9 @@ A sandbox resolves only the host names its compiled policy names. A policy with 
    - the policy must reach hosts it does not name, or the port must be another port of a host that a `ports: any` rule reaches;
    - the host must be public and not a platform service host;
    - the port must be one every compiled endpoint admits (80, 443 and the ports rules name), or, under a `ports: any` rule (D95), any port but OpenShell's control-plane ports;
-   - some HTTP or git request to the host there must be allowed or escalated, after the hard floor (with the settings' `admin_hosts`), the pool ceiling and the reserved hosts.
+   - some HTTP or git request to the host there must be allowed or escalated, after the hard floor (with the settings' `admin_hosts` and `owner_addresses`), the pool ceiling and the reserved hosts.
 4. It names the admitted hosts in one new compilation of the environment's revision, and applies the result with `openshell policy set --wait`. The policy middleware still decides every request. An entry is a host, or `host:port` (`[address]:port` for IPv6) for another port, which only that host's endpoint gets.
-   - Each admitted host gets an endpoint limited to the public address ranges, less the addresses the library always denies ([policy](POLICY.md), "Names, not addresses"). So a name that resolves to a private, metadata or administration address stays refused.
+   - Each admitted host gets an endpoint limited to the public address ranges, less the addresses the library always denies ([policy](POLICY.md), "Names, not addresses"). So a name that resolves to a private, metadata or administration address, or to one of the deployment's own addresses, stays refused.
    - Hosts already in use keep their place, so a new batch or a revision never displaces them.
 5. It rejects every draft it read, giving its decision as the reason, and records the decisions. It never approves a draft: a draft's rule is raw TCP for one program, which the fail-closed middleware could not inspect.
 
@@ -912,6 +912,7 @@ label_environments = false           # label each sandbox sandbox-science.io/env
 event_store = "/var/lib/sandbox-science/middleware/events.db"   # optional: where provisioning writes its permission requests, withdrawals and provision.* records; this is the default
 admission = true                     # admit hosts on demand (D69)
 admin_hosts = ["10.0.0.2", "gateway.lab.internal"]   # the policy middleware's admin_hosts
+owner_addresses = ["192.0.2.7", "2001:db8:5::/48"]     # the policy middleware's owner_addresses: the deployment's own public addresses
 admission_interval = 3               # seconds between checks of each environment's drafts
 max_admitted_hosts = 128             # hosts (and other ports) admitted on demand per environment
 # suspend_after = 3600               # optional, off by default (D100): stop sandboxes idle for an hour (W3)

@@ -9,6 +9,7 @@ listen = "0.0.0.0:50051"
 state_dir = "/var/lib/sandbox-science/policy-middleware"
 ceiling = "/etc/sandbox-science/pool-ceiling.yaml"
 admin_hosts = ["gateway.sandbox-science.internal", "10.0.0.2"]
+owner_addresses = ["192.0.2.7", "2001:db8:1::/48"]  # the deployment's own public addresses
 package_cache_url = "http://127.0.0.1:8090"   # optional: names opam packages in escalations
 mcp_listings = true                           # for direct MCP: filter tool listings (D98)
 # listing_report_grace = 30                    # seconds the runtime has to report an unread listing
@@ -48,6 +49,7 @@ from pydantic import (
     model_validator,
 )
 
+from sandbox_science.policy.floor import OwnerAddresses
 from sandbox_science.policy.model import MAX_INSPECTION_PATTERNS, InspectionPattern
 
 from .errors import SettingsError
@@ -116,6 +118,9 @@ class Settings(_Model):
     """The event store's database file; by default ``events.db`` in the state directory."""
     ceiling: Path
     admin_hosts: tuple[str, ...] = ()
+    owner_addresses: OwnerAddresses = ()
+    """The deployment's own public addresses and prefixes, IP addresses or CIDRs, added to
+    the hard floor (``HardFloor.owner_addresses``)."""
     max_payload_bytes: Annotated[int, Field(ge=1, le=MAX_PAYLOAD_BYTES)] = MAX_PAYLOAD_BYTES
     workers: Annotated[int, Field(ge=1, le=256)] = 16
     tls: TlsSettings | None = None

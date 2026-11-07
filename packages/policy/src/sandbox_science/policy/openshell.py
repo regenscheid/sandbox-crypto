@@ -79,6 +79,7 @@ from .floor import HardFloor
 from .hosts import (
     HostKind,
     HostPattern,
+    IPNetwork,
     address_variants,
     floor_addresses,
     floor_reason,
@@ -696,8 +697,8 @@ def admission_ranges(
     """The public address ranges, less every address the library denies whatever the name.
 
     Those are the floor's metadata addresses, the deployment's administration
-    endpoints, the pool ceiling's denied addresses and MCP servers declared by
-    address, with the IPv4 addresses each embeds. The policy middleware sees only
+    endpoints and own addresses, the pool ceiling's denied addresses and MCP servers
+    declared by address, with the IPv4 addresses each embeds. The policy middleware sees only
     host names, so these ranges, as ``allowed_ips``, are what keeps a name that
     resolves to such an address from reaching it.
     """
@@ -705,7 +706,8 @@ def admission_ranges(
         [
             *_denied_hosts(ceiling, floor),
             *(server.host for server in policy.policy.mcp.servers.values()),
-        ]
+        ],
+        floor.owner_networks,
     )
 
 
@@ -713,12 +715,12 @@ def mcp_server_ranges(ceiling: PoolCeiling, floor: HardFloor = DEFAULT_FLOOR) ->
     """The addresses an MCP server's name may resolve to, as a sandbox's fence checks.
 
     The public address ranges, less the floor's metadata addresses, the deployment's
-    administration endpoints and the pool ceiling's denied addresses. Inside OpenShell
-    every name resolves to a synthetic address, so a client's own check cannot see
-    where a name leads; these ranges, as ``allowed_ips``, apply the floor and the
-    ceiling to the addresses OpenShell dials (lab 13).
+    administration endpoints and own addresses, and the pool ceiling's denied addresses.
+    Inside OpenShell every name resolves to a synthetic address, so a client's own check
+    cannot see where a name leads; these ranges, as ``allowed_ips``, apply the floor and
+    the ceiling to the addresses OpenShell dials (lab 13).
     """
-    return _public_ranges_less(_denied_hosts(ceiling, floor))
+    return _public_ranges_less(_denied_hosts(ceiling, floor), floor.owner_networks)
 
 
 def _denied_hosts(ceiling: PoolCeiling, floor: HardFloor) -> list[str]:
@@ -729,20 +731,21 @@ def _denied_hosts(ceiling: PoolCeiling, floor: HardFloor) -> list[str]:
     ]
 
 
-def _public_ranges_less(hosts: Sequence[str]) -> tuple[str, ...]:
-    """The public address ranges, less the floor's metadata addresses and the IP addresses
-    among ``hosts``, with the IPv4 addresses each embeds."""
+def _public_ranges_less(
+    hosts: Sequence[str], networks: Sequence[IPNetwork] = ()
+) -> tuple[str, ...]:
+    """The public address ranges, less the floor's metadata addresses, the IP addresses
+    among ``hosts``, with the IPv4 addresses each embeds, and ``networks`` (the
+    deployment's own addresses)."""
     addresses = set(floor_addresses())
     for host in hosts:
         address = parse_ip(host)
         if address is not None:
             addresses.update(address_variants(address))
-    ipv4 = tuple(
-        ipaddress.IPv4Network(a) for a in addresses if isinstance(a, ipaddress.IPv4Address)
-    )
-    ipv6 = tuple(
-        ipaddress.IPv6Network(a) for a in addresses if isinstance(a, ipaddress.IPv6Address)
-    )
+    ipv4 = {ipaddress.IPv4Network(a) for a in addresses if isinstance(a, ipaddress.IPv4Address)}
+    ipv6 = {ipaddress.IPv6Network(a) for a in addresses if isinstance(a, ipaddress.IPv6Address)}
+    ipv4.update(n for n in networks if isinstance(n, ipaddress.IPv4Network))
+    ipv6.update(n for n in networks if isinstance(n, ipaddress.IPv6Network))
     return tuple(
         str(network)
         for network in (

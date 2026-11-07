@@ -866,7 +866,7 @@ class Environments:
         """The tier the gateway's driver declares; a job sandbox's probe can only lower it."""
         self.cli = OpenShellCli(backend, cli_env)
         self.store = PolicyStore(settings.policy_store)
-        self.floor = HardFloor(frozenset(settings.admin_hosts))
+        self.floor = HardFloor(frozenset(settings.admin_hosts), frozenset(settings.owner_addresses))
         try:
             self.targets = load_targets(settings.targets)
             self.ceiling = load_ceiling(settings.ceiling)

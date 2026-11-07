@@ -305,6 +305,7 @@ def test_each_settings_file_loads_through_the_model_its_service_starts_with(tmp_
     assert str(middleware.tokens.public_key) == "/private/gateway-public.pem"
     assert middleware.admin_hosts == ("openshell.openshell.svc.cluster.local",)
     assert openshell.environments.admin_hosts == middleware.admin_hosts
+    assert middleware.owner_addresses == openshell.environments.owner_addresses == ()
     if cache:
         # A sandbox resolves only the fully qualified name.
         assert openshell.package_cache == f"http://{NAME}-cache.{NAMESPACE}.svc.cluster.local:8090"
@@ -345,6 +346,23 @@ def test_each_settings_file_loads_through_the_model_its_service_starts_with(tmp_
     )
     runtime = json.loads(manager.runtime_json(models, "runtime-test"))
     assert runtime["control_url"] == f"https://{control_host}:8443/control"
+
+
+def test_the_bundles_owner_addresses_reach_the_worker_and_the_middlewares_floor(tmp_path):
+    site = site_file(tmp_path)
+    bundle = tmp_path / "inputs/bundle.toml"
+    data = tomllib.loads(bundle.read_text())
+    data["network"]["owner_addresses"] = ["198.51.100.7", "2001:db8:5::/48"]
+    bundle.write_text(toml.dumps(data))
+    output = tmp_path / "out"
+    write(output, plan(*load(site)))
+    worker = load_worker(output / "secrets/worker/worker.toml")
+    middleware = load_middleware(output / "secrets/middleware/middleware.toml")
+    assert worker.openshell is not None
+    assert worker.openshell.environments is not None
+    expected = ("198.51.100.7/32", "2001:db8:5::/48")
+    assert worker.openshell.environments.owner_addresses == expected
+    assert middleware.owner_addresses == expected
 
 
 def test_the_direct_path_binds_the_runtimes_sandbox_and_gives_it_its_servers(tmp_path):

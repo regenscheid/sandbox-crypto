@@ -327,7 +327,7 @@ file:
 | `[runtime]` | The `orchestrator` image by digest, its full source `revision`, `recover_infrastructure`, and its Kata placement |
 | `[worker]` | `max_environments` (1 to 1000; the worker's default, 8, when unset): the most session environments, not job sandboxes or child environments, that the projects of control's worker client and of the workspace's may have at once, rendered into each of those two clients' `[[clients]]` entries in `worker.toml` (the runtime manager's binding-only client makes none). The worker keeps this limit per client, so that one cannot fill the pool's host with sandboxes ([clients limited to projects](WORKER.md#clients-limited-to-projects)); a client at it is refused with `policy_denied` ("this client's projects have N environments, its limit; delete one first"). Raise it when a site's projects keep more than eight session environments alive, such as scratch environments beside the sessions'; a change reaches the worker with the regenerated `worker.toml` Secret and a pool restart. `label_environments` (default `false`): `worker.toml`'s `openshell.environments.label_environments`, which gives each sandbox the worker creates the label `sandbox-science.io/environment=<environment ID>` and lets reconciliation of an unknown creation look for it. Confirmed on the test instance's OpenShell 0.1.5 gateway on 2026-10-26: the label appears on the OpenShell sandbox, not on the Kubernetes Sandbox object or its Pod, so select by it through `openshell sandbox list`, not `kubectl`; `[worker.job_profiles.<name>]`, the job sandbox sizes ([job sandboxes](WORKER.md#job-environments)): a placement (below) plus `description` and, optionally, `wall_time_max`, `schedule_timeout`, `max_concurrent`, `stage_max_bytes` and `collect_max_bytes`, rendered into `worker.toml`'s `openshell.environments.job_profiles`, so a `site` run keeps them; and `max_job_sandboxes`, `job_retention`, `job_retention_per_project` (the worker's defaults when unset). A project's policy grants the sizes; `[worker.child_profiles.<name>]`, the sizes of delegated runs' own environments ([child environments](WORKER.md#child-environments)): the same keys as a job size plus `isolation_tier` (3 unless set; 2 or 3, since the placement is Kata), rendered into `worker.toml`'s `openshell.environments.child_profiles`, with `default_child_profile`, `max_child_environments`, `child_retention` and `child_retention_per_project` (the worker's defaults when unset); a project's policy grants them (`resources.child_profiles`, `resources.child_environments_max`) |
 | `[profiles.<name>]` | Each research base profile's image by digest and Kata placement |
-| `[openshell]` | The gateway `endpoint` (`https://host:port`; only the trusted manager and worker use it, so `https://openshell.openshell.svc:8080` works on any cluster domain, and the chart's server certificate covers `openshell.openshell.svc`), `gateway_id` (`openshell`), the middleware's `registration` (`sandbox-science-policy`), optional `audience` and `admin_hosts`, `jwt_public_key` (the gateway's extension-token public key, from OpenShell's own Secrets), and the `manager` and `worker` client identities, each `ca`, `certificate` and `key` PEM paths issued by the gateway's client CA (prep step 5.1) |
+| `[openshell]` | The gateway `endpoint` (`https://host:port`; only the trusted manager and worker use it, so `https://openshell.openshell.svc:8080` works on any cluster domain, and the chart's server certificate covers `openshell.openshell.svc`), `gateway_id` (`openshell`), the middleware's `registration` (`sandbox-science-policy`), optional `audience` and `admin_hosts` (the deployment's own public addresses are the bundle's `network.owner_addresses`, [below](#explicit-network-authority)), `jwt_public_key` (the gateway's extension-token public key, from OpenShell's own Secrets), and the `manager` and `worker` client identities, each `ca`, `certificate` and `key` PEM paths issued by the gateway's client CA (prep step 5.1) |
 | `[cache]` | Exactly when the bundle has `secrets.cache`: the package cache's settings besides its listener, URL and directories (`cache_dir`, and `worker_state_dir`, the worker's state on the same PVC, whose environments' lockfiles pin files against eviction). It must enable at least one ecosystem (`pypi`, `conda`, `cargo`, `go`, `npm`, `opam`, `hackage`; `{}` takes that ecosystem's defaults): a cache with none answers 404 to every request, so `site` refuses it |
 | `[extra_files.<service>]` | A file for each other key the bundle's `extra_files` names, such as `s3-credentials` |
 
@@ -426,6 +426,34 @@ TCP ports. Supply gateway, S3 and package upstream destinations explicitly:
 [[network.pool_egress]]
 ports = [443]
 peer.cidr = "192.0.2.20/32" # documentation-only; replace with the approved private site value
+```
+
+With `[network.cluster]`, the renderer refuses an `app_egress`, `pool_egress` or
+`checkpoint.object_store` CIDR that overlaps the cluster's own Pod or Service CIDRs or
+its API server's address, naming both fields: the cluster's own Pods, Services and API
+server are reached through selectors, and a CIDR over them would open far more than its
+one destination. The fields are optional; without the table, `check`, `render` and
+`site` say the check was skipped:
+
+```toml
+[network.cluster]
+pod_cidrs = ["10.42.0.0/16"]        # up to 8; a dual-stack cluster has one per family
+service_cidrs = ["10.43.0.0/16"]    # up to 8
+api_server = "192.0.2.50"           # optional: the API server's address outside the Service range
+```
+
+`network.owner_addresses` lists the deployment's own public addresses and prefixes, as IP
+addresses or CIDRs without host bits (at most 16), such as the nodes' global IPv6 prefix,
+the site's WAN address and the ingress addresses. `site` writes it into the worker's and
+the middleware's settings, where the hard floor denies every address within them and the
+public ranges compiled into sandbox policies leave them out ([policy](POLICY.md)), so
+research code allowed a public `GET` cannot reach the owner's own services. It is empty
+by default, and its values stay in the private bundle file. An invalid entry or an
+overlap is reported by its location, never its value.
+
+```toml
+[network]
+owner_addresses = ["198.51.100.7", "2001:db8:5::/48"]   # documentation values; replace privately
 ```
 
 No public/default egress, host/node authority or DNS-name-based network permission
