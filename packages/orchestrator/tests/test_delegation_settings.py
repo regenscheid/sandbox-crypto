@@ -26,12 +26,12 @@ from .loop_harness import harness as harness
 from .loop_harness import worker as worker
 from .test_delegation import (
     CHECK,
-    REPORT,
     children,
     configure,
     delegation,
     results,
     started,
+    submitted,
     wait,
 )
 from .test_delegation import delegating as delegating
@@ -242,7 +242,7 @@ async def test_a_check_gets_the_projects_turns_and_tokens(delegating: Harness) -
     keeps its own."""
     configure(delegating, check_turns=2, check_tokens=60_000)
     root = await delegating.run(
-        "root", [Reply(calls=[CHECK]), wait(), Reply("Done.")], delegated=[Reply(REPORT)]
+        "root", [Reply(calls=[CHECK]), wait(), Reply("Done.")], delegated=[*submitted()]
     )
     assert json.loads(results(root)[0])["limits"] == {"turns": 2, "tokens": 60_000}
     (child,) = children(delegating, root)
@@ -262,7 +262,7 @@ async def test_new_child_uses_settings_changed_while_parent_runs(delegating: Har
     root = await delegating.run(
         "root",
         [Reply(calls=[CHECK], before=increase), wait(), Reply("Done.")],
-        delegated=[Reply(REPORT)],
+        delegated=[*submitted()],
     )
     assert json.loads(results(root)[0])["limits"] == {"turns": 100, "tokens": 2_000_000}
     (child,) = children(delegating, root)
@@ -286,7 +286,7 @@ async def test_delegated_runs_call_the_delegated_model(delegating: Harness) -> N
     root = await delegating.run(
         "root",
         [Reply(calls=[CHECK]), wait(), Reply("Done.")],
-        delegated=[Reply(REPORT)],
+        delegated=[*submitted()],
         options=["--delegated-model", "delegated"],
     )
     (child,) = children(delegating, root)
@@ -300,7 +300,7 @@ async def test_delegated_runs_call_the_delegated_model(delegating: Harness) -> N
 
 async def test_without_its_own_alias_a_child_calls_mains(delegating: Harness) -> None:
     root = await delegating.run(
-        "root", [Reply(calls=[CHECK]), wait(), Reply("Done.")], delegated=[Reply(REPORT)]
+        "root", [Reply(calls=[CHECK]), wait(), Reply("Done.")], delegated=[*submitted()]
     )
     (child,) = children(delegating, root)
     assert child.alias == "main"

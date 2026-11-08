@@ -67,8 +67,8 @@ async def test_a_result_for_another_revision_is_corrected_and_the_read_is_noted(
         [Reply(calls=[CHECK]), wait(), Reply("Confirmed.")],
         delegated=[
             Reply(calls=[call("ledger_read", entry="C-1", revision=1)]),
-            Reply(json.dumps({**RESULT, "revision": 2})),
-            Reply(REPORT),
+            Reply(calls=[call("submit_result", **{**RESULT, "revision": 2})]),
+            *submitted(),
         ],
     )
     (delegation_id,) = started(root)
@@ -116,10 +116,12 @@ async def test_a_check_that_never_read_its_entry_says_so(delegating: Harness) ->
 async def test_a_result_stands_for_a_run_that_ended_with_it_or_at_a_limit(
     stopped: str, failed: bool, kept: bool
 ) -> None:
-    """A valid answer, then a limit, keeps its result (PD-19); a cancel, an interruption
+    """A valid submission, then a limit, keeps its result (PD-19); a cancel, an interruption
     or a failure keeps none."""
     outcome = Outcome(TARGET)
-    closing = await outcome.closing(Transcript(context=AgentContext(messages=[])), REPORT)
+    text, _ = await outcome.submit(REPORT)
+    assert "recorded" in text
+    closing = await outcome.closing(Transcript(context=AgentContext(messages=[])), "Done.")
     assert closing.action == "accept"
     assert outcome.result is not None
     assert (result_of(outcome, stopped, failed) is not None) == kept

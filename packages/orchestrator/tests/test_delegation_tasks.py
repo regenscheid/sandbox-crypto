@@ -14,7 +14,7 @@ import pytest
 
 from sandbox_science.orchestrator.context.history import body
 from sandbox_science.orchestrator.continuity.resources import FIRST_STEP, ResourceRequests
-from sandbox_science.orchestrator.delegation.outcome import CAME, TASK_FORMAT, parse_task
+from sandbox_science.orchestrator.delegation.outcome import TASK_FORMAT, parse_task
 from sandbox_science.orchestrator.delegation.prompt import TASK_PROMPT, write_area_text
 from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords
 from sandbox_science.orchestrator.documents import DocumentError
@@ -120,11 +120,11 @@ async def test_a_task_has_a_delegated_agents_ledger_authority(delegating: Harnes
                     call("ledger_change", reason="Left for later.", changes=[task]),
                 ]
             ),
-            Reply(json.dumps(DONE)),
+            *submitted(DONE, "Done."),
         ],
     )
     (child,) = children(delegating, root)
-    refused, made = (json.loads(r) for r in results(child))
+    refused, made, _ = (json.loads(r) for r in results(child))
     assert "not_permitted_for_role" in refused["error"]["message"]
     (entry,) = made["entries"]
     documents = delegating.documents()
@@ -190,28 +190,29 @@ def test_a_blank_obstacle_is_no_obstacle(blank: str) -> None:
         parse_task(json.dumps({**DONE, "status": "blocked", "obstacle": blank}))
 
 
-async def test_a_task_that_answers_in_prose_is_told_to_submit_and_its_json_answer_kept(
+async def test_a_task_that_answers_in_prose_is_told_to_submit_and_its_submission_kept(
     delegating: Harness,
 ) -> None:
     root = await delegating.run(
         "root",
         [Reply(calls=[TASK]), wait(), Reply("Done.")],
-        delegated=[Reply("I made the table."), Reply(json.dumps(DONE))],
+        delegated=[Reply("I made the table."), *submitted(DONE, "Done.")],
     )
     (child,) = children(delegating, root)
     outcome = child.summaries["outcome"]
     assert isinstance(outcome, dict)
-    assert (outcome["nudges"], outcome["submissions"], outcome["source"]) == (1, 0, "answer")
+    assert (outcome["nudges"], outcome["submissions"], outcome["source"]) == (
+        1,
+        1,
+        "submit_result",
+    )
     (delegation_id,) = started(root)
-    assert delegation(delegating, delegation_id).result == {
-        **KEPT,
-        "platform_notes": [CAME["answer"]],
-    }
+    assert delegation(delegating, delegation_id).result == KEPT
 
 
 async def test_a_task_is_no_check_for_the_gate(delegating: Harness) -> None:
     root = await delegating.run(
-        "root", [Reply(calls=[TASK]), wait(), Reply("Done.")], delegated=[Reply(json.dumps(DONE))]
+        "root", [Reply(calls=[TASK]), wait(), Reply("Done.")], delegated=submitted(DONE, "Done.")
     )
     (delegation_id,) = started(root)
     documents = delegating.documents()

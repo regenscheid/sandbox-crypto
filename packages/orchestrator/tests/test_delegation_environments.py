@@ -100,7 +100,7 @@ from .control_versions import older_store
 from .loop_harness import AREA, PROJECT, SESSION, TOKEN, Harness, Lineage, Reply, Worker, call
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
-from .test_delegation import children, delegation, results, started, wait
+from .test_delegation import children, delegation, results, started, submitted, wait
 from .test_delegation_lifecycle import _delegations
 from .test_delegation_tasks import DONE
 from .test_delegation_write_area import errors, written
@@ -681,7 +681,7 @@ async def test_a_task_in_its_own_environment_hands_back_and_is_released(
             Reply(calls=[call("write_file", path=f"{AREA}/table.txt", content="1 1 1\n")]),
             Reply(calls=[call("write_file", path=f"{AREA}/notes.txt", content="All ones.\n")]),
             Reply(calls=[call("publish", path=f"{AREA}/table.txt")]),
-            Reply(json.dumps(RESULT)),
+            *submitted(RESULT, "Done."),
         ],
     )
     (delegation_id,) = started(root)
@@ -731,7 +731,7 @@ async def test_a_session_that_ran_before_delegates_hands_back_and_closes(
         delegated=[
             Reply(calls=[call("write_file", path=f"{AREA}/table.txt", content="1 1 1\n")]),
             Reply(calls=[call("write_file", path=f"{AREA}/notes.txt", content="All ones.\n")]),
-            Reply(json.dumps(RESULT)),
+            *submitted(RESULT, "Done."),
         ],
     )
     assert service.refusals == []
@@ -813,7 +813,7 @@ async def test_a_waiting_child_keeps_its_environment_until_it_ends(
         delegated=[
             Reply(calls=[call("write_file", path=f"{AREA}/table.txt", content="1\n")], before=look),
             Reply(calls=[call("write_file", path=f"{AREA}/notes.txt", content="n\n")], before=look),
-            Reply(json.dumps(RESULT), before=look),
+            *submitted(RESULT, "Done.", before=look),
         ],
     )
     assert seen == [[], [], []]
@@ -1026,7 +1026,7 @@ async def test_a_task_reads_an_input_control_retains_in_its_own_environment(
             Reply(calls=[call("write_file", path=f"{AREA}/table.txt", content="1 1 1\n")]),
             Reply(calls=[call("write_file", path=f"{AREA}/notes.txt", content="All ones.\n")]),
             Reply(calls=[call("publish", path=f"{AREA}/table.txt")]),
-            Reply(json.dumps(RESULT)),
+            *submitted(RESULT, "Done."),
         ],
     )
     (request,) = service.requests
@@ -1288,7 +1288,7 @@ async def test_a_waiting_child_keeps_its_environment_and_an_ended_one_releases_i
             Reply(calls=[call("wait_agent_message", timeout_seconds=0.2)], before=look),
             Reply(calls=[call("write_file", path=f"{AREA}/table.txt", content="1\n")], before=look),
             Reply(calls=[call("write_file", path=f"{AREA}/notes.txt", content="n\n")]),
-            Reply(json.dumps(RESULT), before=look),
+            *submitted(RESULT, "Done.", before=look),
         ],
     )
     assert seen == [[], [], []]
@@ -1313,7 +1313,7 @@ async def test_after_an_unavailable_environment_a_new_delegate_is_admitted(
         delegated=[
             Reply(calls=[call("write_file", path=f"{AREA}/table.txt", content="1\n")]),
             Reply(calls=[call("write_file", path=f"{AREA}/notes.txt", content="n\n")]),
-            Reply(json.dumps(RESULT)),
+            *submitted(RESULT, "Done."),
         ],
     )  # fmt: skip
     first, second = started(root)
@@ -1559,7 +1559,7 @@ async def test_a_child_in_its_own_environment_has_the_same_write_area(
         delegated=[
             Reply(calls=[call("write_file", path=f"{AREA}/notes.md", content="all ones\n")]),
             Reply(calls=[call("write_file", path="table.txt", content="1\n")]),
-            Reply(json.dumps({**DONE, "result_files": [f"{AREA}/notes.md"]})),
+            *submitted({**DONE, "result_files": [f"{AREA}/notes.md"]}, "Done."),
         ],
     )
     (delegation_id,) = started(root)

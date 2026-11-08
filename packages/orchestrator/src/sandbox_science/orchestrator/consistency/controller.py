@@ -32,7 +32,7 @@ from sandbox_science.orchestrator.hooks import (
 )
 from sandbox_science.orchestrator.memory_prompt import MemoryGiven
 from sandbox_science.orchestrator.model import ChatModel, Message, ToolSpec
-from sandbox_science.orchestrator.notices import REVIEW_COUNTS, REVIEW_FINDINGS
+from sandbox_science.orchestrator.notices import REVIEW_COUNTS, REVIEW_FINDINGS, unframed
 from sandbox_science.orchestrator.projects import recorded
 from sandbox_science.orchestrator.purpose import without
 from sandbox_science.orchestrator.view_image import ImageViewer
@@ -243,8 +243,10 @@ def source_of(
     if name in PDF_TOOLS and isinstance(call.get("pdf"), dict):
         record = pdf_record(name, given, cast(Json, call["pdf"]))
     elif name in EPRINT_TOOLS and call.get("connector") in servers and "error" not in call:
-        # The result's text after its archive header (CM-4a), as the server wrote it.
-        record = eprint_record(name, given, body(str(messages[-1].get("content", ""))))
+        # The result's text after its archive header (CM-4a) and its framing line, as the
+        # server wrote it.
+        text = unframed(body(str(messages[-1].get("content", ""))))
+        record = eprint_record(name, given, text)
     if record is None:
         return None
     # Bounded as an item is: lines past the bound are left out, and say so.

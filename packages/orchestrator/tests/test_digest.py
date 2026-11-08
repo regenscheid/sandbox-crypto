@@ -40,7 +40,7 @@ from .loop_harness import PROJECT, SESSION, Harness, Reply
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
-from .test_delegation import CHECK, REPORT, wait
+from .test_delegation import CHECK, submitted, wait
 from .test_delegation import delegating as delegating
 from .test_delegation_tasks import DONE, TASK
 from .test_ledger import MAIN, NEW
@@ -253,7 +253,7 @@ async def test_a_main_run_starts_with_the_digest_and_a_task_with_the_constraints
     await delegating.run(
         "root",
         [Reply(calls=[TASK]), wait(), Reply(calls=[CHECK]), wait(), Reply("Done.")],
-        delegated=[Reply(json.dumps(DONE)), Reply(REPORT)],
+        delegated=[*submitted(DONE, "Done."), *submitted()],
     )
     (first, *_) = delegating.gateway.main
     block = body(str(first[1]["content"]))

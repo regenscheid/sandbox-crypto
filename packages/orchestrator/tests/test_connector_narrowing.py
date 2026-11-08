@@ -17,6 +17,7 @@ from sandbox_science.orchestrator.connectors import Connectors
 from sandbox_science.orchestrator.delegation.narrowing import Narrowing, narrow, of_brief
 from sandbox_science.orchestrator.delegation.specs import TaskBrief, brief_of
 from sandbox_science.orchestrator.harness import McpAccess
+from sandbox_science.orchestrator.notices import CONNECTOR_RESULT
 from sandbox_science.orchestrator.projects import run_name
 from sandbox_science.orchestrator.tools import Toolbox
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
@@ -26,7 +27,7 @@ from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
 from .scripted import ToolCall
-from .test_delegation import children, configure, delegation, results, started, wait
+from .test_delegation import children, configure, delegation, results, started, submitted, wait
 from .test_delegation import delegating as delegating
 from .test_delegation_tasks import DONE
 from .test_run_service import ended, post, serving
@@ -197,7 +198,7 @@ async def test_a_delegated_task_gets_only_the_connectors_its_brief_names(
             Reply(calls=[call("mcp_tools", names=["e-print-mcp_search_eprint", "fetch"])]),
             Reply(calls=[call("e-print-mcp_search_eprint", query="SNOVA")]),
             Reply(calls=[call("paper-search-mcp_search_papers", query="SNOVA")]),
-            Reply(json.dumps(DONE)),
+            *submitted(DONE, "Done."),
         ]
     }
     async with serving(delegating, *root_script) as service:
@@ -214,7 +215,7 @@ async def test_a_delegated_task_gets_only_the_connectors_its_brief_names(
     loads = json.loads(loaded_text)
     assert loads["loaded"] == ["e-print-mcp_search_eprint"]
     assert loads["unknown"] == ["fetch"]  # web is not listed for it at all
-    assert searched == "e-print-mcp_search_eprint answered"
+    assert searched == CONNECTOR_RESULT.text + "e-print-mcp_search_eprint answered"
     assert "not_permitted_for_role" in refused
     connectors = child.summaries["connectors"]
     assert isinstance(connectors, dict)
@@ -244,11 +245,11 @@ async def test_a_narrowed_task_narrows_its_own_children_and_never_widens_them(
             Reply(calls=[call("delegate", task="Fetch the web.", connectors=["web"])]),
             Reply(calls=[call("delegate", task="Part.", connectors=["portal"])]),
             wait(),
-            Reply(json.dumps(DONE)),
+            *submitted(DONE, "Done."),
         ],
         "Part.": [
             Reply(calls=[call("mcp_tools", names=["paper-search-mcp_search_papers"])]),
-            Reply(json.dumps(DONE)),
+            *submitted(DONE, "Done."),
         ],
     }
     async with serving(delegating, *root_script) as service:

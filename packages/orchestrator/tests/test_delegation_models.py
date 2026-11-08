@@ -23,7 +23,15 @@ from .loop_harness import API_KEY, Gateway, Harness, Reply, call
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
-from .test_delegation import REPORT, children, configure, delegation, results, started, wait
+from .test_delegation import (
+    children,
+    configure,
+    delegation,
+    results,
+    started,
+    submitted,
+    wait,
+)
 from .test_delegation import delegating as delegating
 
 ALLOWED = DelegationSettings(models=("checker-b",), fallback="main")
@@ -148,7 +156,7 @@ async def test_a_delegation_runs_on_the_alias_its_brief_chose(delegating: Harnes
     root = await delegating.run(
         "root",
         [Reply(calls=[chosen, other]), wait(), Reply("Done.")],
-        delegated=[Reply(REPORT)],
+        delegated=[*submitted()],
     )
     assert model_tool(delegating) == {
         "type": "string",
@@ -204,7 +212,7 @@ async def test_the_roles_unlisted_alias_runs_the_check(delegating: Harness) -> N
     root = await delegating.run(
         "root",
         [Reply(calls=[check]), wait(), Reply("Done.")],
-        delegated=[Reply(REPORT)],
+        delegated=[*submitted()],
         options=["--delegated-model", "delegated"],
     )
     assert answer(root, 0)["model"] == {"alias": "delegated"}
@@ -221,7 +229,7 @@ async def test_a_fallback_replaces_an_unlisted_alias_and_is_recorded(
     root = await delegating.run(
         "root",
         [Reply(calls=[check]), wait(), Reply("Done.")],
-        delegated=[Reply(REPORT)],
+        delegated=[*submitted()],
         options=["--delegated-model", "delegated"],
     )
     recorded = {"alias": "main", "asked": "delegated", "fallback": True}
@@ -332,7 +340,7 @@ async def test_a_delegated_alias_that_cannot_call_tools_is_refused(delegating: H
     root = await delegating.run(
         "again",
         [Reply(calls=[check]), wait(), Reply("Done.")],
-        delegated=[Reply(REPORT)],
+        delegated=[*submitted()],
         options=["--delegated-model", "delegated"],
     )
     assert answer(root, 0)["model"] == {"alias": "main", "asked": "delegated", "fallback": True}

@@ -18,7 +18,7 @@ from .loop_harness import PROJECT, SESSION, Harness, Reply
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
-from .test_delegation import CHECK, REPORT, children
+from .test_delegation import CHECK, children, submitted
 from .test_delegation import delegating as delegating
 
 pytestmark = pytest.mark.slow
@@ -49,7 +49,7 @@ async def test_parent_retains_the_environment_until_its_child_and_final_answer_e
         delegating.run(
             "root",
             [Reply(calls=[CHECK]), Reply("Done already."), Reply("Done with the child.")],
-            delegated=[Reply(REPORT, before=child_waits)],
+            delegated=[*submitted(before=child_waits)],
         )
     )
     store = ProjectStore(delegating.state)
