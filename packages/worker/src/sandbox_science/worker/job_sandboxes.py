@@ -293,7 +293,7 @@ def offers(settings: EnvironmentSettings, resources: Resources) -> tuple[JobProf
 
 def launch_settings(profile: JobProfile) -> str:
     """The job profile's driver configuration. The session's CPU and memory caps do not
-    narrow it (JS-9). It carries no label: OpenShell 0.1.5's driver configuration has no
+    narrow it (JS-9). It carries no label: OpenShell 0.1.7's driver configuration has no
     place for one, and the sandbox's own label (``JOB_SANDBOX_LABEL``) is set at creation."""
     return profile.driver_json(Resources())
 

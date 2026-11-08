@@ -182,7 +182,7 @@ if command == ["sandbox", "create"]:
     if state.get("fail_create_after"):
         fail("synthetic creation response lost")
     if state.get("create_waits") and sandboxes[name]["phase"] != "Ready":
-        # As OpenShell 0.1.5's command does, --detach or not: it waits for the sandbox
+        # As OpenShell 0.1.7's command does, --detach or not: it waits for the sandbox
         # to be provisioned until its own idle deadline, OPENSHELL_PROVISION_TIMEOUT.
         limit = os.environ.get("OPENSHELL_PROVISION_TIMEOUT")
         state.setdefault("provision_timeouts", []).append(limit)
@@ -1051,7 +1051,7 @@ async def test_policy_add_stores_revisions_for_environments(
 
 
 MISSING = "status: 'Some requested entity was not found', self: \"sandbox not found\""
-"""How OpenShell 0.1.5's CLI (tonic 0.14) shows the gateway's NotFound for a name."""
+"""How OpenShell 0.1.7's CLI (tonic 0.14) shows the gateway's NotFound for a name."""
 
 
 @pytest.mark.parametrize(
@@ -1087,7 +1087,7 @@ async def test_other_failures_never_count_as_absence(setup: Setup, said: str) ->
 
 
 async def test_sandbox_names_fit_openshells_limit_and_are_random() -> None:
-    # OpenShell refuses names over 19 characters (v0.1.3 in lab 12, unchanged in v0.1.5),
+    # OpenShell refuses names over 19 characters (v0.1.3 in lab 12, unchanged in v0.1.7),
     # and uses "--" itself.
     # A name derived from the ID had room for 32 bits of a hash, so another ID could be
     # found to share it (review of D78); 64 random bits cannot be matched.

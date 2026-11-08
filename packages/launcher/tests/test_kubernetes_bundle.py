@@ -1679,7 +1679,7 @@ def test_no_sandboxes_section_renders_nothing_outside_the_bundle_namespace():
 
 
 def test_no_budget_is_rendered_for_job_sandboxes_whose_pods_carry_no_label_of_ours():
-    """OpenShell 0.1.5 puts no label the worker chooses on a job sandbox's Pods, so a
+    """OpenShell 0.1.7 puts no label the worker chooses on a job sandbox's Pods, so a
     PodDisruptionBudget would select nothing; the key stays loadable when false."""
     for items in (with_sandboxes(), with_sandboxes(job_budget=False)):
         assert "PodDisruptionBudget" not in {item["kind"] for item in items}

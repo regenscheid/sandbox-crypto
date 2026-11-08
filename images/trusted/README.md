@@ -75,13 +75,13 @@ manifests on 2026-10-20:
   major and `>=22.12` engine. Both architecture checksums come from the
   [official SHA256 manifest](https://nodejs.org/dist/v24.22.2/SHASUMS256.txt) and the
   version/date from the [official release index](https://nodejs.org/dist/index.json).
-- OpenShell CLI **v0.1.5** (in both images, checked 2026-10-22) for AMD64 and ARM64 uses
+- OpenShell CLI **v0.1.7** (in both images, checked 2026-11-07) for AMD64 and ARM64 uses
   the official Linux musl assets `openshell-x86_64-unknown-linux-musl.tar.gz` and
   `openshell-aarch64-unknown-linux-musl.tar.gz`, pinned by SHA-256 from the
-  [release checksum file](https://github.com/NVIDIA/OpenShell/releases/download/v0.1.5/openshell-checksums-sha256.txt),
-  matching the [release](https://github.com/NVIDIA/OpenShell/releases/tag/v0.1.5) and
-  the 0.1.5 that [babbage](../../docs/PERSONAL-BABBAGE.md) runs. Its upstream LICENSE is
-  pinned by SHA-256 at the v0.1.5 tag commit (unchanged since v0.1.3). The gateway,
+  [release checksum file](https://github.com/NVIDIA/OpenShell/releases/download/v0.1.7/openshell-checksums-sha256.txt),
+  matching the [release](https://github.com/NVIDIA/OpenShell/releases/tag/v0.1.7) and
+  the 0.1.7 that [babbage](../../docs/PERSONAL-BABBAGE.md) runs. Its upstream LICENSE is
+  pinned by SHA-256 at the v0.1.7 tag commit (unchanged since v0.1.3). The gateway,
   drivers and supervisor must independently match that release.
 
 The native archives' upstream LICENSE files remain in the images. Python and web

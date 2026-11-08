@@ -43,7 +43,7 @@ _FRAME = re.compile(r"[\s\u2500-\u257f\u25b6\u00d7]+")
 with."""
 _MISSING = re.compile(r'(?:message|self): "sandbox not found"')
 """The gateway's NotFound for a sandbox name, as tonic shows a status: ``message:`` in
-the OpenShell 0.1.3 labs, ``self:`` from tonic 0.14 (OpenShell 0.1.5). Other NotFound
+the OpenShell 0.1.3 labs, ``self:`` from tonic 0.14 (OpenShell 0.1.5 and later). Other NotFound
 answers, such as a missing service endpoint, gateway or file, do not match."""
 
 

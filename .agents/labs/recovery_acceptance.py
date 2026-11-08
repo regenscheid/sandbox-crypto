@@ -34,13 +34,14 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import quote
 
+from sandbox_science.contracts.openshell_version import OPENSHELL_VERSION
 from sandbox_science.contracts.worker import PROTOCOL_HEADER, PROTOCOL_VERSION
 from sandbox_science.launcher import toml
 from sandbox_science.launcher.config import load_config
 from sandbox_science.orchestrator.projects import ProjectStore
 
 REPO = Path(__file__).resolve().parents[2]
-OS_BIN = Path.home() / ".local/opt/openshell-0.1.5/bin"
+OS_BIN = Path.home() / f".local/opt/openshell-{OPENSHELL_VERSION}/bin"
 PURPOSE = "disposable synthetic recovery acceptance"
 PROJECT = "recovery"
 LOST_FILE = "results/lost-seed.json"
