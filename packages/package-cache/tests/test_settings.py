@@ -48,6 +48,7 @@ def test_the_documented_example_is_valid(tmp_path: Path) -> None:
     assert (settings.listen_host, settings.listen_port) == ("127.0.0.1", 8090)
     assert settings.public_url == "http://host.openshell.internal:8090"
     assert settings.cache_dir == tmp_path / "cache"
+    assert settings.attribution_key_file == tmp_path / "cache-attribution.key"
     assert settings.max_size == 100 * GIB
     assert settings.metadata_ttl == timedelta(minutes=5)
     assert settings.stale_if_error == timedelta(days=1)

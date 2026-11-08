@@ -25,11 +25,12 @@ from sandbox_science.policy import (
     load_policy,
     parse_policy,
 )
-from sandbox_science.policy.hosts import floor_reason, is_public
+from sandbox_science.policy.hosts import IPNetwork, floor_reason, is_public
 from sandbox_science.policy.openshell import (
     BASELINE_READ_ONLY,
     BASELINE_READ_WRITE,
     BASELINE_UNLISTED,
+    GATEWAY_ROUTES,
     HARD_LANDLOCK,
     KERNEL_INTERFACES_READ_ONLY,
     MAX_FILESYSTEM_PATHS,
@@ -646,6 +647,33 @@ def test_admission_ranges_leave_out_addresses_the_library_always_denies() -> Non
     assert not covered("10.0.0.5")
 
 
+def test_public_ranges_leave_out_the_deployments_own_addresses() -> None:
+    # A name the sandbox picks may resolve to the owner's WAN address or IPv6 prefix;
+    # the ranges OpenShell checks the dialled address against leave them out.
+    floor = HardFloor(owner_addresses=frozenset({"34.120.0.0/16", "8.8.4.4", "2600:1f00::/32"}))
+    for ranges in (admission_ranges(EXAMPLE, OPEN, floor), mcp_server_ranges(OPEN, floor)):
+        networks = [ipaddress.ip_network(block) for block in ranges]
+
+        def covered(address: str, networks: list[IPNetwork] = networks) -> bool:
+            return any(ipaddress.ip_address(address) in network for network in networks)
+
+        for owner in ("34.120.0.1", "34.120.255.255", "8.8.4.4", "2600:1f00::1"):
+            assert not covered(owner), owner
+        for ordinary in ("34.121.0.1", "8.8.4.5", "8.8.8.8", "2600:1f01::1"):
+            assert covered(ordinary), ordinary
+    assert admission_ranges(EXAMPLE, OPEN, HardFloor()) == RANGES
+
+
+def test_the_deployments_own_addresses_are_never_admitted_on_demand() -> None:
+    floor = HardFloor(owner_addresses=frozenset({"93.184.215.0/24"}))
+
+    def refusal(host: str) -> str | None:
+        return admission_refusal(EXAMPLE, TARGETS.sandbox, host, 443, ceiling=OPEN, floor=floor)
+
+    assert "one of the deployment's own addresses" in (refusal("93.184.215.14") or "")
+    assert refusal("93.184.216.14") is None
+
+
 def test_compiled_names_are_exactly_its_endpoints() -> None:
     policy = network_policy(
         READ_ANYWHERE
@@ -964,18 +992,24 @@ def test_without_a_kubernetes_placement_no_compute_limit_is_applied() -> None:
         "resources.memory",
         "resources.pids",
         "resources.workspace_disk",
+        "resources.wall_time",
     ]
     for name in ("cpu", "memory"):
         severity, message = findings[f"resources.{name}"]
         assert severity is Severity.WARNING
         assert message.startswith("not applied: this pool places its sandboxes without Kubernetes")
-    assert findings["resources.pids"] == (
-        Severity.WARNING,
-        "not applied: no compute driver this worker configures sets a process limit yet",
+    severity, message = findings["resources.pids"]
+    assert severity is Severity.WARNING
+    assert message.startswith(
+        "not applied: no compute driver this worker configures sets a process limit per sandbox"
     )
+    assert "podPidsLimit" in message
     severity, message = findings["resources.workspace_disk"]
     assert severity is Severity.WARNING
     assert message.startswith("not applied: no compute driver this worker configures limits")
+    # The ephemeral-storage limit is not the workspace's: the finding must not suggest it is.
+    assert "ephemeral-storage limit, its profile's own, bounds the container's" in message
+    assert message.endswith("not the workspace")
 
 
 def test_a_kubernetes_placement_applies_cpu_and_memory_only() -> None:
@@ -994,11 +1028,25 @@ def test_a_kubernetes_placement_applies_cpu_and_memory_only() -> None:
 def test_resource_findings_cover_the_ceilings_caps_and_only_set_limits() -> None:
     # A limit the project leaves unset takes the ceiling's cap, which the pool must apply
     # as well; an unset limit with no cap is no finding.
-    policy = parse_policy(HEADER + "resources: {wall_time: 1h}\n")
-    assert resource_findings(compile_research(policy)) == {}
+    policy = parse_policy(HEADER + "resources: {memory: 1Gi}\n")
+    assert list(resource_findings(compile_research(policy))) == ["resources.memory"]
     capped = resource_findings(compile_research(policy, resources={"pids": 512, "cpu": 2}))
-    assert list(capped) == ["resources.cpu", "resources.pids"]
+    assert list(capped) == ["resources.cpu", "resources.memory", "resources.pids"]
     assert all(severity is Severity.WARNING for severity, _ in capped.values())
+
+
+@pytest.mark.parametrize("placed", [False, True])
+def test_wall_time_bounds_installs_and_each_call_not_the_sandbox(placed: bool) -> None:
+    policy = parse_policy(HEADER + "resources: {wall_time: 1h}\n")
+    compiled = compile_sandbox(policy, TARGETS.sandbox, ceiling=OPEN, kubernetes_placement=placed)
+    assert resource_findings(compiled) == {
+        "resources.wall_time": (
+            Severity.INFO,
+            "applied by the worker to each package install and to each shell call or cell, "
+            "which times out at it; not to a job, whose limits are job_wall_time_default and "
+            "job_wall_time_max, nor to the sandbox's lifetime",
+        )
+    }
 
 
 # The agent runtime's MCP egress (D98): the fence the MCP proxy's sandbox had before.
@@ -1949,7 +1997,7 @@ def test_the_orchestrator_reaches_only_the_platform_services() -> None:
     ]
     assert endpoints == [
         ("worker.sandbox-science.internal", (8100,), "rest", "enforce", "full"),
-        ("litellm.sandbox-science.internal", (4000,), "rest", "enforce", "full"),
+        ("litellm.sandbox-science.internal", (4000,), "rest", "enforce", None),
     ]
     for entry in policy.network_policies.values():
         assert entry.binaries == (Binary(path="/opt/sandbox-science/bin/python*"),)
@@ -1986,6 +2034,75 @@ def test_a_service_with_its_own_tls_is_relayed_without_inspection() -> None:
         {"host": control.host, "ports": [8443], "protocol": "tcp", "tls": "skip"}
     ]
     assert schema_keys(document) <= ALLOWED_KEYS
+
+
+def test_the_model_gateway_admits_only_the_routes_the_runtime_calls() -> None:
+    assert TARGETS.orchestrator is not None
+    policy = compile_orchestrator(TARGETS.orchestrator)
+    (gateway,) = policy.network_policies["sandbox-science-model-gateway"].endpoints
+    assert gateway.access is None
+    assert gateway.deny_rules is None
+    assert gateway.rules is not None
+    admitted = [(rule.allow.method, rule.allow.path, rule.allow.tool) for rule in gateway.rules]
+    assert admitted == [
+        ("POST", "/v1/chat/completions", None),
+        ("POST", "/v1/responses", None),
+        ("POST", "/v1/messages", None),
+        ("POST", "/v1/embeddings", None),
+        ("GET", "/v1/models", None),
+        ("GET", "/v1/model/info", None),
+    ]
+    # LiteLLM's key, user, MCP and administration routes stay out of the runtime's reach.
+    for _, path, _ in admitted:
+        assert path is not None
+        assert not path.startswith(("/key", "/user", "/mcp", "/utils", "/v1/key", "/v1/mcp"))
+        assert not any(character in path for character in "*?[{")
+    document = yaml.safe_load(policy.to_yaml())
+    endpoint = document["network_policies"]["sandbox-science-model-gateway"]["endpoints"][0]
+    assert "access" not in endpoint
+    assert endpoint["rules"][0] == {"allow": {"method": "POST", "path": "/v1/chat/completions"}}
+    assert schema_keys(document) <= ALLOWED_KEYS
+
+
+@pytest.mark.parametrize(
+    ("base", "first"), [("", "/chat/completions"), ("/llm/v1", "/llm/v1/chat/completions")]
+)
+def test_the_gateway_routes_follow_the_gateway_urls_path(base: str, first: str) -> None:
+    assert TARGETS.orchestrator is not None
+    target = TARGETS.orchestrator.model_copy(update={"model_gateway_path": base})
+    rules = compile_orchestrator(target).network_policies["sandbox-science-model-gateway"]
+    assert rules.endpoints[0].rules is not None
+    assert rules.endpoints[0].rules[0].allow.path == first
+    assert len(rules.endpoints[0].rules) == len(GATEWAY_ROUTES)
+
+
+@pytest.mark.parametrize("base", ["/", "/v1/", "v1", "/v*", "/a/../v1", "/%761", "//v1"])
+def test_the_gateway_path_is_plain_segments(base: str) -> None:
+    with pytest.raises(ValidationError):
+        OrchestratorTarget.model_validate(
+            {
+                "worker_api": {"host": "worker.sandbox-science.internal", "port": 8100},
+                "model_gateway": {"host": "litellm.sandbox-science.internal", "port": 4000},
+                "model_gateway_path": base,
+                "binaries": ["/usr/bin/python3"],
+            }
+        )
+
+
+def test_the_model_gateway_is_never_relayed() -> None:
+    # A relayed connection carries no route rules, so the gateway would be wholly open.
+    with pytest.raises(ValidationError, match="the model gateway is inspected"):
+        OrchestratorTarget.model_validate(
+            {
+                "worker_api": {"host": "worker.sandbox-science.internal", "port": 8100},
+                "model_gateway": {
+                    "host": "litellm.sandbox-science.internal",
+                    "port": 4000,
+                    "relay_tls": True,
+                },
+                "binaries": ["/usr/bin/python3"],
+            }
+        )
 
 
 def test_the_model_gateway_is_optional_and_cannot_share_the_worker_api() -> None:

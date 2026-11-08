@@ -136,6 +136,7 @@ def build_lifecycle(
         recycle_daemon=environments.recycle_executor,
         notices=environments.notices,
         job_resources=environments.job_resources,
+        call_resources=environments.call_resources,
         requires_workspace_prefix=environments.requires_workspace_prefix,
     )
 

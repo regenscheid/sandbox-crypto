@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from typing import Any, Final, cast
 
 from sandbox_science.orchestrator.control import ControlStore
+from sandbox_science.orchestrator.notices import unframed
 
 Json = dict[str, Any]
 
@@ -84,7 +85,7 @@ def reads_of(
         from .descriptors import descriptor  # which reads this module's Read
 
         describe = descriptor(tool)
-        placed = describe(args, text) if describe is not None else None
+        placed = describe(args, unframed(text)) if describe is not None else None
         if placed is None:
             identity = hashlib.sha256(json.dumps(args, sort_keys=True).encode()).hexdigest()
             placed = [Read("connector", f"{tool}:{identity[:16]}", "unknown", label=tool)]

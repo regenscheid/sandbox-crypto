@@ -43,7 +43,7 @@ from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
 from .scripted import ToolCall
-from .test_delegation import RESULT, results, started, wait
+from .test_delegation import RESULT, results, started, submitted, wait
 from .test_delegation import delegating as delegating
 from .test_ledger import DELEGATED, MAIN, NEW, change
 from .test_ledger import ledger as ledger
@@ -628,7 +628,7 @@ async def test_a_check_that_skipped_a_proofs_target_does_not_count(delegating: H
         [Reply(calls=[check]), wait(), Reply(calls_from=record), Reply("Recorded.")],
         delegated=[
             Reply(calls=[call("ledger_read", entry="C-1", revision=2)]),
-            Reply(json.dumps({**RESULT, "revision": 2})),
+            *submitted({**RESULT, "revision": 2}, "Done."),
         ],
     )
     (delegation_id,) = started(root)
@@ -699,7 +699,7 @@ async def test_a_main_run_checks_its_proof_by_delegation(delegating: Harness) ->
                     call("ledger_read", entry="C-2", revision=1),
                 ]
             ),
-            Reply(json.dumps({**RESULT, "revision": 2})),
+            *submitted({**RESULT, "revision": 2}, "Done."),
         ],
     )
     first = delegating.gateway.children[0]

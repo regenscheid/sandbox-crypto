@@ -156,7 +156,8 @@ it makes for the host, the reviewer's, the watcher's and the folds'.
 ## Launcher and replacement
 
 The launcher starts the worker and control service first. It compiles the sandbox
-policy with only model gateway, worker and scoped state-service egress and, with
+policy with only worker, scoped state-service and model gateway egress, the gateway's
+limited to the routes the runtime calls ([policy](../POLICY.md)), and, with
 `[mcp_direct]`, the direct path's `protocol: mcp` endpoints and the policy middleware for
 their hosts (D98), with their provider attached; the MCP proxy, an alternative before,
 retired on 2026-10-26.

@@ -299,6 +299,13 @@ def test_unsafe_checkpoint_sections_are_refused(change, match):
         configured(**change)
 
 
+def test_an_object_store_cidr_inside_the_clusters_own_ranges_is_refused():
+    data = with_checkpoint(object_store={"peer": {"cidr": "10.43.0.9/32"}, "ports": [3900]})
+    data["network"]["cluster"] = {"service_cidrs": ["10.43.0.0/16"]}
+    with pytest.raises(ValidationError, match=r"checkpoint\.object_store\.peer\.cidr overlaps"):
+        BundleConfig.model_validate_json(json.dumps(data))
+
+
 def test_the_section_needs_the_sandbox_namespace():
     data = values()
     data["checkpoint"] = CHECKPOINT

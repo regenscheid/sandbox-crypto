@@ -16,6 +16,7 @@ from pydantic import ValidationError
 
 from sandbox_science.launcher.kubernetes_bundle import ALERT_RULES_FILE, ALERTS, render
 from sandbox_science.launcher.kubernetes_config import load
+from sandbox_science.launcher.runtime_manager.manager import NOTE_REPEAT
 
 from .test_kubernetes_bundle import configured, values
 
@@ -119,6 +120,14 @@ def test_each_rule_reads_the_event_its_service_logs() -> None:
     # A held call's record names no project, so the rule does not group by one.
     assert "sum by (service, rule, outcome)" in hold
     assert "project" not in hold
+    blocked = rules["SandboxScienceRuntimeBlocked"]
+    assert blocked["for"] == "10m"
+    assert blocked["labels"]["severity"] == "critical"
+    assert 'service="runtime-manager"' in blocked["expr"]
+    assert '`"event":"runtime_manager_note"`' in blocked["expr"]
+    assert '| kind="blocked" [8m]' in blocked["expr"]
+    # The window outlasts the gap between a held note's records.
+    assert NOTE_REPEAT < 8 * 60
 
 
 def test_each_event_rule_selects_its_services_own_container() -> None:
@@ -132,6 +141,7 @@ def test_each_event_rule_selects_its_services_own_container() -> None:
         "SandboxScienceMcpCanaryChanged": "control",
         "SandboxScienceMcpCanaryFailing": "control",
         "SandboxSciencePolicyHold": "middleware",
+        "SandboxScienceRuntimeBlocked": "runtime-manager",
     }
     containers = {
         container["name"]

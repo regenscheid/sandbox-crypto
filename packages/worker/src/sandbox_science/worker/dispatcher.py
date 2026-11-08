@@ -181,6 +181,8 @@ class Dispatcher:
         job: JobDetails | None = None
         plan: Plan | None = None
         execution_id = new_id("exe")
+        if isinstance(request, ShellRequest | CellRequest) and origin is None:
+            request = self._within_wall_time(request)
         if isinstance(request, JobRequest):
             context = request.context
             if self.usability.winding_down(context):
@@ -278,6 +280,19 @@ class Dispatcher:
         else:
             self.spawn(self._dispatch(live, request))
         return live.execution, True
+
+    def _within_wall_time(self, request: ShellRequest | CellRequest) -> ShellRequest | CellRequest:
+        """``request`` with its time limit cut to the policy's ``wall_time``, which bounds
+        each shell call and cell (not a job, nor the sandbox's lifetime); its execution
+        then times out at that limit. The request's digest stays the one it was sent with.
+        An install step's limit is its operation's, under the same ``wall_time`` already."""
+        call_resources = self.lifecycle.call_resources
+        if call_resources is None:
+            return request
+        wall_time = call_resources(request.context.environment_id).wall_time
+        if wall_time is None or request.timeout_seconds <= wall_time.total_seconds():
+            return request
+        return request.model_copy(update={"timeout_seconds": wall_time.total_seconds()})
 
     async def _dispatch(self, live: Live, request: ExecutionRequest) -> None:
         """Send the request to its executor; whatever goes wrong, the execution ends."""

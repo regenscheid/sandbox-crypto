@@ -18,6 +18,7 @@ upstream_rate = 20           # upstream fetches per second
 upstream_burst = 200
 sandbox_rate = 10            # of those, per sandbox (the policy middleware names it)
 sandbox_burst = 100
+attribution_key_file = "cache-attribution.key"   # optional: the key shared with the middleware
 worker_state_dir = "/var/lib/sandbox-science/worker"  # optional: whose lockfiles pin files
 protect_days = 7             # grace after a lockfile stops being current
 protect_share = 0.5          # pinned files are protected up to this share of max_size
@@ -50,7 +51,8 @@ repository = "https://hackage.haskell.org"
 ```
 
 ``public_url`` and ``cache_dir`` are required; every other key has the default
-shown, except ``worker_state_dir``, which is unset (nothing is pinned) unless given.
+shown, except ``worker_state_dir``, which is unset (nothing is pinned) unless given, and
+``attribution_key_file``, which is unset (sandbox names are not authenticated) unless given.
 An ecosystem whose table is absent is disabled; a table with no keys enables it
 with the default upstreams. Relative paths resolve against the
 settings file's directory. URLs are normalized without a trailing slash, so
@@ -85,6 +87,7 @@ from pydantic import (
     model_validator,
 )
 
+from sandbox_science.policy.cache_attribution import AttributionKeyError, read_key
 from sandbox_science.policy.units import parse_duration, parse_size
 
 from .adapter import check_base_url
@@ -267,6 +270,11 @@ class Settings(_Model):
     """Upstream requests per second for each sandbox, which the policy middleware names in
     its requests; 0 turns the per-sandbox budgets off."""
     sandbox_burst: Annotated[int, Field(ge=1)] = 100
+    attribution_key_file: Path | None = None
+    """A private file with the key the policy middleware shares with the cache. With it,
+    a package request is served only with the middleware's HMAC of its sandbox, method,
+    path and time (``sandbox_science.policy.cache_attribution``); without it, the sandbox
+    header is trusted as sent."""
     worker_state_dir: Path | None = None
     """The worker's state directory, read only: package files that its environments'
     current and known-good lockfiles list are protected from eviction (``pins``). None
@@ -324,6 +332,15 @@ class Settings(_Model):
         """The port to listen on."""
         return _split_listen(self.listen)[1]
 
+    def attribution_key(self) -> bytes | None:
+        """The key shared with the policy middleware, if one is configured."""
+        if self.attribution_key_file is None:
+            return None
+        try:
+            return read_key(self.attribution_key_file)
+        except AttributionKeyError as exc:
+            raise SettingsError(str(exc)) from exc
+
     def upstreams(self) -> tuple[str, ...]:
         """The upstream base URLs of the enabled ecosystems: the only places the cache fetches.
 
@@ -354,7 +371,7 @@ def load_settings(path: Path) -> Settings:
             data = tomllib.load(handle)
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise SettingsError(f"cannot read settings {path}: {exc}") from exc
-    for key in ("cache_dir", "worker_state_dir"):
+    for key in ("cache_dir", "worker_state_dir", "attribution_key_file"):
         value = data.get(key)
         if isinstance(value, str) and value:
             data[key] = path.absolute().parent / value

@@ -29,6 +29,7 @@ from pydantic import (
 )
 
 from sandbox_science.contracts import Contract, Identifier, new_id
+from sandbox_science.contracts.model import UserName
 
 from .documents.agent_text import agent_text, agent_values, check_agent_text
 from .documents.errors import (
@@ -109,7 +110,9 @@ class PlanAuthority(PlanModel):
 
     scope: PlanScope
     role: Literal["user", "main", "delegated"]
-    user_id: Identifier | None = None
+    user_id: UserName | None = None
+    """The user who changed the plan, as the workspace names its logins; a run reads any
+    user's change as the user's."""
     run_id: Identifier | None = None
     alias: Annotated[str, Field(min_length=1, max_length=256)] | None = None
     resolved_model: Annotated[str, Field(min_length=1, max_length=256)] | None = None

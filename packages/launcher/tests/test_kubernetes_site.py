@@ -23,7 +23,12 @@ from cryptography.x509.oid import NameOID
 from sandbox_science.launcher import toml
 from sandbox_science.launcher.kubernetes_bundle import render
 from sandbox_science.launcher.kubernetes_cli import main
-from sandbox_science.launcher.kubernetes_config import REQUIRED_FILES, BundleError
+from sandbox_science.launcher.kubernetes_config import (
+    CACHE_ATTRIBUTION_KEY,
+    REQUIRED_FILES,
+    BundleError,
+    projected_files,
+)
 from sandbox_science.launcher.kubernetes_config import load as load_bundle
 from sandbox_science.launcher.kubernetes_site import plan, write
 from sandbox_science.launcher.kubernetes_site_config import CACHE_ECOSYSTEMS, load
@@ -305,6 +310,7 @@ def test_each_settings_file_loads_through_the_model_its_service_starts_with(tmp_
     assert str(middleware.tokens.public_key) == "/private/gateway-public.pem"
     assert middleware.admin_hosts == ("openshell.openshell.svc.cluster.local",)
     assert openshell.environments.admin_hosts == middleware.admin_hosts
+    assert middleware.owner_addresses == openshell.environments.owner_addresses == ()
     if cache:
         # A sandbox resolves only the fully qualified name.
         assert openshell.package_cache == f"http://{NAME}-cache.{NAMESPACE}.svc.cluster.local:8090"
@@ -313,8 +319,14 @@ def test_each_settings_file_loads_through_the_model_its_service_starts_with(tmp_
         assert str(settings.cache_dir) == "/var/lib/sandbox-science/package-cache"
         # The worker's state, on the same PVC: its lockfiles pin what environments use.
         assert str(settings.worker_state_dir) == "/var/lib/sandbox-science/worker"
+        # Both name the key both Secrets hold, where the copy init puts it.
+        key = f"/private/{CACHE_ATTRIBUTION_KEY}"
+        assert str(settings.attribution_key_file) == key
+        assert str(middleware.cache_attribution_key_file) == key
     else:
         assert not (secrets / "cache").exists()
+        assert middleware.cache_attribution_key_file is None
+        assert not (secrets / "middleware" / CACHE_ATTRIBUTION_KEY).exists()
 
     manager = manager_settings.load(secrets / "runtime-manager/runtime-manager.json")
     # The runtime resolves control inside its sandbox: only the qualified name works.
@@ -345,6 +357,23 @@ def test_each_settings_file_loads_through_the_model_its_service_starts_with(tmp_
     )
     runtime = json.loads(manager.runtime_json(models, "runtime-test"))
     assert runtime["control_url"] == f"https://{control_host}:8443/control"
+
+
+def test_the_bundles_owner_addresses_reach_the_worker_and_the_middlewares_floor(tmp_path):
+    site = site_file(tmp_path)
+    bundle = tmp_path / "inputs/bundle.toml"
+    data = tomllib.loads(bundle.read_text())
+    data["network"]["owner_addresses"] = ["198.51.100.7", "2001:db8:5::/48"]
+    bundle.write_text(toml.dumps(data))
+    output = tmp_path / "out"
+    write(output, plan(*load(site)))
+    worker = load_worker(output / "secrets/worker/worker.toml")
+    middleware = load_middleware(output / "secrets/middleware/middleware.toml")
+    assert worker.openshell is not None
+    assert worker.openshell.environments is not None
+    expected = ("198.51.100.7/32", "2001:db8:5::/48")
+    assert worker.openshell.environments.owner_addresses == expected
+    assert middleware.owner_addresses == expected
 
 
 def test_the_direct_path_binds_the_runtimes_sandbox_and_gives_it_its_servers(tmp_path):
@@ -539,7 +568,8 @@ def test_secrets_hold_exactly_the_projected_keys_and_everything_is_private(tmp_p
     for role in REQUIRED_FILES:
         secret = getattr(bundle.secrets, role.replace("-", "_"))
         keys = {path.name for path in (output / "secrets" / role).iterdir()}
-        assert keys == {*REQUIRED_FILES[role], *secret.extra_files}, role
+        assert keys == {*projected_files(bundle, role), *secret.extra_files}, role
+        assert set(REQUIRED_FILES[role]) <= keys, role
     for path in (output, *output.rglob("*")):
         mode = stat.S_IMODE(path.lstat().st_mode)
         assert mode == (0o700 if path.is_dir() else 0o600), path
@@ -562,6 +592,23 @@ def test_secrets_hold_exactly_the_projected_keys_and_everything_is_private(tmp_p
         assert (manager / f"gateway-{name}").read_bytes() == own != worker
     assert (manager / "active-gateway").read_bytes() == GATEWAY.encode()
     assert (manager / "model.key").read_text() == "test-secret-model-key"
+
+
+def test_the_middleware_and_the_cache_share_one_fresh_attribution_key(tmp_path):
+    (tmp_path / "first").mkdir()
+    (tmp_path / "second").mkdir()
+    first = generate(tmp_path / "first", cache=True) / "secrets"
+    middleware = (first / "middleware" / CACHE_ATTRIBUTION_KEY).read_bytes()
+    assert (first / "cache" / CACHE_ATTRIBUTION_KEY).read_bytes() == middleware
+    assert len(middleware) >= 32
+    second = generate(tmp_path / "second", cache=True) / "secrets"
+    assert (second / "cache" / CACHE_ATTRIBUTION_KEY).read_bytes() != middleware
+    # secrets.sh makes both Secrets from these directories, so the key reaches both at once.
+    script = (first.parent / "secrets.sh").read_text()
+    for role in ("middleware", "cache"):
+        assert f"--from-file={CACHE_ATTRIBUTION_KEY}=secrets/{role}/{CACHE_ATTRIBUTION_KEY}" in (
+            script
+        )
 
 
 def test_tokens_are_fresh_and_their_digests_match(tmp_path):

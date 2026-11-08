@@ -13,13 +13,14 @@ import pytest
 from pydantic import ValidationError
 
 from sandbox_science.launcher import toml, unit
-from sandbox_science.launcher.kubernetes_bundle import render
+from sandbox_science.launcher.kubernetes_bundle import notices, render
 from sandbox_science.launcher.kubernetes_cli import main, write_bundle
 from sandbox_science.launcher.kubernetes_config import (
     BundleConfig,
     BundleError,
     load,
     projected_files,
+    skipped_checks,
 )
 
 
@@ -474,6 +475,86 @@ def test_invalid_config_does_not_echo_sensitive_input_or_create_output(tmp_path,
     assert main(["render", "--config", str(config), "--output", str(output)]) == 1
     assert "test-secret" not in capsys.readouterr().err
     assert not output.exists()
+
+
+CLUSTER = {
+    "pod_cidrs": ["10.42.0.0/16", "fd00:42::/56"],
+    "service_cidrs": ["10.43.0.0/16"],
+    "api_server": "192.0.2.50",
+}
+"""A dual-stack cluster's own ranges, made up for the tests."""
+
+
+def with_network(**changes: object) -> dict:
+    data = values()
+    data["network"].update(changes)
+    return data
+
+
+def test_owner_addresses_take_their_canonical_form():
+    config = configured(with_network(owner_addresses=["2001:DB8:5::/48", "198.51.100.7"]))
+    assert config.network.owner_addresses == ("2001:db8:5::/48", "198.51.100.7/32")
+    assert configured().network.owner_addresses == ()
+
+
+@pytest.mark.parametrize(
+    "address", ["owner.example.org", "198.51.100.7/24", "0.0.0.0/0", "fe80::1%eth0"]
+)
+def test_an_owner_address_is_an_address_or_a_canonical_cidr_and_its_error_names_no_value(
+    tmp_path, address
+):
+    config = tmp_path / "deployment.toml"
+    config.write_text(toml.dumps(with_network(owner_addresses=["198.51.100.8", address])))
+    with pytest.raises(BundleError, match=r"network\.owner_addresses\.1: use an IP address") as e:
+        load(config)
+    assert address not in str(e.value)
+
+
+@pytest.mark.parametrize(
+    ("key", "cidr", "where"),
+    [
+        ("app_egress", "10.42.7.0/24", "network.cluster.pod_cidrs[0]"),
+        ("app_egress", "10.0.0.0/8", "network.cluster.pod_cidrs[0]"),
+        ("pool_egress", "fd00:42:0:1::/64", "network.cluster.pod_cidrs[1]"),
+        ("pool_egress", "10.43.0.1/32", "network.cluster.service_cidrs[0]"),
+        ("app_egress", "192.0.2.50/32", "network.cluster.api_server"),
+    ],
+)
+def test_an_egress_cidr_overlapping_the_clusters_own_ranges_is_refused(tmp_path, key, cidr, where):
+    entry = {"peer": {"cidr": cidr}, "ports": [443]}
+    data = with_network(cluster=CLUSTER, **{key: [entry]})
+    with pytest.raises(ValidationError, match="overlaps"):
+        configured(data)
+    config = tmp_path / "deployment.toml"
+    config.write_text(toml.dumps(data))
+    with pytest.raises(BundleError) as refused:
+        load(config)
+    assert f"network.{key}[0].peer.cidr overlaps {where}" in str(refused.value)
+    assert cidr not in str(refused.value)
+
+
+def test_egress_outside_the_clusters_ranges_passes_and_nothing_is_skipped():
+    data = with_network(
+        cluster=CLUSTER,
+        pool_egress=[
+            {"peer": {"cidr": "192.0.2.51/32"}, "ports": [443]},
+            {"peer": {"cidr": "2001:db8:7::/48"}, "ports": [443]},
+            {"peer": {"namespace_labels": {"kubernetes.io/metadata.name": "garage"}}, "ports": [1]},
+        ],
+    )
+    assert skipped_checks(configured(data)) == ()
+
+
+def test_without_the_clusters_ranges_the_overlap_check_is_skipped_and_said(tmp_path, capsys):
+    data = with_network(app_egress=[{"peer": {"cidr": "10.42.7.0/24"}, "ports": [443]}])
+    assert skipped_checks(configured(data))
+    config = tmp_path / "deployment.toml"
+    config.write_text(toml.dumps(data))
+    assert main(["check", "--config", str(config)]) == 0
+    assert "skipped: egress CIDRs not checked" in capsys.readouterr().out
+    config.write_text(toml.dumps(with_network(cluster=CLUSTER)))
+    assert main(["check", "--config", str(config)]) == 0
+    assert "skipped" not in capsys.readouterr().out
 
 
 def test_output_symlink_is_never_followed(tmp_path):
@@ -1747,35 +1828,103 @@ def test_the_rendered_maintain_command_parses():
     assert artifacts(command[1:]) == 1
 
 
-def test_maintenance_receives_only_controls_object_store_sdk_files():
-    data = values()
-    data["secrets"]["control"]["extra_files"] = ["s3-credentials", "s3-config", "s3-ca.crt"]
+def control_with_storage(data: dict | None = None) -> dict:
+    data = values() if data is None else data
+    data["secrets"]["control"]["extra_files"] = [
+        "s3-credentials",
+        "s3-config",
+        "s3-ca.crt",
+        "s3-reader-credentials",
+    ]
     data["control"] = {
         "environment": {
             "AWS_SHARED_CREDENTIALS_FILE": "/private/s3-credentials",
             "AWS_CONFIG_FILE": "/private/s3-config",
             "AWS_CA_BUNDLE": "/private/s3-ca.crt",
             "AWS_PROFILE": "artifact-writer",
+            "AWS_REGION": "garage",
             "HOME": "/var/lib/sandbox-science/control-home",
         }
     }
-    pod_spec = maintenance_pod(objects(configured(with_maintenance(data))))
+    return data
+
+
+def test_maintenance_verifies_with_a_read_only_key_never_controls_own():
+    data = with_maintenance(
+        control_with_storage(),
+        storage_credentials="s3-reader-credentials",
+        storage_profile="artifact-reader",
+    )
+    pod_spec = maintenance_pod(objects(configured(data)))
     (init,) = pod_spec["initContainers"]
     assert init["name"] == "copy-storage"
     volumes = {volume["name"]: volume for volume in pod_spec["volumes"]}
     secret = volumes["storage-source"]["secret"]
     assert secret["secretName"] == "test-control"
-    assert [item["key"] for item in secret["items"]] == ["s3-ca.crt", "s3-config", "s3-credentials"]
+    # Control's store settings and CA, and the reader's key: never control's credentials.
+    assert [item["key"] for item in secret["items"]] == [
+        "s3-ca.crt",
+        "s3-config",
+        "s3-reader-credentials",
+    ]
     assert volumes["storage-credentials"]["emptyDir"]["medium"] == "Memory"
     (container,) = pod_spec["containers"]
     environment = {item["name"]: item["value"] for item in container["env"]}
-    assert environment["AWS_PROFILE"] == "artifact-writer"
-    assert environment["AWS_SHARED_CREDENTIALS_FILE"] == "/private/s3-credentials"
+    assert environment["AWS_PROFILE"] == "artifact-reader"
+    assert environment["AWS_SHARED_CREDENTIALS_FILE"] == "/private/s3-reader-credentials"
+    assert environment["AWS_CONFIG_FILE"] == "/private/s3-config"
+    assert environment["AWS_REGION"] == "garage"
     assert environment["AWS_EC2_METADATA_DISABLED"] == "true"
     assert environment["HOME"] == "/tmp"
     private = next(m for m in container["volumeMounts"] if m["mountPath"] == "/private")
     assert private["readOnly"] is True
-    assert "control.key" not in json.dumps(pod_spec)
+    rendered = json.dumps(pod_spec)
+    assert "control.key" not in rendered
+    assert '"s3-credentials"' not in rendered
+    assert "artifact-writer" not in rendered
+
+
+def test_maintenance_without_a_profile_passes_no_aws_profile():
+    data = with_maintenance(control_with_storage(), storage_credentials="s3-reader-credentials")
+    (container,) = maintenance_pod(objects(configured(data)))["containers"]
+    assert "AWS_PROFILE" not in {item["name"] for item in container["env"]}
+
+
+def test_maintenance_without_a_read_only_key_leaves_out_only_the_trim_job(tmp_path, capsys):
+    config = configured(with_maintenance(control_with_storage()))
+    items = objects(config)
+    assert not any("maintenance" in item["metadata"]["name"] for item in items)
+    # Everything else renders as without the section.
+    assert items == objects(configured(control_with_storage()))
+    (notice,) = notices(config)
+    assert "cache-trim job was left out" in notice
+    assert "storage_credentials" in notice
+    assert "writer key" in notice
+    path = tmp_path / "bundle.toml"
+    path.write_text(toml.dumps(with_maintenance(control_with_storage())))
+    output = tmp_path / "bundle.json"
+    assert main(["render", "--config", str(path), "--output", str(output)]) == 0
+    assert f"warning: {notice}" in capsys.readouterr().err
+    assert "CronJob" not in output.read_text()
+    # With the key, no notice and the job is there.
+    fixed = with_maintenance(control_with_storage(), storage_credentials="s3-reader-credentials")
+    assert notices(configured(fixed)) == ()
+
+
+@pytest.mark.parametrize(
+    ("maintenance", "message"),
+    [
+        ({"storage_credentials": "s3-missing"}, "not one of secrets.control.extra_files"),
+        ({"storage_credentials": "s3-credentials"}, "one of control's own SDK files"),
+        ({"storage_credentials": "s3-config"}, "one of control's own SDK files"),
+    ],
+)
+def test_maintenance_refuses_to_fall_back_to_controls_writer_key(
+    maintenance: dict, message: str
+) -> None:
+    config = configured(with_maintenance(control_with_storage(), **maintenance))
+    with pytest.raises(BundleError, match=message):
+        render(config)
 
 
 def test_maintenance_pods_reach_only_dns_and_the_apps_external_flows():
@@ -2320,3 +2469,17 @@ def test_no_extra_files_names_the_client_secret():
     data["secrets"]["control"]["extra_files"] = ["authentik-client-secret"]
     with pytest.raises(ValidationError, match="no extra_files names Authentik's client secret"):
         configured(data)
+
+
+@pytest.mark.parametrize("cache", [False, True])
+def test_with_a_cache_the_middleware_and_the_cache_get_the_attribution_key(cache: bool):
+    spec = pod(objects(configured(with_cache() if cache else values())), "pool")
+    sources = {
+        volume["name"]: [item["key"] for item in volume["secret"]["items"]]
+        for volume in spec["volumes"]
+        if "secret" in volume
+    }
+    assert ("cache-attribution.key" in sources["middleware-source"]) == cache
+    if cache:
+        assert "cache-attribution.key" in sources["cache-source"]
+    assert "cache-attribution.key" not in sources["worker-source"]

@@ -27,7 +27,17 @@ from .loop_harness import AREA, PROJECT, SESSION, Harness, Reply, call
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
-from .test_delegation import CHECK, REPORT, RESULT, children, delegation, results, started, wait
+from .test_delegation import (
+    CHECK,
+    REPORT,
+    RESULT,
+    children,
+    delegation,
+    results,
+    started,
+    submitted,
+    wait,
+)
 from .test_delegation import delegating as delegating
 from .test_delegation_lifecycle import BRIEF, _delegations
 
@@ -57,7 +67,7 @@ async def test_a_checks_recorded_files_reach_its_parent_apart_from_its_result(
             Reply(
                 calls=[call("write_file", path=f"{AREA}/check.py", content="print(2 ** 16 % 17)\n")]
             ),
-            Reply(REPORT),
+            *submitted(),
         ],
     )
     (child,) = children(delegating, root)
@@ -82,7 +92,7 @@ async def test_a_checks_recorded_files_reach_its_parent_apart_from_its_result(
 
 async def test_a_check_that_wrote_nothing_has_no_files(delegating: Harness) -> None:
     root = await delegating.run(
-        "root", [Reply(calls=[CHECK]), wait(), Reply("Done.")], delegated=[Reply(REPORT)]
+        "root", [Reply(calls=[CHECK]), wait(), Reply("Done.")], delegated=[*submitted()]
     )
     (delegation_id,) = started(root)
     assert delegation(delegating, delegation_id).files is None

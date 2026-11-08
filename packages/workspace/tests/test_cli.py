@@ -126,7 +126,7 @@ def test_serve_warns_only_when_the_preview_origin_shares_the_site(
     given: list[object] = []
 
     async def serve(*args: object) -> None:
-        preview = args[4]
+        preview = args[3]
         assert isinstance(preview, tuple)
         given.append(preview[-1])
 
@@ -146,7 +146,7 @@ def test_an_mcp_service_leaves_the_preview_origin_localhost(
     given: list[object] = []
 
     async def serve(*args: object) -> None:
-        preview = args[4]
+        preview = args[3]
         assert isinstance(preview, tuple)
         given.append(preview[-1])
 
@@ -450,7 +450,7 @@ def test_without_proxy_settings_the_loopback_server_is_unchanged(
     assert cli.main(["serve", "--state-dir", str(state_dir), "--static", str(static_dir)]) == 0
     assert settings["exposure"] is None
     assert settings["check_host"] is True
-    assert served[5] is None  # no public origins: the listeners' own are announced
+    assert served[4] is None  # no public origins: the listeners' own are announced
 
 
 def test_proxy_settings_reach_the_app_and_the_announcement(
@@ -466,7 +466,7 @@ def test_proxy_settings_reach_the_app_and_the_announcement(
     assert exposure.public == PublicOrigin("workspace.research.test")
     assert [str(network) for network in exposure.trusted] == ["10.42.0.0/16", "fd00::/8"]
     assert settings["check_host"] is False
-    assert served[5] == (
+    assert served[4] == (
         PublicOrigin("workspace.research.test"),
         PublicOrigin("preview.research.test"),
     )
@@ -650,14 +650,15 @@ async def test_with_forward_auth_the_login_url_stays_out_of_the_log(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """D104: the login link is the operator's, an admin; with forward auth it is written
-    to a private file for ``login-url``, never to standard output (the Pod's log)."""
+    to a private file for ``login-url``, never to standard output (the Pod's log), and
+    rewritten with each new token, since each link works once."""
     token = "test-secret-login-token-not-for-the-log-0123456789"
     login_file = tmp_path / cli.LOGIN_URL_FILE
     login_file.write_text("an old URL\n")
     login_file.chmod(0o644)
-    server = asyncio.create_task(
-        cli.serve(web.Application(), "127.0.0.1", 0, token, None, None, login_file)
-    )
+    served = web.Application()
+    sessions = served[app.SESSIONS] = app.Sessions(token)
+    server = asyncio.create_task(cli.serve(served, "127.0.0.1", 0, None, None, login_file))
     for _ in range(200):
         if "token=" in login_file.read_text():
             break
@@ -667,14 +668,50 @@ async def test_with_forward_auth_the_login_url_stays_out_of_the_log(
     assert re.fullmatch(rf"http://127\.0\.0\.1:\d+/login\?token={token}", url)
     printed = capsys.readouterr()
     assert token not in printed.out + printed.err
+    assert "works once" in printed.out
     assert f"login-url --login-url-file {login_file}" in printed.out
     assert cli.main(["login-url", "--state-dir", str(tmp_path)]) == 0
     assert capsys.readouterr().out.strip() == url
+    # A login replaces the token: the file, and login-url, name the new one only.
+    assert sessions.login(token) is not None
+    current = login_file.read_text().strip()
+    assert current == url.replace(token, sessions.token)
+    assert stat.S_IMODE(login_file.stat().st_mode) == 0o600
+    assert cli.main(["login-url", "--state-dir", str(tmp_path)]) == 0
+    printed = capsys.readouterr()
+    assert printed.out.strip() == current
+    assert sessions.token not in printed.err
     os.kill(os.getpid(), signal.SIGTERM)
     await asyncio.wait_for(server, 10)
     assert not login_file.exists()  # the token died with the server
     assert cli.main(["login-url", "--state-dir", str(tmp_path)]) == 1
     assert "not running with forward auth" in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+async def test_without_forward_auth_each_new_login_url_is_printed(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    token = "test-secret-login-token-printed-0123456789abcdef"
+    served = web.Application()
+    sessions = served[app.SESSIONS] = app.Sessions(token)
+    server = asyncio.create_task(cli.serve(served, "127.0.0.1", 0))
+    printed = ""
+    for _ in range(200):
+        printed += capsys.readouterr().out
+        if "token=" in printed:
+            break
+        await asyncio.sleep(0.02)
+    assert re.search(rf"works once.*\n    http://127\.0\.0\.1:\d+/login\?token={token}\n", printed)
+    sessions.rotate()  # as the operator's logout does
+    again = capsys.readouterr().out
+    assert re.fullmatch(
+        rf"The login URL changed; the next one works once:\n"
+        rf"    http://127\.0\.0\.1:\d+/login\?token={sessions.token}\n",
+        again,
+    )
+    os.kill(os.getpid(), signal.SIGTERM)
+    await asyncio.wait_for(server, 10)
 
 
 def test_forward_auth_passes_the_login_file_to_serve(
@@ -685,10 +722,10 @@ def test_forward_auth_passes_the_login_file_to_serve(
     assert (
         cli.main(["serve", "--state-dir", str(state_dir), "--static", str(static_dir), *flags]) == 0
     )
-    assert served[6] == state_dir / cli.LOGIN_URL_FILE
+    assert served[5] == state_dir / cli.LOGIN_URL_FILE
     served.clear()
     assert cli.main(["serve", "--state-dir", str(state_dir), "--static", str(static_dir)]) == 0
-    assert served[6] is None  # without forward auth the URL is printed, as before
+    assert served[5] is None  # without forward auth the URL is printed, as before
 
 
 def test_the_login_url_file_may_be_kept_off_the_state_directory(
@@ -707,7 +744,7 @@ def test_the_login_url_file_may_be_kept_off_the_state_directory(
     base = ["serve", "--state-dir", str(state_dir), "--static", str(static_dir)]
     flags = [*REMOTE, *PUBLIC, *PREVIEW_PUBLIC, *RS256, *FORWARD]
     assert cli.main([*base, *flags, "--login-url-file", str(chosen)]) == 0
-    assert served[6] == chosen
+    assert served[5] == chosen
     served.clear()
     absent = tmp_path / "absent" / "login-url"
     assert cli.main([*base, *flags, "--login-url-file", str(absent)]) == 1

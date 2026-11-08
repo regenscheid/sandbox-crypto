@@ -866,7 +866,7 @@ class Environments:
         """The tier the gateway's driver declares; a job sandbox's probe can only lower it."""
         self.cli = OpenShellCli(backend, cli_env)
         self.store = PolicyStore(settings.policy_store)
-        self.floor = HardFloor(frozenset(settings.admin_hosts))
+        self.floor = HardFloor(frozenset(settings.admin_hosts), frozenset(settings.owner_addresses))
         try:
             self.targets = load_targets(settings.targets)
             self.ceiling = load_ceiling(settings.ceiling)
@@ -993,6 +993,15 @@ class Environments:
             if self.handmade(environment_id):
                 return self.ceiling.resources
             raise WorkerError(ErrorKind.POLICY_DENIED, "no ready environment policy for jobs")
+        return effective_resources(governing.policy.policy, governing.ceiling)[0]
+
+    def call_resources(self, environment_id: str) -> Resources:
+        """The limits of the environment's policy for a shell call or cell, within the
+        pool's ceiling. Unlike ``job_resources`` it does not wait out a change under way:
+        it reads the stored revision, and an environment without one gets the ceiling's."""
+        governing = self.governing(environment_id)
+        if governing is None:
+            return self.ceiling.resources
         return effective_resources(governing.policy.policy, governing.ceiling)[0]
 
     def governing(self, environment_id: str) -> Governing | None:

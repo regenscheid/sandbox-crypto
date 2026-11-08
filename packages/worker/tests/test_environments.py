@@ -539,8 +539,9 @@ async def test_kubernetes_creation_pins_trusted_settings_and_resume_keeps_alloca
 async def test_admission_warns_of_each_resource_limit_the_pool_cannot_apply(
     setup: Setup, placed: bool, caplog: pytest.LogCaptureFixture
 ) -> None:
-    # The example policy sets cpu, memory, pids and workspace_disk. Only a Kubernetes
-    # placement carries any of them to the sandbox, and then only cpu and memory.
+    # The example policy sets cpu, memory, pids and workspace_disk (and wall_time, which
+    # the worker applies itself). Only a Kubernetes placement carries any of the four to
+    # the sandbox, and then only cpu and memory.
     if placed:
         resources = KubernetesResources(
             cpu_millicores=1000, memory_mib=512, ephemeral_storage_mib=256
@@ -570,7 +571,7 @@ async def test_admission_warns_of_each_resource_limit_the_pool_cannot_apply(
     assert reported == {
         f"resources.{name}": "warning" if name in unapplied else "info"
         for name in ("cpu", "memory", "pids", "workspace_disk")
-    }
+    } | {"resources.wall_time": "info"}  # the worker's own, on any pool
     # Asking again for the environment it has admits nothing new and warns no more.
     caplog.clear()
     with caplog.at_level(logging.WARNING, logger=environments_module.__name__):
@@ -1529,6 +1530,29 @@ async def test_admitted_names_cannot_reach_the_deployments_admin_addresses(setup
         or ipaddress.ip_address("168.63.129.16") in ipaddress.ip_network(block)
     ]
     assert covered == []
+
+
+async def test_admitted_names_cannot_reach_the_deployments_own_addresses(setup: Setup) -> None:
+    settings = setup.environments.settings.model_copy(
+        update={"owner_addresses": ("34.120.0.0/16", "2600:1f00::/32")}
+    )
+    environments = Environments(
+        setup.settings, settings, setup.tmp / "other", {"PATH": os.environ["PATH"]}
+    )
+    assert [str(n) for n in environments.floor.owner_networks] == [
+        "34.120.0.0/16",
+        "2600:1f00::/32",
+    ]
+    setup.environments.floor = environments.floor
+    info, _ = await setup.environments.create(setup.request())
+    setup.fake.draft(info.sandbox, "34-120-9-9.sslip.io:443")
+    await DraftWatcher(setup.environments, 1.0).check("env-1", info.sandbox)
+    policies = setup.fake.read()["sandboxes"][info.sandbox]["policy"]["network_policies"]
+    [endpoint] = policies["sandbox-science-admitted"]["endpoints"]
+    blocks = [ipaddress.ip_network(block) for block in endpoint["allowed_ips"]]
+    for owner in ("34.120.9.9", "2600:1f00::1"):
+        assert not any(ipaddress.ip_address(owner) in block for block in blocks), owner
+    assert any(ipaddress.ip_address("34.121.0.1") in block for block in blocks)
 
 
 async def test_text_from_the_sandbox_is_made_printable(setup: Setup) -> None:

@@ -48,7 +48,14 @@ from typing import Annotated, Final, Literal
 from urllib.parse import urlsplit
 
 import yaml
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    model_validator,
+)
 
 from .ceiling import PoolCeiling, effective_resources
 from .classification import (
@@ -72,6 +79,7 @@ from .floor import HardFloor
 from .hosts import (
     HostKind,
     HostPattern,
+    IPNetwork,
     address_variants,
     floor_addresses,
     floor_reason,
@@ -158,6 +166,19 @@ BASELINE_UNLISTED: Final = 1
 MAX_FILESYSTEM_PATHS: Final = 256
 """OpenShell's limit on ``read_only`` plus ``read_write`` paths, its baseline included."""
 
+GATEWAY_ROUTES: Final = (
+    ("POST", "/chat/completions"),  # OpenAICompatibleModel (orchestrator/model.py)
+    ("POST", "/responses"),  # ResponsesModel (orchestrator/responses.py)
+    ("POST", "/messages"),  # MessagesModel (orchestrator/messages.py)
+    ("POST", "/embeddings"),  # the runtime's skill Embedder (orchestrator/skills/embeddings.py)
+    ("GET", "/models"),  # ModelGateway.aliases (orchestrator/model.py)
+    ("GET", "/model/info"),  # model profiles, MessagesModel's providers, PriceList (pricing.py)
+)
+"""The model gateway routes the agent runtime calls, by method, under the gateway URL's
+path (``OrchestratorTarget.model_gateway_path``); its endpoint admits these alone, so that
+the runtime's key reaches none of LiteLLM's key, user, MCP or administration routes. A
+``GET`` rule also admits ``HEAD``."""
+
 OPAM_SOURCES: Final = (
     "https://github.com/ocaml/ocamlfind/archive/refs/tags/findlib-1.9.8.tar.gz",
     "https://github.com/jasmin-lang/jasmin/releases/download/v2026.09.0/"
@@ -196,9 +217,11 @@ class AnyOf(_OpenShellModel):
 
 
 class AllowEntry(_OpenShellModel):
-    """An allowed request: an MCP method, optionally limited to tools."""
+    """An allowed request: an MCP method, optionally limited to tools, or an HTTP method
+    on a path (a ``/``-delimited glob over the canonical path) of a ``rest`` endpoint."""
 
     method: str
+    path: str | None = None
     tool: str | AnyOf | None = None
 
 
@@ -556,6 +579,21 @@ class AgentMcpTarget(StrictModel):
     filesystem: SandboxFilesystem = SandboxFilesystem()
 
 
+def _gateway_path(value: str) -> str:
+    if any(part in {".", ".."} for part in value.split("/")):
+        raise ValueError("the model gateway's path has no '.' or '..' segments")
+    return value
+
+
+GatewayPath = Annotated[
+    str,
+    StringConstraints(pattern=r"^(/[A-Za-z0-9._~-]+)*$", max_length=256),
+    AfterValidator(_gateway_path),
+]
+"""The model gateway URL's path, without a trailing ``/``: plain segments only, so that it
+is already canonical and holds no glob character."""
+
+
 class OrchestratorTarget(StrictModel):
     """Settings for the orchestrator's own sandbox (Z2): the services it may reach.
 
@@ -565,6 +603,9 @@ class OrchestratorTarget(StrictModel):
 
     worker_api: ServiceEndpoint
     model_gateway: ServiceEndpoint | None = None
+    model_gateway_path: GatewayPath = "/v1"
+    """The path of the gateway URL, under which the gateway's routes (``GATEWAY_ROUTES``)
+    are admitted; empty for a gateway served at its root."""
     mcp_proxy: ServiceEndpoint | None = None
     """Where the harness reached the MCP proxy, retired with it (D98, 2026-10-26): read and
     ignored. The agent runtime's MCP egress is compiled from the project policy
@@ -574,6 +615,13 @@ class OrchestratorTarget(StrictModel):
     binaries: tuple[BinaryPattern, ...] = Field(min_length=1)
     filesystem: SandboxFilesystem = SandboxFilesystem()
     """Paths the harness's image provides outside the workdir, such as its interpreter's prefix."""
+
+    @model_validator(mode="after")
+    def _inspected_gateway(self) -> OrchestratorTarget:
+        # A relayed connection carries no route rules.
+        if self.model_gateway is not None and self.model_gateway.relay_tls:
+            raise ValueError("the model gateway is inspected, so that its routes can be limited")
+        return self
 
 
 class OpenShellTargets(StrictModel):
@@ -649,8 +697,8 @@ def admission_ranges(
     """The public address ranges, less every address the library denies whatever the name.
 
     Those are the floor's metadata addresses, the deployment's administration
-    endpoints, the pool ceiling's denied addresses and MCP servers declared by
-    address, with the IPv4 addresses each embeds. The policy middleware sees only
+    endpoints and own addresses, the pool ceiling's denied addresses and MCP servers
+    declared by address, with the IPv4 addresses each embeds. The policy middleware sees only
     host names, so these ranges, as ``allowed_ips``, are what keeps a name that
     resolves to such an address from reaching it.
     """
@@ -658,7 +706,8 @@ def admission_ranges(
         [
             *_denied_hosts(ceiling, floor),
             *(server.host for server in policy.policy.mcp.servers.values()),
-        ]
+        ],
+        floor.owner_networks,
     )
 
 
@@ -666,12 +715,12 @@ def mcp_server_ranges(ceiling: PoolCeiling, floor: HardFloor = DEFAULT_FLOOR) ->
     """The addresses an MCP server's name may resolve to, as a sandbox's fence checks.
 
     The public address ranges, less the floor's metadata addresses, the deployment's
-    administration endpoints and the pool ceiling's denied addresses. Inside OpenShell
-    every name resolves to a synthetic address, so a client's own check cannot see
-    where a name leads; these ranges, as ``allowed_ips``, apply the floor and the
-    ceiling to the addresses OpenShell dials (lab 13).
+    administration endpoints and own addresses, and the pool ceiling's denied addresses.
+    Inside OpenShell every name resolves to a synthetic address, so a client's own check
+    cannot see where a name leads; these ranges, as ``allowed_ips``, apply the floor and
+    the ceiling to the addresses OpenShell dials (lab 13).
     """
-    return _public_ranges_less(_denied_hosts(ceiling, floor))
+    return _public_ranges_less(_denied_hosts(ceiling, floor), floor.owner_networks)
 
 
 def _denied_hosts(ceiling: PoolCeiling, floor: HardFloor) -> list[str]:
@@ -682,20 +731,21 @@ def _denied_hosts(ceiling: PoolCeiling, floor: HardFloor) -> list[str]:
     ]
 
 
-def _public_ranges_less(hosts: Sequence[str]) -> tuple[str, ...]:
-    """The public address ranges, less the floor's metadata addresses and the IP addresses
-    among ``hosts``, with the IPv4 addresses each embeds."""
+def _public_ranges_less(
+    hosts: Sequence[str], networks: Sequence[IPNetwork] = ()
+) -> tuple[str, ...]:
+    """The public address ranges, less the floor's metadata addresses, the IP addresses
+    among ``hosts``, with the IPv4 addresses each embeds, and ``networks`` (the
+    deployment's own addresses)."""
     addresses = set(floor_addresses())
     for host in hosts:
         address = parse_ip(host)
         if address is not None:
             addresses.update(address_variants(address))
-    ipv4 = tuple(
-        ipaddress.IPv4Network(a) for a in addresses if isinstance(a, ipaddress.IPv4Address)
-    )
-    ipv6 = tuple(
-        ipaddress.IPv6Network(a) for a in addresses if isinstance(a, ipaddress.IPv6Address)
-    )
+    ipv4 = {ipaddress.IPv4Network(a) for a in addresses if isinstance(a, ipaddress.IPv4Address)}
+    ipv6 = {ipaddress.IPv6Network(a) for a in addresses if isinstance(a, ipaddress.IPv6Address)}
+    ipv4.update(n for n in networks if isinstance(n, ipaddress.IPv4Network))
+    ipv6.update(n for n in networks if isinstance(n, ipaddress.IPv6Network))
     return tuple(
         str(network)
         for network in (
@@ -1339,18 +1389,35 @@ def compile_sandbox(
 
 
 _UNAPPLIED: Final = {
-    "pids": "no compute driver this worker configures sets a process limit yet",
+    "pids": (
+        "no compute driver this worker configures sets a process limit per sandbox; on "
+        "Kubernetes a node's PID limit (the kubelet's podPidsLimit) is alike for every Pod"
+    ),
     "workspace_disk": (
-        "no compute driver this worker configures limits the workspace's disk yet; a "
-        "Kubernetes placement's ephemeral-storage limit is its profile's own"
+        "no compute driver this worker configures limits the workspace's disk per sandbox; "
+        "on Kubernetes the workspace is a claim the gateway sizes alike for every sandbox, "
+        "and a placement's ephemeral-storage limit, its profile's own, bounds the "
+        "container's writable layer, not the workspace"
     ),
 }
+"""Why the pool applies neither, with or without a Kubernetes placement: OpenShell
+0.1.5's driver configuration has no field for either (``kubernetes.PLACED_LIMITS``)."""
+
+
+_WALL_TIME: Final = (
+    "applied by the worker to each package install and to each shell call or cell, which "
+    "times out at it; not to a job, whose limits are job_wall_time_default and "
+    "job_wall_time_max, nor to the sandbox's lifetime"
+)
+"""What ``wall_time`` bounds, whatever the pool's driver: the worker applies it, not the
+driver configuration."""
 
 
 def _resource_findings(policy: LoadedPolicy, ceiling: PoolCeiling, placed: bool) -> list[Finding]:
     """Per compute limit the project's policy sets or the ceiling caps, whether the pool
     applies it: a Kubernetes placement applies CPU and memory as the Pod's limits;
-    nothing applies the others yet, and without a placement none is applied."""
+    nothing applies the others (``_UNAPPLIED``), and without a placement none is applied.
+    And what ``wall_time`` bounds, when it is set."""
     resources = effective_resources(policy.policy, ceiling)[0]
     unapplied = unapplied_limits(resources, placed=placed)
     findings: list[Finding] = []
@@ -1370,6 +1437,8 @@ def _resource_findings(policy: LoadedPolicy, ceiling: PoolCeiling, placed: bool)
             "gateway's defaults), so no driver configuration carries it",
         )
         findings.append(Finding(Severity.WARNING, f"resources.{name}", f"not applied: {reason}"))
+    if resources.wall_time is not None:
+        findings.append(Finding(Severity.INFO, "resources.wall_time", _WALL_TIME))
     return findings
 
 
@@ -1405,8 +1474,8 @@ def _filesystem(read_only: Iterable[str], read_write: Iterable[str]) -> Filesyst
 
 
 def compile_orchestrator(target: OrchestratorTarget) -> OpenShellPolicy:
-    """Compile the orchestrator sandbox's policy: the worker API, the model gateway and the
-    control capability service only.
+    """Compile the orchestrator sandbox's policy: the worker API, the model gateway's
+    routes the runtime calls (``GATEWAY_ROUTES``) and the control capability service only.
 
     The orchestrator is semi-trusted (Z2 in the threat model): it chooses actions but
     holds no engine credentials, and its egress goes only to platform services. They
@@ -1434,6 +1503,17 @@ def compile_orchestrator(target: OrchestratorTarget) -> OpenShellPolicy:
         if service.relay_tls:
             endpoint = Endpoint(
                 host=service.host, ports=(service.port,), protocol="tcp", tls="skip"
+            )
+        elif key == "model-gateway":
+            endpoint = Endpoint(
+                host=service.host,
+                ports=(service.port,),
+                protocol="rest",
+                enforcement="enforce",
+                rules=tuple(
+                    Rule(allow=AllowEntry(method=method, path=target.model_gateway_path + route))
+                    for method, route in GATEWAY_ROUTES
+                ),
             )
         else:
             endpoint = Endpoint(

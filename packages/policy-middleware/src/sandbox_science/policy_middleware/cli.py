@@ -184,7 +184,7 @@ def _serve(settings: Settings) -> int:
         middleware = PolicyMiddleware(
             PolicyStore(settings.state_dir),
             ceiling=ceiling,
-            floor=HardFloor(frozenset(settings.admin_hosts)),
+            floor=HardFloor(frozenset(settings.admin_hosts), frozenset(settings.owner_addresses)),
             events=sink,
             requests=partial(_read_records, settings.event_store_path),
             archives=(
@@ -200,6 +200,7 @@ def _serve(settings: Settings) -> int:
                 else None
             ),
             response_statuses=settings.response_statuses,
+            cache_attribution_key=settings.cache_attribution_key(),
             listing_report_grace=timedelta(seconds=settings.listing_report_grace),
             inspection=(
                 Inspection(

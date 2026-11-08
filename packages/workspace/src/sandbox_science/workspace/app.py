@@ -2,21 +2,29 @@
 """The web application: login, the API's guard, security headers and the GUI's files.
 
 Authentication works like Jupyter's. ``serve`` makes a random login token at each start
-and prints a login URL once. ``GET /login?token=…`` with that token sets a session
-cookie, HttpOnly and SameSite=Strict, and redirects to the app; sessions last until the
-server stops. Browsers send a host's cookies to every port on it, so the cookie's name
-carries the server's port, and two workspaces on one machine keep their sessions apart.
-Every ``/api/`` route needs a session.
+and prints a login URL. ``GET /login?token=…`` with that token sets a session cookie,
+HttpOnly and SameSite=Strict, and redirects to the app. The link works once: the login
+replaces the token with a new one, which ``serve`` writes out as it did the first, and so
+does the operator's logout, so that a copied link dies with the session. A session ends
+``SESSION_IDLE`` after its last API request or ``SESSION_LIFETIME`` after it opened,
+whichever comes first, at a logout, or when the server stops; the guard checks at a
+request's start, so a stream already open runs on. Browsers send a host's cookies to every
+port on it, so the cookie's name carries the server's port, and two workspaces on one
+machine keep their sessions apart. Every ``/api/`` route needs a session; a request whose
+session ended is answered as one without a session, and its cookie is cleared.
 
 Behind Authentik, ``forward_auth`` (forward_auth.py, D104) opens sessions too: an API
-request without a session whose Authentik token is believed gets one, named by the
-token's user, and the answer sets its cookie as the login does. The session ends when
-the token expires; a request that brings another token (a new login, or Authentik's
-refresh) ends it and opens the token's own, and one whose new token is refused ends it
-and is refused. Logging out ends the sessions of the token and refuses the token until it
-expires, since the outpost sends it until the user signs out of Authentik; the answer
-names Authentik's sign-out. A session the login link opened is the operator's, and an
-Authentik token never replaces it. The plain ``X-authentik-*`` headers are never read.
+request without a session whose Authentik token is believed gets one, named by the token's
+user, and the answer sets its cookie as the login does. The session ends when the token
+expires, or earlier at either of the limits above, after which the next request whose
+token is still believed opens a new one, so Authentik's own session decides how long its
+user stays signed in; a request that brings another token (a new login, or Authentik's
+refresh) ends it and opens the token's own, and one whose new token is refused ends it and
+is refused. Logging out ends every session of the user, as the token's ``sub`` names
+them, and refuses the token until it expires, since the outpost sends it until the user
+signs out of Authentik; the answer names Authentik's sign-out. A session the login link
+opened is the operator's, and an Authentik token never replaces it. The plain
+``X-authentik-*`` headers are never read.
 Each API request carries its session's ``Identity`` (identity.py), which the admin-only
 actions check. A request with any method other than GET or HEAD
 also needs an ``Origin`` that is this server's own, so that a page on another site
@@ -54,6 +62,7 @@ import secrets
 import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, cast
 
@@ -130,9 +139,15 @@ HOST_PREFIX: Final = "__Host-"
 only as set Secure, on Path ``/``, without ``Domain``, so no sibling host under the same
 parent domain (such as the preview origin's) can set or shadow it."""
 MAX_SESSIONS: Final = 64
-"""Sessions kept at once; logging in beyond it ends the oldest Authentik session, or the
-oldest one when every session is the login link's."""
+"""Sessions kept at once; logging in beyond it ends the oldest session of the same
+Authentik user (by ``sub``), else the oldest Authentik session, or the oldest one when
+every session is the login link's."""
 MAX_TOKEN: Final = 256
+SESSION_IDLE: Final = 2 * 60 * 60
+"""Seconds a session lasts after its last API request."""
+SESSION_LIFETIME: Final = 12 * 60 * 60
+"""Seconds a session lasts after it opened, however busy; a forward-auth session ends
+earlier when its token expires."""
 MAX_LOGGED_OUT: Final = 4096
 """Logged-out Authentik tokens remembered at once; past it, the one that expires first is
 forgotten."""
@@ -191,6 +206,20 @@ CONTENT_TYPES: Final = {
 under ``assets/`` are cached for a year and everything else is revalidated."""
 
 
+@dataclass
+class _Session:
+    identity: Identity
+    opened: float
+    seen: float
+    """When the session's last API request came."""
+
+    def ends(self) -> float:
+        """When the session ends: the earliest of its limits."""
+        ends = min(self.seen + SESSION_IDLE, self.opened + SESSION_LIFETIME)
+        expires = self.identity.expires
+        return ends if expires is None else min(ends, expires)
+
+
 class Sessions:
     """The login token, and the browser sessions open, kept by their cookies' digests with
     their identities. A lookup by digest compares no secret directly.
@@ -200,43 +229,70 @@ class Sessions:
         if len(login_token) < 32:
             raise ValueError("a login token needs at least 32 characters")
         self._token = login_token.encode()
-        self._sessions: OrderedDict[bytes, Identity] = OrderedDict()
+        self._announce: Callable[[str], None] | None = None
+        self._sessions: OrderedDict[bytes, _Session] = OrderedDict()
         self._logged_out: dict[bytes, float] = {}
         """The digests of the Authentik tokens whose user logged out, with when each
         expires: until then the token opens no session."""
         self._clock = clock
 
+    @property
+    def token(self) -> str:
+        """The login token that works now, for ``serve`` to write out."""
+        return self._token.decode()
+
+    def announce(self, listener: Callable[[str], None]) -> None:
+        """Call ``listener`` with each new login token, as ``rotate`` makes it."""
+        self._announce = listener
+
+    def rotate(self) -> None:
+        """Replace the login token with a new one: the old one opens nothing from now on."""
+        self._token = secrets.token_urlsafe(32).encode()
+        if self._announce is not None:
+            self._announce(self.token)
+
     def login(self, presented: str) -> str | None:
-        """A new session's cookie value, when ``presented`` is the login token."""
+        """A new session's cookie value, when ``presented`` is the login token, which it
+        then replaces (``rotate``)."""
         if len(presented) > MAX_TOKEN:
             return None
         # Query values that are not UTF-8 arrive as surrogates; they must not raise.
         if not hmac.compare_digest(presented.encode("utf-8", "surrogateescape"), self._token):
             return None
+        self.rotate()
         return self.open(OPERATOR)
 
     def open(self, identity: Identity) -> str:
         """A new session for ``identity``; its cookie's value."""
         session = secrets.token_urlsafe(32)
-        self._sessions[_digest(session)] = identity
+        now = self._clock()
+        self._sessions[_digest(session)] = _Session(identity, opened=now, seen=now)
         while len(self._sessions) > MAX_SESSIONS:
-            oldest = next(
-                (key for key, kept in self._sessions.items() if kept.login == "forward"),
-                next(iter(self._sessions)),
-            )
+            # A user who opens many sessions ends their own before anyone else's.
+            forward = [
+                key for key, kept in self._sessions.items() if kept.identity.login == "forward"
+            ]
+            own = [key for key in forward if _same_user(self._sessions[key].identity, identity)]
+            oldest = next(iter(own[:-1] or forward), next(iter(self._sessions)))
             del self._sessions[oldest]
         return session
 
     def identity(self, session: str | None) -> Identity | None:
-        """The session's identity; None for no session, or one that ended or expired."""
+        """The session's identity, counting this as its latest request; None for no
+        session, or one that ended, was idle too long, or is past its lifetime or its
+        token's expiry, which then ends."""
         if session is None or len(session) > MAX_TOKEN:
             return None
         key = _digest(session)
         found = self._sessions.get(key)
-        if found is not None and found.expires is not None and found.expires <= self._clock():
+        if found is None:
+            return None
+        now = self._clock()
+        if found.ends() <= now:
             del self._sessions[key]
             return None
-        return found
+        found.seen = now
+        return found.identity
 
     def valid(self, session: str | None) -> bool:
         return self.identity(session) is not None
@@ -246,13 +302,13 @@ class Sessions:
             self._sessions.pop(_digest(session), None)
 
     def log_out(self, identity: Identity) -> None:
-        """End every session opened from ``identity``'s Authentik token, and refuse the
-        token until it expires: Authentik's outpost sends it again with each request until
-        the user signs out of Authentik, and it would open a new session."""
+        """End every session of ``identity``'s user, as their ``sub`` names them, and refuse
+        the token until it expires: Authentik's outpost sends it again with each request
+        until the user signs out of Authentik, and it would open a new session."""
         if identity.login != "forward" or not identity.token or identity.expires is None:
             return
         for key, kept in list(self._sessions.items()):
-            if kept.login == "forward" and hmac.compare_digest(kept.token, identity.token):
+            if _same_user(kept.identity, identity):
                 del self._sessions[key]
         now = self._clock()
         for digest, expires in list(self._logged_out.items()):
@@ -272,6 +328,20 @@ class Sessions:
             del self._logged_out[token]
             return False
         return True
+
+
+SESSIONS: Final = web.AppKey("workspace_sessions", Sessions)
+"""The application's sessions and login token, which ``serve`` writes out as they change."""
+
+
+def _same_user(one: Identity, other: Identity) -> bool:
+    """Whether two Authentik sessions are one user's: the same ``sub``, never the same
+    username, which a user may be able to change; without a ``sub``, the same token."""
+    if one.login != "forward" or other.login != "forward":
+        return False
+    if one.sub and other.sub:
+        return one.sub == other.sub
+    return hmac.compare_digest(one.token, other.token)
 
 
 def _digest(value: str) -> bytes:
@@ -390,6 +460,7 @@ def create_app(
             admin=claimed.admin,
             expires=claimed.expires,
             token=digest,
+            sub=claimed.sub,
         )
         request[OPENED] = sessions.open(opened)
         _log.info("opened a session for %s through Authentik", claimed.user)
@@ -413,7 +484,10 @@ def create_app(
         if is_api(request.path):
             found = await authenticate(request)
             if not isinstance(found, Identity):
-                return json_error(401, ErrorKind.POLICY_DENIED, f"not logged in: {found}")
+                refused = json_error(401, ErrorKind.POLICY_DENIED, f"not logged in: {found}")
+                if session_cookie(request) in request.cookies:
+                    clear_session(request, refused)  # a session that ended, or none ever
+                return refused
             request[IDENTITY] = found
             try:
                 response = await handler(request)
@@ -442,6 +516,12 @@ def create_app(
             secure=reached.secure(reached.seen(request)),
         )
 
+    def clear_session(request: web.Request, response: web.StreamResponse) -> None:
+        if reached.public is not None:
+            response.del_cookie(session_cookie(request), path="/", secure=True)  # __Host-
+        else:
+            response.del_cookie(session_cookie(request), path="/")
+
     async def secure(request: web.Request, response: web.StreamResponse) -> None:
         response.headers.update(SECURITY_HEADERS)
         if preview is not None:
@@ -452,8 +532,10 @@ def create_app(
         if session is None:
             return web.Response(
                 status=403,
-                text="This login link is not valid. Open the URL that sandbox-science-workspace "
-                "printed when it started; a restart makes a new one.",
+                text="This login link is not valid: each link works once, and a restart "
+                "makes a new one. Open the current link, which sandbox-science-workspace "
+                "writes out after each login (with forward auth on, its login-url command "
+                "prints it).",
                 headers={hdrs.CACHE_CONTROL: "no-store"},
             )
         response = web.Response(
@@ -480,11 +562,11 @@ def create_app(
                 {"sign_out": sign_out}, headers={hdrs.CACHE_CONTROL: "no-store"}
             )
         else:
+            if found is not None and found.login == "token":
+                sessions.rotate()  # a copied link that was never used dies with the session
+                _log.info("the operator logged out; the login link changed")
             response = web.Response(status=204, headers={hdrs.CACHE_CONTROL: "no-store"})
-        if reached.public is not None:
-            response.del_cookie(name, path="/", secure=True)  # a __Host- cookie needs it
-        else:
-            response.del_cookie(name, path="/")
+        clear_session(request, response)
         return response
 
     async def repair_math(request: web.Request) -> web.StreamResponse:
@@ -514,6 +596,7 @@ def create_app(
             stack.callback(writer.close)
 
     app = web.Application(middlewares=[guard], client_max_size=64 * 1024)
+    app[SESSIONS] = sessions
     if forward_auth is not None and forward_auth.settings.admin_group is not None:
         app[ADMIN_GROUP] = forward_auth.settings.admin_group
     if skills_metadata is not None:

@@ -57,7 +57,12 @@ runtime's sandbox (``mcp_direct``). The MCP proxy that stood there before retire
   (``jsontext``);
 - with a ``BinarySink`` (``mcp_binaries``), each image, audio block or blob of a result
   is withheld (``policy.mcp_answers``) and kept as an artifact, and the model sees the
-  sink's note naming it instead; the toolbox bounds the text as it bounds any tool result.
+  sink's note naming it instead; the toolbox bounds the text as it bounds any tool result;
+- what a server returns is untrusted too: a result's text, and a tool error's, loses the
+  characters a description loses (``clean``), the call's record counting them
+  (``hidden_removed``), and a result's text follows the platform's line that frames it as
+  the server's data, not instructions (``notices.CONNECTOR_RESULT``), which the readers of
+  kept results take off (``notices.unframed``).
 """
 
 from __future__ import annotations
@@ -83,6 +88,7 @@ from .documents.agent_text import hidden_characters
 from .effects import UnknownEffectError
 from .mcp_binaries import BinarySink
 from .model import ToolSpec
+from .notices import CONNECTOR_RESULT
 from .purpose import offered
 from .worker_client import dump
 
@@ -168,8 +174,16 @@ def clean(text: str) -> str:
     rather than refused: controls but line breaks and tabs, format, private-use and
     unassigned characters, line and paragraph separators, and every Default_Ignorable
     code point (``agent_text.hidden_characters``, threat model A3)."""
+    return cleaned(text)[0]
+
+
+def cleaned(text: str) -> tuple[str, int]:
+    """``text`` as ``clean`` makes it, and how many characters that removed."""
     hidden = {index for index, _ in hidden_characters(text)}
-    return "".join(char for index, char in enumerate(text) if index not in hidden)
+    if not hidden:
+        return text, 0
+    kept = "".join(char for index, char in enumerate(text) if index not in hidden)
+    return kept, len(hidden)
 
 
 @dataclass(frozen=True)
@@ -789,7 +803,9 @@ class Connectors:
                     await self.on_approval(None)
         if self.binaries is not None:
             result = await self._keep_binaries(tool.server, name, result, record)
-        text = _text(result)
+        text, removed = cleaned(_text(result))
+        if removed:
+            record["hidden_removed"] = removed
         if jsontext.deeper_than(text, MAX_NESTING):
             record["error"] = "result_too_nested"
             message = (
@@ -800,7 +816,7 @@ class Connectors:
         if result.get("isError") is True:
             record["error"] = "tool_error"
             return dump({"error": {"kind": "tool_error", "message": text}}), record
-        return text, record
+        return CONNECTOR_RESULT.text + text, record
 
     async def _keep_binaries(
         self, server: str, name: str, result: dict[str, Any], record: dict[str, Any]

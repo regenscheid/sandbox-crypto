@@ -32,7 +32,7 @@ from typing import Final, Literal, cast
 from pydantic import Field, JsonValue
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, Identifier
-from sandbox_science.contracts.model import Contract
+from sandbox_science.contracts.model import Contract, UserName
 
 from .control import ControlError, ControlStore
 from .control.errors import BUSY, CONFLICT, INVALID_REQUEST, NOT_FOUND
@@ -206,7 +206,10 @@ class ChatMessage(Contract):
     number: int
     """Its place among the store's messages: a session's messages in the order written."""
     text: str
-    author: Identifier
+    author: UserName
+    """Who wrote it: the user who sent it, as the workspace names its logins (``user``,
+    ``authentik:<username>``), or a platform author; a run reads every user's message as
+    the user's."""
     created_at: datetime
     state: MessageState
     run: str | None = None

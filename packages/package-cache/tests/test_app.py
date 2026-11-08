@@ -30,9 +30,15 @@ from sandbox_science.package_cache.app import (
     PackageCache,
     create_app,
 )
-from sandbox_science.package_cache.errors import StoreError
+from sandbox_science.package_cache.errors import SettingsError, StoreError
 from sandbox_science.package_cache.settings import Settings
 from sandbox_science.package_cache.upstream import USER_AGENT
+from sandbox_science.policy.cache_attribution import (
+    ATTRIBUTION_HEADER,
+    ATTRIBUTION_WINDOW,
+    read_key,
+    sign,
+)
 from sandbox_science.policy.package_requests import SANDBOX_HEADER
 
 pytestmark = pytest.mark.asyncio
@@ -1176,6 +1182,77 @@ async def test_per_sandbox_budgets_can_be_turned_off(make_harness: HarnessFactor
         harness.upstream.set(f"/{name}", name.encode())
         harness.route(name)
         assert (await harness.get(name, headers={SANDBOX_HEADER: "sbx-0001"}))[0] == 200
+
+
+def attribution_key(tmp_path: Path) -> Path:
+    path = tmp_path / "cache-attribution.key"
+    path.write_bytes(b"a-made-up-attribution-key-for-tests-only\n")
+    path.chmod(0o600)
+    return path
+
+
+async def test_with_a_key_only_attributed_requests_are_served(
+    make_harness: HarnessFactory, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="sandbox_science.package_cache.requests")
+    key_file = attribution_key(tmp_path)
+    harness = await make_harness(attribution_key_file=key_file, sandbox_burst=1, rate_limit_wait=0)
+    key = read_key(key_file)
+    for name in "ab":
+        harness.upstream.set(f"/{name}", name.encode())
+        harness.route(name)
+
+    def attributed(sandbox: str, tail: str, *, at: float | None = None) -> dict[str, str]:
+        now = harness.clock.now if at is None else at
+        value = sign(key, sandbox, "GET", f"/pkg/{tail}", now)
+        return {SANDBOX_HEADER: sandbox, ATTRIBUTION_HEADER: value}
+
+    assert (await harness.get("a", headers=attributed("sbx-0001", "a")))[:2] == (200, b"a")
+    # Without the middleware's HMAC, or with one for another sandbox, path or time, the
+    # cache serves nothing and charges no budget.
+    for headers in (
+        {},
+        {SANDBOX_HEADER: "sbx-0001"},
+        {**attributed("sbx-0001", "b"), SANDBOX_HEADER: "sbx-0002"},
+        attributed("sbx-0001", "a"),
+        attributed("sbx-0001", "b", at=harness.clock.now - ATTRIBUTION_WINDOW - 1),
+        attributed("sbx-0001", "b", at=harness.clock.now + ATTRIBUTION_WINDOW + 1),
+        {**attributed("sbx-0001", "b"), ATTRIBUTION_HEADER: "v1:1:" + "0" * 64},
+    ):
+        status, body, _ = await harness.get("b", headers=headers)
+        assert (status, body) == (403, b"the policy middleware did not attribute this request\n")
+    assert harness.upstream.count("/b") == 0
+    # Within the skew window it is good; the status routes need none.
+    skewed = attributed("sbx-0002", "b", at=harness.clock.now - ATTRIBUTION_WINDOW)
+    assert (await harness.get("b", headers=skewed))[:2] == (200, b"b")
+    assert (await harness.stats())["misses"] == 2
+    logged = [
+        record.getMessage() for record in caplog.records if " status=403 " in record.getMessage()
+    ]
+    assert logged
+    assert all(line.endswith("sandbox=-") for line in logged)
+
+
+async def test_without_a_key_the_cache_says_the_sandbox_header_is_unauthenticated(
+    make_harness: HarnessFactory, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.WARNING, logger="sandbox_science.package_cache.app")
+    harness = await make_harness()
+    warned = [r.getMessage() for r in caplog.records if "attribution_key_file" in r.getMessage()]
+    assert len(warned) == 1
+    assert "unauthenticated" in warned[0]
+    harness.upstream.set("/a", b"a")
+    harness.route("a")
+    assert (await harness.get("a", headers={SANDBOX_HEADER: "sbx-0001"}))[:2] == (200, b"a")
+
+
+async def test_an_attribution_key_open_to_others_is_refused(
+    make_harness: HarnessFactory, tmp_path: Path
+) -> None:
+    key_file = attribution_key(tmp_path)
+    key_file.chmod(0o644)
+    with pytest.raises(SettingsError, match="private regular file"):
+        await make_harness(attribution_key_file=key_file)
 
 
 async def test_eviction_keeps_the_store_under_its_cap(make_harness: HarnessFactory) -> None:

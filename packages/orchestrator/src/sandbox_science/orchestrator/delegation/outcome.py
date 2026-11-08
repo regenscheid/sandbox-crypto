@@ -31,16 +31,16 @@ list, in the brief's order, each key the item's ``id`` (a value that is not an o
 names another ``id``, stays an error); and an artifact produced with its path alone gets
 the one revision the run's calls recorded of that path (none or several stay an error).
 
-A closing answer that comes with no result submitted gets the platform's notice that the
-result goes through ``submit_result``, with its form, at most ``NUDGES`` times in a run.
-An answer that holds a valid result as JSON, read leniently (``candidates``: the last
-fenced ``json`` block, or the last top-level JSON object, prose around it allowed), is
-the result instead, its ``platform_notes`` saying it came in the answer; so is a report a
-limit's last call gives, where no tool runs, and before which the hook's notice asks the run
-to write the JSON it would have submitted (``report_notices``). A submission or an answer
-that checks but leaves deliverables out stands, unless a later one checks, as the child's
-result with the platform's status ``blocked`` and its obstacle, marked ``set_by: platform``
-(PD-45).
+``submit_result`` is the only way a result is returned from a run that has tools: a
+closing answer that comes with no result submitted gets the platform's notice that the
+result goes through ``submit_result``, with its form, at most ``NUDGES`` times in a run,
+and JSON in the answer's prose is never read as a result. A report a limit's last call
+gives, where no tool runs, and before which the hook's notice asks the run to write the
+JSON it would have submitted (``report_notices``), is read as that JSON: the answer alone,
+or its last fenced ``json`` block (``reported``), its ``platform_notes`` saying it came in
+the report. A submission or a report that checks but leaves deliverables out stands,
+unless a later one checks, as the child's result with the platform's status ``blocked``
+and its obstacle, marked ``set_by: platform`` (PD-45).
 Without any, the parent still gets a result, the platform's, never stronger than the
 records: ``blocked``, its obstacle that the run submitted none, the run's answer as its
 summary, each deliverable ``not_produced``, no result files, and a note naming the files
@@ -55,7 +55,6 @@ from __future__ import annotations
 
 import json
 import re
-from collections import deque
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import partial
@@ -64,8 +63,6 @@ from typing import Annotated, Any, Final, Literal, Self, cast
 from pydantic import BeforeValidator, Field, JsonValue, ValidationError, model_validator
 
 from sandbox_science.contracts.model import StrictContract
-from sandbox_science.orchestrator import jsontext
-from sandbox_science.orchestrator.aio import threaded
 from sandbox_science.orchestrator.context.history.archive import body
 from sandbox_science.orchestrator.documents.agent_text import agent_text
 from sandbox_science.orchestrator.documents.errors import DocumentError
@@ -97,15 +94,6 @@ it, a task's longest result stays within the table's 32 KiB."""
 ERROR_CHARS: Final = 500
 KEPT_ERRORS: Final = 4
 _FENCED: Final = re.compile(r"^```(?:json)?\s*\n(.*)\n```$", re.DOTALL)
-LENIENT_CHARS: Final = 64 * 1024
-"""How much of an answer's end the lenient reader looks for its last JSON object in:
-more than twice the longest task result."""
-LENIENT_STARTS: Final = 64
-"""The places that may begin an object the lenient reader tries there, the last ones:
-more than twice the objects of the largest task result."""
-_OPENING: Final = re.compile(r'\{\s*["}]')
-"""What may begin a JSON object: a ``{`` before a key or its close, not one of prose or
-of LaTeX, nor one in a JSON string, whose quotes are escaped."""
 SUBMIT: Final = "submit_result"
 """The tool a delegated run submits its result with."""
 NUDGES: Final = 3
@@ -138,13 +126,12 @@ LIMITS: Final = frozenset(
 (RS-6f)."""
 NO_SUBMISSION: Final = "the run ended without submitting a result"
 """The obstacle of the platform's result for a run that submitted none."""
-ANSWER: Final = "answer"
 REPORT: Final = "report"
 CAME: Final = {
-    ANSWER: "the result came in the run's closing answer, not through submit_result",
     REPORT: "the result came in the run's report at its limit, not through submit_result",
 }
-"""The platform's note on a result read from a run's text, by where it came from."""
+"""The platform's note on a result read from a run's text, by where it came from: only a
+report at a limit, where no tool runs."""
 LIMIT_OBSTACLE: Final = "the run reached a limit ({limit}) before it ended"
 """The obstacle of a run's result at a limit, which the platform marks as its own."""
 
@@ -553,8 +540,8 @@ def parse(answer: str | None, target: Target | None = None) -> CheckResult:
 
 
 def _fenced(text: str) -> list[str]:
-    """The contents of an answer's fenced blocks marked ``json``, or not marked, in order:
-    a block opens with a line that begins with three backticks and closes at the next."""
+    """The contents of an answer's fenced blocks marked ``json``, in order: a block opens
+    with a line that begins with three backticks and closes at the next."""
     found: list[str] = []
     lines: list[str] | None = None
     marked = False
@@ -565,7 +552,7 @@ def _fenced(text: str) -> list[str]:
                 lines.append(line)
             continue
         if lines is None:
-            lines, marked = [], stripped[3:].strip().lower() in ("", "json")
+            lines, marked = [], stripped[3:].strip().lower() == "json"
             continue
         if marked:
             found.append("\n".join(lines))
@@ -573,47 +560,16 @@ def _fenced(text: str) -> list[str]:
     return found
 
 
-def _last_object(text: str) -> str | None:
-    """The text of the last top-level JSON object in ``text``'s last ``LENIENT_CHARS``:
-    of the objects read whole from its last ``LENIENT_STARTS`` places that may begin one
-    (``_OPENING``), the one that ends last, which holds any other read inside it. Each
-    read is of at most ``LENIENT_CHARS``, so an answer of any length costs at most
-    ``LENIENT_STARTS`` of them (the orchestrator audit: reading every ``{`` of a 300 KB
-    answer took 14 seconds)."""
-    window = text[-LENIENT_CHARS:]
-    starts = deque((found.start() for found in _OPENING.finditer(window)), LENIENT_STARTS)
-    last: tuple[int, int] | None = None
-    for start in reversed(starts):
-        try:
-            found, end = jsontext.raw_decode(window, start)
-        except ValueError:
-            continue
-        if isinstance(found, dict) and (last is None or end > last[1]):
-            last = start, end
-    return None if last is None else window[last[0] : last[1]]
-
-
-def _object(text: str) -> bool:
-    try:
-        return isinstance(json.loads(text), dict)
-    except (ValueError, RecursionError):
-        return False
-
-
-def candidates(answer: str | None) -> tuple[str, ...]:
-    """The JSON objects an answer may give its result in, read leniently, most likely
-    first: its last fenced ``json`` block, then its last top-level JSON object near its
-    end (``_last_object``), prose before or after either allowed (lab round 2: every
-    child wrote a sentence before its JSON, and one a stub block before it)."""
-    text = answer or ""
-    found: list[str] = []
-    blocks = [block.strip() for block in _fenced(text) if _object(block.strip())]
-    if blocks:
-        found.append(blocks[-1])
-    last = _last_object(text)
-    if last is not None and last not in found:
-        found.append(last)
-    return tuple(found)
+def reported(answer: str | None) -> str | None:
+    """The JSON a report at a limit writes as its answer, as the report's notice asks for
+    it (``OUTCOME_REPORT``): the answer alone, or the content of its last fenced ``json``
+    block, prose around it allowed; None for a report that gives neither. JSON elsewhere
+    in its prose is not read."""
+    text = _unfenced(answer)
+    if text.startswith("{"):
+        return text
+    blocks = _fenced(answer or "")
+    return blocks[-1].strip() if blocks else None
 
 
 def _string(description: str, limit: int, *, least: int = 0) -> dict[str, Any]:
@@ -1356,14 +1312,11 @@ class Outcome(TurnHook):
             tuple(_placed(problems, ids)),
         )
 
-    async def _answered(self, answer: str | None) -> Reading | None:
-        """The best reading of the JSON an answer holds (``candidates``): the first that
-        checks, else the first that checks but for deliverables it leaves out, else the
-        first; ``None`` for an answer that holds none."""
-        readings = [await self._reading(text) for text in await threaded(candidates, answer)]
-        found = next((r for r in readings if r.valid), None)
-        found = found or next((r for r in readings if r.omits), None)
-        return found or (readings[0] if readings else None)
+    async def _report(self, answer: str | None) -> Reading | None:
+        """The reading of the JSON a report at a limit gives (``reported``); ``None`` for
+        a report that gives none."""
+        text = reported(answer)
+        return None if text is None else await self._reading(text)
 
     # --- The result that stands --------------------------------------------------------
 
@@ -1495,8 +1448,8 @@ class Outcome(TurnHook):
 
     async def report_notices(self, run: RunView, limit: str) -> Sequence[Notice]:
         """The report round at a limit, where no tool runs: the run writes, as its answer,
-        the JSON object it would have submitted, which is read leniently as its result
-        (PD-19); with a result recorded, the notice says so."""
+        the JSON object it would have submitted, which is read as its result
+        (``reported``, PD-19); with a result recorded, the notice says so."""
         payload: dict[str, JsonValue] = {
             "limit": limit,
             "recorded": self._submitted,
@@ -1506,7 +1459,7 @@ class Outcome(TurnHook):
 
     async def model_returned(self, run: RunView) -> None:
         """A report round's answer at a limit, where no tool runs: its text is the run's
-        latest answer, whose JSON, read leniently, is the report's result, as is a call
+        latest answer, whose JSON (``reported``) is the report's result, as is a call
         of ``submit_result`` in it, which does not run. A hook that stops the run at its
         closing, as a parent's stop does, asks this hook nothing more."""
         if run.halted is None:
@@ -1528,7 +1481,7 @@ class Outcome(TurnHook):
             readings.append(await self._reading(arguments))
         if isinstance(text, str) and text.strip():
             self.answer = body(text)
-            if (found := await self._answered(self.answer)) is not None:
+            if (found := await self._report(self.answer)) is not None:
                 readings.append(found)
         for reading in sorted(readings, key=lambda r: not r.valid):
             if reading.valid or (reading.omits and not self.valid):
@@ -1536,24 +1489,17 @@ class Outcome(TurnHook):
                 return
 
     async def closing(self, run: RunView, answer: str | None) -> Closing:
-        """A closing answer: it stands once a result was submitted. Without one, a result
-        the answer holds as JSON is taken (a report's at a limit too); otherwise the run
+        """A closing answer: it stands once a result was submitted. Without one, the run
         is told, at most ``NUDGES`` times, that its result goes through ``submit_result``,
-        and then the answer stands (PD-18)."""
+        and then the answer stands (PD-18): JSON in the answer is not a result. A report at
+        a limit, where no tool runs, gives its result as JSON (``reported``, PD-19)."""
         self.answer = answer
-        limited = run.halted is not None
-        if self._submitted and not limited:
+        if run.halted is not None:
+            reading = await self._report(answer)
+            if reading is not None and (reading.valid or (reading.omits and not self.valid)):
+                self._stand(reading, REPORT)
             return Closing()
-        reading = await self._answered(answer)
-        source = REPORT if limited else ANSWER
-        if reading is not None and reading.valid:
-            self._stand(reading, source)
-            return Closing()
-        if self.valid:
-            return Closing()
-        if reading is not None and reading.omits:
-            self._stand(reading, source)
-        if limited or self.nudges >= NUDGES:
+        if self._submitted or self.nudges >= NUDGES:
             return Closing()
         self.nudges += 1
         payload: dict[str, JsonValue] = {
@@ -1562,10 +1508,6 @@ class Outcome(TurnHook):
             "of": NUDGES,
             "form": self.form,
         }
-        if reading is not None:
-            payload["answer_problems"] = [
-                {"at": at, "problem": text} for at, text in self._refused(reading)
-            ]
         return Closing("continue", (Notice(self.name, (), OUTCOME_SUBMIT.text, payload),))
 
     async def finishing(self, run: RunView, stopped: str) -> str | None:

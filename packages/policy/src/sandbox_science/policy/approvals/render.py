@@ -58,11 +58,16 @@ def request_lines(approvals: Approvals, seq: int) -> list[str] | None:
         state = "withdrawn: its operation has ended"
     elif approvals.withdrawn(seq):
         state = "withdrawn: its grant was revoked"
+        revoked = approvals.revoked_by(seq)
+        if revoked is not None:
+            state += f" by {revoked.user}"
     elif answer is None:
         state = f"waiting (after {request.timeout.total_seconds() / 60:.0f} min: "
         state += f"{request.on_timeout})"
     else:
         state = f"{'approved' if answer.kind == APPROVAL else 'denied'} by record {answer.seq}"
+        if answer.by is not None:
+            state += f" ({answer.by.user})"
         if answer.expires is not None:
             state += f", until {answer.expires:%Y-%m-%d %H:%M:%S}"
     lines = [f"{request.seq}  {request.recorded:%Y-%m-%d %H:%M:%S}  {describe(request.key)}"]

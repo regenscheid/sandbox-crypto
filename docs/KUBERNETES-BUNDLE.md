@@ -38,8 +38,11 @@ and PVC a profile names must carry the `openshell.ai/sandbox-attachable` labels
 A first UID-1000 init container mounts only that Pod's data PVC and creates the
 fixed missing state directories: `control` for the application, `worker`,
 `worker-config` and `middleware` for the pool, plus `package-cache` when enabled, and
-`runtime` for the runtime manager, so that each directory a service mounts exists, owned
-by UID 1000, before the service starts. This breaks the cold
+`runtime` for the runtime manager, so that each of these directories a service mounts
+exists, owned by UID 1000, before the service starts. A managed home/config directory a
+service's environment selects (such as the worker's `HOME`) is not among them: the kubelet
+creates it at the container's first mount of its `subPath`, owned by root with the Pod's
+`fsGroup` and the volume root's mode, so the service writes it through its group. This breaks the cold
 volume startup dependency: workspace can initialize its empty control database
 before any runtime has connected. Initialization is create-only, preserves existing
 directory modes and all content, refuses symlink/non-directory collisions and does
@@ -324,7 +327,7 @@ file:
 | `[runtime]` | The `orchestrator` image by digest, its full source `revision`, `recover_infrastructure`, and its Kata placement |
 | `[worker]` | `max_environments` (1 to 1000; the worker's default, 8, when unset): the most session environments, not job sandboxes or child environments, that the projects of control's worker client and of the workspace's may have at once, rendered into each of those two clients' `[[clients]]` entries in `worker.toml` (the runtime manager's binding-only client makes none). The worker keeps this limit per client, so that one cannot fill the pool's host with sandboxes ([clients limited to projects](WORKER.md#clients-limited-to-projects)); a client at it is refused with `policy_denied` ("this client's projects have N environments, its limit; delete one first"). Raise it when a site's projects keep more than eight session environments alive, such as scratch environments beside the sessions'; a change reaches the worker with the regenerated `worker.toml` Secret and a pool restart. `label_environments` (default `false`): `worker.toml`'s `openshell.environments.label_environments`, which gives each sandbox the worker creates the label `sandbox-science.io/environment=<environment ID>` and lets reconciliation of an unknown creation look for it. Confirmed on the test instance's OpenShell 0.1.5 gateway on 2026-10-26: the label appears on the OpenShell sandbox, not on the Kubernetes Sandbox object or its Pod, so select by it through `openshell sandbox list`, not `kubectl`; `[worker.job_profiles.<name>]`, the job sandbox sizes ([job sandboxes](WORKER.md#job-environments)): a placement (below) plus `description` and, optionally, `wall_time_max`, `schedule_timeout`, `max_concurrent`, `stage_max_bytes` and `collect_max_bytes`, rendered into `worker.toml`'s `openshell.environments.job_profiles`, so a `site` run keeps them; and `max_job_sandboxes`, `job_retention`, `job_retention_per_project` (the worker's defaults when unset). A project's policy grants the sizes; `[worker.child_profiles.<name>]`, the sizes of delegated runs' own environments ([child environments](WORKER.md#child-environments)): the same keys as a job size plus `isolation_tier` (3 unless set; 2 or 3, since the placement is Kata), rendered into `worker.toml`'s `openshell.environments.child_profiles`, with `default_child_profile`, `max_child_environments`, `child_retention` and `child_retention_per_project` (the worker's defaults when unset); a project's policy grants them (`resources.child_profiles`, `resources.child_environments_max`) |
 | `[profiles.<name>]` | Each research base profile's image by digest and Kata placement |
-| `[openshell]` | The gateway `endpoint` (`https://host:port`; only the trusted manager and worker use it, so `https://openshell.openshell.svc:8080` works on any cluster domain, and the chart's server certificate covers `openshell.openshell.svc`), `gateway_id` (`openshell`), the middleware's `registration` (`sandbox-science-policy`), optional `audience` and `admin_hosts`, `jwt_public_key` (the gateway's extension-token public key, from OpenShell's own Secrets), and the `manager` and `worker` client identities, each `ca`, `certificate` and `key` PEM paths issued by the gateway's client CA (prep step 5.1) |
+| `[openshell]` | The gateway `endpoint` (`https://host:port`; only the trusted manager and worker use it, so `https://openshell.openshell.svc:8080` works on any cluster domain, and the chart's server certificate covers `openshell.openshell.svc`), `gateway_id` (`openshell`), the middleware's `registration` (`sandbox-science-policy`), optional `audience` and `admin_hosts` (the deployment's own public addresses are the bundle's `network.owner_addresses`, [below](#explicit-network-authority)), `jwt_public_key` (the gateway's extension-token public key, from OpenShell's own Secrets), and the `manager` and `worker` client identities, each `ca`, `certificate` and `key` PEM paths issued by the gateway's client CA (prep step 5.1) |
 | `[cache]` | Exactly when the bundle has `secrets.cache`: the package cache's settings besides its listener, URL and directories (`cache_dir`, and `worker_state_dir`, the worker's state on the same PVC, whose environments' lockfiles pin files against eviction). It must enable at least one ecosystem (`pypi`, `conda`, `cargo`, `go`, `npm`, `opam`, `hackage`; `{}` takes that ecosystem's defaults): a cache with none answers 404 to every request, so `site` refuses it |
 | `[extra_files.<service>]` | A file for each other key the bundle's `extra_files` names, such as `s3-credentials` |
 
@@ -364,7 +367,11 @@ What it generates: a private CA (ECDSA P-256) and server certificates for
 `.<namespace>.svc.<cluster_domain>`; a 32-byte random token for each link, without a
 newline (control's `worker-token`, the workspace's, the worker's `pool-token` and the
 manager's `manager-control.token`, whose lowercase SHA-256 hex is control's
-`runtime-manager-token.sha256`); and the settings with the bindings above, through the
+`runtime-manager-token.sha256`); with `secrets.cache`, one more such key,
+`cache-attribution.key`, written into both the middleware's and the cache's Secret, which
+`middleware.toml`'s `cache_attribution_key_file` and `cache.toml`'s `attribution_key_file`
+name at `/private/cache-attribution.key`, so the cache serves only requests the middleware
+attributed ([package cache](PACKAGE-CACHE.md#logging-and-limits)); and the settings with the bindings above, through the
 launcher's own builders (`control.json`'s model part and run settings, the worker's
 client entries, the runtime's OpenShell target) and models (`RuntimeManagerSettings`).
 `control-models.json` is `control.json`'s model part. The worker declares
@@ -373,7 +380,10 @@ each base profile; `control.json` names the `trusted-app` image's Node and math 
 (`/usr/local/bin/node`, `/usr/share/sandbox-science/math`). The
 middleware verifies the gateway's tokens with the given public key. The CA's key is
 never written: renewing a certificate or rotating a token means generating a new
-directory, replacing every Secret and recreating the Pods. The tests load each settings
+directory, replacing every Secret and recreating the Pods. A deployment generated before
+the attribution key gets it the same way: replace the middleware's and the cache's
+Secrets together, since a key on one side only refuses every package request, and
+restart the pool Pod. The tests load each settings
 file through the model its service starts with.
 
 What it cannot generate, each a `TODO(operator)` in the README: applying the gateway's
@@ -423,6 +433,34 @@ TCP ports. Supply gateway, S3 and package upstream destinations explicitly:
 [[network.pool_egress]]
 ports = [443]
 peer.cidr = "192.0.2.20/32" # documentation-only; replace with the approved private site value
+```
+
+With `[network.cluster]`, the renderer refuses an `app_egress`, `pool_egress` or
+`checkpoint.object_store` CIDR that overlaps the cluster's own Pod or Service CIDRs or
+its API server's address, naming both fields: the cluster's own Pods, Services and API
+server are reached through selectors, and a CIDR over them would open far more than its
+one destination. The fields are optional; without the table, `check`, `render` and
+`site` say the check was skipped:
+
+```toml
+[network.cluster]
+pod_cidrs = ["10.42.0.0/16"]        # up to 8; a dual-stack cluster has one per family
+service_cidrs = ["10.43.0.0/16"]    # up to 8
+api_server = "192.0.2.50"           # optional: the API server's address outside the Service range
+```
+
+`network.owner_addresses` lists the deployment's own public addresses and prefixes, as IP
+addresses or CIDRs without host bits (at most 16), such as the nodes' global IPv6 prefix,
+the site's WAN address and the ingress addresses. `site` writes it into the worker's and
+the middleware's settings, where the hard floor denies every address within them and the
+public ranges compiled into sandbox policies leave them out ([policy](POLICY.md)), so
+research code allowed a public `GET` cannot reach the owner's own services. It is empty
+by default, and its values stay in the private bundle file. An invalid entry or an
+overlap is reported by its location, never its value.
+
+```toml
+[network]
+owner_addresses = ["198.51.100.7", "2001:db8:5::/48"]   # documentation values; replace privately
 ```
 
 No public/default egress, host/node authority or DNS-name-based network permission
@@ -579,8 +617,9 @@ application Pod and forward both ports directly:
 kubectl -n research port-forward pod/EXACT_APPLICATION_POD 8200:8200 8201:8201
 ```
 
-Open the workspace's existing login URL (its token is visible only through the
-trusted operator's logs/workflow); retain the separate preview origin. Do not expose
+Open the workspace's current login URL (its token is visible only through the
+trusted operator's logs/workflow; each URL works once, and the workspace prints the next
+after each login); retain the separate preview origin. Do not expose
 this loopback login by other means or add `--allow-remote` to work around it: the
 only supported route off loopback is the opt-in
 [ingress](#workspace-through-the-clusters-ingress-opt-in).
@@ -664,7 +703,7 @@ The renderer passes no `--trust-proxy-from`: Traefik's Pods have no fixed addres
 with `Host` passed through no forwarded header is needed. Authentik is checked before
 the workspace's own login token, which the workspace still needs unless
 [login through Authentik](#login-through-authentik-opt-in) is on
-(`kubectl logs deploy/<name>-app -c workspace` prints the login URL on the public origin; with login through Authentik it is not in the log, and `kubectl -n <namespace> exec deploy/<name>-app -c workspace -- sandbox-science-workspace login-url --login-url-file /run/sandbox-science/workspace-login/login-url` prints it);
+(`kubectl logs deploy/<name>-app -c workspace` prints the login URL on the public origin, the last one printed being the current one, since each works once; with login through Authentik it is not in the log, and `kubectl -n <namespace> exec deploy/<name>-app -c workspace -- sandbox-science-workspace login-url --login-url-file /run/sandbox-science/workspace-login/login-url` prints the current one);
 Authentik's plain headers open no workspace session. Nothing here is qualified on a cluster.
 
 ### Login through Authentik (opt-in)
@@ -728,8 +767,9 @@ does, so this adds no new exposure ([threat model](THREAT-MODEL.md)). The worksp
 longer prints its login URL, which logs in as the operator, an admin: it writes it to
 `/run/sandbox-science/workspace-login/login-url` (`--login-url-file`), on a 1 MiB memory
 volume only the workspace container mounts, not in the state directory on the app PVC,
-which is backed up and which control mounts too, and
-`kubectl -n <namespace> exec deploy/<name>-app -c workspace -- sandbox-science-workspace login-url --login-url-file /run/sandbox-science/workspace-login/login-url` prints it.
+which is backed up and which control mounts too. The link works once: each login with
+it, and the operator's logout, replaces the file's URL with a new one, and
+`kubectl -n <namespace> exec deploy/<name>-app -c workspace -- sandbox-science-workspace login-url --login-url-file /run/sandbox-science/workspace-login/login-url` prints the current one.
 
 **Who can mint a login.** With HS256, whoever holds the client secret can make a token for
 any user and group: Authentik's administrators, and whoever can read the workspace's
@@ -796,6 +836,8 @@ commands](#offline-worker-commands)).
 # max_bytes = 1073741824       # (1 B to 64 GiB)
 # min_age_seconds = 86400      # keep local copies younger than this
 # deadline_seconds = 3600      # the Job's activeDeadlineSeconds (60 to 86400)
+storage_credentials = "s3-reader-credentials"  # key of control's Secret: a read-only store key
+# storage_profile = "artifact-reader"          # that key's profile; the SDK default without it
 ```
 
 With the section, the bundle adds three objects in its namespace:
@@ -816,11 +858,21 @@ With the section, the bundle adds three objects in its namespace:
   and the `network.app_egress` flows, where the object store is. Without the store the
   pass reports `unavailable` and keeps every local copy.
 
-The Pod gets no control credential. When control's `environment` names object-store SDK
-files (`AWS_SHARED_CREDENTIALS_FILE`, `AWS_CONFIG_FILE`, `AWS_CA_BUNDLE`), a `copy-storage`
-init container copies exactly those keys of control's Secret into the Pod's memory volume,
-and the container gets those variables and `AWS_PROFILE`/`AWS_REGION`; `control.key`,
-the tokens and `control.json` stay in the app Pod.
+The Pod gets no control credential. It verifies remote copies with a read-only key on the
+artifact store: `storage_credentials` names the key of control's Secret (one of
+`secrets.control.extra_files`) that holds that key's SDK credentials file, and
+`storage_profile` its profile. When control's `environment` names its own
+`AWS_SHARED_CREDENTIALS_FILE` and the section names no `storage_credentials`, `check` and
+`render` print a warning and leave the section's three objects out, rendering the rest:
+the cache is not trimmed until the section names a read-only key, and never with
+control's writer key. They refuse a `storage_credentials` that is not one of
+`secrets.control.extra_files`, or that names a file control's environment names. A `copy-storage` init container copies that file,
+and the files of control's `AWS_CONFIG_FILE` and `AWS_CA_BUNDLE`, into the Pod's memory
+volume; the container gets `AWS_SHARED_CREDENTIALS_FILE` naming the read-only file,
+control's `AWS_CONFIG_FILE`, `AWS_CA_BUNDLE` and `AWS_REGION`, and `AWS_PROFILE` only from
+`storage_profile`. Control's config file is shared with the pass, so it holds the store's
+settings, never a key. `control.key`, control's credentials file, the tokens and
+`control.json` stay in the app Pod.
 
 `--at-use-percent` makes the schedule implement "trim at about 70% use" without a
 controller: each pass measures the control volume (`statvfs` of the database's directory,
@@ -1408,7 +1460,7 @@ The first deployment collects every service's logs into Loki through Alloy (D103
 
 ## Alert rules
 
-The first alerts over the structured logs (D103), six rules, are rendered only with an `[alerts]` section: one ConfigMap, `<name>-alert-rules`, whose key `sandbox-science-alerts.yaml` is a rule file in the Prometheus rule format that Loki's ruler reads, with LogQL expressions. Without the section, nothing is rendered. How to load it into the ruler is [preparation, step 11](KUBERNETES-PREP.md#11-log-collection).
+The first alerts over the structured logs (D103), seven rules, are rendered only with an `[alerts]` section: one ConfigMap, `<name>-alert-rules`, whose key `sandbox-science-alerts.yaml` is a rule file in the Prometheus rule format that Loki's ruler reads, with LogQL expressions. Without the section, nothing is rendered. How to load it into the ruler is [preparation, step 11](KUBERNETES-PREP.md#11-log-collection).
 
 ```toml
 [alerts]
@@ -1429,6 +1481,7 @@ The ConfigMap carries `configmap_labels` and the annotation `k8s-sidecar-target-
 | `SandboxScienceMcpCanaryChanged` | A scheduled [MCP canary](MCP-CONNECTORS.md#canaries) changed from `listed` (or no earlier result) to `unavailable`, `denied` or `timeout` (`event: mcp_canary_changed`): the notification. It resolves 20 minutes after the change | `service`, `server`, `status` |
 | `SandboxScienceMcpCanaryFailing` | Every canary of a server within `canary_window_minutes` (20) failed (`event: mcp_canary`, `status` not `listed`, and no listed one): it holds while the server keeps failing and resolves at its first listed result. The window must exceed the canaries' interval (15 minutes by default). With `[mcp_direct]` the bundle's control runs the canaries (`[mcp_direct.canaries]`): both canary rules fire from their logs where Alloy collects them | `service`, `server` |
 | `SandboxSciencePolicyHold` | A detect-and-hold rule opened a hold: the middleware's `event: detect_finding` with `outcome` `hold` (a session's outward calls held, [detect and hold](POLICY-MIDDLEWARE.md#detect-and-hold-d103)) or `hold_call` (one call held for approval). Not grouped by project: a held call's record, and an HTTP detection's, carry none | `service`, `rule`, `outcome` |
+| `SandboxScienceRuntimeBlocked` (critical) | No agent runtime, and the runtime manager will not bring one up: it has noted `blocked` for over 10 minutes (its automatic actions exhausted or refused, or the runtime exited with `recover_infrastructure` off), until an operator requests `replace` or `bootstrap`. The manager logs a held note's `runtime_manager_note` every 5 minutes, whether or not it noted it again, and the rule asks for a `blocked` record within each 8 minutes, held for 10 (`for: 10m`). It resolves up to 8 minutes after the block clears; `request status` says why it holds | `service`, `kind` |
 
 **Network-policy drops are not alerted on.** The services' logs do not carry them: a Kubernetes NetworkPolicy drop is the CNI's to report, and OpenShell's sandbox network denials reach Loki only as OCSF events through the sample's optional OCSF pipeline, whose `class_uid` and `action` values have not been seen on a cluster. The rule file ends with that rule commented out, for once they have. None of the rules has run in a Loki ruler yet.
 

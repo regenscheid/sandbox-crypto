@@ -29,6 +29,7 @@ from sandbox_science.testing import FakeClock, eventually
 from sandbox_science.worker import executor
 from sandbox_science.worker.app import create_app
 from sandbox_science.worker.errors import WorkerError
+from sandbox_science.worker.live import REQUEST
 from sandbox_science.worker.manager import ExecutionManager
 from sandbox_science.worker.timeouts import ManagerTimeouts
 
@@ -168,6 +169,48 @@ async def test_job_timeout_uses_own_policy_and_keeps_output(jobs: ExecutionManag
     assert clamped.job is not None
     assert clamped.job.timeout_seconds == 1
     await jobs.wait(clamped.execution_id)
+
+
+def remembered_timeout(manager: ExecutionManager, execution_id: str) -> float:
+    found = manager.store.recovery(execution_id)
+    assert found is not None
+    timeout = REQUEST.validate_json(found[0]).timeout_seconds
+    assert timeout is not None
+    return timeout
+
+
+@pytest.mark.asyncio
+async def test_wall_time_bounds_each_call_but_not_a_job(jobs: ExecutionManager) -> None:
+    view(jobs).set_lifecycle(call_resources=lambda _: Resources(wall_time=timedelta(seconds=1)))
+    # A limit above wall_time is cut to it, and the execution times out there.
+    above = ShellRequest(
+        operation_id="above", context=CONTEXT, script="sleep 60", timeout_seconds=600
+    )
+    call, _ = await jobs.submit(above)
+    assert remembered_timeout(jobs, call.execution_id) == 1
+    assert (await jobs.wait(call.execution_id)).state is ExecutionState.TIMED_OUT
+    # The request's identity is the one it was sent with: sending it again is no conflict.
+    same, created = await jobs.submit(above)
+    assert (same.execution_id, created) == (call.execution_id, False)
+    # None given: the lesser of the default (120 s) and wall_time.
+    default, _ = await jobs.submit(
+        ShellRequest(operation_id="default", context=CONTEXT, script="true")
+    )
+    assert remembered_timeout(jobs, default.execution_id) == 1
+    await jobs.wait(default.execution_id)
+    below = ShellRequest(operation_id="below", context=CONTEXT, script="true", timeout_seconds=0.5)
+    short, _ = await jobs.submit(below)
+    assert remembered_timeout(jobs, short.execution_id) == 0.5
+    await jobs.wait(short.execution_id)
+    # A job's limit is its own (job_wall_time_*), not wall_time.
+    job, _ = await jobs.submit(request("job-not-cut", "true", timeout_seconds=30))
+    assert job.job is not None
+    assert job.job.timeout_seconds == 30
+    await jobs.wait(job.execution_id)
+    view(jobs).set_lifecycle(call_resources=lambda _: Resources(wall_time=timedelta(hours=1)))
+    plain, _ = await jobs.submit(ShellRequest(operation_id="plain", context=CONTEXT, script="true"))
+    assert remembered_timeout(jobs, plain.execution_id) == 120
+    await jobs.wait(plain.execution_id)
 
 
 @pytest.mark.asyncio

@@ -17,9 +17,10 @@ dependencies:
   - pip
   # SageMath with its sagemath kernelspec, and the libraries named in D46. Not the `sage`
   # metapackage, which adds only these and Jmol, a Java viewer for 3D plots that brings a
-  # Java runtime (400 MB): its other dependencies are listed instead, at its constraints, and
-  # Sage shows 3D plots with three.js (threejs-sage, sagelib's). A runtime install of `sage`
-  # or `jmol` would bring Java back (docs/IMAGES.md).
+  # Java runtime (400 MB): its other dependencies are listed instead, at its constraints but
+  # for pillow, which admits 13 (the metapackage asks <13; sagelib 10.9 takes 13), and Sage
+  # shows 3D plots with three.js (threejs-sage, sagelib's). A runtime install of `sage` or
+  # `jmol` would bring Java back (docs/IMAGES.md).
   - sagelib 10.9.*
   - blas-devel
   - conway-polynomials >=0.10
@@ -38,7 +39,7 @@ dependencies:
   - networkx >=3.6.1,<4
   - notebook >=7.5.5,<8
   - palp >=2.21,<3
-  - pillow >=12.1.1,<13
+  - pillow >=12.1.1,<14
   - pkg-config
   - pkgconfig
   - pythran >=0.18.1,<0.19

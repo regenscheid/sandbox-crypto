@@ -22,9 +22,15 @@ from pydantic import ValidationError
 from sandbox_science.contracts.workspace_checkpoint import CheckpointPlan, RestorePlan
 
 from . import kubernetes_site, kubernetes_site_config
-from .kubernetes_bundle import CHILD_PHASES, release_job, render, worker_operation_job
+from .kubernetes_bundle import (
+    CHILD_PHASES,
+    notices,
+    release_job,
+    render,
+    worker_operation_job,
+)
 from .kubernetes_checkpoint import checkpoint_job, restore_job
-from .kubernetes_config import BundleError, load
+from .kubernetes_config import BundleConfig, BundleError, load, skipped_checks
 from .kubernetes_operations import OperationError, Operator, report, run_command, whoami
 
 
@@ -192,6 +198,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"generated the Secrets' contents in {args.output}; read its README.md, "
                 "which lists what is left to the operator; no cluster changes made"
             )
+            _print_skipped(bundle)
             return 0
         if args.command == "worker-job":
             words = [args.group, args.action]
@@ -222,7 +229,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "(docs/KUBERNETES-BUNDLE.md#offline-worker-replica-release)"
             )
             return 0
-        bundle = render(load(args.config))
+        config = load(args.config)
+        bundle = render(config)
+        for notice in notices(config):
+            print(f"warning: {notice}", file=sys.stderr)
         if args.command == "render":
             write_bundle(
                 args.output, (json.dumps(bundle, indent=2, sort_keys=True) + "\n").encode()
@@ -232,6 +242,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(
                 "valid offline configuration; Secret contents and cluster compatibility unverified"
             )
+        _print_skipped(config)
     except BundleError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -239,6 +250,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("error: cannot create a new output file; no overwrite is permitted", file=sys.stderr)
         return 1
     return 0
+
+
+def _print_skipped(config: BundleConfig) -> None:
+    for check in skipped_checks(config):
+        print(f"skipped: {check}")
 
 
 def _confirm(prompt: str) -> bool:

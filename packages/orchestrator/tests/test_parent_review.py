@@ -49,7 +49,7 @@ from .control_versions import older_store
 from .loop_harness import AREA, PROJECT, SESSION, Harness, Reply, call, own
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
-from .test_delegation import children, delegation, results, started
+from .test_delegation import children, delegation, results, started, submitted
 from .test_delegation import delegating as delegating
 from .test_delegation_environments import ChildService
 from .test_delegation_environments import owning as owning
@@ -127,11 +127,11 @@ async def test_review_before_acceptance_end_to_end(delegating: Harness) -> None:
         routed={
             FIRST: [
                 Reply(calls=[call("python", code="basis = [[3, 1], [1, 2]]")]),
-                Reply(json.dumps(PARTIAL)),
+                *submitted(PARTIAL, "Done."),
                 Reply(calls=[call("python", code="print('kept', sum(map(sum, basis)))")]),
-                Reply(json.dumps(COMPLETE)),
+                *submitted(COMPLETE, "Done."),
             ],
-            SECOND: [Reply(json.dumps(DONE))],
+            SECOND: [*submitted(DONE, "Done.")],
         },
     )
     first, second = started(root)
@@ -209,7 +209,7 @@ async def test_a_reopened_task_keeps_its_environment_and_is_released_on_acceptan
         routed={
             FIRST: [
                 Reply(calls=[call("write_file", path=f"{AREA}/basis.txt", content="3 1\n1 2\n")]),
-                Reply(json.dumps({**PARTIAL, "result_files": [f"{AREA}/basis.txt"]})),
+                *submitted({**PARTIAL, "result_files": [f"{AREA}/basis.txt"]}, "Done."),
                 Reply(
                     calls=[
                         call("read_file", path=f"{AREA}/basis.txt"),
@@ -217,9 +217,9 @@ async def test_a_reopened_task_keeps_its_environment_and_is_released_on_acceptan
                     ],
                     before=look,
                 ),
-                Reply(json.dumps({**COMPLETE, "result_files": [f"{AREA}/basis.txt"]})),
+                *submitted({**COMPLETE, "result_files": [f"{AREA}/basis.txt"]}, "Done."),
             ],
-            SECOND: [Reply(json.dumps(DONE))],
+            SECOND: [*submitted(DONE, "Done.")],
         },
     )
     first, second = started(root)
@@ -244,7 +244,7 @@ async def test_a_reopened_task_keeps_its_environment_and_is_released_on_acceptan
     # before in its write area, which is the same delegation's (PD-46, DA-19).
     runs = [r for r in children(owning, root) if r.delegation == first]
     assert {r.context.environment_id for r in runs} == {found.environment_id}
-    edited = json.loads(results(runs[-1])[-1])
+    edited = json.loads(results(runs[-1])[-2])  # before its submission
     assert "error" not in edited, edited
     assert edited["edited"] == f"work/{first}/basis.txt"
 
@@ -252,7 +252,7 @@ async def test_a_reopened_task_keeps_its_environment_and_is_released_on_acceptan
 async def test_a_check_returning_still_ends(delegating: Harness) -> None:
     """A check is not reviewed: its verdict ends it, and a message to it fails back to
     the root."""
-    from .test_delegation import CHECK, REPORT
+    from .test_delegation import CHECK
 
     root = await delegating.run(
         "root",
@@ -262,7 +262,7 @@ async def test_a_check_returning_still_ends(delegating: Harness) -> None:
             _on_first("message_child", text="Look again."),
             Reply("Checked."),
         ],
-        delegated=[Reply(REPORT)],
+        delegated=[*submitted()],
     )
     (identity,) = started(root)
     found = delegation(delegating, identity)
@@ -671,7 +671,7 @@ async def test_a_reopened_task_cancelled_hands_back_its_first_results_files(
         routed={
             FIRST: [
                 Reply(calls=[call("write_file", path=f"{AREA}/basis.txt", content="3 1\n1 2\n")]),
-                Reply(json.dumps({**PARTIAL, "result_files": [f"{AREA}/basis.txt"]})),
+                *submitted({**PARTIAL, "result_files": [f"{AREA}/basis.txt"]}, "Done."),
                 Reply(calls=[call("list_files", path=".")], before=holds),
             ]
         },
@@ -714,7 +714,7 @@ async def test_a_reopened_task_at_its_limit_hands_back_its_first_results_files(
         routed={
             FIRST: [
                 Reply(calls=[call("write_file", path=f"{AREA}/basis.txt", content="3 1\n1 2\n")]),
-                Reply(json.dumps({**PARTIAL, "result_files": [f"{AREA}/basis.txt"]})),
+                *submitted({**PARTIAL, "result_files": [f"{AREA}/basis.txt"]}, "Done."),
             ]
         },
     )

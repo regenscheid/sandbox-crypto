@@ -20,6 +20,7 @@ from sandbox_science.policy.approvals import (
     ESCALATION,
     VALID_UNTIL,
     WITHDRAWN,
+    AnsweredBy,
     Approvals,
     RequestKey,
     answer_payload,
@@ -233,3 +234,17 @@ def test_a_request_shows_what_was_asked_and_why_in_safe_text() -> None:
     assert shown[3].strip().startswith("purpose (the agent's words): factor [2Jthe lattice x")
     assert len(shown[3].strip()) < 340
     assert shown[4].strip().startswith("grants nothing after ")
+
+
+def test_a_request_in_full_names_the_user_who_answered_it() -> None:
+    approvals = Approvals()
+    key = RequestKey.packages("sbx-1", DIGEST, "prv-1", [PARI])
+    approvals.load([escalation(1, key, [PARI])])
+    kind, payload = prepare_answer(
+        approvals, 1, approve=False, scope=None, hours=None, now=NOW,
+        by=AnsweredBy("authentik:alice", "sub-alice"),
+    )  # fmt: skip
+    approvals.load([Record(2, NOW.isoformat(), kind, payload)])
+    shown = request_lines(approvals, 1)
+    assert shown is not None
+    assert shown[1].strip() == "denied by record 2 (authentik:alice)"

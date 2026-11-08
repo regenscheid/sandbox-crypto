@@ -63,7 +63,7 @@ from .loop_harness import Harness, Reply, call
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
-from .test_delegation import children, results, wait
+from .test_delegation import children, results, submitted, wait
 from .test_delegation import delegating as delegating
 from .test_delegation_tasks import DONE
 from .test_ledger import NEW
@@ -571,7 +571,7 @@ async def test_a_task_works_from_its_parents_referenced_result(delegating: Harne
     root = await delegating.run(
         "root",
         [Reply(calls=reads), Reply(calls_from=referencing), wait(), Reply("Done.")],
-        delegated=[Reply(calls_from=working), Reply(json.dumps(DONE))],
+        delegated=[Reply(calls_from=working), *submitted(DONE, "Done.")],
     )
     began = json.loads(results(root)[2])
     assert began["references"] == 2
@@ -579,7 +579,7 @@ async def test_a_task_works_from_its_parents_referenced_result(delegating: Harne
     assert "Ledger entry C-1, its current view" in ids["state"]
     assert ids["other"] not in ids["state"]
     (child,) = children(delegating, root)
-    read, hidden, refused, made = (json.loads(r) for r in results(child))
+    read, hidden, refused, made, _ = (json.loads(r) for r in results(child))
     assert "GF(17)" in read["text"]
     assert f"has no {ids['other']}" in hidden["error"]["message"]
     assert "provenance_required" in refused["error"]["message"]

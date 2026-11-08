@@ -34,7 +34,7 @@ In [Lab21](../.agents/docs/agent-reports/babbage-openshell-lab-21-2026-10-12.md)
 
 ## Disposable acceptance recipe
 
-Keep the tested source tree and the checkout the middleware and cache run from unchanged throughout the run. The profiles use Python 3.14.8.
+Keep the tested source tree and the checkout the middleware and cache run from unchanged throughout the run. The profiles use Python 3.14.10.
 
 ```bash
 R=/absolute/path/to/reviewed/worktree

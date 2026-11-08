@@ -21,9 +21,17 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from jwt.algorithms import ECAlgorithm
 
+from sandbox_science.contracts.permission_requests import AnsweredBy
 from sandbox_science.orchestrator.documents import USER, Author
 from sandbox_science.workspace import forward_auth
-from sandbox_science.workspace.app import SESSION_COOKIE, Sessions
+from sandbox_science.workspace.app import (
+    MAX_SESSIONS,
+    SESSION_COOKIE,
+    SESSION_IDLE,
+    SESSION_LIFETIME,
+    SESSIONS,
+    Sessions,
+)
 from sandbox_science.workspace.forward_auth import (
     ForwardAuthSettings,
     KeySet,
@@ -31,7 +39,14 @@ from sandbox_science.workspace.forward_auth import (
     TokenRefusedError,
     parse_keys,
 )
-from sandbox_science.workspace.identity import IDENTITY, OPERATOR, Identity, author, operator
+from sandbox_science.workspace.identity import (
+    IDENTITY,
+    OPERATOR,
+    Identity,
+    answered_by,
+    author,
+    operator,
+)
 
 from .authentik_support import (
     ADMINS,
@@ -167,18 +182,83 @@ async def test_a_session_lasts_exactly_as_long_as_its_token_is_believed(
     assert not sessions.valid(opened)
 
 
+def test_a_forward_session_ends_at_the_earliest_of_its_three_limits() -> None:
+    """The token's expiry, the idle limit and the lifetime: whichever comes first."""
+    now = [0.0]
+    sessions = Sessions(TOKEN, clock=lambda: now[0])
+
+    def alice(expires: float) -> str:
+        return sessions.open(Identity("alice", "forward", True, expires=expires, token=b"t"))
+
+    soon = alice(SESSION_IDLE / 2)  # the token expires first
+    idle = alice(2 * SESSION_LIFETIME)  # no request: the idle limit
+    busy = alice(2 * SESSION_LIFETIME)  # a request each hour: the lifetime
+    while now[0] < SESSION_LIFETIME - 3600:
+        now[0] += 3600
+        assert sessions.valid(busy)
+    assert [sessions.valid(soon), sessions.valid(idle)] == [False, False]
+    now[0] = SESSION_LIFETIME
+    assert not sessions.valid(busy)
+
+
+@pytest.mark.asyncio
+async def test_after_an_idle_timeout_a_believed_token_opens_a_new_session(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path, authentik: Authentik
+) -> None:
+    """A timed-out session is answered as no session: behind Authentik, the outpost's
+    token, while it is believed, opens a new one."""
+    client = await forwarded(aiohttp_client, state_dir, static_dir, authentik)
+    app = client.app
+    assert app is not None
+    shift = [0.0]
+    app[SESSIONS]._clock = lambda: time.time() + shift[0]  # the sessions' clock, for the test
+    token = authentik.token(exp=int(time.time()) + 3 * SESSION_IDLE)
+    first = await client.get(PROJECTS, headers=as_user(token))
+    assert first.status == 200
+    opened = first.cookies[cookie(client)].value
+    shift[0] = SESSION_IDLE + 1
+    again = await client.get(PROJECTS, headers=as_user(token))
+    assert again.status == 200
+    assert again.cookies[cookie(client)].value not in ("", opened)
+    # Without the token, the timed-out session is simply gone.
+    shift[0] = 2 * SESSION_IDLE + 2
+    assert (await client.get(PROJECTS)).status == 401
+
+
 def test_an_authentik_user_is_never_recorded_as_the_operator() -> None:
     """D104: a record's author for an Authentik user is ``authentik:<name>``, whatever the
     name; only the login link's session is ``USER``."""
     request = make_mocked_request("GET", "/api/v0/me")
-    request[IDENTITY] = Identity("user", "forward", True)
+    request[IDENTITY] = Identity("user", "forward", True, sub="sub-user")
     assert author(request) == Author(kind="user", user="authentik:user")
     assert author(request) != USER
     assert operator(request) == "authentik:user"
+    # An answer to a permission request names the user with the token's ``sub``.
+    assert answered_by(request) == AnsweredBy(user="authentik:user", sub="sub-user")
     request = make_mocked_request("GET", "/api/v0/me")
     request[IDENTITY] = OPERATOR
     assert author(request) == USER
     assert operator(request) == "user"
+    assert answered_by(request) == AnsweredBy(user="user", sub=None)
+
+
+@pytest.mark.asyncio
+async def test_a_session_carries_its_tokens_sub(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path, authentik: Authentik
+) -> None:
+    client = await forwarded(aiohttp_client, state_dir, static_dir, authentik)
+    seen: list[Identity] = []
+    sessions = client.app[SESSIONS]
+    opened = sessions.open
+
+    def keep(identity: Identity) -> str:
+        seen.append(identity)
+        return opened(identity)
+
+    sessions.open = keep  # type: ignore[method-assign]
+    response = await client.get(PROJECTS, headers=as_user(authentik.token("alice")))
+    assert response.status == 200, await response.text()
+    assert [(found.user, found.sub) for found in seen] == [("alice", "sub-alice")]
 
 
 def _other_rsa() -> rsa.RSAPrivateKey:
@@ -203,6 +283,11 @@ def _other_rsa() -> rsa.RSAPrivateKey:
         (lambda a: "unsigned", "configured RS256"),
         (lambda a: a.token(preferred_username=""), "username"),
         (lambda a: a.token(preferred_username="eve\nadmin"), "username"),
+        # Short enough for Authentik, too long in UTF-8 for its author in the records.
+        (lambda a: a.token(preferred_username="é" * 60), "username"),
+        (lambda a: a.token(sub=""), "subject (sub)"),
+        (lambda a: a.token(sub="sub-eve\x00"), "subject (sub)"),
+        (lambda a: a.token(sub="s" * (forward_auth.MAX_SUB + 1)), "subject (sub)"),
         (lambda a: a.token(groups="atlas-users"), "groups"),
         (lambda a: "not.a.jwt", "not a JWT"),
         (lambda a: "x" * (forward_auth.MAX_TOKEN + 1), "too long"),
@@ -220,6 +305,10 @@ def _other_rsa() -> rsa.RSAPrivateKey:
         "alg-none",
         "empty-user",
         "control-char-user",
+        "long-user",
+        "empty-sub",
+        "control-char-sub",
+        "long-sub",
         "groups-not-a-list",
         "garbage",
         "huge",
@@ -353,20 +442,53 @@ async def test_logging_out_ends_an_authentik_session(
 def test_a_logged_out_token_is_refused_until_it_expires() -> None:
     now = [1000.0]
     sessions = Sessions(TOKEN, clock=lambda: now[0])
-    alice = Identity("alice", "forward", True, expires=1600.0, token=b"a" * 32)
+    alice = Identity("alice", "forward", True, expires=1600.0, token=b"a" * 32, sub="s-a")
     first, second = sessions.open(alice), sessions.open(alice)
-    bob = sessions.open(Identity("bob", "forward", True, expires=1600.0, token=b"b" * 32))
+    # Alice's other token, under the name she changed to: hers by its ``sub``.
+    renamed = Identity("alicia", "forward", True, expires=1600.0, token=b"c" * 32, sub="s-a")
+    third = sessions.open(renamed)
+    bob = sessions.open(
+        Identity("bob", "forward", True, expires=1600.0, token=b"b" * 32, sub="s-b")
+    )
+    # Bob's token claims Alice's old name: the name is not who he is.
+    impostor = sessions.open(
+        Identity("alice", "forward", True, expires=1600.0, token=b"d" * 32, sub="s-d")
+    )
     operator_session = sessions.open(OPERATOR)
     sessions.log_out(alice)
-    # Every session of that token ends; another token's, and the operator's, stay.
-    assert [sessions.valid(first), sessions.valid(second)] == [False, False]
-    assert [sessions.valid(bob), sessions.valid(operator_session)] == [True, True]
+    # Every session of that user ends; another user's, and the operator's, stay.
+    assert [sessions.valid(first), sessions.valid(second), sessions.valid(third)] == [
+        False, False, False,
+    ]  # fmt: skip
+    assert [sessions.valid(bob), sessions.valid(impostor)] == [True, True]
+    assert sessions.valid(operator_session)
     assert sessions.logged_out(b"a" * 32)
     assert not sessions.logged_out(b"b" * 32)
     now[0] = 1600.0  # past its expiry nothing believes the token: it need not be kept
     assert not sessions.logged_out(b"a" * 32)
     sessions.log_out(OPERATOR)  # the login link's session names no token to refuse
     assert sessions.valid(operator_session)
+
+
+def test_past_the_limit_a_user_ends_their_own_oldest_session_first() -> None:
+    sessions = Sessions(TOKEN, clock=lambda: 1000.0)
+
+    def user(name: str, sub: str, token: bytes) -> Identity:
+        return Identity(name, "forward", True, expires=1600.0, token=token, sub=sub)
+
+    bob = sessions.open(user("bob", "s-b", b"b" * 32))
+    first = sessions.open(user("mallory", "s-m", b"m" * 32))
+    others = [sessions.open(OPERATOR) for _ in range(MAX_SESSIONS - 2)]
+    # Mallory's new session, under another name: her own oldest ends, not Bob's.
+    newest = sessions.open(user("bob", "s-m", b"n" * 32))
+    assert [sessions.valid(bob), sessions.valid(first), sessions.valid(newest)] == [
+        True, False, True,
+    ]  # fmt: skip
+    assert all(sessions.valid(kept) for kept in others)
+    # A user with no other session ends the oldest Authentik session, as before.
+    sessions.open(user("carol", "s-c", b"c" * 32))
+    assert not sessions.valid(bob)
+    assert sessions.valid(newest)
 
 
 @pytest.mark.asyncio

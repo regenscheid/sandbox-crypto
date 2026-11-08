@@ -80,6 +80,11 @@ name = "workbench-runtime-manager"
 # Add [secrets.cache] name = "workbench-cache" and approved network.sandboxes
 # peers to enable the optional co-located package cache.
 
+# The deployment's own public addresses (WAN address, global IPv6 prefix, ingress
+# addresses): site adds them to the worker's and the middleware's hard floor.
+# [network]
+# owner_addresses = ["198.51.100.7", "2001:db8:5::/48"]  # documentation-only; replace privately
+
 [network.dns]
 namespace_labels = { "kubernetes.io/metadata.name" = "kube-system" }
 pod_labels = { "k8s-app" = "kube-dns" }
@@ -106,6 +111,13 @@ peer.pod_labels = { "app.kubernetes.io/name" = "openshell" }
 # approved gateway/S3/package destinations. No external egress is enabled here.
 # ports = [443]
 # peer.cidr = "192.0.2.10/32"  # documentation-only address; replace privately
+
+# The cluster's own ranges: an egress CIDR over one is refused. Without this table the
+# check is skipped, and check, render and site say so.
+# [network.cluster]
+# pod_cidrs = ["10.42.0.0/16"]
+# service_cidrs = ["10.43.0.0/16"]
+# api_server = "192.0.2.50"  # documentation-only address; replace privately
 
 [worker]
 cpu_request_millis = 500

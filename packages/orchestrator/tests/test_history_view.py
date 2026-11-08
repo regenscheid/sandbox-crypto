@@ -59,7 +59,7 @@ from .loop_harness import PROJECT, SESSION, TASK, Harness, Reply, call, own
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
-from .test_delegation import CHECK, REPORT, wait
+from .test_delegation import CHECK, submitted, wait
 from .test_delegation import delegating as delegating
 from .test_skills_index import _pin
 from .test_skills_index import pack as pack
@@ -322,7 +322,7 @@ async def test_the_main_view_holds_main_runs_and_answers_a_held_message_once(
     the child's messages, no result without its call; and the held message once, where it
     first arrived, the new run told to answer it there."""
     root = await delegating.run(
-        "root", [Reply(calls=[CHECK]), wait(), Reply("Checked.")], delegated=[Reply(REPORT)]
+        "root", [Reply(calls=[CHECK]), wait(), Reply("Checked.")], delegated=[*submitted()]
     )
     store = ProjectStore(delegating.state)
     try:

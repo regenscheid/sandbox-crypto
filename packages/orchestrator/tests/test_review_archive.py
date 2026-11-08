@@ -30,7 +30,7 @@ from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
 from .test_consistency import store as store
-from .test_delegation import CHECK, REPORT, children, wait
+from .test_delegation import CHECK, children, submitted, wait
 from .test_delegation import delegating as delegating
 
 Json = dict[str, Any]
@@ -130,7 +130,7 @@ async def test_a_delegated_runs_work_names_the_results_it_came_back_as(
     root = await delegating.run(
         "root",
         [Reply(calls=[CHECK]), wait(), Reply("Done: C-1 holds.")],
-        delegated=[Reply(calls=[call("python", code="print(2**16 % 17)")]), Reply(REPORT)],
+        delegated=[Reply(calls=[call("python", code="print(2**16 % 17)")]), *submitted()],
         reviewer=True,
     )
     (child,) = children(delegating, root)
@@ -140,7 +140,7 @@ async def test_a_delegated_runs_work_names_the_results_it_came_back_as(
         (result,) = [
             row
             for row in Archive(documents.control).messages(PROJECT, SESSION, run=name(child))
-            if row.entry.kind == "tool_result"
+            if row.entry.kind == "tool_result" and row.entry.source == "python"
         ]
         place = {"id": result.message_id, "position": result.position}
         found = [

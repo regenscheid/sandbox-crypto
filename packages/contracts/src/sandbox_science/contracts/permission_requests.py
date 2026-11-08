@@ -30,6 +30,9 @@ GrantId = Annotated[str, StringConstraints(pattern=r"^grant-[0-9a-f]{20}$")]
 Text = Annotated[str, StringConstraints(max_length=600)]
 CallerKind = Literal["agent", "code", "user"]
 """Who asked: the agent (through a tool), research code, or the user."""
+MAX_ANSWERER: Final = 255
+"""The longest name or ``sub`` an answer's user carries."""
+Answerer = Annotated[str, StringConstraints(min_length=1, max_length=MAX_ANSWERER)]
 
 
 class HttpSummary(Contract):
@@ -146,6 +149,16 @@ class WorkerPermissionListing(Contract):
     """How many more wait than the listing carries (protocol 20)."""
 
 
+class AnsweredBy(Contract):
+    """The user who answered (protocol 21), as the workspace's records name them: ``user``
+    for the operator's login link, ``authentik:<username>`` for a login through Authentik,
+    with the Authentik token's ``sub``, which names the user whatever their username."""
+
+    kind: Literal["user"] = "user"
+    user: Answerer
+    sub: Answerer | None = None
+
+
 class WorkerPermissionAnswer(Contract):
     """The user's answer, which the workspace relays: approve or deny, with the ledger's
     scope (``request`` or ``host`` for a network request, ``files`` for a file set,
@@ -157,6 +170,10 @@ class WorkerPermissionAnswer(Contract):
     hours: Annotated[float, Field(gt=0, le=MAX_ANSWER_HOURS)] | None = None
     grants: Annotated[tuple[GrantId, ...], Field(max_length=MAX_ANSWER_GRANTS)] = ()
     """The grants an approval comes from, which revoking one withdraws (protocol 18)."""
+    by: AnsweredBy | None = None
+    """Who answered (protocol 21), which the worker records with the answer; null for one
+    the workspace gives on its own: from the standing grants it names, or a denial of a
+    call whose delegating run withdrew it."""
 
 
 class GrantWithdrawal(Contract):
@@ -165,6 +182,8 @@ class GrantWithdrawal(Contract):
 
     project_id: Identifier
     grant: GrantId
+    by: AnsweredBy | None = None
+    """Who revoked the grant (protocol 21), which the worker records with each withdrawal."""
 
 
 class GrantWithdrawn(Contract):

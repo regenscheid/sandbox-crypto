@@ -21,8 +21,11 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from pydantic_core import ErrorDetails, PydanticCustomError
 
 from sandbox_science.contracts import project_id_label_problem
+from sandbox_science.policy.floor import MAX_OWNER_ADDRESSES
+from sandbox_science.policy.hosts import IPNetwork, parse_network
 
 from .kubernetes_models import ModelCatalog
 
@@ -64,6 +67,9 @@ REQUIRED_FILES: dict[str, tuple[str, ...]] = {
         "active-gateway",
     ),
 }
+CACHE_ATTRIBUTION_KEY = "cache-attribution.key"
+"""With a package cache, the key the middleware and the cache share
+(``sandbox_science.policy.cache_attribution``): a key of both their Secrets."""
 GATEWAY_PROFILE: dict[str, str] = {
     "active-gateway": "active_gateway",
     "gateway-metadata.json": "metadata.json",
@@ -286,6 +292,45 @@ class Egress(Model):
     ports: Annotated[tuple[Port, ...], Field(min_length=1, max_length=16)]
 
 
+_REPORTED = frozenset(("network_address", "cidr_overlap"))
+"""Validation errors ``load`` reports by location and rule: their messages carry no value."""
+MAX_CLUSTER_CIDRS = 8
+"""Pod or Service CIDRs a cluster declares: a dual-stack cluster has two of each."""
+
+
+def _network(value: str) -> str:
+    """An IP address or a canonical CIDR, in canonical form; the error names no value."""
+    try:
+        return str(parse_network(value))
+    except ValueError:
+        raise PydanticCustomError(
+            "network_address", "use an IP address or a canonical CIDR without host bits"
+        ) from None
+
+
+Address = Annotated[str, AfterValidator(_network)]
+
+
+class Cluster(Model):
+    """The cluster's own address ranges, which no egress CIDR may cover."""
+
+    pod_cidrs: Annotated[tuple[Address, ...], Field(max_length=MAX_CLUSTER_CIDRS)] = ()
+    service_cidrs: Annotated[tuple[Address, ...], Field(max_length=MAX_CLUSTER_CIDRS)] = ()
+    api_server: Address | None = None
+    """The API server's address, as its endpoint outside the Service range is reached."""
+
+    def ranges(self) -> list[tuple[str, IPNetwork]]:
+        """Each declared range with its location in the bundle."""
+        found = [
+            (f"network.cluster.{name}[{index}]", ipaddress.ip_network(cidr))
+            for name in ("pod_cidrs", "service_cidrs")
+            for index, cidr in enumerate(getattr(self, name))
+        ]
+        if self.api_server is not None:
+            found.append(("network.cluster.api_server", ipaddress.ip_network(self.api_server)))
+        return found
+
+
 SUPERVISOR = ("openshell.ai/component", "supervisor")
 GATEWAY_ID = "openshell.ai/gateway-id"
 
@@ -304,6 +349,13 @@ class Network(Model):
     supervisor Pods as the runtime's does."""
     app_egress: Annotated[tuple[Egress, ...], Field(max_length=16)] = ()
     pool_egress: Annotated[tuple[Egress, ...], Field(max_length=16)] = ()
+    owner_addresses: Annotated[tuple[Address, ...], Field(max_length=MAX_OWNER_ADDRESSES)] = ()
+    """The deployment's own public addresses and prefixes (the hosts' global IPv6 prefix,
+    the site's WAN address, the ingress addresses), which ``site`` adds to the hard floor
+    of the worker and the middleware: research code reaches none of them."""
+    cluster: Cluster | None = None
+    """The cluster's Pod and Service CIDRs and API server address. Given, an egress CIDR
+    that overlaps one is refused; absent, the check is skipped and ``render`` says so."""
 
     @field_validator("runtimes", "sandboxes")
     @classmethod
@@ -550,6 +602,11 @@ _SCHEDULE = (
 )
 
 
+_BUCKET = r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"
+_PROFILE = r"^[A-Za-z0-9][A-Za-z0-9_.@-]{0,63}$"
+_LEAF = r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+
+
 class Maintenance(Model):
     """Opt-in scheduled control-cache trimming (D92): a CronJob in the bundle's namespace
     runs one bounded ``sandbox-science-artifacts maintain --apply`` pass, which does nothing
@@ -566,6 +623,14 @@ class Maintenance(Model):
     deadline_seconds: Annotated[int, Field(strict=True, ge=60, le=86400)] = 3600
     """The Job's ``activeDeadlineSeconds``: a pass still running then is stopped; the next
     one resumes from the cursor."""
+    storage_credentials: Annotated[str, StringConstraints(pattern=_LEAF)] | None = None
+    """The key of control's Secret (one of its ``extra_files``) holding the SDK credentials
+    file of a read-only key on the artifact store, with which the pass verifies remote
+    copies before it evicts. The pass never gets control's own credentials file, so the
+    renderer refuses ``[maintenance]`` without it when control's environment names one."""
+    storage_profile: Annotated[str, StringConstraints(pattern=_PROFILE)] | None = None
+    """That key's profile, as ``AWS_PROFILE``; without it, the SDK's default profile
+    (control's ``AWS_PROFILE`` is not passed)."""
 
 
 CHECKPOINT_WORKER_FILES: tuple[str, ...] = (
@@ -579,8 +644,6 @@ CHECKPOINT_WORKER_FILES: tuple[str, ...] = (
 CHECKPOINT_UPLOAD_KEYS: tuple[str, ...] = ("credentials", "config")
 """The keys of the checkpoint Job's Secret in the sandbox namespace: the upload key's SDK
 credential and config files, and nothing else."""
-_BUCKET = r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"
-_PROFILE = r"^[A-Za-z0-9][A-Za-z0-9_.@-]{0,63}$"
 
 
 def _object_store(value: str) -> str:
@@ -799,6 +862,39 @@ class BundleConfig(Model):
         return self
 
     @model_validator(mode="after")
+    def egress_outside_cluster(self) -> Self:
+        cluster = self.network.cluster
+        if cluster is None:
+            return self
+        egress = [
+            *(
+                (f"network.{name}[{index}]", entry)
+                for name in ("app_egress", "pool_egress")
+                for index, entry in enumerate(getattr(self.network, name))
+            ),
+            *(
+                [("checkpoint.object_store", self.checkpoint.object_store)]
+                if self.checkpoint is not None
+                else []
+            ),
+        ]
+        ranges = cluster.ranges()
+        for location, entry in egress:
+            if entry.peer.cidr is None:
+                continue
+            network = ipaddress.ip_network(entry.peer.cidr)
+            for where, own in ranges:
+                if network.version == own.version and network.overlaps(own):
+                    raise PydanticCustomError(
+                        "cidr_overlap",
+                        "{location}.peer.cidr overlaps {where}: the cluster's own Pods, "
+                        "Services and API server are reached through selectors, never an "
+                        "egress CIDR",
+                        {"location": location, "where": where},
+                    )
+        return self
+
+    @model_validator(mode="after")
     def checkpoint_namespace(self) -> Self:
         # The Job runs beside the volumes, in the namespace OpenShell creates sandboxes in.
         if self.checkpoint is not None and self.sandboxes is None:
@@ -835,10 +931,21 @@ class BundleConfig(Model):
         return self
 
 
+def skipped_checks(config: BundleConfig) -> tuple[str, ...]:
+    """Checks the bundle leaves out for want of an optional section, for the CLI to print."""
+    if config.network.cluster is None:
+        return (
+            "egress CIDRs not checked against the cluster's own ranges: [network.cluster] "
+            "is absent",
+        )
+    return ()
+
+
 def projected_files(config: BundleConfig, role: str) -> tuple[str, ...]:
     """The keys ``role``'s Secret must hold: ``REQUIRED_FILES``'s, and with ``[mcp_direct]``
     the runtime manager's direct MCP ones and the availability check's token (the
-    workspace's) and its digest (control's)."""
+    workspace's) and its digest (control's); with a package cache, the attribution key the
+    middleware and the cache share."""
     files = REQUIRED_FILES[role]
     if config.checkpoint is not None and role == "worker":
         files = (*files, *CHECKPOINT_WORKER_FILES)
@@ -850,6 +957,8 @@ def projected_files(config: BundleConfig, role: str) -> tuple[str, ...]:
     forward = ingress.forward_auth if ingress is not None else None
     if role == "workspace" and forward is not None and forward.shared_secret:
         files = (*files, FORWARD_AUTH_SECRET)
+    if role == "cache" or (role == "middleware" and config.secrets.cache is not None):
+        files = (*files, CACHE_ATTRIBUTION_KEY)
     return files
 
 
@@ -864,9 +973,22 @@ def load(path: Path) -> BundleConfig:
         import json
 
         return BundleConfig.model_validate_json(json.dumps(tomllib.loads(raw.decode("utf-8"))))
-    except ValidationError:
+    except ValidationError as exc:
+        reported = [_reported(error) for error in exc.errors() if error["type"] in _REPORTED]
+        if reported:
+            raise BundleError(
+                f"invalid deployment configuration: {'; '.join(sorted(set(reported)))}"
+            ) from None
         raise BundleError(
             "invalid deployment configuration; check required fields and bounds"
         ) from None
     except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
         raise BundleError("cannot read a valid deployment TOML configuration") from exc
+
+
+def _reported(error: ErrorDetails) -> str:
+    """A reported error with its location: a rule across fields names them in its message."""
+    if error["type"] == "cidr_overlap":
+        return error["msg"]
+    where = ".".join(str(part) for part in error["loc"])
+    return f"{where}: {error['msg']}"

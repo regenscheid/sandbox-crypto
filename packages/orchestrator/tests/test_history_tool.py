@@ -24,7 +24,7 @@ from .loop_harness import PROJECT, SESSION, TASK, Harness, Reply, call, own
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
-from .test_delegation import CHECK, REPORT, wait
+from .test_delegation import CHECK, submitted, wait
 from .test_delegation import delegating as delegating
 
 Json = dict[str, Any]
@@ -231,13 +231,13 @@ async def test_a_delegated_check_searches_and_reads_only_its_own_run(
     root = await delegating.run(
         "root",
         [Reply(verdict, calls=[CHECK]), wait(), Reply("Checked.")],
-        delegated=[Reply(calls_from=read_parent), Reply(REPORT)],
+        delegated=[Reply(calls_from=read_parent), *submitted()],
     )
     assert root.final_text == "Checked."
     assert parent
     (child,) = delegating.gateway.children[-1:]
     results = [json.loads(body(m["content"])) for m in child if m["role"] == "tool"]
-    session, project, refused, ranged = results
+    session, project, refused, ranged, _ = results
     own = ranged["messages"][0]["run"]
     for found in (session, project):
         assert found["scope"] == "run"

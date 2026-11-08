@@ -12,8 +12,10 @@ MCP request is its key's project's, which the middleware takes from the sandbox'
 config. A download from the package cache is a package request, answered for that file
 only: a ``host`` answer would cover the whole cache.
 
-When the user revokes a grant, the workspace has the desk withdraw the requests its live
-answers cover (``withdraw_grant``, D97).
+Each answer, and each withdrawal of a revoked grant's answers, names the user who gave it
+when the workspace says (``by``, protocol 21): the record keeps it, and the middleware's
+``pending --request`` shows it. When the user revokes a grant, the workspace has the desk
+withdraw the requests its live answers cover (``withdraw_grant``, D97).
 
 Any client may also confirm one MCP request for its own projects (``confirm``): whether
 it is a given call's and stands as a refusal said. The harness asks before it trusts a
@@ -32,6 +34,7 @@ from pydantic import ValidationError
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, EnvironmentInfo
 from sandbox_science.contracts.permission_requests import (
     MAX_LISTED,
+    AnsweredBy,
     GrantWithdrawal,
     GrantWithdrawn,
     HoldAsked,
@@ -45,6 +48,7 @@ from sandbox_science.contracts.permission_requests import (
     WorkerPermissionListing,
     WorkerPermissionRequest,
 )
+from sandbox_science.policy import approvals
 from sandbox_science.policy.approvals import (
     PACKAGES_MAX_GRANT,
     PermissionRequest,
@@ -175,7 +179,7 @@ class PermissionDesk:
         try:
             record, decided = self.permissions.answer_request(
                 seq, approve=answer.approve, scope=answer.scope, hours=answer.hours, now=now,
-                grants=answer.grants,
+                grants=answer.grants, by=_by(answer.by),
             )  # fmt: skip
         except ValueError as exc:
             raise PermissionRequestError(str(exc)) from None
@@ -195,12 +199,19 @@ class PermissionDesk:
         for request in self.permissions.granted_by(asked.grant, now):
             if self._project(request, owners) != asked.project_id:
                 continue
-            self.permissions.withdraw(request.seq, f"grant {asked.grant} was revoked", now)
+            self.permissions.withdraw(
+                request.seq, f"grant {asked.grant} was revoked", now, _by(asked.by)
+            )
             withdrawn.append(request.seq)
         return GrantWithdrawn(requests=withdrawn)
 
     def _owners(self) -> dict[str, EnvironmentInfo]:
         return {info.sandbox_id: info for info in self.environments() if info.sandbox_id}
+
+
+def _by(found: AnsweredBy | None) -> approvals.AnsweredBy | None:
+    """The answering user as the answer's record names them."""
+    return None if found is None else approvals.AnsweredBy(found.user, found.sub)
 
 
 def _kind(request: PermissionRequest, payload: Mapping[str, object]) -> str:

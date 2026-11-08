@@ -150,7 +150,7 @@ async def test_a_keyed_answer_to_a_brief_without_deliverables_is_still_refused()
     answer = json.dumps({**DONE, "deliverables": keyed(D3)})
     assert [d.id for d in parse_task(answer).deliverables or ()] == ["d3"]
     found = Outcome(task=True)
-    await found.closing(run(), answer)
+    await submit(found, answer)
     assert found.result is None
     assert "the brief lists none" in found.errors[0]
 
@@ -176,7 +176,7 @@ async def test_a_path_with_several_revisions_or_none_stays_an_error() -> None:
     found = Outcome(task=True, deliverables=(Asked(*TABLE),))
     await found.observe_tool(run(), recorded("table.txt", 1))
     await found.observe_tool(run(), recorded("table.txt", 2))
-    await found.closing(run(), json.dumps({**DONE, "deliverables": [by_path]}))
+    await submit(found, {**DONE, "deliverables": [by_path]})
     assert found.result is None
     assert "produced, it gives path and revision" in found.errors[0]
     assert "your calls recorded revisions 1, 2 of it" in found.errors[0]

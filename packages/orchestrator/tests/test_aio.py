@@ -74,6 +74,27 @@ async def test_held_reports_the_callers_cancellation_with_the_result() -> None:
     assert await caller == ("process", True)
 
 
+async def test_held_raises_a_failure_after_cancellation_and_asyncio_logs_nothing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    release = asyncio.Event()
+
+    async def work() -> str:
+        await release.wait()
+        raise RuntimeError("the work fails after its caller was cancelled")
+
+    caplog.set_level(logging.ERROR)
+    caller = asyncio.create_task(held(work()))
+    await asyncio.sleep(0)
+    caller.cancel()
+    await asyncio.sleep(0)
+    release.set()
+    with pytest.raises(RuntimeError, match="after its caller was cancelled"):
+        await caller
+    await asyncio.sleep(0)
+    assert not caplog.records  # Python 3.14's shield would log "exception in shielded future"
+
+
 async def test_the_executor_bounds_admission_and_drains_detached_work() -> None:
     executor = OwnedExecutor(2, "test")
     started, finish = threading.Event(), threading.Event()
