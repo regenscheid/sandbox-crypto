@@ -66,8 +66,10 @@ separate work; rendering does not create or replace an agent runtime.
 
 Shared image tags contain both Linux architectures. Research image recipes now
 include their target-native scheduler shim; the worker verifies source identity,
-ELF architecture and loadability before use. A checked host-compiler fallback is
-available only on a matching Linux architecture. These image changes still need
+ELF architecture and loadability before use. An image without the matching shim gets
+the trusted worker's own copy, built into its image for its architecture, when the
+worker runs Linux on the sandbox's architecture; a host compiler is the last resort,
+and the trusted worker has none. These image changes still need
 publication and native ARM64 qualification. Kubernetes pod replacement preserves
 mounted data, not interpreter memory or changes to the image's writable layer.
 The research image layout below keeps installed packages in that mounted data;
