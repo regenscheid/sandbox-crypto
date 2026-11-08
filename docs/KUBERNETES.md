@@ -10,13 +10,13 @@ classes, ingress and bucket names belong in private configuration.
 Keep the existing worker API and OpenShell lifecycle. OpenShell owns sandbox pods;
 the platform must not add a competing Job controller or replay an interrupted
 research operation merely because a pod restarted. Pin CLI, gateway, drivers and
-runtime images to the same OpenShell release (currently v0.1.5).
+runtime images to the same OpenShell release (currently v0.1.7).
 
 Use resource requests and trusted pool configuration to select capacity. Each
 Kubernetes profile must pin `kubernetes.io/arch` to `amd64` or `arm64`: OpenShell
 v0.1.3 retained the multiarchitecture image reference without recording the selected
-platform. A search of v0.1.5's Kubernetes driver and server found no platform
-resolution or recording, but this is unverified on 0.1.5 (source search only, no
+platform. A search of the v0.1.5 and v0.1.7 Kubernetes driver and server found no
+platform resolution or recording, but this is unverified (source search only, no
 cluster test). The pin keeps retained native packages compatible across pod replacement.
 Separate approved profiles can share the same multiarchitecture image reference.
 Automatic placement across architectures needs platform discovery and durable
@@ -49,7 +49,7 @@ An entirely absent table retains gateway defaults for existing local runs; that
 configuration is outside the Kubernetes placement/recovery guarantee.
 The gateway must permit approved Kubernetes driver configuration
 ([gateway settings](#gateway-settings-for-profile-placement)). The emitted JSON
-uses only keys OpenShell v0.1.5 accepts (checked against its driver source and
+uses only keys OpenShell v0.1.7 accepts (checked against its driver source and
 pinned by a test); it targets the workload pod and does not place the separately
 managed supervisor pod. A runtime class name is configuration, not isolation proof.
 The current kernel-identity probe also cannot distinguish an isolated guest from
@@ -94,7 +94,7 @@ longer allows. gVisor is therefore not a tier-2 option here.
   Talos 1.14. Every research and agent-runtime sandbox runs under `kata` on the
   amd64 nodes, at tier 3. The RuntimeClass ([example](../examples/kubernetes/runtimeclass-kata.yaml))
   carries `openshell.ai/sandbox-attachable=true`, a `scheduling.nodeSelector`
-  limited to Kata-capable amd64 nodes, and `overhead.podFixed`. In v0.1.5 a
+  limited to Kata-capable amd64 nodes, and `overhead.podFixed`. In v0.1.7 a
   RuntimeClass or PriorityClass needs only that fixed label; the second label,
   `openshell.ai/sandbox-attachable-workspace=<workspace>`, is checked for PVCs
   (`resource_admission.rs`, `admit_shared`). External evidence reports the stock
@@ -110,11 +110,17 @@ longer allows. gVisor is therefore not a tier-2 option here.
 - **Tier 1, plain runc.** D43 still accepts it for nodes without KVM: the workload
   Pod runs without a sandboxed RuntimeClass (Landlock, seccomp and network controls
   apply; the workload shares the node kernel). It is unused for now.
-- **Two Pods per sandbox.** In OpenShell 0.1.5 every Kubernetes sandbox is a workload
+- **Two Pods per sandbox.** In OpenShell 0.1.7 every Kubernetes sandbox is a workload
   Pod plus a separate supervisor Pod that holds the gateway session and enforces
   network policy ([OpenShell setup](https://docs.nvidia.com/openshell/kubernetes/setup)).
   The RuntimeClass and node selector apply to the workload Pod; the supervisor Pod
-  runs under the cluster's default runtime.
+  runs under the cluster's default runtime. Since 0.1.6 the workload Pod opens the
+  control connection: it dials its supervisor's per-sandbox Service
+  `os-supervisor-<id>` on the boundary port (5500 by default), and OpenShell creates
+  a per-sandbox NetworkPolicy `os-control-<id>` that admits that one flow. A sandbox
+  created under 0.1.5 keeps the old direction (the supervisor dials the workload)
+  until it is stopped and started again. The chart's experimental shared supervisor
+  (`supervisor_topology = "gateway"`) is not used.
 - **Pools.** With every sandbox on Kata, one worker pool declaring tier 3
   suffices, and every profile's `runtime_class_name` is `kata` with an amd64
   node selector. Mixing tiers (separate pools, each declaring its own tier and
@@ -127,7 +133,7 @@ longer allows. gVisor is therefore not a tier-2 option here.
   kernel (not `-talos`) keeps the declared tier. RuntimeClass admission labels keep sandboxes on the intended runtime;
   confirming the admitted runtime from trusted state or inside the guest remains
   open (backlog).
-- **Version.** This plan assumes OpenShell 0.1.5, as `dev` runs on babbage.
+- **Version.** This plan assumes OpenShell 0.1.7, as `dev` runs on babbage.
 - **Verified on the owner's cluster** (first test deployment, 2026-10-24): Kata under
   Talos 1.13 on four amd64 nodes (a guest kernel release without `-talos` and the
   hypervisor CPU flag in a smoke Pod). An OpenShell 0.1.5 sandbox under Kata passed
@@ -150,9 +156,9 @@ default_runtime_class_name = "kata"
 enabled = true
 ```
 
-`allowed_pod_labels` (OpenShell 0.1.5, `openshell-driver-kubernetes` `src/config.rs`
-275-287) stays empty, its default, which refuses every Pod label a caller sets: the worker
-sets none. In 0.1.5 a sandbox's workload Pod carries, besides OpenShell's own per-sandbox
+`allowed_pod_labels` (OpenShell 0.1.7, `openshell-driver-kubernetes` `src/config.rs`
+421-424) stays empty, its default, which refuses every Pod label a caller sets: the worker
+sets none. In 0.1.7 a sandbox's workload Pod carries, besides OpenShell's own per-sandbox
 labels, only the labels of its sandbox template (`SandboxTemplate.labels`, `driver.rs`
 `sandbox_template_to_k8s_with_validated_config`), which the CLI never sets: `sandbox create
 --label` labels the OpenShell sandbox record, and a named workload template's labels are
@@ -166,12 +172,12 @@ job sandboxes ([job sandboxes and node drains](KUBERNETES-BUNDLE.md#job-sandboxe
 
 With the Helm chart these are `server.drivers.kubernetes.allowDriverConfig`,
 `server.defaultRuntimeClassName` and `server.drivers.kubernetes.resourceAdmission`
-(v0.1.5 chart; `gateway.allowDriverConfig` is not a v0.1.5 key). Label every
+(v0.1.7 chart; `gateway.allowDriverConfig` is not a v0.1.7 key). Label every
 RuntimeClass and PriorityClass a profile names with
 `openshell.ai/sandbox-attachable: "true"`, and every PVC also with
 `openshell.ai/sandbox-attachable-workspace: "<OpenShell workspace name>"`; an
 unlabelled resource is refused at sandbox creation. The worker sends the config
-wrapped as `{"kubernetes": {...}}`; OpenShell v0.1.5 rejects unknown keys at every
+wrapped as `{"kubernetes": {...}}`; OpenShell v0.1.7 rejects unknown keys at every
 level (`deny_unknown_fields`), which `test_kubernetes.py` checks for the emitted JSON.
 
 ### Persistent research prefix increment
@@ -183,7 +189,7 @@ over it at `/sandbox/.sandbox-science-prefix`, which runtime installs go into, w
 workspace](IMAGES.md#the-environment-outside-the-workspace-b11)). A workspace
 seeded from an earlier image holds that image's whole prefix at the same path and
 keeps it. The same image is used locally, on Mac and in Kubernetes; trusted service
-images keep their separate layout. Build cleanup must preserve the layer. OpenShell's (v0.1.3; its mount path is unchanged in v0.1.5) init container copies the image's `/sandbox`
+images keep their separate layout. Build cleanup must preserve the layer. OpenShell's (v0.1.3; its mount path is unchanged in v0.1.7) init container copies the image's `/sandbox`
 tree into its workspace PVC before the agent mounts it at `/sandbox`.
 
 Trusted Kubernetes profiles require this layout through `require_workspace_prefix`
@@ -228,7 +234,7 @@ entries since the B11 layout (5.3 GB in about 101,000 entries before the 2026-10
 layout change, 2.65 GB in about 61,000 between them), and `minimal` 0.2 MB in about
 280. A workspace seeded from an earlier image keeps its whole prefix and needs its
 earlier size. Storage size, class and retention are private operator choices. The initial copy must finish within
-OpenShell 0.1.5's fixed 5-minute bootstrap grace (`SANDBOX_RUNTIME_BOOTSTRAP_GRACE`,
+OpenShell 0.1.7's fixed 5-minute bootstrap grace (`SANDBOX_RUNTIME_BOOTSTRAP_GRACE`,
 not configurable), or the gateway rolls the sandbox back. A rolled-back creation
 whose response the worker lost never appears, and the worker marks it deleted
 (`creation_rolled_back`) once two reads past `creation_grace` find no trace of it;
@@ -265,17 +271,17 @@ workspace_default_storage_size = "10Gi"  # illustrative; budget prefix + data + 
 
 Pinned Helm values `server.workspaceDefaultStorageSize` and
 `server.workspaceStorageClass` render those same runtime fields. This is a gateway
-creation default, not a live resize of existing PVCs. The [v0.1.3 driver config (fields still present in v0.1.5)](https://github.com/NVIDIA/OpenShell/blob/e1f3c82caa3ed3b65de22889ae7ef32a774878ef/crates/openshell-driver-kubernetes/src/config.rs#L255)
+creation default, not a live resize of existing PVCs. The [v0.1.3 driver config (fields still present in v0.1.7)](https://github.com/NVIDIA/OpenShell/blob/e1f3c82caa3ed3b65de22889ae7ef32a774878ef/crates/openshell-driver-kubernetes/src/config.rs#L255)
 and [chart mapping](https://github.com/NVIDIA/OpenShell/blob/e1f3c82caa3ed3b65de22889ae7ef32a774878ef/deploy/helm/openshell/templates/_helpers.tpl#L543)
 are the exact capacity/class seams; no agent volume or claim authority is added.
-They are the gateway's, for every sandbox: v0.1.5 has no per-sandbox class or size and
+They are the gateway's, for every sandbox: v0.1.7 has no per-sandbox class or size and
 no ephemeral workspace (a sandbox's driver configuration names only placement,
 containers and existing claims), so job sandboxes and child environments get the
 research class too, and with a class that retains volumes each leaves a Released
 volume that `cleanup` names and deletes ([job sandboxes](specs/job-sandboxes.md), JS-26).
 
 The seed init container mounts the claim at `/mnt/openshell-workspace`, leaving
-image `/sandbox` visible as the source. The [pinned seed algorithm (v0.1.3 source; not re-read for v0.1.5)](https://github.com/NVIDIA/OpenShell/blob/e1f3c82caa3ed3b65de22889ae7ef32a774878ef/crates/openshell-sandbox/src/main.rs#L1669)
+image `/sandbox` visible as the source. The [pinned seed algorithm (v0.1.3 source; not re-read for v0.1.7)](https://github.com/NVIDIA/OpenShell/blob/e1f3c82caa3ed3b65de22889ae7ef32a774878ef/crates/openshell-sandbox/src/main.rs#L1669)
 copies file bytes, preserves symlinks without following them, normalizes ownership
 permissions and fsyncs, then writes its initialized sentinel. It does not resume
 partial copies. The agent later mounts that claim over `/sandbox`; the real prefix
@@ -392,8 +398,8 @@ operator bootstrap and live qualification remain explicit.
    worker/control/runtime loss, pod eviction, original-operation Resume, cold
    S3 retrieval and verified cleanup. Record actual isolation tier per pool.
 
-OpenShell's [pinned runtime documentation](https://docs.nvidia.com/openshell/v0.1.5/how-it-works/sandboxes/runtimes/)
-and [pinned chart](https://github.com/NVIDIA/OpenShell/tree/v0.1.5/deploy/helm/openshell)
+OpenShell's [pinned runtime documentation](https://docs.nvidia.com/openshell/v0.1.7/how-it-works/sandboxes/runtimes/)
+and [pinned chart](https://github.com/NVIDIA/OpenShell/tree/v0.1.7/deploy/helm/openshell)
 are the runtime integration sources. Kubernetes documents
 [persistent volume lifecycle](https://kubernetes.io/docs/concepts/storage/persistent-volumes/)
 and [resource requests](https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/).

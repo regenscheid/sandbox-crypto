@@ -2,7 +2,7 @@
 
 Separate [trusted service targets](../images/trusted/README.md) prepare
 the Kubernetes control/workspace/runtime-manager (`trusted-app`) and worker/middleware
-(`trusted-worker`) services; both carry the OpenShell CLI v0.1.5. Use
+(`trusted-worker`) services; both carry the OpenShell CLI v0.1.7. Use
 `images/build_trusted.sh trusted-app|trusted-worker`, which only loads locally;
 `images/test_trusted.sh` checks an existing local image without network or pulls.
 They keep distinct build profiles and are published like the other profiles
@@ -397,7 +397,7 @@ digest and that the package is private. Its first run created the package as
 public, inheriting this public repository's visibility, so the check failed after
 the copy; set the package to private in its GitHub package settings before
 relying on a rerun. It runs when its workflow file changes on
-`dev` or `main`, or by manual dispatch. OpenShell v0.1.5's VM driver sends one
+`dev` or `main`, or by manual dispatch. OpenShell's VM driver (v0.1.5 to v0.1.7) sends one
 registry credential to both the bootstrap and sandbox pulls, and nvcr.io rejects
 the GitHub token needed for `crypto-base`, so the Mac helper boots from this
 mirror. To move to a newer NVIDIA image, change the digest in the workflow and in

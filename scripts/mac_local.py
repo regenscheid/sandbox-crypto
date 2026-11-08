@@ -48,7 +48,7 @@ def pinned_release() -> str:
 OPEN_SHELL_VERSION = pinned_release()
 INSTALLER = f"https://raw.githubusercontent.com/NVIDIA/OpenShell/v{OPEN_SHELL_VERSION}/install.sh"
 # The digest of that release's installer: a new release needs its own.
-INSTALLER_SHA256 = "7bf6706741b8b59c1b61e0c47030f0a34fefba6cee3c74cd52638cbf7cdc3655"
+INSTALLER_SHA256 = "04c1a437d4a4fc11930d75a336fc4f52bf0c95251e8469c306e407e203769ae7"
 DEFAULT_IMAGE = "ghcr.io/regenscheid/sandbox-crypto/crypto-base:6bb73871"
 # OpenShell's VM driver sends its one registry credential to every pull, so the
 # bootstrap image is NVIDIA's index mirrored beside crypto-base with its digest kept.
@@ -339,7 +339,7 @@ client_ca_path = {json.dumps(str(tls_dir / "ca.crt"))}
 enabled = true
 """
         endpoint = f'grpc_endpoint = "{settings.gateway_url}"\n'
-        # The host supervisors' CA for the gateway; v0.1.5 reads it here, not in the driver.
+        # The host supervisors' CA for the gateway, which reads it here, not in the driver.
         plaintext = f"guest_tls_ca = {json.dumps(str(tls_dir / 'ca.crt'))}\n"
     else:
         listener = """

@@ -74,7 +74,7 @@ RANGES = admission_ranges(EXAMPLE, OPEN)
 """The public ranges less the floor's public metadata address, as compiled for EXAMPLE."""
 HEADER = "apiVersion: sandbox-science/v0alpha1\nkind: ProjectPolicy\nmetadata: {name: test}\n"
 
-# Fields of OpenShell's authored schema (v0.1.5) that the compiler may emit. OpenShell
+# Fields of OpenShell's authored schema (v0.1.7) that the compiler may emit. OpenShell
 # rejects unknown fields, so a typo here would break policy loads.
 ALLOWED_KEYS = {
     "version",
@@ -1469,7 +1469,7 @@ def test_credentials_are_not_bound_where_the_library_forbids() -> None:
     )
 
 
-# OpenShell v0.1.5 refuses a policy whose endpoints are ambiguous
+# OpenShell v0.1.7 refuses a policy whose endpoints are ambiguous
 # (openshell-policy/src/ambiguity.rs): endpoints that overlap on host and port
 # must agree on their connection settings, and where neither has the more
 # specific path, on how requests are handled, including the credential binding.

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Compile a project policy into NVIDIA OpenShell v0.1.5 network policy.
+"""Compile a project policy into NVIDIA OpenShell v0.1.7 network policy.
 
 Two sandboxes need OpenShell policy (docs/POLICY.md, "Mapping to enforcement"):
 
@@ -155,7 +155,7 @@ them writable."""
 BASELINE_READ_ONLY: Final = ("/usr", "/lib", "/etc", "/proc", "/var/log", "/dev/urandom")
 BASELINE_READ_WRITE: Final = ("/tmp", "/dev/null")  # noqa: S108 - a Landlock path, not a temporary file
 """OpenShell's baseline paths for a sandbox with network rules (``PROXY_BASELINE_*`` in its
-supervisor, unchanged from v0.1.3 to v0.1.5), less ``/app``, which the images lack. The
+supervisor, unchanged from v0.1.3 to v0.1.7), less ``/app``, which the images lack. The
 supervisor adds each one only if it exists where the supervisor runs. With the macOS VM
 driver that is the host, which has no ``/lib`` or ``/proc``, so every compiled section
 lists them itself; on Linux the supervisor then adds nothing it would not have added."""
@@ -1401,7 +1401,7 @@ _UNAPPLIED: Final = {
     ),
 }
 """Why the pool applies neither, with or without a Kubernetes placement: OpenShell
-0.1.5's driver configuration has no field for either (``kubernetes.PLACED_LIMITS``)."""
+0.1.7's driver configuration has no field for either (``kubernetes.PLACED_LIMITS``)."""
 
 
 _WALL_TIME: Final = (

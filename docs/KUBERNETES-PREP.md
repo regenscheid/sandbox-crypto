@@ -7,7 +7,7 @@ The cluster this describes: Talos 1.13 with the `kata-containers` extension (3.3
 ## Verify before use
 
 This checklist was written from the repository, OpenShell 0.1.5's documentation and
-source, and general Kubernetes practice, then corrected by the first test deployment,
+source (rechecked against 0.1.7's), and general Kubernetes practice, then corrected by the first test deployment,
 which confirmed the OpenShell chart's value keys and `--version` form, the Agent Sandbox
 release, the chart's CA issuer and the client profile's `metadata.json`. Confirm these
 against the live tools before relying on them:
@@ -32,7 +32,7 @@ Every Pod the bundle renders names the pull secret in `imagePullSecrets`
 | `<kata-node>` | An amd64 node that runs Kata |
 | `<cluster-domain>` | The cluster's DNS domain, `cluster.local` unless the cluster was set up with another: the `kubernetes <domain> ...` line of CoreDNS's Corefile (`kubectl -n kube-system get configmap coredns -o jsonpath='{.data.Corefile}' \| grep kubernetes`) |
 
-Tools on the operator's machine: `kubectl` (cluster-admin context), `talosctl`, `helm` 3, the OpenShell 0.1.5 CLI, and this repository's `uv` environment (`uv sync --extra s3`).
+Tools on the operator's machine: `kubectl` (cluster-admin context), `talosctl`, `helm` 3, the OpenShell 0.1.7 CLI, and this repository's `uv` environment (`uv sync --extra s3`).
 
 ## Images
 
@@ -99,7 +99,7 @@ parameters:
 
 Use `research-retain` for `app.storage_class`, `pool.storage_class` and `runtime_manager.storage_class` in the bundle TOML (the manager's PVC is `ReadWriteOncePod`; Longhorn supports it).
 
-The sandbox workspaces need a faster class of their own. OpenShell copies the image's `/sandbox` tree into every new workspace PVC, and the copy must finish within OpenShell 0.1.5's fixed 5-minute bootstrap grace (`SANDBOX_RUNTIME_BOOTSTRAP_GRACE`, not configurable), or the gateway rolls the sandbox back. `crypto-base` seeds its 5.2 GB, about 100,000-file prefix that way: on a 2-replica Longhorn class it took over 4 minutes in the test deployment, and the gateway rolled sandboxes back; a single-replica `strict-local` class brought it to about 2.5 minutes, of which the copy itself (`workspace-init`) took 111 s. With the slimmed images (2.7 GB, about 62,000 files; [prefix layout](IMAGES.md#prefix-layout)) the copy takes 69 s on the same class; a 2-replica class is not yet measured with them:
+The sandbox workspaces need a faster class of their own. OpenShell copies the image's `/sandbox` tree into every new workspace PVC, and the copy must finish within OpenShell 0.1.7's fixed 5-minute bootstrap grace (`SANDBOX_RUNTIME_BOOTSTRAP_GRACE`, not configurable), or the gateway rolls the sandbox back. `crypto-base` seeds its 5.2 GB, about 100,000-file prefix that way: on a 2-replica Longhorn class it took over 4 minutes in the test deployment, and the gateway rolled sandboxes back; a single-replica `strict-local` class brought it to about 2.5 minutes, of which the copy itself (`workspace-init`) took 111 s. With the slimmed images (2.7 GB, about 62,000 files; [prefix layout](IMAGES.md#prefix-layout)) the copy takes 69 s on the same class; a 2-replica class is not yet measured with them:
 
 ```yaml
 apiVersion: storage.k8s.io/v1
@@ -217,7 +217,7 @@ Kata's console, for the next guest-side problem: a second handler whose configur
 
 ## 4. The Agent Sandbox controller
 
-OpenShell 0.1.5 needs the Agent Sandbox controller and its CRDs before the chart; the chart installs neither ([OpenShell setup](https://docs.nvidia.com/openshell/kubernetes/setup)). Pin **v1.0.3**, the release OpenShell 0.1.5's own e2e scripts use; its controller image is multi-arch, so it runs on either kind of node. Apply it server-side:
+OpenShell 0.1.7 needs the Agent Sandbox controller and its CRDs before the chart; the chart installs neither ([OpenShell setup](https://docs.nvidia.com/openshell/kubernetes/setup)). Pin **v1.0.3**, the release OpenShell 0.1.7's own e2e scripts use (as 0.1.5's did); its controller image is multi-arch, so it runs on either kind of node. Apply it server-side:
 
 ```sh
 kubectl apply --server-side -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.3/sandbox.yaml
@@ -231,9 +231,9 @@ Verify: the controller Pod is `Running` and the CRD is `Established`. After any 
 
 Rollback: `kubectl delete -f` the same manifest, only while no `Sandbox` exists: deleting the CRD deletes every Sandbox object and may garbage-collect its workspace PVC.
 
-## 5. OpenShell 0.1.5
+## 5. OpenShell 0.1.7
 
-The cluster's CNI must enforce ingress and egress NetworkPolicy in every sandbox namespace (Flannel with kube-network-policies does; step 10 proves it). Use cert-manager for the chart's PKI so you can issue client certificates from its CA ([managing certificates](https://docs.nvidia.com/openshell/kubernetes/managing-certificates)). The values carry [the gateway fragment](../examples/kubernetes/gateway-driver.toml); the test deployment confirmed these keys on chart 0.1.5 (`oci://ghcr.io/nvidia/openshell/helm-chart`, appVersion 0.1.5):
+The cluster's CNI must enforce ingress and egress NetworkPolicy in every sandbox namespace (Flannel with kube-network-policies does; step 10 proves it). Use cert-manager for the chart's PKI so you can issue client certificates from its CA ([managing certificates](https://docs.nvidia.com/openshell/kubernetes/managing-certificates)). The values carry [the gateway fragment](../examples/kubernetes/gateway-driver.toml); the test deployment confirmed these keys on chart 0.1.5 (`oci://ghcr.io/nvidia/openshell/helm-chart`, appVersion 0.1.5), and chart 0.1.7 keeps every one of them:
 
 ```yaml
 # openshell-values.yaml (private)
@@ -241,7 +241,7 @@ certManager:
   enabled: true
   serverDnsNames: [openshell.openshell.svc.<cluster-domain>]   # only on a cluster domain other than cluster.local
 global:
-  image: {tag: "0.1.5"}               # one release for gateway, supervisor and sandbox runtime
+  image: {tag: "0.1.7"}               # one release for gateway, supervisor and sandbox runtime
 server:
   grpcEndpoint: https://openshell.openshell.svc:8080   # what supervisors dial; see below
   dataStorageClass: research-retain   # the gateway's own PVC
@@ -260,19 +260,23 @@ server:
 The supervisors dial `server.grpcEndpoint`, whose chart default is `https://openshell.openshell.svc.cluster.local:8080`. On a cluster whose domain is not `cluster.local` that name does not resolve and the supervisors cannot reach the gateway (their log says `log push connect failed`). The `.svc` form resolves through the supervisor Pod's search domains on any cluster, and the chart's server certificate covers `openshell.openshell.svc`; adding `openshell.openshell.svc.<cluster-domain>` to `certManager.serverDnsNames` covers the fully qualified name as well. The `dataStorageSize` above is illustrative.
 
 ```sh
-helm show chart oci://ghcr.io/nvidia/openshell/helm-chart --version 0.1.5     # confirm appVersion
-helm template openshell oci://ghcr.io/nvidia/openshell/helm-chart --version 0.1.5 -n openshell \
+helm show chart oci://ghcr.io/nvidia/openshell/helm-chart --version 0.1.7     # confirm appVersion
+helm template openshell oci://ghcr.io/nvidia/openshell/helm-chart --version 0.1.7 -n openshell \
   -f openshell-values.yaml --set agentSandbox.preflight.enabled=false | grep -n -i 'allow_driver_config\|runtime_class\|resource_admission'
-helm upgrade --install openshell oci://ghcr.io/nvidia/openshell/helm-chart --version 0.1.5 \
+helm upgrade --install openshell oci://ghcr.io/nvidia/openshell/helm-chart --version 0.1.7 \
   -n openshell -f openshell-values.yaml
 kubectl -n openshell rollout status statefulset/openshell
 ```
 
-Leave the gateway's `allowed_pod_labels` empty (0.1.5's default): the worker sets no label on a sandbox's Pods, and a job sandbox's label is on the OpenShell sandbox itself ([why](KUBERNETES.md#gateway-settings-for-profile-placement)).
+Leave the gateway's `allowed_pod_labels` empty (0.1.7's default): the worker sets no label on a sandbox's Pods, and a job sandbox's label is on the OpenShell sandbox itself ([why](KUBERNETES.md#gateway-settings-for-profile-placement)).
+
+The gateway refuses to start without user authentication (since 0.1.6): OIDC, mTLS user or operator authentication, or `gateway_jwt`. The chart always renders `[openshell.gateway.gateway_jwt]`, and with the chart's client CA and no OIDC the gateway turns mTLS user authentication on by itself, so these values need no auth setting; never set `server.auth.allowUnauthenticatedUsers` or `[openshell.gateway.auth] allow_unauthenticated_users` on this cluster. A sandbox's workload Pod opens the control connection to its supervisor Pod (since 0.1.6), through a per-sandbox Service `os-supervisor-<id>` and a NetworkPolicy `os-control-<id>` that the gateway creates in the sandbox namespace and deletes with the sandbox; the bundle's NetworkPolicies there select only its checkpoint Jobs' Pods, and since NetworkPolicies add up, OpenShell's admits the flow beside any default-deny in that namespace. The CNI must also let the kubelet's readiness probes reach the supervisor Pods.
+
+**Upgrading from 0.1.5.** Upgrade the chart (`--version 0.1.7`, `global.image.tag: "0.1.7"`) together with the trusted images, whose CLI is 0.1.7: the gateway, supervisor and sandbox runtime images must be one release, since a 0.1.7 supervisor and an older runtime refuse each other's descriptors. Sandboxes created under 0.1.5 keep their old connection direction while they run and move to the new one when they are next stopped and started.
 
 The rendered `gateway.toml` must show `allow_driver_config = true`, `default_runtime_class_name = "kata"` and resource admission enabled, as in the example fragment. `server.workspaceStorageClass` and the size are creation defaults for each sandbox's PVC. Keep the Helm values and the chart version with the site file. The middleware's registration is added to the gateway later, from the values file that step 7 generates, once the bundle runs (step 8).
 
-**Copy the supervisors' client Secret into the sandbox namespace.** With `server.sandboxNamespace` other than the release namespace, chart 0.1.5 creates the supervisors' client Secret `openshell-client-tls` only in the release namespace, but the supervisor Pods mount it in the sandbox namespace and fail with `secret "openshell-client-tls" not found`. Copy it after the install, and again after each cert-manager renewal of it (yearly by default):
+**Copy the supervisors' client Secret into the sandbox namespace.** With `server.sandboxNamespace` other than the release namespace, chart 0.1.5 (and 0.1.7, whose PKI templates are the same) creates the supervisors' client Secret `openshell-client-tls` only in the release namespace, but the supervisor Pods mount it in the sandbox namespace and fail with `secret "openshell-client-tls" not found`. Copy it after the install, and again after each cert-manager renewal of it (yearly by default):
 
 ```sh
 kubectl -n openshell get secret openshell-client-tls -o json \
@@ -438,7 +442,7 @@ Inspect the JSON before applying: image digests, `kubernetes.io/arch` selectors,
 
 Verify: all three Deployments are `Available`; `kubectl -n research get pvc` shows three `Bound` claims on `research-retain` with the recurring jobs attached (Longhorn UI, volume details); the control Service accepts the first connection (`/ready`). Check the runtime manager: `kubectl -n research logs deploy/<name>-runtime-manager` reports waiting, not creating. Reach the GUI by port-forward to the exact application Pod, as [the bundle](KUBERNETES-BUNDLE.md#render-inspect-then-qualify-separately) says (or, later, through the load balancer: step 12).
 
-No PodDisruptionBudget protects job sandboxes: OpenShell 0.1.5 puts no label the worker chooses on a sandbox's Pods ([job sandboxes and node drains](KUBERNETES-BUNDLE.md#job-sandboxes-and-node-drains)). An earlier bundle rendered `<name>-job-sandboxes` in the sandbox namespace, which selects no Pod; delete it (`kubectl -n research-runtimes delete pdb <name>-job-sandboxes`). Before draining a node, list the running job sandboxes (`$OPENSHELL_EXEC sandbox list --selector sandbox-science.io/job-sandbox=true`, step 10) and find which of their Pods run there. A node with any running sandbox drains only with `--force` (`kubectl drain <node> --ignore-daemonsets --delete-emptydir-data --force`): OpenShell's `os-supervisor-*` Pods in the sandbox namespace declare no controller, and without `--force` `kubectl drain` refuses to evict such Pods and stops before evicting anything. With it, the node's sandboxes lose their Pods, and a job running there ends `lost`; not yet recorded on the cluster: how a session environment's sandbox comes back after that.
+No PodDisruptionBudget protects job sandboxes: OpenShell 0.1.7 puts no label the worker chooses on a sandbox's Pods ([job sandboxes and node drains](KUBERNETES-BUNDLE.md#job-sandboxes-and-node-drains)). An earlier bundle rendered `<name>-job-sandboxes` in the sandbox namespace, which selects no Pod; delete it (`kubectl -n research-runtimes delete pdb <name>-job-sandboxes`). Before draining a node, list the running job sandboxes (`$OPENSHELL_EXEC sandbox list --selector sandbox-science.io/job-sandbox=true`, step 10) and find which of their Pods run there. A node with any running sandbox drains only with `--force` (`kubectl drain <node> --ignore-daemonsets --delete-emptydir-data --force`): OpenShell's `os-supervisor-*` Pods in the sandbox namespace declare no controller, and without `--force` `kubectl drain` refuses to evict such Pods and stops before evicting anything. With it, the node's sandboxes lose their Pods, and a job running there ends `lost`; not yet recorded on the cluster: how a session environment's sandbox comes back after that.
 
 Rollback: set the three Deployments to zero replicas (`kubectl -n research scale deploy --all --replicas=0`). Never `kubectl delete -f` the whole bundle, and never delete the PVCs.
 

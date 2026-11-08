@@ -25,7 +25,7 @@ COMPUTE_LIMITS: Final = ("cpu", "memory", "pids", "workspace_disk")
 """The policy's resources that only the compute driver could apply to a sandbox."""
 PLACED_LIMITS: Final = frozenset({"cpu", "memory"})
 """Those a Kubernetes placement applies (``KubernetesProfile.driver_json``), as the Pod's
-CPU and memory limits. OpenShell 0.1.5's driver configuration carries no process limit
+CPU and memory limits. OpenShell 0.1.7's driver configuration carries no process limit
 (a node's ``podPidsLimit`` is the kubelet's, alike for every Pod) and no workspace size
 (the workspace is a claim the gateway sizes alike for every sandbox), so nothing applies
 ``pids`` or ``workspace_disk``. The placement's ephemeral-storage limit is the profile's
@@ -136,9 +136,9 @@ class KubernetesProfile(BaseModel):
         return self
 
     def driver_json(self, cap: Resources) -> str:
-        """Render OpenShell 0.1.5's typed config, narrowing CPU/memory by project/pool caps.
+        """Render OpenShell 0.1.7's typed config, narrowing CPU/memory by project/pool caps.
 
-        Only keys 0.1.5's Kubernetes driver accepts: ``pod`` (``node_selector``,
+        Only keys 0.1.7's Kubernetes driver accepts: ``pod`` (``node_selector``,
         ``runtime_class_name``), ``containers.agent.resources``; it refuses any other key at
         every level, ``pod.labels`` included. Ephemeral storage is not the persistent
         workspace's disk allowance. PVC capacity and archive/restore remain separate

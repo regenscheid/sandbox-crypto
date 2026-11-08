@@ -212,7 +212,7 @@ DRIVER_REFUSAL = (
 @pytest.mark.parametrize(
     "refusal",
     [
-        DRIVER_REFUSAL,  # tonic 0.14, OpenShell 0.1.5
+        DRIVER_REFUSAL,  # tonic 0.14, OpenShell 0.1.5 and later
         "status: FailedPrecondition, message: \"provider 'x' not found\"",  # older tonic
         "status: 'The caller does not have permission to execute the specified operation'",
     ],

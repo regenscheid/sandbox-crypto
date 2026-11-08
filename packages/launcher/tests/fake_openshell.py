@@ -316,7 +316,7 @@ match args:
             del state["sandboxes"][name]  # this answer is the last before the rollback
             save(state)
         if found is None:
-            # As OpenShell 0.1.5 reports the gateway's NotFound (tonic 0.14's status).
+            # As OpenShell 0.1.7 reports the gateway's NotFound (tonic 0.14's status).
             said = "status: 'Some requested entity was not found', self: \"sandbox not found\""
             print(f"\x1b[31mError:\x1b[0m   \u00d7 {said}", file=sys.stderr)
             sys.exit(1)

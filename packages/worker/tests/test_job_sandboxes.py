@@ -615,7 +615,7 @@ def test_the_driver_config_carries_the_profiles_own_size_and_no_label() -> None:
     assert pod["runtime_class_name"] == "kata"
     # The session environment's CPU and memory caps do not narrow a job profile (JS-9).
     assert document["containers"]["agent"]["resources"]["limits"]["cpu"] == "6000m"
-    # OpenShell 0.1.5 refuses pod.labels ("unknown field labels"): none is sent.
+    # OpenShell 0.1.7 refuses pod.labels ("unknown field labels"): none is sent.
     assert set(pod) == {"node_selector", "runtime_class_name"}
 
 
@@ -983,7 +983,7 @@ async def test_a_schedule_timeout_past_the_create_timeout_still_bounds_the_creat
 async def test_the_schedule_timeout_bounds_the_create_command(
     tmp_path: Path, ignores_its_deadline: bool
 ) -> None:
-    """OpenShell 0.1.5's ``sandbox create`` waits for provisioning, ``--detach`` or not,
+    """OpenShell 0.1.7's ``sandbox create`` waits for provisioning, ``--detach`` or not,
     up to its own 300 s: the command is given the profile's schedule timeout as that
     deadline (``OPENSHELL_PROVISION_TIMEOUT``), and ended at it when it waits on, so a
     job no node can place ends ``capacity_unavailable`` after the schedule timeout, and

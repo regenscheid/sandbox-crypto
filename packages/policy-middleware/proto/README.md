@@ -1,9 +1,10 @@
 # Vendored OpenShell contracts
 
 `supervisor_middleware.proto` and `extension.proto` are copied unmodified from
-[NVIDIA/OpenShell](https://github.com/NVIDIA/OpenShell) tag `v0.1.5` (commit
-`bdb956f2cd65`), directory `proto/`. They are licensed under the Apache License 2.0,
-reproduced in [LICENSE](LICENSE); the copyright notices are in each file.
+[NVIDIA/OpenShell](https://github.com/NVIDIA/OpenShell) tag `v0.1.7` (commit
+`5d25211b25a8`), directory `proto/`, unchanged since `v0.1.5`. They are licensed under
+the Apache License 2.0, reproduced in [LICENSE](LICENSE); the copyright notices are in
+each file.
 
 | File | SHA-256 |
 | --- | --- |

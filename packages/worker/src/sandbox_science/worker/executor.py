@@ -418,7 +418,7 @@ PROXY_VARIABLES = (
 
 def proxy_ports(env: Mapping[str, str]) -> tuple[int, ...]:
     """The ports of the egress proxies ``env`` names; where a held run's TCP rules hold,
-    it connects over TCP to these alone (DA-20). OpenShell 0.1.5 names none: it makes
+    it connects over TCP to these alone (DA-20). OpenShell 0.1.7 names none: it makes
     each sandbox process's sockets itself, outside those rules, and applies its network
     policy there. With no proxy named and the rules holding (the ``local`` backend), a
     held run has no TCP."""
