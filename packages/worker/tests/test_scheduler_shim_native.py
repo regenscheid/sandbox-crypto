@@ -71,7 +71,7 @@ class NativePeer:
         )
         return completed.returncode, completed.stdout + completed.stderr
 
-    async def connect(self, signal_shim: bool = False) -> None:
+    async def connect(self, signal_shim: bool = False, cc: str = "cc") -> None:
         async def event(_message: object) -> None:
             pass
 
@@ -85,6 +85,8 @@ class NativePeer:
                 executor_dir=str(self.executor),
                 project_root=str(self.root / "project"),
                 signal_shim=signal_shim,
+                cc=cc,
+                shim_dir=str(self.root / "worker-shims"),
             ),
             self.root / "state",
         )
@@ -171,3 +173,17 @@ async def test_the_signal_shim_is_checked_and_built_the_same_way(native_peer: Na
     installed = native_peer.executor / "shim" / f"{SIGNAL_SHIM.revision}-{machine}"
     assert (installed / SIGNAL_SHIM.name).is_file()
     assert not list(installed.glob("incoming-*.so"))
+
+
+async def test_the_workers_own_library_is_uploaded_and_checked_in_the_target(
+    native_peer: NativePeer,
+) -> None:
+    """An image without the shim gets the worker's prebuilt one, as the trusted worker
+    image ships it, with no compiler on the worker."""
+    library = native_peer.root / "worker-shims" / REVISION / SCHED_SHIM_NAME
+    compile_library(library)
+    with pytest.raises(WorkerError, match="no usable SSH configuration"):
+        await native_peer.connect(cc=str(native_peer.root / "no-compiler"))
+    assert len(native_peer.uploads) == 1
+    assert native_peer.installed.read_bytes() == library.read_bytes()
+    assert not list((native_peer.root / "state").rglob("*.so"))

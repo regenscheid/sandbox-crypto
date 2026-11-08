@@ -83,6 +83,11 @@ MIN_TOKEN: Final = 32
 """The fewest characters a bearer token may have."""
 
 
+SHIM_IMAGE_DIR: Final = "/usr/local/lib/sandbox-science/shim"
+"""Where the images built from images/Containerfile ship the native shims, research images
+and the trusted worker alike."""
+
+
 class SettingsError(Exception):
     """The settings file is missing or invalid."""
 
@@ -106,7 +111,9 @@ class LocalBackendSettings(_Model):
     """Build the signal shim with ``cc`` on a Linux host, so that a delegated run's
     processes can signal their own (DA-20). Without it, their ``kill`` is ``EPERM``."""
     cc: str = "cc"
-    """The C compiler that builds the signal shim."""
+    """The C compiler that builds the signal shim where ``shim_dir`` has none."""
+    shim_dir: str = SHIM_IMAGE_DIR
+    """Where the worker's own prebuilt shims are, as ``<source-sha256>/<library>``."""
 
 
 JOB_WALL_TIME_MAX: Final = 7 * 24 * 3600.0
@@ -311,7 +318,12 @@ class OpenShellBackendSettings(_Model):
     """Validate the sandbox's signal shim, which a delegated run's processes preload to
     signal their own (DA-20)."""
     cc: str = "cc"
-    """The C compiler that builds the shims on the worker host for older images."""
+    """The C compiler that builds the shims on the worker host for older images, where
+    ``shim_dir`` has none."""
+    shim_dir: str = SHIM_IMAGE_DIR
+    """Where the worker's own prebuilt shims are, as ``<source-sha256>/<library>``: the
+    trusted worker image ships them there, as research images do, so an image without the
+    shim needs no compiler on the worker."""
     package_cache: Annotated[str, AfterValidator(check_cache_url)] | None = None
     """The package cache's URL as sandboxes reach it; the package clients are pointed at it.
     With ``environments``, it must name the host and port the targets file gives the cache."""

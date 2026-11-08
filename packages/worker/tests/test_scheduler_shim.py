@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import platform
 import sys
 from pathlib import Path
@@ -14,16 +15,20 @@ from typing import Any
 
 import pytest
 
+from sandbox_science.contracts import ErrorKind
 from sandbox_science.worker import backends, executor
 from sandbox_science.worker.backends import (
+    SCHED_SHIM,
     SCHED_SHIM_NAME,
     SCHED_SHIM_SOURCE,
     SIGNAL_SHIM,
+    LocalBackend,
     OpenShellBackend,
+    Shim,
 )
 from sandbox_science.worker.channel import ExecutorChannel
 from sandbox_science.worker.errors import WorkerError
-from sandbox_science.worker.settings import OpenShellBackendSettings
+from sandbox_science.worker.settings import LocalBackendSettings, OpenShellBackendSettings
 
 REVISION = hashlib.sha256(SCHED_SHIM_SOURCE.read_bytes()).hexdigest()
 IMAGE_SHIM = f"/usr/local/lib/sandbox-science/shim/{REVISION}/{SCHED_SHIM_NAME}"
@@ -37,6 +42,14 @@ def elf(machine: str) -> bytes:
     header[16:18] = (3).to_bytes(2, "little")
     header[18:20] = {"amd64": 62, "arm64": 183}[machine].to_bytes(2, "little")
     return bytes(header)
+
+
+def prebuilt(root: Path, shim: Shim, machine: str = "arm64") -> Path:
+    """A library in the worker's own shim directory, as the trusted worker image ships it."""
+    path = root / "worker-shims" / shim.revision / shim.name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(elf(machine) + shim.symbol.encode() + b"\0" + shim.revision.encode())
+    return path
 
 
 class Peer:
@@ -107,7 +120,11 @@ def host(monkeypatch: pytest.MonkeyPatch, system: str, machine: str) -> None:
 async def connect(peer: Peer, signal_shim: bool = True) -> ExecutorChannel:
     backend = OpenShellBackend(
         OpenShellBackendSettings(
-            isolation_tier=2, sandboxes={"env": "test"}, cc="test-cc", signal_shim=signal_shim
+            isolation_tier=2,
+            sandboxes={"env": "test"},
+            cc="test-cc",
+            signal_shim=signal_shim,
+            shim_dir=str(peer.root / "worker-shims"),
         ),
         peer.root,
     )
@@ -268,3 +285,98 @@ async def test_the_signal_shim_can_be_turned_off(peer: Peer) -> None:
     channel = await connect(peer, signal_shim=False)
     await channel.shutdown()
     assert executor.SIGNAL_SHIM_VARIABLE not in peer.argv[-1]
+
+
+async def test_the_workers_own_shim_is_uploaded_before_any_compiler(
+    peer: Peer, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A sandbox whose image predates the shim's revision gets the worker's prebuilt
+    library: the trusted worker image has no compiler and needs none."""
+    host(monkeypatch, "linux", "aarch64")
+    peer.shim = peer.signal = None
+    libraries = [prebuilt(peer.root, SCHED_SHIM), prebuilt(peer.root, SIGNAL_SHIM)]
+    channel = await connect(peer)
+    await channel.shutdown()
+    assert not any(command[0] == "test-cc" for command in peer.commands)
+    assert [command[-2] for command in peer.uploads if command[-2].endswith(".so")] == [
+        str(library) for library in libraries
+    ]
+    assert f"/shim/{REVISION}-arm64/{SCHED_SHIM_NAME}" in peer.argv[-1]
+    assert f"/shim/{SIGNAL_REVISION}-arm64/{SIGNAL_SHIM.name}" in peer.argv[-1]
+    assert "building one with" not in caplog.text
+
+
+@pytest.mark.parametrize("content", ["other-machine", "other-revision"])
+async def test_a_workers_shim_that_does_not_match_is_refused_not_rebuilt(
+    peer: Peer, monkeypatch: pytest.MonkeyPatch, content: str
+) -> None:
+    host(monkeypatch, "linux", "aarch64")
+    peer.shim = None
+    path = prebuilt(peer.root, SCHED_SHIM, "amd64" if content == "other-machine" else "arm64")
+    if content == "other-revision":
+        path.write_bytes(elf("arm64") + SCHED_SHIM.symbol.encode() + b"\0" + b"0" * 64)
+    with pytest.raises(WorkerError, match="worker's scheduler shim is not a matching"):
+        await connect(peer)
+    assert not peer.uploads
+    assert not any(command[0] == "test-cc" for command in peer.commands)
+
+
+async def test_compiling_for_want_of_the_workers_shim_warns_once_per_revision(
+    peer: Peer, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    host(monkeypatch, "linux", "aarch64")
+    peer.shim = None
+    backend = OpenShellBackend(
+        OpenShellBackendSettings(
+            isolation_tier=2,
+            sandboxes={"env": "test"},
+            cc="test-cc",
+            signal_shim=False,
+            shim_dir=str(peer.root / "worker-shims"),
+        ),
+        peer.root,
+    )
+    caplog.set_level(logging.WARNING)
+    for sandbox in ("first", "second"):
+        await backend._shim(sandbox, SCHED_SHIM)
+    warnings = [r for r in caplog.records if "building one with test-cc" in r.getMessage()]
+    assert len(warnings) == 1
+    assert warnings[0].levelno == logging.WARNING
+    assert REVISION in warnings[0].getMessage()
+    assert sum(command[0] == "test-cc" for command in peer.commands) == 1
+
+
+async def test_without_the_workers_shim_or_a_compiler_the_error_says_what_is_missing(
+    peer: Peer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host(monkeypatch, "linux", "aarch64")
+    peer.shim = None
+    original = peer.command
+
+    async def command(*argv: str, env: dict[str, str] | None = None) -> tuple[int, bytes]:
+        if argv[0] == "test-cc":
+            raise WorkerError(ErrorKind.UNAVAILABLE, "cannot run test-cc: no such file")
+        return await original(*argv, env=env)
+
+    monkeypatch.setattr(backends, "_command", command)
+    with pytest.raises(WorkerError) as caught:
+        await connect(peer)
+    message = caught.value.message
+    assert f"sandbox lacks the native arm64 scheduler shim for source {REVISION}" in message
+    assert f"the worker has none under {peer.root / 'worker-shims'}" in message
+    assert "install a Linux C compiler or rebuild the research image" in message
+    assert "cannot run test-cc: no such file" in message
+    assert not peer.uploads
+    assert not list((peer.root / "shim").rglob("*.so"))
+
+
+async def test_the_local_backend_prefers_the_workers_own_signal_shim(
+    peer: Peer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host(monkeypatch, "linux", "aarch64")
+    library = prebuilt(peer.root, SIGNAL_SHIM)
+    backend = LocalBackend(
+        LocalBackendSettings(cc="test-cc", shim_dir=str(peer.root / "worker-shims")), peer.root
+    )
+    assert await backend._shim() == str(library)
+    assert not any(command[0] == "test-cc" for command in peer.commands)
