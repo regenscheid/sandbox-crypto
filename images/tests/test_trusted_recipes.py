@@ -214,6 +214,11 @@ def test_trusted_native_pins_and_build_contexts_are_explicit() -> None:
     assert "openssh-client" in stages["trusted-worker"]
     assert "git" in stages["trusted-worker"]
     assert "xz-utils" not in stages["trusted-worker"]
+    # The worker uploads its own shims to a sandbox whose image lacks them, with no compiler.
+    shims = "COPY --from=scheduler-shim /output/ /usr/local/lib/sandbox-science/shim/"
+    assert shims in stages["trusted-worker"]
+    assert shims not in stages["trusted-app"]
+    assert "gcc" not in stages["trusted-worker"]
     assert "unpack_node.py" in stages["trusted-node-unpack"]
     assert "tar -xJ" not in stages["trusted-node-unpack"]
 

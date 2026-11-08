@@ -114,8 +114,9 @@ ENV PATH=/opt/sandbox-science/bin:/opt/sandbox-science-base/bin:/usr/local/sbin:
 
 # Compile for the image's target platform, independently of the worker host: the scheduler
 # shim, which every sandbox process preloads under OpenShell, and the signal shim, which a
-# delegated run's processes preload (DA-20). Only the libraries reach research images; the
-# compiler stays in this stage.
+# delegated run's processes preload (DA-20). Only the libraries reach research images and the
+# trusted worker, which uploads its own to a sandbox whose image lacks them; the compiler
+# stays in this stage.
 FROM base AS scheduler-shim
 ARG UBUNTU_SNAPSHOT
 RUN apt-get -o APT::Snapshot="${UBUNTU_SNAPSHOT}" update && \
@@ -495,6 +496,7 @@ COPY --chmod=0755 services/initialize_state.py /usr/local/libexec/sandbox-scienc
 # the Pod runs as uid 1000 and accepts only root's or its own.
 COPY --chown=0:0 --chmod=0755 --from=trusted-openshell-unpack /openshell/openshell /usr/local/bin/openshell
 COPY --from=trusted-openshell-unpack /openshell/LICENSE /usr/share/licenses/openshell/LICENSE
+COPY --from=scheduler-shim /output/ /usr/local/lib/sandbox-science/shim/
 ARG UBUNTU_IMAGE
 ARG UBUNTU_SNAPSHOT
 ARG MICROMAMBA_VERSION

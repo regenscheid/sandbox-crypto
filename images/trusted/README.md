@@ -30,8 +30,11 @@ and math/figure checker files at `/usr/share/sandbox-science/math`. The Node bin
 is `/usr/local/bin/node`, and the OpenShell CLI `/usr/local/bin/openshell`, the same
 pinned binary as the worker's. `trusted-worker` installs contracts, policy, event store,
 worker, policy middleware, package cache and the launcher (for `sandbox-science-unit`, the
-entry point of the [worker-side unit](../../docs/UNIT.md) that each pool container runs), with `/usr/local/bin/openshell` and
-snapshot-pinned OpenSSH client/git dependencies. No gateway server, VM driver,
+entry point of the [worker-side unit](../../docs/UNIT.md) that each pool container runs), with `/usr/local/bin/openshell`,
+snapshot-pinned OpenSSH client/git dependencies and the native shims under
+`/usr/local/lib/sandbox-science/shim/<source-sha256>/`, built for the image's architecture
+by the research images' `scheduler-shim` stage, which the worker uploads to a sandbox whose
+image lacks them. It has no C compiler. No gateway server, VM driver,
 cluster token or default deployment config is embedded.
 
 The web builder retains the repository's `web/workspace` directory layout and
@@ -60,7 +63,9 @@ secret or an operator-chosen visibility. The bundle names the resulting `@sha256
 
 `images/test_trusted.sh trusted-app|trusted-worker [LOCAL_IMAGE]` runs an existing
 local image with pull and network disabled, a read-only root, no capabilities and
-bounded scratch/memory/PIDs. It checks installed CLIs and identities; the application
+bounded scratch/memory/PIDs. It checks installed CLIs and identities, and for the worker
+its shims (present for the installed worker's source revisions, valid for the image's
+architecture) and the absence of a compiler; the application
 also checks packaged skills, S3 support, web/preview assets, actual math/figure
 bundles through their production checkers, the launcher and policy imports and
 `openshell --version` (the runtime manager's console script, once it exists). It does not start a model, use keys or

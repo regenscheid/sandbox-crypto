@@ -4,7 +4,7 @@
  *
  * A held run's seccomp filter (sandbox_confine.py) refuses kill and
  * rt_sigqueueinfo with EPERM whatever they name, since a sandbox supervisor may
- * carry those out for the caller outside its Landlock domain (OpenShell 0.1.7
+ * carry those out for the caller outside its Landlock domain (OpenShell 0.1.5
  * does), and the domain's signal scope would then never see them. This
  * library, loaded with LD_PRELOAD in a held run only, sends the same signals
  * through the thread-directed calls, which the kernel checks against the

@@ -42,7 +42,7 @@ from . import (
 from .channel import EventHandler, ExecutorChannel
 from .errors import PrefixRecoveryError, WorkerError
 from .package_clients import ClientConfiguration, render
-from .settings import LocalBackendSettings, OpenShellBackendSettings
+from .settings import SHIM_IMAGE_DIR, LocalBackendSettings, OpenShellBackendSettings
 
 _log = logging.getLogger(__name__)
 
@@ -83,7 +83,9 @@ display; the bridge's ``ssh`` and the CLI never inherit them."""
 class Shim:
     """A native library the worker preloads in sandboxes: built from ``source`` with the
     source's SHA-256 as ``macro``, which its function ``symbol`` returns, and defining
-    ``function``. Research images ship it under ``SHIM_IMAGE_DIR/<revision>/name``."""
+    ``function``. Research images and the trusted worker ship it under
+    ``SHIM_IMAGE_DIR/<revision>/name``, so a change to the source, comments included,
+    needs every image rebuilt (test_shim_revisions.py)."""
 
     label: str
     source: Path
@@ -98,7 +100,6 @@ class Shim:
 
 
 SHIM_DIR = Path(__file__).with_name("shim")
-SHIM_IMAGE_DIR = "/usr/local/lib/sandbox-science/shim"
 SCHED_SHIM = Shim(
     "scheduler",
     SHIM_DIR / "sched_self.c",
@@ -177,6 +178,28 @@ def _is_elf(path: Path, machine: str) -> bool:
     )
 
 
+def prebuilt_shim(directory: Path, shim: Shim, machine: str) -> Path | None:
+    """The worker's own prebuilt ``shim`` under ``directory/<revision>/``, or ``None`` where
+    it has none. A file there that is not a Linux ELF library for ``machine`` carrying the
+    revision and the symbol that returns it is refused, never replaced by a build; the
+    sandbox's probe loads the uploaded copy and checks the revision again before use."""
+    path = directory / shim.revision / shim.name
+    if not path.is_file():
+        return None
+    content = path.read_bytes()
+    if (
+        not _is_elf(path, machine)
+        or shim.revision.encode() not in content
+        or shim.symbol.encode() not in content
+    ):
+        raise WorkerError(
+            ErrorKind.UNAVAILABLE,
+            f"the worker's {shim.label} shim is not a matching Linux ELF library for source "
+            f"{shim.revision}: {path}",
+        )
+    return path
+
+
 async def build_shim(cc: str, shim: Shim, target: Path, machine: str) -> None:
     """Build ``shim`` with the host's compiler at ``target`` (named for its revision and
     machine), unless it is there already; a library that is not a Linux ELF library for
@@ -186,10 +209,13 @@ async def build_shim(cc: str, shim: Shim, target: Path, machine: str) -> None:
     else:
         target.parent.mkdir(parents=True, exist_ok=True)
         candidate = target.with_suffix(f".{secrets.token_hex(6)}.tmp")
-        code, output = await _command(
-            cc, "-shared", "-fPIC", "-O2", f'-D{shim.macro}="{shim.revision}"',
-            "-o", str(candidate), str(shim.source),
-        )  # fmt: skip
+        try:
+            code, output = await _command(
+                cc, "-shared", "-fPIC", "-O2", f'-D{shim.macro}="{shim.revision}"',
+                "-o", str(candidate), str(shim.source),
+            )  # fmt: skip
+        except WorkerError as exc:  # no compiler at all, or one that hangs
+            code, output = 1, exc.message.encode()
         if code != 0:
             candidate.unlink(missing_ok=True)
             raise WorkerError(
@@ -295,9 +321,10 @@ class LocalBackend:
         return None
 
     async def _shim(self) -> str | None:
-        """The signal shim, built once with the host's compiler on Linux amd64 or arm64;
-        ``None``, with a warning, where it cannot be (held runs then cannot signal their
-        own processes, which changes no guarantee)."""
+        """The signal shim on Linux amd64 or arm64: the worker's prebuilt one in
+        ``shim_dir``, or else one built once with the host's compiler; ``None``, with a
+        warning, where it is neither (held runs then cannot signal their own processes,
+        which changes no guarantee)."""
         machine = {"x86_64": "amd64", "aarch64": "arm64"}.get(platform.machine())
         if not self.settings.signal_shim or sys.platform != "linux" or machine is None:
             return None
@@ -306,7 +333,11 @@ class LocalBackend:
                 shim = SIGNAL_SHIM
                 target = self.state_dir / "shim" / f"{shim.revision}-{machine}" / shim.name
                 try:
-                    await build_shim(self.settings.cc, shim, target, machine)
+                    prebuilt = prebuilt_shim(Path(self.settings.shim_dir), shim, machine)
+                    if prebuilt is not None:
+                        target = prebuilt
+                    else:
+                        await build_shim(self.settings.cc, shim, target, machine)
                 except (WorkerError, OSError) as exc:
                     _log.warning("no signal shim for delegated runs: %s", exc)
                     return None
@@ -392,6 +423,8 @@ class OpenShellBackend:
         self.requires_workspace_prefix = requires_workspace_prefix
         """Starts a stopped sandbox the worker created before an executor runs there."""
         self._shim_lock = asyncio.Lock()
+        self._compiled: set[str] = set()
+        """Revisions the worker has warned that it compiles, for want of its own copy."""
         self._clients = None if settings.package_cache is None else render(settings.package_cache)
 
     def _sandbox(self, environment_id: str) -> str:
@@ -424,7 +457,8 @@ class OpenShellBackend:
             )
 
     async def _shim(self, sandbox: str, shim: Shim) -> str:
-        """Prefer the image's native shim; build only for a matching Linux host."""
+        """Prefer the image's native shim; for a matching Linux host, upload the worker's
+        own prebuilt one (``shim_dir``), or else build one with ``cc``."""
         revision = shim.revision
         executor_dir = str(PurePosixPath(self.settings.executor_dir))
 
@@ -480,7 +514,28 @@ class OpenShellBackend:
             )
         target = self.state_dir / "shim" / f"{revision}-{machine}" / shim.name
         async with self._shim_lock:
-            await build_shim(self.settings.cc, shim, target, machine)
+            shim_dir = Path(self.settings.shim_dir)
+            prebuilt = prebuilt_shim(shim_dir, shim, machine)
+            if prebuilt is not None:
+                target = prebuilt
+            else:
+                if revision not in self._compiled:
+                    self._compiled.add(revision)
+                    # A configuration gap: the trusted worker image ships every shim.
+                    _log.warning(
+                        "the worker has no %s shim for source %s under %s; building one with "
+                        "%s for sandboxes whose image lacks it. Rebuild the worker's image "
+                        "with its native shims",
+                        shim.label, revision, shim_dir, self.settings.cc,
+                    )  # fmt: skip
+                try:
+                    await build_shim(self.settings.cc, shim, target, machine)
+                except WorkerError as exc:
+                    raise WorkerError(
+                        exc.kind,
+                        f"sandbox lacks the native {machine} {shim.label} shim for source "
+                        f"{revision} and the worker has none under {shim_dir}: {exc.message}",
+                    ) from exc
             directory = f"{executor_dir}/shim/{revision}-{machine}"
             staged = f"{directory}/incoming-{secrets.token_hex(12)}.so"
             await self._run(

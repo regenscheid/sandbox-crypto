@@ -2,7 +2,10 @@
 
 Separate [trusted service targets](../images/trusted/README.md) prepare
 the Kubernetes control/workspace/runtime-manager (`trusted-app`) and worker/middleware
-(`trusted-worker`) services; both carry the OpenShell CLI v0.1.7. Use
+(`trusted-worker`) services; both carry the OpenShell CLI v0.1.7. The worker image also
+carries the native shims, as the research images do (`scheduler-shim`, `signal-shim` below),
+built for its own architecture, and uploads them to a sandbox whose image lacks them; it has
+no compiler ([worker](WORKER.md#running-under-openshell)). Use
 `images/build_trusted.sh trusted-app|trusted-worker`, which only loads locally;
 `images/test_trusted.sh` checks an existing local image without network or pulls.
 They keep distinct build profiles and are published like the other profiles
