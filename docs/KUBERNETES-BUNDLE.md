@@ -865,7 +865,10 @@ artifact store: `storage_credentials` names the key of control's Secret (one of
 `AWS_SHARED_CREDENTIALS_FILE` and the section names no `storage_credentials`, `check` and
 `render` print a warning and leave the section's three objects out, rendering the rest:
 the cache is not trimmed until the section names a read-only key, and never with
-control's writer key. They refuse a `storage_credentials` that is not one of
+control's writer key. A deployment rendered with the job before carries on running it,
+with control's writer key, since `kubectl apply` prunes nothing: after applying, delete the
+CronJob `<name>-maintenance`, the ConfigMap `<name>-maintenance-policy` and the
+NetworkPolicy `<name>-maintenance` (the CronJob's Jobs and Pods go with it). They refuse a `storage_credentials` that is not one of
 `secrets.control.extra_files`, or that names a file control's environment names. A `copy-storage` init container copies that file,
 and the files of control's `AWS_CONFIG_FILE` and `AWS_CA_BUNDLE`, into the Pod's memory
 volume; the container gets `AWS_SHARED_CREDENTIALS_FILE` naming the read-only file,
