@@ -22,7 +22,7 @@ from __future__ import annotations
 import re
 from typing import Final
 
-OPENSHELL_VERSION: Final = "0.1.5"
+OPENSHELL_VERSION: Final = "0.1.7"
 OPENSHELL_VERSION_OUTPUT: Final = f"openshell {OPENSHELL_VERSION}"
 """What ``openshell --version`` prints for the pinned release."""
 
@@ -30,6 +30,6 @@ _PINNED: Final = re.compile(rf"(?<![\w.])v?{re.escape(OPENSHELL_VERSION)}(?![\w.
 
 
 def pinned_version(output: str) -> bool:
-    """Whether a ``--version`` output names the pinned release: ``openshell 0.1.5`` or
-    ``openshell-gateway v0.1.5``, not ``0.1.50`` or a prerelease of it."""
+    """Whether a ``--version`` output names the pinned release: ``openshell 0.1.7`` or
+    ``openshell-gateway v0.1.7``, not ``0.1.70`` or a prerelease of it."""
     return _PINNED.search(output) is not None

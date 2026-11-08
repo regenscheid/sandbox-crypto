@@ -218,7 +218,7 @@ Some scripts are historical: they exercise code since removed, and run only at t
 
 ## Prerequisites
 
-- OpenShell 0.1.5 unpacked at `~/.local/opt/openshell-0.1.5/bin` (gateway, driver and CLI).
+- OpenShell 0.1.7 unpacked at `~/.local/opt/openshell-0.1.7/bin` (gateway, driver, supervisor, sandbox runtime and CLI, all from that release; `lab_up.sh` and `recovery_acceptance.py` take the release from `OPENSHELL_VERSION`).
 - The images in the local Docker store, which OpenShell's VM driver reads directly: `sandbox-science/minimal:02f85b3`, `sandbox-science/crypto-base:02f85b3` and `sandbox-science/orchestrator:174e72e` (the retired `sandbox-science/mcp-proxy:d27e41a` may still be there) (built from `images/`; see [images](../../docs/IMAGES.md)). Only create, tag or remove `sandbox-science/*` images: the Docker store is shared with the user's own projects, and is never pruned.
 - `uv sync --locked` in the repository, whose `.venv` the scripts run (`R`, by default the repository these scripts are in).
 

@@ -650,7 +650,7 @@ def test_an_event_stream_listing_not_offered_whole_passes_unread_and_recorded(
     facts: Callable[..., HttpRequestFacts],
     events: EventStore,
 ) -> None:
-    # OpenShell 0.1.5 never offers an event stream whole: the runtime's client reads it.
+    # OpenShell 0.1.7 never offers an event stream whole: the runtime's client reads it.
     assert middleware.evaluate_http(facts(message("tools/list", {}), request_id="list-5")).allowed
     head = preflight("list-5", "text/event-stream")
     del head.preflight.permitted_body_modes[:]

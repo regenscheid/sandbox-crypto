@@ -52,7 +52,7 @@ SERVICE_FILESYSTEM = FilesystemPolicy(
 )
 """A service sandbox's compiled filesystem section: OpenShell's baseline, which the compiler
 lists since its supervisor adds it only where the paths exist on its own host (OpenShell
-v0.1.5), and the prefix to read. No research devices."""
+v0.1.7), and the prefix to read. No research devices."""
 KERNEL_PACKAGES = {"ipykernel", "jupyter_client", "pyzmq", "zeromq"}
 
 

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# Illustrative OpenShell v0.1.5 gateway fragment (gateway TOML, not worker config)
+# Illustrative OpenShell v0.1.7 gateway fragment (gateway TOML, not worker config)
 # for profile placement. Helm: server.drivers.kubernetes.allowDriverConfig,
 # server.drivers.kubernetes.resourceAdmission.enabled and server.defaultRuntimeClassName.
 [openshell.drivers.kubernetes]
@@ -7,7 +7,7 @@
 allow_driver_config = true
 # Applied to sandbox pods whose request names no RuntimeClass.
 default_runtime_class_name = "kata"
-# allowed_pod_labels stays empty (0.1.5's default, which refuses every Pod label a caller
+# allowed_pod_labels stays empty (0.1.7's default, which refuses every Pod label a caller
 # sets): the worker sets none. Job sandboxes (D93) carry sandbox-science.io/job-sandbox=true
 # on the OpenShell sandbox itself (`sandbox create --label`), which needs no allowance.
 

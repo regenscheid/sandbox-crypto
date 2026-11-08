@@ -194,7 +194,7 @@ class Checks:
         }
         done = await asyncio.to_thread(
             subprocess.run,
-            [str(Path.home() / ".local/opt/openshell-0.1.5/bin/openshell"), *arguments],
+            [str(Path.home() / ".local/opt/openshell-0.1.7/bin/openshell"), *arguments],
             env=env,
             capture_output=True,
             text=True,

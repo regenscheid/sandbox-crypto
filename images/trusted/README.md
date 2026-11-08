@@ -30,8 +30,11 @@ and math/figure checker files at `/usr/share/sandbox-science/math`. The Node bin
 is `/usr/local/bin/node`, and the OpenShell CLI `/usr/local/bin/openshell`, the same
 pinned binary as the worker's. `trusted-worker` installs contracts, policy, event store,
 worker, policy middleware, package cache and the launcher (for `sandbox-science-unit`, the
-entry point of the [worker-side unit](../../docs/UNIT.md) that each pool container runs), with `/usr/local/bin/openshell` and
-snapshot-pinned OpenSSH client/git dependencies. No gateway server, VM driver,
+entry point of the [worker-side unit](../../docs/UNIT.md) that each pool container runs), with `/usr/local/bin/openshell`,
+snapshot-pinned OpenSSH client/git dependencies and the native shims under
+`/usr/local/lib/sandbox-science/shim/<source-sha256>/`, built for the image's architecture
+by the research images' `scheduler-shim` stage, which the worker uploads to a sandbox whose
+image lacks them. It has no C compiler. No gateway server, VM driver,
 cluster token or default deployment config is embedded.
 
 The web builder retains the repository's `web/workspace` directory layout and
@@ -60,7 +63,9 @@ secret or an operator-chosen visibility. The bundle names the resulting `@sha256
 
 `images/test_trusted.sh trusted-app|trusted-worker [LOCAL_IMAGE]` runs an existing
 local image with pull and network disabled, a read-only root, no capabilities and
-bounded scratch/memory/PIDs. It checks installed CLIs and identities; the application
+bounded scratch/memory/PIDs. It checks installed CLIs and identities, and for the worker
+its shims (present for the installed worker's source revisions, valid for the image's
+architecture) and the absence of a compiler; the application
 also checks packaged skills, S3 support, web/preview assets, actual math/figure
 bundles through their production checkers, the launcher and policy imports and
 `openshell --version` (the runtime manager's console script, once it exists). It does not start a model, use keys or
@@ -75,13 +80,13 @@ manifests on 2026-10-20:
   major and `>=22.12` engine. Both architecture checksums come from the
   [official SHA256 manifest](https://nodejs.org/dist/v24.22.2/SHASUMS256.txt) and the
   version/date from the [official release index](https://nodejs.org/dist/index.json).
-- OpenShell CLI **v0.1.5** (in both images, checked 2026-10-22) for AMD64 and ARM64 uses
+- OpenShell CLI **v0.1.7** (in both images, checked 2026-11-07) for AMD64 and ARM64 uses
   the official Linux musl assets `openshell-x86_64-unknown-linux-musl.tar.gz` and
   `openshell-aarch64-unknown-linux-musl.tar.gz`, pinned by SHA-256 from the
-  [release checksum file](https://github.com/NVIDIA/OpenShell/releases/download/v0.1.5/openshell-checksums-sha256.txt),
-  matching the [release](https://github.com/NVIDIA/OpenShell/releases/tag/v0.1.5) and
-  the 0.1.5 that [babbage](../../docs/PERSONAL-BABBAGE.md) runs. Its upstream LICENSE is
-  pinned by SHA-256 at the v0.1.5 tag commit (unchanged since v0.1.3). The gateway,
+  [release checksum file](https://github.com/NVIDIA/OpenShell/releases/download/v0.1.7/openshell-checksums-sha256.txt),
+  matching the [release](https://github.com/NVIDIA/OpenShell/releases/tag/v0.1.7) and
+  the 0.1.7 that [babbage](../../docs/PERSONAL-BABBAGE.md) runs. Its upstream LICENSE is
+  pinned by SHA-256 at the v0.1.7 tag commit (unchanged since v0.1.3). The gateway,
   drivers and supervisor must independently match that release.
 
 The native archives' upstream LICENSE files remain in the images. Python and web

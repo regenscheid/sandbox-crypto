@@ -8,8 +8,11 @@ LAB="$HOME/.local/state/openshell-lab"
 test ! -e "$LAB" || { echo "lab exists: $LAB" >&2; exit 1; }
 if ss -ltn | grep -qE ':(8090|8080|8100|50051|17670)\b'; then echo "a lab port is busy" >&2; exit 1; fi
 mkdir -p "$LAB" && chmod 700 "$LAB"
-cat > "$LAB/env.sh" <<'EOF'
-export OS_BIN="$HOME/.local/opt/openshell-0.1.5/bin"
+# The release is OPENSHELL_VERSION in contracts/openshell_version.py, as personal_up.sh reads it.
+OS_VERSION=$(sed -n 's/^OPENSHELL_VERSION: Final = "\([0-9][0-9.]*\)"$/\1/p' "$R/packages/contracts/src/sandbox_science/contracts/openshell_version.py")
+test -n "$OS_VERSION" || { echo "no OPENSHELL_VERSION" >&2; exit 1; }
+printf 'export OS_BIN="$HOME/.local/opt/openshell-%s/bin"\n' "$OS_VERSION" > "$LAB/env.sh"
+cat >> "$LAB/env.sh" <<'EOF'
 export LAB="$HOME/.local/state/openshell-lab"
 export XDG_CONFIG_HOME="$LAB/config"
 export XDG_STATE_HOME="$LAB/state"

@@ -8,7 +8,7 @@ kind: RuntimeClass
 metadata:
   name: kata
   labels:
-    # OpenShell v0.1.5 admits a RuntimeClass or PriorityClass by this fixed label
+    # OpenShell v0.1.7 admits a RuntimeClass or PriorityClass by this fixed label
     # alone. PVCs a profile names also need
     # openshell.ai/sandbox-attachable-workspace: "<openshell workspace name>".
     openshell.ai/sandbox-attachable: "true"

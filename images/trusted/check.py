@@ -9,6 +9,7 @@ import importlib
 import importlib.metadata
 import importlib.resources
 import json
+import platform
 import shutil
 import subprocess
 from pathlib import Path
@@ -80,6 +81,19 @@ async def application() -> None:
         command("sandbox-science-runtime-manager", "--help")
 
 
+def worker_shims() -> None:
+    """The worker's own shims, for sandboxes whose image lacks them: built for this image's
+    architecture from the sources the installed worker carries (it has no compiler)."""
+    from sandbox_science.worker import backends, settings
+
+    machine = {"x86_64": "amd64", "aarch64": "arm64"}[platform.machine()]
+    for shim in (backends.SCHED_SHIM, backends.SIGNAL_SHIM):
+        if backends.prebuilt_shim(Path(settings.SHIM_IMAGE_DIR), shim, machine) is None:
+            raise ValueError(f"worker image lacks its {shim.label} shim for {shim.revision}")
+    if shutil.which("cc") is not None:
+        raise ValueError("worker image unexpectedly contains a C compiler")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("profile", choices=("trusted-app", "trusted-worker"))
@@ -113,6 +127,7 @@ def main() -> None:
             raise ValueError("worker CLI does not match the pinned OpenShell release")
         command("ssh", "-V")
         command("git", "--version")
+        worker_shims()
     print(json.dumps({"profile": profile, "revision": record["revision"], "qualified": True}))
 
 

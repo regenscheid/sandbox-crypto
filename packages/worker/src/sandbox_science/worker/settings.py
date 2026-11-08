@@ -83,6 +83,11 @@ MIN_TOKEN: Final = 32
 """The fewest characters a bearer token may have."""
 
 
+SHIM_IMAGE_DIR: Final = "/usr/local/lib/sandbox-science/shim"
+"""Where the images built from images/Containerfile ship the native shims, research images
+and the trusted worker alike."""
+
+
 class SettingsError(Exception):
     """The settings file is missing or invalid."""
 
@@ -106,7 +111,9 @@ class LocalBackendSettings(_Model):
     """Build the signal shim with ``cc`` on a Linux host, so that a delegated run's
     processes can signal their own (DA-20). Without it, their ``kill`` is ``EPERM``."""
     cc: str = "cc"
-    """The C compiler that builds the signal shim."""
+    """The C compiler that builds the signal shim where ``shim_dir`` has none."""
+    shim_dir: str = SHIM_IMAGE_DIR
+    """Where the worker's own prebuilt shims are, as ``<source-sha256>/<library>``."""
 
 
 JOB_WALL_TIME_MAX: Final = 7 * 24 * 3600.0
@@ -114,7 +121,7 @@ JOB_WALL_TIME_MAX: Final = 7 * 24 * 3600.0
 JOB_SANDBOX_LABEL: Final = ("sandbox-science.io/job-sandbox", "true")
 """The label on every job sandbox, set as the direct MCP path labels its runtime sandbox
 (``openshell sandbox create --label``): it marks the OpenShell sandbox, so ``openshell
-sandbox list --selector`` finds running jobs before a node is drained. OpenShell 0.1.5
+sandbox list --selector`` finds running jobs before a node is drained. OpenShell 0.1.7
 copies no such label onto the sandbox's Pods: a Pod's own labels come only from a
 sandbox template's labels, which its CLI never sets."""
 _KATA: Final = re.compile(r"^kata(?:-[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)?$")
@@ -194,7 +201,7 @@ class EnvironmentSettings(_Model):
     """How long a sandbox may take to become ready."""
     creation_grace: Annotated[float, Field(ge=300, le=86400)] = 420.0
     """Seconds after an environment's record before a creation with an unknown outcome may
-    be found absent: OpenShell 0.1.5's fixed bootstrap grace of 300 s, after which its
+    be found absent: OpenShell 0.1.7's fixed bootstrap grace of 300 s, after which its
     driver rolls a sandbox back, plus a margin. Never shorter than that grace."""
     creation_recheck: Annotated[float, Field(ge=1, le=3600)] = 30.0
     """Seconds between the two reads of the gateway that confirm such a sandbox absent, and
@@ -311,7 +318,12 @@ class OpenShellBackendSettings(_Model):
     """Validate the sandbox's signal shim, which a delegated run's processes preload to
     signal their own (DA-20)."""
     cc: str = "cc"
-    """The C compiler that builds the shims on the worker host for older images."""
+    """The C compiler that builds the shims on the worker host for older images, where
+    ``shim_dir`` has none."""
+    shim_dir: str = SHIM_IMAGE_DIR
+    """Where the worker's own prebuilt shims are, as ``<source-sha256>/<library>``: the
+    trusted worker image ships them there, as research images do, so an image without the
+    shim needs no compiler on the worker."""
     package_cache: Annotated[str, AfterValidator(check_cache_url)] | None = None
     """The package cache's URL as sandboxes reach it; the package clients are pointed at it.
     With ``environments``, it must name the host and port the targets file gives the cache."""

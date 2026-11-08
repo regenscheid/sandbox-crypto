@@ -225,7 +225,7 @@ def _identity(identity: Identity, what: str) -> dict[str, bytes]:
 
 
 def _cli_tree(gateway: str, endpoint: str, identity: dict[str, bytes]) -> dict[str, bytes]:
-    """The OpenShell 0.1.5 CLI's profile tree, as ``openshell gateway add`` writes it
+    """The OpenShell 0.1.7 CLI's profile tree, as ``openshell gateway add`` writes it
     (``gateway_port`` 0 when the endpoint's URL carries the port)."""
     metadata = {
         "name": gateway,
@@ -779,7 +779,7 @@ def _json(document: object) -> bytes:
 def _gateway_values(site: Site, bundle: BundleConfig) -> str:
     """The OpenShell chart's values that register the middleware with the gateway. The
     gateway reads ``tls_ca_cert_path`` itself and ships the PEM to the supervisors inside
-    their configuration (OpenShell 0.1.5 ``openshell-server/src/config_file.rs``), so only
+    their configuration (OpenShell 0.1.7 ``openshell-server/src/config_file.rs``), so only
     the gateway's Pod mounts the CA, from a ConfigMap. The chart takes literal dotted keys
     under ``gatewayConfig``; a nested ``openshell:`` map renders invalid TOML. Every value
     is a validated name, so none needs quoting."""

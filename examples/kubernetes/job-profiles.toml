@@ -12,7 +12,7 @@
 #
 # Each job sandbox carries the OpenShell label sandbox-science.io/job-sandbox=true, so
 # `openshell sandbox list --selector sandbox-science.io/job-sandbox=true` lists running jobs
-# before a node is drained; no PodDisruptionBudget can protect them under OpenShell 0.1.5
+# before a node is drained; no PodDisruptionBudget can protect them under OpenShell 0.1.7
 # (docs/KUBERNETES-BUNDLE.md, job sandboxes and node drains).
 [openshell.environments]
 max_job_sandboxes = 2            # at once across the pool

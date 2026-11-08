@@ -45,6 +45,10 @@ LATEST_BATCH = 256
 """Executions one ``latest`` request asks about."""
 
 
+class _UnreachedError(Exception):
+    """A recovery attempt that did not reach the daemon, with why, which is retried."""
+
+
 @dataclass(frozen=True)
 class RecoveryHooks:
     """What recovery asks of the rest of the manager."""
@@ -120,8 +124,11 @@ class DaemonRecovery:
         began = asyncio.get_running_loop().time()
         try:
             for attempt in itertools.count(1):
+                reason = "the daemon was not reached"
                 try:
                     reached = await self._recover_once(environment_id, startup=startup)
+                except _UnreachedError as exc:
+                    reached, reason = False, str(exc)
                 except Exception:
                     if startup:
                         raise
@@ -132,6 +139,12 @@ class DaemonRecovery:
                 ):
                     break
                 waited = asyncio.get_running_loop().time() - began
+                if startup and not reached and not self.usability.closing:
+                    # The worker is not Ready until this succeeds: say why each time.
+                    _log.error(
+                        "startup recovery of %s, attempt %d after %.0f s: %s",
+                        environment_id, attempt, waited, reason,
+                    )  # fmt: skip
                 if (
                     startup
                     and attempt >= STARTUP_RECOVERY_ATTEMPTS
@@ -190,10 +203,10 @@ class DaemonRecovery:
             return True
         try:
             channel = (await self.hooks.connect(environment_id)).channel
-        except WorkerError:
-            return False
+        except WorkerError as exc:
+            raise _UnreachedError(exc.message) from exc
         if channel is None:
-            return False
+            raise _UnreachedError("the environment's executor did not open")
         try:
             await self._reconcile_unknown(channel)
         except WorkerError as exc:

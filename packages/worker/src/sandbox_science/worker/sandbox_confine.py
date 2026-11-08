@@ -157,7 +157,7 @@ _SETLEASE: Final = 1024
 _SETOWN: Final = (8, 10, 15)  # F_SETOWN, F_SETSIG, F_SETOWN_EX
 _IOCTL_SETOWN: Final = (0x8901, 0x8902)  # FIOSETOWN, SIOCSPGRP
 _SUPERVISED_SIGNALS: Final = ("kill", "rt_sigqueueinfo")
-"""Signal calls OpenShell 0.1.5's supervisor carries out itself, for a target it allows,
+"""Signal calls OpenShell 0.1.7's supervisor carries out itself, for a target it allows,
 outside the caller's Landlock domain (a seccomp user notification answered by its own
 ``pidfd_send_signal``). ``EPERM`` from this filter takes precedence over the
 notification, so the supervisor never sees them; the thread-directed calls it lets the
@@ -510,7 +510,7 @@ def escapes(target: int) -> list[str]:
 
 def tcp_held() -> bool:
     """Whether this process's TCP rules hold: binding a loopback port is refused. A
-    sandbox that makes sockets for its processes (OpenShell 0.1.5 does) binds it outside
+    sandbox that makes sockets for its processes (OpenShell 0.1.7 does) binds it outside
     the ruleset."""
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:

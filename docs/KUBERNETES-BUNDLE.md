@@ -404,7 +404,7 @@ Default-deny policies select only this bundle's trusted Pods. Additive allow rul
 permit app-to-worker TCP 8100, approved `network.runtimes` to control TCP 8443,
 the runtime manager's Pod (and nothing else) to control's manager port TCP 8444, and
 approved `network.supervisors` and the `network.gateway` peer to middleware TCP 50051
-(OpenShell 0.1.5's gateway connects to each registered middleware at startup and exits,
+(OpenShell 0.1.7's gateway connects to each registered middleware at startup and exits,
 "middleware registration failed", if it cannot). The runtime manager accepts
 no connection; it reaches only DNS, control's TCP 8444 and the required
 `network.gateway` peer and ports (the OpenShell gateway). The pool Pod reaches the same
@@ -571,7 +571,7 @@ An optional `[sandboxes]` section names the namespace in which OpenShell creates
 `network.*` peers, which select it by label), for the objects the bundle puts there (the
 checkpoint Jobs' NetworkPolicy, with `[checkpoint]`).
 
-The bundle renders no PodDisruptionBudget for job sandboxes. OpenShell 0.1.5 puts no label
+The bundle renders no PodDisruptionBudget for job sandboxes. OpenShell 0.1.7 puts no label
 the worker chooses on a sandbox's Pods ([gateway settings](KUBERNETES.md#gateway-settings-for-profile-placement)),
 so a budget would select none of a job's Pods, and a planned `kubectl drain` evicts a running
 job's Pod like any other: the job ends `lost` ([job sandboxes](specs/job-sandboxes.md),
@@ -865,7 +865,10 @@ artifact store: `storage_credentials` names the key of control's Secret (one of
 `AWS_SHARED_CREDENTIALS_FILE` and the section names no `storage_credentials`, `check` and
 `render` print a warning and leave the section's three objects out, rendering the rest:
 the cache is not trimmed until the section names a read-only key, and never with
-control's writer key. They refuse a `storage_credentials` that is not one of
+control's writer key. A deployment rendered with the job before carries on running it,
+with control's writer key, since `kubectl apply` prunes nothing: after applying, delete the
+CronJob `<name>-maintenance`, the ConfigMap `<name>-maintenance-policy` and the
+NetworkPolicy `<name>-maintenance` (the CronJob's Jobs and Pods go with it). They refuse a `storage_credentials` that is not one of
 `secrets.control.extra_files`, or that names a file control's environment names. A `copy-storage` init container copies that file,
 and the files of control's `AWS_CONFIG_FILE` and `AWS_CA_BUNDLE`, into the Pod's memory
 volume; the container gets `AWS_SHARED_CREDENTIALS_FILE` naming the read-only file,
@@ -1192,12 +1195,12 @@ next use. A restore never writes into an existing environment, so it cannot over
    executor adopts the restored prefix identity as the environment's baseline. A mismatch
    records the restore `failed`, which keeps the target held.
 
-OpenShell 0.1.5 creates every sandbox Pod with `fsGroup` set to the sandbox's group and
+OpenShell 0.1.7 creates every sandbox Pod with `fsGroup` set to the sandbox's group and
 `fsGroupChangePolicy: OnRootMismatch`, so on each start the kubelet gives every file of the
 volume the group and group read and write (and every directory the set-group-ID bit) only
 when the root's group, group bits or set-group-ID bit are not what `fsGroup` makes them. The
 restore never changes the root, so the kubelet leaves the restored files as written: a file
-the sandbox made `600` stays `600`. OpenShell 0.1.5's driver configuration has no field for
+the sandbox made `600` stays `600`. OpenShell 0.1.7's driver configuration has no field for
 the Pod's security context, so the policy is OpenShell's. The tree digest keeps the group
 bits: the worker compares it before the sandbox ever starts on the restored volume, so no
 later `fsGroup` pass can make a verified restore fail, and ignoring them would let a restore
@@ -1293,7 +1296,7 @@ As seen on the first cluster (2026-10-28):
   owner (project, session and environment, from the worker's records, deleted ones
   included) and how many verified checkpoints it has. A job sandbox's or child
   environment's volume names its owner by kind ("job sandbox environment …", "child
-  environment …"): OpenShell 0.1.5 gives every sandbox's workspace the gateway's one
+  environment …"): OpenShell 0.1.7 gives every sandbox's workspace the gateway's one
   storage class, so with a class that retains volumes each one leaves its volume
   behind. The worker's inventory gives each one's phase and how it ended (`phase`,
   `ended`): the volume needs no checkpoint (no `--without-checkpoint`; the worker's
@@ -1455,7 +1458,7 @@ The first deployment collects every service's logs into Loki through Alloy (D103
 - **JSON on the container's output.** Every container sets `SS_LOG_FORMAT=json`, so each service writes one JSON object per line on standard error, which the kubelet keeps with standard output as the container's log. The shared setup is `sandbox_science.contracts.logs`: `ts` (UTC), `level`, `service`, `logger`, `msg`, `event` when the call names one, and, when known, `project`, `session`, `run`, `environment` and `request`; an exception is one `exc` field. A message, field or traceback passes the redaction first (URL user information, `Authorization` and `Bearer` values, `name=value` where the name ends in `token`, `secret`, `password`, `api_key`, `credential` or `cookie`, and a few credential formats), and a field named like a secret is never written. Local runs keep the text line unless `SS_LOG_FORMAT=json` is set ([the unit](UNIT.md#how-it-runs)).
 - **`service`** is `control`, `workspace`, `harness`, `agent-runtime`, `worker`, `middleware`, `cache`, `runtime-manager` or `unit` (`mcp-proxy` in older lines, before the proxy retired). In the pool Pod each container runs one service of the unit (`--only`), so a line's `service` is the container's; a line a service wrote that is not a record of its own (a traceback, a library's output, a record naming another service) becomes a record of its service. The runtime manager passes on every line of the agent runtime's output as a record of the service `runtime`, whatever the line holds: the runtime is research-facing, so a line it writes as another service's record is only text in one of `runtime`'s.
 - **Pod labels.** Every Pod the renderer makes (`app`, `pool`, `runtime-manager`) carries `app.kubernetes.io/name: sandbox-science`, `app.kubernetes.io/instance: <name>` (the bundle's `name`), `app.kubernetes.io/part-of: <name>` and `app.kubernetes.io/component: app|pool|runtime-manager`; the container name (`control`, `workspace`, `worker`, `middleware`, `cache`, `runtime-manager`) tells the service apart within a Pod. The log labels are on the Pods and objects only: selectors and NetworkPolicies keep to `part-of` and `component`. Alloy reads logs through the Kubernetes API or the nodes' files, so no NetworkPolicy needs an ingress rule for it.
-- **OpenShell's events.** The gateway's and the sandbox supervisors' OCSF events are OpenShell's to export, from its own configuration: `ocsf_json_enabled` makes the supervisors write `OCSF-JSON` lines on their Pod's standard error and the gateway write JSONL (`[openshell.gateway.ocsf_log]`), and `[openshell.gateway.otlp]` with `[openshell.gateway.otlp.ocsf]` sends the events, and the traces, to an OTLP/gRPC collector that the sandboxes can reach too. OpenShell's pages on [observability](https://github.com/NVIDIA/OpenShell/blob/v0.1.5/docs/observability/overview.mdx), [OCSF JSON export](https://github.com/NVIDIA/OpenShell/blob/v0.1.5/docs/observability/ocsf-json-export.mdx) and [telemetry](https://github.com/NVIDIA/OpenShell/blob/v0.1.5/docs/observability/telemetry.mdx) (its anonymous usage data, separate from these signals) name every setting. The gateway's Prometheus listener (`metrics_bind_address`) is scraped, not logged.
+- **OpenShell's events.** The gateway's and the sandbox supervisors' OCSF events are OpenShell's to export, from its own configuration: `ocsf_json_enabled` makes the supervisors write `OCSF-JSON` lines on their Pod's standard error and the gateway write JSONL (`[openshell.gateway.ocsf_log]`), and `[openshell.gateway.otlp]` with `[openshell.gateway.otlp.ocsf]` sends the events, and the traces, to an OTLP/gRPC collector that the sandboxes can reach too. OpenShell's pages on [observability](https://github.com/NVIDIA/OpenShell/blob/v0.1.7/docs/observability/overview.mdx), [OCSF JSON export](https://github.com/NVIDIA/OpenShell/blob/v0.1.7/docs/observability/ocsf-json-export.mdx) and [telemetry](https://github.com/NVIDIA/OpenShell/blob/v0.1.7/docs/observability/telemetry.mdx) (its anonymous usage data, separate from these signals) name every setting. The gateway's Prometheus listener (`metrics_bind_address`) is scraped, not logged.
 - **A sample Alloy configuration** is [alloy-config.alloy](../examples/kubernetes/alloy-config.alloy): the bundle's Pods selected by `app.kubernetes.io/name`, the JSON fields `level` and `service` as labels and the identifiers as structured metadata (a project, session, run or request is a filter, not a stream), an optional pipeline for the supervisors' `OCSF-JSON` lines, and an optional OTLP receiver. It has not run on a cluster. Retention, the Loki URL and Alloy's own access are the operator's.
 
 ## Alert rules

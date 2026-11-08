@@ -530,7 +530,7 @@ class Sandboxes(Model):
     namespace: Name
     job_budget: bool = False
     """Accepted false only, so a bundle that turned the job sandboxes' PodDisruptionBudget
-    off still loads. The bundle renders no such budget: OpenShell 0.1.5 puts no label the
+    off still loads. The bundle renders no such budget: OpenShell 0.1.7 puts no label the
     worker chooses on a job sandbox's Pods (a Pod's own labels come only from a sandbox
     template's, which its CLI never sets), so it would select nothing
     (docs/KUBERNETES-BUNDLE.md, job sandboxes and node drains)."""

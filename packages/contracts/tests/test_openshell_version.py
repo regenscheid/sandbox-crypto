@@ -19,9 +19,9 @@ from sandbox_science.contracts.openshell_version import (
 
 ROOT = Path(__file__).resolve().parents[3]
 DEFINITION = "packages/contracts/src/sandbox_science/contracts/openshell_version.py"
-STRAY = re.compile(r"(?<![\w.])0\.1\.[35](?![0-9])")
-"""The two releases the code has known: a literal of either, in code, is a pin that the
-constant does not move."""
+STRAY = re.compile(r"(?<![\w.])0\.1\.[357](?![0-9])")
+"""The releases the code has known: a literal of any, in code, is a pin that the constant
+does not move."""
 ALLOWED = {
     DEFINITION: "defines it",
     "images/Containerfile": "the build argument, which cannot import; "

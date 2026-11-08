@@ -237,7 +237,7 @@ def test_a_proxy_sandbox_name_another_sandbox_reused_is_left_alone(
 
 
 MISSING = "status: 'Some requested entity was not found', self: \"sandbox not found\""
-"""How OpenShell 0.1.5's CLI (tonic 0.14) shows the gateway's NotFound for a name."""
+"""How OpenShell 0.1.7's CLI (tonic 0.14) shows the gateway's NotFound for a name."""
 
 
 def saying(tmp_path: Path, said: str) -> OpenShell:
