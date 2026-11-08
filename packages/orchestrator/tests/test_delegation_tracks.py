@@ -18,7 +18,7 @@ from .loop_harness import PLAN, PROJECT, USER_PLANS, Harness, Reply, call
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
-from .test_delegation import children, delegation, released, results, started, wait
+from .test_delegation import children, delegation, released, results, started, submitted, wait
 from .test_delegation import delegating as delegating
 from .test_delegation_tasks import DONE
 
@@ -93,7 +93,7 @@ async def test_a_task_records_progress_on_its_own_tracks_steps(delegating: Harne
                     call("track_progress", step_id="write", status="completed", note="Done."),
                 ]
             ),
-            Reply(json.dumps(DONE)),
+            *submitted(DONE, "Done."),
         ],
     )
     began = answer(root, 1)
@@ -104,7 +104,7 @@ async def test_a_task_records_progress_on_its_own_tracks_steps(delegating: Harne
     assert {"track_read", "track_progress"} <= offered
     assert not {"plan_read", "plan_progress"} & offered
     (child,) = children(delegating, root)
-    read, progressed, refused = (json.loads(r) for r in results(child))
+    read, progressed, refused, _ = (json.loads(r) for r in results(child))
     assert read["plan"] == ref.model_dump(mode="json")
     assert [(s["step_id"], s["status"]) for s in read["steps"]] == [("table", "pending")]
     assert (progressed["receipt"]["action"], progressed["receipt"]["ref"]) == (
@@ -150,7 +150,7 @@ async def test_a_track_has_one_running_task(delegating: Harness) -> None:
             Reply(calls_from=wait().calls_from, before=release.before),
             Reply("Done."),
         ],
-        delegated=[Reply(json.dumps(DONE), before=held)],
+        delegated=[*submitted(DONE, "Done.", before=held)],
     )
     refused = answer(root, 2)["error"]
     assert refused["kind"] == "conflict"
@@ -180,11 +180,11 @@ async def test_a_revised_plan_refuses_the_tasks_progress(delegating: Harness) ->
                 calls=[call("track_progress", step_id="table", status="completed", note="x")],
                 before=revise,
             ),
-            Reply(json.dumps({**DONE, "status": "blocked", "obstacle": "The plan changed."})),
+            *submitted({**DONE, "status": "blocked", "obstacle": "The plan changed."}, "Done."),
         ],
     )
     (child,) = children(delegating, root)
-    (refused,) = results(child)
+    refused, _ = results(child)
     assert json.loads(refused)["error"]["message"].startswith("plan_changed")
     (delegation_id,) = started(root)
     outcome = delegation(delegating, delegation_id)
@@ -252,7 +252,7 @@ async def test_a_blocked_tasks_dismissals_and_obstructions_are_work_on_its_issue
     root = await delegating.run(
         "root",
         [Reply(calls=[task]), wait(), Reply("Done.")],
-        delegated=[Reply(json.dumps(blocked))],
+        delegated=[*submitted(blocked, "Done.")],
     )
     (delegation_id,) = started(root)
     first = delegating.gateway.children[0]
@@ -282,7 +282,7 @@ async def test_a_task_that_found_nothing_ran_out_of_ideas(delegating: Harness) -
     issue = an_issue(delegating)
     task = call("delegate", task="Look for a counterexample.", issue=issue)
     await delegating.run(
-        "root", [Reply(calls=[task]), wait(), Reply("Done.")], delegated=[Reply(json.dumps(DONE))]
+        "root", [Reply(calls=[task]), wait(), Reply("Done.")], delegated=[*submitted(DONE, "Done.")]
     )
     (outcome,) = worked(delegating, issue)
     assert (outcome.ending, outcome.limit) == ("limit", "ideas")
@@ -302,7 +302,7 @@ async def test_a_task_that_made_entries_produced_them(delegating: Harness) -> No
         [Reply(calls=[task]), wait(), Reply("Done.")],
         delegated=[
             Reply(calls=[call("ledger_change", reason="A subtask.", changes=[made])]),
-            Reply(json.dumps(DONE)),
+            *submitted(DONE, "Done."),
         ],
     )
     (outcome,) = worked(delegating, issue)

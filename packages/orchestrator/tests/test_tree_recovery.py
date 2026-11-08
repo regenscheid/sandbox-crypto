@@ -26,7 +26,7 @@ from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.worker_client import WorkerClient
 from sandbox_science.testing import eventually
 
-from .scripted import ScriptedModel
+from .scripted import ScriptedModel, SubmittingModel, submitting
 from .test_run_harness import Sink, Worker, main, stores
 from .test_tool_journal import RUN
 from .test_work_ownership import CHILD, CONTINUATION, GRANDCHILD, record
@@ -168,13 +168,11 @@ async def drive_concurrent(recovery, sink, stop):
 async def test_one_resume_recovers_three_levels_and_preserves_stopped_branch(tmp_path: Path):
     state, documents, works = prepare_tree(tmp_path)
     worker = RecoveryWorker()
-    models = [
-        ModelTurn(json.dumps({"status": "complete", "summary": "Recovered"})) for _ in range(8)
-    ]
+    models = SubmittingModel({"status": "complete", "summary": "Recovered"})
     harness = Harness(
         cast(WorkerClient, worker),
         main("Recovered root"),
-        delegated=Role(ScriptedModel(models), "scripted"),
+        delegated=Role(models, "scripted"),
         stores=state,
         settings=Settings(min_isolation_tier=None),
     )
@@ -285,12 +283,10 @@ async def test_four_child_resume_keeps_parent_live_and_consumes_every_handback(
 
         async def complete(self, messages, tools):
             self.requests.append(list(messages))
-            self.started += 1
             await root_started.wait()
-            return ModelTurn(
-                json.dumps({"status": "complete", "summary": f"child {self.started}"}),
-                model="scripted",
-            )
+            turn = submitting(messages, {"status": "complete", "summary": f"child {self.started}"})
+            self.started += bool(turn.tool_calls)  # each child's run, counted at its submission
+            return turn
 
     root_model = RootModel([ModelTurn("Too early"), ModelTurn("Integrated all handbacks")])
     child_model = ChildModel()
@@ -407,9 +403,7 @@ async def test_nested_resume_keeps_a_leaf_runnable_with_four_branch_cap(tmp_path
             added.append(work)
     records.configure("p", depth=2)
     works.interrupt("p", "s", RUN)
-    model = ScriptedModel(
-        [ModelTurn(json.dumps({"status": "complete", "summary": "Recovered"}))] * 24
-    )
+    model = SubmittingModel({"status": "complete", "summary": "Recovered"})
     harness = Harness(
         cast(WorkerClient, RecoveryWorker()),
         main("Integrated", "Integrated", "Integrated", "Integrated"),
@@ -489,10 +483,17 @@ async def test_child_message_wakes_recovered_parent_closing_wait(tmp_path: Path)
             },
             {"tool_calls": [{"name": "wait_agent_message", "arguments": {"timeout_seconds": 30}}]},
             {
-                "text": json.dumps(
-                    {"status": "complete", "summary": "Child completed after correction"}
-                )
+                "tool_calls": [
+                    {
+                        "name": "submit_result",
+                        "arguments": {
+                            "status": "complete",
+                            "summary": "Child completed after correction",
+                        },
+                    }
+                ]
             },
+            {"text": "Done."},
         ]
     )
     root_model = RootModel()
@@ -590,14 +591,9 @@ async def test_child_resource_request_wakes_recovered_parent_closing_wait(
                 assert self.warning is not None
             while not requests.decisions(owner):
                 await asyncio.sleep(0.01)
-            return ModelTurn(
-                json.dumps(
-                    {
-                        "status": "complete",
-                        "summary": "Child completed after resource decision",
-                    }
-                ),
-                model="scripted",
+            return submitting(
+                messages,
+                {"status": "complete", "summary": "Child completed after resource decision"},
             )
 
     root_model = RootModel()
@@ -786,9 +782,7 @@ async def test_unknown_paid_child_without_old_pins_resumes_with_new_pins(tmp_pat
     harness = Harness(
         cast(WorkerClient, worker),
         main("Root waits"),
-        delegated=Role(
-            ScriptedModel([ModelTurn('{"status":"complete","summary":"Wait"}')] * 8), "scripted"
-        ),
+        delegated=Role(SubmittingModel({"status": "complete", "summary": "Wait"}), "scripted"),
         stores=state,
         settings=Settings(min_isolation_tier=None),
     )
@@ -851,9 +845,7 @@ async def test_resume_can_be_interrupted_again_before_parent_admission(tmp_path:
         cast(WorkerClient, RecoveryWorker()),
         Role(model, "scripted"),
         delegated=Role(
-            ScriptedModel(
-                [ModelTurn('{"status":"complete","summary":"Recovered child evidence"}')] * 8
-            ),
+            SubmittingModel({"status": "complete", "summary": "Recovered child evidence"}),
             "scripted",
         ),
         stores=state,
@@ -994,9 +986,7 @@ async def test_automatic_resume_recovers_the_tree_past_a_condition_it_can_handle
     harness = Harness(
         cast(WorkerClient, worker),
         main("Recovered root"),
-        delegated=Role(
-            ScriptedModel([ModelTurn('{"status":"complete","summary":"Done"}')] * 8), "scripted"
-        ),
+        delegated=Role(SubmittingModel({"status": "complete", "summary": "Done"}), "scripted"),
         stores=state,
         settings=Settings(min_isolation_tier=None),
     )
@@ -1070,7 +1060,7 @@ async def test_an_automatic_resume_under_changed_pins_waits_for_the_users_resume
     request = AutoRecovery(control).queue("p", "s", RUN)
     assert request is not None
     assert works.resume_source("p", "s", request) == "automatic"
-    child_model = ScriptedModel([ModelTurn('{"status":"complete","summary":"Done"}')] * 8)
+    child_model = SubmittingModel({"status": "complete", "summary": "Done"})
     harness = Harness(
         cast(WorkerClient, RecoveryWorker()),
         main("Recovered root"),

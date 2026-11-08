@@ -16,6 +16,7 @@ import pytest
 from sandbox_science.orchestrator.consistency.controller import source_of
 from sandbox_science.orchestrator.consistency.ledger import ingest_ledger
 from sandbox_science.orchestrator.consistency.store import ReviewStore, dump
+from sandbox_science.orchestrator.notices import CONNECTOR_RESULT
 from sandbox_science.orchestrator.tools import format_pdf
 from sandbox_science.testing.pdfs import make_pdf
 from sandbox_science.worker import pdfhelper
@@ -357,7 +358,8 @@ def test_a_read_no_quote_cites_stays_out_of_the_review(store: Any, tmp_path: Pat
 @pytest.mark.asyncio
 async def test_the_controller_records_the_executed_call_under_its_mark(store: Any) -> None:
     """The review controller records a source from the call the run executed, through
-    a connector the project configures, under a key that begins with its mark."""
+    a connector the project configures, under a key that begins with its mark; the
+    result's text is read after the platform's framing line, as the server wrote it."""
     from sandbox_science.orchestrator.consistency.controller import ReviewController
     from sandbox_science.orchestrator.consistency.quotes import mark
 
@@ -369,7 +371,8 @@ async def test_the_controller_records_the_executed_call_under_its_mark(store: An
         connectors=(CONNECTOR,),
     )  # fmt: skip
     arguments = {"paper_id": "2024/123", "query": "twist"}
-    messages = exchange(1, EPRINT_TOOL, arguments, passages("2024/123", "twist", TWIST))
+    shown = CONNECTOR_RESULT.text + passages("2024/123", "twist", TWIST)
+    messages = exchange(1, EPRINT_TOOL, arguments, shown)
     await controller.safe_point(
         messages, tool=SERVER, call=executed(EPRINT_TOOL, arguments, SERVER)
     )

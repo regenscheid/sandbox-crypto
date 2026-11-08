@@ -81,3 +81,33 @@ def script(turns: Sequence[Any]) -> list[Any]:
             turn = {**turn, "tool_calls": calls}
         found.append(turn)
     return found
+
+
+def submitting(messages: Sequence[model.Message], result: dict[str, Any]) -> model.ModelTurn:
+    """A delegated run's turn that returns ``result`` (PD-18): its ``submit_result`` call,
+    then, once the run has made it, its closing answer."""
+    made = any(
+        cast(dict[str, Any], call.get("function") or {}).get("name") == "submit_result"
+        for message in messages
+        if message.get("role") == "assistant"
+        for call in cast(list[dict[str, Any]], message.get("tool_calls") or [])
+    )
+    if made:
+        return model.ModelTurn("Done.", model="scripted")
+    call = ToolCall("submit", "submit_result", json.dumps(result))
+    return model.ModelTurn(None, (call,), model="scripted")
+
+
+class SubmittingModel(ScriptedModel):
+    """A delegated run's model that submits ``result`` and then closes, in every run it
+    answers."""
+
+    def __init__(self, result: dict[str, Any]) -> None:
+        super().__init__([])
+        self.result = result
+
+    async def complete(
+        self, messages: Sequence[model.Message], tools: Sequence[model.ToolSpec]
+    ) -> model.ModelTurn:
+        self.requests.append(list(messages))
+        return submitting(messages, self.result)

@@ -234,6 +234,9 @@ GOLDEN = {
     "sandbox-fold-enrich-3": "c76e9d3e1abb63bb694323af221cfd8fd772b36d096b72368356f01cf40156aa",
     "sandbox-fold-overview-2": "019dbbdb8a5b18c94d8a82b88b06b42bc5e81048e4c668481404bfefb3e7ddb9",
     "sandbox-consolidation-1": ("d67d1fdf2583ba97951b057b2246ce1d458a60806edf9bf7a7545920cf33f20a"),
+    "sandbox-notice-connector-result-1": (
+        "9cd0b57aa63d1eced96b2d36adde27000ac03f48e67de8c3e7b6a1718c9d3544"
+    ),
     "sandbox-image-1": "6aad833a6a22472424296c64943b54adcd0d064aef1db5403c5f5eea2eb95f11",
     "sandbox-notice-report-1": "93112b881cb91462c7b85f862d93cd154a9d5c47684af6815a4eedc9156c9c48",
     "sandbox-notice-continue-1": (

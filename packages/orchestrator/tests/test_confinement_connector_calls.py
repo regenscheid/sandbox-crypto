@@ -37,6 +37,7 @@ from sandbox_science.orchestrator.confinement.wire import (
 from sandbox_science.orchestrator.connectors import ConnectorError, Connectors
 from sandbox_science.orchestrator.continuity.records import CURRENT, Ownership
 from sandbox_science.orchestrator.effects import UnknownEffectError
+from sandbox_science.orchestrator.notices import CONNECTOR_RESULT
 
 from .test_mcp_direct import (
     DENIED_TOOL,
@@ -188,7 +189,7 @@ async def test_a_held_call_waits_on_the_hosts_confirmation_and_passes_once_appro
     assert linked.gateway.reached == []
     linked.gateway.approve(request)
     text, record = await asyncio.wait_for(call, 10)
-    assert text == f"{ESCALATED_TOOL} ran"
+    assert text == f"{CONNECTOR_RESULT.text}{ESCALATED_TOOL} ran"
     assert record["permission_request"] == request
     assert heard[-1] is None
     assert linked.gateway.reached == [ESCALATED_TOOL]

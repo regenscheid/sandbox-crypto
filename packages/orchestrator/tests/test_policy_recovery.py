@@ -21,9 +21,9 @@ from sandbox_science.contracts import ErrorKind, new_id
 from sandbox_science.contracts.environments import EnvironmentInfo, EnvironmentState
 from sandbox_science.orchestrator.continuity.recovery import POLICY_CHANGED, Recovery
 from sandbox_science.orchestrator.harness import Harness, Role, Settings
-from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 
+from .scripted import SubmittingModel
 from .test_run_harness import Sink, main
 from .test_tree_recovery import RecoveryWorker, drive, prepare_tree
 
@@ -69,11 +69,11 @@ class PolicyWorker(RecoveryWorker):
 
 
 def harness(state, worker) -> Harness:
-    models = [ModelTurn(json.dumps({"status": "complete", "summary": "Done"})) for _ in range(8)]
+    models = SubmittingModel({"status": "complete", "summary": "Done"})
     return Harness(
         cast(WorkerClient, worker),
         main("Recovered root"),
-        delegated=Role(ScriptedModel(models), "scripted"),
+        delegated=Role(models, "scripted"),
         stores=state,
         settings=Settings(min_isolation_tier=None),
     )

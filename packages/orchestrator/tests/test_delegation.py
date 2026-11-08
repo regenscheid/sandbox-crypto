@@ -14,6 +14,7 @@ import asyncio
 import json
 import re
 import sqlite3
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, cast
 
@@ -28,7 +29,7 @@ from sandbox_science.orchestrator.context.history.limits import WorkingMemoryLim
 from sandbox_science.orchestrator.context.history.log import RunArchive
 from sandbox_science.orchestrator.continuity.resources import FIRST_STEP, ResourceRequests
 from sandbox_science.orchestrator.control import migrations
-from sandbox_science.orchestrator.delegation.outcome import CAME, NO_SUBMISSION, NUDGES, parse
+from sandbox_science.orchestrator.delegation.outcome import NO_SUBMISSION, NUDGES, parse
 from sandbox_science.orchestrator.delegation.records import (
     Delegation,
     DelegationRecords,
@@ -83,9 +84,14 @@ def summary_of(record: RunRecord) -> dict[str, Any]:
     return cast(dict[str, Any], record.summaries["outcome"])
 
 
-def submitted(result: dict[str, Any] = RESULT, then: str = CLOSED) -> list[Reply]:
-    """A child's last replies: its result through submit_result, then its closing answer."""
-    return [Reply(calls=[call("submit_result", **result)]), Reply(then)]
+def submitted(
+    result: dict[str, Any] = RESULT,
+    then: str = CLOSED,
+    before: Callable[[], Awaitable[object]] | None = None,
+) -> list[Reply]:
+    """A child's last replies: its result through submit_result, then its closing answer;
+    ``before`` runs while the model thinks of the first."""
+    return [Reply(calls=[call("submit_result", **result)], before=before), Reply(then)]
 
 
 _ID = re.compile(r"dlg-[0-9a-f]{24}")
@@ -335,7 +341,7 @@ async def test_a_parent_cannot_answer_while_its_check_runs(delegating: Harness) 
         delegating.run(
             "root",
             [Reply(calls=[CHECK]), Reply("Done already."), Reply("Done now.")],
-            delegated=[Reply(REPORT, before=blocked)],
+            delegated=[*submitted(before=blocked)],
         )
     )
     store = ProjectStore(delegating.state)
@@ -410,7 +416,7 @@ async def test_a_limited_parent_keeps_its_check_and_the_next_run_gets_the_outcom
             [Reply(calls=[CHECK]), Reply(answer)],
             delegated=[
                 Reply(calls=[call("ledger_read", entry="C-1")], before=blocked),
-                Reply(REPORT),
+                *submitted(),
             ],
             max_turns=2,
             status=3,
@@ -427,7 +433,7 @@ async def test_a_limited_parent_keeps_its_check_and_the_next_run_gets_the_outcom
     assert (root.stopped, root.final_text) == ("turn_limit", None)
     (child,) = children(delegating, root)
     assert child.stopped == "answered"
-    assert len(delegating.gateway.children) == 2
+    assert len(delegating.gateway.children) == 3
     assert child.ended_at <= root.ended_at
     (delegation_id,) = started(root)
     outcome = delegation(delegating, delegation_id)
@@ -476,7 +482,7 @@ async def test_memory_limited_parent_drains_its_paid_child_before_ending(
             [Reply(calls=[CHECK])],
             delegated=[
                 Reply(calls=[call("ledger_read", entry="C-1")], before=blocked),
-                Reply(REPORT),
+                *submitted(),
             ],
             max_turns=5,
             status=3,
@@ -498,7 +504,7 @@ async def test_memory_limited_parent_drains_its_paid_child_before_ending(
     (child,) = children(delegating, root)
     assert child.stopped == "answered"
     assert child.failure is None
-    assert len(delegating.gateway.children) == 2
+    assert len(delegating.gateway.children) == 3
     assert child.ended_at <= root.ended_at
     (delegation_id,) = started(root)
     assert delegation(delegating, delegation_id).ended == "returned"
@@ -559,7 +565,7 @@ async def test_a_session_runs_at_most_its_cap_of_checks_at_once(delegating: Harn
             Reply(calls_from=wait().calls_from, before=release.before),
             Reply("Done."),
         ],
-        delegated=[Reply(REPORT, before=blocked)],
+        delegated=[*submitted(before=blocked)],
     )
     second = json.loads(results(root)[1])
     assert second["error"]["kind"] == "unavailable"
@@ -826,22 +832,25 @@ async def test_a_check_that_never_submits_is_told_three_times_then_gets_the_plat
     assert received["result"]["status"] == "blocked"
 
 
-async def test_a_result_in_an_answer_after_the_notice_is_kept_with_its_note(
-    delegating: Harness,
-) -> None:
-    """For one release, a closing answer that holds a valid result as JSON is the result,
-    its note saying it came in the answer, not through submit_result."""
+async def test_a_result_in_an_answers_prose_is_not_taken(delegating: Harness) -> None:
+    """PD-18: submit_result is the only way a child returns its result. Closing answers
+    that hold a valid result as JSON, in a fenced block after prose, are told to submit
+    it, three times; the fourth stands, and the parent gets the platform's result."""
+    fenced = f"Here it is.\n```json\n{REPORT}\n```"
     root = await delegating.run(
         "root",
-        [Reply(calls=[CHECK]), wait(), Reply("Confirmed.")],
-        delegated=[Reply("Verdict: confirmed"), Reply(f"Here it is.\n```json\n{REPORT}\n```")],
+        [Reply(calls=[CHECK]), wait(), Reply("Inconclusive.")],
+        delegated=[Reply("Verdict: confirmed"), *[Reply(fenced)] * NUDGES],
     )
     (delegation_id,) = started(root)
     outcome = delegation(delegating, delegation_id)
     assert outcome.result is not None
-    assert outcome.result["verdict"] == "confirmed"
-    assert outcome.result["platform_notes"] == [CAME["answer"]]
-    assert outcome.errors == ()
+    assert (outcome.result["verdict"], outcome.result["obstacle"]) == (
+        "inconclusive",
+        NO_SUBMISSION,
+    )
+    (child,) = children(delegating, root)
+    assert (summary_of(child)["nudges"], summary_of(child)["submissions"]) == (NUDGES, 0)
 
 
 async def test_a_blocked_check_names_its_obstacle_and_its_question(delegating: Harness) -> None:
@@ -881,7 +890,7 @@ async def test_a_parent_reads_and_cancels_its_check(delegating: Harness) -> None
                 about("cancel_delegation"),
                 Reply("Cancelled."),
             ],
-            delegated=[Reply(REPORT, before=blocked)],
+            delegated=[Reply("Still checking.", before=blocked)],
         )
     finally:
         free.set()
@@ -1031,7 +1040,7 @@ async def test_a_checks_brief_names_the_entrys_open_flags(delegating: Harness) -
         documents.close()
     check = call("delegate", check={"entry": "C-2", "revision": 1})
     root = await delegating.run(
-        "root", [Reply(calls=[check]), wait(), Reply("Done.")], delegated=[Reply(REPORT)]
+        "root", [Reply(calls=[check]), wait(), Reply("Done.")], delegated=[*submitted()]
     )
     first = delegating.gateway.children[0]
     brief = str(first[1]["content"])
@@ -1045,7 +1054,7 @@ async def test_same_alias_parent_child_pin_distinct_requested_effort(delegating:
     root = await delegating.run(
         "effort-parent",
         [Reply(calls=[CHECK]), wait(), Reply("Checked.")],
-        delegated=[Reply(REPORT)],
+        delegated=[*submitted()],
         options=["--reasoning-effort", "main=max", "--reasoning-effort", "delegated=low"],
     )
     (child,) = children(delegating, root)

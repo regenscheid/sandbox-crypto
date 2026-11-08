@@ -48,6 +48,7 @@ from sandbox_science.orchestrator.mcp_direct import (
     RequestCheck,
     WorkerRequestCheck,
 )
+from sandbox_science.orchestrator.notices import CONNECTOR_RESULT
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
@@ -342,7 +343,7 @@ async def test_an_allowed_read_tool_answers_over_an_event_stream(gateway: Gatewa
         # The middleware's listing check dropped the denied tool: the agent never sees it.
         assert set(connectors.tools) == {READ_TOOL, ESCALATED_TOOL}
         text, record = await connectors.call(READ_TOOL, {"query": "SNOVA"})
-        assert text == f"{READ_TOOL} ran"
+        assert text == f"{CONNECTOR_RESULT.text}{READ_TOOL} ran"
         assert record == {"connector": SERVER}
     finally:
         await direct.close()
@@ -427,7 +428,7 @@ async def test_a_held_call_waits_in_place_until_approved_as_through_the_proxy(
         text, record = await asyncio.wait_for(call, 10)
     finally:
         await direct.close()
-    assert text == f"{ESCALATED_TOOL} ran"
+    assert text == f"{CONNECTOR_RESULT.text}{ESCALATED_TOOL} ran"
     assert record["permission_request"] == request
     assert heard[-1] is None
     assert gateway.reached == [ESCALATED_TOOL]
@@ -641,7 +642,7 @@ async def test_a_binary_result_is_withheld_from_the_model_and_kept_by_control(
         text, record = await connectors.call(READ_TOOL, {"query": "SNOVA"})
     finally:
         await direct.close()
-    assert text == f"{READ_TOOL} ran\n[kept as artifact a-0]"
+    assert text == f"{CONNECTOR_RESULT.text}{READ_TOOL} ran\n[kept as artifact a-0]"
     assert PNG not in text
     assert record["binary_results"] == 1
     assert sink.kept == [(SERVER, READ_TOOL, Withheld(0, "image", "image/png", PNG))]
@@ -776,7 +777,7 @@ async def test_a_childs_held_call_tells_its_parent_and_a_withdrawal_denies_it(
         assert not root_call.done()
         gateway.approve(held["main-1"])
         text, _ = await asyncio.wait_for(root_call, 10)
-        assert text == f"{ESCALATED_TOOL} ran"
+        assert text == f"{CONNECTOR_RESULT.text}{ESCALATED_TOOL} ran"
     finally:
         await direct.close()
         projects.close()

@@ -26,7 +26,7 @@ from .loop_harness import Harness, Reply, call, own
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
-from .test_delegation import children, results, started, wait
+from .test_delegation import children, results, started, submitted, wait
 from .test_delegation import delegating as delegating
 from .test_delegation_tasks import DONE
 
@@ -273,7 +273,7 @@ async def test_root_correction_reaches_a_child_at_its_next_safe_point(
         routed={
             "Check the finite-field cases.": [
                 Reply(calls=[call("list_files", path=".")], before=held),
-                Reply(json.dumps(DONE)),
+                *submitted(DONE, "Done."),
             ]
         },
     )
@@ -314,7 +314,7 @@ async def test_child_reports_to_parent_while_working(
                 Reply(
                     calls=[call("message_parent", text="First case fails; I am checking another.")]
                 ),
-                Reply(json.dumps(DONE)),
+                *submitted(DONE, "Done."),
             ]
         },
     )

@@ -3,17 +3,16 @@
 spec, PD-17 to PD-19, PD-45, PD-46): the tool's schema is the run's brief's, a submission
 is checked inside the call and answered with every problem by its place or with what was
 recorded, and a run may submit as often as it needs. A closing answer with no result
-recorded is told so, three times; an answer that holds a valid result as JSON is taken
-for one release, as the lab's children wrote theirs, prose around it; without any, the
-parent gets the platform's result, never stronger than the records. A limit keeps a
-result, ``partial`` at the limit; the parent's closing names a returned task whose result
-is the platform's."""
+recorded is told so, three times, and JSON in it is never taken as a result; without a
+submission, the parent gets the platform's result, never stronger than the records. A
+limit keeps a result, ``partial`` at the limit, and a report there, where no tool runs,
+gives its result as JSON; the parent's closing names a returned task whose result is the
+platform's."""
 
 from __future__ import annotations
 
 import json
 import sqlite3
-import time
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
@@ -28,7 +27,6 @@ from sandbox_science.orchestrator.context.history import body
 from sandbox_science.orchestrator.delegation.hook import outcome, summarized
 from sandbox_science.orchestrator.delegation.outcome import (
     CAME,
-    LENIENT_CHARS,
     LIMIT_OBSTACLE,
     NO_SUBMISSION,
     NUDGES,
@@ -36,8 +34,8 @@ from sandbox_science.orchestrator.delegation.outcome import (
     Asked,
     Outcome,
     Target,
-    candidates,
     check_schema,
+    reported,
     result_of,
     task_schema,
 )
@@ -277,61 +275,46 @@ WHOLE = json.dumps(SUMMARY, indent=2)
 @pytest.mark.parametrize(
     "answer",
     [
+        # The result alone, as JSON.
+        WHOLE,
         # A sentence of prose, then the result in a fenced block.
         f"Everything is in place; the result follows.\n\n```json\n{WHOLE}\n```",
-        # Prose, the fenced result, then prose after it.
-        f"All checks pass.\n\n```json\n{WHOLE}\n```\n\nIn short:\n1. The table is saved.",
         # Prose, a fenced stub, more prose, then the whole result, unfenced.
         'Let me report.\n\n```json\n{"status": "complete"}\n```\n\nThe report:\n\n'
         + json.dumps(SUMMARY),
     ],
 )
-async def test_the_labs_first_answer_shapes_are_taken_through_the_fallback(answer: str) -> None:
-    """Lab round 2: every child wrote prose before its JSON, which the strict reader
-    refused; for one release the platform reads such an answer leniently and keeps its
-    result, its note saying it came in the answer, not through the tool."""
+async def test_json_in_a_closing_answer_is_not_taken_as_the_result(answer: str) -> None:
+    """PD-18: submit_result is the only way a result is returned from a run with tools.
+    A closing answer that holds a valid result as JSON, alone or among prose, is told to
+    submit it, and with no submission the parent gets the platform's result."""
     found = Outcome(task=True)
-    closing = await found.closing(run(), answer)
-    assert (closing.action, found.nudges) == ("accept", 0)
+    for n in range(1, NUDGES + 1):
+        closing = await found.closing(run(), answer)
+        assert (closing.action, found.nudges) == ("continue", n)
+        payload = cast(dict[str, Any], closing.notices[0].payload)
+        assert "answer_problems" not in payload
+        assert found.result is None
+    assert (await found.closing(run(), answer)).action == "accept"
     kept = found.kept()
-    assert kept is not None, found.errors
-    assert kept["summary"] == SUMMARY["summary"]
-    assert kept["platform_notes"] == [CAME["answer"]]
-    assert found.source == "answer"
+    assert kept is not None
+    assert (kept["status"], kept["obstacle"]) == ("blocked", NO_SUBMISSION)
+    assert found.source is None
 
 
-def test_the_lenient_reader_takes_the_last_fenced_block_then_the_last_object() -> None:
-    assert candidates('No JSON here, only {braces} and a {"list": [1') == ()
-    assert candidates('Done.\n```python\nprint({"a": 1})\n```') == ('{"a": 1}',)
-    assert candidates('```json\n{"a": 1}\n```\n```\n{"b": 2}\n```\nThen {"c": 3}.') == (
-        '{"b": 2}',
-        '{"c": 3}',
+def test_a_report_gives_its_json_alone_or_in_its_last_json_block() -> None:
+    """PD-19: a report at a limit, where no tool runs, writes the JSON it would have
+    submitted, as the report's notice asks: the answer alone, or its last fenced json
+    block. JSON elsewhere in its prose, or in a block of another language, is not read."""
+    assert reported('{"a": 1}') == '{"a": 1}'
+    assert reported('```json\n{"a": 1}\n```') == '{"a": 1}'
+    assert reported('Found X.\n```json\n{"a": 1}\n```\n```json\n{"b": 2}\n```\nEnd.') == (
+        '{"b": 2}'
     )
-    assert candidates('{"a": {"b": 1}} and {"c": 2}') == ('{"c": 2}',)
-
-
-def test_the_lenient_reader_looks_only_near_the_end_and_at_once() -> None:
-    """The orchestrator audit: reading every ``{`` of a 300 KB answer took 14 seconds,
-    on the event loop. The reader looks in the answer's last 64 KiB, at the last 64
-    places there that may begin an object, in a thread."""
-    pathological = '{"a":' * (1024 * 1024 // 5)
-    started = time.perf_counter()
-    assert candidates(pathological) == ()
-    assert time.perf_counter() - started < 0.1
-    # A result of the most objects a task's has, LaTeX in its summary and in the prose
-    # before it, at the end of a long answer, is still read.
-    result = {
-        "status": "complete",
-        "summary": r"Over $\mathbb{F}_{2^{8}}$ the map $x \mapsto \{x\}$ holds. " * 40,
-        "dismissals": [{"what": f"line {n}", "limit": "time"} for n in range(10)],
-        "obstructions": [{"claim": f"claim {n}", "evidence": "{none}"} for n in range(5)],
-        "deliverables": [{"id": f"d{n}", "status": "produced", "path": "t"} for n in range(12)],
-    }
-    whole = json.dumps(result)
-    prose = "Work notes. " * 200_000 + r"Each $\{0,1\}^{n}$ case {checked}." + "\n"
-    assert candidates(prose + whole + "\nThat is all.") == (whole,)
-    # One that ends before the answer's last 64 KiB is not.
-    assert candidates(whole + "\n" + "x" * LENIENT_CHARS) == ()
+    assert reported('Found X; my result: {"a": 1}') is None
+    assert reported('Done.\n```python\nprint({"a": 1})\n```') is None
+    assert reported('Done.\n```\n{"a": 1}\n```\nThat is all.') is None
+    assert reported(None) is None
 
 
 async def test_an_answer_with_no_result_is_told_three_times_then_the_platform_writes_one() -> None:
@@ -383,13 +366,6 @@ async def test_an_answer_with_no_result_is_told_three_times_then_the_platform_wr
         ],
     }
     assert found.nudges == NUDGES
-
-
-async def test_an_answers_json_that_does_not_check_is_named_in_the_notice() -> None:
-    found = await made()
-    closing = await found.closing(run(), "Here:\n" + json.dumps({**PARTIAL, "status": "done"}))
-    payload = cast(dict[str, Any], closing.notices[0].payload)
-    assert payload["answer_problems"][0]["at"] == "status"
 
 
 async def test_a_notice_the_run_has_no_turn_for_leaves_the_answer_standing() -> None:
@@ -458,7 +434,8 @@ async def test_a_report_gives_the_json_it_would_have_submitted() -> None:
     assert "recorded" in await submit(found, PARTIAL)
     complete = {**DONE, "deliverables": [D1, D2, {"id": "d3", "status": "produced", "answer": "Y"}]}
     closing = await found.closing(
-        run(halted="turn_limit"), "Out of turns; my result:\n" + json.dumps(complete)
+        run(halted="turn_limit"),
+        "Out of turns; my result:\n```json\n" + json.dumps(complete) + "\n```",
     )
     assert closing.action == "accept"
     kept = result_of(found, "turn_limit", False)

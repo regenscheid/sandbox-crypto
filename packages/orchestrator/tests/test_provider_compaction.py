@@ -450,7 +450,8 @@ async def test_a_delegated_run_compacts_as_its_root(delegating: Harness) -> None
         [Scripted(calls=[DELEGATE]), wait(), Scripted("Done.")],
         delegated=[
             Scripted("Working.", calls=[call("shell", script="echo 1")], compact=SUMMARY),
-            Scripted(json.dumps(CHILD_DONE)),
+            Scripted(calls=[call("submit_result", **CHILD_DONE)]),
+            Scripted("Done."),
         ],
         options=[*MESSAGES, "--context-ceiling", "100000"],
     )
@@ -462,9 +463,9 @@ async def test_a_delegated_run_compacts_as_its_root(delegating: Harness) -> None
         body for body in delegating.gateway.claude
         if str(body["system"][0]["text"]).startswith("You are a delegated")
     ]  # fmt: skip
-    assert len(bodies) == 2
+    assert len(bodies) == 3
     assert all("context_management" in body for body in bodies)
-    after = bodies[-1]["messages"]
+    after = bodies[1]["messages"]
     assert after[0]["content"][0]["type"] == "compaction"
     pinned = [b["text"] for b in after[1]["content"] if b.get("type") == "text"]
     assert any("Delegated work brief (unchanged)" in text for text in pinned)

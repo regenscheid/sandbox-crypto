@@ -514,11 +514,12 @@ async def test_deliverables_in_the_result_of_a_brief_without_any_are_invalid() -
     assert "the brief lists none" in found.errors[0]
 
 
-async def test_with_no_turn_left_an_answer_that_leaves_one_out_is_blocked() -> None:
-    """PD-45: an answer that leaves a deliverable out already holds the platform's block,
-    which stands when the loop has no turn to give for the notice."""
+async def test_with_no_turn_left_a_submission_that_leaves_one_out_is_blocked() -> None:
+    """PD-45: a submission that leaves a deliverable out already holds the platform's
+    block, which stands when the loop has no turn to give for the notice."""
     found = Outcome(task=True, deliverables=ASKED)
-    closing = await found.closing(run(), json.dumps(OMITTED))
+    assert "error" in await submit(found, OMITTED)
+    closing = await found.closing(run(), "Done.")
     assert closing.action == "continue"
     kept = found.kept()
     assert kept is not None
@@ -527,17 +528,17 @@ async def test_with_no_turn_left_an_answer_that_leaves_one_out_is_blocked() -> N
 
 async def test_an_omission_stands_blocked_until_a_result_checks() -> None:
     """PD-45: a result that leaves a deliverable out stands, blocked by the platform, after
-    an answer with no JSON, and a later answer or submission with other errors replaces
-    nothing; one that checks replaces it."""
+    an answer with no JSON, and a later submission with other errors replaces nothing;
+    one that checks replaces it."""
     found = Outcome(task=True, deliverables=ASKED)
     await found.closing(run(), "Not JSON.")
-    await found.closing(run(), json.dumps(OMITTED))
+    await submit(found, OMITTED)
+    await found.closing(run(), "Done.")
     kept = found.kept()
     assert kept is not None
     assert kept["status"] == "blocked"
     other = Outcome(task=True, deliverables=ASKED)
-    await other.closing(run(), json.dumps(OMITTED))
-    await other.closing(run(), json.dumps({**OMITTED, "deliverables": [{**GIVEN_UP[0]}, D1]}))
+    await submit(other, OMITTED)
     assert "error" in await submit(other, {**OMITTED, "deliverables": [GIVEN_UP[0], D1]})
     kept = other.kept()
     assert kept is not None
@@ -621,8 +622,8 @@ async def test_the_longest_task_result_with_the_platforms_mark_fits_its_record()
     assert len(json.dumps(longest, ensure_ascii=False).encode()) <= TASK_BYTES
     parse_task(json.dumps(longest))
     found = Outcome(task=True, deliverables=asked)
-    await found.closing(run(), json.dumps(longest))
-    await found.closing(run(), json.dumps(longest))
+    await submit(found, longest)
+    await found.closing(run(), "Done.")
     kept = found.kept()
     assert kept is not None
     assert kept["status"] == "blocked"

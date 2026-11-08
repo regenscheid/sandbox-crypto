@@ -22,7 +22,7 @@ from .loop_harness import PROJECT, SESSION, Harness, Reply, call
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
-from .test_delegation import CHECK, REPORT, RESULT, children, configure, decide, started, wait
+from .test_delegation import CHECK, RESULT, children, configure, decide, started, submitted, wait
 from .test_delegation import delegating as delegating
 
 
@@ -36,7 +36,7 @@ def recorded(harness: Harness) -> list[WorkRecord]:
 
 async def test_a_checks_outcome_is_work_on_the_entry_it_checked(delegating: Harness) -> None:
     root = await delegating.run(
-        "root", [Reply(calls=[CHECK]), wait(), Reply("Done.")], delegated=[Reply(REPORT)]
+        "root", [Reply(calls=[CHECK]), wait(), Reply("Done.")], delegated=[*submitted()]
     )
     (child,) = children(delegating, root)
     (delegation_id,) = started(root)

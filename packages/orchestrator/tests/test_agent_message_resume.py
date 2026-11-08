@@ -23,10 +23,10 @@ from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords, Ending
 from sandbox_science.orchestrator.harness import Harness, Role, RunRequest, Settings
 from sandbox_science.orchestrator.loop import Transcript
-from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
+from .scripted import SubmittingModel
 from .test_run_harness import Sink, main, stores
 from .test_tool_journal import RUN
 from .test_tree_recovery import RecoveryWorker, drive
@@ -123,12 +123,7 @@ async def test_root_resume_delivers_both_directions_before_next_model_call(tmp_p
         assert mailbox.pending("p", "s", None) == [messages[3]]
         assert not mailbox.target_ended("p", "s", ids[CHILD])
         control.close()  # durable queues and lineage survive a service restart
-        model = ScriptedModel(
-            [
-                ModelTurn(json.dumps({"status": "complete", "summary": "Recovered"}))
-                for _ in range(8)
-            ]
-        )
+        model = SubmittingModel({"status": "complete", "summary": "Recovered"})
         harness = Harness(
             cast(WorkerClient, RecoveryWorker()),
             main("Recovered root"),

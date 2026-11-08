@@ -75,6 +75,7 @@ from .test_delegation import (
     name,
     results,
     started,
+    submitted,
     wait,
 )
 from .test_delegation import delegating as delegating
@@ -103,8 +104,8 @@ async def test_a_task_delegates_once_more_and_its_child_hands_back_to_it(
         "root",
         [Reply(calls=[LEAD]), wait(), Reply("Done.")],
         routed={
-            "Lead the work.": [Reply(calls=[PART]), wait(), Reply(json.dumps(DONE))],
-            "Do a part.": [Reply(calls=[WRITE]), Reply(json.dumps(DONE))],
+            "Lead the work.": [Reply(calls=[PART]), wait(), *submitted(DONE, "Done.")],
+            "Do a part.": [Reply(calls=[WRITE]), *submitted(DONE, "Done.")],
         },
     )
     assert answer(root, 0)["delegate"] is True
@@ -112,7 +113,7 @@ async def test_a_task_delegates_once_more_and_its_child_hands_back_to_it(
     (grandchild,) = children(delegating, child)
     assert (grandchild.role, grandchild.parent) == ("delegated", name(child))
     # The root held the session for its grandchild: its write was made.
-    (wrote,) = results(grandchild)
+    wrote, _ = results(grandchild)
     assert "error" not in json.loads(wrote)
     # The root's wait returned its child alone; the child's, its own child.
     (waited,) = answer(root, 1)["delegations"]
@@ -157,9 +158,9 @@ async def test_the_second_level_delegates_nothing_and_no_level_delegates_checks(
             "Lead the work.": [
                 Reply(calls=[CHECK, deeper, tracked, PART]),
                 wait(),
-                Reply(json.dumps(DONE)),
+                *submitted(DONE, "Done."),
             ],
-            "Do a part.": [Reply(calls=[PART]), Reply(json.dumps(DONE))],
+            "Do a part.": [Reply(calls=[PART]), *submitted(DONE, "Done.")],
         },
     )
     (child,) = children(delegating, root)
@@ -197,8 +198,8 @@ async def test_the_cap_counts_the_whole_tree(delegating: Harness) -> None:
         "root",
         [Reply(calls=[LEAD]), wait(), Reply("Done.")],
         routed={
-            "Lead the work.": [Reply(calls=[PART, PART]), wait(), Reply(json.dumps(DONE))],
-            "Do a part.": [Reply(json.dumps(DONE))],
+            "Lead the work.": [Reply(calls=[PART, PART]), wait(), *submitted(DONE, "Done.")],
+            "Do a part.": [*submitted(DONE, "Done.")],
         },
     )
     (child,) = children(delegating, root)
@@ -229,7 +230,7 @@ async def test_a_cancel_goes_down_through_every_level(delegating: Harness) -> No
             ],
             routed={
                 "Lead the work.": [Reply(calls=[PART]), wait()],
-                "Do a part.": [Reply(json.dumps(DONE), before=held)],
+                "Do a part.": [Reply("Working on my part.", before=held)],
             },
         )
     finally:
@@ -538,7 +539,7 @@ def _working() -> tuple[asyncio.Event, asyncio.Event, Reply]:
         working.set()
         await free.wait()
 
-    return working, free, Reply(json.dumps(DONE), before=held)
+    return working, free, Reply(calls=[call("submit_result", **DONE)], before=held)
 
 
 def _below(harness: Harness, parent: str) -> list[RunRecord]:

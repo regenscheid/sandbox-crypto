@@ -23,7 +23,7 @@ from .loop_harness import PROJECT, SESSION, Harness, Reply
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
-from .test_delegation import CHECK, RESULT, children, wait
+from .test_delegation import CHECK, RESULT, children, submitted, wait
 from .test_delegation import delegating as delegating
 from .test_delegation_tasks import DONE, TASK
 from .test_history_folds import CONTEXT
@@ -140,7 +140,7 @@ async def test_scoped_folds_survive_reopen_without_other_agents_context(
 
 @pytest.mark.parametrize(("task", "result"), [(TASK, DONE), (CHECK, RESULT)])
 async def test_production_harness_folds_each_delegated_role_using_its_model_limit(
-    delegating: Harness, task: tuple[str, dict[str, Any]], result: object
+    delegating: Harness, task: tuple[str, dict[str, Any]], result: dict[str, Any]
 ) -> None:
     delegating.gateway.limits = {
         "main": {"max_input_tokens": 600_000},
@@ -149,7 +149,7 @@ async def test_production_harness_folds_each_delegated_role_using_its_model_limi
     root = await delegating.run(
         "root",
         [Reply(calls=[task]), wait(), Reply("Done.")],
-        delegated=[Reply(json.dumps(result))],
+        delegated=[*submitted(result, "Done.")],
         options=["--delegated-model", "delegated", "--fold-chunk", "10000"],
     )
     (child,) = children(delegating, root)
@@ -182,7 +182,7 @@ async def test_production_child_narrates_on_its_own_alias_and_grant(delegating: 
     root = await delegating.run(
         "root",
         [Reply(calls=[TASK]), wait(), Reply("Done.")],
-        delegated=[*notes, Reply(json.dumps(DONE))],
+        delegated=[*notes, *submitted(DONE, "Done.")],
         task="PARENT PRIVATE REASONING",
         options=[
             *ROOMY_ENRICHED,

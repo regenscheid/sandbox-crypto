@@ -20,7 +20,7 @@ from .loop_harness import AREA, SESSION, Harness, Reply, call
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
-from .test_delegation import children, results, started, wait
+from .test_delegation import children, results, started, submitted, wait
 from .test_delegation import delegating as delegating
 from .test_delegation_tasks import DONE, TASK
 
@@ -74,7 +74,7 @@ async def test_a_child_writes_only_in_its_write_area_and_shared(delegating: Harn
                     call("write_file", path="shared/out.md", content="1\n", create_only=True),
                 ]
             ),
-            Reply(json.dumps({**DONE, "summary": "Wrote my notes."})),
+            *submitted({**DONE, "summary": "Wrote my notes."}, "Done."),
         ],
     )
     (delegation_id,) = started(root)
@@ -145,7 +145,7 @@ async def test_a_childs_code_writes_only_in_its_write_area(delegating: Harness) 
         delegated=[
             Reply(calls=[call("shell", script=CHILD_SHELL)]),
             Reply(calls=[call("python", code=CHILD_CELL)]),
-            Reply(json.dumps({**DONE, "summary": "Wrote my notes."})),
+            *submitted({**DONE, "summary": "Wrote my notes."}, "Done."),
         ],
     )
     (delegation_id,) = started(root)

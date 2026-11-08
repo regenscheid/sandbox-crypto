@@ -41,7 +41,7 @@ from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
 from .test_confinement_drain import prepared_attempt
-from .test_delegation import configure, wait
+from .test_delegation import configure, submitted, wait
 from .test_delegation_tasks import DONE
 from .test_run_service import records, serving
 from .test_tool_journal import projects as projects
@@ -140,13 +140,14 @@ async def test_a_confined_child_at_its_first_soft_turn_cap_goes_on_and_answers(
     harness: Harness, tmp_path: Path
 ) -> None:
     """At its soft cap of two turns the child checks in, the platform gives it one step,
-    as its first check-in at a soft cap, and it takes its third turn and answers, rather
-    than ending at two."""
+    as its first check-in at a soft cap, and it takes its third turn, submits and answers,
+    rather than ending at two."""
     configure(harness, depth=1, task_turns=2)
-    _, child, asked = await confined_tree(harness, tmp_path, [step(1), step(2), Reply(ANSWER)])
+    script = [step(1), step(2), *submitted(DONE, "Done.")]
+    _, child, asked = await confined_tree(harness, tmp_path, script)
     assert child.stopped == "answered"
-    assert child.final_text == ANSWER
-    assert [t["tool"] for t in child.tools] == ["shell", "shell"]
+    assert child.final_text == "Done."
+    assert [t["tool"] for t in child.tools] == ["shell", "shell", "submit_result"]
     (request,) = check_ins(harness)
     assert (request.resource, request.used, request.total) == ("turns", 2, 2)
     assert request.decision is not None
@@ -162,7 +163,7 @@ async def test_a_confined_childs_turn_ceiling_still_stops_it(
     round crosses the host, which admits it, and the JSON the report gives is its result,
     partial at the limit (PD-19)."""
     configure(harness, depth=1, task_turns=2, turn_ceiling=3)
-    report = "Out of turns. My result:\n" + ANSWER
+    report = "Out of turns. My result:\n```json\n" + ANSWER + "\n```"
     _, child, asked = await confined_tree(
         harness, tmp_path, [step(1), step(2), step(3), Reply(report)]
     )

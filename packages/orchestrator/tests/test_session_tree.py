@@ -25,7 +25,7 @@ from .loop_harness import PROJECT, SESSION, Harness, Reply
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
-from .test_delegation import CHECK, REPORT, wait
+from .test_delegation import CHECK, submitted, wait
 from .test_delegation import delegating as delegating
 from .test_run_tree import record
 
@@ -147,7 +147,7 @@ async def test_a_delegated_check_is_in_its_sessions_tree(delegating: Harness) ->
     """Through a run: the root and its child, both ended, and the delegation with the
     brief the platform wrote, the limits it granted and its outcome."""
     await delegating.run(
-        "root", [Reply(calls=[CHECK]), wait(), Reply("Done.")], delegated=[Reply(REPORT)]
+        "root", [Reply(calls=[CHECK]), wait(), Reply("Done.")], delegated=[*submitted()]
     )
     store = ProjectStore(delegating.state)
     try:

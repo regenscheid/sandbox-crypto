@@ -22,7 +22,7 @@ from .loop_harness import PROJECT, SESSION, Harness, Reply
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
-from .test_delegation import CHECK, REPORT, results, wait
+from .test_delegation import CHECK, results, submitted, wait
 from .test_delegation import delegating as delegating
 from .test_delegation_lifecycle import BRIEF
 from .test_run_service import ended, records, serving
@@ -40,7 +40,7 @@ async def test_with_nothing_set_delegate_wait_and_halt_all_work(delegating: Harn
     async def release() -> None:
         free.set()
 
-    delegating.gateway.delegated = [Reply(REPORT, before=held) for _ in range(4)]
+    delegating.gateway.delegated = [reply for _ in range(4) for reply in submitted(before=held)]
     RunState(ProjectStore(delegating.state).control).post(
         PROJECT, SESSION, "m-1", "Check C-1 four times.", author="user"
     )
@@ -63,7 +63,7 @@ async def test_a_check_gets_its_configured_turns_even_when_its_parent_has_fewer_
     root = await delegating.run(
         "root",
         [Reply(calls=[CHECK]), wait(), Reply("Done.")],
-        delegated=[Reply(REPORT)],
+        delegated=[*submitted()],
         max_turns=3,
     )
     started = json.loads(results(root)[0])

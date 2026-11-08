@@ -46,6 +46,7 @@ from .loop_harness import harness as harness
 from .loop_harness import worker as worker
 from .test_delegation import (
     CHECK,
+    CLOSED,
     REPORT,
     RESULT,
     awaiting_children,
@@ -54,6 +55,7 @@ from .test_delegation import (
     name,
     results,
     started,
+    submitted,
     wait,
 )
 from .test_delegation import delegating as delegating
@@ -83,7 +85,7 @@ async def test_child_persistence_failure_never_advertises_a_successful_result(
     root = await delegating.run(
         "root",
         [Reply(calls=[CHECK]), wait(), Reply("The child's persistence failed.")],
-        delegated=[Reply(REPORT)],
+        delegated=submitted(),
         status=3,
     )
     assert root.stopped == "unfinished_children"
@@ -91,7 +93,7 @@ async def test_child_persistence_failure_never_advertises_a_successful_result(
     outcome = delegation(delegating, delegation_id)
     assert (outcome.ended, outcome.stopped) == ("failed", "persistence_error")
     assert outcome.result is None
-    assert outcome.report == REPORT
+    assert outcome.report == CLOSED
     assert "could not be saved" in outcome.errors[0]
     assert len(children(delegating, root)) == (0 if failure == "save" else 1)
 
@@ -128,13 +130,13 @@ FENCED = {
 
 
 def blocking() -> tuple[asyncio.Event, Reply]:
-    """An event, and a child's answer that waits for it while the model thinks."""
+    """An event, and a child's submission that waits for it while the model thinks."""
     free = asyncio.Event()
 
     async def blocked() -> None:
         await free.wait()
 
-    return free, Reply(REPORT, before=blocked)
+    return free, Reply(calls=[call("submit_result", **RESULT)], before=blocked)
 
 
 def depth(harness: Harness, value: int) -> None:
@@ -162,11 +164,11 @@ async def test_a_check_keeps_the_plan_fence(delegating: Harness) -> None:
         delegated=[
             Reply(calls=[call("write_file", path=f"{AREA}/check.txt", content="x")], before=plan),
             Reply(calls=[call("publish", path=f"{AREA}/check.txt")]),
-            Reply(json.dumps(FENCED)),
+            *submitted(FENCED, "Done."),
         ],
     )
     (child,) = children(delegating, root)
-    written, refused = results(child)
+    written, refused, _ = results(child)
     assert "error" not in json.loads(written), written
     error = json.loads(refused)["error"]
     assert error["kind"] == "policy_denied"
@@ -245,7 +247,7 @@ async def test_the_parents_kernel_sweep_leaves_a_running_childs_kernels(
         delegated=[
             Reply(calls=[call("python", code="x = 41")]),
             Reply(calls=[call("python", code="print(x + 1)")], before=child_computed),
-            Reply(REPORT),
+            *submitted(),
         ],
     )
     (child,) = children(delegating, root)
@@ -351,13 +353,13 @@ async def test_a_check_changes_no_entry_document_or_memory(delegating: Harness, 
     root = await delegating.run(
         "root",
         [Reply(calls=[CHECK]), wait(), Reply("Done.")],
-        delegated=[Reply(calls=[call(tool, **WITHHELD[tool])]), Reply(REPORT)],
+        delegated=[Reply(calls=[call(tool, **WITHHELD[tool])]), *submitted()],
     )
     (child,) = children(delegating, root)
     offered = {t["function"]["name"] for t in delegating.gateway.tools["delegated"][0]}
     assert tool not in offered
     assert {"ledger_read", "document_read", "memory_list", "shell", "write_file"} <= offered
-    (refused,) = results(child)
+    refused, _ = results(child)
     error = json.loads(refused)["error"]
     assert (error["kind"], error["message"].split(":")[0]) == (
         "policy_denied",
@@ -482,7 +484,7 @@ def kept_children(harness: Harness, parent: str) -> list[Any]:
 async def test_handbacks_are_summaries_and_waits_return_whole_outcomes_in_pages(
     delegating: Harness,
 ) -> None:
-    long = json.dumps({**RESULT, "summary": "x" * 7_900})
+    long = {**RESULT, "summary": "x" * 7_900}
     go = asyncio.Event()
 
     async def held() -> None:
@@ -497,6 +499,7 @@ async def test_handbacks_are_summaries_and_waits_return_whole_outcomes_in_pages(
         finally:
             store.close()
 
+    submits = Reply(calls=[call("submit_result", **long)], before=held)
     root = await delegating.run(
         "root",
         [
@@ -505,7 +508,7 @@ async def test_handbacks_are_summaries_and_waits_return_whole_outcomes_in_pages(
             wait(),
             Reply("Three checks confirmed."),
         ],
-        delegated=[Reply(long, before=held) for _ in range(3)],
+        delegated=[submits] * 3 + [Reply(CLOSED)] * 3,
     )
     attached = json.loads(results(root)[3])["delegation_notices"]
     assert len(attached) == 3

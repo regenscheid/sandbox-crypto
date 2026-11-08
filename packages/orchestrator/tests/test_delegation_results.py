@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 
 from sandbox_science.orchestrator.context.agent import AgentContext
-from sandbox_science.orchestrator.delegation.outcome import Outcome, parse_task
+from sandbox_science.orchestrator.delegation.outcome import SUBMIT, Outcome, parse_task
 from sandbox_science.orchestrator.documents import USER
 from sandbox_science.orchestrator.file_settings import DEFAULT_IGNORE, ProjectFiles
 from sandbox_science.orchestrator.ledger import Ledger
@@ -22,7 +22,7 @@ from .loop_harness import AREA, PROJECT, Harness, Reply, call
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
-from .test_delegation import children, delegation, results, started, wait
+from .test_delegation import children, delegation, results, started, submitted, wait
 from .test_delegation import delegating as delegating
 from .test_delegation_tasks import DONE
 from .test_delegation_tracks import an_issue, worked
@@ -50,7 +50,7 @@ async def test_a_tasks_result_files_are_pinned_in_its_outcome(delegating: Harnes
     root = await delegating.run(
         "root",
         [Reply(calls=[TASK]), wait(), Reply("Done.")],
-        delegated=[Reply(calls=[WRITE]), Reply(json.dumps(WRITTEN))],
+        delegated=[Reply(calls=[WRITE]), *submitted(WRITTEN, "Done.")],
     )
     (delegation_id,) = started(root)
     found = delegation(delegating, delegation_id)
@@ -72,13 +72,17 @@ async def test_a_tasks_result_files_are_pinned_in_its_outcome(delegating: Harnes
 
 
 async def test_a_file_the_child_did_not_make_is_refused_once(delegating: Harness) -> None:
-    """Its first answer names a file its calls did not write; the correction lists only
-    the file they wrote."""
+    """Its first submission names a file its calls did not write; the answer to it lists
+    only the file they wrote."""
     wrong = {**DONE, "result_files": [f"{AREA}/table.txt", "missing.txt"]}
     root = await delegating.run(
         "root",
         [Reply(calls=[TASK]), wait(), Reply("Done.")],
-        delegated=[Reply(calls=[WRITE]), Reply(json.dumps(wrong)), Reply(json.dumps(WRITTEN))],
+        delegated=[
+            Reply(calls=[WRITE]),
+            Reply(calls=[call(SUBMIT, **wrong)]),
+            *submitted(WRITTEN, "Done."),
+        ],
     )
     (child,) = children(delegating, root)
     outcome = child.summaries["outcome"]
@@ -104,8 +108,8 @@ async def test_a_deleted_file_is_no_result() -> None:
             {**entry, "revision": 1 + deleted, "deleted": deleted, "content_retained": not deleted}
         ]
         await outcome.observe_tool(run, {"recorded_files": {"files": files}})
-    closing = await outcome.closing(run, json.dumps(RESULT))
-    assert closing.action == "continue"
+    text, _ = await outcome.submit(json.dumps(RESULT))
+    assert "error" in json.loads(text)
     assert outcome.result is None
     assert "wrote or published no file table.txt" in outcome.errors[0]
 
@@ -127,7 +131,7 @@ async def test_a_published_file_is_a_result_in_a_results_only_project(
         delegated=[
             Reply(calls=[WRITE]),
             Reply(calls=[call("publish", path=f"{AREA}/table.txt")]),
-            Reply(json.dumps(WRITTEN)),
+            *submitted(WRITTEN, "Done."),
         ],
     )
     (delegation_id,) = started(root)
@@ -144,7 +148,7 @@ async def test_an_issues_outcome_cites_the_result_files(delegating: Harness) -> 
     root = await delegating.run(
         "root",
         [Reply(calls=[task]), wait(), Reply("Done.")],
-        delegated=[Reply(calls=[WRITE]), Reply(json.dumps(WRITTEN))],
+        delegated=[Reply(calls=[WRITE]), *submitted(WRITTEN, "Done.")],
     )
     (delegation_id,) = started(root)
     (outcome,) = worked(delegating, issue)

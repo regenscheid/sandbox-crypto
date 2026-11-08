@@ -37,6 +37,7 @@ from sandbox_science.orchestrator.context.history.reads import (
 )
 from sandbox_science.orchestrator.hooks import Appended
 from sandbox_science.orchestrator.model import ToolCall
+from sandbox_science.orchestrator.notices import CONNECTOR_RESULT
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome
 from sandbox_science.orchestrator.worker_client import WorkerClient
@@ -149,9 +150,11 @@ def test_each_descriptor_places_its_tools_reads(
     tool: str, arguments: dict[str, Any], text: str, expected: list[tuple[str, str, str]]
 ) -> None:
     """CM-12a: each reading tool's result, as its server writes it, says which source it
-    read and how much; a link to a file, a search or a failed fetch reads none."""
+    read and how much; a link to a file, a search or a failed fetch reads none. The
+    result as the model got it, after the platform's framing line, reads the same."""
     found = placed(tool, arguments, text)
     assert [(r.kind, r.source, r.extent) for r in found] == expected
+    assert placed(tool, arguments, CONNECTOR_RESULT.text + text) == found
 
 
 def test_a_tool_without_a_descriptor_is_unknown_and_a_client_name_finds_its_own() -> None:
