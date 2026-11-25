@@ -1454,14 +1454,25 @@ class Harness:
         if self.stores is None:
             raise ValueError("a delegated run's result needs the stores")
         request = admitted.request
+        context = admitted.context
         outcome = Outcome(
             request.target,
             task=request.target is None,
             deliverables=await threaded(
-                _deliverables, self.stores.documents, admitted.context, request.delegation
+                _deliverables, self.stores.documents, context, request.delegation
             ),
             entry_made=functools.partial(
-                _entry_made, Ledger(self.stores.documents), admitted.context.project_id
+                _entry_made, Ledger(self.stores.documents), context.project_id
+            ),
+            # Its result may name a file relative to its research work's write area, as
+            # its processes' working directory does (DA-19, DA-20).
+            write_area=None
+            if request.delegation is None
+            else await threaded(
+                DelegationRecords(self.stores.projects.control, clock=self.clock).write_area,
+                context.project_id,
+                context.session_id,
+                request.delegation,
             ),
         )
         if request.opening is not None and request.delegation is not None:
