@@ -95,6 +95,9 @@ MANAGER_WORKER_TOKEN = "manager-worker"  # noqa: S105 - a token's key, not a tok
 manager's bearer token for control, which control sees on every manager request."""
 GATEWAY_VALUES = "gateway/openshell-values-middleware.yaml"
 """The OpenShell chart's values that register the middleware (``_gateway_values``)."""
+OPENSHELL_CHART = "oci://quay.io/ai-openshell/charts/openshell"
+"""The OpenShell chart, published as ``openshell`` there since 0.1.10 (``helm-chart`` at
+``oci://ghcr.io/nvidia/openshell`` before); its version is ``OPENSHELL_VERSION``."""
 INSPECT_DEFAULTS: dict[str, Any] = {
     "enabled": True,
     "argument_bytes": 16 * 1024,
@@ -976,7 +979,7 @@ token, generate a new directory, replace every Secret and recreate the Pods.
 {fence}sh
 kubectl -n {gateway_ns} create configmap {name}-middleware-ca \\
   --from-file=ca.crt=gateway/middleware-ca.crt
-helm upgrade openshell oci://ghcr.io/nvidia/openshell/helm-chart \\
+helm upgrade openshell {OPENSHELL_CHART} \\
   --version {OPENSHELL_VERSION} -n {gateway_ns} -f openshell-values.yaml -f {GATEWAY_VALUES}
 {fence}
 
