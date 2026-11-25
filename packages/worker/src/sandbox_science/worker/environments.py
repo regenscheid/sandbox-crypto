@@ -162,7 +162,7 @@ REFUSALS: Final = frozenset(
     }
 )
 """The statuses with which the gateway refuses a request it validated: InvalidArgument,
-FailedPrecondition, PermissionDenied and Unauthenticated. OpenShell 0.1.7 checks a
+FailedPrecondition, PermissionDenied and Unauthenticated. OpenShell 0.1.10 checks a
 sandbox's spec, driver configuration and admission before it records the sandbox."""
 _SANDBOX_COMMAND: Final = ("sleep", "infinity")
 _POLICY_TIMEOUT: Final = 120
@@ -195,7 +195,7 @@ class ScheduleTimeoutError(WorkerError):
 
 
 _PROVISION_TIMEOUT: Final = "sandbox provisioning timed out"
-"""How OpenShell 0.1.7's ``sandbox create`` reports its own provisioning deadline."""
+"""How OpenShell 0.1.10's ``sandbox create`` reports its own provisioning deadline."""
 
 
 def _not_placed(timeout: float) -> ScheduleTimeoutError:
@@ -232,7 +232,7 @@ def printable(text: str, limit: int = 255) -> str:
 def new_sandbox_name() -> str:
     """A fresh OpenShell sandbox name: the prefix and 64 random bits, in 19 characters.
 
-    OpenShell v0.1.7 takes at most 19 characters, a DNS label without the ``--``
+    OpenShell v0.1.10 takes at most 19 characters, a DNS label without the ``--``
     (``OPENSHELL_SEPARATOR``) it uses between the segments of routable names, so the
     sandbox is what follows the last ``--`` of its Kubernetes objects' names (the
     operator's cleanup reads them so). A name derived from the environment ID left
@@ -2335,7 +2335,7 @@ class Environments:
             raise _not_placed(timeout) from exc
 
     async def _create_within(self, args: Sequence[str], timeout: float, deadline: float) -> None:
-        """Run ``sandbox create`` within a schedule timeout. OpenShell 0.1.7's command
+        """Run ``sandbox create`` within a schedule timeout. OpenShell 0.1.10's command
         waits for the sandbox to be provisioned, even with ``--detach``, until its own
         idle deadline (``OPENSHELL_PROVISION_TIMEOUT``, 300 s by default, renewed by
         each progress event): the command is given the schedule timeout as that deadline

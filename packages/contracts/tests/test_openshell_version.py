@@ -19,7 +19,7 @@ from sandbox_science.contracts.openshell_version import (
 
 ROOT = Path(__file__).resolve().parents[3]
 DEFINITION = "packages/contracts/src/sandbox_science/contracts/openshell_version.py"
-STRAY = re.compile(r"(?<![\w.])0\.1\.[357](?![0-9])")
+STRAY = re.compile(r"(?<![\w.])0\.1\.(?:[357]|10)(?![0-9])")
 """The releases the code has known: a literal of any, in code, is a pin that the constant
 does not move."""
 ALLOWED = {
@@ -149,7 +149,9 @@ def test_the_scan_catches_a_literal() -> None:
     docs = '"""v0.1.5 docs"""\ndef f():\n    """0.1.3"""\nX = 1\n"""about 0.1.3"""\n'
     assert string_literals(docs) == []
     assert STRAY.search("openshell-0.1.5/bin")
+    assert STRAY.search("openshell-0.1.10/bin")
     assert not STRAY.search("0.1.50")
+    assert not STRAY.search("0.1.100")
     assert not STRAY.search("10.1.5")
 
 
@@ -166,7 +168,8 @@ def test_the_containerfile_and_the_example_config_agree() -> None:
 
 DOC_STATEMENT = re.compile(
     r"openshell-(\d+\.\d+\.\d+)/bin"  # the install directory
-    r"|OpenShell/v(\d+\.\d+\.\d+)/install\.sh|OPENSHELL_VERSION=v(\d+\.\d+\.\d+)"  # the installer
+    r"|(?i:openshell)/v(\d+\.\d+\.\d+)/install\.sh"  # the installer
+    r"|OPENSHELL_VERSION=v(\d+\.\d+\.\d+)"
     r"|(?:assumes|needs|requires|pins) (?:OpenShell |v)(\d+\.\d+\.\d+)"  # a requirement
     r"|the OpenShell (\d+\.\d+\.\d+) CLI"
 )
@@ -208,5 +211,6 @@ def test_the_doc_scan_reads_what_a_page_says() -> None:
     assert release("unpacked at `~/.local/opt/openshell-9.9.9/bin`") == "9.9.9"
     assert release("The helper requires v9.9.9 and will not") == "9.9.9"
     assert release("curl .../OpenShell/v9.9.9/install.sh | OPENSHELL_VERSION=v9.9.9 sh") == "9.9.9"
+    assert release("curl .../ai-openshell/openshell/v9.9.9/install.sh") == "9.9.9"
     assert release("helm 3, the OpenShell 9.9.9 CLI, and uv") == "9.9.9"
     assert release("Measured on babbage (OpenShell 0.1.3, VM driver)") is None

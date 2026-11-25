@@ -46,9 +46,11 @@ def pinned_release() -> str:
 
 
 OPEN_SHELL_VERSION = pinned_release()
-INSTALLER = f"https://raw.githubusercontent.com/NVIDIA/OpenShell/v{OPEN_SHELL_VERSION}/install.sh"
+INSTALLER = (
+    f"https://raw.githubusercontent.com/ai-openshell/openshell/v{OPEN_SHELL_VERSION}/install.sh"
+)
 # The digest of that release's installer: a new release needs its own.
-INSTALLER_SHA256 = "04c1a437d4a4fc11930d75a336fc4f52bf0c95251e8469c306e407e203769ae7"
+INSTALLER_SHA256 = "2cd0e9ac0e53c24abb16d88ae2e4fd5d522b9c8507eb1f2f3212775f804a7fc1"
 DEFAULT_IMAGE = "ghcr.io/regenscheid/sandbox-crypto/crypto-base:6bb73871"
 # OpenShell's VM driver sends its one registry credential to every pull, so the
 # bootstrap image is NVIDIA's index mirrored beside crypto-base with its digest kept.

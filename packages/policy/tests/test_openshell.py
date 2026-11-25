@@ -74,7 +74,7 @@ RANGES = admission_ranges(EXAMPLE, OPEN)
 """The public ranges less the floor's public metadata address, as compiled for EXAMPLE."""
 HEADER = "apiVersion: sandbox-science/v0alpha1\nkind: ProjectPolicy\nmetadata: {name: test}\n"
 
-# Fields of OpenShell's authored schema (v0.1.7) that the compiler may emit. OpenShell
+# Fields of OpenShell's authored schema (v0.1.10) that the compiler may emit. OpenShell
 # rejects unknown fields, so a typo here would break policy loads.
 ALLOWED_KEYS = {
     "version",
@@ -1469,7 +1469,7 @@ def test_credentials_are_not_bound_where_the_library_forbids() -> None:
     )
 
 
-# OpenShell v0.1.7 refuses a policy whose endpoints are ambiguous
+# OpenShell v0.1.10 refuses a policy whose endpoints are ambiguous
 # (openshell-policy/src/ambiguity.rs): endpoints that overlap on host and port
 # must agree on their connection settings, and where neither has the more
 # specific path, on how requests are handled, including the credential binding.
@@ -2304,13 +2304,19 @@ def test_scoped_state_service_has_only_its_declared_endpoint() -> None:
         "sandbox-science-worker-api",
         "sandbox-science-state-service",
     ]
-    endpoint = compiled.network_policies["sandbox-science-state-service"].endpoints[0]
-    assert (endpoint.host, endpoint.ports, endpoint.protocol, endpoint.access) == (
-        "state.sandbox-science.internal",
-        (8202,),
-        "rest",
-        "full",
+    # Control's channel is a WebSocket, which OpenShell (0.1.8 and later) refuses on a
+    # rest endpoint: the one endpoint relays that host and port, for the harness only.
+    (endpoint,) = compiled.network_policies["sandbox-science-state-service"].endpoints
+    assert endpoint == Endpoint(
+        host="state.sandbox-science.internal", ports=(8202,), protocol="tcp"
     )
+    assert compiled.network_policies["sandbox-science-state-service"].binaries == (
+        Binary(path="/opt/sandbox-science/bin/python*"),
+    )
+    document = yaml.safe_load(compiled.to_yaml())
+    assert document["network_policies"]["sandbox-science-state-service"]["endpoints"] == [
+        {"host": "state.sandbox-science.internal", "ports": [8202], "protocol": "tcp"}
+    ]
     with pytest.raises(ValidationError):
         OrchestratorTarget.model_validate(
             {
