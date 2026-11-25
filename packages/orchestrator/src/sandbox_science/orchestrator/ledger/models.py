@@ -232,9 +232,9 @@ class QuoteInput(Contract):
     first_line: Annotated[int, Field(ge=1, le=100000, strict=True)] | None = None
     last_line: Annotated[int, Field(ge=1, le=100000, strict=True)] | None = None
     dated: Annotated[str, Field(min_length=1, max_length=128)] | None = None
-    """For an ePrint, the date stamp the e-print tools gave the paper, such as
-    ``2015-06-30T18:41:29Z; 2015-06-30T20:25:17Z``: the paper ID and this stamp are
-    what names the version, as the server reports it."""
+    """For an ePrint, the date stamp the e-print tools gave the paper, the whole value of
+    ``get_eprint``'s Date line, such as ``2017-06-29 (posted; revised 2020-10-14)``: the
+    paper ID and this stamp are what names the version, as the server reports it."""
     revision: Annotated[str, Field(pattern=r"^[0-9a-f]{12,64}$")] | None = None
     """For a library text, the revision its result named on its second line, such as
     ``3fa2c1d0e9b8``: the hexadecimal start of the PDF's SHA-256 the text was made
@@ -274,7 +274,8 @@ class QuoteInput(Contract):
         elif self.dated is None:
             raise ValueError(
                 "an ePrint quote names the date stamp the e-print tools gave the paper, "
-                'in dated, such as "dated": "2015-06-30T18:41:29Z"'
+                "in dated: the whole value of get_eprint's Date line, such as "
+                '"dated": "2017-06-29 (posted; revised 2020-10-14)"'
             )
         if (self.first_line is None) != (self.last_line is None) or (
             self.first_line is not None
