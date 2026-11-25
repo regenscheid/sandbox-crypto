@@ -89,7 +89,7 @@ def test_a_draft_is_written_for_review(tmp_path: Path, fake: FakeModel) -> None:
     loaded = load_classification(out.parent, "crypto-research-mcp")
     assert loaded.tools["web-fetch-mcp_web_fetch"].effect.value == "read"
     assert loaded.tools["web-fetch-mcp_web_capture"].effect.value == "unclassified"
-    assert len(loaded.pins) == 6
+    assert len(loaded.pins) == 7
 
 
 def test_a_failed_model_call_writes_nothing(
