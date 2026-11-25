@@ -8,8 +8,9 @@
 # (mode: headers; [mcp_direct.servers.NAME] credentials), and OpenShell substitutes
 # each value as the request leaves toward the bound host, only in the header its
 # credential declares below (auth_style: header, header_name): without that
-# declaration OpenShell (0.1.8 and later) resolves a placeholder in Authorization only. The owner imports it and creates the
-# provider from the token, read into the environment without echo:
+# declaration OpenShell (0.1.8 and later) resolves a placeholder in Authorization only.
+# The owner imports it and creates the provider from the token, read into the
+# environment without echo:
 #
 #   openshell provider profile lint -f examples/openshell/profiles/cloudflare-access.yaml
 #   openshell provider profile import -f examples/openshell/profiles/cloudflare-access.yaml
