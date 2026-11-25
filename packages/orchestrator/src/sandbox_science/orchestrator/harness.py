@@ -2211,6 +2211,8 @@ class Harness:
                 images=await self._reviewer_images(inventory, context, reviewer),
             )
             bundles.append(caps.reviews(reviews, on_close))
+            # Its source records are what the ledger's notices on new quotes read (CR-4).
+            ledger.sources = True
         artifacts = ArtifactPublisher(inventory, self.client, context, run_id=run_id, alias=alias)
         bundles.append(caps.artifacts(artifacts, on_close))
         if connectors is not None:

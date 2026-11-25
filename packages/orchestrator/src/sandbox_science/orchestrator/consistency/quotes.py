@@ -21,8 +21,15 @@ number. For an ePrint, the paper from the result's header, and:
 - ``get_eprint``: the date stamp from its ``Date`` line, and no text. Neither tool above
   prints the date stamp, so a quote of their text names the one ``get_eprint`` gave the
   paper in the same session;
+- ``eprint_fulltext`` called with a query: the search's passages, after the server's line
+  that says so;
 - ``eprint_fulltext`` as it was before 2026-10-31, in records and archives of then: the
   date stamp from its header and the passages it returned as matching its query.
+
+The text tools' header may hold the server's own lines (``descriptors.eprint_header``): a
+``NOTE:`` before the paper's line, such as ``NOTE: Source: stored ePrint original.``, and a
+line on a PostScript original's conversion after it. The record keeps them as ``notes``,
+never as the paper's text; they are no header, heading or passage, and confirm nothing.
 
 For a library text (``library_record``), the paper's work label and the ledger identifier
 it names (``papers``), the rendition's tier, converter, page count and revision, and the
@@ -47,6 +54,11 @@ record beside the entry in its review, once in each window (raw sources are not 
 evidence); a quote not found has no source, and its citation cannot be confirmed. What a
 tool returned may still be an agent's own: a PDF the agent made, unless the PDF is
 vouched for (LG-16).
+
+When an agent records an ePrint or library quote no record of the session holds yet for a
+mechanical reason, ``unmatched`` says so, from those records alone, in the change's
+result: the date stamps ``get_eprint`` gave the paper, or the revisions and pages read.
+It is advice; the quote is recorded as given, and the review reads the records again.
 """
 
 from __future__ import annotations
@@ -57,6 +69,8 @@ import sqlite3
 from collections.abc import Collection
 from typing import Any, Final, cast
 
+from sandbox_science.orchestrator.context.history.descriptors import eprint_header
+from sandbox_science.orchestrator.context.history.reads import spans
 from sandbox_science.orchestrator.ledger.models import EntryView, EvidenceLink
 from sandbox_science.orchestrator.papers import LEDGER_SCHEMES, library_paper, paper_id
 
@@ -97,6 +111,8 @@ QUOTED_TOOLS: Final = (*EPRINT_TOOLS, *LIBRARY_TOOLS)
 """The connector tools whose results the review controller records as sources."""
 MAX_FIELDS: Final = 8
 """The most further fields of a library result's rendition line a record keeps."""
+MAX_NAMED: Final = 3
+"""The most date stamps or revisions an ``unmatched`` notice names."""
 
 # The server echoes the query as ``repr`` gives it: in single quotes, or in double quotes
 # when it holds a single quote. ``repr`` keeps it on one line.
@@ -104,11 +120,13 @@ _MARKER: Final = re.compile(r"""\n\n\d+ passage\(s\) matching (?:'.*'|".*"):\n""
 _PASSAGE: Final = re.compile(r"\n?[ \t]*\.\.\.\n")
 _PAPER: Final = re.compile(r"\A\[([^\]\n]{1,64})\]")
 _DATED: Final = re.compile(r"^Date: (.{1,128})$", re.M)
-# A search's passages (2026-10-31): each begins with its physical page, after a blank line.
+# A search's passages (2026-10-31): the count and the phrase under the header, after a blank
+# line; each passage begins with its physical page, after a blank line.
+_SEARCHED: Final = re.compile(r"""\A\n\d+ passage\(s\) matching (?:'.*'|".*"):\n""")
 _SEARCH_PASSAGE: Final = re.compile(r"(?:\A\n*|\n\n)Physical page (\d{1,6})\n")
 # A page read (2026-10-31): its range under the header, then each page under its heading,
 # then a pointer to the next pages or the end.
-_PAGES: Final = re.compile(r"\A[^\n]*\nPhysical pages (\d{1,6})-(\d{1,6}) of (\d{1,6})\.\n")
+_PAGES: Final = re.compile(r"\APhysical pages (\d{1,6})-(\d{1,6}) of (\d{1,6})\.\n")
 _PAGE: Final = re.compile(r"(?:\A|\n)\n?## Page (\d{1,6})\n")
 _TRAILER: Final = re.compile(r"\n+(?:Next: eprint_fulltext\(.*\)\.|End of paper\.)\s*\Z")
 # The toolbox's mark where it cut a result in the middle (``tools.bound``): a page or
@@ -197,44 +215,51 @@ def pdf_record(tool: str, arguments: Json, result: Json) -> Json | None:
 
 def eprint_record(tool: str, arguments: Json, text: str) -> Json | None:
     """The source record of an e-print call: the paper from the result's header, the date
-    stamp where the result prints one, and the passages or pages of the paper's text it
-    returned. None for a result that names no paper, and for a ``get_eprint`` record
-    without a date stamp."""
+    stamp where the result prints one, the passages or pages of the paper's text it
+    returned, and the server's own lines in the header (``notes``). None for a result that
+    names no paper, and for a ``get_eprint`` record without a date stamp."""
     if tool not in EPRINT_TOOLS:
         return None
-    paper = _PAPER.match(text)
-    if paper is None:
+    if tool == EPRINT_RECORD:
+        paper = _PAPER.match(text)
+        # Only the record's lines, before its abstract, which may hold a line like one.
+        line = _DATED.search(text.split("\n\n", 1)[0])
+        if paper is None or line is None:
+            return None
+        found: Json = {"paper": paper.group(1), "dated": line.group(1).strip(), "passages": []}
+        return {"tool": tool, "arguments": arguments, "eprint": found}
+    header = eprint_header(text, compatible=tool == EPRINT_TOOL)
+    if header is None:
         return None
-    found = _MARKER.search(text)
-    read = _PAGES.match(text) if tool == EPRINT_TOOL else None
-    # Only the header's Date line: a page of the paper may hold a line like one.
-    header = text[: read.end()] if read else text if found is None else text[: found.start()]
-    dated = _DATED.search(header)
+    named, notes, rest = header
+    read = _PAGES.match(rest) if tool == EPRINT_TOOL else None
+    searched = _SEARCHED.match(rest)
+    dated: str | None = None
     passages: list[str] = []
     pages: list[int | None] = []
-    if tool == EPRINT_RECORD:
-        if dated is None:
-            return None
-    elif read is not None:
-        pages, passages = _page_texts(_TRAILER.sub("", text[read.end() :]))
-    elif found is not None and tool == EPRINT_SEARCH:
-        pages, passages = _search_passages(text[found.end() :])
-    elif found is not None and tool == EPRINT_TOOL:
-        # eprint_fulltext as it was before 2026-10-31: passages after the query's echo.
-        rest = text[found.end() :]
-        passages = [
-            squash(block)
-            for block in _PASSAGE.split(rest)
-            if block.strip() and not _OMITTED.search(block)
-        ]
-        pages = [None] * len(passages)
-    record: Json = {
-        "paper": paper.group(1),
-        "dated": None if dated is None else dated.group(1).strip(),
-        "passages": passages,
-    }
+    if read is not None:
+        pages, passages = _page_texts(_TRAILER.sub("", rest[read.end() :]))
+    elif searched is not None:
+        pages, passages = _search_passages(rest[searched.end() :])
+    elif tool == EPRINT_TOOL:
+        # eprint_fulltext as it was before 2026-10-31: the record's lines, with the date
+        # stamp, then passages after the query's echo. Only a Date line among the record's
+        # lines: a passage of the paper may hold a line like one.
+        stamp = _DATED.search(rest.split("\n\n", 1)[0])
+        dated = None if stamp is None else stamp.group(1).strip()
+        echoed = _MARKER.search(rest) if dated is not None else None
+        if echoed is not None:
+            passages = [
+                squash(block)
+                for block in _PASSAGE.split(rest[echoed.end() :])
+                if block.strip() and not _OMITTED.search(block)
+            ]
+            pages = [None] * len(passages)
+    record: Json = {"paper": named, "dated": dated, "passages": passages}
     if any(page is not None for page in pages):
         record["pages"] = pages
+    if notes:
+        record["notes"] = notes
     return {"tool": tool, "arguments": arguments, "eprint": record}
 
 
@@ -454,6 +479,89 @@ def source(
                 payload = {**payload, "dated_by": {"tool": EPRINT_RECORD, "dated": dated}}
             return at, payload
     return None
+
+
+def unmatched(db: sqlite3.Connection, project: str, session: str, link: EvidenceLink) -> str | None:
+    """Why no source record of session ``session`` holds ePrint or library quote ``link``
+    yet, when the reason is mechanical, from those records alone: no ``get_eprint`` record
+    of the paper, none with the quote's date stamp, or no read of its text; no library
+    read of the paper, none at the quote's revision, or none of its page at that revision.
+    None when a record holds the quote, when the records have its date stamp and a read of
+    the paper's text, or its page at its revision (its text is then what differs), and for
+    a PDF quote. It names only what the session's tools returned."""
+    locator = link.locator or {}
+    named = cast(Json, locator.get("named") or {})
+    if locator.get("source") not in ("eprint", "library") or not named:
+        return None
+    if source(db, project, session, link) is not None:
+        return None
+    if locator["source"] == "eprint":
+        eprint, dated = str(named.get("eprint")), str(locator.get("dated"))
+        rows = _candidates(db, project, session, [f"source:{mark('eprint', eprint)}:"])
+        stamps = list(
+            dict.fromkeys(
+                str(found["dated"])
+                for _, payload in rows
+                if (found := cast(Json, payload.get("eprint") or {})).get("paper") == eprint
+                and found.get("dated") is not None
+            )
+        )
+        if dated in stamps:
+            texts = [payload for _, payload in rows if payload.get("tool") in EPRINT_TEXT_TOOLS]
+            if texts:
+                return None
+            return (
+                f"no eprint_fulltext or search_eprint_fulltext result for ePrint {eprint} is "
+                "recorded in this session yet: the citation check finds an ePrint quote only "
+                "in a page or passage read in the session"
+            )
+        if not stamps:
+            return (
+                f"no get_eprint result for ePrint {eprint} is recorded in this session yet: "
+                "the citation check finds an ePrint quote only under the date stamp "
+                "get_eprint printed, the whole value of its Date line"
+            )
+        given = " or ".join(repr(stamp) for stamp in stamps[:MAX_NAMED])
+        return (
+            f"get_eprint gave ePrint {eprint} the date stamp {given} in this session, and "
+            f"this quote's dated is {dated!r}: the citation check finds the quote only under "
+            "the date stamp as printed, the whole value of the Date line"
+        )
+    papers = _named_papers(named)
+    revision, page = str(locator.get("revision", "")).casefold(), locator.get("page")
+    rows = _candidates(
+        db, project, session, [f"source:{mark('paper', k)}:" for k in sorted(papers)]
+    )
+    reads = [
+        found
+        for _, payload in rows
+        if payload.get("tool") in LIBRARY_TOOLS
+        and (found := cast(Json, payload.get("library") or {})).get("named") in papers
+    ]
+    if not reads:
+        return (
+            "no read_paper or search_in_paper result for this paper is recorded in this "
+            "session yet: the citation check finds a library quote only in a page read in "
+            "the session"
+        )
+    at = [found for found in reads if str(found.get("revision", "")).casefold() == revision]
+    if not at:
+        revisions = list(dict.fromkeys(str(found.get("revision")) for found in reads))
+        given = " or ".join(repr(r) for r in revisions[:MAX_NAMED])
+        return (
+            f"this session read the paper at revision {given}, and this quote's revision is "
+            f"{str(locator.get('revision'))!r}: give the revision from the result's second "
+            "line, exactly as printed"
+        )
+    pages = sorted({n for found in at for n in cast(list[Any], found.get("pages") or [])
+                    if isinstance(n, int)})  # fmt: skip
+    if page in pages:
+        return None
+    return (
+        f"no read of physical page {page} at this revision is recorded in this session "
+        f"(pages read at it: {spans(pages) or 'none'}): the citation check finds a library "
+        "quote only on the page it names"
+    )
 
 
 def _candidates(

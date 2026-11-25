@@ -456,11 +456,12 @@ class Ledger:
         *,
         provenance: Json | None = None,
         dry_run: bool = False,
+        within: Callable[[sqlite3.Connection, list[MutationResult]], None] | None = None,
     ) -> MutationResult:
         """Apply one mutation (LG-30), or replay its first result (LG-31); with
         ``dry_run``, make it, every check included, and roll it back (LG-42): the result is
         the one it would have, the refusal the one it would get, and nothing is recorded,
-        not even a receipt."""
+        not even a receipt. ``within`` is as for ``apply``, in a dry run too."""
         try:
             mutation = Mutation.model_validate(raw)
         except ValidationError as error:
@@ -469,7 +470,7 @@ class Ledger:
             ) from None
         trying = _TRYING.set(dry_run)
         try:
-            return self.apply(project, [(mutation, provenance)], author)[0]
+            return self.apply(project, [(mutation, provenance)], author, within=within)[0]
         finally:
             _TRYING.reset(trying)
 
