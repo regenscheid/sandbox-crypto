@@ -1,5 +1,5 @@
 {
- "captured": "2026-10-26",
+ "captured": "2026-11-25",
  "group": "nist-csrc-mcp",
  "server": "crypto-research-mcp",
  "tools": [
@@ -204,7 +204,7 @@
    "name": "nist-csrc-mcp_nist_list_topics"
   },
   {
-   "description": "Read 1-10 pages as Markdown: tables as Markdown or HTML, math in LaTeX. Start at\npage_index (zero-based physical page) or at printed_page, the number printed on the\npage ('24', 'vi'); each page's location gives both. Each page reports how it was\nconverted and lists the catalog items it prints; use nist_get_catalog_item for those.\nrepresentation='library_text' or 'both' returns the PDF's raw text layer;\nstart_char/end_char slice one page's raw text for exact quotation. Ranges stop at\n40,000 characters (see next_page_index).",
+   "description": "Read 1-10 pages as Markdown: tables as Markdown or HTML, math in LaTeX. Start at\npage_index (zero-based physical page) or at printed_page, the number printed on the\npage ('24', 'vi'); each page's location gives both. Each page reports how it was\nconverted and lists the catalog items it prints; use nist_get_catalog_item for those.\nrepresentation='library_text' or 'both' returns the PDF's raw text layer;\nstart_char/end_char slice one page's raw text for exact quotation. Ranges stop at\n40,000 characters (see next_page_index) and at the document's last page\n(stop_reason 'end_of_document'; document_pages gives its length).",
    "inputSchema": {
     "properties": {
      "edition_id": {

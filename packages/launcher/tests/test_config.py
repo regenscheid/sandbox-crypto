@@ -171,11 +171,13 @@ def test_the_labs_config_needs_nothing_added_by_hand(home: Path, tmp_path: Path)
         "CF-Access-Client-Id": "CF_ACCESS_CLIENT_ID",
         "CF-Access-Client-Secret": "CF_ACCESS_CLIENT_SECRET",
     }
-    listed = ("attack-catalog-mcp", "e-print-mcp", "nist-csrc-mcp", "paper-search-mcp")
-    assert direct.index == tuple(f"crypto-research-mcp/{n}" for n in (*listed, "web-fetch-mcp"))
-    assert len(direct.about) == 7
+    listed = ("library-mcp", "attack-catalog-mcp", "e-print-mcp", "nist-csrc-mcp")
+    assert direct.index == tuple(
+        f"crypto-research-mcp/{n}" for n in (*listed, "paper-search-mcp", "web-fetch-mcp")
+    )
+    assert len(direct.about) == 8
     assert direct.about["crypto-research-mcp/web-fetch-mcp"] == (
-        "fetch a web page, or its links, as text"
+        "the open web: fetch a page, or its links, as text; for papers, use the library first"
     )
     (project,) = config.projects
     assert project.id == "lab41"
@@ -236,10 +238,15 @@ def test_the_examples_mcp_direct_works_uncommented(home: Path, tmp_path: Path) -
     assert direct.provider_env_file == Path("/path/to/the/owners/cloudflare.env")
     assert direct.provider_profile == tmp_path / "openshell/profiles/cloudflare-access.yaml"
     # The tool index (lab 39, B5): what each server behind the portal is for.
-    listed = ("attack-catalog-mcp", "e-print-mcp", "nist-csrc-mcp", "paper-search-mcp")
-    assert direct.index == tuple(f"crypto-research-mcp/{n}" for n in (*listed, "web-fetch-mcp"))
+    listed = ("library-mcp", "attack-catalog-mcp", "e-print-mcp", "nist-csrc-mcp")
+    assert direct.index == tuple(
+        f"crypto-research-mcp/{n}" for n in (*listed, "paper-search-mcp", "web-fetch-mcp")
+    )
     assert direct.about["crypto-research-mcp/e-print-mcp"].startswith("the IACR Cryptology ePrint")
-    assert len(direct.about) == 7
+    assert direct.about["crypto-research-mcp/library-mcp"].startswith(
+        "the library, the first place to find, fetch and read papers"
+    )
+    assert len(direct.about) == 8
 
 
 def test_skill_packs_name_urls_as_they_are_and_paths_against_the_file(

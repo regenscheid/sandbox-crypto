@@ -122,9 +122,13 @@ confinement `Channel`: the client's `ControlRequestCheck` asks the lab host's `c
 which binds the lab's project and asks the worker (`confinement.requests.confirm` with
 `WorkerRequestCheck`, as `HostLoops` does). A confirmed hold is answered through the worker's
 answer route with the operator token, as the workspace does, and the client calls again every
-3 s. Upstream calls are kept to the listings, one read each on e-print, nist-csrc, web-fetch and
+3 s. Upstream calls are kept to the listings, one read each on e-print, nist-csrc, web-fetch,
+the library (`library-mcp_paper_status` of a public ePrint paper the library holds) and
 attack-catalog (the escalated tool, after approval), one firecrawl scrape of a small public page,
-and one attack-catalog call without its required argument for the error answer. A later lab runs
+and one attack-catalog call without its required argument for the error answer. The library's
+read needs the library server in the service token's view of the portal (a Service Auth policy
+for it in Cloudflare Access, as for each server); the portal answers a server the token does not
+see with "Tool Server ... not found", which proof 1 counts as a failed read. A later lab runs
 `proofs --plan rerun`, which calls the portal's own `portal_list_servers` as the allowed tool and
 skips the error answer, so the earlier lab's upstream reads are not repeated. Proof 5 (binary
 results): after proofs 1 to 4 the lab host relays one `mcp_request` of web-fetch's
@@ -218,7 +222,7 @@ Some scripts are historical: they exercise code since removed, and run only at t
 
 ## Prerequisites
 
-- OpenShell 0.1.7 unpacked at `~/.local/opt/openshell-0.1.7/bin` (gateway, driver, supervisor, sandbox runtime and CLI, all from that release; `lab_up.sh` and `recovery_acceptance.py` take the release from `OPENSHELL_VERSION`).
+- OpenShell 0.1.10 unpacked at `~/.local/opt/openshell-0.1.10/bin` (gateway, driver, supervisor, sandbox runtime and CLI, all from that release; `lab_up.sh` and `recovery_acceptance.py` take the release from `OPENSHELL_VERSION`).
 - The images in the local Docker store, which OpenShell's VM driver reads directly: `sandbox-science/minimal:02f85b3`, `sandbox-science/crypto-base:02f85b3` and `sandbox-science/orchestrator:174e72e` (the retired `sandbox-science/mcp-proxy:d27e41a` may still be there) (built from `images/`; see [images](../../docs/IMAGES.md)). Only create, tag or remove `sandbox-science/*` images: the Docker store is shared with the user's own projects, and is never pruned.
 - `uv sync --locked` in the repository, whose `.venv` the scripts run (`R`, by default the repository these scripts are in).
 

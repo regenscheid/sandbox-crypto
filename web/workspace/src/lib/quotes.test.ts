@@ -117,6 +117,21 @@ describe('a quote', () => {
     });
   });
 
+  it('of a library text names the paper, the page and the revision the library gave', () => {
+    const quote = eprintQuote({
+      source: 'library',
+      dated: undefined,
+      page: 7,
+      revision: '3fa2c1d0e9b8',
+      named: { eprint: '2015/625', doi: '10.1007/x_1' },
+    });
+    expect(quoteView('p1', quote)).toMatchObject({
+      where: 'library text of eprint 2015/625, doi 10.1007/x_1, page 7, revision 3fa2c1d0e9b8',
+      pdf: null,
+      page: null,
+    });
+  });
+
   it('opens no PDF without a PDF revision, a page and a hash it can name', () => {
     expect(quoteView('p1', pdfQuote({}, { named: undefined }))!.pdf).toBeNull();
     expect(quoteView('p1', pdfQuote({}, { page: '14' }))!.pdf).toBeNull();

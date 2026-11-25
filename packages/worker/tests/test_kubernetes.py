@@ -73,7 +73,7 @@ def test_requests_above_effective_policy_are_refused() -> None:
         {"volumes": [{"hostPath": "/"}]},
         {"requests": {"cpu_millicores": True, "memory_mib": 512, "ephemeral_storage_mib": 256}},
         {"requests": {"cpu_millicores": 9000, "memory_mib": 512, "ephemeral_storage_mib": 256}},
-        # OpenShell 0.1.7 carries no process limit: a profile cannot declare one applied.
+        # OpenShell 0.1.10 carries no process limit: a profile cannot declare one applied.
         {"pids": 512},
         {
             "limits": {"cpu_millicores": 8000, "memory_mib": 8192, "ephemeral_storage_mib": 1024}
@@ -132,7 +132,7 @@ def test_workspace_prefix_requirement_defaults_safe_and_never_enters_driver_json
             KubernetesProfile.model_validate({**values, "require_workspace_prefix": invalid})
 
 
-# The Kubernetes caller driver config as OpenShell v0.1.7 parses it (unchanged since v0.1.5)
+# The Kubernetes caller driver config as OpenShell v0.1.10 parses it (unchanged since v0.1.5)
 # (crates/openshell-driver-kubernetes/src/driver.rs, KubernetesSandboxDriverConfig
 # and its nested structs): every struct is `deny_unknown_fields`, so one key outside
 # this tree makes the gateway refuse the sandbox. `None` marks a free-form map or
@@ -187,7 +187,7 @@ def renderings() -> list[str]:
     ]
 
 
-def test_driver_json_uses_only_keys_openshell_0_1_5_accepts() -> None:
+def test_driver_json_uses_only_keys_openshell_accepts() -> None:
     for rendered in renderings():
         document = json.loads(rendered)
         assert set(document) == {"kubernetes"}

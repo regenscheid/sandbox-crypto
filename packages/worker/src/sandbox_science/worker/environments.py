@@ -162,7 +162,7 @@ REFUSALS: Final = frozenset(
     }
 )
 """The statuses with which the gateway refuses a request it validated: InvalidArgument,
-FailedPrecondition, PermissionDenied and Unauthenticated. OpenShell 0.1.7 checks a
+FailedPrecondition, PermissionDenied and Unauthenticated. OpenShell 0.1.10 checks a
 sandbox's spec, driver configuration and admission before it records the sandbox."""
 _SANDBOX_COMMAND: Final = ("sleep", "infinity")
 _POLICY_TIMEOUT: Final = 120
@@ -175,6 +175,9 @@ MAX_NOTICES: Final = 10
 """Admission notices one result carries at most; the newest are kept."""
 MAX_RECORDED: Final = 512
 """Decisions kept per environment: every admitted one, then the newest refusals."""
+DELETE_TIMEOUT: Final = 120.0
+"""Seconds a sandbox may stay after a delete the gateway accepted (OpenShell 0.1.10:
+"deletion accepted; cleanup is pending") before the deletion counts as unconfirmed."""
 
 JOB_ENVIRONMENT: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,109}-job-[0-9a-f]{12}$")
 """A job sandbox's environment ID (D93, JS-1): ``<project>-job-<12 hex>``. No client may
@@ -195,7 +198,7 @@ class ScheduleTimeoutError(WorkerError):
 
 
 _PROVISION_TIMEOUT: Final = "sandbox provisioning timed out"
-"""How OpenShell 0.1.7's ``sandbox create`` reports its own provisioning deadline."""
+"""How OpenShell 0.1.10's ``sandbox create`` reports its own provisioning deadline."""
 
 
 def _not_placed(timeout: float) -> ScheduleTimeoutError:
@@ -232,7 +235,7 @@ def printable(text: str, limit: int = 255) -> str:
 def new_sandbox_name() -> str:
     """A fresh OpenShell sandbox name: the prefix and 64 random bits, in 19 characters.
 
-    OpenShell v0.1.7 takes at most 19 characters, a DNS label without the ``--``
+    OpenShell v0.1.10 takes at most 19 characters, a DNS label without the ``--``
     (``OPENSHELL_SEPARATOR``) it uses between the segments of routable names, so the
     sandbox is what follows the last ``--`` of its Kubernetes objects' names (the
     operator's cleanup reads them so). A name derived from the environment ID left
@@ -851,6 +854,7 @@ class Environments:
         poll_seconds: float = 1.0,
         resume_timeout: float = 180.0,
         start_backoff: float = 60.0,
+        delete_timeout: float = DELETE_TIMEOUT,
     ) -> None:
         self.settings = settings
         self.clock = clock
@@ -861,6 +865,8 @@ class Environments:
         """The longest a stopped sandbox may take to start or stop, within ``create_timeout``."""
         self.start_backoff = seconds("start_backoff", start_backoff)
         """After a failed start, uses fail at once for this long instead of starting again."""
+        self.delete_timeout = seconds("delete_timeout", delete_timeout)
+        """The longest an accepted deletion may take to leave the gateway (``DELETE_TIMEOUT``)."""
         self.handmade_sandboxes = frozenset(backend.sandboxes)
         self.isolation_tier = backend.isolation_tier
         """The tier the gateway's driver declares; a job sandbox's probe can only lower it."""
@@ -1782,8 +1788,7 @@ class Environments:
                         ErrorKind.UNAVAILABLE, "sandbox identity changed before deletion"
                     )
                 await self.cli.run("sandbox", "delete", info.sandbox)
-            if await self.cli.sandbox(info.sandbox) is not None:
-                raise WorkerError(ErrorKind.UNAVAILABLE, "sandbox deletion was not confirmed")
+            await self._deleted(info)
             self.records.confirm_deletion(info)
         if info.sandbox_id is not None:
             self.store.unbind(info.sandbox_id)
@@ -1796,6 +1801,19 @@ class Environments:
         _log.info("deleted sandbox %s of environment %s", info.sandbox, environment_id)
         await self._forget(environment_id)
         return deleted
+
+    async def _deleted(self, info: EnvironmentInfo) -> None:
+        """Wait, within ``delete_timeout``, until the gateway reports no sandbox under the
+        environment's name: OpenShell 0.1.10 may accept a deletion and finish it after
+        the command returns. A sandbox still there at the bound, or another one under
+        the name, leaves the deletion unconfirmed (``unavailable``)."""
+        deadline = self.clock.monotonic() + self.delete_timeout
+        while (document := await self.cli.sandbox(info.sandbox)) is not None:
+            if document.get("id") != info.sandbox_id:
+                raise WorkerError(ErrorKind.UNAVAILABLE, "sandbox identity changed during deletion")
+            if self.clock.monotonic() >= deadline:
+                raise WorkerError(ErrorKind.UNAVAILABLE, "sandbox deletion was not confirmed")
+            await self.clock.sleep(self.poll_seconds)
 
     async def _forget(self, environment_id: str, *, reuse: bool = False) -> None:
         """Tell each of ``deleted`` that the environment is deleted."""
@@ -2335,7 +2353,7 @@ class Environments:
             raise _not_placed(timeout) from exc
 
     async def _create_within(self, args: Sequence[str], timeout: float, deadline: float) -> None:
-        """Run ``sandbox create`` within a schedule timeout. OpenShell 0.1.7's command
+        """Run ``sandbox create`` within a schedule timeout. OpenShell 0.1.10's command
         waits for the sandbox to be provisioned, even with ``--detach``, until its own
         idle deadline (``OPENSHELL_PROVISION_TIMEOUT``, 300 s by default, renewed by
         each progress event): the command is given the schedule timeout as that deadline

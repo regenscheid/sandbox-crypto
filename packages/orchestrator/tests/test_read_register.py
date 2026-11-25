@@ -42,6 +42,8 @@ from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
+from . import eprint_results as ep
+from . import library_results as lib
 from .ledger_support import AnchoredLedger as Ledger
 from .test_ledger_evidence import publish
 from .test_ledger_tools import CONTEXT, tool, use
@@ -124,6 +126,20 @@ def placed(tool: str, arguments: dict[str, Any], text: str) -> list[Read]:
         ("e-print-mcp_search_eprint_fulltext", {"paper_id": "2024/1234", "query": "pebble"},
          SEARCH_MISSED, []),
         ("e-print-mcp_eprint_file", {"paper_id": "2024/1234"}, "https://signed.example/x", []),
+        # Since 2026-11-25 the server's own lines may lead the header or follow its first line.
+        (ep.READ, {"paper_id": ep.PAPER}, ep.OBSERVED, [("eprint", ep.PAPER, "partial")]),
+        (ep.READ, {"paper_id": ep.PAPER},
+         ep.read(["A"], total=1, note=ep.MIRROR, conversion=ep.RENDERED),
+         [("eprint", ep.PAPER, "whole")]),
+        (ep.READ, {"paper_id": ep.PAPER}, ep.read(["A"], note=None, conversion=ep.POSTSCRIPT),
+         [("eprint", ep.PAPER, "partial")]),
+        (ep.READ, {"paper_id": ep.PAPER, "query": "Table 1"},
+         ep.compatible("Table 1", [(2, ep.PAGE_TWO)]), [("eprint", ep.PAPER, "partial")]),
+        (ep.SEARCH, {"paper_id": ep.PAPER, "query": "Table 1"},
+         ep.search("Table 1", [(2, ep.PAGE_TWO)], note=ep.BUDGET, conversion=ep.RENDERED),
+         [("eprint", ep.PAPER, "partial")]),
+        (ep.SEARCH, {"paper_id": ep.PAPER, "query": "pebble"}, ep.search("pebble", []), []),
+        (ep.RECORD, {"paper_id": ep.PAPER}, ep.record(), [("eprint", ep.PAPER, "abstract_only")]),
         ("web-fetch-mcp_fetch_page", {"url": "https://eprint.iacr.org/2024/1234"}, FETCHED,
          [("web", "eprint.iacr.org/2024/1234", "partial")]),
         ("web-fetch-mcp_web_fetch", {"url": "https://example.org/note/"}, WHOLE_PAGE,
@@ -144,6 +160,42 @@ def placed(tool: str, arguments: dict[str, Any], text: str) -> list[Read]:
          [("nist", "FIPS203", "partial")]),
         ("nist-csrc-mcp_nist_get_pdf", {"edition_id": "pilot:fips203-final"}, "{}", []),
         ("e-print-mcp_search_eprint", {"query": "lattice"}, "10 results", []),
+        ("e-print-mcp_eprint_originals", {"paper_id": "2024/1234"}, '{"originals": []}', []),
+        ("paper-search-mcp_paper_copies", {"id": "10.1/x"}, "2 copies", []),
+        ("paper-search-mcp_papers_by_ids", {"ids": ["10.1/x"]}, "1 paper", []),
+        ("paper-search-mcp_zbmath_search", {"query": "isogeny"}, "3 results", []),
+        ("web-fetch-mcp_web_fetch_hosts", {}, "eprint.iacr.org: ok", []),
+        # The library server (library-mcp, 2026-11-24), under its work labels.
+        ("library-mcp_read_paper", {"identifier": "2024/1234", "start_page": 2},
+         lib.read("eprint/2024/1234", 2, ["A", "B"], total=10),
+         [("eprint", "2024/1234", "partial")]),
+        ("library-mcp_read_paper", {"identifier": "10.1007/X"},
+         lib.read("doi:10.1007/x", 1, ["A"], total=1), [("paper", "doi:10.1007/x", "whole")]),
+        ("library-mcp_read_paper", {"identifier": "nist:ir-8610"},
+         lib.read("nist:ir-8610", 1, ["A"]), [("nist", "IR8610", "partial")]),
+        ("library-mcp_read_paper", {"identifier": "W12"},
+         lib.read("openalex:W12", 1, ["A"]), [("paper", "openalex:w12", "partial")]),
+        ("library-mcp_read_paper", {"identifier": "2024/1234"}, lib.not_held("eprint/2024/1234"),
+         []),
+        ("library-mcp_read_paper", {"identifier": "2024/1234", "page_count": 9},
+         "page_count must be between 1 and 5; complete pages are returned without clipping.", []),
+        ("library-mcp_search_in_paper", {"identifier": "2024/1234", "phrase": "twist"},
+         lib.search("eprint/2024/1234", "twist", [(3, "a twist")]),
+         [("eprint", "2024/1234", "partial")]),
+        ("library-mcp_search_in_paper", {"identifier": "2024/1234", "phrase": "pebble"},
+         lib.search("eprint/2024/1234", "pebble", []), []),
+        ("library-mcp_paper_statements", {"identifier": "2024/1234"},
+         lib.header("eprint/2024/1234") + "2 numbered statement(s):\n",
+         [("eprint", "2024/1234", "partial")]),
+        ("library-mcp_paper_card", {"identifier": "2024/1234"},
+         lib.header("eprint/2024/1234") + "kind: scheme\n- It signs.",
+         [("eprint", "2024/1234", "abstract_only")]),
+        ("library-mcp_paper_notes", {"identifier": "2024/1234"},
+         lib.header("eprint/2024/1234") + "1 note(s) by people reading it, by page:\n", []),
+        *[(f"library-mcp_{name}", {"identifier": "2024/1234"}, "Anything.", [])
+          for name in ("find_papers", "paper_status", "fetch_paper", "paper_file",
+                       "search_library", "related_papers", "paper_positions", "imports_of",
+                       "imports_near")],
     ],
 )  # fmt: skip
 def test_each_descriptor_places_its_tools_reads(
@@ -397,3 +449,45 @@ def test_a_samples_file_is_its_recorded_revision_and_a_redirect_counts_for_both_
     finally:
         projects.close()
     assert (found["source"], found["extent"]) == ("http://example.org/old", "whole")
+
+
+def test_a_paper_read_through_either_server_is_one_source() -> None:
+    """CM-12a: pages of ePrint 2024/1234 read through the e-print server and through
+    the library (``eprint/2024/1234``) are one paper's, and together they read it whole;
+    a reference's ePrint identifier names it as either server does."""
+    eprint = placed("e-print-mcp_eprint_fulltext", {"paper_id": "2024/1234", "start_page": 2},
+                    PAGES)  # fmt: skip
+    library = placed("library-mcp_read_paper", {"identifier": "2024/1234"},
+                     lib.read("eprint/2024/1234", 1, ["A"], total=10)) + placed(
+        "library-mcp_read_paper", {"identifier": "eprint/2024/1234", "start_page": 4},
+        lib.read("eprint/2024/1234", 4, ["D", "E", "F", "G", "H"], total=10),
+    ) + placed("library-mcp_read_paper", {"identifier": "2024/1234", "start_page": 9},
+               lib.read("eprint/2024/1234", 9, ["I", "J"], total=10))  # fmt: skip
+    assert {(r.kind, r.source) for r in eprint + library} == {("eprint", "2024/1234")}
+    assert extent(library) == "partial"
+    assert extent([*eprint, *library]) == "whole"
+
+
+def test_a_reading_result_cut_between_pages_reads_the_pages_shown() -> None:
+    """CM-12a: a reading tool's result over its limit loses whole pages from its end
+    (``descriptors.paged``); the read covers the pages shown and is ``partial``, and
+    another read of the pages left out completes it. Any other connector result keeps
+    the general limit."""
+    toolbox = Toolbox(cast(WorkerClient, SimpleNamespace()), CONTEXT, output_chars=6000)
+    texts = ["x" * 3000 for _ in range(5)]
+    text = CONNECTOR_RESULT.text + lib.read("eprint/2024/1234", 1, texts, total=5)
+    record: dict[str, Any] = {"connector": "crypto-research-mcp"}
+    shown = toolbox._cut(text, record, "library-mcp_read_paper")  # twice output_chars
+    assert 3000 < len(shown) <= 12000 < len(text)
+    assert "cut" not in record
+    assert record["paged"]["pages"] == [4, 5]
+    assert shown.endswith("read them with a call that starts at page 4.]")
+    (read,) = reads_of("library-mcp_read_paper", json.dumps({"identifier": "2024/1234"}),
+                       record, shown)  # fmt: skip
+    assert (read.source, read.extent, read.detail["pages"]) == ("2024/1234", "partial", [1, 2, 3])
+    rest = placed("library-mcp_read_paper", {"identifier": "2024/1234", "start_page": 4},
+                  lib.read("eprint/2024/1234", 4, ["D", "E"], total=5))  # fmt: skip
+    assert extent([read, *rest]) == "whole"
+    other: dict[str, Any] = {"connector": "crypto-research-mcp"}
+    assert len(toolbox._cut(text, other, "web-fetch-mcp_web_fetch")) <= 3000 + 64
+    assert "cut" in other

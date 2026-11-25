@@ -1,14 +1,16 @@
-# OpenShell v0.1.7 provider profile for a Cloudflare Access service token, such as the
+# OpenShell v0.1.10 provider profile for a Cloudflare Access service token, such as the
 # one crypto-research-mcp's Access application admits (docs/MCP-CONNECTORS.md).
 #
 # It has no endpoints: the project policy's MCP server entry names the host, and the
 # agent runtime sandbox's compiled policy binds the provider there with
 # credential_binding, which OpenShell refuses for a provider whose profile has endpoints
 # (lab 2). The runtime's MCP client places the two placeholders in the headers itself
-# (mode: headers; [mcp_direct.servers.NAME] credentials), so the
-# placement fields below are descriptive; OpenShell substitutes the values as the
-# request leaves toward the bound host. The owner imports it and creates the
-# provider from the token, read into the environment without echo:
+# (mode: headers; [mcp_direct.servers.NAME] credentials), and OpenShell substitutes
+# each value as the request leaves toward the bound host, only in the header its
+# credential declares below (auth_style: header, header_name): without that
+# declaration OpenShell (0.1.8 and later) resolves a placeholder in Authorization only.
+# The owner imports it and creates the provider from the token, read into the
+# environment without echo:
 #
 #   openshell provider profile lint -f examples/openshell/profiles/cloudflare-access.yaml
 #   openshell provider profile import -f examples/openshell/profiles/cloudflare-access.yaml

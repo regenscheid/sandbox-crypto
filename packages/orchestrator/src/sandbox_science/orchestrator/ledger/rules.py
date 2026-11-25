@@ -15,6 +15,7 @@ from sandbox_science.orchestrator.documents.errors import (
     DocumentError,
 )
 from sandbox_science.orchestrator.documents.models import Author
+from sandbox_science.orchestrator.papers import LEDGER_SCHEMES, normal
 
 from . import evidence, frontier, gate, preparation, queries, records
 from .models import (
@@ -276,8 +277,9 @@ def unsettles(before: Json, after: Json) -> bool:
 def check_quotes(db: sqlite3.Connection, planned: list[Planned]) -> None:
     """A quote names what it quotes as the reference reads at the revision it pins
     (LG-8, CR-4): a PDF quote, the reference's PDF, pinned by its SHA-256; an ePrint
-    quote, the reference's ePrint identifier. The reference may be one the same
-    change records or revises."""
+    quote, the reference's ePrint identifier; a library quote, each of its ePrint, DOI,
+    arXiv and NIST identifiers. The reference may be one the same change records or
+    revises."""
     by_id = {p.row.entry_id: p for p in planned}
     for p in planned:
         if p.evidence is None:
@@ -322,6 +324,25 @@ def quoted(
         locator["named"] = {"artifact_id": pdf["artifact_id"], "revision": pdf["revision"]}
         return link.model_copy(update={"locator": locator, "sha256": pdf["sha256"]})
     identifiers = cast(Json, fields.get("identifiers") or {})
+    if locator["source"] == "library":
+        # The paper by each identifier a library work label can name, as the reference
+        # records it: a read of eprint/2024/1234 confirms a reference with eprint 2024/1234.
+        named = {
+            scheme: value
+            for scheme in LEDGER_SCHEMES
+            if isinstance(value := identifiers.get(scheme), str) and normal(scheme, value)
+        }
+        if not named:
+            raise DocumentError(
+                INVALID_REQUEST,
+                f"{p.row.handle} quotes a library text of {handle}, which names no eprint, "
+                "doi, arxiv or nist identifier: give the reference the identifier the "
+                "library's work label names (eprint/2024/1234 is the eprint 2024/1234). A "
+                "paper the library labels otherwise, by an OpenAlex ID or a URL, cannot be "
+                "confirmed by its text: quote its PDF",
+            )
+        locator["named"] = named
+        return link.model_copy(update={"locator": locator})
     eprint = identifiers.get("eprint")
     if not eprint:
         raise DocumentError(

@@ -509,8 +509,14 @@ class OwnedRoot:
         assert current.items() <= owned.items(), "unrecorded sandbox: inspect ownership first"
         for identity, name in current.items():
             self.cli("sandbox", "delete", name, timeout=120)
-            remaining = json.loads(self.cli("sandbox", "list", "-o", "json").stdout)
-            assert not any(item["id"] == identity for item in remaining["sandboxes"])
+
+            def deleted(identity=identity):
+                # The gateway may accept a deletion and finish it afterwards (OpenShell
+                # 0.1.10: "deletion accepted; cleanup is pending"), so the ID is awaited.
+                remaining = json.loads(self.cli("sandbox", "list", "-o", "json").stdout)
+                return not any(item["id"] == identity for item in remaining["sandboxes"])
+
+            wait(deleted)
         assert not json.loads(self.cli("sandbox", "list", "-o", "json").stdout)["sandboxes"]
         for unit in units[split:]:
             run(["systemctl", "--user", "stop", unit], timeout=120)

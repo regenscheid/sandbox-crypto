@@ -6,7 +6,7 @@ apiVersion: sandbox-science/v0alpha1
 kind: ToolClassification
 server: crypto-research-mcp
 prefix: nist-csrc-mcp_
-pinned: "2026-10-26"
+pinned: "2026-11-25"
 tools:
   nist-csrc-mcp_nist_browse_catalogs:
     class: read
@@ -39,7 +39,7 @@ tools:
   nist-csrc-mcp_nist_read:
     class: read
     reason: "Reads pages of a publication as Markdown."
-    sha256: b56d459f500187ab4e4b9153d495b303a91c784b083881acbb78e498a8e90f4f
+    sha256: 0d776d976d58d48aa1f108c58dbfaf1e9b59f1408d0e440d8069dc345a1ef273
     significant: {title: edition_id, size: page_count}
   nist-csrc-mcp_nist_search:
     class: read

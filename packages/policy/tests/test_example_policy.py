@@ -34,19 +34,18 @@ CEILING = PoolCeiling.unrestricted()
 
 class Tool(TypedDict):
     name: str
-    # READ, SPEND, WRITE or CONFIG, from each tool's own description (2026-10-10).
+    # READ, SPEND, WRITE or CONFIG, from each tool's own description (2026-10-10; the tools
+    # listed since, the library's included, 2026-11-25).
     class_: str
 
 
-# The class each tool of the 2026-10-10 notes takes in the checked-in classification,
+# The class each tool of the notes takes in the checked-in classification,
 # where it differs from the notes' word for it (D96, H1). Cost is not a reason to ask:
 # the services limit and bill their own use, so SPEND tools are reads.
 RECLASSED = {
     # Reads that fill the server's own document cache on first use (D95: reads).
     "e-print-mcp_eprint_file": "read",
     "e-print-mcp_eprint_fulltext": "read",
-    "nist-mcp_csrc_file": "read",
-    "nist-mcp_csrc_fulltext": "read",
     # Reads by name; their effects come from argument rules (H1).
     "firecrawl-mcp_firecrawl_crawl": "read",
     "firecrawl-mcp_firecrawl_scrape": "read",
@@ -60,7 +59,6 @@ RECLASSED = {
     "firecrawl-mcp_firecrawl_monitor_update": "communicate",
     # Shared corpora rebuilt for everyone.
     "e-print-mcp_refresh_eprint": "admin",
-    "nist-mcp_refresh_csrc": "admin",
 }
 BY_NOTE = {"READ": "read", "SPEND": "read", "WRITE": "write", "CONFIG": "admin"}
 EXPECTED_BY_CLASS = {
@@ -106,7 +104,7 @@ def test_every_crypto_research_mcp_tool(policy: LoadedPolicy, tool: Tool) -> Non
 def test_fixture_covers_the_reclassed_tools() -> None:
     names = {tool["name"] for tool in load_tools()}
     assert names >= set(RECLASSED)
-    assert len(names) == 78
+    assert len(names) == 93
 
 
 @pytest.mark.parametrize(

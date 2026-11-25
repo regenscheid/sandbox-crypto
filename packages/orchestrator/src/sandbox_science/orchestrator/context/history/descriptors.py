@@ -13,7 +13,8 @@ description and its results as the server returned them on 2026-10-16:
   (``partial``; none matched reads nothing); ``eprint_file`` only links the PDF, which the
   PDF tools then read. Before 2026-10-31 ``eprint_fulltext`` returned the record and the
   passages matching a query (``partial``, or ``abstract_only`` when none matched), which
-  archives of then still hold;
+  archives of then still hold. The text tools' header may carry the server's own lines
+  (``eprint_header``, as the server writes them on 2026-11-25);
 - the web-fetch server: ``web_fetch`` and ``fetch_page`` return a page, ``whole`` unless
   it ends ``[Truncated. Call fetch_continue(document_id='…', offset=N) …]``;
   ``fetch_continue`` returns the next part as JSON, ``next_offset`` null at the end. The
@@ -24,7 +25,18 @@ description and its results as the server returned them on 2026-10-16:
 - the NIST servers: ``nist_read`` returns pages of an edition (``partial``: it names no
   page count); ``csrc_fulltext`` returns a publication's header and the passages matching
   a query; ``get_csrc`` a catalog record; ``nist_get_pdf`` and ``csrc_file`` only link
-  the PDF.
+  the PDF;
+- the library server (``library-mcp``, as its tools write their results on 2026-11-24):
+  ``read_paper`` reads pages of a held text (``partial``, with the pages and the text's
+  page count, which add up to ``whole``), ``search_in_paper`` returns passages
+  (``partial``); ``paper_statements`` and ``paper_references`` return what was taken from
+  a text (``partial``), ``paper_card`` a model's summary of it (``abstract_only``). Its
+  finding, fetching, linking and listing tools, and ``paper_notes``, people's notes, read
+  none. A work label is keyed as the paper it names (``library_key``), so a paper read
+  through the e-print server and the library is one source.
+
+The reading tools (``PAGED``) return a paper's text page by page or passage by passage:
+past its limit the toolbox cuts such a result between units (``paged``), never inside one.
 
 A search or a listing reads no source. Any other connector tool has no descriptor: its
 reads are ``unknown`` (``reads.reads_of``), and the register counts them.
@@ -36,6 +48,9 @@ import json
 import re
 from collections.abc import Callable
 from typing import Any, Final, cast
+
+from sandbox_science.orchestrator.papers import library_paper
+from sandbox_science.orchestrator.papers import nist_key as nist_key
 
 from .reads import Json, Read
 
@@ -56,14 +71,40 @@ _TRUNCATED: Final = re.compile(
 """The server's notice that it cut a page, its last line: a page that quotes one
 elsewhere is not cut."""
 _NIST: Final = re.compile(r"\ANIST (.{1,64}?) — ", re.M)
+_WORK: Final = re.compile(r"\A(\S{1,512}) — [^\n]*\n([^\n]*)\n")
+"""A library result's first two lines: the paper's work label and title, then its
+rendition (``… rendition by …``) or ``no text held``."""
+_LIBRARY_PAGES: Final = re.compile(r"^Physical pages (\d{1,6})-(\d{1,6}) of (\d{1,6})\.", re.M)
+_HEADING: Final = re.compile(r"\n\n## Page (\d{1,6})\b[^\n]*\n")
+_PHYSICAL: Final = re.compile(r"\n\nPhysical page (\d{1,6})\n")
+_LEFT_OUT: Final = re.compile(r"\n\n\[The platform left out [^\n]{1,1024}\]\Z")
+"""The toolbox's last line on a reading result it cut at a page boundary
+(``paged``)."""
+MAX_NOTE: Final = 512
+"""The most characters of a ``NOTE:`` line the e-print server's header may hold; a
+result with a longer one has no header (``eprint_header``)."""
+_NOTE: Final = re.compile(rf"\ANOTE: [^\n]{{1,{MAX_NOTE}}}\n\n")
+_COMPATIBILITY: Final = (
+    "Compatibility: query now belongs to search_eprint_fulltext; eprint_fulltext reads pages."
+)
+"""The line ``eprint_fulltext`` puts before a search's answer, then a blank line, when it
+is called with a query."""
+_CONVERTED: Final = (
+    "Converted from a PDF rendered from the PostScript original; mathematical symbols may be "
+    "approximate.",
+    "Text extracted from PostScript; layout and mathematical symbols may be approximate.",
+)
+"""The lines the server puts under the paper's line for a PostScript original."""
 
-
-def nist_key(designation: str) -> str:
-    """A NIST publication as a register's key: ``FIPS 203``, ``NIST.FIPS.203`` and
-    ``fips203`` alike, and ``SP 800-56A Rev. 3`` as ``NIST.SP.800-56Ar3``."""
-    found = designation.strip().upper().removeprefix("NIST").lstrip(". ")
-    found = re.sub(r"\s*REV(?:ISION)?\b\.?\s*", "R", found)
-    return re.sub(r"[\s._-]+", "", found)
+PAGED: Final[dict[str, str]] = {
+    "e-print-mcp_eprint_fulltext": "pages",
+    "e-print-mcp_search_eprint_fulltext": "passages",
+    "library-mcp_read_paper": "pages",
+    "library-mcp_search_in_paper": "passages",
+}
+"""The reading tools whose results hold a paper's text page by page or passage by
+passage, each with its unit: the toolbox gives their results a larger limit and, past
+it, cuts them only between units (``paged``)."""
 
 
 def paper_key(identifier: str) -> str:
@@ -82,6 +123,101 @@ def paper_key(identifier: str) -> str:
     return f"{scheme}:{rest.strip()}"
 
 
+def library_key(label: str) -> tuple[str, str]:
+    """A library work label as the register keys the paper (kind, key): an ePrint, a
+    NIST publication, a DOI or arXiv paper as the other servers' reads of it are keyed,
+    so that a paper read through both is one source (``papers.library_paper``); a URL
+    as its page; any other label, such as an OpenAlex ID, as a paper of its own."""
+    named = library_paper(label)
+    if named is not None:
+        scheme, value = named
+        if scheme == "eprint":
+            return "eprint", value
+        if scheme == "nist":
+            return "nist", value
+        return "paper", paper_key(f"{scheme}:{value}")
+    if label.startswith("url:"):
+        return "web", url_key(label.removeprefix("url:"))
+    return "paper", label.strip().casefold()
+
+
+def unit_of(tool: str) -> str | None:
+    """The unit, ``pages`` or ``passages``, of a reading tool's result, under its portal
+    name or a client's longer one; None for any other tool."""
+    found = PAGED.get(tool)
+    if found is not None:
+        return found
+    return next((u for name, u in PAGED.items() if tool.endswith(f"-{name}")), None)
+
+
+def paged(tool: str, text: str, limit: int) -> tuple[str, Json] | None:
+    """A reading tool's result ``text`` within ``limit`` characters, cut only between its
+    units: the units that fit, whole, then a last line that says which were left out and
+    how to ask for them; and what the record keeps of the cut (its ``length``, the
+    characters ``shown`` and the ``pages`` left out). None when the result fits, has no
+    units, or not even its first unit fits, which ``tools.bound`` cuts in the middle."""
+    unit = unit_of(tool)
+    if unit is None or len(text) <= limit:
+        return None
+    starts = list((_HEADING if unit == "pages" else _PHYSICAL).finditer(text))
+    for index in range(len(starts) - 1, 0, -1):
+        left = [int(found.group(1)) for found in starts[index:]]
+        closing = _left_out(unit, left, limit)
+        at = starts[index].start()
+        if at + len(closing) <= limit:
+            return text[:at] + closing, {"length": len(text), "shown": at, "pages": left}
+    return None
+
+
+def _left_out(unit: str, left: list[int], limit: int) -> str:
+    from .reads import spans  # which reads this module's Read
+
+    if unit == "pages":
+        return (
+            f"\n\n[The platform left out pages {spans(left)} of this result, to keep it within "
+            f"{limit:,} characters: read them with a call that starts at page {left[0]}.]"
+        )
+    return (
+        f"\n\n[The platform left out {len(left)} more passage(s) of this result, on pages "
+        f"{spans(sorted(set(left)))}, to keep it within {limit:,} characters: ask for fewer "
+        "passages, or search for a longer phrase.]"
+    )
+
+
+def unpaged(text: str) -> str:
+    """A reading result as its server wrote it, without the toolbox's last line naming
+    the pages it left out (``paged``); any other text as it is."""
+    return _LEFT_OUT.sub("", text)
+
+
+def eprint_header(text: str, *, compatible: bool = False) -> tuple[str, list[str], str] | None:
+    """The paper an e-print text tool's result names on its own first line, the server's
+    lines around that line, and the result after them; None for a result that does not
+    begin so. The server's lines are exactly those it writes (``eprint_mcp/tools.py``,
+    ``_reading_header``): before the paper's line, ``eprint_fulltext``'s compatibility
+    line and a blank line, when ``compatible``, then one ``NOTE:`` line and a blank line
+    (where the text came from, a newer revision, the fetch budget); after it, one line on
+    a PostScript original's conversion. So there are at most three, each one line, in that
+    order, and none is the paper's text, its header or a heading."""
+    notes: list[str] = []
+    if compatible and text.startswith(_COMPATIBILITY + "\n\n"):
+        notes.append(_COMPATIBILITY)
+        text = text[len(_COMPATIBILITY) + 2 :]
+    note = _NOTE.match(text)
+    if note is not None:
+        notes.append(note.group(0).strip())
+        text = text[note.end() :]
+    paper = _PAPER.match(text)
+    if paper is None:
+        return None
+    rest = text.partition("\n")[2]
+    line, newline, after = rest.partition("\n")
+    if newline and line in _CONVERTED:
+        notes.append(line)
+        rest = after
+    return paper.group(1), notes, rest
+
+
 def _eprint_record(arguments: Json, text: str) -> list[Read] | None:
     paper = _PAPER.match(text)
     if paper is None:
@@ -90,35 +226,37 @@ def _eprint_record(arguments: Json, text: str) -> list[Read] | None:
 
 
 def _eprint_fulltext(arguments: Json, text: str) -> list[Read] | None:
-    paper = _PAPER.match(text)
-    if paper is None:
+    header = eprint_header(text, compatible=True)
+    if header is None:
         return [] if "queue" in text.casefold() else None  # queued: nothing read yet
-    lines = text.split("\n", 2)
-    read = _PAGES.fullmatch(lines[1]) if len(lines) > 1 else None
+    paper, _, rest = header
+    read = _PAGES.fullmatch(rest.split("\n", 1)[0])
     if read is not None:
         first, last, of = (int(n) for n in read.groups())
         detail: Json = {"pages": list(range(first, min(last, of) + 1)), "of": of}
         extent = "whole" if first <= 1 and last >= of else "partial"
-        return [Read("eprint", paper.group(1), extent, detail, label=paper.group(1))]
-    # As the tool answered before 2026-10-31: the passages matching a query.
-    matched = _MATCHED.search(text)
+        return [Read("eprint", paper, extent, detail, label=paper)]
+    # Called with a query, or as the tool answered before 2026-10-31: the passages
+    # matching it.
+    matched = _MATCHED.search(rest)
     if matched is not None:
         detail: Json = {"passages": int(matched.group(1)), "query": str(arguments.get("query"))}
-        return [Read("eprint", paper.group(1), "partial", detail, label=paper.group(1))]
-    if _NONE_MATCHED.search(text) is not None:
-        return [Read("eprint", paper.group(1), "abstract_only", {}, label=paper.group(1))]
+        return [Read("eprint", paper, "partial", detail, label=paper)]
+    if _NONE_MATCHED.search(rest) is not None:
+        return [Read("eprint", paper, "abstract_only", {}, label=paper)]
     return None
 
 
 def _eprint_search(arguments: Json, text: str) -> list[Read] | None:
-    paper = _PAPER.match(text)
-    if paper is None:
+    header = eprint_header(text)
+    if header is None:
         return [] if "queue" in text.casefold() else None  # queued: nothing read yet
-    matched = _MATCHED.search(text)
+    paper, _, rest = header
+    matched = _MATCHED.search(rest)
     if matched is None:
         return []  # no passage matched: nothing of the paper was read
     detail: Json = {"passages": int(matched.group(1)), "query": str(arguments.get("query"))}
-    return [Read("eprint", paper.group(1), "partial", detail, label=paper.group(1))]
+    return [Read("eprint", paper, "partial", detail, label=paper)]
 
 
 def _web_fetch(arguments: Json, text: str) -> list[Read] | None:
@@ -213,6 +351,47 @@ def _csrc_record(arguments: Json, text: str) -> list[Read] | None:
     return [Read("nist", nist_key(ref), "abstract_only", {}, label=ref)]
 
 
+def _library_read(arguments: Json, text: str) -> list[Read] | None:
+    work = _WORK.match(text)
+    if work is None:
+        return []  # a refusal of the arguments: no paper was read
+    kind, key = library_key(work.group(1))
+    read = _LIBRARY_PAGES.search(text, work.end())
+    if " rendition by " not in work.group(2) or read is None:
+        return []  # not held, queued, or a page outside the text: nothing read
+    first, last, of = (int(n) for n in read.groups())
+    detail: Json = {"pages": list(range(first, min(last, of) + 1)), "of": of}
+    extent = "whole" if first <= 1 and last >= of else "partial"
+    return [Read(kind, key, extent, detail, label=work.group(1))]
+
+
+def _library_search(arguments: Json, text: str) -> list[Read] | None:
+    work = _WORK.match(text)
+    if work is None:
+        return []
+    matched = _MATCHED.search(text, work.end())
+    if matched is None:
+        return []  # no passage matched, or no text is held: nothing read
+    kind, key = library_key(work.group(1))
+    detail: Json = {"passages": int(matched.group(1)), "query": str(arguments.get("phrase"))}
+    return [Read(kind, key, "partial", detail, label=work.group(1))]
+
+
+def _library_extract(extent: str) -> Descriptor:
+    """A library tool that returns what was taken from a held text, such as its numbered
+    statements or its reference list (``partial``), or a model's summary of it, its card
+    (``abstract_only``): the paper, never its pages."""
+
+    def describe(arguments: Json, text: str) -> list[Read] | None:
+        work = _WORK.match(text)
+        if work is None or " rendition by " not in work.group(2):
+            return []
+        kind, key = library_key(work.group(1))
+        return [Read(kind, key, extent, {}, label=work.group(1))]
+
+    return describe
+
+
 def _no_read(arguments: Json, text: str) -> list[Read] | None:
     return []
 
@@ -222,6 +401,7 @@ DESCRIPTORS: Final[dict[str, Descriptor]] = {
     "e-print-mcp_eprint_fulltext": _eprint_fulltext,
     "e-print-mcp_search_eprint_fulltext": _eprint_search,
     "e-print-mcp_eprint_file": _no_read,
+    "e-print-mcp_eprint_originals": _no_read,
     "e-print-mcp_search_eprint": _no_read,
     "e-print-mcp_recent_eprint": _no_read,
     "e-print-mcp_refresh_eprint": _no_read,
@@ -229,6 +409,25 @@ DESCRIPTORS: Final[dict[str, Descriptor]] = {
     "web-fetch-mcp_fetch_page": _web_fetch,
     "web-fetch-mcp_fetch_continue": _fetch_continue,
     "web-fetch-mcp_fetch_links": _no_read,
+    "web-fetch-mcp_web_fetch_hosts": _no_read,
+    "paper-search-mcp_paper_copies": _no_read,
+    "paper-search-mcp_papers_by_ids": _no_read,
+    "paper-search-mcp_zbmath_search": _no_read,
+    "library-mcp_read_paper": _library_read,
+    "library-mcp_search_in_paper": _library_search,
+    "library-mcp_paper_statements": _library_extract("partial"),
+    "library-mcp_paper_references": _library_extract("partial"),
+    "library-mcp_paper_card": _library_extract("abstract_only"),
+    "library-mcp_paper_notes": _no_read,
+    "library-mcp_paper_status": _no_read,
+    "library-mcp_find_papers": _no_read,
+    "library-mcp_fetch_paper": _no_read,
+    "library-mcp_paper_file": _no_read,
+    "library-mcp_search_library": _no_read,
+    "library-mcp_related_papers": _no_read,
+    "library-mcp_paper_positions": _no_read,
+    "library-mcp_imports_of": _no_read,
+    "library-mcp_imports_near": _no_read,
     "firecrawl-mcp_firecrawl_scrape": _scrape,
     "firecrawl-mcp_firecrawl_research_read_paper": _read_paper,
     "nist-csrc-mcp_nist_read": _nist_read,

@@ -6,7 +6,7 @@ apiVersion: sandbox-science/v0alpha1
 kind: ToolClassification
 server: crypto-research-mcp
 prefix: portal_
-pinned: "2026-10-26"
+pinned: "2026-11-25"
 tools:
   portal_list_servers:
     class: read

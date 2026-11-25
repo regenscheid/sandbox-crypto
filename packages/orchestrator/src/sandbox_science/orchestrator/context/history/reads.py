@@ -31,6 +31,7 @@ from typing import Any, Final, cast
 
 from sandbox_science.orchestrator.control import ControlStore
 from sandbox_science.orchestrator.notices import unframed
+from sandbox_science.orchestrator.papers import normal
 
 Json = dict[str, Any]
 
@@ -93,6 +94,9 @@ def reads_of(
     cut = record.get("cut")
     if isinstance(cut, dict):
         found = [_cut(read, cast(Json, cut)) for read in found]
+    paged = record.get("paged")
+    if isinstance(paged, dict):
+        found = [_paged(read, cast(Json, paged)) for read in found]
     listed = cast(Json, record.get("recorded_files") or {}).get("files")
     recorded = {
         str(cast(Json, f).get("path")).removeprefix("./"): cast(Json, f)
@@ -118,6 +122,19 @@ def _cut(read: Read, cut: Json) -> Read:
     extent = "partial" if read.extent == "whole" else read.extent
     kept = {k: v for k, v in read.detail.items() if k in ("document", "final", "query")}
     detail: Json = {**kept, "cut": {"length": cut.get("length"), "shown": cut.get("shown")}}
+    return Read(read.kind, read.source, extent, detail, label=read.label)
+
+
+def _paged(read: Read, paged: Json) -> Read:
+    """A read whose result the toolbox cut between pages or passages (``descriptors.paged``):
+    the pages it left out are not read, so the read is ``partial``; the pages before them
+    were shown whole and count."""
+    left = {n for n in cast(list[object], paged.get("pages") or []) if type(n) is int}
+    detail: Json = {**read.detail, "left_out": {"length": paged.get("length"),
+                    "shown": paged.get("shown"), "pages": sorted(left)}}  # fmt: skip
+    if isinstance(read.detail.get("pages"), list):
+        detail["pages"] = [p for p in cast(list[object], read.detail["pages"]) if p not in left]
+    extent = "partial" if read.extent == "whole" else read.extent
     return Read(read.kind, read.source, extent, detail, label=read.label)
 
 
@@ -359,7 +376,7 @@ def reference_keys(
     identifiers = cast(Json, fields.get("identifiers") or {})
     keys: list[tuple[str, str]] = []
     if isinstance(eprint := identifiers.get("eprint"), str):
-        keys.append(("eprint", eprint.strip()))
+        keys.append(("eprint", normal("eprint", eprint) or eprint.strip()))
     if isinstance(url := identifiers.get("url"), str):
         keys.append(("web", url_key(url)))
     if isinstance(nist := identifiers.get("nist"), str):

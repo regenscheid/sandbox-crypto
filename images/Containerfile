@@ -25,9 +25,9 @@ ARG LATTICE_ESTIMATOR_COMMIT=53da5982597709ba0fdf94ea37a84d822310fd84
 ARG NODE_VERSION=24.22.2
 ARG NODE_SHA256_AMD64=48cc0e21e048790e54c0cf5749c2725005313d652651c40b7a21feb9697aaf75
 ARG NODE_SHA256_ARM64=eb187837a2230d4047161ac0be008584e16b46f726e9c9490ee35dc6b17d9ba8
-ARG OPENSHELL_VERSION=0.1.7
-ARG OPENSHELL_SHA256_AMD64=5c1adfcae797eac9b2e8b9280c66c1f75e4e84d9e31ce6938c5b994314ef6098
-ARG OPENSHELL_SHA256_ARM64=696b523c263895b69eaa7c7e6afbb19b8af6c65cd79c7ffac7b685b6e3aa23da
+ARG OPENSHELL_VERSION=0.1.10
+ARG OPENSHELL_SHA256_AMD64=2467a09d839bb9af43bf1d649d72e77e596578cbd8e567b6e55a0c504c222f5f
+ARG OPENSHELL_SHA256_ARM64=a6ad4833ca22a077d844e8405eae4092b32c9ae1e53b1b2151d77374117ff4c0
 
 # micromamba's release binary for the target architecture, checked against its published SHA-256.
 FROM scratch AS micromamba-amd64
@@ -364,13 +364,13 @@ FROM scratch AS trusted-openshell-amd64
 ARG OPENSHELL_VERSION
 ARG OPENSHELL_SHA256_AMD64
 ADD --checksum=sha256:${OPENSHELL_SHA256_AMD64} \
-    https://github.com/NVIDIA/OpenShell/releases/download/v${OPENSHELL_VERSION}/openshell-x86_64-unknown-linux-musl.tar.gz /openshell.tar.gz
+    https://github.com/ai-openshell/openshell/releases/download/v${OPENSHELL_VERSION}/openshell-x86_64-unknown-linux-musl.tar.gz /openshell.tar.gz
 
 FROM scratch AS trusted-openshell-arm64
 ARG OPENSHELL_VERSION
 ARG OPENSHELL_SHA256_ARM64
 ADD --checksum=sha256:${OPENSHELL_SHA256_ARM64} \
-    https://github.com/NVIDIA/OpenShell/releases/download/v${OPENSHELL_VERSION}/openshell-aarch64-unknown-linux-musl.tar.gz /openshell.tar.gz
+    https://github.com/ai-openshell/openshell/releases/download/v${OPENSHELL_VERSION}/openshell-aarch64-unknown-linux-musl.tar.gz /openshell.tar.gz
 
 FROM trusted-openshell-${TARGETARCH} AS trusted-openshell
 
@@ -392,7 +392,7 @@ RUN --mount=type=bind,from=trusted-openshell,source=/openshell.tar.gz,target=/tm
     mkdir /openshell && tar -xzf /tmp/openshell.tar.gz -C /openshell && \
     test -x /openshell/openshell
 ADD --checksum=sha256:d07c0367e2861e7fe70fa1b679f879f4fa2f9138ade4457d44ecf8b2e135bb45 \
-    https://raw.githubusercontent.com/NVIDIA/OpenShell/5d25211b25a8fc887e8d5c606d57d6ab22f1d76c/LICENSE /openshell/LICENSE
+    https://raw.githubusercontent.com/ai-openshell/openshell/152c59d3178039e3fbb4a5595f9fff7216a6be92/LICENSE /openshell/LICENSE
 
 FROM trusted-python AS trusted-web-build
 USER root
@@ -458,7 +458,7 @@ RUN --mount=type=bind,source=orchestrator/conda-lock.yml,target=/run/ss-build/co
         --source-url "${SOURCE_URL}" --base-image "${UBUNTU_IMAGE}" \
         --ubuntu-snapshot "${UBUNTU_SNAPSHOT}" --micromamba "${MICROMAMBA_VERSION}" \
         --source "nodejs|${NODE_VERSION}|MIT|https://nodejs.org/|upstream binary" \
-        --source "openshell|${OPENSHELL_VERSION}|Apache-2.0|https://github.com/NVIDIA/OpenShell|upstream binary" \
+        --source "openshell|${OPENSHELL_VERSION}|Apache-2.0|https://github.com/ai-openshell/openshell|upstream binary" \
         --expect-licenses "${LICENSES}"
 USER 1000:1000
 WORKDIR /sandbox
@@ -514,7 +514,7 @@ RUN --mount=type=bind,source=orchestrator/conda-lock.yml,target=/run/ss-build/co
     python -B /run/ss-build/record.py --profile trusted-worker --revision "${REVISION}" \
         --source-url "${SOURCE_URL}" --base-image "${UBUNTU_IMAGE}" \
         --ubuntu-snapshot "${UBUNTU_SNAPSHOT}" --micromamba "${MICROMAMBA_VERSION}" \
-        --source "openshell|${OPENSHELL_VERSION}|Apache-2.0|https://github.com/NVIDIA/OpenShell|upstream binary" \
+        --source "openshell|${OPENSHELL_VERSION}|Apache-2.0|https://github.com/ai-openshell/openshell|upstream binary" \
         --expect-licenses "${LICENSES}"
 USER 1000:1000
 WORKDIR /sandbox

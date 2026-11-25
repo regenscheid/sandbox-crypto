@@ -1,0 +1,70 @@
+# SPDX-License-Identifier: MIT
+# The classification of crypto-research-mcp's library-mcp tools (D96, docs/MCP-CONNECTORS.md).
+# Reviewed by the admin. Not pinned: no raw listing has shown the library's tools yet (the
+# portal's listing for the platform's service token lacks the server), so no tool has a sha256
+# and, with no schema to check a rule against, fetch_paper is a write as a whole.
+apiVersion: sandbox-science/v0alpha1
+kind: ToolClassification
+server: crypto-research-mcp
+prefix: library-mcp_
+tools:
+  library-mcp_fetch_paper:
+    class: write
+    reason: "Acquires a paper into the library's shared store now, by paid routes too; a url the agent picks is fetched and kept for the paper."
+    significant: {title: identifier, url: url}
+  library-mcp_find_papers:
+    class: read
+    reason: "Searches the library and its indexes; registering what it finds in the catalogue fills the server's cache (D95: a read)."
+    significant: {query: query}
+  library-mcp_imports_near:
+    class: read
+    reason: "What the papers near one paper took from others."
+    significant: {title: identifier}
+  library-mcp_imports_of:
+    class: read
+    reason: "What one paper took from others, or what held papers took from it."
+    significant: {title: identifier}
+  library-mcp_paper_card:
+    class: read
+    reason: "One paper's model-made card of claims, each with a quote and page."
+    significant: {title: identifier}
+  library-mcp_paper_file:
+    class: read
+    reason: "A signed link to a held paper's PDF or text."
+    significant: {title: identifier}
+  library-mcp_paper_notes:
+    class: read
+    reason: "The notes people made on one paper in the web reader."
+    significant: {title: identifier}
+  library-mcp_paper_positions:
+    class: read
+    reason: "How held papers position themselves against one paper."
+    significant: {title: identifier}
+  library-mcp_paper_references:
+    class: read
+    reason: "One held paper's reference list, resolved to catalogued papers."
+    significant: {title: identifier}
+  library-mcp_paper_statements:
+    class: read
+    reason: "One held paper's numbered theorems, lemmas and definitions, verbatim."
+    significant: {title: identifier}
+  library-mcp_paper_status:
+    class: read
+    reason: "One paper's identifiers, abstract and holdings; an unknown one is looked up and catalogued (D95: a read)."
+    significant: {title: identifier}
+  library-mcp_read_paper:
+    class: read
+    reason: "Reads a held paper's text by page; the first read may fetch or queue a budgeted conversion (D95: a read)."
+    significant: {title: identifier}
+  library-mcp_related_papers:
+    class: read
+    reason: "Papers citing or cited by one paper; those found are catalogued (D95: a read)."
+    significant: {title: identifier}
+  library-mcp_search_in_paper:
+    class: read
+    reason: "Searches one held paper's text for a phrase; the first search may queue a budgeted conversion (D95: a read)."
+    significant: {title: identifier, query: phrase}
+  library-mcp_search_library:
+    class: read
+    reason: "Searches the held texts and what was extracted from them."
+    significant: {query: query}
