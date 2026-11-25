@@ -219,12 +219,15 @@ MIN_QUOTE: Final = 20
 class QuoteInput(Contract):
     """What a claim or result quotes from the reference it cites (LG-8, CR-4): a PDF's
     page and lines as ``pdf_pages`` or ``pdf_search`` numbered them, with the page's
-    printed label, or an ePrint passage as the e-print tools gave it, with the date stamp
-    they gave the paper; and the text, as it was read."""
+    printed label; an ePrint passage as the e-print tools gave it, with the date stamp
+    they gave the paper; or a library text's physical page as the library's
+    ``read_paper`` or ``search_in_paper`` gave it, with the revision its result named;
+    and the text, as it was read."""
 
-    source: Literal["pdf", "eprint"]
+    source: Literal["pdf", "eprint", "library"]
     page: Annotated[int, Field(ge=1, le=100000, strict=True)] | None = None
-    """The PDF's physical page, from 1."""
+    """The PDF's physical page, from 1; for a library text, the physical page its
+    result named."""
     label: Annotated[str, Field(min_length=1, max_length=32)] | None = None
     first_line: Annotated[int, Field(ge=1, le=100000, strict=True)] | None = None
     last_line: Annotated[int, Field(ge=1, le=100000, strict=True)] | None = None
@@ -232,6 +235,10 @@ class QuoteInput(Contract):
     """For an ePrint, the date stamp the e-print tools gave the paper, such as
     ``2015-06-30T18:41:29Z; 2015-06-30T20:25:17Z``: the paper ID and this stamp are
     what names the version, as the server reports it."""
+    revision: Annotated[str, Field(pattern=r"^[0-9a-f]{12,64}$")] | None = None
+    """For a library text, the revision its result named on its second line, such as
+    ``3fa2c1d0e9b8``: the hexadecimal start of the PDF's SHA-256 the text was made
+    from, which names the version the library read."""
     text: Annotated[str, Field(min_length=1, max_length=2000)]
     """At least ``MIN_QUOTE`` characters that are not white space: a few words match too
     much to vouch for anything."""
@@ -242,6 +249,8 @@ class QuoteInput(Contract):
             raise ValueError(
                 f"a quote holds at least {MIN_QUOTE} characters that are not white space"
             )
+        if self.source != "library" and self.revision is not None:
+            raise ValueError("only a library quote names a revision")
         if self.source == "pdf":
             if self.page is None or self.first_line is None or self.last_line is None:
                 raise ValueError(
@@ -250,6 +259,18 @@ class QuoteInput(Contract):
                 )
             if self.dated is not None:
                 raise ValueError("a PDF quote names no date stamp: the PDF's hash names it")
+        elif self.source == "library":
+            if self.page is None or self.revision is None:
+                raise ValueError(
+                    "a library quote names the physical page and the revision its "
+                    "read_paper or search_in_paper result named, the revision as its second "
+                    'line prints it: "page": 4, "revision": "3fa2c1d0e9b8"'
+                )
+            if self.dated is not None or self.first_line is not None or self.label is not None:
+                raise ValueError(
+                    "a library quote names its page and revision only: no date stamp, "
+                    "printed label or lines"
+                )
         elif self.dated is None:
             raise ValueError(
                 "an ePrint quote names the date stamp the e-print tools gave the paper, "

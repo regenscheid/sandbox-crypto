@@ -96,7 +96,17 @@ export function checkedBy(locator: Record<string, unknown> | null): string {
   return `${outcome}${note}`;
 }
 
-/** Where a quote is in its source: a PDF's page and lines, or an ePrint and its date stamp. */
+/** The identifiers a library quote's reference names, such as `eprint 2015/625`. */
+const libraryNames = (named: Record<string, unknown>, show: (text: string) => string): string =>
+  ['eprint', 'doi', 'arxiv', 'nist']
+    .filter((scheme) => typeof named[scheme] === 'string')
+    .map((scheme) => `${scheme} ${show(named[scheme] as string)}`)
+    .join(', ') || '?';
+
+/**
+ * Where a quote is in its source: a PDF's page and lines, an ePrint and its date stamp, or
+ * a library text's page and revision.
+ */
 export function quoteWhere(locator: Record<string, unknown> | null): string {
   if (locator === null) return '';
   if (locator.source === 'pdf') {
@@ -104,6 +114,9 @@ export function quoteWhere(locator: Record<string, unknown> | null): string {
     return `, PDF page ${String(locator.page)}${label}, lines ${String(locator.first_line)}–${String(locator.last_line)}`;
   }
   const named = (locator.named ?? {}) as Record<string, unknown>;
+  if (locator.source === 'library') {
+    return `, library text of ${libraryNames(named, String)}, page ${String(locator.page)}, revision ${String(locator.revision)}`;
+  }
   return `, ePrint ${String(named.eprint ?? '?')} dated ${String(locator.dated)}`;
 }
 
@@ -113,8 +126,8 @@ export interface QuoteView {
   reference: LinkTarget;
   /**
    * Where the quote is, each character a person may not see as its code point: a PDF's
-   * page, printed label and lines, with the start of its SHA-256, or an ePrint and the
-   * date stamp the e-print tools gave it.
+   * page, printed label and lines, with the start of its SHA-256, an ePrint and the
+   * date stamp the e-print tools gave it, or a library text's page and revision.
    */
   where: string;
   /** The PDF viewer at the quote's page, when the link names a PDF revision and its hash. */
@@ -162,6 +175,16 @@ export function quoteView(project: string, link: EvidenceLink): QuoteView | null
       where: `PDF page ${page ?? '?'}${label}, ${lines}${digest}`,
       pdf,
       page,
+      text,
+    };
+  }
+  if (locator.source === 'library') {
+    const revision = typeof locator.revision === 'string' ? visible(locator.revision) : '?';
+    return {
+      reference,
+      where: `library text of ${libraryNames(named, visible)}, page ${String(count(locator.page) ?? '?')}, revision ${revision}`,
+      pdf: null,
+      page: null,
       text,
     };
   }

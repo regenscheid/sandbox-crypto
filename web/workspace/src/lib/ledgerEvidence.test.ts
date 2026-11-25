@@ -88,6 +88,19 @@ describe('an evidence link', () => {
     expect(evidenceTarget('p1', eprint).text).toBe(
       'quote of REF-1 r2, ePrint 2015/625 dated 2015-06-30',
     );
+    const library = {
+      ...eprint,
+      locator: {
+        source: 'library',
+        page: 7,
+        revision: '3fa2c1d0e9b8',
+        named: { eprint: '2015/625' },
+        text: 't',
+      },
+    };
+    expect(evidenceTarget('p1', library).text).toBe(
+      'quote of REF-1 r2, library text of eprint 2015/625, page 7, revision 3fa2c1d0e9b8',
+    );
   });
 
   it("to a delegation's outcome says what the check returned and shows its parent's note", () => {

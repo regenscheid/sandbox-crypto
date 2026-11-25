@@ -252,16 +252,16 @@ _LINK = {
 _EVIDENCE = {
     "type": "object",
     "description": (
-        "Evidence a claim, result or decision holds: its role, its type, a scope note saying "
-        "what it covers, and one pinned target: entry (with revision, its current one by "
-        "default), artifact with revision (find_artifacts gives both by path; sha256 is best "
-        "left out), document with revision, block and optionally math (a span), or review. "
-        "An independent_check names the revision of this entry it checked as checked; its "
-        "target can be delegation, an ended delegation that checked that revision. A claim "
+        "Evidence a claim, result or decision holds: its role, its type, a scope note (what "
+        "it covers), and one pinned target: entry (with revision, its current one by "
+        "default), artifact with revision (find_artifacts gives both by path; leave "
+        "sha256 out), document with revision, block and optionally math (a span), or review. "
+        "An independent_check names the revision it checked as checked; its target can be "
+        "delegation, an ended delegation that checked that revision. A claim "
         "or result cites a reference with supports evidence of type source_claim naming it, "
-        "and a published one must; best with quote: what it quotes, from the reference's "
-        "PDF (page and lines as pdf_pages numbered them) or the e-print tools (the date "
-        "stamp they gave)"
+        "and a published one must; best with quote, from its PDF (page and lines as "
+        "pdf_pages numbered them), e-print tools (their date stamp) or the library "
+        "(page, revision)"
     ),
     "properties": {
         "role": {
@@ -286,12 +286,13 @@ _EVIDENCE = {
         "quote": {
             "type": "object",
             "properties": {
-                "source": {"type": "string", "enum": ["pdf", "eprint"]},
+                "source": {"type": "string", "enum": ["pdf", "eprint", "library"]},
                 "page": {"type": "integer", "minimum": 1},
                 "label": {"type": "string"},
                 "first_line": {"type": "integer", "minimum": 1},
                 "last_line": {"type": "integer", "minimum": 1},
                 "dated": {"type": "string"},
+                "revision": {"type": "string"},
                 "text": {"type": "string"},
             },
             "required": ["source", "text"],

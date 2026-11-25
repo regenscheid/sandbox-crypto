@@ -502,7 +502,9 @@ def test_the_skeleton_keeps_decisions_caveats_reads_and_literal_keys(archive: Ar
     digest = "ab" * 32
     sample = {
         "state": "succeeded",
-        "stdout": f"order = 1234567890123456789 {digest}",
+        "stdout": f"order = 1234567890123456789 {digest} "
+        + "x" * 4000
+        + " eprint/2025/0417, doi:10.1007/978-3-030_7. arxiv:2401.01234 nist:sp.800-56ar3",
         "sample": "Shown here only in part",
         "saved": {"stdout": "call-output/x.txt"},
     }
@@ -530,6 +532,13 @@ def test_the_skeleton_keeps_decisions_caveats_reads_and_literal_keys(archive: Ar
     assert keys["2024/1234"] == rows[0].message_id
     assert keys[digest] == keys["1234567890123456789"] == rows[3].message_id
     assert "order = 1234567890123456789" in keys
+    # The library's work labels are kept literally, a DOI label once, not also bare.
+    labels = ("eprint/2025/0417", "doi:10.1007/978-3-030_7.", "arxiv:2401.01234",
+              "nist:sp.800-56ar3")  # fmt: skip
+    for label in labels:
+        assert label.rstrip(".") in keys
+    assert "10.1007/978-3-030_7" not in keys
+    assert "2025/0417" not in keys
     assert any("ledger_change: D-4 → rejected, C-2 → proposed" in line for line in record.skeleton)
     # Stored and read back as it was built.
     stored = FoldRecord.of(

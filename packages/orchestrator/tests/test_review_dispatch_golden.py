@@ -13,8 +13,9 @@ context (lab 42's B5), ``sandbox-consistency-6`` to take earlier runs' actions a
 context, ``sandbox-consistency-7`` to know that a rejected rebuttal with evidence is a
 challenge, ``sandbox-consistency-8`` to suggest the handle of a ledger entry an answer
 relies on without naming it, ``sandbox-consistency-9`` to check cryptographic claims
-from their form, and ``sandbox-consistency-10`` to finish within its budget, with the
-manifest marking the window's new items and the run record naming what a review covered;
+from their form, ``sandbox-consistency-10`` to finish within its budget, with the
+manifest marking the window's new items and the run record naming what a review covered,
+and ``sandbox-consistency-11`` to read a library text as a quote's source;
 a change to any of them changes what a reviewer sees. The finding
 lifecycle (CR-40 to CR-47) changed them once more without a rubric: a copied finding
 carries its queued re-check and the author's dismissal, a fix leaves it ``open``, and the
@@ -50,9 +51,9 @@ from .test_consistency import store as store
 
 GOLDEN = {
     # Author and fallback windows now include recent prior evidence for boundary checks.
-    "author": "6ad23a9599e87c2ab841eb13ec5b4b5150c056e2dc198cdef3dd79bf71663869",
-    "confirmation": "ed623aaa27833f97b78c706fbef8a5bb8ebd02ed0ccc9c4d3eded3d38d6dae6c",
-    "fallback": "64577b06741c214d0a34a66eec0afeee1f5a8a9f0736174716d49ab8f90c51ea",
+    "author": "4cced345ecf5ae71a5efe704f4dedabb88faa6daad3a334561b27ce3b6adb18f",
+    "confirmation": "48c3c6b63f56e09eaae5c24d90804b3bc42ee0ce257e39eb0dbd87a673f65e08",
+    "fallback": "7c75deb4888063028241719937a36224c8b8d5d63c67c9371f4d6a4b730bb790",
 }
 
 

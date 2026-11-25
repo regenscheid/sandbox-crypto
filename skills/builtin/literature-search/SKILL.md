@@ -1,6 +1,6 @@
 ---
 name: literature-search
-description: Finding papers, standards and known results through the project's MCP connectors (IACR ePrint, NIST CSRC, paper search), recording them as ledger references, and quoting them. Use it before citing literature or saying what is known.
+description: Finding, reading and quoting papers, standards and known results through the project's MCP connectors (the paper library first, then IACR ePrint, NIST CSRC, paper and web search), and recording them as ledger references. Use it before citing literature or saying what is known.
 ---
 
 # Searching the literature
@@ -17,22 +17,36 @@ The project's MCP servers are reached through `mcp_tools`. Its description carri
 On this platform's crypto deployment, the crypto-research-mcp connector offers these servers, among others. The index is the authority: a deployment can list other names.
 
 ```text
+library-mcp       one catalogue of papers: ePrint, arXiv, DOI and NIST, read by page
+                  library-mcp_find_papers, library-mcp_read_paper,
+                  library-mcp_search_in_paper, library-mcp_fetch_paper,
+                  library-mcp_paper_status, library-mcp_paper_card,
+                  library-mcp_paper_statements, library-mcp_paper_references,
+                  library-mcp_related_papers, library-mcp_paper_positions,
+                  library-mcp_imports_of, library-mcp_search_library
 e-print-mcp       IACR ePrint archive
                   e-print-mcp_search_eprint, e-print-mcp_get_eprint,
                   e-print-mcp_search_eprint_fulltext, e-print-mcp_eprint_fulltext,
                   e-print-mcp_recent_eprint, e-print-mcp_corpus_stats
 nist-csrc-mcp     NIST CSRC publications
-                  nist-csrc-mcp_nist_search, nist-csrc-mcp_nist_get_publication,
-                  nist-csrc-mcp_nist_read, nist-csrc-mcp_nist_get_pdf,
-                  nist-csrc-mcp_nist_get_corpus_status
-paper-search-mcp  arXiv, DBLP, Crossref, OpenAlex, Semantic Scholar
-                  paper-search-mcp_arxiv_search, paper-search-mcp_dblp_search,
-                  paper-search-mcp_crossref_search, paper-search-mcp_openalex_search,
-                  paper-search-mcp_semantic_scholar_search,
-                  paper-search-mcp_paper_details, paper-search-mcp_paper_citations
+                  nist-csrc-mcp_nist_search, nist-csrc-mcp_nist_read,
+                  nist-csrc-mcp_nist_get_pdf
+paper-search-mcp  arXiv, DBLP, Crossref, OpenAlex, Semantic Scholar, zbMATH
+firecrawl-mcp     web search: firecrawl-mcp_firecrawl_search
+web-fetch-mcp     a web page: web-fetch-mcp_web_fetch, web-fetch-mcp_fetch_page
 ```
 
-Use the server made for the job: the ePrint server's own search for ePrint papers before a general web search, the NIST server for NIST publications, and DBLP or Crossref for venues and DOIs.
+## The library first
+
+The library is the first place to find, read and quote a paper. Each paper has a work label, which every result prints at its head: eprint/2024/1234, doi:10.1007/..., arxiv:2401.01234 or nist:ir-8610 (any identifier finds it). The second line names the text the library holds: its tier, its converter, its page count and its revision, the start of the PDF's SHA-256.
+
+- **Discover** with library-mcp_find_papers: one ranked list across the library, ePrint and the outside indexes. Each hit's rung line says what is held and the next call, such as "held: text (quality, 15 pp), card, 23 statements → read_paper, paper_card"; "not held → fetch_paper" means the library knows the paper but has no copy.
+- **Read** with library-mcp_read_paper (identifier, start_page, page_count up to 5), each page whole under a "## Page" heading, and its last line names the next pages. A heading that says "corrected by a reader" is a page a person corrected. Lines that begin "[Note by" after a page are people's notes, not the paper. A long result ends with the platform's line naming the pages it left out: read them with the next call. Search one paper for a literal phrase with library-mcp_search_in_paper; each passage is under a "Physical page" line.
+- **Acquire** with library-mcp_fetch_paper only when a read says the paper is not held, or its free routes failed. "Queued" means the library is fetching it: do other work and read again later; calling again joins the same request.
+- **Orient** with library-mcp_paper_card and library-mcp_paper_statements. A card is a model's summary: never quote it as the paper. Quote only what read_paper or search_in_paper returned.
+- **Follow citations** with library-mcp_paper_references, library-mcp_related_papers, library-mcp_paper_positions and library-mcp_imports_of. **Search the held texts** with library-mcp_search_library, then read the page it names.
+
+Go to another server when it does the job better: the e-print server for the newest ePrint reports and their date stamps, the NIST server for NIST publications, web search and web fetch for what is not a paper (project pages, mailing lists, source repositories), and a downloaded PDF with the PDF tools when a quote must name its lines.
 
 ## Searching well
 
@@ -52,7 +66,7 @@ The project's policy decides each connector call. A call that needs approval wai
 
 ## Recording a reference
 
-A reference entry keeps a source's citation. Its statement is the citation text. Its fields name at least one locator (an identifier, or the PDF) and one date (published, version or retrieved). Identifiers use the schemes doi, eprint, arxiv, nist, isbn and url. Write an ePrint identifier exactly as the e-print tools print it in brackets at the head of a result, such as 2015/1234: the citation check compares it as written.
+A reference entry keeps a source's citation. Its statement is the citation text. Its fields name at least one locator (an identifier, or the PDF) and one date (published, version or retrieved). Identifiers use the schemes doi, eprint, arxiv, nist, isbn and url. Take them from the work label or the e-print tools' brackets: the label eprint/2015/1234 is the eprint identifier 2015/1234, doi:10.1007/x the doi 10.1007/x, and likewise for arxiv and nist. A paper read through both servers is one paper. The library labels a paper known by nothing better with an OpenAlex ID or a URL: a quote of that text cannot be confirmed, so record the paper's DOI, ePrint or arXiv identifier if it has one, or quote its PDF.
 
 ```json
 {"key": "ref", "type": "reference", "title": "A short title of the paper",
@@ -63,23 +77,32 @@ A reference entry keeps a source's citation. Its statement is the citation text.
 
 A claim or result taken from the literature has origin published. It cites its reference with a supports link of type source_claim, best with a quote, and one change can create both, naming the new reference as new:ref. The recording-results skill covers the rest of the ledger.
 
-## Quoting an ePrint passage
+## Quoting a paper's text
 
-The e-print server has two tools for a paper's own text. e-print-mcp_search_eprint_fulltext searches one paper (paper_id) for a literal word or phrase (query, words that are in the paper, not a question) and returns the passages that hold it, each under a "Physical page" line; a line such as "2 passage(s) matching ..." echoes the phrase. e-print-mcp_eprint_fulltext reads the paper page by page (start_page, page_count), each page under a "## Page" heading, and ends by naming the next pages to read. Neither prints the paper's date stamp: e-print-mcp_get_eprint does, on its Date line. The citation check looks for a quote inside one passage or page of that paper that a tool returned in this session, with a date stamp get_eprint gave that paper in this session. So:
+The citation check looks for a quote inside one page or passage of the paper that a tool returned in this session. For any quote:
 
-- call get_eprint for the paper in this session, and give its Date line's value as the quote's date stamp, exactly as printed;
-- quote from one passage or one page, never from a header, the abstract or the echoed phrase; a quote that runs across a page break is not found, so keep it within a page;
-- a quote of exactly what you searched for counts only when its passage holds more than that, so search for a phrase and quote the sentence around it;
-- copy the passage's words exactly; only white space may differ;
-- read the passage or page in this session before recording the quote: the check reads this session's tool results.
+- quote from one page or passage, never from a header, a card, a note, the echoed phrase or the platform's line about pages left out; a quote across a page break is not found;
+- a quote of exactly what you searched for counts only when its passage holds more, so search for a phrase and quote the sentence around it;
+- copy the words exactly; only white space may differ;
+- read the page or passage in this session before recording the quote.
+
+**From the library** (library-mcp_read_paper or library-mcp_search_in_paper): give the physical page, from the "## Page" heading or the "Physical page" line, and the revision from the result's second line, exactly as printed. The check finds the quote only in a read of that page at that revision.
 
 ```json
 {"role": "supports", "type": "source_claim", "entry": "new:ref",
  "scope": "The attack's cost for the 128-bit parameter set",
+ "quote": {"source": "library", "page": 7, "revision": "3fa2c1d0e9b8",
+           "text": "the sentence as the returned page gives it, at least 20 characters"}}
+```
+
+**From the e-print server**: e-print-mcp_eprint_fulltext reads a paper page by page and e-print-mcp_search_eprint_fulltext searches it for a phrase; neither prints the paper's date stamp, which e-print-mcp_get_eprint does, on its Date line. Call get_eprint for the paper in this session, and give that value as the quote's date stamp.
+
+```json
+{"role": "supports", "type": "source_claim", "entry": "new:ref",
  "quote": {"source": "eprint", "dated": "2015-06-30T18:41:29Z; 2015-06-30T20:25:17Z",
            "text": "the sentence as the returned passage or page gives it, at least 20 characters"}}
 ```
 
-A quote of an ePrint passage can confirm a published result through the citation check alone. A PDF quote needs the user to vouch for the PDF first (see the pdf-reading skill). The ledger names an ePrint by its ID and date stamp, as the server reports them, not by a hash of its text.
+A quote of a library text or an ePrint passage can confirm a published result through the citation check alone. A PDF quote needs the user to vouch for the PDF first (see the pdf-reading skill). The ledger names a library text by its revision and an ePrint by its date stamp, as the servers report them, not by a hash of the text.
 
-The citation check reads no other connector's text. To quote another source, such as a NIST publication, download its PDF (the NIST server's get-PDF tool gives its address and SHA-256), compare the hash, publish the file, and quote it with the PDF tools as the pdf-reading skill describes.
+The check reads no other connector's text: not a card, a statement list, a NIST read or a web page. To quote such a source, download its PDF (the NIST server's get-PDF tool gives its address and SHA-256), compare the hash, publish the file, and quote it with the PDF tools as the pdf-reading skill describes.
