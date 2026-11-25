@@ -64,8 +64,13 @@ KEPT: Final = frozenset({"user", "change"})
 FAILED: Final = frozenset({"failed", "timed_out", "cancelled", "lost", "error"})
 _KEYS: Final = (
     re.compile(r"(?<![\w-])[0-9a-fA-F]{32,}(?![\w-])"),  # hashes
+    re.compile(r"(?<![\w/])eprint/(?:19|20)\d\d/\d{3,5}(?![\w/])"),  # library ePrint labels
+    re.compile(  # the library's other work labels (papers.library_paper)
+        r"\b(?:doi:10\.\d{4,9}/[^\s\"'<>\\]+[^\s\"'<>\\.,;:)\]]|arxiv:[\w./-]{3,40}\w"
+        r"|nist:[\w.-]{0,80}\w)"
+    ),
     re.compile(r"(?<![\w/])(?:19|20)\d\d/\d{3,5}(?![\w/])"),  # ePrint IDs
-    re.compile(r"\b10\.\d{4,9}/[^\s\"'<>\\]+[^\s\"'<>\\.,;:)\]]"),  # DOIs
+    re.compile(r"(?<!doi:)\b10\.\d{4,9}/[^\s\"'<>\\]+[^\s\"'<>\\.,;:)\]]"),  # DOIs
     re.compile(r"(?<![\w.])\d{12,}(?![\w.])"),  # long numbers
     re.compile(r"\b[A-Za-z_]\w{0,40} ?= ?-?\d[\w.^{}*+-]{0,60}"),  # name = value
 )

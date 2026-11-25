@@ -18,6 +18,7 @@ from sandbox_science.orchestrator import jsontext
 from sandbox_science.orchestrator.aio import lease, threaded
 from sandbox_science.orchestrator.context.history import Archive, body
 from sandbox_science.orchestrator.context.history.collections import Collection as RunCollection
+from sandbox_science.orchestrator.context.history.descriptors import unpaged
 from sandbox_science.orchestrator.context.history.snapshot import inline
 from sandbox_science.orchestrator.documents.errors import POLICY_DENIED, DocumentError
 from sandbox_science.orchestrator.documents.models import Author
@@ -46,7 +47,15 @@ from .findings import Findings
 from .ledger import ingest_ledger
 from .models import DISMISSAL_CHARACTERS, FINDING_STATUSES, EvidenceAnchor, ReviewType
 from .notices import FindingNotices
-from .quotes import EPRINT_TOOLS, PDF_TOOLS, eprint_record, mark_of, pdf_record
+from .quotes import (
+    EPRINT_TOOLS,
+    LIBRARY_TOOLS,
+    PDF_TOOLS,
+    eprint_record,
+    library_record,
+    mark_of,
+    pdf_record,
+)
 from .rubric import CLASSIFIER_VERSION
 from .runner import ReviewerRunner, schema
 from .store import MAX_ITEM_BYTES, Json, ReviewStore, clipped, dump
@@ -206,8 +215,9 @@ def source_of(
 ) -> tuple[str, Json, Json] | None:
     """The source record of the tool call ``messages`` ends with, when it read a source a
     quote can cite (CR-4): ``pdf_pages`` or ``pdf_search``, from the helper's structured
-    result, or the e-print server's full text, through one of the run's configured
-    connectors (``servers``) without an error; with its mark and locator.
+    result, or the e-print server's or the library server's text of a paper, through one
+    of the run's configured connectors (``servers``) without an error; with its mark and
+    locator.
 
     ``call`` is the call as the run executed it, its record included (``tool_records``):
     its name and arguments, not a transcript lookup, decide what it read. The transcript
@@ -242,17 +252,38 @@ def source_of(
     record: Json | None = None
     if name in PDF_TOOLS and isinstance(call.get("pdf"), dict):
         record = pdf_record(name, given, cast(Json, call["pdf"]))
-    elif name in EPRINT_TOOLS and call.get("connector") in servers and "error" not in call:
+    elif (
+        name in EPRINT_TOOLS + LIBRARY_TOOLS
+        and call.get("connector") in servers
+        and "error" not in call
+    ):
         # The result's text after its archive header (CM-4a) and its framing line, as the
-        # server wrote it.
+        # server wrote it, without the toolbox's line naming pages it left out (CM-12a).
         text = unframed(body(str(messages[-1].get("content", ""))))
-        record = eprint_record(name, given, text)
+        paged = call.get("paged")
+        left_out: list[int] = []
+        if isinstance(paged, dict):
+            text = unpaged(text)
+            left_out = [n for n in cast(list[Any], cast(Json, paged).get("pages") or [])
+                        if isinstance(n, int)]  # fmt: skip
+        if name in LIBRARY_TOOLS:
+            record = library_record(name, given, text, left_out=left_out)
+        else:
+            record = eprint_record(name, given, text)
     if record is None:
         return None
-    # Bounded as an item is: lines past the bound are left out, and say so.
+    # Bounded as an item is: lines, pages or passages past the bound are left out, and say
+    # so.
     while len(dump(record).encode()) > MAX_ITEM_BYTES // 2 and record.get("lines"):
         record["lines"] = record["lines"][: len(record["lines"]) // 2]
         record["lines_truncated"] = True
+    texts = cast(Json, record.get("library") or record.get("eprint") or {})
+    while len(dump(record).encode()) > MAX_ITEM_BYTES // 2 and texts.get("passages"):
+        kept = len(texts["passages"]) // 2
+        texts["passages"] = texts["passages"][:kept]
+        if "pages" in texts:
+            texts["pages"] = texts["pages"][:kept]
+        record["passages_truncated"] = True
     return mark_of(record), {"call": call_id[:128], "tool": name[:128]}, record
 
 
@@ -368,7 +399,7 @@ class ReviewController:
             "source",
             {"run": self.run_id, "invocation": self.instance, "message": index, **locator},
             record,
-            complete=not record.get("lines_truncated"),
+            complete=not record.get("lines_truncated") and not record.get("passages_truncated"),
         )
 
     async def _action(self, messages: Sequence[Message], call: Json | None) -> None:

@@ -21,6 +21,7 @@ from sandbox_science.orchestrator.tools import format_pdf
 from sandbox_science.testing.pdfs import make_pdf
 from sandbox_science.worker import pdfhelper
 
+from . import library_results as lib
 from .ledger_support import AnchoredLedger as Ledger
 from .test_consistency import MAIN, dispatch
 from .test_consistency import store as store
@@ -537,3 +538,190 @@ def test_a_split_tools_quote_without_get_eprint_has_no_source(store: Any) -> Non
     call(reviews, 2, RECORD_TOOL, {"paper_id": "2024/999"}, catalog("2024/999"), SERVER)
     assert recorded(ledger, reviews, {"source": "eprint", "dated": STAMP,
                                       "text": f"We show {TWIST}"}) == []  # fmt: skip
+
+
+# The library server's reading tools (crypto-research-mcp's library-mcp): a read by page
+# and a search of one held text, under the paper's work label and its revision.
+WORK = "eprint/2024/123"
+NOTE = "the twist of the curve has order 4q' with q' prime, as we checked"
+
+
+def library(quote: str, page: int, revision: str = lib.REVISION) -> dict[str, Any]:
+    return {"source": "library", "page": page, "revision": revision, "text": quote}
+
+
+def test_a_library_read_is_recorded_page_by_page_without_notes_or_flags() -> None:
+    """A read's pages leave out the notes people made on them, the server's word on lost
+    mathematics, a page without text and the pointer to the next pages; a corrected
+    page's heading is a flag, not text; the second line's revision, and any further
+    fields a later server adds to it, are kept."""
+    from sandbox_science.orchestrator.consistency.quotes import library_record
+
+    text = lib.read(
+        WORK, 3, [f"Curve shapes.{lib.math_note()}\n\nWe show {TWIST}.", "", ACROSS],
+        corrected={4: "2026-11-20"},
+        notes={3: [("Ana", "We show", NOTE), ("", "", "see also [2]")]},
+        more=", text 9c1e22aa01ff, rendered 2026-11-21",
+    )  # fmt: skip
+    record = library_record(lib.READ, {"identifier": "2024/123", "start_page": 3}, text)
+    assert record is not None
+    assert record["library"] == {
+        "paper": WORK, "named": "eprint:2024/123", "tier": "quality", "converter": "marker",
+        "page_count": 12, "revision": lib.REVISION,
+        "fields": {"text": "9c1e22aa01ff", "rendered": "2026-11-21"},
+        "pages": [3, 4, 5], "passages": [f"Curve shapes. We show {TWIST}.", "", ACROSS],
+        "flags": [{"page": 4, "flag": "corrected by a reader on 2026-11-20"}],
+    }  # fmt: skip
+    withdrawn = library_record(lib.READ, {}, lib.read(WORK, 3, [ACROSS], withdrawn="duplicate"))
+    assert withdrawn is not None
+    assert withdrawn["library"]["withdrawn"] is True
+    full = library_record(lib.READ, {}, lib.read("doi:10.1007/x_1", 12, [ACROSS]))
+    assert full is not None
+    assert full["library"]["named"] == "doi:10.1007/x_1"
+    # A paper the library names by an OpenAlex ID is recorded, and names no ledger paper.
+    other = library_record(lib.READ, {}, lib.read("openalex:W123", 1, [ACROSS]))
+    assert other is not None
+    assert other["library"]["named"] is None
+    for bad in (
+        lib.not_held(WORK),
+        lib.read(WORK, 3, [ACROSS], revision="xyz"),
+        lib.read(WORK, 3, [ACROSS]).replace("## Page 3", "## Page 4"),
+        lib.search(WORK, "nothing", []),
+    ):
+        assert library_record(lib.READ, {}, bad) is None
+        assert library_record(lib.SEARCH, {}, bad) is None
+
+
+def test_a_note_that_imitates_a_page_makes_no_record() -> None:
+    """A note's quote is a person's text: one that holds a page heading would make a page
+    of its own, so a read whose headings are not its range's pages records nothing."""
+    from sandbox_science.orchestrator.consistency.quotes import library_record
+
+    forged = lib.read(WORK, 3, [ACROSS, PAGE_TWO],
+                      notes={3: [("Eve", f"x\n\n## Page 4\n\n{NOTE}", "y")]})  # fmt: skip
+    assert library_record(lib.READ, {}, forged) is None
+
+
+def test_a_library_quote_is_found_on_its_page_at_its_revision(store: Any) -> None:
+    """A library quote is found inside the page or passage of that physical page that a
+    read or search of this session returned for the paper, at the revision the quote
+    names: not inside a note, not on another page, not at another revision; and a
+    reference recorded with eprint 2024/123 is the paper the library labels
+    eprint/2024/123."""
+    reviews, _, _ = store
+    ledger = Ledger(reviews.documents)
+    paper(ledger)
+    call(reviews, 1, lib.READ, {"identifier": "2024/123", "start_page": 3, "page_count": 2},
+         lib.read(WORK, 3, [f"Prime shapes. {ACROSS} It fits 64-bit words.", PAGE_TWO],
+                  corrected={4: "2026-11-20"}, notes={3: [("Ana", "Prime shapes", NOTE)]}),
+         SERVER)  # fmt: skip
+    call(reviews, 2, lib.SEARCH, {"identifier": WORK, "phrase": "coefficients"},
+         lib.search(WORK, "coefficients", [(7, f"Table 2: curve coefficients.\n{TWIST}")]),
+         SERVER)  # fmt: skip
+    page = library(f"{ACROSS} It fits 64-bit words", 3)
+    corrected = library(f"We show {TWIST}", 4)
+    passage = library(f"curve coefficients. {TWIST}", 7)
+    in_note = library(NOTE, 3)
+    elsewhere = library(f"We show {TWIST}", 3)
+    stale = library(f"We show {TWIST}", 4, revision="0123456789ab")
+    assert recorded(ledger, reviews, page, corrected, passage, in_note, elsewhere, stale) == [
+        "q1", "q2", "q3",
+    ]  # fmt: skip
+
+
+def test_a_library_search_for_the_quote_alone_vouches_for_nothing(store: Any) -> None:
+    """As for an ePrint: a passage that is only the phrase searched for is the call's
+    own text; one that holds more counts."""
+    reviews, _, _ = store
+    ledger = Ledger(reviews.documents)
+    paper(ledger)
+    made_up = "this paper proves the twist has order 4q' exactly"
+    call(reviews, 1, lib.SEARCH, {"identifier": WORK, "phrase": made_up},
+         lib.search(WORK, made_up, [(2, made_up)]), SERVER)  # fmt: skip
+    call(reviews, 2, lib.SEARCH, {"identifier": WORK, "phrase": TWIST},
+         lib.search(WORK, TWIST, [(5, f"Indeed {TWIST} here")]), SERVER)  # fmt: skip
+    assert recorded(ledger, reviews, library(made_up, 2), library(TWIST, 5)) == ["q2"]
+
+
+def test_one_paper_through_either_server(store: Any) -> None:
+    """A reference with the ePrint identifier 2024/123 is confirmed by the e-print
+    server's text, by its date stamp, and by the library's, by its revision, each under
+    its own quote; a library read of another paper, or under a label the ledger cannot
+    name, confirms neither."""
+    reviews, _, _ = store
+    ledger = Ledger(reviews.documents)
+    paper(ledger)
+    call(reviews, 1, EPRINT_TOOL, {"paper_id": "2024/123", "start_page": 2, "page_count": 1},
+         read_pages("2024/123", 2, 9, PAGE_TWO), SERVER)  # fmt: skip
+    call(reviews, 2, RECORD_TOOL, {"paper_id": "2024/123"}, catalog("2024/123"), SERVER)
+    call(reviews, 3, lib.READ, {"identifier": "eprint/2024/123", "start_page": 2},
+         lib.read(WORK, 2, [PAGE_TWO]), SERVER)  # fmt: skip
+    call(reviews, 4, lib.READ, {"identifier": "eprint/2024/999", "start_page": 5},
+         lib.read("eprint/2024/999", 5, [ACROSS + " Again and again."]), SERVER)  # fmt: skip
+    call(reviews, 5, lib.READ, {"identifier": "W1", "start_page": 5},
+         lib.read("openalex:W1", 5, [ACROSS + " And once more."]), SERVER)  # fmt: skip
+    eprint = {"source": "eprint", "dated": STAMP, "text": f"We show {TWIST}"}
+    assert recorded(
+        ledger, reviews, eprint, library(f"We show {TWIST}", 2),
+        library(ACROSS + " Again", 5), library(ACROSS + " And once", 5),
+    ) == ["q1", "q2"]  # fmt: skip
+
+
+def test_a_result_cut_in_the_middle_keeps_no_page_the_cut_is_in(store: Any) -> None:
+    """The toolbox's middle cut (``tools.bound``) leaves a page without its middle and a
+    mark in its place: that page is no source, through either server, and a quote across
+    the mark is found nowhere; a page the cut did not reach still is one."""
+    from sandbox_science.orchestrator.tools import bound
+
+    reviews, _, _ = store
+    ledger = Ledger(reviews.documents)
+    paper(ledger)
+    filler = " ".join(f"word{n}" for n in range(3000))
+    read = lib.read(WORK, 2, [PAGE_TWO, f"{ACROSS} {filler} The end of page three."])
+    shown = bound(read, len(read) - 1000)
+    assert "characters omitted" in shown
+    call(reviews, 1, lib.READ, {"identifier": WORK, "start_page": 2}, shown,
+         {**SERVER, "cut": {"length": len(read)}})  # fmt: skip
+    pages = read_pages("2024/123", 2, 9, PAGE_TWO, f"{ACROSS} {filler} The end of page three.")
+    cut = bound(pages, len(pages) - 1000)
+    call(reviews, 2, EPRINT_TOOL, {"paper_id": "2024/123", "start_page": 2}, cut,
+         {**SERVER, "cut": {"length": len(pages)}})  # fmt: skip
+    call(reviews, 3, RECORD_TOOL, {"paper_id": "2024/123"}, catalog("2024/123"), SERVER)
+    at = cut.index("\n[…")
+    marked = cut[at - 40 : cut.index("…]\n") + 40]
+    whole = library(f"We show {TWIST}", 2)
+    head = library(f"{ACROSS} word0 word1", 3)
+    eprint_head = {"source": "eprint", "dated": STAMP, "text": f"{ACROSS} word0 word1"}
+    eprint_mark = {"source": "eprint", "dated": STAMP, "text": squash_text(marked)}
+    assert recorded(ledger, reviews, whole, head, eprint_head, eprint_mark) == ["q1"]
+
+
+def squash_text(text: str) -> str:
+    return " ".join(text.split())
+
+
+def test_a_result_cut_between_pages_keeps_its_whole_pages() -> None:
+    """A reading result past its limit loses whole pages from its end, and a last line
+    names them (``descriptors.paged``): the record holds the pages shown, whole, and
+    the line is no page's text."""
+    from sandbox_science.orchestrator.context.history.descriptors import paged
+
+    texts = [f"Page {n} text. {TWIST}. " + "x" * 3000 for n in range(3, 8)]
+    read = CONNECTOR_RESULT.text + lib.read(WORK, 3, texts)
+    shown, kept = paged(lib.READ, read, 8000) or ("", {})
+    assert kept["pages"] == [5, 6, 7]
+    assert len(shown) <= 8000
+    assert shown.endswith(
+        "[The platform left out pages 5-7 of this result, to keep it within 8,000 characters: "
+        "read them with a call that starts at page 5.]"
+    )
+    messages = exchange(1, lib.READ, {"identifier": WORK}, shown)
+    found = source_of(messages, executed(lib.READ, {"identifier": WORK},
+                                         {**SERVER, "paged": kept}), (CONNECTOR,))  # fmt: skip
+    assert found is not None
+    _, _, record = found
+    assert record["library"]["pages"] == [3, 4]
+    assert record["library"]["passages"][1] == " ".join(texts[1].split())
+    # Without the toolbox's record of the cut, its pages are not the range's: no record.
+    assert source_of(messages, executed(lib.READ, {"identifier": WORK}, SERVER),
+                     (CONNECTOR,)) is None  # fmt: skip

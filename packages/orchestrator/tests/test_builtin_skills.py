@@ -24,7 +24,7 @@ from markdown_it import MarkdownIt
 from markdown_it.token import Token
 
 from sandbox_science.orchestrator.consistency.controller import AUTHOR_SPECS
-from sandbox_science.orchestrator.consistency.quotes import EPRINT_TOOLS, PDF_TOOLS
+from sandbox_science.orchestrator.consistency.quotes import EPRINT_TOOLS, LIBRARY_TOOLS, PDF_TOOLS
 from sandbox_science.orchestrator.delegation.prompt import processes_text
 from sandbox_science.orchestrator.delegation.tracks import SPECS as TRACK_SPECS
 from sandbox_science.orchestrator.loop import SYSTEM_PROMPT
@@ -167,6 +167,7 @@ def test_the_skills_name_the_tools_the_citation_check_reads() -> None:
     pdf = inline_code(body("pdf-reading"))
     assert all(tool in pdf for tool in PDF_TOOLS)
     assert all(tool in body("literature-search") for tool in EPRINT_TOOLS)
+    assert all(tool in body("literature-search") for tool in LIBRARY_TOOLS)
 
 
 @pytest.mark.parametrize("skill", sorted(ROLES))

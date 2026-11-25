@@ -103,7 +103,9 @@ RUN_HEADER: Final = "Sandbox-Science-Run"
 """Names the run whose agent made a call (DA-4): a main run's or a delegated run's name, as
 its record is kept. The middleware records it; it is never part of a key."""
 MAX_ANSWER_BYTES: Final = 8 * 1024 * 1024
-MAX_DESCRIPTION: Final = 2000
+MAX_DESCRIPTION: Final = 4000
+"""Characters of a tool's description a run keeps: the longest a portal server writes
+(the library's find_papers, 3,943 characters, with its vocabularies at the end) fits."""
 MAX_SCHEMA_BYTES: Final = 16 * 1024
 MAX_VALUE_TEXT: Final = 1024
 """Characters of enum and const text one tool's schema keeps."""

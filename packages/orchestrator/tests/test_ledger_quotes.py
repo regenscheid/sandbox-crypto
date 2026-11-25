@@ -128,3 +128,43 @@ def moved_author() -> Any:
     from .test_ledger import MAIN
 
     return MAIN
+
+
+LIBRARY = {"source": "library", "page": 4, "revision": "3fa2c1d0e9b8",
+           "text": "The twist has order 4q' with q' prime."}  # fmt: skip
+
+
+def test_a_library_quote_is_named_by_the_references_identifiers(ledger: Ledger) -> None:
+    """A library quote names its page and the revision the library's result named, and
+    the reference's identifiers in the schemes a library work label can name: a read of
+    eprint/2024/123 or doi:10.1007/x_1 is the reference's paper (``papers``)."""
+    change(ledger, paper(identifiers={"eprint": "2024/123", "doi": "10.1007/X_1", "isbn": "1"}),
+           {**PUBLISHED, "evidence": [quoting(LIBRARY)]})  # fmt: skip
+    (held,) = ledger.entry("p", "C-1").evidence
+    assert (held.target, held.sha256) == ("quote", None)
+    assert held.locator == {**LIBRARY, "named": {"eprint": "2024/123", "doi": "10.1007/X_1"}}
+
+
+def test_a_library_quote_names_a_page_a_revision_and_a_paper_the_library_labels(
+    ledger: Ledger,
+) -> None:
+    """A library quote of a reference known only by a URL or an ISBN is refused: the
+    library labels such a paper by an OpenAlex ID or a URL, which confirms nothing."""
+    change(ledger, {**NEW["reference"], "fields": {"identifiers": {"url": "https://x.test/p"},
+                                                   "retrieved": "2026-10-15"}})  # fmt: skip
+    change(ledger, paper(), op="eprint-ref")
+    for n, (item, message) in enumerate(
+        (
+            (quoting(LIBRARY, "REF-1"), "names no eprint, doi, arxiv or nist identifier"),
+            (quoting(LIBRARY, "REF-1"), "by an OpenAlex ID or a URL, cannot be confirmed"),
+            (quoting({**LIBRARY, "page": None}, "REF-2"), "names the physical page and the"),
+            (quoting({**LIBRARY, "revision": None}, "REF-2"), "names the physical page and the"),
+            (quoting({**LIBRARY, "revision": "3FA2"}, "REF-2"), "revision"),
+            (quoting({**LIBRARY, "dated": STAMP}, "REF-2"), "names its page and revision only"),
+            (quoting({**LIBRARY, "first_line": 1, "last_line": 2}, "REF-2"), "revision only"),
+            (quoting({**EPRINT, "revision": "3fa2c1d0e9b8"}, "REF-2"), "only a library quote"),
+        )
+    ):
+        with pytest.raises(DocumentError, match=message) as refused:
+            change(ledger, {**PUBLISHED, "evidence": [item]}, op=f"bad-{n}")
+        assert refused.value.kind in ("invalid_request", "policy_denied")

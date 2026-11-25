@@ -64,6 +64,7 @@ from .connectors import (
 )
 from .consistency.controller import ReviewController
 from .context.history import HistoryTool
+from .context.history.descriptors import paged, unit_of
 from .continuity.kernels import MAX_SAVED_FILES, LostGeneration, LostKernels
 from .documents.errors import DocumentError
 from .documents.tool import DocumentTool, with_notices
@@ -114,6 +115,15 @@ TRACEBACK_LINES: Final = 20
 SHOWN_OUTPUTS: Final = 20
 """Rich outputs shown to the model, the first and last half; a note counts the rest."""
 SHOWN_ENTRIES: Final = 200
+READING_OUTPUT_CHARS: Final = 40_000
+"""The most characters of a reading tool's result (``descriptors.PAGED``: a paper's pages
+or passages), however large ``output_chars`` is; it gets twice ``output_chars`` up to
+this, where any other result gets half. A paper's page is 3,000 to 6,000 characters of
+Markdown, so five pages, the most ``read_paper`` returns, arrive whole with room for the
+header and readers' notes; past it a result is cut between pages, never inside one. Worst
+case about 13,000 tokens, at three characters a token for text dense with mathematics
+(10,000 for prose), against 2,500 to 3,300 for the general half of the default
+``output_chars``."""
 _UNSAFE: Final = re.compile(r"[^A-Za-z0-9._-]")
 
 _TIMEOUT = {"type": "number", "exclusiveMinimum": 0, "description": "Wall-time limit in seconds"}
@@ -1175,7 +1185,7 @@ class Toolbox:
                 ) from exc
             return _failure(exc.kind, exc.message)
         if entry.bound:
-            outcome.text = self._cut(outcome.text, outcome.record)
+            outcome.text = self._cut(outcome.text, outcome.record, entry.spec.name)
         return outcome
 
     # Executions.
@@ -1468,11 +1478,21 @@ class Toolbox:
     def _bound(self, text: str) -> str:
         return bound(text, self.output_chars // 2)
 
-    def _cut(self, text: str, record: dict[str, Any]) -> str:
+    def _cut(self, text: str, record: dict[str, Any], tool: str | None = None) -> str:
         """``text`` bounded, and when that cut it, ``record['cut']`` says so: its length
         and the character ranges the model was shown, its head and its tail, so that the
-        read register never takes a cut result for a whole read (CM-12)."""
+        read register never takes a cut result for a whole read (CM-12). A connector's
+        reading tool (``descriptors.PAGED``) has the larger limit of
+        ``READING_OUTPUT_CHARS``, and past it loses whole pages or passages from its end,
+        which a last line names and ``record['paged']`` keeps (CM-12a); it is cut in the
+        middle only when not even its first page fits."""
         limit = self.output_chars // 2
+        if tool is not None and "connector" in record and unit_of(tool) is not None:
+            limit = max(limit, min(READING_OUTPUT_CHARS, 2 * self.output_chars))
+            found = paged(tool, text, limit) if "error" not in record else None
+            if found is not None:
+                record["paged"] = found[1]
+                return found[0]
         if len(text) > limit:
             half = limit // 2
             record["cut"] = {
