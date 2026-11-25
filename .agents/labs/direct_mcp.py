@@ -128,13 +128,17 @@ DENIED = "attack-catalog-mcp_list_taxonomy"
 INVALID = "attack-catalog-mcp_get_attack"
 """Called without its required ``attack_id``: the server's error answer."""
 PAGE = "https://example.com/"
+LIBRARY_PAPER = "2022/708"
+"""A public ePrint paper the library holds: its status is the library's allowed read."""
 READS = [
     ["e-print-mcp_corpus_stats", {}],
     ["nist-csrc-mcp_nist_get_corpus_status", {}],
     ["web-fetch-mcp_web_fetch", {"url": PAGE, "max_chars": 2000}],
     ["firecrawl-mcp_firecrawl_scrape", {"url": PAGE, "formats": ["markdown"]}],
+    ["library-mcp_paper_status", {"identifier": LIBRARY_PAPER}],
 ]
-"""One read each on e-print, nist-csrc and web-fetch, and one small firecrawl scrape."""
+"""One read each on e-print, nist-csrc, web-fetch and the library, and one small firecrawl
+scrape."""
 CREDENTIAL_HEADERS = {
     "CF-Access-Client-Id": "CF_ACCESS_CLIENT_ID",
     "CF-Access-Client-Secret": "CF_ACCESS_CLIENT_SECRET",

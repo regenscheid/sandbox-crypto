@@ -6,7 +6,7 @@ apiVersion: sandbox-science/v0alpha1
 kind: ToolClassification
 server: crypto-research-mcp
 prefix: paper-search-mcp_
-pinned: "2026-10-26"
+pinned: "2026-11-25"
 tools:
   paper-search-mcp_arxiv_search:
     class: read
@@ -31,17 +31,27 @@ tools:
   paper-search-mcp_paper_citations:
     class: read
     reason: "Lists citing or cited papers."
-    sha256: 34ec4ce2c7fa270736f3bf467e5743de923010296239976a7ce27eb38d733acc
+    sha256: a34d894b4c2f84729d15b277b36a1906c6fdf23f5e7374bc6083e5969ba2e8a9
+    significant: {title: identifier}
+  paper-search-mcp_paper_copies:
+    class: read
+    reason: "Lists the known full-text copies of one paper; nothing is downloaded."
+    sha256: 8b888f03339d08f9b88cdb8ea2217d7dcf6a29f717af3d70688cfa7256b3cb86
     significant: {title: identifier}
   paper-search-mcp_paper_details:
     class: read
     reason: "Metadata for one paper."
-    sha256: 44f2f058a1f795acf9eb15ce6be96d3e8559626f8b528715cc7df9965d200e45
+    sha256: 36d3926391cd12e23f1c7554f811097f761dab22c2e99890413660b61ac4eacf
     significant: {title: identifier}
   paper-search-mcp_paper_search_health:
     class: read
     reason: "Reports configured sources and counters."
     sha256: d1e82f7140d726d1bdf7c2f93106282e1417b9f3cbf2a881c2db01f0432cf95a
+  paper-search-mcp_papers_by_ids:
+    class: read
+    reason: "Metadata for many papers at once, by identifier."
+    sha256: 1c4b0a7a8ac0138649aa9f4312858e2958ceec74c186d585a60e0021f7d0adb1
+    significant: {title: identifiers}
   paper-search-mcp_scholar_search:
     class: read
     reason: "Searches Google Scholar; billed by the service, which controls its cost."
@@ -50,10 +60,15 @@ tools:
   paper-search-mcp_search_papers:
     class: read
     reason: "Searches several sources and merges the results."
-    sha256: a0918ee28e7ff82e741ceccbcca1b07d1f90b0a7ac98231c19ec76b5584c0b40
+    sha256: 9a33dc8510647b2180a044f6238671f30bcabc189f1c2f906d66c7f0ebe19f34
     significant: {query: query, size: limit}
   paper-search-mcp_semantic_scholar_search:
     class: read
     reason: "Searches Semantic Scholar."
     sha256: 03e4abb9946e3ad6da3d2f4c5c1ec6ee013b1c9b7240f68b241b19144d5597dd
     significant: {query: query, size: limit}
+  paper-search-mcp_zbmath_search:
+    class: read
+    reason: "Searches zbMATH Open."
+    sha256: 59c1c22bf3049d852faa37b485165d2ba6f2d55fcc80ccacaf62656c68095b02
+    significant: {query: query, size: per_page}

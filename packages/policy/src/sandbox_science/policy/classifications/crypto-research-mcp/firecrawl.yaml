@@ -6,7 +6,7 @@ apiVersion: sandbox-science/v0alpha1
 kind: ToolClassification
 server: crypto-research-mcp
 prefix: firecrawl-mcp_
-pinned: "2026-10-26"
+pinned: "2026-11-25"
 tools:
   firecrawl-mcp_firecrawl_agent:
     class: browse

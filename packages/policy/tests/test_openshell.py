@@ -1076,11 +1076,14 @@ def test_example_agent_mcp_policy() -> None:
     assert isinstance(names, AnyOf)
     # The tools the classification makes reads or escalates (the middleware holds those),
     # and portal_list_servers by name.
-    assert len(names.any) == 75
+    assert len(names.any) == 88
     assert "firecrawl-mcp_firecrawl_agent" not in names.any  # browse, off by default
     # The server lists bare names, and the fence admits them as listed (lab 39).
     assert "e-print-mcp_search_eprint" in names.any
     assert "e-print-mcp_search_eprint_fulltext" in names.any  # pinned 2026-10-31
+    assert "library-mcp_read_paper" in names.any
+    assert "library-mcp_fetch_paper" in names.any  # a write, which the middleware holds
+    assert not any(name.startswith("nist-mcp_") for name in names.any)  # retired
     assert not any(name.startswith("crypto_research_mcp-") for name in names.any)
     assert [binary.path for binary in entry.binaries] == ["/opt/sandbox-science/bin/python*"]
     # Inside OpenShell a client sees only synthetic addresses, so the fence applies the

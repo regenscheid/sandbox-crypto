@@ -10,6 +10,11 @@
     {"tool": "firecrawl-mcp_firecrawl_feedback", "arguments": {"endpoint": "search", "jobId": "00000000-0000-0000-0000-000000000000", "rating": "good"}, "effect": "write", "action": "escalate"},
     {"tool": "firecrawl-mcp_firecrawl_monitor_create", "arguments": {"page": "https://example.org/", "goal": "changes"}, "effect": "communicate", "action": "escalate"},
     {"tool": "e-print-mcp_refresh_eprint", "arguments": {}, "effect": "admin", "action": "escalate"},
+    {"tool": "library-mcp_read_paper", "arguments": {"identifier": "2022/708", "start_page": 1, "page_count": 2}, "effect": "read", "action": "allow"},
+    {"tool": "library-mcp_find_papers", "arguments": {"query": "SNOVA"}, "effect": "read", "action": "allow"},
+    {"tool": "library-mcp_fetch_paper", "arguments": {"identifier": "2022/708"}, "effect": "write", "action": "escalate"},
+    {"tool": "library-mcp_fetch_paper", "arguments": {"identifier": "2022/708", "url": "https://example.org/paper.pdf"}, "effect": "write", "action": "escalate"},
+    {"tool": "paper-search-mcp_paper_copies", "arguments": {"identifier": "10.1000/xyz"}, "effect": "read", "action": "allow"},
     {"tool": "portal_list_servers", "arguments": {}, "effect": "read", "action": "allow"},
     {"tool": "portal_toggle_servers", "arguments": {}, "effect": "admin", "action": "deny"},
     {"tool": "web-fetch-mcp_made_up", "arguments": {"url": "https://example.org/"}, "effect": "unclassified", "action": "escalate"}

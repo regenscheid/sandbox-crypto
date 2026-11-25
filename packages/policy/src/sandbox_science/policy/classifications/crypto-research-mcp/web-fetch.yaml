@@ -6,7 +6,7 @@ apiVersion: sandbox-science/v0alpha1
 kind: ToolClassification
 server: crypto-research-mcp
 prefix: web-fetch-mcp_
-pinned: "2026-10-26"
+pinned: "2026-11-25"
 tools:
   web-fetch-mcp_fetch_continue:
     class: read
@@ -21,7 +21,7 @@ tools:
   web-fetch-mcp_fetch_page:
     class: read
     reason: "Fetches a page's content."
-    sha256: 8105b8adbc4cbb300d476998294d984f98a0391f218eb9bab6292deff3dd6111
+    sha256: 50319d662ebd2195417e6adeeea3f8e64c26039ca1dfe487f0d91594efd68e10
     significant: {url: url}
   web-fetch-mcp_web_capture:
     class: read
@@ -31,9 +31,14 @@ tools:
   web-fetch-mcp_web_fetch:
     class: read
     reason: "Fetches a page's content."
-    sha256: 692034c8cd541eff5451afe1392e456fbf7a394a4a4a4459f56cdf30f40ba87f
+    sha256: e5a83a7d5c830591cfbd55feffb17109c722f5eb8fe998f5ac0133c38213c3a7
     significant: {url: url, size: max_chars}
   web-fetch-mcp_web_fetch_health:
     class: read
     reason: "Reports fetch engines and configuration."
     sha256: f26fad73067c70643756844038b0be243bb8fa4739a0134018ec93c0e42faa40
+  web-fetch-mcp_web_fetch_hosts:
+    class: read
+    reason: "Reports the per-host fetch memory; nothing changes the fetch chain."
+    sha256: b4cd0da78cd704de1ce3ef241de9b7359399534f6f4e1dfc527a584fac44c060
+    significant: {host: host}
