@@ -197,9 +197,13 @@ elif command == ["sandbox", "get"]:
     if state.get("fail_get"):
         fail(state.get("get_error", "synthetic gateway unavailable"))
     name = argv[2]
+    if sandboxes.get(name, {}).get("reads_until_gone") == 0:
+        sandboxes.pop(name)  # an accepted deletion's cleanup finished
     if name not in sandboxes:
         fail("code: 'Some requested entity was not found', message: \"sandbox not found\"")
     box = sandboxes[name]
+    if "reads_until_gone" in box:
+        box["reads_until_gone"] -= 1
     out = json.dumps({"id": box["id"], "name": name, "phase": box.get("phase", "Ready"),
                       "configuration_admission": {"state": "accepted", "error": ""},
                       **({"labels": box["labels"]} if "labels" in box else {})})
@@ -232,8 +236,12 @@ elif command == ["sandbox", "start"]:
 elif command == ["sandbox", "delete"]:
     if state.get("fail_delete"):
         fail("synthetic deletion failed")
-    if state.get("delete_pending"):
+    if state.get("delete_pending") or "delete_pending_reads" in state:
+        # As OpenShell 0.1.10 does: "deletion accepted; cleanup is pending". The sandbox
+        # stays, Deleting, for good or for that many reads.
         sandboxes[argv[2]]["phase"] = "Deleting"
+        if "delete_pending_reads" in state:
+            sandboxes[argv[2]]["reads_until_gone"] = state["delete_pending_reads"]
     else:
         sandboxes.pop(argv[2], None)
     out = "deleted"
@@ -736,6 +744,106 @@ async def test_delete_stops_the_executor_unbinds_and_allows_a_new_sandbox(setup:
     assert again.sandbox_id != info.sandbox_id
 
 
+async def _polled[T](clock: FakeClock, work: asyncio.Task[T]) -> T:
+    """Await ``work``, moving the clock on by a poll whenever it sleeps."""
+    while not work.done():
+        if clock.sleepers:
+            clock.advance(1.0)
+        await asyncio.sleep(0.01)
+    return await work
+
+
+async def test_an_accepted_deletion_is_awaited_until_the_sandbox_is_gone(paused: Setup) -> None:
+    clock = paused.fake_clock()
+    info, _ = await paused.environments.create(paused.request())
+    assert info.sandbox_id is not None
+    paused.fake.update(delete_pending_reads=3)  # "deletion accepted; cleanup is pending"
+    deleted = await _polled(clock, asyncio.create_task(paused.environments.delete("env-1")))
+    assert deleted.state is EnvironmentState.DELETED
+    assert paused.environments.records.deletion_confirmed(info)
+    assert info.sandbox not in paused.fake.read()["sandboxes"]
+    assert paused.environments.store.binding(info.sandbox_id) is None
+    assert clock.elapsed == 3.0  # three reads still found it, a poll apart
+    assert len(paused.fake.calls("sandbox", "delete")) == 1
+
+
+async def test_an_accepted_deletion_still_pending_at_the_bound_is_unavailable(
+    tmp_path: Path,
+) -> None:
+    setup = Setup(tmp_path, clock=FakeClock(datetime.now(UTC)), delete_timeout=5.0)
+    clock = setup.fake_clock()
+    info, _ = await setup.environments.create(setup.request())
+    assert info.sandbox_id is not None
+    setup.fake.update(delete_pending=True)
+    with pytest.raises(WorkerError, match="deletion was not confirmed") as unconfirmed:
+        await _polled(clock, asyncio.create_task(setup.environments.delete("env-1")))
+    assert unconfirmed.value.kind is ErrorKind.UNAVAILABLE
+    assert clock.elapsed == 5.0
+    kept = setup.environments.get("env-1")
+    assert kept.state is EnvironmentState.READY
+    assert not setup.environments.records.deletion_confirmed(kept)
+    assert setup.environments.store.binding(info.sandbox_id) is not None
+    # The cleanup finishes later: a retry confirms it without deleting again.
+    state = setup.fake.read()
+    del state["sandboxes"][info.sandbox]
+    setup.fake.write(state)
+    deleted = await setup.environments.delete("env-1")
+    assert deleted.state is EnvironmentState.DELETED
+    assert len(setup.fake.calls("sandbox", "delete")) == 1
+
+
+async def test_a_refused_deletion_fails_at_once_and_is_never_taken_for_done(
+    paused: Setup,
+) -> None:
+    clock = paused.fake_clock()
+    info, _ = await paused.environments.create(paused.request())
+    paused.fake.update(fail_delete=True)
+    with pytest.raises(WorkerError, match="synthetic deletion failed"):
+        await paused.environments.delete("env-1")  # a wait would hang on the paused clock
+    assert clock.elapsed == 0.0
+    assert paused.fake.read()["calls"][-1][:2] == ["sandbox", "delete"]
+    assert not paused.environments.records.deletion_confirmed(paused.environments.get("env-1"))
+    assert info.sandbox in paused.fake.read()["sandboxes"]
+
+
+async def test_a_replacement_during_an_accepted_deletion_is_never_confirmed(
+    paused: Setup,
+) -> None:
+    clock = paused.fake_clock()
+    info, _ = await paused.environments.create(paused.request())
+    paused.fake.update(delete_pending=True)
+    deletion = asyncio.create_task(paused.environments.delete("env-1"))
+    while not clock.sleepers:
+        await asyncio.sleep(0.01)
+    reuse_name(paused, info.sandbox)
+    with pytest.raises(WorkerError, match="identity changed during deletion"):
+        await _polled(clock, deletion)
+    assert not paused.environments.records.deletion_confirmed(paused.environments.get("env-1"))
+    assert len(paused.fake.calls("sandbox", "delete")) == 1
+
+
+async def test_a_cancelled_deletion_waits_on_for_the_accepted_cleanup(paused: Setup) -> None:
+    clock = paused.fake_clock()
+    info, _ = await paused.environments.create(paused.request())
+    paused.fake.update(delete_pending=True)
+    deletion = asyncio.create_task(paused.environments.delete("env-1"))
+    while not clock.sleepers:
+        await asyncio.sleep(0.01)
+    for _ in range(2):
+        deletion.cancel()
+        await asyncio.sleep(0)  # deliver each cancellation to the owned deletion
+        assert not deletion.done()
+    assert not paused.environments.records.deletion_confirmed(paused.environments.get("env-1"))
+    state = paused.fake.read()
+    del state["sandboxes"][info.sandbox]  # the gateway's cleanup finishes
+    paused.fake.write(state)
+    with pytest.raises(asyncio.CancelledError):
+        await _polled(clock, deletion)
+    deleted = paused.environments.get("env-1")
+    assert deleted.state is EnvironmentState.DELETED
+    assert paused.environments.records.deletion_confirmed(deleted)
+
+
 async def test_a_sandbox_left_by_a_crash_is_replaced(setup: Setup) -> None:
     info, _ = await setup.environments.create(setup.request())
     # As if the worker had died between creating the sandbox and recording it as ready.
@@ -767,8 +875,9 @@ async def test_an_unobserved_creation_keeps_its_cleanup_obligation(setup: Setup)
 
 @pytest.mark.parametrize("problem", ["fail_delete", "delete_pending", "fail_get"])
 async def test_failed_creation_cleanup_retains_identity_across_restart(
-    setup: Setup, problem: str
+    tmp_path: Path, problem: str
 ) -> None:
+    setup = Setup(tmp_path, delete_timeout=0.5, poll_seconds=0.1)
     other, _ = await setup.environments.create(setup.request("env-2"))
     setup.fake.update(fail_create_after=True, **{problem: True})
     with pytest.raises(WorkerError, match="creation response lost"):
@@ -787,6 +896,8 @@ async def test_failed_creation_cleanup_retains_identity_across_restart(
         setup.settings.environments,
         setup.state_dir,
         {"FAKE_OPENSHELL_STATE": str(setup.fake.path), "PATH": os.environ["PATH"]},
+        delete_timeout=0.5,
+        poll_seconds=0.1,
     )
     try:
         with pytest.raises(WorkerError):
