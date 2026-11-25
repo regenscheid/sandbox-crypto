@@ -30,6 +30,10 @@ as amended 2026-11-01): ``deliverables`` given as an object keyed by number beco
 list, in the brief's order, each key the item's ``id`` (a value that is not an object, or
 names another ``id``, stays an error); and an artifact produced with its path alone gets
 the one revision the run's calls recorded of that path (none or several stay an error).
+A path a task's result gives relative to its write area, as its processes' working
+directory names it, is the path below the area that its calls recorded, read so before
+every check, with no note (DA-19): it is the result's own path in another form, and one
+recorded in both forms or in neither stays an error that names both.
 
 ``submit_result`` is the only way a result is returned from a run that has tools: a
 closing answer that comes with no result submitted gets the platform's notice that the
@@ -62,7 +66,9 @@ from typing import Annotated, Any, Final, Literal, Self, cast
 
 from pydantic import BeforeValidator, Field, JsonValue, ValidationError, model_validator
 
+from sandbox_science.contracts.context import in_write_area
 from sandbox_science.contracts.model import StrictContract
+from sandbox_science.contracts.worker import validate_relative_path
 from sandbox_science.orchestrator.context.history.archive import body
 from sandbox_science.orchestrator.documents.agent_text import agent_text
 from sandbox_science.orchestrator.documents.errors import DocumentError
@@ -658,16 +664,22 @@ def check_schema(target: Target | None = None) -> dict[str, Any]:
     }
 
 
+PATH_FORMS: Final = "in full or relative to your write area"
+"""How a result may name a file its calls wrote: the path they named, or that path below
+the run's write area without the area's prefix (DA-19), as its processes' working
+directory names it."""
 _REFERENCES: Final[dict[str, dict[str, Any]]] = {
     "artifact": {
-        "path": _string("its path, as your calls wrote or published it", 4096, least=1),
+        "path": _string(
+            f"its path, as your calls wrote or published it, {PATH_FORMS}", 4096, least=1
+        ),
         "revision": {
             "type": "integer",
             "minimum": 1,
             "description": "the revision of it your calls recorded or published",
         },
     },
-    "file": {"path": _string("its path, as your calls wrote it", 4096, least=1)},
+    "file": {"path": _string(f"its path, as your calls wrote it, {PATH_FORMS}", 4096, least=1)},
     "entry": {
         "entry": _string(
             "the handle of the entry you created or revised, such as T-3", 128, least=1
@@ -749,7 +761,8 @@ def task_schema(asked: Sequence[Asked] = ()) -> dict[str, Any]:
             "type": "array",
             "maxItems": MAX_RESULT_FILES,
             "description": "the paths of the files that are your results, as your calls wrote "
-            "or published them; the platform pins each to the revision your calls made",
+            f"or published them, {PATH_FORMS}; the platform pins each to the revision your "
+            "calls made",
             "items": {"type": "string", "minLength": 1, "maxLength": 4096},
         },
         "lessons": {
@@ -880,12 +893,17 @@ class Outcome(TurnHook):
         task: bool = False,
         deliverables: Sequence[Asked] = (),
         entry_made: EntryMade | None = None,
+        write_area: str | None = None,
     ) -> None:
         """``target`` is a check's entry and revision; ``task`` reads a task's result,
         which accounts for ``deliverables``, its brief's (PD-45); ``entry_made`` checks
         an entry a deliverable names that the run's changes did not revise, by its work
-        records; without it, only the entries the run's changes revised count."""
+        records; without it, only the entries the run's changes revised count.
+        ``write_area`` is the run's (``work/<delegation_id>``, DA-19): a path its result
+        gives relative to it is read as the path below it (``_canonical``); without it,
+        a path is read only as given."""
         self.target = target
+        self.write_area = write_area
         self.task = task
         self.deliverables = tuple(deliverables)
         self.entry_made = entry_made
@@ -1114,6 +1132,78 @@ class Outcome(TurnHook):
 
     # --- The checks ---------------------------------------------------------------------
 
+    def _below(self, path: str) -> str | None:
+        """The path below the run's write area that ``path`` names when it is relative to
+        the area: ``None`` without an area, for a path in it already, and for one that is
+        no workspace path (absolute, or with an empty, ``.`` or ``..`` segment), which is
+        never joined to the area and so names nothing the run's calls recorded."""
+        given = path.removeprefix("./")
+        area = self.write_area
+        if area is None or in_write_area(area, given):
+            return None
+        try:
+            validate_relative_path(given)
+        except ValueError:
+            return None
+        return None if given == "." else f"{area}/{given}"
+
+    def _canonical(self, path: str) -> tuple[str, str | None]:
+        """The path a result's ``path`` names, and the problem when it names two: given
+        relative to the write area, it becomes the path below the area that the run's
+        calls recorded (DA-19), as the result would give it in full; recorded in that form
+        and as given, it is refused, naming both. Any other is kept as given, for the
+        checks that follow, which refuse one the calls did not record in either form,
+        naming both (``_named``)."""
+        given = path.removeprefix("./")
+        below = self._below(path)
+        if below is None or below not in self.recorded:
+            return path, None
+        if given in self.recorded:
+            return path, (
+                f"{path} names two files your calls wrote or published, {given} and "
+                f"{below}: give the one you mean in full"
+            )
+        return below, None
+
+    def _named(self, path: str) -> str:
+        """``path`` as a refusal names it: with the path below the write area it was also
+        read as, when there is one, or as no workspace path, when it is none."""
+        below = self._below(path)
+        if below is not None:
+            return f"{path} or {below}"
+        try:
+            validate_relative_path(path.removeprefix("./"))
+        except ValueError:
+            return f"{path}, which is no workspace path: give it {PATH_FORMS}"
+        return path
+
+    def _normalised(self, result: TaskResult) -> tuple[TaskResult, list[str]]:
+        """The result with each path it gives, in ``result_files`` and its deliverables,
+        as the run's calls recorded it (``_canonical``), before any other check reads it,
+        and the problems of the paths that name two files or, so read, list one file
+        twice."""
+        problems: list[str] = []
+        files: list[str] = []
+        for path in result.result_files:
+            found, problem = self._canonical(path)
+            if problem is not None:
+                problems.append(f"result_files: {problem}")
+            elif found in files:
+                problems.append(f"result_files: {found} is listed twice: list it once")
+            files.append(found)
+        items: list[Accounted] = []
+        for item in result.deliverables or ():
+            if item.path is not None:
+                found, problem = self._canonical(item.path)
+                if problem is not None:
+                    problems.append(f"{item.id}: {problem}")
+                item = item.model_copy(update={"path": found})
+            items.append(item)
+        update: dict[str, object] = {"result_files": tuple(files)}
+        if result.deliverables is not None:
+            update["deliverables"] = tuple(items)
+        return result.model_copy(update=update), problems
+
     def _pin(self, result: TaskResult) -> list[dict[str, JsonValue]]:
         """The task's result files, each pinned to the latest revision its calls made, or
         ``ValueError`` naming those its calls did not make (RA-38)."""
@@ -1127,7 +1217,8 @@ class Outcome(TurnHook):
             pinned.append({k: v for k, v in found.items() if k not in ("deleted", "reproduced")})
         if missing:
             raise ValueError(
-                f"result_files: your calls wrote or published no file {', '.join(missing[:5])}; "
+                "result_files: your calls wrote or published no file "
+                f"{', '.join(self._named(path) for path in missing[:5])}; "
                 "a result file is one your calls wrote, as they named it, or published"
             )
         return pinned
@@ -1176,17 +1267,21 @@ class Outcome(TurnHook):
                     else "; your calls recorded no revision of it"
                 )
             return [error]
-        path = item.path.removeprefix("./") if item.path is not None else None
-        if path is not None and item.revision is not None:
+        if item.path is None:
+            return []
+        path = item.path.removeprefix("./")
+        if item.revision is not None:
             if item.revision not in self.revisions.get(path, set()):
                 return [
                     f"{asked.id}: your calls recorded or published no revision {item.revision} "
-                    f"of {item.path}"
+                    f"of {self._named(item.path)}"
                 ]
-        elif path is not None:
+        else:
             found = self.recorded.get(path)
             if found is None or found.get("deleted") is True:
-                return [f"{asked.id}: your calls wrote or published no file {item.path}"]
+                return [
+                    f"{asked.id}: your calls wrote or published no file {self._named(item.path)}"
+                ]
         return []
 
     def _resolved(self, result: TaskResult) -> tuple[TaskResult, tuple[str, ...]]:
@@ -1265,8 +1360,10 @@ class Outcome(TurnHook):
         read = TaskResult.model_construct(
             status=whole.get("status"), deliverables=None if given is None else tuple(items)
         )
+        read, problems = self._normalised(read)
         read, _ = self._resolved(read)
-        missing, problems = self._unaccounted(read)
+        missing, accounting = self._unaccounted(read)
+        problems.extend(accounting)
         problems.extend(await self._entries(read))
         return [asked for asked in missing if asked.id not in unread], problems
 
@@ -1295,8 +1392,10 @@ class Outcome(TurnHook):
             except ValueError:
                 ids = []
             return Reading(missing=tuple(missing), problems=(*located, *_placed(problems, ids)))
+        found, problems = self._normalised(found)
         found, resolved = self._resolved(found)
-        missing, problems = self._unaccounted(found)
+        missing, accounting = self._unaccounted(found)
+        problems.extend(accounting)
         pinned: list[dict[str, JsonValue]] = []
         try:
             pinned = self._pin(found)

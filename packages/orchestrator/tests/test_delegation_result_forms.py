@@ -3,7 +3,9 @@
 say (plans-and-delegation spec, PD-18 as amended 2026-11-01, PD-45): ``deliverables``
 keyed by number becomes the list in the brief's order, and an artifact given by its path
 alone gets the one revision the run's calls recorded of it, each with the platform's
-note; every other form stays an error, and nothing is filled in. A submission the schema
+note; a path relative to the write area is the path below it that the run's calls
+recorded (delegated agents spec, DA-19); every other form stays an error, and nothing is
+filled in. A submission the schema
 refuses has its deliverables checked as far as they can be read, so that its refusal
 names every problem, each by its place; and the brief shows each deliverable's produced
 form, as submit_result's schema takes it."""
@@ -20,6 +22,7 @@ from sandbox_science.orchestrator.delegation.outcome import (
     ERROR_CHARS,
     KEYED_NOTE,
     MAX_PROBLEMS,
+    PATH_FORMS,
     TASK_BYTES,
     Asked,
     Outcome,
@@ -240,6 +243,153 @@ async def test_the_longest_result_with_the_notes_and_the_mark_fits_its_record() 
     assert kept["status"] == "blocked"
     assert len(cast(list[str], kept["platform_notes"])) == 2
     assert len(json.dumps(kept, ensure_ascii=False, separators=(",", ":")).encode()) <= RESULT_BYTES
+
+
+# --- A path relative to the write area ----------------------------------------------
+
+AREA = "work/dlg-1"
+TABLE_FILE = ("d1", "The table", "file")
+
+
+async def in_area(*paths: str, asked: tuple[Asked, ...] = (Asked(*TABLE_FILE),)) -> Outcome:
+    """An outcome of a run with the write area ``AREA`` whose calls recorded ``paths``."""
+    found = Outcome(task=True, deliverables=asked, write_area=AREA)
+    for path in paths:
+        await found.observe_tool(run(), recorded(path))
+    return found
+
+
+def file_result(path: str, *files: str) -> dict[str, Any]:
+    return {
+        **DONE,
+        "deliverables": [{"id": "d1", "status": "produced", "path": path}],
+        "result_files": list(files),
+    }
+
+
+@pytest.mark.parametrize("given", ["table.txt", "./table.txt", f"{AREA}/table.txt"])
+async def test_a_path_relative_to_the_write_area_is_read_as_the_full_path(given: str) -> None:
+    """DA-19: a file named relative to the write area, as the run's processes' working
+    directory names it, is the file below the area its calls recorded; the result kept,
+    and what the submission echoes, are those the full path gives, with no note."""
+    found = await in_area(f"{AREA}/table.txt")
+    echoed = await submit(found, file_result(given, given))
+    assert echoed["values"]["deliverables"][0]["path"] == f"{AREA}/table.txt"
+    assert echoed["values"]["result_files"] == [{"path": f"{AREA}/table.txt", "revision": 1}]
+    full = await in_area(f"{AREA}/table.txt")
+    await submit(full, file_result(f"{AREA}/table.txt", f"{AREA}/table.txt"))
+    assert kept_of(found) == kept_of(full)
+    assert kept_of(found)["result_files"] == [f"{AREA}/table.txt"]
+    assert "platform_notes" not in kept_of(found)
+    assert found.pinned == full.pinned
+
+
+async def test_an_artifact_relative_to_the_write_area_gets_its_revision_and_full_path() -> None:
+    found = await in_area(f"{AREA}/table.txt", asked=(Asked(*TABLE),))
+    await submit(found, file_result("table.txt"))
+    (item,) = listed_of(kept_of(found)["deliverables"])
+    assert (item["path"], item["revision"]) == (f"{AREA}/table.txt", 1)
+    given = await in_area(f"{AREA}/table.txt", asked=(Asked(*TABLE),))
+    result = file_result("table.txt")
+    result["deliverables"][0]["revision"] = 1
+    await submit(given, result)
+    assert listed_of(kept_of(given)["deliverables"])[0]["path"] == f"{AREA}/table.txt"
+
+
+async def test_a_path_in_shared_or_outside_the_area_is_read_as_given() -> None:
+    """A path the calls recorded as given keeps it, as before: shared/'s, and one they
+    published from the session's files."""
+    found = await in_area("shared/table.txt", "notes/table.txt")
+    await submit(found, file_result("shared/table.txt", "notes/table.txt"))
+    kept = kept_of(found)
+    assert listed_of(kept["deliverables"])[0]["path"] == "shared/table.txt"
+    assert kept["result_files"] == ["notes/table.txt"]
+
+
+async def test_a_relative_path_to_a_file_the_run_did_not_write_names_both_forms() -> None:
+    found = await in_area(f"{AREA}/table.txt")
+    refused = await submit(found, file_result("other.txt", "other.txt"))
+    assert refused["error"]["problems"] == [
+        {
+            "at": "result_files",
+            "problem": f"your calls wrote or published no file other.txt or {AREA}/other.txt; "
+            "a result file is one your calls wrote, as they named it, or published",
+        },
+        {
+            "at": "deliverables[0]",
+            "problem": f"d1: your calls wrote or published no file other.txt or {AREA}/other.txt",
+        },
+    ]
+    assert found.result is None
+
+
+@pytest.mark.parametrize(
+    "given",
+    [
+        "../dlg-2/table.txt",
+        "out/../../dlg-2/table.txt",
+        f"{AREA}/../dlg-2/table.txt",
+        "/work/dlg-2/table.txt",
+        f"/sandbox/workspace/{AREA}/table.txt",
+        "/etc/passwd",
+        ".//table.txt",
+    ],
+)
+async def test_a_path_that_escapes_the_area_or_is_absolute_is_refused(given: str) -> None:
+    """A ``..`` segment, an absolute path or an empty segment is never joined to the area
+    nor resolved: it names no file the calls recorded, even one they did record, here
+    another work's file and the area's own, and is refused as no workspace path."""
+    found = await in_area(f"{AREA}/table.txt", "work/dlg-2/table.txt")
+    refused = await submit(found, file_result(given, given))
+    problems = [item["problem"] for item in refused["error"]["problems"]]
+    assert len(problems) == 2
+    assert all(f"no file {given}" in problem for problem in problems)
+    assert all("which is no workspace path" in problem for problem in problems)
+    assert found.result is None
+
+
+async def test_a_path_recorded_both_as_given_and_below_the_area_is_refused_naming_both() -> None:
+    """Two readings, the session's file and the area's, are not chosen between."""
+    found = await in_area(f"{AREA}/table.txt", "table.txt")
+    refused = await submit(found, file_result("table.txt", "table.txt"))
+    both = (
+        f"table.txt names two files your calls wrote or published, table.txt and "
+        f"{AREA}/table.txt: give the one you mean in full"
+    )
+    assert refused["error"]["problems"] == [
+        {"at": "result_files", "problem": both},
+        {"at": "deliverables[0]", "problem": f"d1: {both}"},
+    ]
+    assert found.result is None
+    given = await submit(found, file_result(f"{AREA}/table.txt", f"{AREA}/table.txt"))
+    assert "recorded" in given, given
+    assert kept_of(found)["result_files"] == [f"{AREA}/table.txt"]
+
+
+async def test_one_file_listed_in_both_forms_is_listed_twice() -> None:
+    found = await in_area(f"{AREA}/table.txt")
+    refused = await submit(
+        found, file_result(f"{AREA}/table.txt", "table.txt", f"{AREA}/table.txt")
+    )
+    assert refused["error"]["problems"] == [
+        {"at": "result_files", "problem": f"{AREA}/table.txt is listed twice: list it once"}
+    ]
+
+
+async def test_without_a_write_area_a_path_is_read_only_as_given() -> None:
+    found = Outcome(task=True, deliverables=(Asked(*TABLE_FILE),))
+    await found.observe_tool(run(), recorded(f"{AREA}/table.txt"))
+    await submit(found, file_result("table.txt"))
+    assert found.result is None
+    assert found.errors == ["deliverables[0]: d1: your calls wrote or published no file table.txt"]
+
+
+def test_the_schema_says_a_path_may_be_relative_to_the_write_area() -> None:
+    schema = task_schema((Asked(*TABLE), Asked("d2", "The notes", "file")))
+    branches = schema["properties"]["deliverables"]["items"]["oneOf"]
+    paths = [branch["properties"]["path"]["description"] for branch in branches]
+    paths.append(schema["properties"]["result_files"]["description"])
+    assert all(PATH_FORMS in text for text in paths)
 
 
 # --- A refusal names every problem -------------------------------------------------
