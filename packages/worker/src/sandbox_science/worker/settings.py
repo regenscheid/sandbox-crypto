@@ -121,7 +121,7 @@ JOB_WALL_TIME_MAX: Final = 7 * 24 * 3600.0
 JOB_SANDBOX_LABEL: Final = ("sandbox-science.io/job-sandbox", "true")
 """The label on every job sandbox, set as the direct MCP path labels its runtime sandbox
 (``openshell sandbox create --label``): it marks the OpenShell sandbox, so ``openshell
-sandbox list --selector`` finds running jobs before a node is drained. OpenShell 0.1.7
+sandbox list --selector`` finds running jobs before a node is drained. OpenShell 0.1.10
 copies no such label onto the sandbox's Pods: a Pod's own labels come only from a
 sandbox template's labels, which its CLI never sets."""
 _KATA: Final = re.compile(r"^kata(?:-[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)?$")
@@ -201,8 +201,9 @@ class EnvironmentSettings(_Model):
     """How long a sandbox may take to become ready."""
     creation_grace: Annotated[float, Field(ge=300, le=86400)] = 420.0
     """Seconds after an environment's record before a creation with an unknown outcome may
-    be found absent: OpenShell 0.1.7's fixed bootstrap grace of 300 s, after which its
-    driver rolls a sandbox back, plus a margin. Never shorter than that grace."""
+    be found absent: OpenShell's bootstrap grace of 300 s (0.1.10's default, which the
+    deployments keep), after which its driver rolls a sandbox back, plus a margin. Never
+    shorter than that grace."""
     creation_recheck: Annotated[float, Field(ge=1, le=3600)] = 30.0
     """Seconds between the two reads of the gateway that confirm such a sandbox absent, and
     between the running worker's passes over those environments."""

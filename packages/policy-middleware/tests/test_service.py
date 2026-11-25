@@ -88,12 +88,18 @@ def call(
     return stub(request, metadata=metadata, timeout=10)
 
 
+HTTP_HOOKS = "openshell.supervisor-middleware.http-hooks"
+"""The streaming HTTP hooks a gateway supports since OpenShell 0.1.9; a service selects them
+by requiring the capability, and this one does not."""
+
+
 def gateway_metadata(**overrides: object) -> ext.PeerMetadata:
+    """A gateway's metadata as OpenShell 0.1.10 sends it at Describe."""
     fields: dict[str, object] = {
         "protocol_version": ext.ProtocolVersion(major=1, minor=0),
         "implementation_name": "openshell/gateway",
-        "implementation_version": "0.1.7",
-        "supported_capabilities": [CONTRACT_CAPABILITY],
+        "implementation_version": "0.1.10",
+        "supported_capabilities": [CONTRACT_CAPABILITY, HTTP_HOOKS],
         "required_capabilities": [CONTRACT_CAPABILITY],
     }
     fields.update(overrides)
@@ -168,6 +174,19 @@ def test_describe_returns_the_manifest(channel: grpc.Channel) -> None:
     assert list(extension.supported_capabilities) == [CONTRACT_CAPABILITY]
     assert list(extension.required_capabilities) == [CONTRACT_CAPABILITY]
     assert extension.implementation_version
+
+
+def test_a_gateway_without_http_hooks_is_served_the_legacy_hooks(channel: grpc.Channel) -> None:
+    # An OpenShell 0.1.7 gateway knows no HTTP hooks; the manifest requires none, so it
+    # and a 0.1.10 gateway (gateway_metadata) both call EvaluateHttpRequest.
+    request = pb.MiddlewareDescribeRequest(
+        gateway=gateway_metadata(
+            implementation_version="0.1.7", supported_capabilities=[CONTRACT_CAPABILITY]
+        )
+    )
+    manifest = call(channel, "Describe", request, pb.MiddlewareManifest, gateway())
+    assert HTTP_HOOKS not in manifest.extension.required_capabilities
+    assert len(manifest.bindings) == 2
 
 
 @pytest.mark.parametrize(

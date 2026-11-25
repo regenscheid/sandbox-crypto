@@ -20,6 +20,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519
 from cryptography.x509.oid import NameOID
 
+from sandbox_science.contracts.openshell_version import OPENSHELL_VERSION
 from sandbox_science.launcher import toml
 from sandbox_science.launcher.kubernetes_bundle import render
 from sandbox_science.launcher.kubernetes_cli import main
@@ -701,6 +702,12 @@ def test_the_gateway_values_mount_the_ca_and_register_the_middleware(tmp_path):
     ) in readme
     assert "-f gateway/openshell-values-middleware.yaml" in readme
     assert "connects to\n   the middleware at startup" in readme
+    # The chart moved and was renamed with OpenShell 0.1.10; the pinned release is its version.
+    assert (
+        "helm upgrade openshell oci://quay.io/ai-openshell/charts/openshell \\\n"
+        f"  --version {OPENSHELL_VERSION} -n openshell"
+    ) in readme
+    assert "ghcr.io/nvidia" not in readme
 
 
 def test_a_cluster_domain_qualifies_every_name_a_sandbox_resolves(tmp_path):

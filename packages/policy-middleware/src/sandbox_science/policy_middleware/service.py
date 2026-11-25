@@ -373,9 +373,9 @@ class MiddlewareService:
         streamed = pb.HTTP_RESPONSE_BODY_MODE_STREAM_BYTES in modes
         if check is not None and preflight.status_code == 200:
             if media == "text/event-stream" and not whole:
-                # OpenShell 0.1.7 never offers an event stream whole: it passes unrewritten,
-                # recorded, and the agent runtime's client filters it and reports it for
-                # drift (D98). Inspection still reads it as it streams.
+                # OpenShell (0.1.7 to 0.1.10) never offers an event stream whole: it passes
+                # unrewritten, recorded, and the agent runtime's client filters it and reports
+                # it for drift (D98). Inspection still reads it as it streams.
                 check.unread()
                 return None, answer, _inspect_plan(answer, streamed=streamed, whole=False)
             if media not in _LISTING_MEDIA or not whole:

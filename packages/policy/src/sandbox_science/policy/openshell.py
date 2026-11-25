@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Compile a project policy into NVIDIA OpenShell v0.1.7 network policy.
+"""Compile a project policy into OpenShell v0.1.10 network policy.
 
 Two sandboxes need OpenShell policy (docs/POLICY.md, "Mapping to enforcement"):
 
@@ -155,7 +155,7 @@ them writable."""
 BASELINE_READ_ONLY: Final = ("/usr", "/lib", "/etc", "/proc", "/var/log", "/dev/urandom")
 BASELINE_READ_WRITE: Final = ("/tmp", "/dev/null")  # noqa: S108 - a Landlock path, not a temporary file
 """OpenShell's baseline paths for a sandbox with network rules (``PROXY_BASELINE_*`` in its
-supervisor, unchanged from v0.1.3 to v0.1.7), less ``/app``, which the images lack. The
+supervisor, unchanged from v0.1.3 to v0.1.10), less ``/app``, which the images lack. The
 supervisor adds each one only if it exists where the supervisor runs. With the macOS VM
 driver that is the host, which has no ``/lib`` or ``/proc``, so every compiled section
 lists them itself; on Linux the supervisor then adds nothing it would not have added."""
@@ -611,7 +611,9 @@ class OrchestratorTarget(StrictModel):
     ignored. The agent runtime's MCP egress is compiled from the project policy
     (``compile_agent_mcp``)."""
     state_service: ServiceEndpoint | None = None
-    """The scoped control capability service; never a database or filesystem endpoint."""
+    """The scoped control capability service; never a database or filesystem endpoint. Its
+    channel is a WebSocket, so OpenShell relays it (``protocol: tcp``) and checks only host,
+    port and binary."""
     binaries: tuple[BinaryPattern, ...] = Field(min_length=1)
     filesystem: SandboxFilesystem = SandboxFilesystem()
     """Paths the harness's image provides outside the workdir, such as its interpreter's prefix."""
@@ -1401,7 +1403,7 @@ _UNAPPLIED: Final = {
     ),
 }
 """Why the pool applies neither, with or without a Kubernetes placement: OpenShell
-0.1.7's driver configuration has no field for either (``kubernetes.PLACED_LIMITS``)."""
+0.1.10's driver configuration has no field for either (``kubernetes.PLACED_LIMITS``)."""
 
 
 _WALL_TIME: Final = (
@@ -1480,10 +1482,11 @@ def compile_orchestrator(target: OrchestratorTarget) -> OpenShellPolicy:
     The orchestrator is semi-trusted (Z2 in the threat model): it chooses actions but
     holds no engine credentials, and its egress goes only to platform services. They
     are inspected HTTP endpoints, with no policy middleware, since no project policy
-    governs the orchestrator itself. Its MCP egress, decided by native rules and the
-    middleware, is compiled apart (``compile_agent_mcp``) and merged in. The retired MCP
-    proxy's address (``mcp_proxy``) is ignored. Raises CompileError when two services
-    share an endpoint.
+    governs the orchestrator itself, except the control capability service, whose
+    WebSocket is relayed (``protocol: tcp``), and a service with ``relay_tls``. Its MCP
+    egress, decided by native rules and the middleware, is compiled apart
+    (``compile_agent_mcp``) and merged in. The retired MCP proxy's address (``mcp_proxy``)
+    is ignored. Raises CompileError when two services share an endpoint.
     """
     binaries = tuple(Binary(path=path) for path in target.binaries)
     services = {"worker-api": ("Sandbox Science worker API", target.worker_api)}
@@ -1504,6 +1507,13 @@ def compile_orchestrator(target: OrchestratorTarget) -> OpenShellPolicy:
             endpoint = Endpoint(
                 host=service.host, ports=(service.port,), protocol="tcp", tls="skip"
             )
+        elif key == "state-service":
+            # Control's capability channel is one WebSocket (``/control``), which a
+            # ``rest`` endpoint refuses with 403 (OpenShell 0.1.8 and later). A
+            # ``websocket`` endpoint would bound each client text message at 4 MiB, below
+            # the channel's frames (``MAX_FRAME_BYTES``), and close it at every policy
+            # change, so the connection is relayed as on Kubernetes.
+            endpoint = Endpoint(host=service.host, ports=(service.port,), protocol="tcp")
         elif key == "model-gateway":
             endpoint = Endpoint(
                 host=service.host,
