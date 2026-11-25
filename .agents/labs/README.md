@@ -122,9 +122,13 @@ confinement `Channel`: the client's `ControlRequestCheck` asks the lab host's `c
 which binds the lab's project and asks the worker (`confinement.requests.confirm` with
 `WorkerRequestCheck`, as `HostLoops` does). A confirmed hold is answered through the worker's
 answer route with the operator token, as the workspace does, and the client calls again every
-3 s. Upstream calls are kept to the listings, one read each on e-print, nist-csrc, web-fetch and
+3 s. Upstream calls are kept to the listings, one read each on e-print, nist-csrc, web-fetch,
+the library (`library-mcp_paper_status` of a public ePrint paper the library holds) and
 attack-catalog (the escalated tool, after approval), one firecrawl scrape of a small public page,
-and one attack-catalog call without its required argument for the error answer. A later lab runs
+and one attack-catalog call without its required argument for the error answer. The library's
+read needs the library server in the service token's view of the portal (a Service Auth policy
+for it in Cloudflare Access, as for each server); the portal answers a server the token does not
+see with "Tool Server ... not found", which proof 1 counts as a failed read. A later lab runs
 `proofs --plan rerun`, which calls the portal's own `portal_list_servers` as the allowed tool and
 skips the error answer, so the earlier lab's upstream reads are not repeated. Proof 5 (binary
 results): after proofs 1 to 4 the lab host relays one `mcp_request` of web-fetch's

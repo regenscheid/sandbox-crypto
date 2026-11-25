@@ -1,6 +1,6 @@
 {
   "server": "crypto-research-mcp",
-  "captured": "2026-10-10",
+  "captured": "2026-11-25",
   "tools": [
     {
       "name": "attack-catalog-mcp_find_applicable_attacks",
@@ -75,6 +75,12 @@
       "evidence": "Reads paper text from cache; first call downloads and caches the PDF or queues it (fetch defaults true)."
     },
     {
+      "name": "e-print-mcp_eprint_originals",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Lists stored originals with a cursor; never fetches or converts."
+    },
+    {
       "name": "e-print-mcp_get_eprint",
       "class": "READ",
       "ambiguous": false,
@@ -97,6 +103,12 @@
       "class": "READ",
       "ambiguous": false,
       "evidence": "Keyword/FTS search of the ePrint corpus; read-only."
+    },
+    {
+      "name": "e-print-mcp_search_eprint_fulltext",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Searches one paper's text for a phrase."
     },
     {
       "name": "firecrawl-mcp_firecrawl_agent",
@@ -177,6 +189,12 @@
       "evidence": "Creates a recurring monitor that schedules future network checks and can email or call webhooks."
     },
     {
+      "name": "firecrawl-mcp_firecrawl_monitor_delete",
+      "class": "WRITE",
+      "ambiguous": false,
+      "evidence": "Deletes a monitor."
+    },
+    {
       "name": "firecrawl-mcp_firecrawl_monitor_get",
       "class": "READ",
       "ambiguous": false,
@@ -255,6 +273,96 @@
       "evidence": "Records feedback on a prior search; first feedback can refund 1 credit."
     },
     {
+      "name": "library-mcp_fetch_paper",
+      "class": "WRITE",
+      "ambiguous": false,
+      "evidence": "Acquires a paper's PDF now, by every route including paid ones; the one tool that acts."
+    },
+    {
+      "name": "library-mcp_find_papers",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "One ranked search over the library and the indexes; nothing is fetched."
+    },
+    {
+      "name": "library-mcp_imports_near",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "What neighbouring papers imported."
+    },
+    {
+      "name": "library-mcp_imports_of",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "What a paper imported, or what held papers took from it."
+    },
+    {
+      "name": "library-mcp_paper_card",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "A held paper's card of claims with quotes."
+    },
+    {
+      "name": "library-mcp_paper_file",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "A signed link to a held paper's PDF or text."
+    },
+    {
+      "name": "library-mcp_paper_notes",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Notes people made on a paper; read-only."
+    },
+    {
+      "name": "library-mcp_paper_positions",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "How held papers position themselves against one paper."
+    },
+    {
+      "name": "library-mcp_paper_references",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "A held paper's resolved reference list."
+    },
+    {
+      "name": "library-mcp_paper_statements",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "A held paper's numbered statements, verbatim."
+    },
+    {
+      "name": "library-mcp_paper_status",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "One paper's identifiers and holdings; no side effects, by its description."
+    },
+    {
+      "name": "library-mcp_read_paper",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Reads a held text by page; a paper not held is queued for its free routes."
+    },
+    {
+      "name": "library-mcp_related_papers",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Citing and cited papers."
+    },
+    {
+      "name": "library-mcp_search_in_paper",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Finds a phrase in one held text."
+    },
+    {
+      "name": "library-mcp_search_library",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Searches what was extracted from every held text."
+    },
+    {
       "name": "nist-csrc-mcp_nist_browse_catalogs",
       "class": "READ",
       "ambiguous": false,
@@ -303,48 +411,6 @@
       "evidence": "Searches NIST publications, catalog items and passages."
     },
     {
-      "name": "nist-mcp_csrc_currency",
-      "class": "READ",
-      "ambiguous": false,
-      "evidence": "Checks whether a NIST publication is current, superseded or a draft."
-    },
-    {
-      "name": "nist-mcp_csrc_file",
-      "class": "WRITE",
-      "ambiguous": true,
-      "evidence": "Fetches a NIST PDF (past Cloudflare if needed), caches it, returns public and signed cache URLs."
-    },
-    {
-      "name": "nist-mcp_csrc_fulltext",
-      "class": "WRITE",
-      "ambiguous": true,
-      "evidence": "Searches one publication's text; first call downloads and caches its PDF (fetch defaults true)."
-    },
-    {
-      "name": "nist-mcp_csrc_stats",
-      "class": "READ",
-      "ambiguous": false,
-      "evidence": "Reports index size, series breakdown and cache state."
-    },
-    {
-      "name": "nist-mcp_get_csrc",
-      "class": "READ",
-      "ambiguous": false,
-      "evidence": "Returns metadata for one NIST publication."
-    },
-    {
-      "name": "nist-mcp_refresh_csrc",
-      "class": "WRITE",
-      "ambiguous": false,
-      "evidence": "Re-downloads NIST's publication index and rebuilds the search index."
-    },
-    {
-      "name": "nist-mcp_search_csrc",
-      "class": "READ",
-      "ambiguous": false,
-      "evidence": "Searches ~930 NIST publications (titles, abstracts, cached full text)."
-    },
-    {
       "name": "paper-search-mcp_arxiv_search",
       "class": "READ",
       "ambiguous": false,
@@ -375,6 +441,12 @@
       "evidence": "Lists citing or referenced papers via OpenAlex."
     },
     {
+      "name": "paper-search-mcp_paper_copies",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Lists a paper's known full-text copies; nothing is downloaded."
+    },
+    {
       "name": "paper-search-mcp_paper_details",
       "class": "READ",
       "ambiguous": false,
@@ -385,6 +457,12 @@
       "class": "READ",
       "ambiguous": false,
       "evidence": "Reports configured sources and request counters."
+    },
+    {
+      "name": "paper-search-mcp_papers_by_ids",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Batch metadata lookup by identifier."
     },
     {
       "name": "paper-search-mcp_scholar_search",
@@ -403,6 +481,12 @@
       "class": "READ",
       "ambiguous": false,
       "evidence": "Searches Semantic Scholar."
+    },
+    {
+      "name": "paper-search-mcp_zbmath_search",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Searches zbMATH Open."
     },
     {
       "name": "patent-search-mcp_patent_search",
@@ -469,6 +553,12 @@
       "class": "READ",
       "ambiguous": false,
       "evidence": "Reports available fetch engines and server config."
+    },
+    {
+      "name": "web-fetch-mcp_web_fetch_hosts",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Reports the per-host fetch memory; changes nothing."
     }
   ]
 }

@@ -1,5 +1,5 @@
 {
- "captured": "2026-10-26",
+ "captured": "2026-11-25",
  "group": "web-fetch-mcp",
  "server": "crypto-research-mcp",
  "tools": [
@@ -53,9 +53,14 @@
    "name": "web-fetch-mcp_fetch_links"
   },
   {
-   "description": "Fetch a page and return its content (alias of web_fetch).\n\nAccepts the same arguments as web_fetch: `url`, `format` (markdown/text/html),\n`max_chars`.  Provided because some MCP hosts call the tool fetch_page.\n",
+   "description": "Fetch a page and return its content (alias of web_fetch).\n\nAccepts the same arguments as web_fetch: `url`, `format` (markdown/text/html),\n`max_chars`, `expect`.  Provided because some MCP hosts call the tool fetch_page.\n",
    "inputSchema": {
     "properties": {
+     "expect": {
+      "default": "auto",
+      "title": "Expect",
+      "type": "string"
+     },
      "extractor": {
       "default": "auto",
       "title": "Extractor",
@@ -107,9 +112,14 @@
    "name": "web-fetch-mcp_web_capture"
   },
   {
-   "description": "Fetch a page as Markdown/text/HTML, or return an intact file download.\n\nLocal-first fallback: direct HTTP, Obscura, Firefox, then Bright Data.\nPaper landing pages prominently identify advertised full-text, errata,\nand supplemental links. Attachments are not automatically fetched.\n\n`format`: \"markdown\" (default), \"text\", or \"html\".\n`max_chars`: cap on the returned content; 0 uses the server default.\nLong pages include a continuation token. `extractor`: auto, trafilatura,\nor conservative. `refresh` bypasses the short-lived result cache.\n",
+   "description": "Fetch a page as Markdown/text/HTML, or return an intact file download.\n\nLocal-first chain, per host: direct HTTP with the host's saved cookies,\nObscura, a local Chrome that solves a bot check once, then the paid\ntiers (Bright Data, Scrappey) and Firefox last. Explicit local walls can\nexclude a transport; ordinary failures do not blacklist a host. Paper landing pages prominently\nidentify advertised full-text, errata, and supplemental links.\nRecognizable AMS and ScienceDirect article pages automatically follow\ntheir own advertised PDF link; unrelated papers are excluded.\n\n`format`: \"markdown\" (default), \"text\", or \"html\".\n`max_chars`: cap on the returned content; 0 uses the server default.\nLong pages include a continuation token. `extractor`: auto, trafilatura,\nor conservative. `refresh` bypasses the short-lived result cache and the\nper-host memory's skips. `expect`: \"auto\" (a URL that looks like a\ndocument is one), or \"document\" \u2014 the file is wanted: a page in its\nplace has its advertised full-text link followed once, and only a page\nwith no such link escalates to the stronger transports.\n",
    "inputSchema": {
     "properties": {
+     "expect": {
+      "default": "auto",
+      "title": "Expect",
+      "type": "string"
+     },
      "extractor": {
       "default": "auto",
       "title": "Extractor",
@@ -151,6 +161,26 @@
     "type": "object"
    },
    "name": "web-fetch-mcp_web_fetch_health"
+  },
+  {
+   "description": "What the per-host memory remembers: for each host and transport, the\nattempts, successes and the last outcome in the period, and which hosts\nhold saved clearance cookies. For an operator reading which paid tiers a\nsite needed; nothing here changes the chain.",
+   "inputSchema": {
+    "properties": {
+     "days": {
+      "default": 7,
+      "title": "Days",
+      "type": "integer"
+     },
+     "host": {
+      "default": "",
+      "title": "Host",
+      "type": "string"
+     }
+    },
+    "title": "web_fetch_hostsArguments",
+    "type": "object"
+   },
+   "name": "web-fetch-mcp_web_fetch_hosts"
   }
  ]
 }

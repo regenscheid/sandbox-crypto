@@ -1,5 +1,5 @@
 {
- "captured": "2026-10-31",
+ "captured": "2026-11-25",
  "group": "e-print-mcp",
  "server": "crypto-research-mcp",
  "tools": [
@@ -13,11 +13,20 @@
    "name": "e-print-mcp_corpus_stats"
   },
   {
-   "description": "Return a temporary URL for an intact original PDF or PostScript file.\nA missing original is fetched inline\nin standalone mode or queued for the cluster's dedicated fetcher. The\ncluster waits briefly so the initial call normally returns the URL on a\ndirect-fetch success; slower fallbacks return a queue status. Once returned,\nthe client should download the signed HTTPS URL from the server's cache.",
+   "description": "Return a temporary signed URL for an intact original PDF or PostScript\nfile, served from the store that holds it. A missing original is fetched\ninline in standalone mode or queued for the cluster's dedicated fetcher.\nThe cluster waits briefly so the initial call normally returns the URL on\na direct-fetch success; slower fallbacks return a queue status. The client\nmay GET the signed HTTPS URL directly, with no header, for 30 minutes.\nExplicit requests use interactive priority, ahead of nightly prefetches.\nAutomated bulk intake must pass priority=\"batch\". Repeating an explicit\nrequest promotes an existing batch job without resetting its retries.",
    "inputSchema": {
     "properties": {
      "paper_id": {
       "title": "Paper Id",
+      "type": "string"
+     },
+     "priority": {
+      "default": "interactive",
+      "enum": [
+       "interactive",
+       "batch"
+      ],
+      "title": "Priority",
       "type": "string"
      }
     },
@@ -30,7 +39,7 @@
    "name": "e-print-mcp_eprint_file"
   },
   {
-   "description": "Read a paper's BODY from the local cache, not just its abstract.\n\nIn standalone mode, the first call downloads and caches the PDF. In the\ncluster, it queues a missing PDF and waits briefly for the dedicated\nfetcher; the initial call normally returns the requested text when the\ndirect path succeeds, otherwise it returns a queue status. Responses\nlink to the archive or a verified original. PostScript text is extracted\nby an isolated worker and cached; if extraction fails, the original PS\ndownload remains available. Always pass `query` -- these are full\npapers. `ref` is accepted as an alias for paper_id for symmetry with the\nNIST tools.\n",
+   "description": "Read the paper itself as complete Markdown/LaTeX pages, not search results.\n\nFor \"show/read the paper\", pass paper_id and start_page=1. page_count is\n1-5 (default 1); follow the returned next start_page to continue. Page\nnumbers are physical PDF positions, starting at 1, not printed page labels.\nComplete pages are returned without a character cutoff. Source PNG links\nare omitted unless include_page_images=true. For metadata/abstract only use\nget_eprint; to find a word or phrase in the body use search_eprint_fulltext.\nOlder unpaginated text returns a clearly labeled character window with an\noffset for continuation. A missing original is fetched/queued only when\nfetch=true; otherwise the call is read-only and says the paper is not held.\n",
    "inputSchema": {
     "properties": {
      "fetch": {
@@ -77,7 +86,39 @@
    "name": "e-print-mcp_eprint_fulltext"
   },
   {
-   "description": "Fetch full metadata and the abstract for one ePrint paper by ID\n(e.g. \"2024/1234\"), including its archive link and any cached original's format.",
+   "description": "List already stored active originals for library synchronization, with a durable cursor.\n\nThis never fetches from ePrint or requests a conversion. Cold mirror copies\nare ingested separately. paper_id optionally inspects one held paper,\nincluding the PDF rendered from a PostScript original.\n",
+   "inputSchema": {
+    "properties": {
+     "after": {
+      "default": 0,
+      "title": "After",
+      "type": "integer"
+     },
+     "limit": {
+      "default": 200,
+      "title": "Limit",
+      "type": "integer"
+     },
+     "paper_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Paper Id"
+     }
+    },
+    "title": "eprint_originalsArguments",
+    "type": "object"
+   },
+   "name": "e-print-mcp_eprint_originals"
+  },
+  {
+   "description": "Fetch full metadata and the abstract for one ePrint paper by ID\n(e.g. \"2024/1234\"), including its archive link and any held original's format.",
    "inputSchema": {
     "properties": {
      "paper_id": {
@@ -130,7 +171,7 @@
    "name": "e-print-mcp_refresh_eprint"
   },
   {
-   "description": "Search the Cryptology ePrint Archive corpus by topic, title, or keyword.\n\nDomain acronyms expand automatically (LWE -> learning with errors, MPCitH\n-> MPC-in-the-Head, etc.).  Supports FTS5 syntax directly when you want\ncontrol -- quoted phrases, AND/OR/NOT, prefix wildcards like \"latt*\".\nResults include archive links and verified formats for cached originals.\nUse eprint_file to resolve and download an uncached original (PDF or PS).\nSet abstracts=true only after narrowing; it costs a lot of tokens.\n",
+   "description": "Search the Cryptology ePrint Archive corpus by topic, title, or keyword.\n\nDomain acronyms expand automatically (LWE -> learning with errors, MPCitH\n-> MPC-in-the-Head, etc.), and a standard finds its submission's name and\nback (ML-KEM <-> Kyber, ML-DSA <-> Dilithium, SLH-DSA <-> SPHINCS+,\nFN-DSA <-> Falcon).  Names with hyphens, slashes or digits are kept whole\n(SHA-1, A5/1, X25519, (EC)DSA).  For control: quoted phrases, AND/OR/NOT,\nparentheses and prefix wildcards like latt*; when nothing matches all of\nsuch a query, papers matching some of it come back and the first line says so.\nThe author filter ignores accents (Faugere finds Faug\u00e8re).\nEach result's archive line ends with the date it was first posted.\nResults include archive links and verified formats for held originals.\nUse eprint_file to resolve and download an original (PDF or PS).\nSet abstracts=true only after narrowing; it costs a lot of tokens. An\nabstract over 700 characters is cut at a word and ends in \" ...\"\n(get_eprint has it whole).\n",
    "inputSchema": {
     "properties": {
      "abstracts": {

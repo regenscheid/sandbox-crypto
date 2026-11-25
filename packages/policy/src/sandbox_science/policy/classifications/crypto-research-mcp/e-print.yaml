@@ -6,7 +6,7 @@ apiVersion: sandbox-science/v0alpha1
 kind: ToolClassification
 server: crypto-research-mcp
 prefix: e-print-mcp_
-pinned: "2026-10-31"
+pinned: "2026-11-25"
 tools:
   e-print-mcp_corpus_stats:
     class: read
@@ -15,17 +15,22 @@ tools:
   e-print-mcp_eprint_file:
     class: read
     reason: "Signed URL for a paper; a missing original is fetched into the server's cache (D95: a read)."
-    sha256: ea5131406d9774a10c24fdbd12b06e802691d821c33b80532ff1d88bbe1d9528
+    sha256: 5d6389d961cb78f78e306330a91e3ca8c220ba3d269bda1783a864f6f2d5ce2c
     significant: {title: paper_id}
   e-print-mcp_eprint_fulltext:
     class: read
     reason: "Reads a paper's text by page; the first call may fetch and cache the PDF (D95: a read)."
-    sha256: b77b2ee26ef4230c1b397cce81f7adb107e1a307e7af58ff544cf1dd8af0a8ff
+    sha256: a60b2ae3ea41f0c3c5b3908b132600420f3b0bf994ec742740f99512eba48724
     significant: {title: paper_id}
+  e-print-mcp_eprint_originals:
+    class: read
+    reason: "Lists the originals the server already holds; it never fetches or converts."
+    sha256: 8ab0d0598962580441cfc698156d08f3d64a1daff22052290afa5eae6e6b3782
+    significant: {title: paper_id, size: limit}
   e-print-mcp_get_eprint:
     class: read
     reason: "Metadata and abstract for one paper."
-    sha256: d21b5767ae9d867711267a01c9a45bb1d36e29db1b3f3e7c8f70b9af3ffe91e8
+    sha256: 11732ba2b04e7ade4e04a9f5aa68a9d6aa7fe56af2421b21fd0a17c59bea9e4a
     significant: {title: paper_id}
   e-print-mcp_recent_eprint:
     class: read
@@ -39,7 +44,7 @@ tools:
   e-print-mcp_search_eprint:
     class: read
     reason: "Searches the ePrint corpus."
-    sha256: 41cb9f4dc0bfd7e5519a00ec5b2dbf49459cfd077ab696242ed5d5c9c80f80db
+    sha256: 04ca944be04cf8a47b275e44a69a1161661c5e2053a5f5ad0c3c42821ca8e825
     significant: {query: query}
   e-print-mcp_search_eprint_fulltext:
     class: read

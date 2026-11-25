@@ -339,8 +339,8 @@ GROUPS = {
     "attack-catalog-mcp",
     "e-print-mcp",
     "firecrawl-mcp",
+    "library-mcp",
     "nist-csrc-mcp",
-    "nist-mcp",
     "paper-search-mcp",
     "patent-search-mcp",
     "portal",
@@ -377,10 +377,12 @@ def test_every_pinned_tool_is_classified_with_its_digest() -> None:
 def test_only_tools_missing_from_the_pinned_listings_go_unpinned() -> None:
     unpinned = sorted(name for name, entry in catalog(SERVER).tools.items() if entry.sha256 is None)
     assert unpinned == [
-        *sorted(f"nist-mcp_{name}" for name in (
-            "csrc_currency", "csrc_file", "csrc_fulltext", "csrc_stats", "get_csrc",
-            "refresh_csrc", "search_csrc",
-        )),  # the 2026-10-10 notes; nist-mcp was not listed on 2026-10-15, -24 or -26
+        *sorted(f"library-mcp_{name}" for name in (
+            "fetch_paper", "find_papers", "imports_near", "imports_of", "paper_card",
+            "paper_file", "paper_notes", "paper_positions", "paper_references",
+            "paper_statements", "paper_status", "read_paper", "related_papers",
+            "search_in_paper", "search_library",
+        )),  # the portal's raw listing of 2026-11-25 for the service token lacks the library
     ]  # fmt: skip
 
 
