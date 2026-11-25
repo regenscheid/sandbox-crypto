@@ -13,7 +13,8 @@ description and its results as the server returned them on 2026-10-16:
   (``partial``; none matched reads nothing); ``eprint_file`` only links the PDF, which the
   PDF tools then read. Before 2026-10-31 ``eprint_fulltext`` returned the record and the
   passages matching a query (``partial``, or ``abstract_only`` when none matched), which
-  archives of then still hold;
+  archives of then still hold. The text tools' header may carry the server's own lines
+  (``eprint_header``, as the server writes them on 2026-11-25);
 - the web-fetch server: ``web_fetch`` and ``fetch_page`` return a page, ``whole`` unless
   it ends ``[Truncated. Call fetch_continue(document_id='…', offset=N) …]``;
   ``fetch_continue`` returns the next part as JSON, ``next_offset`` null at the end. The
@@ -79,6 +80,21 @@ _PHYSICAL: Final = re.compile(r"\n\nPhysical page (\d{1,6})\n")
 _LEFT_OUT: Final = re.compile(r"\n\n\[The platform left out [^\n]{1,1024}\]\Z")
 """The toolbox's last line on a reading result it cut at a page boundary
 (``paged``)."""
+MAX_NOTE: Final = 512
+"""The most characters of a ``NOTE:`` line the e-print server's header may hold; a
+result with a longer one has no header (``eprint_header``)."""
+_NOTE: Final = re.compile(rf"\ANOTE: [^\n]{{1,{MAX_NOTE}}}\n\n")
+_COMPATIBILITY: Final = (
+    "Compatibility: query now belongs to search_eprint_fulltext; eprint_fulltext reads pages."
+)
+"""The line ``eprint_fulltext`` puts before a search's answer, then a blank line, when it
+is called with a query."""
+_CONVERTED: Final = (
+    "Converted from a PDF rendered from the PostScript original; mathematical symbols may be "
+    "approximate.",
+    "Text extracted from PostScript; layout and mathematical symbols may be approximate.",
+)
+"""The lines the server puts under the paper's line for a PostScript original."""
 
 PAGED: Final[dict[str, str]] = {
     "e-print-mcp_eprint_fulltext": "pages",
@@ -174,6 +190,34 @@ def unpaged(text: str) -> str:
     return _LEFT_OUT.sub("", text)
 
 
+def eprint_header(text: str, *, compatible: bool = False) -> tuple[str, list[str], str] | None:
+    """The paper an e-print text tool's result names on its own first line, the server's
+    lines around that line, and the result after them; None for a result that does not
+    begin so. The server's lines are exactly those it writes (``eprint_mcp/tools.py``,
+    ``_reading_header``): before the paper's line, ``eprint_fulltext``'s compatibility
+    line and a blank line, when ``compatible``, then one ``NOTE:`` line and a blank line
+    (where the text came from, a newer revision, the fetch budget); after it, one line on
+    a PostScript original's conversion. So there are at most three, each one line, in that
+    order, and none is the paper's text, its header or a heading."""
+    notes: list[str] = []
+    if compatible and text.startswith(_COMPATIBILITY + "\n\n"):
+        notes.append(_COMPATIBILITY)
+        text = text[len(_COMPATIBILITY) + 2 :]
+    note = _NOTE.match(text)
+    if note is not None:
+        notes.append(note.group(0).strip())
+        text = text[note.end() :]
+    paper = _PAPER.match(text)
+    if paper is None:
+        return None
+    rest = text.partition("\n")[2]
+    line, newline, after = rest.partition("\n")
+    if newline and line in _CONVERTED:
+        notes.append(line)
+        rest = after
+    return paper.group(1), notes, rest
+
+
 def _eprint_record(arguments: Json, text: str) -> list[Read] | None:
     paper = _PAPER.match(text)
     if paper is None:
@@ -182,35 +226,37 @@ def _eprint_record(arguments: Json, text: str) -> list[Read] | None:
 
 
 def _eprint_fulltext(arguments: Json, text: str) -> list[Read] | None:
-    paper = _PAPER.match(text)
-    if paper is None:
+    header = eprint_header(text, compatible=True)
+    if header is None:
         return [] if "queue" in text.casefold() else None  # queued: nothing read yet
-    lines = text.split("\n", 2)
-    read = _PAGES.fullmatch(lines[1]) if len(lines) > 1 else None
+    paper, _, rest = header
+    read = _PAGES.fullmatch(rest.split("\n", 1)[0])
     if read is not None:
         first, last, of = (int(n) for n in read.groups())
         detail: Json = {"pages": list(range(first, min(last, of) + 1)), "of": of}
         extent = "whole" if first <= 1 and last >= of else "partial"
-        return [Read("eprint", paper.group(1), extent, detail, label=paper.group(1))]
-    # As the tool answered before 2026-10-31: the passages matching a query.
-    matched = _MATCHED.search(text)
+        return [Read("eprint", paper, extent, detail, label=paper)]
+    # Called with a query, or as the tool answered before 2026-10-31: the passages
+    # matching it.
+    matched = _MATCHED.search(rest)
     if matched is not None:
         detail: Json = {"passages": int(matched.group(1)), "query": str(arguments.get("query"))}
-        return [Read("eprint", paper.group(1), "partial", detail, label=paper.group(1))]
-    if _NONE_MATCHED.search(text) is not None:
-        return [Read("eprint", paper.group(1), "abstract_only", {}, label=paper.group(1))]
+        return [Read("eprint", paper, "partial", detail, label=paper)]
+    if _NONE_MATCHED.search(rest) is not None:
+        return [Read("eprint", paper, "abstract_only", {}, label=paper)]
     return None
 
 
 def _eprint_search(arguments: Json, text: str) -> list[Read] | None:
-    paper = _PAPER.match(text)
-    if paper is None:
+    header = eprint_header(text)
+    if header is None:
         return [] if "queue" in text.casefold() else None  # queued: nothing read yet
-    matched = _MATCHED.search(text)
+    paper, _, rest = header
+    matched = _MATCHED.search(rest)
     if matched is None:
         return []  # no passage matched: nothing of the paper was read
     detail: Json = {"passages": int(matched.group(1)), "query": str(arguments.get("query"))}
-    return [Read("eprint", paper.group(1), "partial", detail, label=paper.group(1))]
+    return [Read("eprint", paper, "partial", detail, label=paper)]
 
 
 def _web_fetch(arguments: Json, text: str) -> list[Read] | None:

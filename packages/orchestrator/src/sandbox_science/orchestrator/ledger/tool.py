@@ -16,6 +16,7 @@ import binascii
 import hashlib
 import json
 import re
+import sqlite3
 from collections.abc import Awaitable, Callable
 from typing import Annotated, Any, Final, cast, get_args
 
@@ -23,6 +24,7 @@ from pydantic import ConfigDict, Field, ValidationError
 
 from sandbox_science.contracts import ExecutionContext, FileContent, ReadFileRequest
 from sandbox_science.contracts.model import Contract
+from sandbox_science.orchestrator.consistency.quotes import unmatched
 from sandbox_science.orchestrator.documents.errors import (
     CONFLICT,
     INTERNAL,
@@ -35,7 +37,7 @@ from sandbox_science.orchestrator.model import ToolSpec
 from sandbox_science.orchestrator.recording import FileRecorder, Written
 from sandbox_science.orchestrator.worker_client import WorkerAPIError
 
-from . import records
+from . import evidence, records
 from .models import (
     MAX_ANCHORS,
     MAX_CAVEATS,
@@ -59,6 +61,7 @@ from .models import (
     IssueKind,
     LinkKind,
     Mutation,
+    MutationResult,
     Scheme,
     WorkLimit,
     WorkPage,
@@ -858,6 +861,10 @@ MESSAGE_CHARS: Final = 2000
 """The most characters of a refusal's message the model gets: enough for a change's
 problems, each with its fix."""
 
+QUOTE_NOTICES: Final = 8
+"""The most notices on new quotes that no source record of the session holds yet one
+change's result gives (CR-4)."""
+
 CHANGE_ARGUMENTS: Final = (
     "reason",
     "changes",
@@ -892,6 +899,10 @@ class LedgerTool:
         self.recorder: FileRecorder | None = None
         """Records a results file as an artifact revision when an import finds it is none
         yet, so the import is anchored on one (CM-9)."""
+        self.sources = False
+        """Whether the run's review controller records the session's sources (CR-4): then
+        a change's result names each quote it adds that no source record holds yet for a
+        mechanical reason."""
 
     def author(self, call_id: str | None, model: str | None) -> Author:
         return Author(
@@ -965,11 +976,19 @@ class LedgerTool:
         dry_run = given.pop("dry_run", False)
         if not isinstance(dry_run, bool):
             raise DocumentError(INVALID_REQUEST, "dry_run: give true or false")
+        notices: list[Json] = []
         result = self.ledger.change(
-            self.context.project_id, {"operation_id": operation, **given}, author, dry_run=dry_run
+            self.context.project_id,
+            {"operation_id": operation, **given},
+            author,
+            dry_run=dry_run,
+            within=self._quoted(notices) if self.sources else None,
         )
+        quoted: Json = {"quotes": notices} if notices else {}
         if not dry_run:
-            return result.model_dump_json()
+            if not quoted:
+                return result.model_dump_json()
+            return _dump({**result.model_dump(mode="json"), **quoted})
         return _dump(
             {
                 "dry_run": True,
@@ -985,8 +1004,33 @@ class LedgerTool:
                 "replayed": result.replayed,
                 "next": "nothing was recorded: call again without dry_run to record it; "
                 "the handles of new entries are those they would get now",
+                **quoted,
             }
         )
+
+    def _quoted(
+        self, notices: list[Json]
+    ) -> Callable[[sqlite3.Connection, list[MutationResult]], None]:
+        """What a change runs before it is kept, or rolled back in a dry run: a notice, in
+        ``notices``, on each quote it adds that no source record of the session holds yet
+        for a mechanical reason (``quotes.unmatched``), as many as ``QUOTE_NOTICES``. The
+        change is the same with them or without: they are advice."""
+        project, session = self.context.project_id, self.context.session_id
+
+        def advise(db: sqlite3.Connection, results: list[MutationResult]) -> None:
+            for result in results:
+                for entry in [] if result.replayed else result.entries:
+                    for link in evidence.stored(db, entry.entry_id, entry.revision):
+                        if link.target != "quote" or link.added != entry.revision:
+                            continue
+                        said = unmatched(db, project, session, link)
+                        if said is not None and len(notices) < QUOTE_NOTICES:
+                            text = str((link.locator or {}).get("text", ""))
+                            notices.append(
+                                {"entry": entry.handle, "quote": _clip(text, 80), "notice": said}
+                            )
+
+        return advise
 
     def _proposals(self, args: _Proposals, operation: str, author: Author) -> str:
         """Each proposal accepted, under an operation ID of this call's, or dismissed; one

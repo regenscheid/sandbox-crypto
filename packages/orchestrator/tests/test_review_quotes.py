@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from sandbox_science.contracts import ExecutionContext
 from sandbox_science.orchestrator.consistency.controller import source_of
 from sandbox_science.orchestrator.consistency.ledger import ingest_ledger
 from sandbox_science.orchestrator.consistency.store import ReviewStore, dump
@@ -21,6 +22,7 @@ from sandbox_science.orchestrator.tools import format_pdf
 from sandbox_science.testing.pdfs import make_pdf
 from sandbox_science.worker import pdfhelper
 
+from . import eprint_results as ep
 from . import library_results as lib
 from .ledger_support import AnchoredLedger as Ledger
 from .test_consistency import MAIN, dispatch
@@ -538,6 +540,162 @@ def test_a_split_tools_quote_without_get_eprint_has_no_source(store: Any) -> Non
     call(reviews, 2, RECORD_TOOL, {"paper_id": "2024/999"}, catalog("2024/999"), SERVER)
     assert recorded(ledger, reviews, {"source": "eprint", "dated": STAMP,
                                       "text": f"We show {TWIST}"}) == []  # fmt: skip
+
+
+def test_the_servers_notes_are_kept_apart_from_the_papers_text() -> None:
+    """Since 2026-11-25 the e-print server puts a NOTE line before the paper's line, and
+    under it a line on a PostScript original's conversion; eprint_fulltext called with a
+    query puts its line first. Each form parses, each such line is a note on the record,
+    and none is a page or a passage."""
+    from sandbox_science.orchestrator.consistency.quotes import eprint_record
+
+    observed = eprint_record(ep.READ, {"paper_id": ep.PAPER}, ep.OBSERVED)
+    assert observed is not None
+    assert observed["eprint"] == {
+        "paper": ep.PAPER, "dated": None, "pages": [1, 2],
+        "passages": [ep.PAGE_ONE, ep.PAGE_TWO], "notes": [f"NOTE: {ep.STORED}"],
+    }  # fmt: skip
+    forms = [
+        (ep.READ, ep.read([ep.PAGE_TWO], start=2, note=ep.MIRROR), [f"NOTE: {ep.MIRROR}"]),
+        (ep.READ, ep.read([ep.PAGE_TWO], start=2, note=ep.BUDGET), [f"NOTE: {ep.BUDGET}"]),
+        (ep.READ, ep.read([ep.PAGE_TWO], start=2, conversion=ep.RENDERED),
+         [f"NOTE: {ep.STORED}", ep.RENDERED]),
+        (ep.READ, ep.read([ep.PAGE_TWO], start=2, note=None, conversion=ep.POSTSCRIPT),
+         [ep.POSTSCRIPT]),
+        (ep.SEARCH, ep.search("Table 1", [(2, ep.PAGE_TWO)], conversion=ep.RENDERED),
+         [f"NOTE: {ep.STORED}", ep.RENDERED]),
+        (ep.SEARCH, ep.search("Table 1", [(2, ep.PAGE_TWO)], note=None), []),
+        (ep.READ, ep.compatible("Table 1", [(2, ep.PAGE_TWO)]),
+         [ep.COMPATIBILITY, f"NOTE: {ep.STORED}"]),
+    ]  # fmt: skip
+    for tool, text, notes in forms:
+        found = eprint_record(tool, {"paper_id": ep.PAPER}, text)
+        assert found is not None, text
+        record = found["eprint"]
+        assert (record["paper"], record["pages"], record["passages"]) == (
+            ep.PAPER, [2], [ep.PAGE_TWO],
+        ), text  # fmt: skip
+        assert record.get("notes", []) == notes
+    missed = eprint_record(ep.SEARCH, {}, ep.search("pebble", []))
+    assert missed is not None
+    assert (missed["eprint"]["passages"], missed["eprint"]["notes"]) == ([], [f"NOTE: {ep.STORED}"])
+    # get_eprint prints no note; its Date line is the record's, not one in the abstract.
+    catalogued = eprint_record(ep.RECORD, {"paper_id": ep.PAPER}, ep.record())
+    assert catalogued is not None
+    assert catalogued["eprint"] == {"paper": ep.PAPER, "dated": ep.DATED, "passages": []}
+
+
+def test_a_line_the_server_does_not_write_so_makes_no_record() -> None:
+    """Only the server's lines, where it writes them, are notes: a NOTE after the paper's
+    line, two of them, one too long, one before no paper's line, the compatibility line
+    before a search's own answer, or another line under the paper's line, leaves the
+    result without a header, or its text without pages."""
+    from sandbox_science.orchestrator.consistency.quotes import eprint_record
+    from sandbox_science.orchestrator.context.history.descriptors import MAX_NOTE
+
+    head = f"[{ep.PAPER}] {ep.TITLE}\n"
+    unread = [
+        (ep.READ, ep.read([ep.PAGE_ONE], note=None).replace(head, f"{head}NOTE: {ep.STORED}\n")),
+        (ep.READ, f"NOTE: {ep.BUDGET}\n\n" + ep.OBSERVED),
+        (ep.READ, ep.read([ep.PAGE_ONE], note="x" * (MAX_NOTE + 1))),
+        (ep.READ, f"NOTE: {ep.STORED}\n\nNo paper with id '2017/9999'. Expected format: 2024/1234"),
+        (ep.SEARCH, ep.compatible("Table 1", [(2, ep.PAGE_TWO)])),
+        (ep.READ, ep.read([ep.PAGE_ONE]).replace(head, f"{head}Converted from a scan.\n")),
+    ]  # fmt: skip
+    for tool, text in unread:
+        found = eprint_record(tool, {}, text)
+        assert found is None or found["eprint"]["passages"] == [], text
+
+
+def test_a_quote_of_a_page_the_server_noted_is_found(store: Any) -> None:
+    """The cluster's read of 2017/634, as received, is a source: a quote of its page,
+    dated by get_eprint's whole Date line, is found; the note is no passage, and a quote
+    dated by one of the Date line's days alone is not found."""
+    reviews, _, _ = store
+    ledger = Ledger(reviews.documents)
+    reference = {"type": "reference", "title": "Kyber", "statement": "Kyber.",
+                 "fields": {**REFERENCE_FIELDS, "identifiers": {"eprint": ep.PAPER}}}  # fmt: skip
+    ledger.change("p", {"operation_id": "ref", "reason": "r", "changes": [reference]}, MAIN)
+    call(reviews, 1, ep.READ, {"paper_id": ep.PAPER, "start_page": 1, "page_count": 2},
+         CONNECTOR_RESULT.text + ep.OBSERVED, SERVER)  # fmt: skip
+    call(reviews, 2, ep.RECORD, {"paper_id": ep.PAPER}, ep.record(), SERVER)
+    page = {"source": "eprint", "dated": ep.DATED, "text": "Its IND-CCA2 security rests on"}
+    note = {"source": "eprint", "dated": ep.DATED, "text": ep.STORED}
+    day = {**page, "dated": "2020-10-14"}
+    assert recorded(ledger, reviews, page, note, day) == ["q1"]
+
+
+def kyber(ledger: Ledger) -> None:
+    reference = {"type": "reference", "title": "Kyber", "statement": "Kyber.",
+                 "fields": {**REFERENCE_FIELDS, "identifiers": {"eprint": ep.PAPER}}}  # fmt: skip
+    ledger.change("p", {"operation_id": "ref", "reason": "r", "changes": [reference]}, MAIN)
+
+
+async def test_a_quote_no_record_holds_for_a_mechanical_reason_is_named_at_once(
+    store: Any,
+) -> None:
+    """When the agent records an ePrint quote whose date stamp no get_eprint record of the
+    session gave, or a library quote of a revision or page no read recorded, the change's
+    result and its dry run say so, from the session's records alone; the quote is
+    recorded as given, a quote a record holds draws nothing, and a run whose sources are
+    not recorded is told nothing."""
+    from sandbox_science.orchestrator.ledger.tool import LedgerTool
+
+    reviews, _, _ = store
+    ledger = Ledger(reviews.documents)
+    kyber(ledger)
+    context = ExecutionContext(project_id="p", session_id="s", environment_id="env")
+    tool = LedgerTool(ledger, context, run_id="author-1", role="main", alias="main")
+    tool.sources = True
+    page = "Its IND-CCA2 security rests on the problem"
+    day = {"source": "eprint", "dated": "2020-10-14", "text": page}
+
+    async def change(operation: str, *quotes: dict[str, Any], dry_run: bool = False) -> Any:
+        claim = {"type": "claim", "origin": "published", "title": "Kyber", "statement": "s",
+                 "evidence": [quoting(q) for q in quotes]}  # fmt: skip
+        text, _ = await tool.call(
+            "ledger_change", {"reason": "r", "changes": [claim], "dry_run": dry_run},
+            operation=operation,
+        )  # fmt: skip
+        return json.loads(text)
+
+    call(reviews, 1, ep.READ, {"paper_id": ep.PAPER, "start_page": 1, "page_count": 2},
+         CONNECTOR_RESULT.text + ep.OBSERVED, SERVER)  # fmt: skip
+    (unstamped,) = (await change("c0", day, dry_run=True))["quotes"]
+    assert "no get_eprint result for ePrint 2017/634" in unstamped["notice"]
+    call(reviews, 2, ep.RECORD, {"paper_id": ep.PAPER}, ep.record(), SERVER)
+    work = f"eprint/{ep.PAPER}"
+    call(reviews, 3, lib.READ, {"identifier": ep.PAPER, "start_page": 3},
+         lib.read(work, 3, [f"Section 3. {TWIST}."]), SERVER)  # fmt: skip
+    good = {**day, "dated": ep.DATED}
+    quotes = [day, good, library(TWIST, 3), library(TWIST, 4), library(TWIST, 3, "0" * 12)]
+    dry = await change("c1", *quotes, dry_run=True)
+    assert dry["recorded"] is False
+    made = await change("c2", *quotes)
+    assert made["entries"][0]["handle"] == "C-1"
+    for result in (dry, made):
+        notices = [item["notice"] for item in result["quotes"]]
+        assert len(notices) == 3, notices
+        assert f"date stamp {ep.DATED!r}" in notices[0]
+        assert "this quote's dated is '2020-10-14'" in notices[0]
+        assert "no read of physical page 4 at this revision" in notices[1]
+        assert "pages read at it: 3" in notices[1]
+        assert f"at revision {lib.REVISION!r}" in notices[2]
+        assert result["quotes"][0]["entry"] == "C-1"
+    # Recorded as given: the notice is advice.
+    quoted = [e.locator for e in ledger.entry("p", "C-1").evidence if e.target == "quote"]
+    assert [q["dated"] if q["source"] == "eprint" else q["page"] for q in quoted if q] == [
+        "2020-10-14", ep.DATED, 3, 4, 3,
+    ]  # fmt: skip
+    tool.sources = False
+    assert "quotes" not in await change("c3", day, dry_run=True)
+    # A session whose get_eprint gave the stamp but that read none of the paper's text.
+    elsewhere = ExecutionContext(project_id="p", session_id="other", environment_id="env")
+    tool = LedgerTool(ledger, elsewhere, run_id="author-2", role="main", alias="main")
+    tool.sources = True
+    call(reviews, 4, ep.RECORD, {"paper_id": ep.PAPER}, ep.record(), SERVER, session="other")
+    (unread,) = (await change("c4", good, dry_run=True))["quotes"]
+    assert "no eprint_fulltext or search_eprint_fulltext result" in unread["notice"]
 
 
 # The library server's reading tools (crypto-research-mcp's library-mcp): a read by page

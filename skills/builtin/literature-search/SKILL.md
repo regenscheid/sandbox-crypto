@@ -95,11 +95,11 @@ The citation check looks for a quote inside one page or passage of the paper tha
            "text": "the sentence as the returned page gives it, at least 20 characters"}}
 ```
 
-**From the e-print server**: e-print-mcp_eprint_fulltext reads a paper page by page and e-print-mcp_search_eprint_fulltext searches it for a phrase; neither prints the paper's date stamp, which e-print-mcp_get_eprint does, on its Date line. Call get_eprint for the paper in this session, and give that value as the quote's date stamp.
+**From the e-print server**: e-print-mcp_eprint_fulltext reads a paper page by page and e-print-mcp_search_eprint_fulltext searches it for a phrase; neither prints the paper's date stamp, which e-print-mcp_get_eprint does, on its Date line. Call get_eprint for the paper in this session and give the whole value of its Date line as dated, character for character, with every date and the words in parentheses, as in the example: not the paper's publication date, and not one of the dates alone.
 
 ```json
 {"role": "supports", "type": "source_claim", "entry": "new:ref",
- "quote": {"source": "eprint", "dated": "2015-06-30T18:41:29Z; 2015-06-30T20:25:17Z",
+ "quote": {"source": "eprint", "dated": "2017-06-29 (posted; revised 2020-10-14)",
            "text": "the sentence as the returned passage or page gives it, at least 20 characters"}}
 ```
 

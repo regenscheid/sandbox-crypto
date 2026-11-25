@@ -42,6 +42,7 @@ from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
+from . import eprint_results as ep
 from . import library_results as lib
 from .ledger_support import AnchoredLedger as Ledger
 from .test_ledger_evidence import publish
@@ -125,6 +126,20 @@ def placed(tool: str, arguments: dict[str, Any], text: str) -> list[Read]:
         ("e-print-mcp_search_eprint_fulltext", {"paper_id": "2024/1234", "query": "pebble"},
          SEARCH_MISSED, []),
         ("e-print-mcp_eprint_file", {"paper_id": "2024/1234"}, "https://signed.example/x", []),
+        # Since 2026-11-25 the server's own lines may lead the header or follow its first line.
+        (ep.READ, {"paper_id": ep.PAPER}, ep.OBSERVED, [("eprint", ep.PAPER, "partial")]),
+        (ep.READ, {"paper_id": ep.PAPER},
+         ep.read(["A"], total=1, note=ep.MIRROR, conversion=ep.RENDERED),
+         [("eprint", ep.PAPER, "whole")]),
+        (ep.READ, {"paper_id": ep.PAPER}, ep.read(["A"], note=None, conversion=ep.POSTSCRIPT),
+         [("eprint", ep.PAPER, "partial")]),
+        (ep.READ, {"paper_id": ep.PAPER, "query": "Table 1"},
+         ep.compatible("Table 1", [(2, ep.PAGE_TWO)]), [("eprint", ep.PAPER, "partial")]),
+        (ep.SEARCH, {"paper_id": ep.PAPER, "query": "Table 1"},
+         ep.search("Table 1", [(2, ep.PAGE_TWO)], note=ep.BUDGET, conversion=ep.RENDERED),
+         [("eprint", ep.PAPER, "partial")]),
+        (ep.SEARCH, {"paper_id": ep.PAPER, "query": "pebble"}, ep.search("pebble", []), []),
+        (ep.RECORD, {"paper_id": ep.PAPER}, ep.record(), [("eprint", ep.PAPER, "abstract_only")]),
         ("web-fetch-mcp_fetch_page", {"url": "https://eprint.iacr.org/2024/1234"}, FETCHED,
          [("web", "eprint.iacr.org/2024/1234", "partial")]),
         ("web-fetch-mcp_web_fetch", {"url": "https://example.org/note/"}, WHOLE_PAGE,
