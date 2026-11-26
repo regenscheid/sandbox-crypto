@@ -275,8 +275,8 @@
     {
       "name": "library-mcp_fetch_paper",
       "class": "WRITE",
-      "ambiguous": false,
-      "evidence": "Acquires a paper's PDF now, by every route including paid ones; the one tool that acts."
+      "ambiguous": true,
+      "evidence": "Acquires a paper's PDF now, by every route including paid ones, into the server's store; a url the caller found is fetched and kept for the paper."
     },
     {
       "name": "library-mcp_find_papers",
