@@ -96,6 +96,24 @@ def check_dispatch(operation: str | None = None) -> None:
             raise ExecutorRefusalError(error.kind, error.message) from None
 
 
+def current_admission() -> Admission | LegacyAdmission | None:
+    """The admission effects are checked against here, for work that goes on elsewhere."""
+    return _CURRENT.get()
+
+
+@contextmanager
+def admitted(admission: Admission | LegacyAdmission | None) -> Generator[None]:
+    """Check effects against ``admission`` while the block runs, as where it was taken.
+
+    Work that an executor's event starts runs in the channel's event task, which holds
+    the admission of whatever opened the channel, perhaps a run superseded since."""
+    token = _CURRENT.set(admission)
+    try:
+        yield
+    finally:
+        _CURRENT.reset(token)
+
+
 def control_context(
     target: ExecutionContext, supplied: ExecutionContext | None
 ) -> ExecutionContext:

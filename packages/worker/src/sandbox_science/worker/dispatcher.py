@@ -59,13 +59,13 @@ from .kernels import (
     require_skill_bindings,
 )
 from .lifecycle import EnvironmentLifecycle
-from .live import REQUEST, Live, time_limit
+from .live import REQUEST, CancelSource, Live, time_limit
 from .output_observations import normalize as normalize_observation
 from .package_admission import LEGACY as PACKAGE_GATE_LEGACY
 from .package_admission import PackageAdmission
 from .package_changes import PackageChanges
 from .recovery import DaemonRecovery
-from .recovery_fence import check_dispatch
+from .recovery_fence import admitted, check_dispatch, current_admission
 from .replies import epoch, error, integer, outputs, seconds, size, stream
 from .shared_sync import SharedSync
 from .store import Store
@@ -273,6 +273,7 @@ class Dispatcher:
             # Before any await: the counts admission read cannot change in between.
             sandboxes.record(execution, plan)
         live = self.journal.track(execution, request.output_limit_bytes)
+        live.admission = current_admission()
         self.journal.state(live, ExecutionState.QUEUED)
         self.store.update_execution(live.execution)
         if plan is not None and sandboxes is not None and isinstance(request, JobRequest):
@@ -494,7 +495,7 @@ class Dispatcher:
             )
         _log.warning("execution %s overran its limit; cancelling it", live.execution.execution_id)
         with contextlib.suppress(WorkerError):
-            await self.cancel(live.execution.execution_id)
+            await self.cancel(live.execution.execution_id, source=CancelSource.TIME_LIMIT)
         await self.clock.sleep(self.timeouts.lost_grace)
         self.journal.finish(
             live,
@@ -724,7 +725,9 @@ class Dispatcher:
         notices = list(live.notices)
         shared = self.shared
         if shared is not None:
-            notices += await self.files.sync(shared.up, live.execution.context, channel)
+            # Under the call's own admission, not that of whatever opened the channel.
+            with contextlib.nullcontext() if live.admission is None else admitted(live.admission):
+                notices += await self.files.sync(shared.up, live.execution.context, channel)
         try:
             self._complete(live, notices)
         except Exception:
@@ -797,7 +800,7 @@ class Dispatcher:
 
     async def _cancel_quietly(self, live: Live) -> None:
         with contextlib.suppress(WorkerError):
-            await self.cancel(live.execution.execution_id)
+            await self.cancel(live.execution.execution_id, source=CancelSource.OUTPUT_LIMIT)
 
     def _result(self, environment_id: str, live: Live, raw: dict[str, Any]) -> Result:
         """The executor's result, checked and bounded by the attempt's output limit."""
@@ -881,7 +884,13 @@ class Dispatcher:
         self._noticed[key] = max([since, *(at for at, _ in fresh)])
         return tuple(text for _, text in fresh)
 
-    async def cancel(self, execution_id: str, project_id: str | None = None) -> Execution:
+    async def cancel(
+        self,
+        execution_id: str,
+        project_id: str | None = None,
+        *,
+        source: CancelSource = CancelSource.REQUEST,
+    ) -> Execution:
         check_dispatch()
         execution = self.journal.get(execution_id, project_id)
         live = self.journal.live.get(execution_id)
@@ -890,6 +899,8 @@ class Dispatcher:
         already_requested = live.cancel_requested
         self.store.cancel_intent(execution_id)
         live.cancel_requested = True
+        if live.cancel_source is None:
+            live.cancel_source = source
         sandboxes = self.sandboxes()
         job = execution.job
         if job is not None and job.profile is not None and sandboxes is not None:
@@ -937,13 +948,13 @@ class Dispatcher:
             return
         await channel.request("cancel", execution=live.execution.execution_id)
 
-    async def cancel_jobs(self, jobs: list[Execution]) -> None:
+    async def cancel_jobs(self, jobs: list[Execution], *, source: CancelSource) -> None:
         """Bound cancel acknowledgments and process completion together, including broken peers."""
         if not jobs:
             return
 
         async def cancel_all() -> None:
-            await asyncio.gather(*(self.cancel(job.execution_id) for job in jobs))
+            await asyncio.gather(*(self.cancel(job.execution_id, source=source) for job in jobs))
             await asyncio.gather(*(self.journal.wait(job.execution_id) for job in jobs))
 
         try:
