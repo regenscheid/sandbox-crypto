@@ -218,6 +218,8 @@ class RunGiven(Attempt):
     max_input_chars: int = Field(strict=True, ge=1, le=MAX_VIEW_BYTES)
     system: str | Section
     research_template: str | None = None
+    notes: tuple[Section, ...] = Field(default=(), max_length=8)
+    """The platform's sections on what the run starts without (``loop.run_task``)."""
     role: str = Field(min_length=1, max_length=128)
     memory: MemoryGiven | None = None
     toolbox: ToolboxGiven

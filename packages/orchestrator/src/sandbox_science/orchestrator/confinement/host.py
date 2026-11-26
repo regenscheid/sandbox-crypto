@@ -1047,6 +1047,7 @@ class HostLoops:
             max_input_chars=min(options["max_input_chars"], 8 * 1024 * 1024),
             system=options["system"],
             research_template=options.get("research_template"),
+            notes=tuple(options.get("notes", ())),
             role=options["role"],
             memory=options.get("memory"),
             toolbox=toolbox_given(toolbox),

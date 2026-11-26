@@ -34,13 +34,14 @@ from sandbox_science.orchestrator.delegation.prompt import (
     TASK_PROMPT,
     TASK_VERSION,
 )
+from sandbox_science.orchestrator.delegation.prompt import NO_CONNECTORS as DELEGATED_NO_CONNECTORS
 from sandbox_science.orchestrator.documents import DocumentStore, DocumentTool
 from sandbox_science.orchestrator.documents.annotation_tools import SPECS as ANNOTATION_SPECS
 from sandbox_science.orchestrator.harness import save
 from sandbox_science.orchestrator.hooks import TurnHook
 from sandbox_science.orchestrator.jobs import WATCHER_PROMPT
 from sandbox_science.orchestrator.ledger.tool import PROPOSALS
-from sandbox_science.orchestrator.loop import MAIN_VERSION, SYSTEM_PROMPT, run_task
+from sandbox_science.orchestrator.loop import MAIN_VERSION, NO_CONNECTORS, SYSTEM_PROMPT, run_task
 from sandbox_science.orchestrator.memory_prompt import (
     REVIEWER_FRAMING,
     REVIEWER_VERSION,
@@ -77,6 +78,15 @@ HOSTILE = "Authorization: Bearer test-secret-prompt-not-a-credential"
 # Each installed version and the SHA-256 of its UTF-8 text. Changing a text means a new
 # version: add it here, and keep the old version's entry for its records.
 GOLDEN = {
+    "sandbox-main-21": "ca636732c6ae4cf804d66b4c8fcae41868911f71fb02b66f7aa5dbc47695fbe4",
+    "sandbox-delegated-task-22": "5dd3211a400ef077310cd82051001253cf985483d9dfcc144c29bbf9adc6169a",
+    "sandbox-delegated-check-17": (
+        "f564ab19247381185edba3377e97fdcec55de4e875010d61377cbc7dde7af39f"
+    ),
+    "sandbox-no-connectors-1": "46aa69ad48505a7d686cdd3acb1e1b3f8b4752c49c1e3ffc6487df28cc8ec7ea",
+    "sandbox-delegated-no-connectors-1": (
+        "0292b9b4ed5e73aa09a518b8e72b8314f14960fb9982573fdae37f52c85c5407"
+    ),
     "sandbox-main-20": "95ddb8d6130651b7bd01c68abe09c5b22b3eef104ed60d51ae76fc1590630303",
     "sandbox-delegated-task-21": "21b4fd679cbe45c2696d33e5f7d98d0711ae101b82432c5f904b15bb0ba4d6f5",
     "sandbox-delegated-check-16": (
@@ -195,6 +205,7 @@ GOLDEN = {
     "sandbox-delegated-check-8": "1911d9d5cf0036fe6d952132042f96124e0845bde8271078eb65c5960b655a78",
     "sandbox-delegated-task-8": "0928db5b6b9d08a097dd67464f69ff56eae48890d32f982dd2e516d71ae157fc",
     "sandbox-job-watcher-1": "4b545fe81e35622bf1b894c435833d78fb122116f9364d429b21c6c3551e1ab1",
+    "sandbox-consistency-12": "5b89cbaaf87e7d8207c6e6f80edd1c9c7e27c5f59c8e9d4975365624338ba58f",
     "sandbox-consistency-11": "83e3d07282c79659c0eed43d4c1278e8dfeecf7596606a7d3d7acc9491811327",
     "sandbox-consistency-10": "5400f167e3174daab99f268bfc0ed9613ed3886d97e4a86832054a33b5b3f135",
     "sandbox-review-budget-1": "0c8b1f5f323c09ae4aef090f39a724f14efe468eeeaed0f8f72d28dbf7f14681",
@@ -279,6 +290,8 @@ def installed() -> dict[str, str]:
         TASK_VERSION: TASK_PROMPT,
         SKILLS_VERSION: SKILLS_FRAMING,
         PASS_VERSION: PASS_PROMPT,
+        NO_CONNECTORS.version or "": NO_CONNECTORS.text,
+        DELEGATED_NO_CONNECTORS.version or "": DELEGATED_NO_CONNECTORS.text,
     }
     texts |= {select_template(t).version: select_template(t).text for t in TEMPLATE_IDS}
     texts |= {framing.version: framing.text for framing in FRAMINGS}
@@ -328,7 +341,7 @@ HEADINGS = {
     "check": ["How you check", "Your parent", "Untrusted content and policy", "Your result"],
 }
 """Each prompt's headings, in order, after its first paragraph, which says who the agent
-is (``sandbox-main-20``, ``sandbox-delegated-task-21``, ``sandbox-delegated-check-16``)."""
+is (``sandbox-main-21``, ``sandbox-delegated-task-22``, ``sandbox-delegated-check-17``)."""
 STALE = (
     "self-approve",
     "awaiting_approval",
@@ -408,6 +421,38 @@ def test_the_main_prompt_says_how_to_answer_when_to_ask_and_how_to_batch() -> No
     assert "side by side in one reply: they run at once" in main
     for prompt in (TASK_PROMPT, CHECK_PROMPT):
         assert "side by side in one reply: they run at once" in prompt
+
+
+def test_the_baseline_runs_faults_are_answered_where_the_prompts_speak_of_them() -> None:
+    """Lane B4, from the 2026-11-26 baseline run: a tool a skill names but the run lacks,
+    a contradicted premise of the user's, a change of scope, a "decide", children's
+    environments, lessons and acceptance, where a paper's text came from, and batched
+    writes; the reviewer checks the contradicted premise."""
+    main = " ".join(SYSTEM_PROMPT.split())
+    for said in (
+        "If a skill or the user points you to a tool you are not offered, say so in your "
+        "next message, name the route you will use instead, and go on.",
+        "contradicts a statement of the user's request, as an issue of kind contradiction",
+        "say the latter in your next reply and in your final answer",
+        'When the user answers "decide", state your choice and its reason',
+        "When a message changes the scope",
+        "to an independent re-implementation, so it cannot see your code",
+        "give the tool lessons this session has learned",
+        "read its outcome and deliverables",
+        "once no follow-on work for it is likely: accepting ends the task",
+        "(an archive, a mirror) and its capture date",
+        "Put independent writes (files to publish, progress on different plan steps, ledger "
+        "entries) in one reply too.",
+    ):
+        assert said in main, said
+    for prompt in (TASK_PROMPT, CHECK_PROMPT):
+        flat = " ".join(prompt.split())
+        assert "points you to a tool you are not offered, tell your parent" in flat
+    assert "statement of it" in RUBRIC
+    assert "the final answer and report name that statement" in " ".join(RUBRIC.split())
+    # The notes that a project the connectors do not serve gets name no project.
+    for note in (NO_CONNECTORS, DELEGATED_NO_CONNECTORS):
+        assert "mcp_tools is not offered" in note.text
 
 
 def test_the_delegated_prompts_end_with_the_result_and_an_example() -> None:

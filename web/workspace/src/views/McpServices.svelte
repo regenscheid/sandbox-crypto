@@ -221,7 +221,9 @@
       {:else}<p class="muted">
           {services.length
             ? 'No services match these filters.'
-            : 'No MCP services are configured for this project in this workspace.'}
+            : shown.elsewhere
+              ? "This deployment's MCP services serve another project: this project's runs are offered none."
+              : 'No MCP services are configured for this project in this workspace.'}
         </p>{/each}
     </section>
     <PaneResizer bind:width {maxWidth} label="Resize MCP service details" />

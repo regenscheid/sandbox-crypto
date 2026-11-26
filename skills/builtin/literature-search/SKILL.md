@@ -7,7 +7,7 @@ description: Finding, reading and quoting papers, standards and known results th
 
 ## Connector tools
 
-The project's MCP servers are reached through `mcp_tools`. Its description carries an index of the servers' tools, grouped by server, each with a short purpose in the server's own words. Main and delegated runs have it when the project configures connectors; a delegated check is offered only the tools that read, which are most of a research server's.
+The project's MCP servers are reached through `mcp_tools`. Its description carries an index of the servers' tools, grouped by server, each with a short purpose in the server's own words. Main and delegated runs have it when the project configures connectors; a delegated check is offered only the tools that read, which are most of a research server's. If you are not offered `mcp_tools`, or a tool this skill names, say so in your next message (a delegated run: to its parent), name the route you will use instead, and go on.
 
 - A query lists the tools that match it, and loads none.
 - Names, at most 16 a call, load tools. A loaded tool joins your tools for the rest of the run, and you call it by its name.

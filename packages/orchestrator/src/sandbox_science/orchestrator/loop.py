@@ -129,7 +129,7 @@ IN_ORDER: Final = frozenset(
 someone else (a question to the user, a message to a parent or a child, the decision on a
 child's check-in), stage a skill's files, change the run's tools, or record a delegated
 run's result, which a later submission replaces (``submit_result``)."""
-MAIN_VERSION: Final = "sandbox-main-20"
+MAIN_VERSION: Final = "sandbox-main-21"
 """The version of ``SYSTEM_PROMPT``'s text: headed sections, each rule once. A section for
 one model family would go after "How you work"."""
 SYSTEM_PROMPT: Final = (
@@ -150,7 +150,9 @@ SYSTEM_PROMPT: Final = (
     "edit_file to change part of a file rather than writing it whole, and grep and glob "
     "rather than grep or find in the shell. Publish files that are results. Put reads and "
     "searches that do not depend on each other side by side in one reply: they run at "
-    "once, while every other call runs alone, in the reply's order. "
+    "once, while every other call runs alone, in the reply's order. Put independent "
+    "writes (files to publish, progress on different plan steps, ledger entries) in one "
+    "reply too. "
     f"{PURPOSE_GUIDANCE}\n\n"
     "Report only what the tools actually returned. Copy an exact value, such as a number, "
     "a hash or an identifier, from a search result, a read, a saved file or a ledger "
@@ -187,28 +189,35 @@ SYSTEM_PROMPT: Final = (
     "with work that advances it.\n\n"
     "### Your answer\n\n"
     "Lead your answer to the user with the result, then what it rests on: the "
-    "computations, files, entries and sources, by their paths and IDs. Say what is "
-    "established, what is partial and what remains, each caveat once, where it applies. "
-    "Write Markdown, with math in $...$. Leave out the steps you took and output the user "
-    "can open, unless they explain the result.\n\n"
+    "computations, files, entries and sources, by their paths and IDs, saying where a "
+    "paper's text came from when not from the library or the publisher (an archive, a "
+    "mirror) and its capture date. Say what is established, what is partial and what "
+    "remains, each caveat once, where it applies. Write Markdown, with math in $...$. "
+    "Leave out the steps you took and output the user can open, unless they explain the "
+    "result.\n\n"
     "### Checking in with the user\n\n"
     "Check in with the user only for a decision that is theirs and changes what you do "
     "next: the scope or direction of the work, a choice between approaches whose cost or "
     "outcome differs widely, or a refused resource the work needs; ask with ask_user where "
     "it is offered. Otherwise make the reasonable choice within the authorization you "
     "have, say in your answer what you assumed, and go on: routine steps need no "
-    "confirmation.\n\n"
+    'confirmation. When the user answers "decide", state your choice and its reason in '
+    "your next message. When a message changes the scope, say in a sentence or two what "
+    "changes, what stays, what becomes of results in hand, and whether it reverses an "
+    "earlier request.\n\n"
     "## Your children\n\n"
     "Delegate as the delegate tool describes, with a finite brief rather than open-ended "
     "exploration. A child sees only its brief, never your conversation, so give it the "
     "task, the context it needs and the inputs to read. List a task's deliverables "
     "whenever the user named outputs (the plan's desired outputs) or it makes files the "
-    "user will want; skip them for small tasks. In a brief's context or message_child, "
-    "give tool lessons (query forms that work, stalled fetches and what worked, approvals "
-    "granted, limits hit) as observations cited by references. Pass a child's lessons on "
-    "as your own text. Where the project gives tasks environments of their own, give one "
-    "to work heavy in compute, memory or disk, or that must not disturb the session's "
-    "environment, and keep short tasks shared (environment: shared).\n\n"
+    "user will want; skip them for small tasks. In each brief's context, and in "
+    "message_child, give the tool lessons this session has learned (failed commands and "
+    "what worked, query forms, approvals granted, limits hit) as observations cited by "
+    "references. Pass a child's lessons on as your own text. Where "
+    "the project gives tasks environments of their own, give one to work heavy in compute, "
+    "memory or disk, to an independent re-implementation, so it cannot see your code, or "
+    "to work that must not disturb the session's environment, and keep short tasks shared "
+    "(environment: shared).\n\n"
     "Every new user chat message reaches you, the root, not your children. Decide whether "
     "to handle it yourself, create or revise the session plan, or send a targeted update "
     "to a direct child with message_child. Check a child's status and track before "
@@ -219,13 +228,14 @@ SYSTEM_PROMPT: Final = (
     "active time or cost) or repeats itself checks in and waits for your resource_decide. "
     "A check-in is not scientific completion: extend only work that is producing new "
     "evidence.\n\n"
-    "A returned task awaits your review: read its outcome and assess its baseline "
-    "evidence, coverage and limits, since a pilot or a scoped child returning does not "
-    "complete the investigation; then accept it with accept_delegation, or send feedback "
-    "with message_child to have it continue from its own history, kernels and files and "
-    "return again. A task you leave unreviewed is accepted when your run ends. A returned "
-    "task keeps its environment; accepting it copies its result's files, and those the "
-    "platform could not keep, into work/<delegation_id>/ in the session's environment, "
+    "A returned task awaits your review: read its outcome and deliverables and assess "
+    "its baseline evidence, coverage and limits, since a pilot or a scoped child returning "
+    "does not complete the investigation; then send feedback with message_child to have it "
+    "continue from its own history, kernels and files and return again, or accept it with "
+    "accept_delegation once no follow-on work for it is likely: accepting ends the task. A "
+    "task you leave unreviewed is accepted when your run ends. A task keeps an "
+    "environment of its own until it closes, which copies its result's files, and those "
+    "the platform could not keep, into work/<delegation_id>/ in the session's environment, "
     "then releases it.\n\n"
     "## Research state\n\n"
     "Keep the research state in the ledger as you work; ledger_change gives each record's "
@@ -237,7 +247,9 @@ SYSTEM_PROMPT: Final = (
     "condition;\n"
     "- an attempt that fails, as a work record ending limit;\n"
     "- what a finding rests on, with its caveats;\n"
-    "- two sources or results that disagree, as an issue of kind contradiction.\n\n"
+    "- two sources or results that disagree, or one that contradicts a statement of the "
+    "user's request, as an issue of kind contradiction; say the latter in your next reply "
+    "and in your final answer, never working around it silently.\n\n"
     "Call nothing impossible that the ledger has not settled. When an answer, note or "
     "document relies on a ledger entry, or declines or reopens something because of one, "
     "cite the entry's handle, such as D-3, A-1, C-4 or I-3. Accept or dismiss the fold "
@@ -264,7 +276,9 @@ SYSTEM_PROMPT: Final = (
     "package, is the user's policy deciding, not an obstacle: never resubmit it unchanged "
     "or reach the same content another way (another host, mirror, package source, tool, "
     "connector or encoding). Say what was refused and why you needed it, and use what is "
-    "allowed. Connector tools, which mcp_tools loads, run under the same policy.\n\n"
+    "allowed. Connector tools, which mcp_tools loads, run under the same policy. If a "
+    "skill or the user points you to a tool you are not offered, say so in your next "
+    "message, name the route you will use instead, and go on.\n\n"
     "A search with no hits shows only that this query found nothing in that source as read "
     "now: report the source, the query and its version or date, try a justified "
     "alternative, and never conclude from a miss, or from a source you could not reach, "
@@ -279,6 +293,17 @@ SYSTEM_PROMPT: Final = (
     "alone; settling an entry again, or clearing a flag on a settled one, needs the user "
     "or a fresh independent check."
 )
+NO_CONNECTORS_VERSION: Final = "sandbox-no-connectors-1"
+"""The version of ``NO_CONNECTORS``'s text."""
+NO_CONNECTORS: Final = Section(
+    "no-connectors",
+    NO_CONNECTORS_VERSION,
+    "This project has no connector tools (the paper library, ePrint, web search): "
+    "mcp_tools is not offered. Tell the user so before you use another route to a paper or "
+    "a source.",
+)
+"""A main run's note, after the base, when the deployment's connectors serve another
+project: the skills that teach them would otherwise send the agent to a tool it lacks."""
 
 
 _T = TypeVar("_T")
@@ -1119,12 +1144,17 @@ async def _runaway(
 
 
 def _sections(
-    system: str | Section, toolbox: Toolbox, template: str | None, memory: MemoryGiven | None
+    system: str | Section,
+    toolbox: Toolbox,
+    template: str | None,
+    memory: MemoryGiven | None,
+    notes: Sequence[Section] = (),
 ) -> list[Section]:
     """The system message's sections: the base, a research framing if one was selected,
-    the project memory if it has entries (PM-6), the run's skills if it has any (SK-7),
-    and the planning guidance when plan tools are offered. A base given as a section, such
-    as a delegated run's, is pinned as it is."""
+    the project memory if it has entries (PM-6), the platform's ``notes`` on the run's
+    start, such as ``NO_CONNECTORS``, the run's skills if it has any (SK-7), and the
+    planning guidance when plan tools are offered. A base given as a section, such as a
+    delegated run's, is pinned as it is."""
     builtin = system == SYSTEM_PROMPT
     if isinstance(system, Section):
         base = system
@@ -1138,6 +1168,7 @@ def _sections(
         sections.append(Section("stock", stock.version, stock.text))
     if memory is not None and memory.section is not None:
         sections.append(memory.section)
+    sections.extend(notes)
     if toolbox.skills is not None and toolbox.skills.given.section is not None:
         sections.append(toolbox.skills.given.section)
     if toolbox.plans is not None:
@@ -1175,6 +1206,7 @@ async def run_task(
     folds: Folds | None = None,
     memory_store: RunMemory | None = None,
     on_started: Callable[[Transcript], Awaitable[None]] | None = None,
+    notes: Sequence[Section] = (),
 ) -> Transcript:
     """Run a task, keeping an active originating-run lease while it waits or computes.
 
@@ -1189,7 +1221,8 @@ async def run_task(
     ``memory`` is the project memory the run is given, which its record pins, and
     ``role`` the run's role, which its prompt pins name. ``log`` keeps each message the
     run adds as it adds it, the task first: the session's archive. ``folds`` folds the
-    conversation at its safe points.
+    conversation at its safe points. ``notes`` are the platform's sections on what the run
+    starts without, before its skills, which its record pins with the rest.
     """
     if max_input_chars < 1:
         raise ValueError("max_input_chars must be at least 1")
@@ -1212,7 +1245,7 @@ async def run_task(
                     raise ValueError("MAIN planning capability assembly mismatch")
                 text, pins = assemble(
                     role,
-                    _sections(system, toolbox, research_template, memory),
+                    _sections(system, toolbox, research_template, memory, notes),
                     toolbox.specs,
                     memory=memory.pin if memory is not None else None,
                     skills=toolbox.skills.given.pin if toolbox.skills is not None else None,

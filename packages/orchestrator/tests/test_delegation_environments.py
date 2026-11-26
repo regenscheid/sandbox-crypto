@@ -1208,7 +1208,7 @@ def test_the_prompts_say_when_to_ask_for_an_environment_and_what_comes_back() ->
     main = " ".join(SYSTEM_PROMPT.split())
     assert "heavy in compute, memory or disk" in main
     assert "keep short tasks shared (environment: shared)" in main
-    assert "A returned task keeps its environment; accepting it copies" in main
+    assert "A task keeps an environment of its own until it closes, which copies" in main
     assert "work/<delegation_id>/" in main
     assert "A returned task awaits your review" in main
     task = " ".join(TASK_PROMPT.split())

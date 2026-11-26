@@ -5,7 +5,7 @@ description: Starting delegated runs, either a check of one ledger entry that ca
 
 # Delegating work
 
-A main run is offered `delegate`, `wait_delegations`, `delegation_status` and `cancel_delegation` once the project's delegation setting allows it. A delegated run starts with a fresh context: it sees none of your conversation, only its brief and the project memory, and it has kernels of its own. It works in the same session, so it reads and writes the session's files. It cannot ask the user anything: when it needs an answer, it ends blocked with the question among its open questions.
+A main run is offered `delegate`, `wait_delegations`, `delegation_status` and `cancel_delegation` once the project's delegation setting allows it. A delegated run starts with a fresh context: it sees none of your conversation, only its brief and the project memory, and it has kernels of its own. It works in the same session, so it reads and writes the session's files. It cannot ask the user anything: when it needs an answer, it asks you with `message_parent`, and ends blocked with the question among its open questions only when you do not answer.
 
 ## Checks and tasks
 
@@ -35,6 +35,8 @@ A task can also name:
 - delegate: true, where the project allows two levels, so it may start tasks of its own once more.
 
 A task works with a delegated agent's authority. It can create ledger entries in their first status and add evidence and work records, but it changes no status. A task never counts as an entry's independent check.
+
+A literature task's brief asks for each quote as a ledger claim citing its reference, with its page and the quote form the citation check confirms (the literature-search skill), not only in a Markdown file.
 
 ## When a check counts
 
@@ -77,4 +79,4 @@ The result is the child's claim. Weigh it like any other evidence, and check wha
 - The project's cap bounds how many delegated runs the session runs at once, across the whole tree.
 - Checks and tasks have turn and token limits from the project's setting, and a child never gets more turns than its parent has left.
 - There are at most two levels. A task allowed to delegate starts tasks, never checks, and on no track; its own children delegate nothing.
-- A delegated run has no connector, review, plan or delegate tools (unless allowed), and no `ask_user`. Search the literature in the main run, and pass what a task needs as files.
+- A delegated run has no review, plan or delegate tools (unless allowed), and no `ask_user`. It has the project's connector tools, which its brief may narrow, a check only those that read; where the project has none, search the literature in the main run and pass what a task needs as files.
