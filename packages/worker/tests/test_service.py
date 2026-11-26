@@ -34,7 +34,9 @@ from sandbox_science.contracts import (
     Execution,
     ExecutionContext,
     ExecutionState,
+    ShellRequest,
 )
+from sandbox_science.contracts.recovery import RecoveryFence
 from sandbox_science.testing import FakeClock, eventually
 from sandbox_science.worker.backends import LocalBackend
 from sandbox_science.worker.channel import ExecutorChannel, Message
@@ -761,6 +763,60 @@ async def test_an_attempts_result_outlives_a_sync_cut_short(
     assert done["state"] == "succeeded"
     assert done["result"]["stdout"]["text"] == "hi\n"
     assert any("could not be synced" in notice for notice in done["result"]["notices"])
+
+
+def _owned(environment: str, session: str, epoch: int) -> ExecutionContext:
+    authority = {"work": "work", "run": f"run-{epoch}", "epoch": epoch}
+    return ExecutionContext.model_validate({**_in(environment, session), "authority": authority})
+
+
+async def _owned_shell(
+    worker: Harness, operation: str, context: ExecutionContext, script: str
+) -> Execution:
+    """A call submitted as the orchestrator submits it: not as an operator, so the
+    recovery fence holds it to its authority."""
+    execution, _ = await worker.manager.submit(
+        ShellRequest(operation_id=operation, context=context, script=script)
+    )
+    return await worker.manager.wait(execution.execution_id)
+
+
+async def test_the_sync_after_a_call_is_held_to_the_calls_own_authority(synced: Harness) -> None:
+    """Not to that of whatever opened the environment's executor: a later run of the
+    session, under a newer epoch, has its calls' changes synced and no failure told."""
+    fences = synced.manager.store.recovery_fences
+    fences.install(RecoveryFence(project_id="p1", session_id="s1", epoch=1))
+    await _owned_shell(synced, "op-1", _owned("env1", "s1", 1), "true")  # opens the executor
+    fences.install(RecoveryFence(project_id="p1", session_id="s1", epoch=2))
+    later = await _owned_shell(
+        synced, "op-2", _owned("env1", "s1", 2), 'echo 2 > "$PROJECT_SHARED/later.txt"'
+    )
+    assert later.result is not None
+    assert not any("could not be synced" in n for n in later.result.notices)
+    seen = await _shell(synced, "op-3", _in("env2", "s3"), 'cat "$PROJECT_SHARED/later.txt"')
+    assert seen["result"]["stdout"]["text"] == "2\n"
+
+
+async def test_a_call_superseded_while_it_ran_has_nothing_synced_after_it(
+    synced: Harness,
+) -> None:
+    fences = synced.manager.store.recovery_fences
+    fences.install(RecoveryFence(project_id="p1", session_id="s1", epoch=1))
+    execution, _ = await synced.manager.submit(
+        ShellRequest(
+            operation_id="op-1",
+            context=_owned("env1", "s1", 1),
+            script='sleep 1; echo 1 > "$PROJECT_SHARED/stale.txt"',
+        )
+    )
+    await synced.wait_running(execution.execution_id)
+    fences.install(RecoveryFence(project_id="p1", session_id="s1", epoch=2))
+    done = await synced.manager.wait(execution.execution_id)
+    assert done.result is not None
+    [notice] = [n for n in done.result.notices if "could not be synced" in n]
+    assert "superseded research authority" in notice
+    seen = await _shell(synced, "op-2", _in("env2", "s3"), 'ls "$PROJECT_SHARED"; echo end')
+    assert seen["result"]["stdout"]["text"] == "end\n"
 
 
 @pytest.mark.parametrize("fake", [False, True], ids=["system-clock", "fake-clock"])

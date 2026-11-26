@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Final
 
 from pydantic import TypeAdapter
@@ -21,9 +22,21 @@ from sandbox_science.contracts.worker import DEFAULT_OUTPUT_LIMIT
 
 from .channel import ExecutorChannel
 from .errors import WorkerError
+from .recovery_fence import Admission, LegacyAdmission
 
 REQUEST: Final = TypeAdapter[ExecutionRequest](ExecutionRequest)
 """Reads a request saved for recovery."""
+
+
+class CancelSource(StrEnum):
+    """Who asked for an execution's cancellation; a cancelled job's error names it."""
+
+    REQUEST = "cancel_job"
+    SESSION_CLOSE = "its session's close"
+    RELEASE = "the release of its environment's executor"
+    DELETION = "its environment's deletion"
+    TIME_LIMIT = "the worker, as it overran its time limit"
+    OUTPUT_LIMIT = "the worker, as its executor sent more output than its limit"
 
 
 def time_limit(request: ExecutionRequest) -> float:
@@ -45,7 +58,12 @@ class Live:
     observation_gap: Gap | None = "missing"
     limit: int = DEFAULT_OUTPUT_LIMIT
     cancel_requested: bool = False
+    cancel_source: CancelSource | None = None
+    """Who asked first for its cancellation; lost when the worker restarts."""
     dispatched: bool = False
+    admission: Admission | LegacyAdmission | None = None
+    """What its submission was admitted under, which the sync after it is checked
+    against; None for an execution reattached after a restart."""
     reattached: bool = False
     """An unseen kernel birth replayed after detach cannot establish a new start pin."""
     watchdog: asyncio.Task[None] | None = None

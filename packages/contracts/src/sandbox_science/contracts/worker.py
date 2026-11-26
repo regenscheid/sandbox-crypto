@@ -714,7 +714,9 @@ class SessionCloseRequest(Contract):
     """Stop a session's kernels and jobs in one environment. Files and foreground calls stay.
 
     With ``run``, stop only that delegated run's own kernels, when the run ends (PD-37);
-    the session's kernels and its jobs stay."""
+    the session's kernels and its jobs stay, and its starts are not held while the close
+    runs. A job names no run, so a run's close cancels none, not even one that run
+    started."""
 
     context: ExecutionContext
     run: Identifier | None = None

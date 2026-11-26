@@ -11,15 +11,18 @@ import hashlib
 import time
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
-from sandbox_science.contracts import ErrorKind
+from sandbox_science.contracts import ErrorKind, ExecutionContext
 from sandbox_science.testing import FakeClock
 from sandbox_science.worker.artifacts import Blobs
+from sandbox_science.worker.channel import ExecutorChannel
 from sandbox_science.worker.errors import WorkerError
+from sandbox_science.worker.files import SYNCED_AGAIN, Files
 from sandbox_science.worker.shared_sync import SharedRecords, SharedSync
+from sandbox_science.worker.timeouts import ManagerTimeouts
 
 pytestmark = pytest.mark.asyncio
 
@@ -981,3 +984,34 @@ async def test_cancelled_blob_read_keeps_admission_until_thread_finishes(
             await copying
         if queued is not None:
             await queued
+
+
+async def test_a_failing_sync_is_told_once_for_each_reason_then_its_recovery() -> None:
+    """A sync that fails at every call says why once, not at every call (D79)."""
+    files = Files(cast(Any, None), cast(Any, None), None, timeouts=ManagerTimeouts(shared=0.05))
+    context = ExecutionContext(project_id="p1", session_id="s1", environment_id="env1")
+    other = context.model_copy(update={"environment_id": "env2"})
+    channel = cast(ExecutorChannel, None)
+    failure: list[BaseException | None] = [WorkerError(ErrorKind.UNAVAILABLE, "disk gone")]
+
+    async def step(project: str, environment: str, session: str, _: Any) -> list[str]:
+        error = failure[0]
+        if isinstance(error, TimeoutError):
+            await asyncio.Event().wait()
+        if error is not None:
+            raise error
+        return ["a sync notice"]
+
+    [first] = await files.sync(step, context, channel)
+    assert "could not be synced" in first
+    assert "unavailable: disk gone" in first
+    assert await files.sync(step, context, channel) == []  # the same failure, untold
+    assert len(await files.sync(step, other, channel)) == 1  # another environment's own
+    failure[0] = TimeoutError()
+    [slow] = await files.sync(step, context, channel)
+    assert "did not end within 0.05 s" in slow
+    failure[0] = None
+    assert await files.sync(step, context, channel) == [SYNCED_AGAIN, "a sync notice"]
+    assert await files.sync(step, context, channel) == ["a sync notice"]
+    failure[0] = WorkerError(ErrorKind.UNAVAILABLE, "disk gone")
+    assert len(await files.sync(step, context, channel)) == 1  # failing again is told again
