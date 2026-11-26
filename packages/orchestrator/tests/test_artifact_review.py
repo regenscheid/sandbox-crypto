@@ -436,7 +436,7 @@ def test_fix_refs_need_relevant_same_session_exact_grants(state) -> None:
         if i["locator"]["artifact"]["artifact_id"] != unrelated.artifact_id
     )
     found = finding(reviews, review, first["evidence"])
-    with pytest.raises(DocumentError, match="unrelated"):
+    with pytest.raises(DocumentError, match="is not what the finding is pinned to"):
         fix(reviews, found, unrelated)
     foreign_source = source.model_copy(
         update={"context": source.context.model_copy(update={"session_id": "other"})}
@@ -1017,3 +1017,50 @@ def test_a_confirmation_holds_the_artifacts_the_fixed_entry_pins(state) -> None:
     api.respond("p", "s", fix(finding, revision, ["C-1", 2]), MAIN)
     confirm = dispatch(reviews, "confirmation")
     assert [i["locator"]["pinned_by"]["revision"] for i in pinned(reviews, confirm)] == [2]
+
+
+def test_a_fix_may_name_the_workers_publication_of_a_later_revision(state) -> None:
+    """``publish`` answers with the worker's name of what it published and with the
+    inventory's revision; a fix naming the former means the latter."""
+    reviews, inventory, _ = state
+    publish(state)
+    ingest_artifacts(reviews, "p", "s")
+    review = dispatch(reviews)
+    found = finding(reviews, review, items(reviews, review)[0]["evidence"])
+    new = publish(state, "op2", b"count = 17\n")
+    ingest_artifacts(reviews, "p", "s")
+    assert inventory.published("p", "worker-op2") == new
+    assert inventory.published("p", "worker-none") is None
+    named = new.model_copy(update={"artifact_id": "worker-op2", "revision": 1})
+    fix(reviews, found, named)
+    responded = Findings(reviews).get("p", "s", found["finding_id"])["history"][-1]
+    assert responded["payload"]["artifact_revisions"] == [new.model_dump(mode="json")]
+
+
+def test_an_unrelated_fix_names_what_the_finding_is_pinned_to_and_what_it_accepts(
+    state,
+) -> None:
+    reviews, _, _ = state
+    pinned = publish(state)
+    unrelated = publish(state, "unrelated", path="elsewhere.txt")
+    ingest_artifacts(reviews, "p", "s")
+    review = dispatch(reviews)
+    first = next(
+        i
+        for i in items(reviews, review)
+        if i["locator"]["artifact"]["artifact_id"] == pinned.artifact_id
+    )
+    found = finding(reviews, review, first["evidence"])
+    with pytest.raises(DocumentError) as refused:
+        fix(reviews, found, unrelated)
+    assert refused.value.kind == "policy_denied"
+    assert refused.value.message == (
+        f"artifact {unrelated.artifact_id} is not what the finding is pinned to; it is pinned "
+        f"to artifact {pinned.artifact_id} r1. It accepts a later revision of a pinned "
+        "artifact (artifact_revisions) or a dismissal with a reason (action dismiss)"
+    )
+    assert refused.value.details == {"pinned": [f"artifact {pinned.artifact_id} r1"]}
+    # The worker's name of another file's publication is no name of the pinned one.
+    other = unrelated.model_copy(update={"artifact_id": "worker-unrelated"})
+    with pytest.raises(DocumentError, match=f"artifact {unrelated.artifact_id} is not what"):
+        fix(reviews, found, other, "fix-other")

@@ -83,7 +83,12 @@ Each assertion binds a hash of its exact current step fields and phase ID.
 Unchanged intent can carry progress across a body revision. Changed fields, phase
 or track leave the old assertion visible but `matches_current_step=false` until
 reaffirmed against the current version. An old completion cannot silently certify
-changed work. The per-plan progress cursor is monotonic; each step's CAS cursor is
+changed work, so a revision that rewords a finished step reopens it; `plan_revise`'s
+result names such steps (`finished_steps_changed`) as the revision is made. A refused
+`completed` status names each step that holds it, by reason (`open`, `changed`,
+`not_completed` for a blocked or skipped step under an `achieved` outcome), in its
+message and its details. Any status may follow any other: work the user pauses is
+`blocked` and goes back to `in_progress` when it resumes. The per-plan progress cursor is monotonic; each step's CAS cursor is
 the sequence of its latest assertion, so unrelated steps can advance independently.
 
 The optional `expected_status_revision` on `progress` enters the operation digest

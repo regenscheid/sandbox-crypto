@@ -16,7 +16,7 @@ import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Annotated, Literal, Self, TypeVar, cast
+from typing import Annotated, Final, Literal, Self, TypeVar, cast
 
 from pydantic import (
     AwareDatetime,
@@ -469,6 +469,32 @@ def _steps(body: PlanBody) -> dict[str, tuple[PlanStep, str]]:
         for phase in body.phases
         for step in phase.steps
     }
+
+
+FINISHED: Final = frozenset({"completed", "blocked", "skipped"})
+"""The step statuses a finished plan's steps hold."""
+MAX_HELD_STEPS: Final = 16
+"""The step IDs a refused finish names for each reason; it counts the rest."""
+
+
+def _named(ids: list[str]) -> str:
+    named = ", ".join(ids[:MAX_HELD_STEPS])
+    more = len(ids) - MAX_HELD_STEPS
+    return named if more <= 0 else f"{named} and {more} more"
+
+
+def _unfinished(held: dict[str, list[str]], ref: PlanRef) -> str:
+    """Why a finish is refused, by step and reason, and what to do about each."""
+    reasons = {
+        "open": "open (no record, pending or in_progress): record each completed, blocked or "
+        "skipped",
+        "changed": "changed by a revision after its last record, which was for the step as "
+        f"it was: record each again against version {ref.version}",
+        "not_completed": "blocked or skipped, which an achieved outcome cannot have: record "
+        "each completed, or finish with partially_achieved or not_achieved",
+    }
+    parts = [f"{_named(ids)} {reasons[reason]}" for reason, ids in held.items() if ids]
+    return "the plan's steps are not all finished: " + "; ".join(parts)
 
 
 @dataclass(frozen=True)
@@ -1212,24 +1238,23 @@ class SessionPlans:
                 )
             if status == "completed":
                 opened: list[str] = []
+                held: dict[str, list[str]] = {"open": [], "changed": [], "not_completed": []}
                 body = self._version(db, authority.scope, base).body
+                achieved = change.outcome is not None and change.outcome.status == "achieved"
                 for step_id, (_, fingerprint) in _steps(body).items():
                     latest = self._latest(db, authority.scope, base, step_id)
-                    if (
-                        latest is None
-                        or latest.step_sha256 != fingerprint
-                        or latest.status not in {"completed", "blocked", "skipped"}
-                    ) or (
-                        change.outcome
-                        and change.outcome.status == "achieved"
-                        and latest.status != "completed"
-                    ):
-                        opened.append(step_id)
+                    if latest is None or latest.status not in FINISHED:
+                        held["open"].append(step_id)
+                    elif latest.step_sha256 != fingerprint:
+                        held["changed"].append(step_id)
+                    elif achieved and latest.status != "completed":
+                        held["not_completed"].append(step_id)
+                    else:
+                        continue
+                    opened.append(step_id)
                 if opened:
                     raise DocumentError(
-                        CONFLICT,
-                        "current steps are open, changed, or incompatible with achieved outcome",
-                        details={"steps": opened},
+                        CONFLICT, _unfinished(held, base), details={"steps": opened, **held}
                     )
             revision = _increment(head.status_revision)
             change = change.model_copy(update={"revision": revision})

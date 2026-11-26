@@ -28,6 +28,7 @@ from sandbox_science.orchestrator.loop import run_task
 from sandbox_science.orchestrator.model import ModelError, ModelTurn
 from sandbox_science.orchestrator.notices import PLANS
 from sandbox_science.orchestrator.plan_tools import (
+    GUIDANCE,
     GUIDANCE_VERSION,
     MAX_CHANGES,
     MAX_REQUEST_BYTES,
@@ -1246,3 +1247,155 @@ async def test_a_revision_names_the_steps_it_added_changed_and_removed(fixture):
     # Its progress was for the step before the edit: the step is open again.
     assert shown(notice)["steps"][0] == "step-0 pending (edited since it was in_progress): Step 0"
     assert shown(notice)["current"] == "next open step: step-0"
+
+
+async def record(f, ref, revision, step, cursor, status, operation):
+    result, _ = await call(
+        f,
+        "plan_progress",
+        operation_id=operation,
+        base=ref,
+        step_id=step,
+        expected_step_cursor=cursor,
+        expected_status_revision=revision,
+        status=status,
+        note="Recorded",
+    )
+    return result["receipt"]
+
+
+async def revise(f, ref, revised, operation="revise"):
+    result, _ = await call(
+        f, "plan_revise", operation_id=operation, base=ref, body=revised, reason="New request"
+    )
+    return result
+
+
+ACHIEVED = {"status": "achieved", "summary": "Checked", "evidence": [], "remaining_work": []}
+
+
+@pytest.mark.asyncio
+async def test_a_revision_keeps_unchanged_finished_steps_and_names_the_changed_ones(fixture):
+    """A revision that keeps a finished step's ID and text keeps its record; one that
+    rewords a finished step says so in its result, by step ID, when the cost is incurred."""
+    f = fixture
+    ref, revision = await active(f)
+    await record(f, ref, revision, "step-0", 0, "completed", "done")
+    # A new step and a changed goal leave step-0 as it was: it stays completed.
+    wider = body("Check the wider claim", count=2)
+    kept = await revise(f, ref, wider)
+    assert "finished_steps_changed" not in kept
+    current = f.core.compact_current(f.adapter.authority)
+    assert current.steps[0].matches_current_step
+    assert current.steps[0].latest.status == "completed"
+    second = kept["receipt"]["ref"]
+    await record(f, second, revision, "step-1", 0, "blocked", "pause")
+    # Rewording both finished steps reopens them, and the result names them.
+    reworded = body("Check the wider claim", count=2)
+    for step in reworded["phases"][0]["steps"]:
+        step["description"] = "Inspect and check again"
+    changed = await revise(f, second, reworded, "reword")
+    assert changed["finished_steps_changed"] == ["step-0", "step-1"]
+    assert "record each again before plan_finish" in changed["note"]
+    third = changed["receipt"]["ref"]
+    outcome = await tools(f).call(
+        ToolCall(
+            "c",
+            "plan_finish",
+            json.dumps(
+                {
+                    "operation_id": "finish",
+                    "base": third,
+                    "expected_status_revision": revision,
+                    "expected_progress_cursor": 2,
+                    "reason": "Finished",
+                    "outcome": ACHIEVED,
+                }
+            ),
+        ),
+        "finish",
+    )
+    error = json.loads(outcome.text)["error"]
+    assert error["kind"] == "conflict"
+    assert error["message"] == (
+        "the plan's steps are not all finished: step-0, step-1 changed by a revision after "
+        "its last record, which was for the step as it was: record each again against "
+        "version 3"
+    )
+    assert error["details"] == {
+        "steps": ["step-0", "step-1"],
+        "open": [],
+        "changed": ["step-0", "step-1"],
+        "not_completed": [],
+    }
+    # Recorded again against the new version, the steps let the plan finish.
+    await record(f, third, revision, "step-0", 1, "completed", "again-0")
+    await record(f, third, revision, "step-1", 2, "completed", "again-1")
+    finished, _ = await call(
+        f,
+        "plan_finish",
+        operation_id="finish",
+        base=third,
+        expected_status_revision=revision,
+        expected_progress_cursor=4,
+        reason="Finished",
+        outcome=ACHIEVED,
+    )
+    assert finished["receipt"]["action"] == "status"
+
+
+@pytest.mark.asyncio
+async def test_a_refused_finish_says_each_steps_reason_and_bounds_its_details(fixture):
+    f = fixture
+    receipt = f.core.publish(f.user, "plan", PlanBody.model_validate(body(count=128)), "Plan")
+    f.core.set_status(f.user, "go", receipt.ref, 1, 0, "active", "Go")
+    f.core.progress(f.user, "a", receipt.ref, "step-0", 0, "blocked", "Paused by the user")
+    f.core.progress(f.user, "b", receipt.ref, "step-1", 0, "completed", "Done")
+    await read_and_deliver(f)
+    outcome = await tools(f).call(
+        ToolCall(
+            "c",
+            "plan_finish",
+            json.dumps(
+                {
+                    "operation_id": "finish",
+                    "base": receipt.ref.model_dump(mode="json"),
+                    "expected_status_revision": 2,
+                    "expected_progress_cursor": 2,
+                    "reason": "Finished",
+                    "outcome": ACHIEVED,
+                }
+            ),
+        ),
+        "finish",
+    )
+    error = json.loads(outcome.text)["error"]
+    message = error["message"]
+    assert message.startswith(
+        "the plan's steps are not all finished: step-2, step-3, step-4, step-5, step-6, "
+        "step-7, step-8, step-9, step-10, step-11, step-12, step-13, step-14, step-15, "
+        "step-16, step-17 and 110 more open (no record, pending or in_progress): record "
+        "each completed, blocked or skipped; step-0 blocked or skipped, which an achieved "
+        "outcome cannot have"
+    )
+    # 126 open steps and one blocked one, named twice, are more than a failed call shows.
+    details = error["details"]
+    assert len(json.dumps(details, separators=(",", ":")).encode()) <= 2048
+    shown = len(details["steps"]) + sum(len(details.get(k, [])) for k in ("open", "changed"))
+    shown += len(details.get("not_completed", []))
+    assert details["steps"][:2] == ["step-0", "step-2"]
+    assert shown + details["omitted"] == 2 * 127
+
+
+@pytest.mark.asyncio
+async def test_a_step_the_user_pauses_is_blocked_and_resumes_in_progress(fixture):
+    f = fixture
+    ref, revision = await active(f)
+    await record(f, ref, revision, "step-0", 0, "in_progress", "start")
+    await record(f, ref, revision, "step-0", 1, "blocked", "pause")
+    resumed = await record(f, ref, revision, "step-0", 2, "in_progress", "resume")
+    assert resumed["progress_cursor"] == 3
+    assert f.core.compact_current(f.adapter.authority).steps[0].latest.status == "in_progress"
+    guidance = " ".join(GUIDANCE.split())
+    assert "work the user pauses is blocked, with the user's reason" in guidance
+    assert "leave finished steps' text as it is" in guidance
