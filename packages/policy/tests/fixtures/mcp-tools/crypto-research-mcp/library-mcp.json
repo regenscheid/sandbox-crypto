@@ -1,0 +1,611 @@
+{
+ "captured": "2026-11-26",
+ "group": "library-mcp",
+ "server": "crypto-research-mcp",
+ "tools": [
+  {
+   "description": "Get a paper's PDF now, through every route including the browser and\npaid tiers, and queue its conversion by policy; the one tool that acts.\nReading a paper not held already starts its free routes, so this is for\n\"now\", for a copy the free routes missed, or for a url the caller found\n(the PDF at that URL is kept for this paper after a check that it is the\npaper). Returns the result if it finishes within eight seconds; otherwise\nreturns a durable queued/running response while the fetch continues.\nRepeating the call joins that request. Then paper_status or read_paper.\n",
+   "inputSchema": {
+    "properties": {
+     "identifier": {
+      "title": "Identifier",
+      "type": "string"
+     },
+     "project": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Project"
+     },
+     "url": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Url"
+     }
+    },
+    "required": [
+     "identifier"
+    ],
+    "title": "fetch_paperArguments",
+    "type": "object"
+   },
+   "name": "library-mcp_fetch_paper"
+  },
+  {
+   "description": "Find papers: the one search for papers, anywhere \u2014 one ranked list over\nthe library, the ePrint archive and paper-search's indexes (OpenAlex,\nSemantic Scholar, arXiv, Crossref, DBLP, Scholar), merged by identity,\nevery hit registered. Each result says what is held of it \u2014 not held,\noriginal, text, card \u2014 and the verb that applies next.\n\nDepth: `limit` papers from `offset` on, up to 500 a call; each index is\nasked as deep (up to 200 a source), so 100 or more papers on a topic\ntake one call of ten to twenty seconds. brief=True puts each paper on\none line (title, year, authors, identifier, what is held, where found),\nfor long lists; paper_status gives one in full.\n\nOrder: papers on topic first \u2014 a held title carrying the query's rare\nwords; a catalogued paper the library's own paper search ranks high,\nby the words and the meaning of its title and abstract, its card and\nits text, so a held paper is found though its title says it otherwise\n(each says what matched it, with its best card item or passage and the\npage); or a hit whose title and abstract carry most of the query's\nwords or that several indexes found \u2014 then the rest. `sort`: relevance\n(default), newest, cited (the indexes' citation counts), or\ncited_per_year (citations per year since publication: the recent work\nothers build on before old classics); the other sorts list the papers\non topic only. For the current state of the art give year_from with\ncited_per_year or newest. An outside index finds a paper only by its\nwords; related_papers follows citations from a landmark paper among\nthe papers the library holds.\n\nheld_only keeps to papers the library holds, and asks no outside index,\nso it answers in a second or two; sources narrows to any of\neprint, openalex, semantic_scholar, arxiv, crossref, dblp,\ngoogle_scholar. author matches any author of a paper, not only the\nfirst, and keeps every result to that person's papers. This finds\npapers; to search inside held texts use search_library, to read one use\nread_paper. Nothing is fetched by finding. A query's list is kept for six\nhours, so offset pages through the same list (offset=0 asks again when a\nsource failed); a query word that no paper found has in its title,\nabstract, authors or year is named, which says the query as a whole\nmatched nothing.\n\npaper_kind and topic keep to the papers the library has tagged so: each\ncatalogued paper has one kind and up to four topics, from fixed lists,\nset by a model from its title and abstract or by a person; a paper an\nindex brought in today is tagged the next night. paper_kind is one kind\nor a list, any of which: survey, book, thesis, construction,\ncryptanalysis, security_proof, algorithms_math, implementation,\nstandard, other. topic is one topic or a list, and a paper must carry\nevery topic listed; for either of two, call once for each. Topics, by\ngroup \u2014 hard problems: lattices, elliptic_curves_pairings,\nrsa_factoring_dlog, multivariate, codes, isogenies,\nhash_based_signatures; symmetric: block_ciphers, hash_functions,\naead_macs_modes, stream_ciphers, boolean_functions_sboxes; foundations:\nfoundations_prf_owf; what a paper builds: signatures,\nmpc_secret_sharing, zero_knowledge, fhe, blockchains_consensus,\nencryption_kems, anonymity_credentials, threshold, advanced_encryption\n(ABE, IBE, broadcast, functional), key_exchange, commitments_vrfs,\not_pir_oram, voting, obfuscation, protocols (TLS, messaging, PAKE,\nauthentication), searchable_storage; attacks: side_channels_faults,\nquantum_algorithms, differential_linear, algebraic_attacks,\nlattice_reduction, isd; implementation: software_performance, hardware,\nmasking_leakage, formal_verification, trusted_hardware_pufs;\ncross-cutting: post_quantum; mathematics: number_theory,\nalgebraic_geometry, commutative_algebra, combinatorics_designs,\ncoding_information_theory, groups_algebra, complexity_algorithms,\nquantum_information, analysis_probability. paper_status shows a\npaper's kind and topics.\n\nA call answers within about 50 seconds. When an index is still answering\nthen, the reply lists what came in time, says so, and the search goes on:\ncall again with the same arguments (or with only search_id, the id the\nreply names) a minute or two later, and the full list comes back at once.\n",
+   "inputSchema": {
+    "properties": {
+     "author": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Author"
+     },
+     "brief": {
+      "default": false,
+      "title": "Brief",
+      "type": "boolean"
+     },
+     "held_only": {
+      "default": false,
+      "title": "Held Only",
+      "type": "boolean"
+     },
+     "limit": {
+      "default": 15,
+      "title": "Limit",
+      "type": "integer"
+     },
+     "offset": {
+      "default": 0,
+      "title": "Offset",
+      "type": "integer"
+     },
+     "paper_kind": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Paper Kind"
+     },
+     "project": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Project"
+     },
+     "query": {
+      "default": "",
+      "title": "Query",
+      "type": "string"
+     },
+     "search_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Search Id"
+     },
+     "sort": {
+      "default": "relevance",
+      "title": "Sort",
+      "type": "string"
+     },
+     "sources": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Sources"
+     },
+     "topic": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Topic"
+     },
+     "year_from": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Year From"
+     },
+     "year_to": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Year To"
+     }
+    },
+    "title": "find_papersArguments",
+    "type": "object"
+   },
+   "name": "library-mcp_find_papers"
+  },
+  {
+   "description": "What the papers around one \u2014 those it cites and those that cite it \u2014\nimported, grouped by the cited paper, the most importers first, with a\nrecord each. The entry point when an investigation starts from a paper\nrather than a description: the mathematics its neighbourhood has\nalready reached for. side as in search_library(kind=\"imports\").\n",
+   "inputSchema": {
+    "properties": {
+     "identifier": {
+      "title": "Identifier",
+      "type": "string"
+     },
+     "limit": {
+      "default": 15,
+      "title": "Limit",
+      "type": "integer"
+     },
+     "side": {
+      "default": "mathematics",
+      "title": "Side",
+      "type": "string"
+     }
+    },
+    "required": [
+     "identifier"
+    ],
+    "title": "imports_nearArguments",
+    "type": "object"
+   },
+   "name": "library-mcp_imports_near"
+  },
+  {
+   "description": "What one paper imported, from where, in its own words (direction\n\"out\"), or what held papers took from it and how they put it (direction\n\"in\"): every import record of the paper, grouped by the other paper. The\nrecords are citing sentences with their neighbours, statements restated\nwith their source named, and card items naming a reference; each has\nits page. Use it on a paper you are validating to see what it leans\non, and on a mathematics paper to see how cryptographers have used it.\nlimit is the number of other papers listed (30, up to 200).\n",
+   "inputSchema": {
+    "properties": {
+     "direction": {
+      "default": "out",
+      "title": "Direction",
+      "type": "string"
+     },
+     "identifier": {
+      "title": "Identifier",
+      "type": "string"
+     },
+     "limit": {
+      "default": 30,
+      "title": "Limit",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "identifier"
+    ],
+    "title": "imports_ofArguments",
+    "type": "object"
+   },
+   "name": "library-mcp_imports_of"
+  },
+  {
+   "description": "The card of one processed paper, under its kind and topics: its problem, methods, results,\nassumptions, limitations, how it positions itself against earlier work,\nand the questions it leaves open \u2014 each a plain sentence with the quote\nfrom the text that supports it and its page. For the numbered theorems\nverbatim use paper_statements; for the page around an item use read_paper.\n",
+   "inputSchema": {
+    "properties": {
+     "identifier": {
+      "title": "Identifier",
+      "type": "string"
+     }
+    },
+    "required": [
+     "identifier"
+    ],
+    "title": "paper_cardArguments",
+    "type": "object"
+   },
+   "name": "library-mcp_paper_card"
+  },
+  {
+   "description": "A temporary signed URL to a held paper's original (kind=\"pdf\") or to\nits whole text as Markdown (kind=\"text\"): GET it directly, no header\nneeded; it expires in 30 minutes. For a paper not held, fetch_paper\nfirst; to read page by page, read_paper.\n",
+   "inputSchema": {
+    "properties": {
+     "identifier": {
+      "title": "Identifier",
+      "type": "string"
+     },
+     "kind": {
+      "default": "pdf",
+      "title": "Kind",
+      "type": "string"
+     }
+    },
+    "required": [
+     "identifier"
+    ],
+    "title": "paper_fileArguments",
+    "type": "object"
+   },
+   "name": "library-mcp_paper_file"
+  },
+  {
+   "description": "The notes people made on a held paper's passages in the library's web reader, by page: who wrote\neach, when, the passage it is on, and what it says. Read-only; a note is a reader's own comment, not the\npaper's text. To read the page around a note, read_paper(identifier, start_page=N).\n",
+   "inputSchema": {
+    "properties": {
+     "identifier": {
+      "title": "Identifier",
+      "type": "string"
+     }
+    },
+    "required": [
+     "identifier"
+    ],
+    "title": "paper_notesArguments",
+    "type": "object"
+   },
+   "name": "library-mcp_paper_notes"
+  },
+  {
+   "description": "How held papers position themselves against one: for each held paper\nthat cites it from a reference list the library has read, its card's\npositions item toward it (improves, breaks, generalizes, corrects,\nbuilds-on or compares, with the statement and the quote) or its method\nitem (what it took), and the citing sentence \u2014 one reply in place of\nrelated_papers followed by a card per citer. The descendants of an\nattack, the uses of a theorem, the responses to a scheme.\n",
+   "inputSchema": {
+    "properties": {
+     "identifier": {
+      "title": "Identifier",
+      "type": "string"
+     },
+     "limit": {
+      "default": 50,
+      "title": "Limit",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "identifier"
+    ],
+    "title": "paper_positionsArguments",
+    "type": "object"
+   },
+   "name": "library-mcp_paper_positions"
+  },
+  {
+   "description": "The reference list of one held text: each entry resolved to a held\npaper, with the sentences that cite it, or kept as written when nothing\nmatched. References resolve by DOI, ePrint ID, NIST URL or title; an\nunresolved entry is never guessed. Entries known only from the OpenAlex\nindex are listed after the ones read from the text. For papers citing\nthis one use related_papers.\n",
+   "inputSchema": {
+    "properties": {
+     "identifier": {
+      "title": "Identifier",
+      "type": "string"
+     }
+    },
+    "required": [
+     "identifier"
+    ],
+    "title": "paper_referencesArguments",
+    "type": "object"
+   },
+   "name": "library-mcp_paper_references"
+  },
+  {
+   "description": "The numbered theorems, lemmas, propositions, corollaries, conjectures and\ndefinitions of one held text, verbatim, each with its page.\n\nkind narrows: \"statements\", \"definitions\", or one kind such as \"theorem\".\nStatements are extracted by their labels, with no model, and read on\nacross a page break while their sentence is unfinished. \"[end unclear]\"\nmarks one that stops mid-sentence; \"[math unreliable]\" one whose\nmathematics the conversion lost; \"again, first on p. N\" a label that\nstood before (a restatement). For the surrounding page use read_paper.\n",
+   "inputSchema": {
+    "properties": {
+     "identifier": {
+      "title": "Identifier",
+      "type": "string"
+     },
+     "kind": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Kind"
+     }
+    },
+    "required": [
+     "identifier"
+    ],
+    "title": "paper_statementsArguments",
+    "type": "object"
+   },
+   "name": "library-mcp_paper_statements"
+  },
+  {
+   "description": "One paper: its authors (every one known), identifiers, abstract, its kind and topics (the lists\nfind_papers names), how far it has come \u2014 known,\noriginal kept, text, processed \u2014 the fetch routes tried, and what applies\nnext. No side effects. identifier is any scheme: an ePrint ID (2024/1234),\na DOI, an arXiv ID, an OpenAlex ID (W\u2026), nist:\u2026, or a URL. To get its\ntext use fetch_paper; to read it use read_paper.\n",
+   "inputSchema": {
+    "properties": {
+     "identifier": {
+      "title": "Identifier",
+      "type": "string"
+     }
+    },
+    "required": [
+     "identifier"
+    ],
+    "title": "paper_statusArguments",
+    "type": "object"
+   },
+   "name": "library-mcp_paper_status"
+  },
+  {
+   "description": "Read a held text as complete Markdown pages, not search results.\n\nPass the identifier and start_page=1 to begin; follow the returned next\nstart_page to continue. page_count is 1-5. Page numbers are physical PDF\npositions from 1, not printed labels. The header names the tier the text\ncame from. A block whose mathematics the conversion lost (HTML entities,\ndollar signs written out, math glyphs strung among letters) is followed by\na note to read it in the PDF (paper_file). A paper not held is queued for\nits free fetch routes and the reply says to read again in a minute. To\nfind a phrase inside the text use search_in_paper; for its theorems and\ndefinitions use paper_statements.\n",
+   "inputSchema": {
+    "properties": {
+     "identifier": {
+      "title": "Identifier",
+      "type": "string"
+     },
+     "page_count": {
+      "default": 1,
+      "title": "Page Count",
+      "type": "integer"
+     },
+     "project": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Project"
+     },
+     "start_page": {
+      "default": 1,
+      "title": "Start Page",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "identifier"
+    ],
+    "title": "read_paperArguments",
+    "type": "object"
+   },
+   "name": "library-mcp_read_paper"
+  },
+  {
+   "description": "Papers that cite one (\"cited_by\") or that it cites (\"cites\"): from\nthe reference lists the library has read \u2014 with the citing sentence \u2014\nand from OpenAlex, every paper it knows (each registered, so paper_status\nand read_paper take it); each line says which route, what is held and\nhow cited it is. The one tool for who cites a paper: paper-search's\npaper_citations is its engine.\n\n`sort`: library (default: the papers whose reference lists the library\nread first, the most cited by held papers first, then OpenAlex's most\ncited), newest, cited (OpenAlex's counts), or cited_per_year\n(citations per year since publication, among the 200 most cited: the\nrecent work built on a landmark paper before old classics). For the\ncurrent state of the art after a paper, give year_from with\ncited_per_year or newest. `limit` up to 500 from `offset` on, one kept\nlist paged; brief=True puts each paper on one line. held_only keeps to\nthe citations the library holds. To see what a paper imported from its\nneighbours use imports_near; to find papers by words use find_papers.\nA call answers within about 50 seconds; when the index's listing takes\nlonger, the reply says so and the listing goes on: call again with the\nsame arguments a minute or two later for all of it.\n",
+   "inputSchema": {
+    "properties": {
+     "brief": {
+      "default": false,
+      "title": "Brief",
+      "type": "boolean"
+     },
+     "held_only": {
+      "default": false,
+      "title": "Held Only",
+      "type": "boolean"
+     },
+     "identifier": {
+      "title": "Identifier",
+      "type": "string"
+     },
+     "limit": {
+      "default": 15,
+      "title": "Limit",
+      "type": "integer"
+     },
+     "offset": {
+      "default": 0,
+      "title": "Offset",
+      "type": "integer"
+     },
+     "relation": {
+      "default": "cited_by",
+      "title": "Relation",
+      "type": "string"
+     },
+     "sort": {
+      "default": "library",
+      "title": "Sort",
+      "type": "string"
+     },
+     "year_from": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Year From"
+     },
+     "year_to": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Year To"
+     }
+    },
+    "required": [
+     "identifier"
+    ],
+    "title": "related_papersArguments",
+    "type": "object"
+   },
+   "name": "library-mcp_related_papers"
+  },
+  {
+   "description": "Find a literal word or phrase inside one held text, case-insensitively.\n\nHyphens, dashes and spaces count alike (\"baby-step giant-step\" finds\n\"baby-step-giant-step\"), and a phrase may run across a line break.\nLaTeX markup does not count: \"\u03b4-correct if\", \"delta-correct if\" and\n\"$\\delta$-correct if\" all find \"$\\delta$-\\emph{correct} if\", and\n\"Lemma 7\" finds \"Lemma $7$\".\nPass words that appear in the text, not a question. Results carry physical\npage numbers. No match means the phrase was not found, not that the text\nis unavailable. To read sequentially use read_paper; to search across all\nheld texts use search_library.\n",
+   "inputSchema": {
+    "properties": {
+     "context": {
+      "default": 3,
+      "title": "Context",
+      "type": "integer"
+     },
+     "identifier": {
+      "title": "Identifier",
+      "type": "string"
+     },
+     "max_passages": {
+      "default": 8,
+      "title": "Max Passages",
+      "type": "integer"
+     },
+     "phrase": {
+      "title": "Phrase",
+      "type": "string"
+     }
+    },
+    "required": [
+     "identifier",
+     "phrase"
+    ],
+    "title": "search_in_paperArguments",
+    "type": "object"
+   },
+   "name": "library-mcp_search_in_paper"
+  },
+  {
+   "description": "Search what the library extracted from every held text, by words and\nby meaning: quoted hits with their paper, page and kind, ranked as units.\n\nkind is \"passages\" (statements, definitions and paragraphs, with card\nitems beside them), \"statements\", \"definitions\", \"cards\" (the card items\nalone), one statement kind such as \"theorem\", or \"imports\": papers found\nthrough the words with which held papers cite them \u2014 put that query as\nan importing paper would write it, the objects and the property in\nwords, and if nothing fits, as the other field names them. side keeps\n\"mathematics\", \"cryptography\" or \"any\" \u2014 for imports mathematics by\ndefault, for the other kinds any (a side keeps the papers classified to\nit and those not classified yet). paper_kind and topic keep the hits of\npapers tagged so, with the lists find_papers names (paper kinds:\nsurvey, book, thesis, construction, cryptanalysis, security_proof,\nalgorithms_math, implementation, standard, other): a paper of any kind\nlisted that carries every topic listed; for imports, the cited papers.\nPass words, not a question. To find papers by title use find_papers; to\nread the page around a hit use read_paper.\n",
+   "inputSchema": {
+    "properties": {
+     "kind": {
+      "default": "passages",
+      "title": "Kind",
+      "type": "string"
+     },
+     "limit": {
+      "default": 15,
+      "title": "Limit",
+      "type": "integer"
+     },
+     "paper_kind": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Paper Kind"
+     },
+     "query": {
+      "title": "Query",
+      "type": "string"
+     },
+     "side": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Side"
+     },
+     "topic": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Topic"
+     }
+    },
+    "required": [
+     "query"
+    ],
+    "title": "search_libraryArguments",
+    "type": "object"
+   },
+   "name": "library-mcp_search_library"
+  }
+ ]
+}

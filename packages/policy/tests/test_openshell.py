@@ -1082,7 +1082,7 @@ def test_example_agent_mcp_policy() -> None:
     assert "e-print-mcp_search_eprint" in names.any
     assert "e-print-mcp_search_eprint_fulltext" in names.any  # pinned 2026-10-31
     assert "library-mcp_read_paper" in names.any
-    assert "library-mcp_fetch_paper" in names.any  # a write, which the middleware holds
+    assert "library-mcp_fetch_paper" in names.any  # a read; with a url the middleware holds it
     assert not any(name.startswith("nist-mcp_") for name in names.any)  # retired
     assert not any(name.startswith("crypto_research_mcp-") for name in names.any)
     assert [binary.path for binary in entry.binaries] == ["/opt/sandbox-science/bin/python*"]

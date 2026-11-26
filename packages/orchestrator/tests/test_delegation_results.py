@@ -71,6 +71,47 @@ async def test_a_tasks_result_files_are_pinned_in_its_outcome(delegating: Harnes
     assert outcome["result_files"] == [pinned]
 
 
+async def test_a_result_file_named_relative_to_the_write_area_is_pinned_at_once(
+    delegating: Harness,
+) -> None:
+    """DA-19: the file named as the child's processes' working directory names it, without
+    the write area's prefix, is recorded at the first submission, and the outcome, the
+    stored result and the parent's view are those the full path gives."""
+
+    async def ran(result: dict[str, Any]) -> tuple[str, Any, Any]:
+        root = await delegating.run(
+            "root",
+            [Reply(calls=[TASK]), wait(), Reply("Done.")],
+            delegated=[Reply(calls=[WRITE]), *submitted(result, "Done.")],
+        )
+        (delegation_id,) = started(root)
+        (child,) = children(delegating, root)
+        outcome = child.summaries["outcome"]
+        assert isinstance(outcome, dict)
+        assert (outcome["submissions"], outcome["errors"]) == (1, [])
+        found = delegation(delegating, delegation_id)
+        (view,) = [
+            ended
+            for ended in answer(root, 1)["delegations"]
+            if ended["delegation_id"] == delegation_id
+        ]
+        return delegation_id, found, view
+
+    relative_id, relative, relative_view = await ran(RESULT)
+    full_id, full, full_view = await ran(WRITTEN)
+
+    def same(value: Any, delegation_id: str) -> str:
+        return json.dumps(value, sort_keys=True).replace(delegation_id, "<id>")
+
+    assert relative.result is not None
+    assert relative.result["result_files"] == [f"work/{relative_id}/table.txt"]
+    assert same(relative.result, relative_id) == same(full.result, full_id)
+    (pinned,) = listed(relative.files, "results")
+    assert pinned["path"] == f"work/{relative_id}/table.txt"
+    assert relative_view["result_files"] == [pinned]
+    assert same(relative_view["result"], relative_id) == same(full_view["result"], full_id)
+
+
 async def test_a_file_the_child_did_not_make_is_refused_once(delegating: Harness) -> None:
     """Its first submission names a file its calls did not write; the answer to it lists
     only the file they wrote."""

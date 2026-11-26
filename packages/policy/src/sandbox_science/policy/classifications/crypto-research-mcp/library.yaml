@@ -1,70 +1,87 @@
 # SPDX-License-Identifier: MIT
 # The classification of crypto-research-mcp's library-mcp tools (D96, docs/MCP-CONNECTORS.md).
-# Reviewed by the admin. Not pinned: no raw listing has shown the library's tools yet (the
-# portal's listing for the platform's service token lacks the server), so no tool has a sha256
-# and, with no schema to check a rule against, fetch_paper is a write as a whole.
+# Reviewed by the admin; sha256 pins each tool as the pinned listing has it
+# (packages/policy/tests/fixtures/mcp-tools/crypto-research-mcp/library-mcp.json).
 apiVersion: sandbox-science/v0alpha1
 kind: ToolClassification
 server: crypto-research-mcp
 prefix: library-mcp_
+pinned: "2026-11-26"
 tools:
   library-mcp_fetch_paper:
-    class: write
-    reason: "Acquires a paper into the library's shared store now, by paid routes too; a url the agent picks is fetched and kept for the paper."
+    class: read
+    reason: "Acquires a paper's PDF now, by paid routes too (D95: fills the cache); a url the agent picks is fetched and kept for the paper (a write)."
+    sha256: d0eea63295a23a161d83bb1597b1213a781d9e6bb01b299cbab581e9b4f7a5cb
     significant: {title: identifier, url: url}
+    rules:
+      - {argument: url, present: true, class: write}
   library-mcp_find_papers:
     class: read
     reason: "Searches the library and its indexes; registering what it finds in the catalogue fills the server's cache (D95: a read)."
+    sha256: e8d7e552bffc97c667f832c6b0703f13ab33b8c52d14ea7fc58d6258f4f2e48d
     significant: {query: query}
   library-mcp_imports_near:
     class: read
     reason: "What the papers near one paper took from others."
+    sha256: 74b820292c230813c07f4137d66d5dada69f161232a67b8ccb3f86351b67b13d
     significant: {title: identifier}
   library-mcp_imports_of:
     class: read
     reason: "What one paper took from others, or what held papers took from it."
+    sha256: 6d9c987c6518347157fc86057de147f6ef0e0a3d8e24f2e4bc93326648ec4885
     significant: {title: identifier}
   library-mcp_paper_card:
     class: read
     reason: "One paper's model-made card of claims, each with a quote and page."
+    sha256: e96ebed474dcda4cf5b83bc0ed2e866e1b23654906baa06122938383f91caaed
     significant: {title: identifier}
   library-mcp_paper_file:
     class: read
     reason: "A signed link to a held paper's PDF or text."
+    sha256: 7a653e913a79a45ac5efe70780d757c6d722358186ff97acb0a461dc30b63cb7
     significant: {title: identifier}
   library-mcp_paper_notes:
     class: read
     reason: "The notes people made on one paper in the web reader."
+    sha256: 2ec99a6c57b977e7237926b6118d722523d41efa245c80a3dc11ba589cdd896f
     significant: {title: identifier}
   library-mcp_paper_positions:
     class: read
     reason: "How held papers position themselves against one paper."
+    sha256: e074103b9a1626b2c8467b722b938cf335498bfa6165eef5ee157008342775b6
     significant: {title: identifier}
   library-mcp_paper_references:
     class: read
     reason: "One held paper's reference list, resolved to catalogued papers."
+    sha256: 15e0c8a77fd0567558603e34b43aba283c4deeb13e6808f49c6d8a18f72a2cf4
     significant: {title: identifier}
   library-mcp_paper_statements:
     class: read
     reason: "One held paper's numbered theorems, lemmas and definitions, verbatim."
+    sha256: 0803203c688599f704f161cdf57333e3a9a607f0469e8a38f707c1f7af5f519c
     significant: {title: identifier}
   library-mcp_paper_status:
     class: read
     reason: "One paper's identifiers, abstract and holdings; an unknown one is looked up and catalogued (D95: a read)."
+    sha256: 46c661a76ab60d947fc837539849188c1b517ba4804b2b455cf4bab3d67f270c
     significant: {title: identifier}
   library-mcp_read_paper:
     class: read
     reason: "Reads a held paper's text by page; the first read may fetch or queue a budgeted conversion (D95: a read)."
+    sha256: 6cfafd42ce25694c5261e4ad304b06313ca10eba86d2623c15d21ae82182232a
     significant: {title: identifier}
   library-mcp_related_papers:
     class: read
     reason: "Papers citing or cited by one paper; those found are catalogued (D95: a read)."
+    sha256: b337159aeba58369c6f56fad808fc81c3b8b9791365e1827f485c4953026ca7c
     significant: {title: identifier}
   library-mcp_search_in_paper:
     class: read
     reason: "Searches one held paper's text for a phrase; the first search may queue a budgeted conversion (D95: a read)."
+    sha256: 36df948b2526743d971a180f79ae2b2912f5fe16959024f2a343d02873713e4d
     significant: {title: identifier, query: phrase}
   library-mcp_search_library:
     class: read
     reason: "Searches the held texts and what was extracted from them."
+    sha256: 96801a3ef994c4e11c80b6a672a754761dd1ea019b3fceb739829f7349b964b9
     significant: {query: query}
