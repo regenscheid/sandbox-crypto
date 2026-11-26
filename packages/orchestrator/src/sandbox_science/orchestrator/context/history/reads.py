@@ -18,15 +18,18 @@ archived message (``Archive.append``), with what this read covered:
 whole or their pages, byte ranges or character ranges together cover it; otherwise the
 best of ``partial`` (with what they covered), ``abstract_only``, ``preview_only`` and
 ``unknown``. ``Register`` reads them for a session or a reference (LG-15), with the share
-of reads no descriptor could place.
+of reads no descriptor could place. A read may name further keys of its source
+(``aliases``, a library read's paper under the identifier it was asked for by): the
+register finds it under each, and puts the reads of linked keys together as one source.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Final, cast
 
 from sandbox_science.orchestrator.control import ControlStore
@@ -120,7 +123,7 @@ def _cut(read: Read, cut: Json) -> Read:
     and none of its pages or ranges count toward the whole, since the model saw only the
     head and tail of what the tool returned."""
     extent = "partial" if read.extent == "whole" else read.extent
-    kept = {k: v for k, v in read.detail.items() if k in ("document", "final", "query")}
+    kept = {k: v for k, v in read.detail.items() if k in ("document", "final", "query", "aliases")}
     detail: Json = {**kept, "cut": {"length": cut.get("length"), "shown": cut.get("shown")}}
     return Read(read.kind, read.source, extent, detail, label=read.label)
 
@@ -255,29 +258,30 @@ class Register:
         self, project: str, *, session: str | None = None, keys: Iterable[tuple[str, str]] = ()
     ) -> list[Read]:
         """The project's sources, or a session's, or those of ``keys`` (kind, source),
-        each as its reads put together, in the order first read."""
+        each as its reads put together, in the order first read. Reads whose keys a read's
+        ``aliases`` link are one source, under the first of ``keys`` among them, else the
+        key first read."""
         wanted = list(dict.fromkeys(keys))
         query = "SELECT kind, source, extent, detail, label FROM source_reads WHERE project = :p"
-        params: dict[str, object] = {"p": project, "keys": json.dumps([list(k) for k in wanted])}
+        params: dict[str, object] = {"p": project}
         if session is not None:
             query += " AND session = :session"
             params["session"] = session
-        if wanted:
-            # A fetched page counts under the URL asked for and the one it ended at.
-            query += (
-                " AND ((kind, source) IN (SELECT json_extract(value, '$[0]'), "
-                "json_extract(value, '$[1]') FROM json_each(:keys)) OR (kind = 'web' AND "
-                "json_extract(detail, '$.final') IN (SELECT json_extract(value, '$[1]') "
-                "FROM json_each(:keys) WHERE json_extract(value, '$[0]') = 'web')))"
-            )
         with self.control.read() as tx:
+            if wanted:
+                # A fetched page counts under the URL asked for and the one it ended at.
+                params["keys"] = json.dumps([list(k) for k in _linked(tx.sql, project, wanted)])
+                query += " AND (" + _MATCHED + ")"
             rows = tx.sql.execute(query + " ORDER BY rowid", params).fetchall()
-        grouped: dict[tuple[str, str], list[Read]] = {}
-        for kind, source, extent, detail, label in rows:
-            grouped.setdefault((kind, source), []).append(
-                Read(kind, source, extent, cast(Json, json.loads(detail)), label=label)
-            )
-        return [m for reads in grouped.values() if (m := merged(reads)) is not None]
+        found = [
+            Read(kind, source, extent, cast(Json, json.loads(detail)), label=label)
+            for kind, source, extent, detail, label in rows
+        ]
+        return [
+            replace(m, kind=key[0], source=key[1])
+            for key, reads in _grouped(found, wanted).items()
+            if (m := merged(reads)) is not None
+        ]
 
     def of_messages(self, project: str, messages: Sequence[str]) -> list[tuple[str, Read]]:
         """What each of ``messages`` read, in order: its archived message's ID, and each
@@ -302,11 +306,11 @@ class Register:
         none did (CM-21a). A PDF's or a file's key is its digest, so all its reads count;
         another source's content may change, so only its reads after ``after`` do."""
         with self.control.read() as tx:
+            keys = json.dumps([list(k) for k in _linked(tx.sql, project, [(kind, source)])])
             rows = tx.sql.execute(
-                "SELECT rowid, message_id, extent, detail FROM source_reads WHERE project = ? "
-                "AND ((kind = ? AND source = ?) OR (kind = 'web' AND ? = 'web' AND "
-                "json_extract(detail, '$.final') = ?)) ORDER BY rowid",
-                (project, kind, source, kind, source),
+                "SELECT rowid, message_id, extent, detail FROM source_reads WHERE project = "  # noqa: S608 - a fixed condition
+                f":p AND ({_MATCHED}) ORDER BY rowid",
+                {"p": project, "keys": keys},
             ).fetchall()
             boundary = 0
             if after is not None:
@@ -336,6 +340,66 @@ class Register:
                 (project, session),
             ).fetchone()
         return {"reads": total, "unknown": unknown, "share": unknown / total if total else 0.0}
+
+
+# A read whose key is one of ``:keys`` (a JSON list of [kind, source]), or that names one
+# among its aliases; a fetched page also by the URL it ended at.
+_MATCHED: Final = (
+    "(kind, source) IN (SELECT json_extract(value, '$[0]'), json_extract(value, '$[1]') "
+    "FROM json_each(:keys)) OR (kind = 'web' AND json_extract(detail, '$.final') IN "
+    "(SELECT json_extract(value, '$[1]') FROM json_each(:keys) WHERE "
+    "json_extract(value, '$[0]') = 'web')) OR (instr(detail, '\"aliases\"') > 0 AND "
+    "EXISTS (SELECT 1 FROM json_each(detail, "
+    "'$.aliases') AS alias, json_each(:keys) AS asked WHERE json_extract(alias.value, "
+    "'$[0]') = json_extract(asked.value, '$[0]') AND json_extract(alias.value, '$[1]') = "
+    "json_extract(asked.value, '$[1]')))"
+)
+
+
+def _linked(
+    db: sqlite3.Connection, project: str, keys: Sequence[tuple[str, str]]
+) -> list[tuple[str, str]]:
+    """``keys`` and the keys the project's reads link to them: the aliases of a read
+    under one of them, and the key of a read that names one among its aliases."""
+    found = list(dict.fromkeys(keys))
+    rows = db.execute(
+        "SELECT kind, source, json_extract(detail, '$.aliases') FROM source_reads WHERE "  # noqa: S608 - a fixed condition
+        "project = :p AND instr(detail, '\"aliases\"') > 0 AND "
+        f"({_MATCHED})",
+        {"p": project, "keys": json.dumps([list(k) for k in found])},
+    ).fetchall()
+    for kind, source, raw in rows:
+        found.append((str(kind), str(source)))
+        found += [(str(a[0]), str(a[1])) for a in cast(list[list[object]], json.loads(raw))]
+    return list(dict.fromkeys(found))
+
+
+def _grouped(
+    reads: Sequence[Read], wanted: Sequence[tuple[str, str]]
+) -> dict[tuple[str, str], list[Read]]:
+    """``reads`` by source, the keys a read's ``aliases`` link to its own as one source,
+    under the first of ``wanted`` among them, else the key first read."""
+    parent: dict[tuple[str, str], tuple[str, str]] = {}
+
+    def root(key: tuple[str, str]) -> tuple[str, str]:
+        while parent.setdefault(key, key) != key:
+            key = parent[key]
+        return key
+
+    for read in reads:
+        own = root((read.kind, read.source))
+        for alias in cast(list[list[object]], read.detail.get("aliases") or []):
+            other = root((str(alias[0]), str(alias[1])))
+            if other != own:
+                parent[other] = own
+    members: dict[tuple[str, str], list[tuple[str, str]]] = {}
+    for key in parent:
+        members.setdefault(root(key), []).append(key)
+    named = {top: next((k for k in wanted if k in keys), top) for top, keys in members.items()}
+    grouped: dict[tuple[str, str], list[Read]] = {}
+    for read in reads:
+        grouped.setdefault(named[root((read.kind, read.source))], []).append(read)
+    return grouped
 
 
 def shown(read: Read) -> Json:

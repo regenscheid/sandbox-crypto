@@ -32,11 +32,13 @@ line on a PostScript original's conversion after it. The record keeps them as ``
 never as the paper's text; they are no header, heading or passage, and confirm nothing.
 
 For a library text (``library_record``), the paper's work label and the ledger identifier
-it names (``papers``), the rendition's tier, converter, page count and revision, and the
-pages ``read_paper`` returned or the passages ``search_in_paper`` found, each with its
-physical page: a page without the notes people made on it, which are theirs, not the
-paper's. A page or passage the toolbox cut in the middle is in no record, from either
-server.
+it names (``papers``), and the call's ``identifier`` when it is exactly another one, which
+the library resolved to that paper (an ePrint report the library files under its
+published DOI), under each of which the record is found (``source_keys``); the
+rendition's tier, converter, page count and revision; and the pages ``read_paper``
+returned or the passages ``search_in_paper`` found, each with its physical page: a page
+without the notes people made on it, which are theirs, not the paper's. A page or
+passage the toolbox cut in the middle is in no record, from either server.
 
 Call and result come from the same run.
 
@@ -46,19 +48,20 @@ and ends in the last); an ePrint quote inside one passage or page of a result fo
 paper, with the date stamp the record holds or, for a record without one, a date stamp a
 ``get_eprint`` record of the session gave that paper; a library quote inside a page or
 passage of its physical page, in a record of the reference's paper at the quote's
-revision; the phrase or query the server
-echoes is never a passage, and a quote the call sent counts only in a passage that holds
-more than what was sent. White space is read as one space. Each quote reads the newest
-records of its mark in the session, by the feed's key index. A quote found brings its
-record beside the entry in its review, once in each window (raw sources are not review
-evidence); a quote not found has no source, and its citation cannot be confirmed. What a
-tool returned may still be an agent's own: a PDF the agent made, unless the PDF is
-vouched for (LG-16).
+revision, under any identifier of the reference's that the record is under; the phrase
+or query the server echoes is never a passage, and a quote the call sent counts only in a
+passage that holds more than what was sent. White space is read as one space. Each quote
+reads the newest records of its mark in the session, by the feed's key index. A quote
+found brings its record beside the entry in its review, once in each window (raw sources
+are not review evidence); a quote not found has no source, and its citation cannot be
+confirmed. What a tool returned may still be an agent's own: a PDF the agent made, unless
+the PDF is vouched for (LG-16).
 
 When an agent records an ePrint or library quote no record of the session holds yet for a
 mechanical reason, ``unmatched`` says so, from those records alone, in the change's
-result: the date stamps ``get_eprint`` gave the paper, or the revisions and pages read.
-It is advice; the quote is recorded as given, and the review reads the records again.
+result: the date stamps ``get_eprint`` gave the paper, or the revisions and pages read,
+or, with no read of the paper, the papers the session's library reads are of. It is
+advice; the quote is recorded as given, and the review reads the records again.
 """
 
 from __future__ import annotations
@@ -72,7 +75,7 @@ from typing import Any, Final, cast
 from sandbox_science.orchestrator.context.history.descriptors import eprint_header
 from sandbox_science.orchestrator.context.history.reads import spans
 from sandbox_science.orchestrator.ledger.models import EntryView, EvidenceLink
-from sandbox_science.orchestrator.papers import LEDGER_SCHEMES, library_paper, paper_id
+from sandbox_science.orchestrator.papers import LEDGER_SCHEMES, exact_paper, library_paper, paper_id
 
 from .store import Json, stored_json
 
@@ -112,7 +115,10 @@ QUOTED_TOOLS: Final = (*EPRINT_TOOLS, *LIBRARY_TOOLS)
 MAX_FIELDS: Final = 8
 """The most further fields of a library result's rendition line a record keeps."""
 MAX_NAMED: Final = 3
-"""The most date stamps or revisions an ``unmatched`` notice names."""
+"""The most date stamps, revisions or papers an ``unmatched`` notice names."""
+ALIAS: Final = "alias_of"
+"""A source row's payload field that holds the key of the row with its record: the row
+that indexes a library record under one of its further identifiers (``source_keys``)."""
 
 # The server echoes the query as ``repr`` gives it: in single quotes, or in double quotes
 # when it holds a single quote. ``repr`` keeps it on one line.
@@ -180,6 +186,18 @@ def mark_of(record: Json) -> str:
         library = cast(Json, record["library"])
         return mark("paper", str(library.get("named") or library.get("paper")))
     return mark("eprint", str(cast(Json, record.get("eprint") or {}).get("paper")))
+
+
+def source_keys(record: Json, suffix: str) -> list[str]:
+    """The keys the review controller records source record ``record`` under, each
+    ``source:<mark>:<suffix>``: its mark's first, which holds the record, then, for a
+    library record, the mark of each further identifier the library vouched for
+    (``aliases``), whose row holds only the first key (``ALIAS``), so that the feed's key
+    index finds the record under every name of its paper."""
+    marks = [mark_of(record)]
+    library = cast(Json, record.get("library") or {})
+    marks += [mark("paper", str(a)) for a in cast(list[Any], library.get("aliases") or [])]
+    return [f"source:{found}:{suffix}" for found in dict.fromkeys(marks)]
 
 
 def pdf_record(tool: str, arguments: Json, result: Json) -> Json | None:
@@ -267,7 +285,9 @@ def library_record(
     tool: str, arguments: Json, text: str, *, left_out: Collection[int] = ()
 ) -> Json | None:
     """The source record of a library call: the paper's work label from the result's
-    first line, with the ledger identifier it names (``papers.library_paper``); from the
+    first line, with the ledger identifier it names (``papers.library_paper``), and the
+    call's ``identifier`` argument as a further one (``aliases``) when it is exactly an
+    identifier in a ledger scheme (``papers.exact_paper``) that names another; from the
     second, the rendition's tier, converter, page count and revision, and any further
     ``, key value`` fields; and each page ``read_paper`` returned, or each passage
     ``search_in_paper`` did, with its physical page. A page's text leaves out the notes
@@ -277,7 +297,16 @@ def library_record(
     and every page after it, is left out (``cut``); pages the toolbox left out at a page
     boundary (``left_out``) are not expected. None for a result that names no paper or
     revision, holds no text, or whose headings are not the pages its range names, as a
-    note's quote that imitates a heading would make them."""
+    note's quote that imitates a heading would make them.
+
+    The library resolves ``identifier`` to the work it reads (crypto-research-mcp's
+    ``Tools._resolve`` and ``Catalog.resolve``): by the work's own label, or by an
+    identifier its catalogue holds for the work, exactly, after reading the argument by its
+    grammar, which also takes an identifier out of a longer text, such as a publisher's
+    page with a DOI in its path. Its answer for an argument that is one identifier is thus
+    the library's word that the label and that identifier name one paper: an ePrint
+    report and the DOI of its published version, say. An argument the strict grammar does
+    not read as one identifier is no alias: what the library took from it is not shown."""
     if tool not in LIBRARY_TOOLS:
         return None
     work = _WORK.match(text)
@@ -300,9 +329,13 @@ def library_record(
     pages, passages, flags = found
     label = work.group(1)
     named = library_paper(label)
+    key = None if named is None else f"{named[0]}:{named[1]}"
+    asked = arguments.get("identifier")
+    exact = exact_paper(asked) if isinstance(asked, str) else None
+    alias = None if exact is None else f"{exact[0]}:{exact[1]}"
     record: Json = {
         "paper": label,
-        "named": None if named is None else f"{named[0]}:{named[1]}",
+        "named": key,
         "tier": tier,
         "converter": converter,
         "page_count": None if count == "?" else int(count),
@@ -311,6 +344,8 @@ def library_record(
         "pages": pages,
         "passages": passages,
     }
+    if alias is not None and alias != key:
+        record["aliases"] = [alias]
     if flags:
         record["flags"] = flags
     if " — WITHDRAWN (" in work.group(0):
@@ -536,13 +571,24 @@ def unmatched(db: sqlite3.Connection, project: str, session: str, link: Evidence
         found
         for _, payload in rows
         if payload.get("tool") in LIBRARY_TOOLS
-        and (found := cast(Json, payload.get("library") or {})).get("named") in papers
+        and _papers_of(found := cast(Json, payload.get("library") or {})) & papers
     ]
     if not reads:
+        others = _library_reads(db, project, session)
+        if not others:
+            return (
+                "no read_paper or search_in_paper result for this paper is recorded in this "
+                "session yet: the citation check finds a library quote only in a page read "
+                "in the session"
+            )
+        given = "; ".join(others[:MAX_NAMED])
         return (
-            "no read_paper or search_in_paper result for this paper is recorded in this "
-            "session yet: the citation check finds a library quote only in a page read in "
-            "the session"
+            "no read_paper or search_in_paper result is recorded in this session under this "
+            f"reference's identifiers ({', '.join(sorted(papers))}); the session's library reads "
+            f"are of {given}: the citation check finds a library quote only in a read of the "
+            "reference's own paper, recorded under one of the reference's identifiers. If "
+            "one of those is this paper, read it by an identifier the reference carries, or "
+            "give the reference the identifier the library printed"
         )
     at = [found for found in reads if str(found.get("revision", "")).casefold() == revision]
     if not at:
@@ -564,11 +610,37 @@ def unmatched(db: sqlite3.Connection, project: str, session: str, link: Evidence
     )
 
 
+def _library_reads(db: sqlite3.Connection, project: str, session: str) -> list[str]:
+    """The papers of the session's newest library reads, as many as ``MAX_CANDIDATES``
+    of them, newest first, once each: each by the identifiers its records are under, the
+    work label's first, or by its work label when none is a ledger identifier."""
+    rows = db.execute(
+        "SELECT json_extract(payload,'$.library') FROM review_feed WHERE project=? AND "
+        "session=? AND kind='source' AND source_key GLOB 'source:*' AND "
+        "json_extract(locator,'$.tool') IN (?,?) AND "
+        "json_extract(payload,'$.library.paper') IS NOT NULL ORDER BY seq DESC LIMIT ?",
+        (project, session, *LIBRARY_TOOLS, MAX_CANDIDATES),
+    )
+    papers: list[list[str]] = []
+    for (raw,) in rows:
+        found = stored_json(str(raw))
+        names = [str(n) for n in (found.get("named"), *cast(list[Any], found.get("aliases") or []))
+                 if isinstance(n, str)] or [str(found.get("paper"))]  # fmt: skip
+        same = next((p for p in papers if set(p) & set(names)), None)
+        if same is None:
+            papers.append(names)
+        else:
+            same += [n for n in names if n not in same]
+    return [p[0] + (f" (also {', '.join(p[1:])})" if p[1:] else "") for p in papers]
+
+
 def _candidates(
     db: sqlite3.Connection, project: str, session: str, prefixes: list[str]
 ) -> list[tuple[Json, Json]]:
     """The session's source records under any of ``prefixes``, newest first, at most
-    ``MAX_CANDIDATES``: the key index alone (its rows' seq), then each candidate's row."""
+    ``MAX_CANDIDATES``: the key index alone (its rows' seq), then each candidate's row. A
+    row that indexes a record under a further identifier (``ALIAS``) is read as the
+    record's own row, once however many of its keys the prefixes find."""
     found: set[int] = set()
     for prefix in prefixes:
         found.update(
@@ -580,12 +652,29 @@ def _candidates(
             )
         )
     rows: list[tuple[Json, Json]] = []
+    seen: set[str] = set()
     for seq in sorted(found, reverse=True)[:MAX_CANDIDATES]:
-        raw_locator, raw_payload = db.execute(
-            "SELECT locator,payload FROM review_feed WHERE seq=? AND kind='source'", (seq,)
-        ).fetchone() or (None, None)
-        if raw_payload is not None:
-            rows.append((stored_json(str(raw_locator)), stored_json(raw_payload)))
+        key, raw_locator, raw_payload = db.execute(
+            "SELECT source_key,locator,payload FROM review_feed WHERE seq=? AND kind='source'",
+            (seq,),
+        ).fetchone() or (None, None, None)
+        if raw_payload is None:
+            continue
+        payload = stored_json(raw_payload)
+        if isinstance(payload.get(ALIAS), str):
+            key = str(payload[ALIAS])
+            raw_locator, raw_payload = db.execute(
+                "SELECT locator,payload FROM review_feed WHERE project=? AND session=? AND "
+                "source_key=? AND kind='source'",
+                (project, session, key),
+            ).fetchone() or (None, None)
+            if raw_payload is None:
+                continue
+            payload = stored_json(raw_payload)
+        if key in seen:
+            continue
+        seen.add(str(key))
+        rows.append((stored_json(str(raw_locator)), payload))
     return rows
 
 
@@ -598,6 +687,13 @@ def _named_papers(named: Json) -> set[str]:
         if isinstance(value := named.get(scheme), str)
         and (key := paper_id(scheme, value)) is not None
     }
+
+
+def _papers_of(record: Json) -> set[str]:
+    """The ledger identifiers library record ``record`` is under: the one its work label
+    names, and the further ones the library vouched for (``aliases``)."""
+    names = [record.get("named"), *cast(list[Any], record.get("aliases") or [])]
+    return {name for name in names if isinstance(name, str)}
 
 
 def quoted_items(
@@ -672,11 +768,12 @@ def _eprint_holds(
 
 
 def _library_holds(payload: Json, papers: set[str], revision: str, page: int, text: str) -> bool:
-    """Whether a library record of one of ``papers``, read at ``revision``, holds
-    ``text`` in a page or passage on physical page ``page``. As for an ePrint, a quote
-    the call sent counts only in a passage that holds more than what was sent."""
+    """Whether a library record under one of ``papers`` (``_papers_of``), read at
+    ``revision``, holds ``text`` in a page or passage on physical page ``page``. As for
+    an ePrint, a quote the call sent counts only in a passage that holds more than what
+    was sent."""
     record = cast(Json, payload.get("library") or {})
-    if payload.get("tool") not in LIBRARY_TOOLS or record.get("named") not in papers:
+    if payload.get("tool") not in LIBRARY_TOOLS or not _papers_of(record) & papers:
         return False
     if str(record.get("revision", "")).casefold() != revision:
         return False

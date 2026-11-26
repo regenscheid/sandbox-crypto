@@ -7,7 +7,13 @@ from __future__ import annotations
 
 import pytest
 
-from sandbox_science.orchestrator.papers import library_label, library_paper, normal, paper_id
+from sandbox_science.orchestrator.papers import (
+    exact_paper,
+    library_label,
+    library_paper,
+    normal,
+    paper_id,
+)
 
 TABLE = [
     # (library work label, ledger scheme, as a reference may record it, normal form)
@@ -52,3 +58,28 @@ def test_a_value_not_of_its_scheme_has_no_normal_form() -> None:
     assert normal("arxiv", "not an id") is None
     assert normal("url", "https://example.test") is None
     assert normal("isbn", "978-3-16-148410-0") is None
+
+
+@pytest.mark.parametrize(
+    ("given", "named"),
+    [("2017/634", ("eprint", "2017/634")), ("eprint/2017/634", ("eprint", "2017/634")),
+     ("https://eprint.iacr.org/2017/634.pdf", ("eprint", "2017/634")),
+     (" 10.1109/EuroSP.2018.00032 ", ("doi", "10.1109/eurosp.2018.00032")),
+     ("doi:10.1109/eurosp.2018.00032", ("doi", "10.1109/eurosp.2018.00032")),
+     ("https://doi.org/10.1109/eurosp.2018.00032", ("doi", "10.1109/eurosp.2018.00032")),
+     ("arXiv:2401.01234v2", ("arxiv", "2401.01234")), ("nist:fips.203", ("nist", "FIPS203"))],
+)  # fmt: skip
+def test_an_exact_identifier_names_its_paper(given: str, named: tuple[str, str]) -> None:
+    assert exact_paper(given) == named
+
+
+@pytest.mark.parametrize(
+    "given",
+    ["CRYSTALS-Kyber", "Kyber: a CCA-secure module-lattice-based KEM", "ePrint 2017/634",
+     "https://ieeexplore.ieee.org/document/10.1109/eurosp.2018.00032", "FIPS 203",
+     "openalex:W1628272610", "W1628272610", "2017/634 and 2018/1", ""],
+)  # fmt: skip
+def test_anything_looser_than_one_exact_identifier_names_no_paper(given: str) -> None:
+    """The library reads some of these too, by its lenient grammar or its catalogue's own
+    names, but none is an identifier in a ledger scheme as it stands."""
+    assert exact_paper(given) is None
