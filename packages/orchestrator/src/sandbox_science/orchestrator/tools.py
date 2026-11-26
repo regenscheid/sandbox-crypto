@@ -115,6 +115,8 @@ TRACEBACK_LINES: Final = 20
 SHOWN_OUTPUTS: Final = 20
 """Rich outputs shown to the model, the first and last half; a note counts the rest."""
 SHOWN_ENTRIES: Final = 200
+MAX_DETAILS_BYTES: Final = 2048
+"""The JSON bytes of a refusal's details a failed call shows; what does not fit is counted."""
 READING_OUTPUT_CHARS: Final = 40_000
 """The most characters of a reading tool's result (``descriptors.PAGED``: a paper's pages
 or passages), however large ``output_chars`` is; it gets twice ``output_chars`` up to
@@ -1171,7 +1173,7 @@ class Toolbox:
         try:
             outcome = await entry.handler(Request(call, args, operation, model))
         except DocumentError as error:
-            return _failure(ErrorKind(error.kind), error.message)
+            return _failure(ErrorKind(error.kind), error.message, error.details)
         except ValidationError as exc:
             first = exc.errors()[0]
             where = ".".join(str(part) for part in first.get("loc", ()))
@@ -2174,8 +2176,44 @@ def _known(args: dict[str, Any], *names: str) -> dict[str, Any]:
     return {name: args[name] for name in names if name in args}
 
 
-def _failure(kind: ErrorKind, message: str) -> ToolOutcome:
-    return ToolOutcome(
-        dump({"error": {"kind": kind.value, "message": bound(message, 4000)}}),
-        {"error": kind.value},
-    )
+def _failure(
+    kind: ErrorKind, message: str, details: Mapping[str, object] | None = None
+) -> ToolOutcome:
+    error: dict[str, object] = {"kind": kind.value, "message": bound(message, 4000)}
+    if details:
+        error["details"] = _shown_details(details)
+    return ToolOutcome(dump({"error": error}), {"error": kind.value})
+
+
+def _shown_details(details: Mapping[str, object]) -> dict[str, object]:
+    """A refusal's details as a failed call shows them: whole within ``MAX_DETAILS_BYTES``,
+    else the keys and list items that fit, in order, and ``omitted``, the count of the
+    rest. Details are the platform's own identifiers, counters and references, never text
+    a server or a user wrote, so they need no untrusted-text framing."""
+    plain = cast(dict[str, object], json.loads(json.dumps(dict(details), default=str)))
+    budget = MAX_DETAILS_BYTES - len('"omitted":999999,')
+
+    def fits(value: object) -> bool:
+        return len(dump(value).encode()) <= budget
+
+    if fits(plain):
+        return plain
+    shown: dict[str, object] = {}
+    omitted = 0
+    for key, value in plain.items():
+        if isinstance(value, list):
+            items = cast(list[object], value)
+            kept: list[object] = []
+            for item in items:
+                if not fits({**shown, key: [*kept, item]}):
+                    break
+                kept.append(item)
+            omitted += len(items) - len(kept)
+            if fits({**shown, key: kept}):
+                shown[key] = kept
+        elif fits({**shown, key: value}):
+            shown[key] = value
+        else:
+            omitted += 1
+    shown["omitted"] = omitted
+    return shown

@@ -173,6 +173,8 @@ Every definitive failure has one of these kinds and a message for the agent, whi
 | `exception` | The cell raised an exception; its name, value and traceback describe it |
 | `internal` | A worker fault; the attempt's outcome may be unknown and must be reconciled |
 
+A refusal from the control store (a plan, document, ledger, memory or review refusal) also carries its `details`, the platform's own identifiers, counters and references that say what it refers to, such as the steps that hold a plan's finish; a details object over 2 KiB of JSON keeps the keys and list items that fit, in order, and counts the rest in `omitted` (`tools.MAX_DETAILS_BYTES`). Details hold no text a server or a user wrote, so they need no untrusted-data framing.
+
 *Decided 2026-10-25 by the owner (B9); built 2026-10-25:* `invalid_request` also covers a call without its `purpose_note`, or with one outside its limits ([purpose of each call](#purpose-of-each-call), item 2).
 
 Network failures inside research code are the program's own errors, not these kinds. Two come from the platform:

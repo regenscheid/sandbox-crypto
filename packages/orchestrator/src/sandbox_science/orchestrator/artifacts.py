@@ -893,6 +893,25 @@ class ArtifactInventory:
         with self.documents.control.read() as tx:
             return self._revision(tx.sql, project, artifact, number)
 
+    def published(self, project: str, worker_artifact: str) -> ArtifactRevisionRef | None:
+        """The revision a publication recorded, by the worker's name for what it published
+        (``art-…``): ``publish`` answers with that and with this inventory's revision of the
+        file (``artifact-…`` and its number), two names of one file's one revision. ``None``
+        when no finished publication of the project has that name."""
+        self._scope(project)
+        if self.documents.control.missing:
+            return None
+        with self.documents.control.read() as tx:
+            row = tx.sql.execute(
+                "SELECT receipt FROM artifact_operations WHERE project=? AND state='done' "
+                "AND json_extract(receipt,'$.worker_snapshot.artifact_id')=? LIMIT 1",
+                (project, worker_artifact),
+            ).fetchone()
+        if row is None:
+            return None
+        receipt = ArtifactReceipt.model_validate_json(row[0])
+        return receipt.revision if receipt.state == "recorded" else None
+
     def resolve(self, project: str, link: ArtifactLink) -> ArtifactRevision:
         """Resolve latest in one snapshot, returning an exact pinned revision."""
         self._scope(project)

@@ -735,7 +735,7 @@ def test_a_fix_cites_the_changed_entry_revision_and_a_confirmation_reads_it(stor
     change(reviews, {"entry": "C-1", "expected": 1, "statement": "$a^{16} = 1$ in GF(17)."},
            op="fixed")  # fmt: skip
     change(reviews, {"entry": "C-2", "expected": 1, "title": "Other"}, op="other")
-    with pytest.raises(DocumentError, match="unrelated to this finding") as unrelated:
+    with pytest.raises(DocumentError, match="is not what the finding is pinned to") as unrelated:
         api.respond("p", "s", fix(finding, revision, ["C-2", 2], op="other"), MAIN)
     assert unrelated.value.kind == "policy_denied"
     claimed = api.respond("p", "s", fix(finding, revision, ["C-1", 2]), MAIN)

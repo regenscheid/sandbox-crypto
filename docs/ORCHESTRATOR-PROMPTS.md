@@ -20,7 +20,7 @@ IDs are the version strings in the code.
 | Input | ID in code | Source | When it is sent |
 | --- | --- | --- | --- |
 | MAIN base system | `sandbox-main-20` (`loop.py` `MAIN_VERSION`) | [loop.py](../packages/orchestrator/src/sandbox_science/orchestrator/loop.py) `SYSTEM_PROMPT`: who the agent is, then headed sections (how you work, your children, research state, untrusted content and policy, the user's authority; see below); new user messages may mean root work, plan creation or revision, child steering, or feedback on a pinned result | Every MAIN run, unless the caller supplies a custom `system` |
-| MAIN planning guidance | `sandbox-main-plan-4` | [plan_tools.py](../packages/orchestrator/src/sandbox_science/orchestrator/plan_tools.py) `GUIDANCE` | Appended when the six plan tools are offered (stateful MAIN runs) |
+| MAIN planning guidance | `sandbox-main-plan-5` | [plan_tools.py](../packages/orchestrator/src/sandbox_science/orchestrator/plan_tools.py) `GUIDANCE` | Appended when the six plan tools are offered (stateful MAIN runs) |
 | Delegated check system | `sandbox-delegated-check-16` (`delegation/prompt.py` `CHECK_VERSION`) | [delegation/prompt.py](../packages/orchestrator/src/sandbox_science/orchestrator/delegation/prompt.py) `CHECK_PROMPT`, headed as the task prompt is, with how it checks in place of how it works and no research-state section; its first user message is the brief the platform writes (`check_task`, `evidence_line`, `brief_text`): the task, the entry's evidence and the parent's note, then the platform's line naming its write area (`write_area_text`, DA-19; one wording for a run in the session's environment, which reads every file of the session, and one for a run in an environment of its own, which does not), and for a run in an environment of its own the line mapping its inputs to their copies under `inputs/` (`inputs_text`, CE-7); later parent messages cannot predetermine its verdict; it says what its read-only connector tools are and that a call needing approval waits for the user, that its result goes through `submit_result` (PD-18), and that a question goes to its parent while it keeps working, a blocked result only when the parent does not answer (DA-15) | Every delegated run, which checks one ledger entry ([plans and delegation](specs/plans-and-delegation.md), PD-13) |
 | Delegated task system | `sandbox-delegated-task-21` (`delegation/prompt.py` `TASK_VERSION`) | [delegation/prompt.py](../packages/orchestrator/src/sandbox_science/orchestrator/delegation/prompt.py) `TASK_PROMPT`: who the agent is, then headed sections (how you work, your parent, research state, untrusted content and policy, and last its result, with one example); its first user message is the parent's brief (`task_text`): the task, the context and the inputs, the deliverables, each line with the produced form of its kind in `submit_result` (`deliverable_line`, `produced_form`), and a line when the brief has references, then the platform's line naming its write area (`write_area_text`, DA-19; one wording for a run in the session's environment, which reads every file of the session, and one for a run in an environment of its own, which does not), and for a run in an environment of its own the line mapping its inputs to their copies under `inputs/` (`inputs_text`, CE-7); later parent messages can steer it; it says what its connector tools are, that a call needing approval waits for the user, how a draft plan holds outward calls, that its parent may give it records by reference, and that a child lacking context asks its parent with `message_parent` (DA-15); its result goes through `submit_result` (PD-18), and a question goes to its parent while it keeps working, a blocked result only when the parent does not answer (DA-15) | Every delegated run that does a task ([plans and delegation](specs/plans-and-delegation.md), PD-11) |
 
@@ -159,12 +159,15 @@ the original actor. The tool-call identity is kept in the run's tool record.
 
 The [harness](../packages/orchestrator/src/sandbox_science/orchestrator/harness.py) offers the
 tools only to a stateful MAIN run with a recorded open session. Stateless runs, the
-watcher and the reviewer get no plan tools or guidance. The `sandbox-main-plan-4`
+watcher and the reviewer get no plan tools or guidance. The `sandbox-main-plan-5`
 guidance is appended to the MAIN system message only when the tools are offered. It
 asks substantive work to create or resume a short plan and record progress as work
 happens; small factual answers need no plan. It says that a plans notice shows the plan
 when someone else changed it and counts as reading it, and that `plan_read` gives step
-details and the counters a change needs. What the MAIN base says (budgets are ceilings,
+details and the counters a change needs. It says that work the user pauses is recorded
+`blocked` with the user's reason and `in_progress` again when it resumes, and that a
+revision leaves finished steps' text as it is and adds steps or changes open ones, since
+a changed finished step must be recorded again. What the MAIN base says (budgets are ceilings,
 finite child briefs, a first checklist or pilot is not completion, when to stop) it
 leaves to the base.
 
@@ -174,7 +177,12 @@ There is no approval state: plan approval (PD-6) is undecided, and the unused
 `awaiting_approval` state was removed until it is (decision 10). Progress requires an active plan and exact plan, step and status CAS.
 Finishing requires the core's explicit goal outcome (`achieved`,
 `partially_achieved` or `not_achieved`) and terminal assertions for all current
-steps; blocked or skipped steps cannot produce `achieved`. Plan text and evidence
+steps; blocked or skipped steps cannot produce `achieved`. A refused finish names each
+step that holds it and why (open, changed by a revision since its last record, or blocked
+or skipped under `achieved`) and what to do, and a failed call's `details` list them. A
+revision keeps a step's record while the step's ID, phase and fields are unchanged; one
+that changes a finished step reopens it, and `plan_revise`'s result names those steps
+(`finished_steps_changed`, with a note) so the cost shows when it is incurred. Plan text and evidence
 are attributed assertions, with no scientific verification, permission expansion
 or automatic link from effects to steps.
 

@@ -36,7 +36,7 @@ The system message is its sections' texts joined by a blank line, in order
 4. `skills`, with no version, when the project pins skills: the framing
    `sandbox-skills-index-4`, the index of the run's skills and the skills loaded at its
    start ([skills](SKILLS.md)); the `skills` pin below names the framing's version.
-5. `planning`, version `sandbox-main-plan-4`, when the plan tools are offered. Plan
+5. `planning`, version `sandbox-main-plan-5`, when the plan tools are offered. Plan
    tools offered without their hook, or the hook without the tools, refuse before any
    model call.
 
@@ -47,7 +47,9 @@ evidence-based stopping. They preserve bounded tasks, finite child briefs and
 resource ceilings. These are prompt rules, not a new quality gate; existing runs
 retain their original pins and do not receive a live prompt replacement. Since MAIN
 version 20 and planning version 4 the base alone says what both said (ceilings, finite
-briefs, when to stop), and the planning guidance keeps what is the plan's.
+briefs, when to stop), and the planning guidance keeps what is the plan's. Planning
+version 5 adds that work the user pauses is recorded `blocked` and resumes `in_progress`,
+and that a revision leaves finished steps' text as it is.
 
 ## Pins
 

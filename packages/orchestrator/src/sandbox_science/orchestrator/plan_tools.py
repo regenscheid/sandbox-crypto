@@ -24,6 +24,7 @@ from .model import ToolSpec
 from .notices import PLANS
 from .projects import ProjectError, ProjectStore, SessionSnapshot
 from .session_plans import (
+    FINISHED,
     CompactPlan,
     Counter,
     GoalOutcome,
@@ -59,6 +60,11 @@ REREAD = (
     "plan_reread_required: someone else changed the session plan after this turn began; "
     "the plans notice before your next turn shows it as it now stands"
 )
+REOPENED = (
+    "The revision changed the text of these finished steps, so their records no longer "
+    "match and each is open again: record each again before plan_finish. When revising, "
+    "leave finished steps as they are and add new steps or change open ones."
+)
 OPEN: Final = frozenset({"pending", "in_progress"})
 MAX_REQUEST_BYTES = 96 * 1024
 MAX_RESPONSE_BYTES = 256 * 1024
@@ -70,16 +76,19 @@ MAX_REASON: Final = 160
 """The characters of a version's reason a plans notice shows."""
 MAX_STEP_IDS: Final = 8
 """The step IDs a plans notice names for each kind of change in a revision."""
-GUIDANCE_VERSION = "sandbox-main-plan-4"
+GUIDANCE_VERSION = "sandbox-main-plan-5"
 GUIDANCE = (
-    "Planning guidance (sandbox-main-plan-4): The offered plan tools keep this session's "
+    "Planning guidance (sandbox-main-plan-5): The offered plan tools keep this session's "
     "plan and its progress. For substantive research, read and resume the current plan by "
     "its stable step IDs, or create a short plan with its goal, feasibility, outputs and "
     "evidence standards; small factual replies need no plan. Activate a draft and go on "
     "under the user's existing authorization: activation grants no permissions and is not "
     "the user's approval. Record a step in_progress when it starts, and completed, blocked "
-    "or skipped as its results or obstacles become known, rather than at the final answer. "
-    "Keep the user's edits. When the user or another run changes the plan, a plans notice "
+    "or skipped as its results or obstacles become known, rather than at the final answer; "
+    "work the user pauses is blocked, with the user's reason, until it resumes in_progress. "
+    "Keep the user's edits. When revising, leave finished steps' text as it is, since a "
+    "changed finished step must be recorded again, and add new steps or change open ones. "
+    "When the user or another run changes the plan, a plans notice "
     "before your next turn shows it as it now stands, which counts as reading it; plan_read "
     "gives step details and the counters a plan change needs. For explicitly extended "
     "research, keep hypotheses, baseline evidence and stopping criteria in the plan's "
@@ -611,11 +620,16 @@ class PlanTools:
                     outcome=request.outcome if isinstance(request, Finish) else None,
                 )
             value = receipt.model_dump(mode="json")
-            result = {
+            result: dict[str, object] = {
                 "receipt": value,
                 "historical_receipt": summary is not None
                 and receipt.event_sequence <= summary.event_cursor,
             }
+            if isinstance(request, Revise):
+                reopened = self._reopened(receipt.ref)
+                if reopened:
+                    result["finished_steps_changed"] = reopened
+                    result["note"] = REOPENED
             return _json(result), {
                 "plan_receipt": value,
                 "plan_call_id": call_id,
@@ -623,6 +637,26 @@ class PlanTools:
             }
 
         return await threaded(lambda: self._owned(perform))
+
+    def _reopened(self, ref: PlanRef) -> list[str]:
+        """The steps that were finished, completed, blocked or skipped, and that the
+        revision to ``ref`` changed, so that they are open again until recorded against it;
+        none once the plan has moved past ``ref``."""
+        plan = self.plans.compact_current(self.authority)
+        if plan is None or plan.head.ref != ref or ref.version == 1:
+            return []
+        before = self.plans.version(
+            self.authority, PlanRef(plan_id=ref.plan_id, version=ref.version - 1)
+        )
+        changed = set(step_changes(before.body, plan.version.body).changed)
+        return [
+            step.step_id
+            for step in plan.steps
+            if step.step_id in changed
+            and step.latest is not None
+            and step.latest.status in FINISHED
+            and not step.matches_current_step
+        ]
 
     def _read(self, request: Read) -> tuple[dict[str, object], Pin | None]:
         if request.view == "current":
