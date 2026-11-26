@@ -46,6 +46,7 @@ RECLASSED = {
     # Reads that fill the server's own document cache on first use (D95: reads).
     "e-print-mcp_eprint_file": "read",
     "e-print-mcp_eprint_fulltext": "read",
+    "library-mcp_fetch_paper": "read",  # with a url, a write (its argument rule)
     # Reads by name; their effects come from argument rules (H1).
     "firecrawl-mcp_firecrawl_crawl": "read",
     "firecrawl-mcp_firecrawl_scrape": "read",
@@ -165,6 +166,25 @@ def test_firecrawl_argument_rules(
 ) -> None:
     """H1: the arguments that act on the world make the call an effect, whatever its name."""
     decision = call(policy, tool, arguments)
+    assert (decision.effect, decision.action) == (effect, action), decision.reason
+
+
+@pytest.mark.parametrize(
+    ("arguments", "effect", "action"),
+    [
+        ({"identifier": "2022/708"}, "read", Action.ALLOW),
+        ({"identifier": "2022/708", "url": None}, "read", Action.ALLOW),
+        ({"identifier": "2022/708", "url": ""}, "read", Action.ALLOW),
+        ({"identifier": "2022/708", "project": "p"}, "read", Action.ALLOW),
+        ({"identifier": "2022/708", "url": "https://e.org/paper.pdf"}, "write", Action.ESCALATE),
+    ],
+)
+def test_the_library_fetch_paper_url_rule(
+    policy: LoadedPolicy, arguments: dict[str, object], effect: str, action: Action
+) -> None:
+    """Fetching a catalogued paper by its identifier fills the server's cache (D95); with a
+    url the agent chooses what the server fetches and keeps in a shared store: a write."""
+    decision = call(policy, "library-mcp_fetch_paper", arguments)
     assert (decision.effect, decision.action) == (effect, action), decision.reason
 
 
