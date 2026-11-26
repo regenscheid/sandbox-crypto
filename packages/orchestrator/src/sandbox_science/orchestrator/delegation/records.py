@@ -1395,18 +1395,19 @@ def _union(
 def _merge(
     plans: Sequence[tuple[tuple[str, ...], tuple[dict[str, JsonValue], ...]]],
 ) -> tuple[tuple[str, ...], tuple[dict[str, JsonValue], ...]]:
-    """Hand-back plans as one, the first's first, each path once: a file a plan names by
-    its revision is not copied."""
+    """Hand-back plans as one, the first's first, each path once: copied, and named by
+    its revision when the first plan that gives it publishes it (CE-6)."""
     files: dict[str, None] = {}
     retained: dict[str, dict[str, JsonValue]] = {}
     for copy, named in plans:
         for item in named:
             path = item.get("path")
-            if isinstance(path, str) and path not in retained and path not in files:
+            if isinstance(path, str) and path not in files:
                 retained[path] = item
+                # A plan made before published files were copied names them only.
+                files[path] = None
         for path in copy:
-            if path not in retained:
-                files.setdefault(path, None)
+            files.setdefault(path, None)
     return tuple(files), tuple(retained.values())
 
 

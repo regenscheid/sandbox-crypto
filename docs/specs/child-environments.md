@@ -143,8 +143,15 @@ platform places a child by the project's settings. No change to checks' evidence
   its deliverables of kind `artifact` or `file` name (PD-45), and every recorded file
   whose content the recorder could not retain, under the job collection's bounds (JS-16:
   1,000 files, 100 MiB per write, a 30-minute deadline), with a manifest written once.
-  Files already retained in control are not copied twice: the manifest names their
-  artifact revisions. A collection past its bounds is incomplete: the delegation's
+  A result file or deliverable the child published is copied too, so that the parent
+  reads every one with `read_file` at `work/<delegation_id>/<path>`, and the manifest
+  also names its artifact revision; the account the delegation's outcome keeps gives,
+  for each, the path its copy has (`at`), or says that the copy differs from the
+  revision named (`differs`), as for a file changed after it was published, and its
+  `complete` is true only when the worker's hand-back was complete and every published
+  file's copy is its revision. A file left out names where it is read: a published one
+  by its artifact revision (`find_artifacts`), another by the retained environment that
+  holds it. A collection past its bounds is incomplete: the delegation's
   outcome lists what was left behind, the environment is retained (CE-4), and the
   parent's outcome notice says so. *As built 2026-10-27, amended 2026-10-31:* a file is
   copied whole up to the bytes left of the profile's `collect_max_bytes` (4 GiB unless

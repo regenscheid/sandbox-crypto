@@ -48,6 +48,7 @@ from sandbox_science.contracts.child_environments import (
     InputStaged,
     RetainedFile,
     RetainedInput,
+    hand_back_path,
     hand_back_target,
 )
 from sandbox_science.contracts.worker import MAX_MANIFEST_FILES, validate_relative_path
@@ -133,10 +134,12 @@ def hand_back_plan(
     published: Collection[str],
     files: Mapping[str, JsonValue] | None,
 ) -> tuple[tuple[str, ...], tuple[RetainedFile, ...]]:
-    """What a hand-back copies, and what it names by revision instead (CE-6): the
-    result's ``result_files`` and the paths its deliverables give, copied unless the
-    child published them (control retains them already); and every file its calls
-    recorded whose content the recorder could not retain."""
+    """What a hand-back copies, and the revisions it names (CE-6): the result's
+    ``result_files`` and the paths its deliverables give, each copied, so the parent reads
+    it at its handed-back path with its file tools; one the child published is also named
+    by its artifact revision, which control retains, so the account can check the copy
+    against it. And every file its calls recorded whose content the recorder could not
+    retain, copied."""
     copy: list[str] = []
     retained: dict[str, RetainedFile] = {}
 
@@ -146,8 +149,9 @@ def hand_back_plan(
             validate_relative_path(path)
         except ValueError:
             return
-        if path in copy or path in retained:
+        if path in copy:
             return
+        copy.append(path)
         found = recorded.get(path)
         artifact, revision = (found or {}).get("artifact_id"), (found or {}).get("revision")
         if (
@@ -165,8 +169,6 @@ def hand_back_plan(
                 revision=revision,
                 sha256=sha if isinstance(sha, str) else None,
             )
-        else:
-            copy.append(path)
 
     if result is not None:
         declared = result.get("result_files")
@@ -588,19 +590,63 @@ def account(
         if found.inputs_missing:
             kept["inputs_missing"] = list(found.inputs_missing)
     if back is not None:
-        kept["hand_back"] = {
-            "target": back.target,
-            "complete": back.complete,
-            "copied": [f.path for f in back.collected],
-            "retained": [
-                {"path": r.path, "artifact_id": r.artifact_id, "revision": r.revision}
-                for r in back.retained
-            ],
-            "left": [{"path": f.path, "reason": f.reason} for f in back.not_collected],
-        }
+        kept["hand_back"] = _handed_back(found, back)
     if error is not None:
         kept["error"] = error
     return kept
+
+
+def _handed_back(found: ChildEnvironment, back: ChildHandBack) -> dict[str, JsonValue]:
+    """A hand-back's account (CE-6): what it copied, by session path; each published
+    file's artifact revision, with the path its copy has in the session; what it left,
+    with why, and for a file left that control retains or that the retained environment
+    holds, where it is read. ``complete`` only when every file is readable at its path,
+    a published one at the revision its result names."""
+    copies = {f.path: f for f in back.collected}
+    complete = back.complete
+    named: list[JsonValue] = []
+    for item in back.retained:
+        at = hand_back_path(back.target, item.path)
+        copy = copies.get(at)
+        entry: dict[str, JsonValue] = {
+            "path": item.path,
+            "artifact_id": item.artifact_id,
+            "revision": item.revision,
+        }
+        if copy is None:
+            complete = False
+        elif item.sha256 is not None and copy.sha256 != item.sha256:
+            # The file changed after it was published: the copy is the file as the child
+            # left it, not the revision its result names.
+            complete = False
+            entry["differs"] = (
+                f"{at} is the file as the child left it, not revision {item.revision}"
+            )
+        else:
+            entry["at"] = at
+        named.append(entry)
+    published = {r.path: r for r in back.retained}
+    left: list[JsonValue] = []
+    for item in back.not_collected:
+        entry = {"path": item.path, "reason": item.reason}
+        if (source := published.get(item.path)) is not None:
+            entry["read"] = (
+                f"control keeps it as artifact {source.artifact_id} revision "
+                f"{source.revision}: find_artifacts with path {item.path} lists it"
+            )
+        elif found.phase == "retained" and found.retained_until is not None:
+            entry["read"] = (
+                f"it stays in child environment {found.environment_id} until "
+                f"{found.retained_until.isoformat()}, for an operator to recover"
+            )
+        left.append(entry)
+    return {
+        "target": back.target,
+        "complete": complete,
+        "copied": [f.path for f in back.collected],
+        "retained": named,
+        "left": left,
+    }
 
 
 def waiting_notice(delegation_id: str) -> str:

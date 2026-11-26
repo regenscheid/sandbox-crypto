@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import copy
+import json
 import logging
 import math
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Sequence
@@ -32,6 +33,7 @@ from sandbox_science.contracts.model import Contract
 from sandbox_science.contracts.worker import TERMINAL_STATES
 
 from .aio import lease, threaded
+from .control import ControlStore
 from .effects import UnknownEffectError
 from .hooks import Closing, Effect, Notice, Point, RunView, TurnHook
 from .jobstate import JobState
@@ -39,6 +41,7 @@ from .memory_prompt import MemoryGiven
 from .model import ChatModel, ModelError, ToolSpec
 from .notices import JOBS, JOBS_ATTACHED
 from .pricing import CostSource
+from .projects import run_id_of
 from .recording import FileRecorder, Written
 from .watcher_prompt import assemble_watcher
 from .worker_client import WorkerAPIError, WorkerClient, dump
@@ -149,8 +152,10 @@ JOB_SPECS = (
     ToolSpec(
         "wait_jobs",
         "Keep this turn open without calling your model until all jobs (or "
-        "the first with mode=first) end, the watcher needs attention, or a user message "
-        "arrives through the harness's message boundary. Jobs keep running on interruption.",
+        "the first with mode=first) end, the watcher needs attention, a user message "
+        "arrives through the harness's message boundary, an agent message reaches you, or "
+        "a delegated run you started ends; the result's reason says which. Jobs keep "
+        "running on interruption.",
         {
             "type": "object",
             "properties": {
@@ -282,6 +287,89 @@ def _sandbox(status: JobStatus) -> dict[str, object]:
     return value
 
 
+WOKEN: Final = (
+    "The jobs keep running. Read the agent message or the delegation's outcome shown "
+    "next, then call wait_jobs again to go on waiting."
+)
+"""What a wait an agent message or a child's end woke says to do."""
+
+
+async def _reason(wake: Awaitable[object], reason: str | None) -> str:
+    """``reason`` once ``wake`` returns, or the reason it returns."""
+    woke = await wake
+    return reason if reason is not None else str(woke)
+
+
+CLOSED_RUN: Final = (
+    "The platform cancelled it: the delegated run that started it closed ({why}), and a "
+    "job of a closed run has no owner."
+)
+"""Why a job a closed delegated run left running was cancelled, as its notice says."""
+
+
+def _work_jobs(control: ControlStore, project: str, session: str, kernel: str) -> list[str]:
+    """The jobs the runs of one delegated work started, by its kernels' run (the work's
+    first run's ID): every attempt's, a reopened task's earlier runs' among them."""
+    with control.read() as tx:
+        rows = tx.sql.execute(
+            "SELECT a.run FROM research_attempts a JOIN research_work w ON w.project=a.project "
+            "AND w.session=a.session AND w.work=a.work WHERE w.project=? AND w.session=? "
+            "AND w.kernel=? AND w.role='delegated'",
+            (project, session, kernel),
+        ).fetchall()
+        # Job origins name a run by its ID, attempts by its record's name.
+        runs = sorted({kernel, *(run_id_of(str(r[0])) or str(r[0]) for r in rows)})
+        found = tx.sql.execute(
+            "SELECT job FROM job_origins WHERE project=? AND session=? "
+            "AND run IN (SELECT value FROM json_each(?)) ORDER BY job",
+            (project, session, json.dumps(runs)),
+        ).fetchall()
+    return [str(r[0]) for r in found]
+
+
+def _ended_by(control: ControlStore, project: str, session: str, job: str, why: str) -> None:
+    with control.write() as tx:
+        tx.sql.execute(
+            "UPDATE job_origins SET ended_by=? WHERE project=? AND session=? AND job=? "
+            "AND ended_by IS NULL",
+            (why[:1000], project, session, job),
+        )
+
+
+def ended_by(control: ControlStore, project: str, session: str, job: str) -> str | None:
+    """Why the platform cancelled ``job``; ``None`` for a job it did not."""
+    with control.read() as tx:
+        row = tx.sql.execute(
+            "SELECT ended_by FROM job_origins WHERE project=? AND session=? AND job=?",
+            (project, session, job),
+        ).fetchone()
+    return None if row is None or row[0] is None else str(row[0])
+
+
+async def cancel_closed_jobs(
+    client: WorkerClient, control: ControlStore, context: ExecutionContext, kernel: str, why: str
+) -> list[str]:
+    """Cancel the jobs a closed delegated work's runs started that still run, as its
+    kernels stop (``kernel``, its kernels' run): a run's close at the worker cancels no
+    job, since a job names no run. The parent's and its siblings' are other works', and
+    stay. Each cancelled job keeps why (``CLOSED_RUN``), which its notice gives. A
+    worker that does not answer leaves a job running, logged."""
+    project, session = context.project_id, context.session_id
+    cancelled: list[str] = []
+    for job in await threaded(_work_jobs, control, project, session, kernel):
+        try:
+            status = await client.job_status(job, project_id=project)
+            if status.execution.state in TERMINAL_STATES:
+                continue
+            await client.cancel(job, project_id=project, context=context)
+        except WorkerAPIError as error:
+            _log.warning("job %s of closed run %s was not cancelled: %s", job, kernel, error)
+            continue
+        await threaded(_ended_by, control, project, session, job, CLOSED_RUN.format(why=why))
+        cancelled.append(job)
+    return cancelled
+
+
 class JobTools:
     """Job tools for one run; worker ownership is checked on every operation."""
 
@@ -340,6 +428,10 @@ class JobTools:
         )
         self.heartbeat_seconds, self.watcher_timeout = heartbeat_seconds, watcher_timeout
         self.wake, self.on_wait = wake, on_wait
+        self.wakes: tuple[Callable[[], Awaitable[str]], ...] = ()
+        """The run's other reasons to end a wait, each returning its reason: an agent
+        message to the run (``agent_message``), a delegated run of its own that ends
+        (``delegation_ended``), as ``wait_delegations`` wakes for them."""
         self.memory = memory
         self.recorder: FileRecorder | None = None
         """Records an ended job's files, when the run first sees it end (RA-27)."""
@@ -568,6 +660,16 @@ class JobTools:
                     "stderr_tail": str(value["stderr"])[-bound:],
                     "error": value["error"],
                 }
+                if self.state is not None and (
+                    why := await threaded(
+                        ended_by,
+                        self.state.control,
+                        self.context.project_id,
+                        self.context.session_id,
+                        job,
+                    )
+                ):
+                    notice["cancelled_by"] = why  # a closed delegated run's job
                 recorded = await self._record(job)
                 if recorded is not None:
                     notice["recorded_files"] = recorded
@@ -614,20 +716,25 @@ class JobTools:
         }
         await self._waiting(waiting)
         running = asyncio.create_task(self._wait_loop(request, waiting))
-        # A user message ends the wait. The message itself is not consumed here: it
-        # follows this result as the user's own message, before the next model call.
-        message = asyncio.create_task(self.wake()) if self.wake is not None else None
+        # A user message ends the wait, as an agent message or a child's end does. The
+        # message itself is not consumed here: it follows this result, the user's as the
+        # user's own message and an agent's as its notice, before the next model call.
+        wakes: list[asyncio.Task[str]] = []
+        if self.wake is not None:
+            wakes.append(asyncio.create_task(_reason(self.wake(), "user_message")))
+        wakes += [asyncio.create_task(_reason(wake(), None)) for wake in self.wakes]
         try:
-            if message is None:
+            done, _ = await asyncio.wait((running, *wakes), return_when=asyncio.FIRST_COMPLETED)
+            if running in done:
                 value = await running
             else:
-                done, _ = await asyncio.wait(
-                    (running, message), return_when=asyncio.FIRST_COMPLETED
-                )
-                if running in done:
-                    value = await running
-                else:
-                    value = {"reason": "user_message", "job_ids": list(request.job_ids)}
+                reason = next(w for w in wakes if w in done).result()
+                value: dict[str, object] = {"reason": reason, "job_ids": list(request.job_ids)}
+                if reason != "user_message":
+                    value["next"] = WOKEN
+                    # The jobs as they stand, which keep running.
+                    statuses = await asyncio.gather(*(self.owned(j) for j in request.job_ids))
+                    value["jobs"] = [summary(st, self.clock.now()) for st in statuses]
             # The ended executions are the record's, for the review (lab 41's B7), not
             # the model's: its answer has their summaries.
             executions = value.pop(_ENDED, [])
@@ -636,7 +743,7 @@ class JobTools:
                 record["executions"] = executions
             return dump(value), record
         finally:
-            cleanup = [task for task in (running, message) if task is not None]
+            cleanup: list[asyncio.Task[Any]] = [running, *wakes]
             for task in cleanup:
                 task.cancel()
             # The winning branch already reports its exception.

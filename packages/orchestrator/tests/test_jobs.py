@@ -282,6 +282,87 @@ async def test_user_message_interrupts_wait_without_cancelling_job(tmp_path: Pat
 
 
 @pytest.mark.asyncio
+async def test_an_agent_message_or_a_childs_end_wakes_a_wait(tmp_path: Path) -> None:
+    """A wait ends, as wait_delegations does, for an agent message to the run or a
+    delegated run of its own that ends, saying which; the jobs keep running, and the
+    result shows them as they stand and says to wait again."""
+    for reason in ("agent_message", "delegation_ended"):
+        worker = FakeWorker()
+        arrived = asyncio.Event()
+
+        async def woke(reason: str = reason, arrived: asyncio.Event = arrived) -> str:
+            await arrived.wait()
+            return reason
+
+        async def never() -> str:
+            await asyncio.Event().wait()
+            return "never"
+
+        clock = FakeClock(datetime.now(UTC))
+        jobs = tools(worker, tmp_path / reason, clock)
+        jobs.wakes = (never, woke)
+        waiting = asyncio.create_task(jobs.wait({"job_ids": ["exe-1"]}, "op"))
+        await eventually(lambda jobs=jobs, clock=clock: clock.sleepers == 1 and waits(jobs))
+        arrived.set()
+        text, record = await asyncio.wait_for(waiting, 5)
+        found = json.loads(text)
+        assert found["reason"] == reason
+        assert found["job_ids"] == ["exe-1"]
+        assert [j["state"] for j in found["jobs"]] == ["running"]
+        assert "call wait_jobs again" in found["next"]
+        assert record["wait"]["reason"] == reason
+        assert worker.cancelled == []
+        assert waits(jobs) == []
+
+
+def test_a_runs_capabilities_wake_its_job_waits_for_messages_and_children(
+    tmp_path: Path,
+) -> None:
+    """The run's job tools end a wait for what ends wait_delegations: its mailbox's agent
+    messages and its delegations' ends."""
+    from sandbox_science.orchestrator import capabilities as caps
+    from sandbox_science.orchestrator.agent_messages import AgentMailbox, AgentMessageStore
+    from sandbox_science.orchestrator.control import ControlStore
+
+    control = ControlStore(tmp_path / "control.sqlite")
+    try:
+        mailbox = AgentMailbox(
+            AgentMessageStore(control), CONTEXT, run="run-1", delegation=None,
+            may_message_child=True,
+        )  # fmt: skip
+        jobs = tools(FakeWorker(), tmp_path)
+        caps.main([caps.jobs(jobs), caps.mailbox(mailbox)])
+        assert jobs.wakes == (mailbox.wake,)
+        alone = tools(FakeWorker(), tmp_path / "alone")
+        caps.task([caps.jobs(alone)])
+        assert alone.wakes == ()
+    finally:
+        control.close()
+
+
+@pytest.mark.asyncio
+async def test_a_delegations_end_is_a_wake() -> None:
+    """``Delegations.child_ended`` returns once a running child's task ends, and waits
+    while none runs."""
+    from types import SimpleNamespace
+
+    from sandbox_science.orchestrator.delegation.hook import Delegations
+
+    release = asyncio.Event()
+    child = asyncio.create_task(release.wait())
+    running = SimpleNamespace(children={"dlg-1": SimpleNamespace(task=child)})
+    ended = asyncio.create_task(Delegations.child_ended(cast(Delegations, running)))
+    await asyncio.sleep(0)
+    assert not ended.done()
+    release.set()
+    assert await asyncio.wait_for(ended, 5) == "delegation_ended"
+    idle = asyncio.create_task(Delegations.child_ended(cast(Delegations, running)))
+    await asyncio.sleep(0.05)
+    assert not idle.done()
+    idle.cancel()
+
+
+@pytest.mark.asyncio
 async def test_first_and_all_wait_modes(tmp_path: Path) -> None:
     worker = FakeWorker()
     worker.records["exe-1"] = execution(state=ExecutionState.SUCCEEDED)

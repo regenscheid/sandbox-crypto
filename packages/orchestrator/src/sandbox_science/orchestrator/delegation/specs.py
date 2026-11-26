@@ -373,9 +373,12 @@ SPECS: Final = (
     ToolSpec(
         "accept_delegation",
         "Accept a returned task you delegated, once you have reviewed its outcome: it "
-        "closes, its own environment hands its files back and is released, and its kernels "
-        "stop. To have it continue instead, send it feedback with message_child. A task "
-        "you leave unreviewed is accepted when your run ends. Returns its outcome.",
+        "closes, its own environment hands its files back to work/<delegation_id>/ and is "
+        "released, and its kernels stop. Acceptance is final: the task takes no follow-on "
+        "work, and message_child to it is refused. To have it continue instead, send it "
+        "feedback with message_child before you accept; later, delegate a new task that "
+        "references its result files. A task you leave unreviewed is accepted when your "
+        "run ends. Returns its outcome.",
         {
             "type": "object",
             "properties": {

@@ -25,6 +25,7 @@ from .control import ControlError
 from .delegation.hook import ChildEnd
 from .documents import DocumentError, DocumentStore
 from .hooks import TurnHook
+from .jobs import cancel_closed_jobs
 from .ledger import Ledger
 from .projects import ProjectError, ProjectStore, RunRecord, run_name
 from .worker_client import WorkerAPIError, WorkerClient
@@ -165,6 +166,10 @@ class AttemptFinalizer:
             return "retained"
         try:
             async with asyncio.timeout(self.close_timeout):
+                # The worker's close stops kernels only: the jobs its runs left go first.
+                await cancel_closed_jobs(
+                    self.worker, self.projects.control, context, work.kernel, f"it {work.state}"
+                )
                 await self.worker.close_session(context, run=work.kernel)
         except (WorkerAPIError, TimeoutError) as exc:
             _log.warning("could not close completed work kernels: %r", exc)

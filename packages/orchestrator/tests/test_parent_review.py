@@ -110,8 +110,8 @@ def _wait(count: int | None = None) -> Reply:
 async def test_review_before_acceptance_end_to_end(delegating: Harness) -> None:
     """PD-F14: the first task returns partial after building a value in its kernel; the
     parent's feedback reopens it, it reads the value still in its kernel and returns
-    complete, and the parent accepts it; a later message to it goes back to the root as
-    a delivery failure; the second task, never reviewed, is accepted as the parent's run
+    complete, and the parent accepts it; a later message to it is refused, since
+    acceptance is final; the second task, never reviewed, is accepted as the parent's run
     ends."""
     root = await delegating.run(
         "root",
@@ -158,12 +158,19 @@ async def test_review_before_acceptance_end_to_end(delegating: Harness) -> None:
     assert "reopened this task" in seen
     assert FEEDBACK in seen
     assert continued.delivered["agent_messages"]
-    # The message reopened it; the later one went back to the root as a failure.
+    # The message reopened it; the later one, after the acceptance, was refused, and
+    # nothing came back to the root.
     sent = [json.loads(r) for r in results(root) if '"message_id"' in r]
+    assert len(sent) == 1
     assert sent[0]["reopened"]["delegation_id"] == first
     assert sent[0]["reopened"]["result"] == 2
-    assert sent[1]["state"] == "recipient_ended"
-    assert root.delivered["agent_messages"] == [sent[1]["message_id"]]
+    accepted = next(
+        json.loads(r) for r in results(root) if '"accept_delegation"' in r or '"closed"' in r
+    )
+    assert "Accepted, which is final" in accepted["closed"]
+    (refused,) = [r for r in results(root) if "task_accepted" in r]
+    assert f"{first} was accepted by you at " in refused
+    assert not root.delivered.get("agent_messages")
     # The second, never reviewed, was accepted as the parent's run ended.
     other = delegation(delegating, second)
     assert (other.review, other.review_reason, other.reviewed_by) == (
@@ -247,6 +254,118 @@ async def test_a_reopened_task_keeps_its_environment_and_is_released_on_acceptan
     edited = json.loads(results(runs[-1])[-2])  # before its submission
     assert "error" not in edited, edited
     assert edited["edited"] == f"work/{first}/basis.txt"
+
+
+async def test_a_closed_tasks_jobs_are_cancelled_and_its_parents_keep_running(
+    delegating: Harness,
+) -> None:
+    """A task in the session's environment that started a job and returned keeps it while
+    its parent reviews it (a reopened run may use it, as its kernels); once accepted, the
+    job is cancelled, with why, since the worker's close of its run cancels no job. The
+    parent's own job keeps running. Needs the worker whose run close cancels no job
+    (lane B1); before it, the worker's close cancelled the parent's job too."""
+    from sandbox_science.contracts.worker import TERMINAL_STATES
+    from sandbox_science.orchestrator.jobs import CLOSED_RUN, ended_by
+    from sandbox_science.orchestrator.worker_client import WorkerClient
+
+    from .loop_harness import TOKEN, start_job
+
+    states: list[dict[str, str]] = []
+
+    async def jobs() -> dict[str, str]:
+        async with WorkerClient(delegating.worker.url, TOKEN) as client:
+            listing = await client.jobs(delegating.context())
+        found = {j.job.purpose: j.state.value for j in listing.jobs if j.job is not None}
+        states.append(found)
+        return found
+
+    root = await delegating.run(
+        "root",
+        [
+            Reply(calls=[start_job("parent"), call("delegate", task=SECOND)]),
+            _wait(),
+            Reply(calls_from=_on_first("accept_delegation").calls_from, before=jobs),
+            # The parent's own job, which ran on, ends as the file it waits for appears.
+            Reply(calls=[call("write_file", path="parent", content="go")], before=jobs),
+            Reply("Done."),
+        ],
+        routed={SECOND: [Reply(calls=[start_job("child")]), *submitted(DONE, "Done.")]},
+    )
+    (identity,) = started(root)
+    assert delegation(delegating, identity).review == "accepted"
+    # Returned and awaiting review: both jobs ran.
+    assert states[0] == {"wait for parent": "running", "wait for child": "running"}
+    found = states[1]
+    assert found["wait for child"] in {s.value for s in TERMINAL_STATES}
+    assert found["wait for parent"] == "running"
+    async with WorkerClient(delegating.worker.url, TOKEN) as client:
+        listing = await client.jobs(delegating.context())
+    (child_job,) = [
+        j.execution_id for j in listing.jobs if j.job and j.job.purpose == "wait for child"
+    ]
+    store = ProjectStore(delegating.state)
+    try:
+        why = ended_by(store.control, PROJECT, SESSION, child_job)
+    finally:
+        store.close()
+    assert why == CLOSED_RUN.format(why="its review closed it")
+    (parent_job,) = [
+        j.execution_id for j in listing.jobs if j.job and j.job.purpose == "wait for parent"
+    ]
+    store = ProjectStore(delegating.state)
+    try:
+        assert ended_by(store.control, PROJECT, SESSION, parent_job) is None
+    finally:
+        store.close()
+
+
+async def test_a_cancelled_running_tasks_jobs_are_cancelled(delegating: Harness) -> None:
+    """A running task its parent cancels ends ``stopped``: as its kernels stop, the job it
+    started in the session's environment is cancelled, with why."""
+    from sandbox_science.orchestrator.jobs import CLOSED_RUN, ended_by
+    from sandbox_science.orchestrator.worker_client import WorkerClient
+
+    from .loop_harness import TOKEN, start_job
+
+    started_job, release = asyncio.Event(), asyncio.Event()
+
+    async def hold() -> None:
+        started_job.set()
+        await release.wait()
+
+    async def child_started() -> None:
+        await asyncio.wait_for(started_job.wait(), 30)
+
+    async def let_go() -> None:
+        release.set()
+
+    root = await delegating.run(
+        "root",
+        [
+            Reply(calls=[call("delegate", task=SECOND)]),
+            Reply(calls_from=_on_first("cancel_delegation").calls_from, before=child_started),
+            Reply("Cancelled.", before=let_go),
+        ],
+        routed={
+            SECOND: [
+                Reply(calls=[start_job("child")]),
+                Reply(calls=[call("list_files", path=".")], before=hold),
+            ]
+        },
+    )
+    (identity,) = started(root)
+    assert delegation(delegating, identity).ended == "cancelled"
+    async with WorkerClient(delegating.worker.url, TOKEN) as client:
+        listing = await client.jobs(delegating.context())
+    (job,) = [j for j in listing.jobs if j.job and j.job.purpose == "wait for child"]
+    assert job.state.value == "cancelled"
+    store = ProjectStore(delegating.state)
+    try:
+        assert ended_by(store.control, PROJECT, SESSION, job.execution_id) == CLOSED_RUN.format(
+            why="it stopped"
+        )
+    finally:
+        store.close()
 
 
 async def test_a_check_returning_still_ends(delegating: Harness) -> None:
@@ -416,7 +535,7 @@ def _returned(
 
 def test_an_acceptance_and_a_reopening_message_cannot_both_win(tmp_path: Path) -> None:
     """Both are one write transaction that only a task awaiting review passes: whichever
-    commits first wins, and the other is refused, or goes to the root."""
+    commits first wins, and the other is refused."""
     store = _store(tmp_path)
     try:
         records = DelegationRecords(store.control)
@@ -424,13 +543,13 @@ def test_an_acceptance_and_a_reopening_message_cannot_both_win(tmp_path: Path) -
         first, second = _returned(store, 1), _returned(store, 2)
         mailbox = AgentMessageStore(store.control)
         plan = ReopenPlan("20261015T130000000000Z-again", cap=10, fenced=True)
-        # Accepted first: the message is kept for the root, as a delivery failure.
+        # Accepted first: the message is refused, since acceptance is final, and nothing
+        # is kept.
         records.accept(PROJECT, SESSION, first, by=ROOT, reason="parent", parent=ROOT)
-        sent = mailbox.deliver_child(
-            PROJECT, SESSION, ROOT, None, first, "More.", "op-1", reopen=plan
-        )
-        assert sent.reopened is None
-        assert mailbox.pending(PROJECT, SESSION, None) == [sent.message]
+        with pytest.raises(ControlError, match=r"^task_accepted: "):
+            mailbox.deliver_child(PROJECT, SESSION, ROOT, None, first, "More.", "op-1", reopen=plan)
+        assert mailbox.pending(PROJECT, SESSION, None) == []
+        assert records.get(PROJECT, SESSION, first).review == "accepted"
         # Reopened first: the acceptance is refused, and the task runs again.
         sent = mailbox.deliver_child(
             PROJECT, SESSION, ROOT, None, second, "More.", "op-2", reopen=plan
