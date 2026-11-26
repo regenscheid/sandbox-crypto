@@ -33,7 +33,10 @@ description and its results as the server returned them on 2026-10-16:
   a text (``partial``), ``paper_card`` a model's summary of it (``abstract_only``). Its
   finding, fetching, linking and listing tools, and ``paper_notes``, people's notes, read
   none. A work label is keyed as the paper it names (``library_key``), so a paper read
-  through the e-print server and the library is one source.
+  through the e-print server and the library is one source; the call's ``identifier``,
+  when it is exactly an identifier that names another key, is the read's alias
+  (``aliases``), the library's word that both name the paper it read (an ePrint report it
+  files under its published DOI), and the register counts the read under both.
 
 The reading tools (``PAGED``) return a paper's text page by page or passage by passage:
 past its limit the toolbox cuts such a result between units (``paged``), never inside one.
@@ -49,7 +52,7 @@ import re
 from collections.abc import Callable
 from typing import Any, Final, cast
 
-from sandbox_science.orchestrator.papers import library_paper
+from sandbox_science.orchestrator.papers import exact_paper, library_paper
 from sandbox_science.orchestrator.papers import nist_key as nist_key
 
 from .reads import Json, Read
@@ -130,15 +133,29 @@ def library_key(label: str) -> tuple[str, str]:
     as its page; any other label, such as an OpenAlex ID, as a paper of its own."""
     named = library_paper(label)
     if named is not None:
-        scheme, value = named
-        if scheme == "eprint":
-            return "eprint", value
-        if scheme == "nist":
-            return "nist", value
-        return "paper", paper_key(f"{scheme}:{value}")
+        return ledger_key(*named)
     if label.startswith("url:"):
         return "web", url_key(label.removeprefix("url:"))
     return "paper", label.strip().casefold()
+
+
+def ledger_key(scheme: str, value: str) -> tuple[str, str]:
+    """A ledger identifier, in its normal form (``papers.normal``), as the register keys
+    the paper (kind, key)."""
+    if scheme in ("eprint", "nist"):
+        return scheme, value
+    return "paper", paper_key(f"{scheme}:{value}")
+
+
+def aliases(arguments: Json, kind: str, key: str) -> Json:
+    """A library read's detail for the paper its call asked for, when the call's
+    ``identifier`` is exactly a ledger identifier (``papers.exact_paper``) whose key is not
+    the work label's (``kind``, ``key``): ``aliases``, that key; else nothing."""
+    asked = arguments.get("identifier")
+    exact = exact_paper(asked) if isinstance(asked, str) else None
+    if exact is None or (alias := ledger_key(*exact)) == (kind, key):
+        return {}
+    return {"aliases": [list(alias)]}
 
 
 def unit_of(tool: str) -> str | None:
@@ -361,6 +378,7 @@ def _library_read(arguments: Json, text: str) -> list[Read] | None:
         return []  # not held, queued, or a page outside the text: nothing read
     first, last, of = (int(n) for n in read.groups())
     detail: Json = {"pages": list(range(first, min(last, of) + 1)), "of": of}
+    detail.update(aliases(arguments, kind, key))
     extent = "whole" if first <= 1 and last >= of else "partial"
     return [Read(kind, key, extent, detail, label=work.group(1))]
 
@@ -374,6 +392,7 @@ def _library_search(arguments: Json, text: str) -> list[Read] | None:
         return []  # no passage matched, or no text is held: nothing read
     kind, key = library_key(work.group(1))
     detail: Json = {"passages": int(matched.group(1)), "query": str(arguments.get("phrase"))}
+    detail.update(aliases(arguments, kind, key))
     return [Read(kind, key, "partial", detail, label=work.group(1))]
 
 
@@ -387,7 +406,7 @@ def _library_extract(extent: str) -> Descriptor:
         if work is None or " rendition by " not in work.group(2):
             return []
         kind, key = library_key(work.group(1))
-        return [Read(kind, key, extent, {}, label=work.group(1))]
+        return [Read(kind, key, extent, aliases(arguments, kind, key), label=work.group(1))]
 
     return describe
 

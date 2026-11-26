@@ -491,3 +491,70 @@ def test_a_reading_result_cut_between_pages_reads_the_pages_shown() -> None:
     other: dict[str, Any] = {"connector": "crypto-research-mcp"}
     assert len(toolbox._cut(text, other, "web-fetch-mcp_web_fetch")) <= 3000 + 64
     assert "cut" in other
+
+
+def test_a_paper_the_library_files_under_another_identifier_is_one_source(state: Path) -> None:
+    """CM-12a: a library read asked for by ePrint number that answers under the paper's
+    published DOI names both (``aliases``): a reference with either identifier sees the
+    e-print server's pages and the library's together, as one source, and together they
+    complete it; a read asked for by a looser name links nothing."""
+    published = "doi:10.1109/eurosp.2018.00032"
+    projects = ProjectStore(state)
+    log = RunArchive(Archive(projects.control), CONTEXT, run="run-1", parent=None)
+    register = Register(projects.control)
+    calls = 0
+
+    def result(name: str, arguments: dict[str, Any], text: str) -> None:
+        nonlocal calls
+        calls += 1
+        call = ToolCall(f"call-{calls}", name, json.dumps(arguments))
+        outcome = ToolOutcome(text, {"connector": "crypto-research-mcp"})
+        message = {"role": "tool", "tool_call_id": call.id, "content": text}
+        asyncio.run(log.append(message, Appended("tool_result", call=call, outcome=outcome)))
+
+    def read(fields: dict[str, Any]) -> list[dict[str, Any]]:
+        return reference_reads(projects.control, "p", {"identifiers": fields})
+
+    try:
+        result(
+            "e-print-mcp_eprint_fulltext",
+            {"paper_id": ep.PAPER, "start_page": 1, "page_count": 2},
+            ep.OBSERVED,
+        )
+        result("library-mcp_read_paper", {"identifier": "ePrint 2017/634", "start_page": 3},
+               lib.read(published, 3, ["C"], total=16))  # fmt: skip
+        assert [r["covered"]["pages"] for r in read({"eprint": ep.PAPER})] == ["1-2"]
+        assert register.completed("p", "eprint", ep.PAPER) is None
+        result("library-mcp_read_paper", {"identifier": ep.PAPER, "start_page": 4},
+               lib.read(published, 4, [f"P{n}" for n in range(4, 17)], total=16))  # fmt: skip
+        (one,) = read({"eprint": ep.PAPER})
+        assert one["kind"] == "eprint"  # its source shown is the label last read
+        assert (one["extent"], one["covered"]["pages"]) == ("whole", "1-16")
+        (other,) = read({"doi": "10.1109/EuroSP.2018.00032"})
+        assert (other["kind"], other["extent"]) == ("paper", "whole")
+        assert register.completed("p", "eprint", ep.PAPER) is not None
+        assert register.completed("p", "paper", published) is not None
+        assert read({"eprint": "2024/999"}) == []
+        # In the session's own list it is one source too.
+        assert [r.extent for r in register.sources("p", session="s")] == ["whole"]
+    finally:
+        projects.close()
+
+
+def test_a_library_read_names_the_exact_identifier_it_was_asked_for_by() -> None:
+    """The call's identifier is the read's alias when it is exactly a ledger identifier
+    of another key than the work label's, in each library tool that reads; a title, a
+    lenient form or the label's own identifier adds none."""
+    text = lib.read("doi:10.1109/eurosp.2018.00032", 1, ["A"], total=16)
+    (read,) = placed("library-mcp_read_paper", {"identifier": "2017/634"}, text)
+    assert (read.kind, read.source) == ("paper", "doi:10.1109/eurosp.2018.00032")
+    assert read.detail["aliases"] == [["eprint", "2017/634"]]
+    found = lib.search("doi:10.1109/eurosp.2018.00032", "twist", [(3, "a twist")])
+    (searched,) = placed("library-mcp_search_in_paper", {"identifier": "eprint/2017/634"}, found)
+    assert searched.detail["aliases"] == [["eprint", "2017/634"]]
+    card = lib.header("eprint/2017/634") + "kind: scheme\n- It encapsulates."
+    (carded,) = placed("library-mcp_paper_card", {"identifier": "10.1109/EuroSP.2018.00032"}, card)
+    assert carded.detail == {"aliases": [["paper", "doi:10.1109/eurosp.2018.00032"]]}
+    for loose in ("ePrint 2017/634", "Kyber", "doi:10.1109/eurosp.2018.00032"):
+        (plain,) = placed("library-mcp_read_paper", {"identifier": loose}, text)
+        assert "aliases" not in plain.detail, loose
