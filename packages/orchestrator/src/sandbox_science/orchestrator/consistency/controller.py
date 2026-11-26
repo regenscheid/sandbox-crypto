@@ -48,6 +48,7 @@ from .ledger import ingest_ledger
 from .models import DISMISSAL_CHARACTERS, FINDING_STATUSES, EvidenceAnchor, ReviewType
 from .notices import FindingNotices
 from .quotes import (
+    ALIAS,
     EPRINT_TOOLS,
     LIBRARY_TOOLS,
     PDF_TOOLS,
@@ -55,6 +56,7 @@ from .quotes import (
     library_record,
     mark_of,
     pdf_record,
+    source_keys,
 )
 from .rubric import CLASSIFIER_VERSION
 from .runner import ReviewerRunner, schema
@@ -287,6 +289,24 @@ def source_of(
     return mark_of(record), {"call": call_id[:128], "tool": name[:128]}, record
 
 
+def record_source(
+    store: ReviewStore, project: str, session: str, suffix: str, locator: Json, record: Json
+) -> None:
+    """Record source record ``record`` in one transaction, under each of its keys
+    (``quotes.source_keys``): the record under the first, and under each further one a
+    row that names the first (``quotes.ALIAS``)."""
+    first, *more = source_keys(record, suffix)
+    complete = not record.get("lines_truncated") and not record.get("passages_truncated")
+    store.scope(project, session)
+    with store.documents.control.write() as tx:
+        store.record_observation(
+            tx.sql, project, session, first, "source", locator, record, complete=complete
+        )
+        for key in more:
+            pointer: Json = {"tool": record.get("tool"), ALIAS: first}
+            store.record_observation(tx.sql, project, session, key, "source", locator, pointer)
+
+
 class ReviewController:
     """Detached checkpoints and bounded terminal/confirmation reviews in one live run.
 
@@ -390,16 +410,11 @@ class ReviewController:
         found = source_of(messages, call, self.connectors)
         if found is None:
             return
-        mark, locator, record = found
+        _, locator, record = found
         index = len(messages) - 1
+        located = {"run": self.run_id, "invocation": self.instance, "message": index, **locator}
         await asyncio.to_thread(
-            self.store.observe,
-            *self.scope,
-            f"source:{mark}:{self.instance}:{index}",
-            "source",
-            {"run": self.run_id, "invocation": self.instance, "message": index, **locator},
-            record,
-            complete=not record.get("lines_truncated") and not record.get("passages_truncated"),
+            record_source, self.store, *self.scope, f"{self.instance}:{index}", located, record
         )
 
     async def _action(self, messages: Sequence[Message], call: Json | None) -> None:

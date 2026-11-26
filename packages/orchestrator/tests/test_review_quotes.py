@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 
 from sandbox_science.contracts import ExecutionContext
-from sandbox_science.orchestrator.consistency.controller import source_of
+from sandbox_science.orchestrator.consistency.controller import record_source, source_of
 from sandbox_science.orchestrator.consistency.ledger import ingest_ledger
 from sandbox_science.orchestrator.consistency.store import ReviewStore, dump
 from sandbox_science.orchestrator.notices import CONNECTOR_RESULT
@@ -74,11 +74,11 @@ def call(
         )  # fmt: skip
     found = source_of(messages, executed(name, arguments, record), (CONNECTOR,))
     if found is not None:
-        mark, locator, source = found
-        reviews.observe(
-            "p", session, f"source:{mark}:turn:{number}", "source",
+        _, locator, source = found
+        record_source(
+            reviews, "p", session, f"turn:{number}",
             {"run": "author-1", "invocation": "turn", "message": 2 * number + 1, **locator},
-            source, complete=not source.get("lines_truncated"),
+            source,
         )  # fmt: skip
 
 
@@ -883,3 +883,143 @@ def test_a_result_cut_between_pages_keeps_its_whole_pages() -> None:
     # Without the toolbox's record of the cut, its pages are not the range's: no record.
     assert source_of(messages, executed(lib.READ, {"identifier": WORK}, SERVER),
                      (CONNECTOR,)) is None  # fmt: skip
+
+
+# The library files many ePrint reports under their published version's DOI: a read asked
+# for by the ePrint number answers under the DOI's work label (as on the cluster for
+# 2017/634). The answer is the library's word that the two name one paper.
+PUBLISHED = "doi:10.1109/eurosp.2018.00032"
+KYBER_PAGE = "Its IND-CCA2 security rests on the hardness of module LWE, as we prove."
+
+
+def published_reference(ledger: Ledger, identifiers: dict[str, str]) -> None:
+    reference = {"type": "reference", "title": "Kyber", "statement": "Kyber.",
+                 "fields": {**REFERENCE_FIELDS, "identifiers": identifiers}}  # fmt: skip
+    ledger.change("p", {"operation_id": "ref", "reason": "r", "changes": [reference]}, MAIN)
+
+
+def test_a_library_read_keeps_the_identifier_it_was_asked_for_by() -> None:
+    """The call's identifier, when it is exactly one identifier in a ledger scheme that
+    names another paper key than the work label, is the record's alias, and the record
+    is indexed under both; an argument that is not one exact identifier, or that names
+    the label's own paper, adds none."""
+    from sandbox_science.orchestrator.consistency.quotes import (
+        ALIAS,
+        library_record,
+        mark,
+        source_keys,
+    )
+
+    text = lib.read(PUBLISHED, 1, [KYBER_PAGE], total=16)
+    record = library_record(lib.READ, {"identifier": "2017/634", "start_page": 1}, text)
+    assert record is not None
+    assert record["library"]["named"] == "doi:10.1109/eurosp.2018.00032"
+    assert record["library"]["aliases"] == ["eprint:2017/634"]
+    assert source_keys(record, "turn:1") == [
+        f"source:{mark('paper', 'doi:10.1109/eurosp.2018.00032')}:turn:1",
+        f"source:{mark('paper', 'eprint:2017/634')}:turn:1",
+    ]
+    assert ALIAS not in record
+    for loose in ("Kyber: a CCA-secure module-lattice-based KEM", "ePrint 2017/634",
+                  "https://ieeexplore.ieee.org/document/10.1109/eurosp.2018.00032",
+                  PUBLISHED, "doi:10.1109/EuroSP.2018.00032", 7):  # fmt: skip
+        found = library_record(lib.READ, {"identifier": loose}, text)
+        assert found is not None
+        assert "aliases" not in found["library"], loose
+        assert len(source_keys(found, "turn:1")) == 1
+
+
+@pytest.mark.parametrize(
+    "identifiers",
+    [{"eprint": "2017/634"}, {"doi": "10.1109/EuroSP.2018.00032"}],
+    ids=["eprint only", "doi only"],
+)
+def test_a_read_asked_for_by_eprint_number_confirms_either_identifier(
+    store: Any, identifiers: dict[str, str]
+) -> None:
+    """A read asked for by ePrint number whose header prints the DOI's work label
+    confirms a quote for a reference that carries only the ePrint identifier, and for one
+    that carries only the DOI; the page and revision rules hold as before."""
+    reviews, _, _ = store
+    ledger = Ledger(reviews.documents)
+    published_reference(ledger, identifiers)
+    call(reviews, 1, lib.READ, {"identifier": "2017/634", "start_page": 1, "page_count": 2},
+         lib.read(PUBLISHED, 1, [KYBER_PAGE, ACROSS], total=16), SERVER)  # fmt: skip
+    good = library("rests on the hardness of module LWE", 1)
+    other_page = library("rests on the hardness of module LWE", 2)
+    stale = library("rests on the hardness of module LWE", 1, revision="0123456789ab")
+    assert recorded(ledger, reviews, good, other_page, stale) == ["q1"]
+
+
+def test_a_quote_is_found_once_when_the_reference_carries_both_identifiers(
+    store: Any,
+) -> None:
+    """A reference with both names finds the record through both keys, and it is one
+    candidate, pinned once."""
+    reviews, _, _ = store
+    ledger = Ledger(reviews.documents)
+    published_reference(ledger, {"eprint": "2017/634", "doi": "10.1109/eurosp.2018.00032"})
+    call(reviews, 1, lib.READ, {"identifier": "eprint/2017/634", "start_page": 1},
+         lib.read(PUBLISHED, 1, [KYBER_PAGE], total=16), SERVER)  # fmt: skip
+    assert recorded(ledger, reviews, library("the hardness of module LWE, as we prove", 1)) == [
+        "q1"
+    ]
+
+
+def test_a_loose_argument_vouches_for_no_other_identifier(store: Any) -> None:
+    """A read asked for by a phrase the library also reads (its lenient grammar) is
+    recorded under its work label alone: it confirms no quote for a reference that
+    carries only the ePrint identifier."""
+    reviews, _, _ = store
+    ledger = Ledger(reviews.documents)
+    published_reference(ledger, {"eprint": "2017/634"})
+    call(reviews, 1, lib.READ, {"identifier": "ePrint 2017/634", "start_page": 1},
+         lib.read(PUBLISHED, 1, [KYBER_PAGE], total=16), SERVER)  # fmt: skip
+    assert recorded(ledger, reviews, library("the hardness of module LWE, as we prove", 1)) == []
+
+
+async def test_a_read_of_another_paper_is_named_in_the_notice(store: Any) -> None:
+    """A read asked for by DOI confirms no quote for a reference that carries only an
+    unrelated identifier, and the change's notice names the papers the session's library
+    reads are of, and says the check finds a quote only in a read of the reference's own
+    paper; a session with no library read keeps the plain notice."""
+    from sandbox_science.orchestrator.ledger.tool import LedgerTool
+
+    reviews, _, _ = store
+    ledger = Ledger(reviews.documents)
+    published_reference(ledger, {"eprint": "2024/999"})
+    context = ExecutionContext(project_id="p", session_id="s", environment_id="env")
+    tool = LedgerTool(ledger, context, run_id="author-1", role="main", alias="main")
+    tool.sources = True
+
+    async def notice(session_tool: LedgerTool, operation: str) -> str:
+        quote = library("the hardness of module LWE, as we prove", 1)
+        claim = {"type": "claim", "origin": "published", "title": "Kyber", "statement": "s",
+                 "evidence": [quoting(quote)]}  # fmt: skip
+        text, _ = await session_tool.call(
+            "ledger_change", {"reason": "r", "changes": [claim], "dry_run": True},
+            operation=operation,
+        )  # fmt: skip
+        (said,) = json.loads(text)["quotes"]
+        return str(said["notice"])
+
+    call(reviews, 1, lib.READ, {"identifier": PUBLISHED, "start_page": 1},
+         lib.read(PUBLISHED, 1, [KYBER_PAGE], total=16), SERVER)  # fmt: skip
+    call(reviews, 2, lib.READ, {"identifier": "2017/634", "start_page": 2},
+         lib.read(PUBLISHED, 2, [ACROSS], total=16), SERVER)  # fmt: skip
+    call(reviews, 3, lib.READ, {"identifier": "W7", "start_page": 1},
+         lib.read("openalex:W7", 1, [ACROSS]), SERVER)  # fmt: skip
+    said = await notice(tool, "c1")
+    assert "under this reference's identifiers (eprint:2024/999)" in said
+    assert (
+        "library reads are of openalex:W7; "
+        "doi:10.1109/eurosp.2018.00032 (also eprint:2017/634): the citation check"
+    ) in said
+    assert "only in a read of the reference's own paper" in said
+    assert recorded(ledger, reviews, library("the hardness of module LWE, as we prove", 1)) == []
+    elsewhere = ExecutionContext(project_id="p", session_id="other", environment_id="env")
+    alone = LedgerTool(ledger, elsewhere, run_id="author-2", role="main", alias="main")
+    alone.sources = True
+    assert (await notice(alone, "c2")).startswith(
+        "no read_paper or search_in_paper result for this paper is recorded in this session yet"
+    )

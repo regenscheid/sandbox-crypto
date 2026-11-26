@@ -86,7 +86,7 @@ The citation check looks for a quote inside one page or passage of the paper tha
 - copy the words exactly; only white space may differ;
 - read the page or passage in this session before recording the quote.
 
-**From the library** (library-mcp_read_paper or library-mcp_search_in_paper): give the physical page, from the "## Page" heading or the "Physical page" line, and the revision from the result's second line, exactly as printed. The check finds the quote only in a read of that page at that revision.
+**From the library** (library-mcp_read_paper or library-mcp_search_in_paper): give the physical page, from the "## Page" heading or the "Physical page" line, and the revision from the result's second line, exactly as printed. The check finds the quote only in a read of that page at that revision. The library may file a paper under another identifier than the one you asked for, such as an ePrint report under its published DOI: read the paper by an identifier the reference carries, or give the reference every identifier the library printed.
 
 ```json
 {"role": "supports", "type": "source_claim", "entry": "new:ref",

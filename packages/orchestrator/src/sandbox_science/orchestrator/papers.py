@@ -80,6 +80,23 @@ def library_paper(label: str) -> tuple[str, str] | None:
     return None if named is None else (scheme, named)
 
 
+def exact_paper(text: str) -> tuple[str, str] | None:
+    """The ledger identifier, as (scheme, normal value), that ``text`` is exactly, as a
+    library call's ``identifier`` argument may give it: a work label, or one identifier
+    in the forms of the library's strict grammar (crypto-research-mcp's
+    ``common.identifiers.parse``: ``2024/1234``, ``eprint/2024/1234``, ``10.1007/…``,
+    ``https://doi.org/…``, ``arXiv:2401.01234v2``, ``nist:ir-8610``). None for anything
+    else, even what the library also reads: its lenient forms (``ePrint 2024/1234``, a
+    publisher's page with a DOI in its path) take an identifier out of a longer text, and
+    a NIST designation without its ``nist:`` is any word."""
+    text = text.strip()
+    if re.match(r"^nist:\S+$", text, re.I):
+        named = normal("nist", text)
+        return None if named is None else ("nist", named)
+    found = [(s, n) for s in ("eprint", "doi", "arxiv") if (n := normal(s, text)) is not None]
+    return found[0] if len(found) == 1 else None
+
+
 def library_label(scheme: str, value: str) -> str | None:
     """The library's work label for ledger identifier ``value`` of ``scheme``, as the
     library writes it: the inverse of ``library_paper``."""
