@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import sqlite3
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -25,6 +26,7 @@ from sandbox_science.contracts.model import Contract
 
 from .agent_message_routes import received_by, recipient_state, recipient_target, work_for_run
 from .aio import threaded
+from .context.history.receipts import Receipts
 from .control import ControlError, ControlStore
 from .control.errors import CONFLICT, INTERNAL, INVALID_REQUEST, NOT_FOUND, POLICY_DENIED
 from .delegation.records import Reopened, ReopenPlan, reopen_in
@@ -47,6 +49,8 @@ from .worker_client import dump
 if TYPE_CHECKING:
     from .delegation.requests import ChildRequests
 
+_log = logging.getLogger(__name__)
+
 SOURCE: Final = "agent_messages"
 MAX_BODY: Final = 4096
 PAGE: Final = 100
@@ -68,8 +72,13 @@ class AgentMessage:
     body: str
     created_at: str
     delivered_run: str | None
+    """The recipient's run whose model call saw it; never a root's that received it as a
+    delivery failure (``failure_run``)."""
     references: tuple[dict[str, Any], ...] = ()
     """The sender's records it references, as resolved (PD-44, CM-37b)."""
+    failure_run: str | None = None
+    """The root run that received it as a delivery failure, its recipient having closed
+    before it saw it (PD-44)."""
 
 
 def _row(row: tuple[object, ...]) -> AgentMessage:
@@ -83,12 +92,13 @@ def _row(row: tuple[object, ...]) -> AgentMessage:
         str(row[5]),
         None if row[6] is None else str(row[6]),
         tuple(cast(list[dict[str, Any]], refs)) if isinstance(refs, list) else (),
+        None if row[8] is None else str(row[8]),
     )
 
 
 _COLUMNS: Final = (
     "message_id, sender_run, sender_delegation, recipient_delegation, body, "
-    "created_at, delivered_run, refs"
+    "created_at, delivered_run, refs, failure_run"
 )
 
 
@@ -298,8 +308,9 @@ class AgentMessageStore:
         child sees it at its next safe point. A returned task that awaits review is
         reopened by it, in the same transaction, which an acceptance cannot pass at the
         same time (PD-46): only with ``reopen``, the run its parent would start. One that
-        is closed (accepted, cancelled, failed or ended otherwise) keeps it for the root,
-        as a delivery failure (PD-44)."""
+        was accepted refuses it (``task_accepted``), naming how to continue its work; one
+        closed otherwise (cancelled, failed or ended otherwise) keeps it for the root, as a
+        delivery failure (PD-44)."""
         body = _body(body)
         with self.control.write() as tx:
             db = tx.sql
@@ -329,6 +340,9 @@ class AgentMessageStore:
                     raise ControlError(CONFLICT, "the sender is not this delegation's live run")
                 root, _ = self._ancestor(db, project, session, ancestor)
             self._live(db, project, session, root)
+            if ended is not None and (refusal := _accepted(db, project, session, target)):
+                # Acceptance released its environment and kernels: it takes no more work.
+                raise ControlError(CONFLICT, refusal)
             reopened = None
             if ended is not None and reviewing:
                 if reopen is None:
@@ -391,7 +405,7 @@ class AgentMessageStore:
             target, parameters = recipient_target(tx.sql, project, session, recipient)
             rows = tx.sql.execute(
                 f"SELECT {_COLUMNS} FROM agent_messages WHERE project_id=? AND session_id=? "  # noqa: S608 - fixed columns
-                f"AND {target} AND delivered_run IS NULL "
+                f"AND {target} AND delivered_run IS NULL AND failure_run IS NULL "
                 "AND message_id NOT IN (SELECT value FROM json_each(?)) "
                 "ORDER BY rowid LIMIT ?",
                 (project, session, *parameters, json.dumps(sorted(seen)), limit),
@@ -423,15 +437,22 @@ class AgentMessageStore:
         run: str,
         message_ids: list[str],
     ) -> None:
+        """Record that ``run``, of ``recipient`` (``None`` for the root), saw the messages
+        ``message_ids``: as their delivery, or, for a root's of a message to a delegation
+        that closed first, as the root's receipt of the failure (``failure_run``)."""
         with self.control.write() as tx:
             if recipient is not None and not received_by(tx.sql, project, session, recipient, run):
                 raise ControlError(CONFLICT, "the acknowledgment is not from the recipient's work")
             target, parameters = recipient_target(tx.sql, project, session, recipient)
+            # The root's own messages are those addressed to no delegation; any other it
+            # receives is a delivery failure.
+            failed = "recipient_delegation IS NOT NULL" if recipient is None else "0"
             tx.sql.execute(
-                "UPDATE agent_messages SET delivered_run=? WHERE project_id=? "  # noqa: S608 - fixed predicates
-                f"AND session_id=? AND {target} AND delivered_run IS NULL "
-                "AND message_id IN (SELECT value FROM json_each(?))",
-                (run, project, session, *parameters, json.dumps(message_ids)),
+                f"UPDATE agent_messages SET delivered_run=CASE WHEN {failed} THEN NULL "  # noqa: S608 - fixed predicates
+                f"ELSE ? END, failure_run=CASE WHEN {failed} THEN ? ELSE NULL END "
+                f"WHERE project_id=? AND session_id=? AND {target} AND delivered_run IS NULL "
+                "AND failure_run IS NULL AND message_id IN (SELECT value FROM json_each(?))",
+                (run, run, project, session, *parameters, json.dumps(message_ids)),
             )
 
     def target_state(
@@ -459,6 +480,59 @@ def _review(db: sqlite3.Connection, project: str, session: str, delegation: str)
         (project, session, delegation),
     ).fetchone()
     return None if row is None or row[0] is None else str(row[0])
+
+
+ACCEPTED: Final = "task_accepted"
+"""The reason code of a message refused because its task was accepted (PD-46)."""
+ACCEPTED_FILES: Final = 10
+"""The most result files a ``task_accepted`` refusal names."""
+
+
+def _accepted(db: sqlite3.Connection, project: str, session: str, delegation: str) -> str | None:
+    """Why a message to ``delegation`` is refused, when its task was accepted: when and by
+    whom, that acceptance released what it worked in, and how to continue its work, a new
+    ``delegate`` whose references name its result files, as the hand-back left them in the
+    session; ``None`` for a delegation not accepted."""
+    row = db.execute(
+        "SELECT review, reviewed_at, reviewed_by, review_reason, files, result FROM delegations "
+        "WHERE project_id=? AND session_id=? AND delegation_id=?",
+        (project, session, delegation),
+    ).fetchone()
+    if row is None or row[0] != "accepted":
+        return None
+    by = "by you" if row[3] == "parent" else f"for you ({row[3]})"
+    named: dict[str, str] = {}
+    # Its result files as pinned (RA-38), then the paths its deliverables give (PD-45).
+    for column, key in ((row[4], "results"), (row[5], "deliverables")):
+        found: object = json.loads(str(column)) if column is not None else None
+        items = cast(dict[str, object], found).get(key) if isinstance(found, dict) else None
+        for item in cast(list[object], items) if isinstance(items, list) else []:
+            if not isinstance(item, dict):
+                continue
+            given = cast(dict[str, object], item)
+            path, artifact = given.get("path"), given.get("artifact_id")
+            revision = given.get("revision")
+            if not isinstance(path, str) or path in named:
+                continue
+            pinned = (
+                f" (artifact {artifact} revision {revision})"
+                if isinstance(artifact, str) and isinstance(revision, int)
+                else f" (revision {revision})"
+                if isinstance(revision, int)
+                else ""
+            )
+            named[path] = json.dumps({"file": path}) + pinned
+    if named:
+        shown = ", ".join(list(named.values())[:ACCEPTED_FILES])
+        more = f" and {len(named) - ACCEPTED_FILES} more" if len(named) > ACCEPTED_FILES else ""
+        how = f"call delegate with a new task whose references name its result files: {shown}{more}"
+    else:
+        how = "call delegate with a new task that names what it should build on"
+    return (
+        f"{ACCEPTED}: {delegation} was accepted {by} at {row[1]}, which closed it: its "
+        "environment and kernels are released, so it takes no follow-on work and nothing "
+        f"was sent. To continue its work, {how}."
+    )
 
 
 def _same_work(
@@ -614,6 +688,8 @@ class AgentMailbox(TurnHook):
         without them, a message to a returned task is refused."""
         self.requests = requests if may_message_child else None
         self.seen: frozenset[str] = frozenset()
+        self.acknowledged: frozenset[str] = frozenset()
+        """The messages this run acknowledged at the model call that saw them."""
         self.specs = (
             ((CHILD_SPEC,) if may_message_child else ())
             + ((PARENT_SPEC,) if delegation is not None else ())
@@ -702,7 +778,8 @@ class AgentMailbox(TurnHook):
             self.store.target_state, project, session, message.recipient_delegation
         )
         ended = target is not None and target[1]
-        failed_delivery = (
+        # A root's receipt of a failure acknowledged before version 90 is its delivered_run.
+        failed_delivery = message.failure_run is not None or (
             target is not None
             and message.recipient_delegation is not None
             and message.delivered_run is not None
@@ -714,19 +791,20 @@ class AgentMailbox(TurnHook):
                 message.delivered_run,
             )
         )
+        delivered = None if failed_delivery else message.delivered_run
         result: dict[str, Any] = {
             "message_id": message.message_id,
             "state": (
                 "delivery_failed"
                 if failed_delivery
                 else "delivered"
-                if message.delivered_run is not None
+                if delivered is not None
                 else "recipient_ended"
                 if ended
                 else "queued"
             ),
             "recipient": message.recipient_delegation or "root",
-            "delivered_run": message.delivered_run,
+            "delivered_run": delivered,
         }
         if reopened is not None:
             # The returned task continues from its own history with this message (PD-46).
@@ -859,7 +937,33 @@ class AgentMailbox(TurnHook):
             )
 
     async def model_returned(self, run: RunView) -> None:
+        """Acknowledge what the model call saw, once its reply is saved with the call's
+        receipts, so a message's status says ``delivered`` while the recipient's run
+        goes on; the saved run record acknowledges the rest, as before (PD-44)."""
         self.seen = frozenset(run.offered.get(self.name, ()))
+        # The run's few agent messages: its delivered IDs may be a store's view of them.
+        delivered = [i for i in run.delivered_ids(self.name) if i not in self.acknowledged]
+        if not delivered:
+            return
+        project, session = self.context.project_id, self.context.session_id
+        try:
+            saved = await threaded(self._receipted, delivered)
+            if saved:
+                await threaded(
+                    self.store.acknowledge, project, session, self.delegation, self.run, saved
+                )
+        except (ControlError, sqlite3.Error) as error:
+            # The run's saved record acknowledges them at its end.
+            _log.warning("agent messages not acknowledged at their model call: %s", error)
+            return
+        self.acknowledged |= frozenset(saved)
+
+    def _receipted(self, ids: list[str]) -> list[str]:
+        """Those of ``ids`` a saved reply of this run's records as seen."""
+        receipts = Receipts(
+            self.store.control, self.context.project_id, self.context.session_id, self.run
+        )
+        return [i for i in ids if receipts.contains(self.name, i)]
 
     async def arrived(self) -> None:
         """Wake a parent's delegation wait when a child has sent something new."""

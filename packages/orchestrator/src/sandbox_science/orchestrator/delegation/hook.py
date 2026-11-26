@@ -132,6 +132,12 @@ IDLE_SWEEP_SECONDS: Final = 300.0
 WRITES: Final = 3
 """Tries at writing an outcome; one never written ends ``interrupted`` at the session's
 next main run."""
+ACCEPTED_NOTE: Final = (
+    "Accepted, which is final: {0} takes no follow-on work, and message_child to it is "
+    "refused. Its files are under work/{0}/; to continue the work, delegate a new task "
+    "whose references name them."
+)
+"""What ``accept_delegation``'s result says of the task's close (PD-46)."""
 
 
 @dataclass(eq=False)
@@ -859,6 +865,15 @@ class Delegations(TurnHook):
         ended = [i for i, d in found.items() if d.ended is not None]
         return dump(result), {"wait": {"reason": reason, "ended": ended}}
 
+    async def child_ended(self) -> str:
+        """``delegation_ended`` once a delegated run of this run's that is running now
+        ends, as by returning; never while none runs. A ``wait_jobs`` ends with it."""
+        running = {c.task for c in self.children.values() if not c.task.done()}
+        if not running:
+            await asyncio.Event().wait()
+        await asyncio.wait(running, return_when=asyncio.FIRST_COMPLETED)
+        return "delegation_ended"
+
     async def _wait_for(self, pending: set[asyncio.Task[None]], when: str) -> str:
         """Wait without spending model turns; cancelling this wait leaves cleanup
         of the children's tasks to the owning lease."""
@@ -928,7 +943,7 @@ class Delegations(TurnHook):
         hands back and is released, and its kernels stop. Refused for a delegation that
         is not this run's child, or not a returned task awaiting review."""
         closed = await self._close(request.delegation_id, note=request.note or None)
-        shown = self._shown(closed)
+        shown = {**self._shown(closed), "closed": ACCEPTED_NOTE.format(closed.delegation_id)}
         return dump(shown), {"accept": {"delegation_id": closed.delegation_id}}
 
     async def _close(

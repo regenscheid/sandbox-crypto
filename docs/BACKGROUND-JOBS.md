@@ -138,7 +138,25 @@ model is never called to poll. Completion, timeout, a watcher attention note,
 or a message the user sends in the session's chat ends the wait. An interruption
 leaves the computations running. The message stays in the session's queue and
 reaches the model as the next user message, after the wait's result, so it is
-neither consumed nor repeated ([chat](WORKSPACE.md#chat)).
+neither consumed nor repeated ([chat](WORKSPACE.md#chat)). As `wait_delegations` does, a
+wait also ends when an agent message reaches the run or a delegated run it started ends
+(PD-44): the result's `reason` is `agent_message` or `delegation_ended`, it lists the
+jobs as they stand, which keep running, and says to call `wait_jobs` again; the message
+or the outcome follows as its notice. The run's capabilities give its job tools these
+wakes (`capabilities.main` and `task`, `JobTools.wakes`).
+
+A job belongs to the run that started it (`job_origins`), and the worker's close of a
+run stops its kernels but cancels no job, since a job names no run. So when a delegated
+run in the session's environment closes, the orchestrator cancels the jobs its work's
+runs started that still run, just before it stops their kernels: as the work completes
+or stops (`AttemptFinalizer.release_work`: cancelled, failed, at a limit), or, for a
+returned task, once its parent's review closes it (accepted or cancelled), since a
+reopened run may still use them while it awaits review (PD-46). An interrupted run that
+a Resume may continue keeps them. The parent's and a sibling's jobs are other works' and
+keep running. Each job cancelled so keeps why (`job_origins.ended_by`, control store
+version 91), and its completion notice gives it as `cancelled_by`
+(`jobs.cancel_closed_jobs`). A child in an environment of its own has its jobs there
+ended with the environment's release (CE-4).
 
 Without a watcher model alias, waits make no watcher calls and the GUI says
 check-ins are off. To enable the separate role:

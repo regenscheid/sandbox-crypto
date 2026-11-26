@@ -97,7 +97,7 @@ from .file_settings import ProjectFiles
 from .finalization import AttemptCompletion, AttemptFinalizer
 from .finalization import save as save
 from .hooks import Refusal, TurnHook
-from .jobs import JobTools
+from .jobs import JobTools, cancel_closed_jobs
 from .jobstate import JobState
 from .kernel_check import KernelCheck
 from .ledger import Ledger
@@ -1547,6 +1547,10 @@ class Harness:
         )
 
         async def release_kernel(kernel: str) -> None:
+            # The worker's close stops kernels only: the jobs the task's runs left go first.
+            await cancel_closed_jobs(
+                self.client, records.control, session_context, kernel, "its review closed it"
+            )
             await self.client.close_session(session_context, run=kernel)
 
         # Every run of the tree is given the memory its root was (PM-8).

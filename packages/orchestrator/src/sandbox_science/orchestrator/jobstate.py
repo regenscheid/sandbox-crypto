@@ -83,7 +83,8 @@ class JobState:
         with self.control.write() as tx:
             db = tx.sql
             db.execute(
-                "INSERT OR IGNORE INTO job_origins VALUES (?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO job_origins (project, session, job, run) "
+                "VALUES (?, ?, ?, ?)",
                 (context.project_id, context.session_id, job, run),
             )
 

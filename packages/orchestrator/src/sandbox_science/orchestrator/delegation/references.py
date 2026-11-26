@@ -111,6 +111,24 @@ def _refused(
     return ControlError(kind, f"{PREFIX}reference {number} ({item.named()}) {why}")
 
 
+def _span_refusal(start: int, end: int) -> str | None:
+    """What is wrong with the range ``start`` to ``end``, both included, and a range that
+    would pass; ``None`` for one of 1 to ``MAX_SPAN`` positions."""
+    if end < start:
+        return (
+            f"ends before it starts: from is at most to, and the range includes both, as in "
+            f"from {end} to {min(start, end + MAX_SPAN - 1)}"
+        )
+    span = end - start + 1
+    if span <= MAX_SPAN:
+        return None
+    return (
+        f"spans {span} positions, from and to included, past the limit of {MAX_SPAN}: "
+        f"from {start} to {start + MAX_SPAN - 1} fits, and a longer stretch takes "
+        "several references"
+    )
+
+
 def subtree(db: sqlite3.Connection, project: str, session: str, run: str) -> frozenset[str]:
     """``run`` and the runs it delegated, at any depth, from the delegation records."""
     rows = db.execute(
@@ -172,10 +190,8 @@ def _resolved(
             )
         return {"message": item.message}
     if item.start is not None and item.end is not None:
-        if item.end < item.start or item.end - item.start + 1 > MAX_SPAN:
-            raise _refused(
-                number, item, f"is no range of 1 to {MAX_SPAN} positions", INVALID_REQUEST
-            )
+        if (why := _span_refusal(item.start, item.end)) is not None:
+            raise _refused(number, item, why, INVALID_REQUEST)
         (last,) = db.execute(
             "SELECT coalesce(max(position), 0) FROM archive_messages WHERE project=? AND session=?",
             (project, session),

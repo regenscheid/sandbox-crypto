@@ -252,16 +252,30 @@ class CapabilitySet:
 def main(bundles: Iterable[Capability], *, read_only_records: bool = False) -> CapabilitySet:
     """Select capabilities constructed for a trusted main-agent scope, its tool groups
     deferred."""
-    selected = CapabilitySet(tuple(bundles), groups=True)
+    selected = _waking(CapabilitySet(tuple(bundles), groups=True))
     return record_reads(selected) if read_only_records else selected
 
 
 def task(bundles: Iterable[Capability]) -> CapabilitySet:
     """Select delegated task capabilities, withholding all main-only domains, its tool
     groups deferred."""
-    return CapabilitySet(
-        tuple(b for b in bundles if not b.main_only), allow_main=False, groups=True
+    return _waking(
+        CapabilitySet(tuple(b for b in bundles if not b.main_only), allow_main=False, groups=True)
     )
+
+
+def _waking(selected: CapabilitySet) -> CapabilitySet:
+    """End a ``wait_jobs`` for what ends a ``wait_delegations``: an agent message to the
+    run, and a delegated run of its own that ends (PD-44)."""
+    jobs = selected.service(JOBS)
+    if isinstance(jobs, JobTools):
+        # A direct caller's stand-ins have neither wake.
+        mailbox, delegations = selected.service(MAILBOX), selected.service(DELEGATIONS)
+        jobs.wakes = (
+            *((mailbox.wake,) if isinstance(mailbox, AgentMailbox) else ()),
+            *((delegations.child_ended,) if isinstance(delegations, Delegations) else ()),
+        )
+    return selected
 
 
 def record_reads(selected: CapabilitySet) -> CapabilitySet:
