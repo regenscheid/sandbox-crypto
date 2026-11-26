@@ -1802,6 +1802,7 @@ export interface McpInventory {
   skipped_runs: number;
   observation_scope: string;
   checks: boolean;
+  elsewhere: boolean;
 }
 
 /** The newest listing found in the bounded sample, not its present state. */

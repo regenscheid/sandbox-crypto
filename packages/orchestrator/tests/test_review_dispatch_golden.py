@@ -15,7 +15,8 @@ challenge, ``sandbox-consistency-8`` to suggest the handle of a ledger entry an 
 relies on without naming it, ``sandbox-consistency-9`` to check cryptographic claims
 from their form, ``sandbox-consistency-10`` to finish within its budget, with the
 manifest marking the window's new items and the run record naming what a review covered,
-and ``sandbox-consistency-11`` to read a library text as a quote's source;
+``sandbox-consistency-11`` to read a library text as a quote's source, and
+``sandbox-consistency-12`` to name a statement of the user's request the evidence contradicts;
 a change to any of them changes what a reviewer sees. The finding
 lifecycle (CR-40 to CR-47) changed them once more without a rubric: a copied finding
 carries its queued re-check and the author's dismissal, a fix leaves it ``open``, and the
@@ -51,9 +52,9 @@ from .test_consistency import store as store
 
 GOLDEN = {
     # Author and fallback windows now include recent prior evidence for boundary checks.
-    "author": "4cced345ecf5ae71a5efe704f4dedabb88faa6daad3a334561b27ce3b6adb18f",
-    "confirmation": "48c3c6b63f56e09eaae5c24d90804b3bc42ee0ce257e39eb0dbd87a673f65e08",
-    "fallback": "7c75deb4888063028241719937a36224c8b8d5d63c67c9371f4d6a4b730bb790",
+    "author": "28b6c05eff3acddabae4c7f50582da4cd43d616e174f250e1685f029c72f9e45",
+    "confirmation": "9c4a14d18bba099c6ff1a98dd3fe62a4cf8b65ba3c2e936750d544096993065e",
+    "fallback": "9e21eca8df48cf2dd88cd5bd43b29c94de0bb60e690e5fc78331d9638e4ad7f6",
 }
 
 

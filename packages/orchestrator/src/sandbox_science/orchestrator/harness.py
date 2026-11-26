@@ -105,6 +105,7 @@ from .ledger.tool import LedgerTool
 from .loop import (
     MAX_INPUT_CHARS,
     MAX_TURNS,
+    NO_CONNECTORS,
     SYSTEM_PROMPT,
     TURNS_CEILING,
     Interruption,
@@ -426,6 +427,19 @@ class McpAccess:
     classes: ToolClassSource | None = None
     """Where the listed tools' classes come from: the project's classification in force,
     on the trusted side (DA-7); without it, no connector tool has a class."""
+
+
+WITHHELD: Final = {"offered": False, "reason": "other_project"}
+"""What a run's ``started`` event and its record's ``summaries.connectors`` say when the
+deployment's connectors serve another project, which neither names."""
+
+
+def withheld(mcp: McpAccess | None, project: str) -> bool:
+    """Whether a run of ``project`` gets no connectors although the deployment has them:
+    they serve another project. Its model is told so, and its records say why; a
+    deployment without connectors says nothing, as the skills say connectors come only
+    when the project configures them."""
+    return mcp is not None and mcp.project != project
 
 
 class RunSink(Protocol):
@@ -1198,6 +1212,15 @@ class Harness:
                         ),
                         on_tool=sink.tool,
                         research_template=admitted.request.research_template,
+                        notes=(
+                            (
+                                NO_CONNECTORS
+                                if request.parent is None
+                                else delegated_prompt.NO_CONNECTORS,
+                            )
+                            if withheld(self.mcp, admitted.context.project_id)
+                            else ()
+                        ),
                         hooks=hooks,
                         memory=for_run(*memory) if memory is not None else None,
                         role=request.role,
@@ -1217,6 +1240,8 @@ class Harness:
                 raise
             else:
                 transcript.fail("cleanup")
+        if withheld(self.mcp, admitted.context.project_id):
+            transcript.summaries["connectors"] = dict(WITHHELD)
         return Finished(
             admitted.run_id,
             admitted.context,
@@ -2136,6 +2161,17 @@ class Harness:
             await connectors.load(taken=HARNESS_TOOL_NAMES)
             if chat is not None and connectors.failed:
                 chat.unavailable = dict(connectors.failed)
+        elif self.mcp is not None:
+            # The operator's log names the bound project; the run's records and its model
+            # are told only that the connectors serve another one (WITHHELD, NO_CONNECTORS).
+            _log.info(
+                "run %s: the deployment's connectors serve project %s, not %s: none offered",
+                run_id,
+                self.mcp.project,
+                context.project_id,
+            )
+            if chat is not None:
+                chat.connectors = WITHHELD
         if delegations is not None:
             # A task brief's narrowing is checked against these (DA-6).
             delegations.connectors = connectors

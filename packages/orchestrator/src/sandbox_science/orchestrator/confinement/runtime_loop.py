@@ -394,6 +394,7 @@ class RuntimeLoops:
                 max_input_chars=given.max_input_chars,
                 system=given.system,
                 research_template=given.research_template,
+                notes=given.notes,
                 hooks=hooks,
                 memory=given.memory,
                 role=given.role,

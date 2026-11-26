@@ -16,7 +16,18 @@ from sandbox_science.orchestrator.confinement.transport import (
     Request,
     TransportError,
 )
-from sandbox_science.orchestrator.confinement.wire import Hello, Ready, WireMessage, WireTurn
+from sandbox_science.orchestrator.confinement.wire import (
+    Hello,
+    Ready,
+    RunGiven,
+    ToolboxGiven,
+    WireMessage,
+    WireTurn,
+    payload,
+    typed,
+)
+from sandbox_science.orchestrator.delegation.prompt import NO_CONNECTORS as DELEGATED_NO_CONNECTORS
+from sandbox_science.orchestrator.loop import NO_CONNECTORS
 from sandbox_science.orchestrator.model import AssistantMessage, ModelTurn, ToolCall
 
 
@@ -281,3 +292,27 @@ async def test_internal_diagnostic_keeps_stack_without_payload_or_exception_text
     finally:
         await left.close()
         await right.close()
+
+
+def test_a_run_given_carries_the_platforms_notes_to_the_runtime() -> None:
+    """Lane B4: a confined run's notes (``NO_CONNECTORS``) cross to the runtime's loop as
+    the sections they are; a run given none, as an older host sends, has none."""
+    fields: dict[str, object] = {
+        "attempt": "cap-" + "0" * 48,
+        "run_id": "run-1",
+        "task": "Find SNOVA.",
+        "history": (),
+        "max_turns": 10,
+        "max_input_chars": 100_000,
+        "system": "system",
+        "role": "main",
+        "toolbox": ToolboxGiven(specs=(), revision=0, output_chars=2000),
+        "hooks": (),
+        "logged": True,
+        "folding": False,
+        "model": "scripted",
+    }
+    notes = (NO_CONNECTORS, DELEGATED_NO_CONNECTORS)
+    given = RunGiven.model_validate({**fields, "notes": notes})
+    assert typed(RunGiven, payload(given)).notes == notes
+    assert RunGiven.model_validate(fields).notes == ()

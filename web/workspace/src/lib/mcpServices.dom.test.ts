@@ -274,3 +274,36 @@ it("shows the runtime's latest reported listing, each tool with its class and de
     vi.useRealTimers();
   }
 });
+
+it("says when the deployment's services serve another project", async () => {
+  const inventory = (elsewhere: boolean) =>
+    new Response(
+      JSON.stringify({
+        project_id: 'p2',
+        policy_revision: 'sha256:' + 'a'.repeat(64),
+        inspected_runs: 0,
+        skipped_runs: 0,
+        observation_scope: 'Bounded sample',
+        checks: false,
+        elsewhere,
+        services: [],
+      }),
+    );
+  vi.stubGlobal('innerWidth', 1400);
+  for (const [elsewhere, said] of [
+    [true, 'serve another project'],
+    [false, 'No MCP services are configured for this project'],
+  ] as const) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => inventory(elsewhere)),
+    );
+    const target = document.createElement('div');
+    document.body.append(target);
+    mounted.push(mount(McpServices, { target, props: { projectId: 'p2' } }));
+    await settle();
+    expect(target.querySelector('.mcp-list')?.textContent).toContain(said);
+    await unmount(mounted.pop()!);
+    target.remove();
+  }
+});

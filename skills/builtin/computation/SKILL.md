@@ -40,7 +40,7 @@ Under pipefail, a pipe into head can end with status 141, which only means head 
 
 ## Write results to files
 
-Print the few aggregates a decision needs, and write the rest to files: JSON for structured results, text for logs and tables. Name the inputs, parameters and seed in the file, so the result can be traced and run again.
+Print the few aggregates a decision needs, and write the rest to files: JSON for structured results, text for logs and tables. Name the inputs, parameters and seed in the file, so the result can be traced and run again. When a result file is wrong, fix the code and regenerate the file; never edit it by hand.
 
 ```python
 import json, pathlib
@@ -51,6 +51,15 @@ with open("results/collisions.json", "w") as out:
 ```
 
 In Sage, convert Sage Integers with int() before json.dumps, and write very large values as strings.
+
+Known quirks of this platform's Sage image, as last observed; check one before relying on it:
+
+```text
+python script.py           runs a Sage script that does from sage.all import *;
+                           sage -python is not a command here
+F.from_integer(i)          a finite field's element from an integer; fetch_int is gone
+random.Random(int(seed))   random.Random takes an integer seed, not a Sage Integer
+```
 
 Where a result claims exactness, compute exactly: integers, rationals and finite-field elements, not floats. A floating-point or sampled estimate is a numerical experiment, and its precision or model belongs beside the value.
 
@@ -64,7 +73,7 @@ Output too long for a tool's result comes back as its head and tail, marked as a
 
 ## Long runs
 
-Before a long or large run, check the method on a small representative case against known answers, and note its time and memory, unless current pilot evidence already applies. Trivial work needs no pilot. Then run the full computation as a background job:
+Before a long or large run, check the method on a small representative case against known answers, and note its time and memory, unless current pilot evidence already applies. Trivial work needs no pilot. A limit of memory or size past which you skip a computation is derived before running, from the envelope the user stated or the sandbox reports, and recorded with the result. Then run the full computation as a background job:
 
 - `start_job` takes a script (or argv), its purpose and the progress to expect, and returns a job ID. Jobs keep running after the turn ends.
 - `job_status` shows a job's state, its CPU and memory use, and the head and tail of its output. Read its full logs with `read_file`, at the stdout and stderr paths it names.

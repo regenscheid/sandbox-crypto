@@ -108,6 +108,9 @@ class RunChat:
         self.unavailable: Mapping[str, str] = {}
         """The MCP servers whose listing failed at the run's start, with why: the
         ``started`` event says so (lab 41, B4)."""
+        self.connectors: Mapping[str, object] | None = None
+        """Why the run was offered no connectors although the deployment has them
+        (``harness.WITHHELD``): the ``started`` event says so."""
         self.parent, self.delegation = parent, delegation
         self.poll, self.clock = poll, clock
         self.offered: set[str] = set()
@@ -406,6 +409,9 @@ class EventLog(TurnHook):
                         {"connectors_unavailable": dict(chat.unavailable)}
                         if chat.unavailable
                         else {}
+                    ),
+                    **(
+                        {"connectors": dict(chat.connectors)} if chat.connectors is not None else {}
                     ),
                 },
             )

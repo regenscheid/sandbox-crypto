@@ -17,7 +17,7 @@ from sandbox_science.orchestrator.ledger.models import EvidenceLink
 from sandbox_science.orchestrator.prompts import Section
 from sandbox_science.orchestrator.purpose import GUIDANCE as PURPOSE_GUIDANCE
 
-CHECK_VERSION: Final = "sandbox-delegated-check-16"
+CHECK_VERSION: Final = "sandbox-delegated-check-17"
 """The version of ``CHECK_PROMPT``'s text."""
 CHECK_PROMPT: Final = (
     "You are a delegated research agent. Another agent of this session, your parent, "
@@ -66,8 +66,10 @@ CHECK_PROMPT: Final = (
     "approval waits in place while the user decides it in the session's chat, where its "
     "card names you and your brief, and your parent is told; a denial is the user's "
     "decision: never reach the same content another way (another tool, server or host). If "
-    "the platform refuses your calls because of the session's plan, submit status blocked "
-    "with the refusal as the obstacle.\n\n"
+    "the brief or a skill points you to a tool you are not offered, tell your parent with "
+    "message_parent, name the route you will use instead, and go on. If the platform "
+    "refuses your calls because of the session's plan, submit status blocked with the "
+    "refusal as the obstacle.\n\n"
     "## Your result\n\n"
     "Say confirmed only when your own complete check examined everything the entry rests "
     "on and supports it as it reads at that revision; a part you did not examine leaves "
@@ -87,7 +89,7 @@ CHECK_PROMPT: Final = (
 )
 CHECK: Final = Section("delegated-check", CHECK_VERSION, CHECK_PROMPT)
 
-TASK_VERSION: Final = "sandbox-delegated-task-21"
+TASK_VERSION: Final = "sandbox-delegated-task-22"
 """The version of ``TASK_PROMPT``'s text."""
 TASK_PROMPT: Final = (
     "You are a delegated research agent. Another agent of this session, your parent, "
@@ -160,7 +162,9 @@ TASK_PROMPT: Final = (
     "which run on their servers through the platform under the project's policy. Your "
     "brief may narrow your connectors: mcp_tools then lists only the ones it names; any "
     "other is not permitted to you, and if the work needs one, tell your parent with "
-    "message_parent. A call that needs the user's approval waits in place while the user "
+    "message_parent. If your brief or a skill points you to a tool you are not offered, "
+    "tell your parent so with message_parent, name the route you will use instead, and go "
+    "on. A call that needs the user's approval waits in place while the user "
     "decides it in the session's chat, where its card names you and your brief, and your "
     "parent is told; a denial is the user's decision: never reach the same content another "
     "way (another tool, server or host). While the plan is a draft or the user changed it, "
@@ -186,6 +190,18 @@ TASK_PROMPT: Final = (
     'did not finish.", "dismissals": [{"what": "n = 96", "limit": "time"}]}.'
 )
 TASK: Final = Section("delegated-task", TASK_VERSION, TASK_PROMPT)
+
+NO_CONNECTORS_VERSION: Final = "sandbox-delegated-no-connectors-1"
+"""The version of ``NO_CONNECTORS``'s text."""
+NO_CONNECTORS: Final = Section(
+    "delegated-no-connectors",
+    NO_CONNECTORS_VERSION,
+    "This project has no connector tools (the paper library, ePrint, web search): "
+    "mcp_tools is not offered. Tell your parent so with message_parent before you use "
+    "another route to a paper or a source.",
+)
+"""A delegated run's note, after its base, when the deployment's connectors serve another
+project, as the main run's (``loop.NO_CONNECTORS``)."""
 
 REOPENED_TASK: Final = (
     "Your parent reviewed the result you returned and reopened this task with feedback, "
