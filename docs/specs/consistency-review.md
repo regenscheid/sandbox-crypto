@@ -4,7 +4,7 @@ Date: 2026-10-11. **Status: Approved as drafted (2026-10-11, by the user), with 
 
 ## Scope
 
-The automatic consistency review checks an agent's claims against recorded evidence while the agent works and when it finishes, and follows each finding through the author's response to confirmation or another outcome. It behaves like CScience's review (D35, confirmed): checkpoint and terminal scheduling, a constrained reviewer, findings with severity, author responses and claimed-fix confirmation.
+The automatic consistency review checks an agent's claims against recorded evidence while the agent works and when it finishes, and follows each finding through the author's response to confirmation or another outcome. It follows CScience's review in kind, with this platform's bounds (D35, confirmed): checkpoints during the work and one final review when the run answers, a constrained reviewer, findings with severity, author responses and claimed-fix confirmation.
 
 Out of scope: mathematical verification and reproduction, a separate role that may run code (D27, proposed extension); action and security monitoring ([monitoring](../MONITORING.md)); the rubric and prompts, written independently (D56); promotion of results into the ledger ([research workspace](../RESEARCH-WORKSPACE.md)).
 
