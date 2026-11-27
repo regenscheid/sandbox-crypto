@@ -89,7 +89,7 @@ CHECK_PROMPT: Final = (
 )
 CHECK: Final = Section("delegated-check", CHECK_VERSION, CHECK_PROMPT)
 
-TASK_VERSION: Final = "sandbox-delegated-task-22"
+TASK_VERSION: Final = "sandbox-delegated-task-23"
 """The version of ``TASK_PROMPT``'s text."""
 TASK_PROMPT: Final = (
     "You are a delegated research agent. Another agent of this session, your parent, "
@@ -111,8 +111,8 @@ TASK_PROMPT: Final = (
     "change direction or stop and report; save evidence as you go, so that your check-in "
     "shows progress. In an environment of your own, its disk is working memory, gone once "
     "your task closes: what you keep, record or publish, and name your results in "
-    "result_files, which come back to your parent with the files the platform could not "
-    "keep.\n\n"
+    "result_files or deliverables, since only the files you name there come back to your "
+    "parent, with any the platform could not keep.\n\n"
     "## Your parent\n\n"
     "You cannot talk to the user. When you need an answer or a decision, ask your parent "
     "with message_parent and keep working on what does not depend on it; when nothing is "
@@ -176,7 +176,10 @@ TASK_PROMPT: Final = (
     "When your brief lists deliverables, account for every one, honestly: produced, in the "
     "fields of its kind and no others, as the brief's line for it shows; partial, with "
     "what exists and what is missing; or not_produced with its reason, rather than left "
-    "out. Your status is complete only when every one was produced. You may give lessons, "
+    "out. Your status is complete only when every one was produced. List in deviations "
+    "each place you used less than, or other than, what your brief named (a subsample, a "
+    "capped degree, a substituted source, code or method), with its size; an empty list "
+    "claims you did all of it. You may give lessons, "
     "at most 5, each one line of at most 200 characters: what you learned operating the "
     "tools that a later run could use, stated as observations, such as a query form that "
     "works, a fetch that stalled and what worked instead, or a limit you hit.\n\n"
@@ -228,15 +231,16 @@ def write_area_text(area: str, *, own_environment: bool = False) -> str:
     its processes to it (DA-20). A child in the session's environment reads every file of
     the session and its parent reads the area where it is. A child in an environment of
     its own (CE-1) has only what was copied into it, which the brief's next line names
-    (CE-7), so the line does not say it reads the session's files, and says the area's
-    files come back to the same paths in the session when the task ends (CE-6)."""
+    (CE-7), so the line does not say it reads the session's files, and says the files its
+    result names come back to the same paths in the session when the task ends (CE-6)."""
     if own_environment:
         return (
             f"Your write area: {area}/, in your own environment. write_file and edit_file "
             "write only there and in shared/ (with create_only or expected_sha256); you "
             "read your own environment's files, not the session's other files; when your "
-            "task ends, the files of your write area are copied to the same paths in the "
-            f"session for your parent to read. {processes_text(True)}"
+            "task ends, only the files you name in result_files or deliverables are copied "
+            "to the same paths in the session for your parent to read. "
+            f"{processes_text(True)}"
         )
     return (
         f"Your write area: {area}/. write_file and edit_file write only there and in "

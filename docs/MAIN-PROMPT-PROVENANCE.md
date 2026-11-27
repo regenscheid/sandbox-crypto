@@ -15,7 +15,7 @@ The system message is its sections' texts joined by a blank line, in order
 ([`loop.py`](../packages/orchestrator/src/sandbox_science/orchestrator/loop.py)
 `_sections`):
 
-1. `main`, version `sandbox-main-22`: `SYSTEM_PROMPT`. A caller's other system text is
+1. `main`, version `sandbox-main-23`: `SYSTEM_PROMPT`. A caller's other system text is
    a `custom` section with no version; supplying the exact built-in text counts as
    `main`, which says what the text is, not who supplied it. Its first paragraph says
    who the agent is; Markdown headings follow, each once: *How you work* (with *Tools
@@ -42,7 +42,7 @@ The system message is its sections' texts joined by a blank line, in order
 5. `skills`, with no version, when the project pins skills: the framing
    `sandbox-skills-index-4`, the index of the run's skills and the skills loaded at its
    start ([skills](SKILLS.md)); the `skills` pin below names the framing's version.
-6. `planning`, version `sandbox-main-plan-5`, when the plan tools are offered. Plan
+6. `planning`, version `sandbox-main-plan-6`, when the plan tools are offered. Plan
    tools offered without their hook, or the hook without the tools, refuse before any
    model call.
 

@@ -73,7 +73,7 @@ An outcome separates what the platform saw from what the child said:
 
 The result is the child's claim. Weigh it like any other evidence, and check what matters.
 
-A returned task awaits your review. Read the files its result names where its status and outcome notice say (their read_files field), then send it feedback with `message_child`, which reopens it, or accept it with `accept_delegation`. Acceptance is final: `message_child` to an accepted task is refused, so to build on it, delegate a new task whose references name its result files.
+A returned task awaits your review. Read the files its result names where its status and outcome notice say (their read_files field), then send it feedback with `message_child`, which reopens it, or accept it with `accept_delegation`. Acceptance is final: `message_child` to an accepted task is refused, so to build on it, delegate a new task whose references name its result files. So leave a returned task unaccepted until your final answer, which lets it take follow-on work, unless an environment of its own must be freed for other work; a task left unreviewed is accepted when your run ends. Carry its deviations with its numbers into what you report.
 
 ## Limits
 

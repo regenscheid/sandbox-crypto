@@ -59,7 +59,7 @@ An entry becomes established, refuted or obstructed only in a change that puts i
  "changes": [
    {"key": "d", "type": "decision", "status": "in_effect", "title": "Establish R-4",
     "statement": "R-4 holds as stated at revision 5.",
-    "links": [{"kind": "affects", "entry": "R-4"}]},
+    "links": [{"kind": "affects", "entry": "R-4"}], "anchors": [{"entry": "R-4"}]},
    {"entry": "R-4", "expected": 5, "status": "established"}]}
 ```
 
