@@ -297,6 +297,19 @@ def until_ended(harness: Harness, count: int = 1) -> Callable[[], Awaitable[None
     return ended
 
 
+def until_called(harness: Harness, brief: str) -> Callable[[], Awaitable[None]]:
+    """Waits, while a model thinks, until the delegated run whose brief holds ``brief``
+    called the model: its delegation is written and its run is under way."""
+
+    async def called() -> None:
+        await eventually(
+            lambda: any(brief in json.dumps(seen[:2]) for seen in harness.gateway.children),
+            timeout=60,
+        )
+
+    return called
+
+
 def until_running(harness: Harness) -> Callable[[], Awaitable[None]]:
     """Waits, while a model thinks, until a delegated run called the model."""
 
@@ -971,7 +984,13 @@ def refusal_case(
             if row.name.startswith("R19"):
                 pair.append(call("delegate", task=TASK_B))
                 routed[TASK_B] = [_held(release), Reply("Done.")]
-            routed[TASK_A] = [Reply(calls=[asked]), Reply("Done.")]
+            first = Reply(calls=[asked])
+            if row.name.startswith("R19"):
+                # The tree's cap is full only once the sibling runs too: A asks for its
+                # grandchild once B's run is under way, held in its first call until A
+                # has read its refusal and ended.
+                first.before = until_called(harness, TASK_B)
+            routed[TASK_A] = [first, Reply("Done.")]
             child = True
             root = [
                 Reply(calls=pair),
