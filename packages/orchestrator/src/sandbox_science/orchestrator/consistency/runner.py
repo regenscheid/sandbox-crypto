@@ -24,6 +24,7 @@ from sandbox_science.orchestrator.model import (
     ModelError,
     ToolCall,
     ToolSpec,
+    cached_for,
 )
 from sandbox_science.orchestrator.model_profiles import ModelProfile
 from sandbox_science.orchestrator.purpose import PurposeError, offered_all, split, without
@@ -219,7 +220,10 @@ class ReviewerRunner:
         images: ImageViewer | None = None,
     ) -> None:
         self.store, self.project, self.session = store, project, session
-        self.review, self.owner, self.model = review, owner, model
+        # The review's calls share a prompt cache of their own (CR-49): each sends the
+        # conversation the one before sent, and more.
+        self.review, self.owner = review, owner
+        self.model = None if model is None else cached_for(model, project, session, review)
         self.memory = memory
         """The project memory, given after the rubric (PM-6)."""
         self.images = images

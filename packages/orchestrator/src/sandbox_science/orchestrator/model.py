@@ -310,6 +310,14 @@ def session_cache_key(project: str, session: str) -> str:
     return "ss-" + hashlib.sha256(f"{project}\0{session}".encode()).hexdigest()[:32]
 
 
+def review_cache_key(project: str, session: str, review: str) -> str:
+    """The key one review's calls share (CR-49, CM-32): the same for every call of review
+    ``review``, so that each call reuses the prefix the one before sent, and different
+    for every other review and from the session's own, whose calls' prefix is another."""
+    digest = hashlib.sha256(f"{project}\0{session}\0{review}".encode()).hexdigest()
+    return "ss-rev-" + digest[:32]
+
+
 class ModelError(Exception):
     """The model gateway failed or answered with something unusable."""
 
@@ -908,11 +916,19 @@ class OpenAICompatibleModel(GatewayModel):
         return await self._call(body, _parse_completion)
 
 
-def cached_for(model: ChatModel, project: str, session: str) -> ChatModel:
-    """``model`` calling as ``session`` of ``project``, for the prompt cache (``cached_as``);
-    a model that is not the gateway's, such as a scripted one, as it is."""
+def cached_for(
+    model: ChatModel, project: str, session: str, review: str | None = None
+) -> ChatModel:
+    """``model`` calling as ``session`` of ``project``, or as its review ``review``, for the
+    prompt cache (``cached_as``); a model that is not the gateway's, such as a scripted
+    one, as it is."""
     if isinstance(model, GatewayModel):
-        return model.cached_as(session_cache_key(project, session))
+        key = (
+            session_cache_key(project, session)
+            if review is None
+            else review_cache_key(project, session, review)
+        )
+        return model.cached_as(key)
     return model
 
 

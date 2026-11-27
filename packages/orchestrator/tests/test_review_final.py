@@ -245,35 +245,56 @@ async def test_the_hourly_cap_does_not_stop_the_final_review(store) -> None:
 
 
 def test_a_checkpoint_skips_a_backlog_to_the_newest_work_and_says_so(store) -> None:
-    """A checkpoint that starts with more than three windows of backlog is given the
-    newest window; the range it skipped is recorded unreviewed, and the session's
-    coverage names it (CR-49)."""
+    """A checkpoint that starts with more than ``BACKLOG_WINDOWS`` grown windows of backlog
+    is given the newest grown window; the range it skipped is recorded unreviewed, and the
+    session's coverage names it with its reason and its items (CR-49)."""
+    from sandbox_science.orchestrator.consistency.models import BACKLOG_WINDOWS, WINDOW_GROWTH
+
     reviews, _, _ = store
     reviews.defaults = ReviewConfig(max_feed_items=2)
-    seqs = [claim(reviews, f"Step {n}.", f"step-{n}") for n in range(10)]
+    grown = 2 * WINDOW_GROWTH
+    count = BACKLOG_WINDOWS * grown + 8
+    seqs = [claim(reviews, f"Step {n}.", f"step-{n}") for n in range(count)]
     review = dispatch(reviews, "checkpoint")
     run = reviews.run("p", "s", review)
-    assert (run["start_seq"], run["end_seq"]) == (seqs[8], seqs[9])
-    assert reviews.progress("p", "s")["watermark"] == seqs[7]
+    assert (run["start_seq"], run["end_seq"]) == (seqs[-grown], seqs[-1])
+    assert reviews.progress("p", "s")["watermark"] == seqs[-grown - 1]
     (skipped,) = reviews.listing("p", "s")["unreviewed"]
-    assert (skipped["start"], skipped["end"], skipped["reason"]) == (seqs[0], seqs[7], "backlog")
+    assert (skipped["start"], skipped["end"], skipped["reason"]) == (
+        seqs[0],
+        seqs[-grown - 1],
+        "backlog",
+    )
     reviews.finish("p", "s", review, "owner", "passed", "Checked the newest steps.")
     coverage = reviews.coverage("p", "s")
     assert not coverage["complete"]
-    assert coverage["unreviewed"] == [{"start": seqs[0], "end": seqs[7]}]
-    assert (coverage["reviewed_through"], coverage["feed_end"]) == (seqs[9], seqs[9])
-    # Three windows of backlog are kept up with, not skipped.
+    assert coverage["unreviewed"] == [
+        {"start": seqs[0], "end": seqs[-grown - 1], "items": count - grown, "reasons": ["backlog"]}
+    ]
+    assert coverage["items"] == {
+        "total": count,
+        "reviewed": grown,
+        "read_in_part": 0,
+        "not_read": 0,
+        "unreviewed": count - grown,
+        "not_recorded": 0,
+    }
+    assert (coverage["reviewed_through"], coverage["feed_end"]) == (seqs[-1], seqs[-1])
+    # A backlog within the bound is kept up with in grown windows, not skipped.
     reviews.defaults = ReviewConfig(max_feed_items=4)
-    for n in range(12):
+    for n in range(BACKLOG_WINDOWS * 4 * WINDOW_GROWTH):
         claim(reviews, f"Later {n}.", f"later-{n}")
-    later = dispatch(reviews, "checkpoint")
-    assert reviews.run("p", "s", later)["start_seq"] == seqs[9] + 1
+    later = reviews.run("p", "s", dispatch(reviews, "checkpoint"))
+    assert later["start_seq"] == seqs[-1] + 1
+    assert later["end_seq"] == seqs[-1] + 4 * WINDOW_GROWTH
 
 
 async def test_a_final_review_picks_up_a_skipped_range_its_budget_allows(store) -> None:
     reviews, _, _ = store
+    from sandbox_science.orchestrator.consistency.models import BACKLOG_WINDOWS, WINDOW_GROWTH
+
     reviews.defaults = ReviewConfig(max_feed_items=2)
-    for n in range(10):
+    for n in range(BACKLOG_WINDOWS * 2 * WINDOW_GROWTH + 8):
         claim(reviews, f"Step {n}.", f"step-{n}")
     review = dispatch(reviews, "checkpoint")
     reviews.finish("p", "s", review, "owner", "passed", "Checked the newest steps.")
@@ -295,7 +316,10 @@ async def test_a_backlog_larger_than_the_final_budget_leaves_a_named_range(store
     summary = await controller(reviews, LabReviewer()).terminal([], "The task is complete.")
     final = summary["final_review"]
     assert (final["complete"], summary["coverage_gap"]) == (False, True)
-    assert final["unreviewed"] == [{"start": seqs[0], "end": seqs[4]}]
+    assert final["unreviewed"] == [
+        {"start": seqs[0], "end": seqs[4], "items": 5, "reasons": ["final_budget"]}
+    ]
+    assert final["items"]["unreviewed"] == 5
     assert final["unreviewed_reasons"] == {"final_budget": 1}
     (left,) = [u for u in reviews.listing("p", "s")["unreviewed"] if u.get("reason")]
     assert (left["start"], left["end"], left["reason"]) == (seqs[0], seqs[4], "final_budget")
@@ -394,6 +418,14 @@ def test_a_review_stored_before_the_final_review_still_loads(store) -> None:
         "unreviewed": [],
         "unreviewed_ranges": 0,
         "unreviewed_reasons": {},
+        "items": {
+            "total": 3,
+            "reviewed": 3,
+            "read_in_part": 0,
+            "not_read": 0,
+            "unreviewed": 0,
+            "not_recorded": 0,
+        },
         "not_recorded_through": None,
     }
     assert reviews.listing("p", "s")["reviews"][0]["review_id"] == review
@@ -552,7 +584,9 @@ async def test_a_later_final_review_takes_up_a_range_left_unreviewed(store) -> N
     reviews, _, _ = store
     seqs = [claim(reviews, f"Step {n}.", f"step-{n}") for n in range(FINAL_FEED_ITEMS + 5)]
     first = await controller(reviews, LabReviewer()).terminal([], "The task is complete.")
-    assert first["final_review"]["unreviewed"] == [{"start": seqs[0], "end": seqs[4]}]
+    assert first["final_review"]["unreviewed"] == [
+        {"start": seqs[0], "end": seqs[4], "items": 5, "reasons": ["final_budget"]}
+    ]
     reviews.observe(
         "p", "s", "later", "transcript", {"run": "author-2", "message": 1},
         {"role": "assistant", "content": "Later work."},
@@ -579,7 +613,9 @@ def test_reviews_before_coverage_records_say_so(store) -> None:
     later = claim(reviews, "A later claim.", "later")
     coverage = reviews.coverage("p", "s")
     assert coverage["not_recorded_through"] == seqs[-1]
-    assert coverage["unreviewed"] == [{"start": later, "end": later}]
+    assert coverage["unreviewed"] == [
+        {"start": later, "end": later, "items": 1, "reasons": ["not_reached"]}
+    ]
 
 
 async def test_hold_keeps_the_answer_from_the_chat_until_its_closing_ends() -> None:
@@ -669,7 +705,9 @@ async def test_every_review_is_given_the_users_request_and_its_later_change(stor
     assert summary["final_review"]["complete"]
 
 
-def test_a_long_request_keeps_the_newest_whole_and_the_first(store) -> None:
+def test_a_long_request_keeps_every_message_the_newest_whole_and_the_rest_clipped(store) -> None:
+    """The user's messages are never left out: those that do not fit whole, the oldest
+    first after the first, are kept as clipped stubs with their IDs (CR-48 as amended)."""
     from sandbox_science.contracts import new_id
     from sandbox_science.orchestrator.consistency.models import REQUEST_BYTES
 
@@ -679,9 +717,12 @@ def test_a_long_request_keeps_the_newest_whole_and_the_first(store) -> None:
         _post(reviews, message, f"Message {n}: " + "x" * (REQUEST_BYTES // 4))
     claim(reviews)
     asked = _request(reviews, dispatch(reviews, "checkpoint"))
-    listed = [m["message"] for m in asked["messages"]]
-    assert (listed[0], listed[-1]) == (ids[0], ids[-1])
-    assert asked["omitted"] == len(ids) - len(listed) > 0
+    listed = asked["messages"]
+    assert [m["message"] for m in listed] == ids
+    assert not listed[-1].get("clipped")
+    assert listed[-1]["text"].startswith("Message 5: ")
+    assert asked["clipped_messages"] == sum(1 for m in listed if m.get("clipped")) > 0
+    assert asked["omitted"] == 0
 
 
 class FixingReviewer(LabReviewer):

@@ -43,9 +43,20 @@ FINAL_RECHECK_CALLS: Final = 8
 """The calls of the one re-check after a final review's answering turn (CR-48)."""
 FINAL_RECHECK_SECONDS: Final = 180
 """How long that re-check may take: a bound of its own, after the end's wait."""
-BACKLOG_WINDOWS: Final = 3
-"""A checkpoint that starts with more than this many windows of new items after the
-watermark skips to the newest window and records the rest as unreviewed (CR-49)."""
+WINDOW_GROWTH: Final = 2
+"""How many times its configured window (``max_feed_items``) a checkpoint's window grows
+to when work has piled up after the watermark, its calls, time, context and bytes
+growing with it (CR-49): by default 32 items, what one review reads and judges whole."""
+REVIEW_CALLS_CEILING: Final = 48
+"""The most calls a grown checkpoint window is given."""
+REVIEW_SECONDS_CEILING: Final = 600.0
+"""The longest a grown checkpoint window may take."""
+REVIEW_CHARS_CEILING: Final = 500_000
+"""The largest context, in characters, a grown checkpoint window's calls may have."""
+BACKLOG_WINDOWS: Final = 8
+"""A checkpoint that starts with more than this many grown windows of new items after the
+watermark skips to the newest grown window and records the rest as unreviewed (CR-49):
+a last resort, after reviews back to back in grown windows have fallen this far behind."""
 REVIEWER_MAX_RESPONSE_BYTES: Final = 6 * 1024 * 1024
 """Finite gateway envelope for a max-effort reviewer response.
 
@@ -139,7 +150,7 @@ class ReviewConfig(Contract):
     (``hold``) its final review (CR-48)."""
     # The call limits allow a bounded evidence window to finish even when the reviewer
     # reads every item; the SNOVA audit showed that larger windows repeatedly capped.
-    max_turns: int = Field(default=24, ge=1, le=30, strict=True)
+    max_turns: int = Field(default=24, ge=1, le=REVIEW_CALLS_CEILING, strict=True)
     time_seconds: float = Field(default=300, ge=0.01, le=600, allow_inf_nan=False)
     max_input_chars: int = Field(default=300000, ge=4096, le=500000, strict=True)
     max_output_chars: int = Field(default=16000, ge=1024, le=64000, strict=True)
@@ -189,11 +200,12 @@ class FindingResponse(Contract):
     """The status a ``set`` gives the finding."""
     successor: FindingID | None = None
     """For a ``set`` to ``superseded``: the finding that replaces it, if any."""
-    messages: tuple[Annotated[str, Field(pattern=r"^msg-[0-9a-f]{16}$")], ...] = Field(
-        default=(), max_length=8
+    messages: tuple[Annotated[str, Field(pattern=r"^msg-[0-9a-f]{16}(?:[0-9a-f]{8})?$")], ...] = (
+        Field(default=(), max_length=8)
     )
-    """For a ``fix`` of a finding anchored only to messages: the later archive messages
-    that correct it (CR-42)."""
+    """For a ``fix``: the archive messages that correct the finding or ground it (CR-42),
+    by their archive IDs, or a chat message the user wrote by its chat ID (as the request
+    item names it), which stands for the archive message that delivered it."""
     evidence: tuple[EvidenceAnchor, ...] = Field(default=(), max_length=8)
     # New document revisions are validated and pinned before claiming a fix.
     revisions: tuple[tuple[DocumentID, RevisionNumber], ...] = Field(default=(), max_length=16)

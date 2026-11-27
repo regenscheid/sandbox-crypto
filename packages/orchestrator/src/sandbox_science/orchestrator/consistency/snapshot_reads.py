@@ -11,7 +11,7 @@ import json
 import sqlite3
 from collections.abc import Sequence
 from dataclasses import replace
-from typing import Any, cast
+from typing import Any, Final, cast
 
 from sandbox_science.orchestrator.control import ControlStore
 
@@ -332,6 +332,17 @@ _FOLDED = "(kind='action' OR (kind='source' AND source_key NOT GLOB 'quoted:*'))
 raw sources, which only a quote brings in."""
 
 
+def backlog(db: sqlite3.Connection, project: str, session: str, after: int) -> int:
+    """How many new items the session's feed holds after position ``after``: its rows but
+    actions and raw sources (``_FOLDED``)."""
+    (count,) = db.execute(
+        f"SELECT count(*) FROM review_feed WHERE project=? AND session=? AND seq>? "  # noqa: S608 - fixed fragment
+        f"AND NOT {_FOLDED}",
+        (project, session, after),
+    ).fetchone()
+    return int(count)
+
+
 def backlog_skip(
     db: sqlite3.Connection, project: str, session: str, window: SnapshotWindow, items: int
 ) -> int | None:
@@ -377,56 +388,183 @@ def reviewed_ranges(db: sqlite3.Connection, project: str, session: str) -> list[
     return merged(found)
 
 
+QUESTION_CHARACTERS: Final = 600
+"""The most characters of a question's text, the agent's, a request item copies."""
+DETAIL_CHARACTERS: Final = 200
+"""The most characters of an option's detail, the agent's, a request item copies."""
+STUB_CHARACTERS: Final = 240
+"""How much of a user's message a request item keeps when the messages do not fit whole."""
+
+
+def _clip(text: str, limit: int) -> tuple[str, bool]:
+    return (text, False) if len(text) <= limit else (text[:limit] + " …", True)
+
+
+def _delivered(db: sqlite3.Connection, project: str, session: str, message: str) -> str | None:
+    """The archive message that delivered chat message ``message`` to a run, which a
+    response cites it by (CR-42)."""
+    found = db.execute(
+        "SELECT message_id FROM archive_messages WHERE project=? AND session=? "
+        "AND kind IN ('user','task') AND EXISTS(SELECT 1 FROM json_each(refs) WHERE value=?) "
+        "ORDER BY kind='task',position LIMIT 1",
+        (project, session, message),
+    ).fetchone()
+    return None if found is None else str(found[0])
+
+
+def _answers(db: sqlite3.Connection, project: str, session: str) -> list[Json]:
+    """The session's answered questions (PD-23), each as the request item lists it: the
+    question and its options, as the workspace showed them to the user, the agent's text
+    clipped to ``QUESTION_CHARACTERS`` and ``DETAIL_CHARACTERS``; the one the agent
+    recommended; what the user picked or wrote, or that the user left it to the agent,
+    whole; when; and the archive message of the ``ask_user`` result that carried it."""
+    from sandbox_science.orchestrator.question_tool import ASK_USER
+
+    found: list[Json] = []
+    for question, run, call, text, options, asked, answer, closed, message in db.execute(
+        "SELECT question_id,run,tool_call,text,options,asked_at,answer,closed_at,message_id "
+        "FROM user_questions WHERE project_id=? AND session_id=? AND state='answered' "
+        "ORDER BY closed_at,rowid",
+        (project, session),
+    ):
+        given = cast(Json, json.loads(answer)) if answer else {}
+        asked_text, clipped_text = _clip(str(text), QUESTION_CHARACTERS)
+        listed: list[Json] = []
+        for option in cast(list[Json], json.loads(options)):
+            shown: Json = {"label": option.get("label")}
+            if option.get("detail") is not None:
+                detail, cut = _clip(str(option["detail"]), DETAIL_CHARACTERS)
+                shown["detail"] = detail
+                clipped_text = clipped_text or cut
+            if option.get("recommended"):
+                shown["recommended"] = True
+            listed.append(shown)
+        entry: Json = {
+            "answer_to": question,
+            "at": closed,
+            "asked_at": asked,
+            "question": asked_text,
+            "options": listed,
+            "answer": given.get("kind"),
+        }
+        if clipped_text:
+            entry["question_clipped"] = True
+        if given.get("picked"):
+            entry["picked"] = given["picked"]
+        if given.get("text") is not None:
+            entry["text"] = given["text"]
+        if message is not None:
+            entry["message"] = message
+        result = db.execute(
+            "SELECT message_id FROM archive_messages WHERE project=? AND session=? AND run=? "
+            "AND kind='tool_result' AND source=? AND call_id=? AND instr(content,?)>0 "
+            "ORDER BY position LIMIT 1",
+            (project, session, run, ASK_USER, call, question),
+        ).fetchone()
+        if result is not None:
+            entry["archive"] = result[0]
+        found.append(entry)
+    return found
+
+
+def _when(entry: Json) -> tuple[int, str]:
+    """An entry's place in the request's order: by its time, which the message and the
+    question stores both write as ISO 8601; one that cannot be read goes last."""
+    from datetime import UTC, datetime
+
+    try:
+        at = datetime.fromisoformat(str(entry.get("at")))
+    except ValueError:
+        return (1, "")
+    return (0, (at if at.tzinfo else at.replace(tzinfo=UTC)).astimezone(UTC).isoformat())
+
+
+def _size(entry: Json) -> int:
+    return len(dump(entry).encode())
+
+
 def request_item(db: sqlite3.Connection, project: str, session: str) -> EvidenceItem | None:
     """The user's request as a review's context (CR-48): the session's messages the user
-    wrote, refused ones aside, the first and each later one in order, as many as
-    ``REQUEST_BYTES`` holds, the newest whole first and the first one always, cut short
-    if it must be; or, in a session with no chat messages, its first transcript message
-    of role user, the task a run was started with. None when there is neither."""
+    wrote, refused ones aside, and the user's answers to the agent's questions, in time
+    order, within ``REQUEST_BYTES``. The user's messages come first and are never left
+    out: those that do not fit whole, the oldest first, are kept as clipped stubs with
+    their IDs (``clipped``), and only then do answers take what room is left, the newest
+    first, each that does not fit left out and named (``omitted_answers``). Each entry
+    names the archive message a response cites it by (``archive``). In a session with no
+    chat messages, its first transcript message of role user, the task a run was started
+    with, stands as the first message. None when there is nothing of the user's."""
     from sandbox_science.orchestrator.notices import PLATFORM_AUTHORS
 
     from .models import REQUEST_BYTES
 
-    rows = [
-        (message, text, author, created)
-        for message, text, author, created in db.execute(
-            "SELECT message_id,text,author,created_at FROM session_messages "
-            "WHERE project_id=? AND session_id=? AND state!='refused' ORDER BY number",
-            (project, session),
-        )
-        if author not in PLATFORM_AUTHORS
-    ]
-    messages: list[Json] = [
-        {"message": message, "at": created, "text": text} for message, text, _, created in rows
-    ]
+    messages: list[Json] = []
+    for message, text, author, created in db.execute(
+        "SELECT message_id,text,author,created_at FROM session_messages "
+        "WHERE project_id=? AND session_id=? AND state!='refused' ORDER BY number",
+        (project, session),
+    ):
+        if author in PLATFORM_AUTHORS:
+            continue
+        entry: Json = {"message": message, "at": created, "text": text}
+        delivered = _delivered(db, project, session, str(message))
+        if delivered is not None:
+            entry["archive"] = delivered
+        messages.append(entry)
+    answers = _answers(db, project, session)
     if not messages:
         first = db.execute(
             "SELECT payload FROM review_feed WHERE project=? AND session=? AND kind='transcript' "
             "AND json_extract(payload,'$.role')='user' ORDER BY seq LIMIT 1",
             (project, session),
         ).fetchone()
-        if first is None:
+        if first is None and not answers:
             return None
-        messages = [{"message": None, "at": None, "text": stored_json(first[0])["content"]}]
-    room = REQUEST_BYTES
-    kept: list[Json] = []
-    for message in reversed(messages[1:]):
-        size = len(dump(message).encode())
-        if size > room - 4096:
-            break
-        kept.append(message)
-        room -= size
-    head = dict(messages[0])
-    text = str(head["text"])
-    while len(dump(head).encode()) > room and text:
-        text = text[: len(text) // 2]
-        head = {**messages[0], "text": text + " …", "clipped": True}
-    listed = [head, *reversed(kept)]
+        if first is not None:
+            messages = [{"message": None, "at": None, "text": stored_json(first[0])["content"]}]
+    room = REQUEST_BYTES - 1024
+    # The user's messages, all of them: whole while they fit, the newest and the first
+    # kept longest; the later ones from the oldest, then the first, become stubs, and
+    # only past that do stubs lose their text.
+    kept = list(messages)
+    order = [*range(1, len(kept)), 0][: len(kept)]
+    for limit in (STUB_CHARACTERS, 0):
+        for index in order:
+            if sum(_size(e) for e in kept) <= room:
+                break
+            text = str(kept[index]["text"])
+            if len(text) > limit:
+                kept[index] = {**kept[index], "text": _clip(text, limit)[0] if limit else "",
+                               "clipped": True}  # fmt: skip
+    left = room - sum(_size(e) for e in kept)
+    # The answers in the room the messages leave, the newest first; one too large for it
+    # is left out and named, and the others still go on.
+    taken: list[Json] = []
+    omitted: list[str] = []
+    for entry in reversed(answers):
+        size = _size(entry)
+        if size > left:
+            omitted.append(str(entry["answer_to"]))
+            continue
+        taken.append(entry)
+        left -= size
+    head, rest = (kept[0], kept[1:]) if kept else (None, [])
+    listed = ([] if head is None else [head]) + sorted([*rest, *taken], key=_when)
     payload: Json = {
-        "about": "What the user asked in this session, oldest first: context, not under review.",
+        "about": (
+            "What the user asked in this session, oldest first: the user's messages and "
+            "the user's answers to the agent's questions (answer_to): context, not under "
+            "review."
+            if answers
+            else "What the user asked in this session, oldest first: context, not under review."
+        ),
         "messages": listed,
-        "omitted": len(messages) - len(listed),
+        "omitted": len(omitted),
     }
+    clipped = sum(1 for entry in kept if entry.get("clipped"))
+    if clipped:
+        payload["clipped_messages"] = clipped
+    if answers:
+        payload["omitted_answers"] = sorted(omitted)
     encoded = dump(payload)
     return EvidenceItem("request", dump({"request": session}), encoded, digest(encoded), 1)
 
@@ -498,6 +636,58 @@ def merged(ranges: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
     return found
 
 
+_READINGS: Final = {"unread": 0, "partial": 1, "whole": 2}
+"""How an item was read, worst first: the best reading of an item counts."""
+
+
+def item_readings(db: sqlite3.Connection, project: str, session: str) -> dict[int, str]:
+    """How the session's author-work reviews read each new item they covered, by its feed
+    position: ``whole``, ``partial`` (cut short) or ``unread`` (nothing to read), the
+    best of its readings, as each review's coverage record names its items (CR-49 as
+    amended); a record from before coverage named items covers its range whole."""
+    found: dict[int, str] = {}
+    for review, start, end, payload in db.execute(
+        "SELECT r.review_id,r.start_seq,r.end_seq,c.payload FROM review_runs r "
+        "JOIN review_records c ON c.review_id=r.review_id AND c.kind='coverage' "
+        "WHERE r.project=? AND r.session=? AND r.kind IN ('checkpoint','terminal') "
+        "AND r.state NOT IN ('inconclusive','failed','dropped','running')",
+        (project, session),
+    ):
+        coverage = stored_json(payload)
+        through, first = coverage.get("through"), coverage.get("from", start)
+        if not coverage.get("verdict") or not isinstance(through, int):
+            continue
+        covered = set(cast(list[str], coverage.get("covered") or []))
+        partial = set(cast(list[str], coverage.get("partial") or []))
+        unread = set(cast(list[str], coverage.get("unread") or []))
+        readings: dict[int, str] = {}
+        if not covered:
+            for (seq,) in db.execute(
+                f"SELECT seq FROM review_feed WHERE project=? AND session=? AND seq>=? "  # noqa: S608 - fixed fragment
+                f"AND seq<=? AND NOT {_FOLDED}",
+                (project, session, first, through),
+            ):
+                readings[int(seq)] = "whole"
+        for evidence, seq in db.execute(
+            "SELECT e.evidence_id,f.seq FROM review_evidence e JOIN review_feed f "
+            "ON f.project=? AND f.session=? AND f.seq>=? AND f.seq<=? AND f.kind=e.kind "
+            "AND f.locator=e.locator AND f.sha256=e.sha256 WHERE e.review_id=?",
+            (project, session, start, end, review),
+        ):
+            if evidence not in covered:
+                continue
+            reading = (
+                "unread" if evidence in unread else "partial" if evidence in partial else "whole"
+            )
+            seq = int(seq)
+            if _READINGS[reading] > _READINGS.get(readings.get(seq, ""), -1):
+                readings[seq] = reading
+        for seq, reading in readings.items():
+            if _READINGS[reading] > _READINGS.get(found.get(seq, ""), -1):
+                found[seq] = reading
+    return found
+
+
 def recorded_unreviewed(
     db: sqlite3.Connection, project: str, session: str
 ) -> list[tuple[int, int]]:
@@ -518,13 +708,13 @@ def recorded_unreviewed(
     )
 
 
-def unreviewed_reasons(
+def range_reasons(
     db: sqlite3.Connection, project: str, session: str, left: Sequence[tuple[int, int]]
-) -> dict[str, int]:
-    """How many of the ranges ``left`` unreviewed meet a range the session's reviews
-    recorded as unreviewed with each reason (``review.unreviewed``); ``not_reached`` counts
-    those no record names, which no review has reached yet. A range of several reasons
-    counts under each."""
+) -> list[list[str]]:
+    """For each of the ranges ``left`` unreviewed, the reasons the session's reviews
+    recorded for the ranges it meets (``review.unreviewed``: ``backlog``,
+    ``final_budget``, ``deadline``, ``final_inconclusive`` and the like), sorted;
+    ``not_reached`` for one no record names, which no review has reached yet."""
     recorded = [
         (int(start), int(end), str(reason))
         for start, end, reason in db.execute(
@@ -535,12 +725,39 @@ def unreviewed_reasons(
             (project, session),
         )
     ]
+    return [
+        sorted({reason for a, b, reason in recorded if a <= end and b >= start} or {"not_reached"})
+        for start, end in left
+    ]
+
+
+def unreviewed_reasons(
+    db: sqlite3.Connection, project: str, session: str, left: Sequence[tuple[int, int]]
+) -> dict[str, int]:
+    """How many of the ranges ``left`` unreviewed meet a range the session's reviews
+    recorded as unreviewed with each reason (``range_reasons``); ``not_reached`` counts
+    those no record names. A range of several reasons counts under each."""
     counts: dict[str, int] = {}
-    for start, end in left:
-        reasons = {reason for a, b, reason in recorded if a <= end and b >= start}
-        for reason in reasons or {"not_reached"}:
+    for reasons in range_reasons(db, project, session, left):
+        for reason in reasons:
             counts[reason] = counts.get(reason, 0) + 1
     return counts
+
+
+def items_in(
+    db: sqlite3.Connection, project: str, session: str, ranges: Sequence[tuple[int, int]]
+) -> list[int]:
+    """How many new items (rows but actions and raw sources) each of ``ranges`` holds."""
+    return [
+        int(
+            db.execute(
+                f"SELECT count(*) FROM review_feed WHERE project=? AND session=? "  # noqa: S608 - fixed fragment
+                f"AND seq>=? AND seq<=? AND NOT {_FOLDED}",
+                (project, session, start, end),
+            ).fetchone()[0]
+        )
+        for start, end in ranges
+    ]
 
 
 def covered(ranges: Sequence[tuple[int, int]], seq: int) -> bool:

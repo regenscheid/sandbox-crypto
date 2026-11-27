@@ -400,6 +400,8 @@ class ReviewController:
         """When ``hold``'s limit ends, by the event loop's clock: from the final review's
         start, its answering turn and the re-check after it included (CR-48)."""
         self.final: str | None = None
+        self.final_answer = ""
+        """The answer the run's final review reviewed, whose files its summary weighs."""
         """The run's final review, once dispatched (CR-48)."""
         self.author_alias = author_alias
         self.memory = memory
@@ -560,6 +562,16 @@ class ReviewController:
             ),
         )
 
+    def _written_by(self, archived: Json) -> str | None:
+        """Who wrote the archive message ``archived`` names (``written_by``)."""
+        from sandbox_science.orchestrator.ledger.provenance import written_by
+
+        message = archived.get("id")
+        if not isinstance(message, str):
+            return None
+        with self.store.documents.control.read() as tx:
+            return written_by(tx.sql, self.scope[0], message)
+
     async def observe(
         self, messages: Sequence[Message], *, tool: Json | None = None, call: Json | None = None
     ) -> None:
@@ -577,6 +589,12 @@ class ReviewController:
                 "truncated": len(original) > 32000,
             }
             at = {"archive": located[index]} if index in located else {}
+            if message.get("role") == "user" and at:
+                # Who wrote it, by the ledger's rule of the user's words: a delegation's
+                # brief is its parent agent's, never the user's (CR-48 as amended).
+                author = await asyncio.to_thread(self._written_by, located[index])
+                if author is not None:
+                    payload["written_by"] = author
             key = f"{self.instance}:message:{index}"
             where: Json = {"run": self.run_id, "invocation": self.instance, "message": index, **at}
             await self._recorded(
@@ -880,6 +898,7 @@ class ReviewController:
                 return self._review_summary(summary)
         # One final review, with a budget of its own, instead of a walk through the
         # backlog window by window (CR-48): what it is not given is named unreviewed.
+        self.final_answer = final_text or ""
         review = await self._dispatch("terminal", label, final=True, answer=final_text)
         if review is None:
             # Another live process owns this session's review: the work waits as one
@@ -944,7 +963,9 @@ class ReviewController:
     ) -> Json:
         """The final review's summary (``ReviewStore.final_summary``), with when the answer
         went out (``mode``) and, when its review did not run, that it did not finish."""
-        found = await asyncio.to_thread(self.store.final_summary, *self.scope, review)
+        found = await asyncio.to_thread(
+            self.store.final_summary, *self.scope, review, answer=self.final_answer
+        )
         if finished is not None:
             found["finished"] = finished
         return {"mode": config.final_review, **found}
@@ -1171,7 +1192,13 @@ class ReviewController:
                 {**args, "operation_id": args.get("operation_id", operation)},
                 author,
             )
-        elif name == "request_review" and not args:
+        elif name == "request_review":
+            # Some models send an empty-keyed placeholder for a tool without arguments;
+            # it says nothing and is ignored. Any other argument is refused.
+            if any(key or value not in ("", None) for key, value in args.items()):
+                raise DocumentError(
+                    "invalid_request", "request_review takes no arguments: call it with {}"
+                )
             await asyncio.to_thread(self.store.request, *self.scope)
             result = {"queued": True}
         else:
