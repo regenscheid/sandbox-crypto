@@ -182,7 +182,7 @@ GOLDEN = {
     "sandbox-notice-jobs-attached-1": (
         "962543a55f349e3fab95b93c92e0a765c03933193b4e1be7fa70b92032e20f67"
     ),
-    "sandbox-notice-plans-3": "c2092ca6aa306b26fa12f3c5ab179c3937c81c7b2a519c0848b83062ee88684c",
+    "sandbox-notice-plans-3": "152c14ffcca2d5bb041dcf653f66d2748904bdcc5c6b1619b49031b8e78df58b",
     "sandbox-notice-plans-went-on-1": (
         "d06fc2a414aa2d59f001fa65299e142d358b9ffd0cd6eae6e716acacbe7f3ea7"
     ),
