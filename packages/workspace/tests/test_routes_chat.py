@@ -124,7 +124,11 @@ async def test_a_runs_events_are_read_by_cursor_with_its_state(
     assert (await (await client.get(events)).json())["state"] == "interrupted"
     state.append("p1", "a", "run-x", "stopped", {"stopped": "answered"})
     assert (await (await client.get(events)).json())["state"] == "ended"
-    await error_of(await client.get(events, params={"limit": "201"}), 400, "invalid_request")
+    refused = await client.get(events, params={"limit": "500"})
+    message = (await error_of(refused, 400, "invalid_request"))["message"]
+    # The refusal says the largest limit the route accepts, and how to read on.
+    assert "from 0 to 200, got '500'; 200 is the most events one read returns" in message
+    assert "after" in message
 
 
 async def test_the_events_of_an_unknown_run_are_not_found(

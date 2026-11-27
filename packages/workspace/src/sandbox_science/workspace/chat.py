@@ -139,12 +139,20 @@ def _scope(request: web.Request) -> tuple[str, str]:
     return project, session
 
 
-def _cursor(request: web.Request, name: str, default: int, top: int) -> int:
+def _cursor(
+    request: web.Request, name: str, default: int, top: int, *, most: str | None = None
+) -> int:
+    """A query number from 0 to ``top``; a refusal says the largest it accepts, and with
+    ``most``, what that bound is."""
     raw = request.query.get(name)
     if raw is None:
         return default
     if not raw.isdigit() or not 0 <= int(raw) <= top:
-        raise ProjectError(ErrorKind.INVALID_REQUEST, f"{name} is a number from 0 to {top}")
+        bound = f"; {top} is the most {most}" if most is not None else ""
+        raise ProjectError(
+            ErrorKind.INVALID_REQUEST,
+            f"{name} is a whole number from 0 to {top}, got {raw[:20]!r}{bound}",
+        )
     return int(raw)
 
 
@@ -253,7 +261,13 @@ async def events(request: web.Request) -> web.Response:
     project, session = _scope(request)
     run = _run_name(request)
     after = _cursor(request, "after", 0, 999999999)
-    limit = _cursor(request, "limit", PAGE, PAGE)
+    limit = _cursor(
+        request,
+        "limit",
+        PAGE,
+        PAGE,
+        most="events one read returns: read on with after set to the last event's seq",
+    )
     context = request.app[CONTEXT]
 
     def read() -> str:
