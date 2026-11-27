@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any, cast
 
-from pydantic import JsonValue, TypeAdapter
+from pydantic import JsonValue
 
 from sandbox_science.contracts.model import Counter
 from sandbox_science.orchestrator.aio import owned
@@ -56,6 +56,7 @@ from .wire import (
     ToolRequest,
     WireMessage,
     WireTurn,
+    adapter,
     json_value,
     payload,
     typed,
@@ -103,6 +104,9 @@ class RemoteHook(TurnHook):
         self.limits_turns = given.turn_limit
         self.holds = given.holds
         self.carries = given.goes_on
+        self.asks = frozenset(given.asks)
+        """The methods the host's hook has of its own: the others do nothing, and the
+        runtime does not ask for them."""
         self._holding = False
         """The host's hook's ``holds_answers``, as last asked: when its lease is entered,
         after each closing, and before a turn while an answer held for its round is kept,
@@ -114,9 +118,7 @@ class RemoteHook(TurnHook):
 
     async def _refresh(self) -> None:
         if self.holds:
-            self._holding = TypeAdapter(bool).validate_python(
-                await self.ask(Capability.HOLDS_ANSWERS)
-            )
+            self._holding = adapter(bool).validate_python(await self.ask(Capability.HOLDS_ANSWERS))
 
     async def ask(
         self,
@@ -149,9 +151,11 @@ class RemoteHook(TurnHook):
             await owned(self.ask(Capability.HOOK_EXIT))
 
     async def notices(self, point: Point, run: RunView) -> Sequence[Notice]:
-        found = TypeAdapter(tuple[Notice, ...]).validate_python(
-            await self.ask(Capability.NOTICES, run, point=point)
-        )
+        found: tuple[Notice, ...] = ()
+        if "notices" in self.asks:
+            found = adapter(tuple[Notice, ...]).validate_python(
+                await self.ask(Capability.NOTICES, run, point=point)
+            )
         if point == "turn" and run.holding:
             await self._refresh()  # a hold's limit can pass between closings (CR-48)
         return found
@@ -159,43 +163,53 @@ class RemoteHook(TurnHook):
     async def turn_limit(self, run: RunView) -> int | None:
         if not self.limits_turns:
             return None
-        return TypeAdapter(Counter | None).validate_python(
-            await self.ask(Capability.TURN_LIMIT, run)
-        )
+        return adapter(Counter | None).validate_python(await self.ask(Capability.TURN_LIMIT, run))
 
     async def halt(self, run: RunView) -> str | None:
+        if "halt" not in self.asks:
+            return None
         # A check-in waits here for its parent's decision, and the automatic one after
         # ``DECISION_WAIT_SECONDS``: this waits longer, so that decision answers first.
-        return TypeAdapter(str | None).validate_python(
+        return adapter(str | None).validate_python(
             await self.ask(Capability.HALT, run, timeout=HALT_TIMEOUT_SECONDS)
         )
 
     async def last_call(self, run: RunView) -> str | None:
-        return TypeAdapter(str | None).validate_python(await self.ask(Capability.LAST_CALL, run))
+        if "last_call" not in self.asks:
+            return None
+        return adapter(str | None).validate_python(await self.ask(Capability.LAST_CALL, run))
 
     async def report_notices(self, run: RunView, limit: str) -> Sequence[Notice]:
-        return TypeAdapter(tuple[Notice, ...]).validate_python(
+        if "report_notices" not in self.asks:
+            return ()
+        return adapter(tuple[Notice, ...]).validate_python(
             await self.ask(Capability.REPORT_NOTICES, run, stopped=limit)
         )
 
     async def consumption(self) -> Sequence[str]:
+        if "consumption" not in self.asks:
+            return ()
         return typed(Consumed, await self.ask(Capability.CONSUMPTION)).ids
 
     async def model_returned(self, run: RunView) -> None:
+        if "model_returned" not in self.asks:
+            return
         await self.ask(Capability.MODEL_RETURNED, run)
 
     async def gate(self, effect: Effect) -> Refusal | None:
-        return TypeAdapter(Refusal | None).validate_python(
+        return adapter(Refusal | None).validate_python(
             await self.ask(Capability.GATE, effect=effect)
         )
 
     async def observe_tool(self, run: RunView, record: dict[str, Any]) -> None:
+        if "observe_tool" not in self.asks:
+            return
         await self.ask(Capability.OBSERVE_TOOL, run, record=record)
 
     async def goes_on(self, run: RunView, answer: str) -> Sequence[Notice]:
         if not self.carries:
             return ()
-        return TypeAdapter(tuple[Notice, ...]).validate_python(
+        return adapter(tuple[Notice, ...]).validate_python(
             await self.ask(Capability.GOES_ON, run, answer=answer)
         )
 
@@ -203,20 +217,26 @@ class RemoteHook(TurnHook):
         # The host commits the offer it keeps, never notices the runtime sends back.
         if not self.carries:
             return False
-        return TypeAdapter(bool).validate_python(await self.ask(Capability.WENT_ON, run))
+        return adapter(bool).validate_python(await self.ask(Capability.WENT_ON, run))
 
     async def closing(self, run: RunView, answer: str | None) -> Closing:
-        closing = TypeAdapter(Closing).validate_python(
-            await self.ask(Capability.CLOSING, run, answer=answer)
+        closing = (
+            adapter(Closing).validate_python(await self.ask(Capability.CLOSING, run, answer=answer))
+            if "closing" in self.asks
+            else Closing()
         )
         await self._refresh()
         return closing
 
     async def accept(self, run: RunView) -> None:
+        if "accept" not in self.asks:
+            return
         await self.ask(Capability.ACCEPT, run)
 
     async def finishing(self, run: RunView, stopped: str) -> str | None:
-        return TypeAdapter(str | None).validate_python(
+        if "finishing" not in self.asks:
+            return None
+        return adapter(str | None).validate_python(
             await self.ask(Capability.FINISHING, run, stopped=stopped)
         )
 

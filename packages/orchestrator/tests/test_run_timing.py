@@ -213,3 +213,16 @@ def test_the_command_prints_where_the_time_went(
     found = json.loads(capsys.readouterr().out)
     assert found["total"]["time"]["user_ms"] == 8000
     assert found["sessions"][0]["time"]["approval_ms"] == 12000
+
+
+def test_the_platforms_time_between_calls_is_part_of_the_rest() -> None:
+    """Each call's usage says how long the loop worked before it and after the call before
+    it: their sum is the platform's time, which the rest includes."""
+    timing = RunTiming(span_ms=100000)
+    timing.model(30000, 1200, None)
+    timing.model(10000, 800, 2500)
+    timing.model(None)
+    summary = timing.summary()
+    assert summary["platform_ms"] == 4500
+    assert summary["rest_ms"] == 60000
+    assert "rest 1m00s (platform 4.5s)" in timing.line()

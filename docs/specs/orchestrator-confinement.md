@@ -320,6 +320,12 @@ to commit (`went_on`), and the host's hook decides, recording the plan state's
 continuation, and only then are the kept notices admitted. Both refuse unless the last
 committed message is an answer with no tool call. The plan's state, and the record that
 its state had its continuation, stay in control. Older control/runtime peers are refused.
+closings. Private control protocol 10 names, for each hook, the methods its class has of
+its own (`asks`): the runtime asks the host only for those, and takes the default of
+the others, which does nothing (no notices, no halt, an accepted closing), without a
+round trip. A runtime that asks for one all the same is answered as before, so this
+changes no check the host makes on what it is asked. Older control/runtime peers are
+refused.
 
 How long each request may wait:
 
