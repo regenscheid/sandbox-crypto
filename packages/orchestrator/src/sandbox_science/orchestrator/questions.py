@@ -2,12 +2,13 @@
 """Questions a main run asks the user, and their answers (plans-and-delegation spec,
 PD-23 to PD-26).
 
-A question is the agent's text, optionally with two to four options, and whether
-several may be chosen. It is written once, ``open``, and stays in the control store, so
-it outlives the browser. The user closes it with an answer: options picked, an answer
-in their own words, the agent to decide, or a cancel. A question also closes when its
-run cannot receive the answer: ``cancelled`` with the run or the session,
-``interrupted`` when the service restarted under it. Once closed, nothing changes it.
+A question is the agent's text, optionally with two to four options, at most one of
+them marked as the one the agent recommends, and whether several may be chosen. It is
+written once, ``open``, and stays in the control store, so it outlives the browser. The
+user closes it with an answer: options picked, an answer in their own words, the agent
+to decide, or a cancel. A question also closes when its run cannot receive the answer:
+``cancelled`` with the run or the session, ``interrupted`` when the service restarted
+under it. Once closed, nothing changes it.
 
 A question is not a permission request (PD-25): it records a preference or a research
 decision, while a permission request decides an operation under the policy, and they
@@ -53,6 +54,8 @@ class QuestionOption(Contract):
 
     label: Annotated[str, Field(min_length=1, max_length=MAX_LABEL)]
     detail: Annotated[str, Field(min_length=1, max_length=MAX_DETAIL)] | None = None
+    recommended: bool = False
+    """The option the agent would choose; a question marks at most one."""
 
 
 class Answer(Contract):
@@ -87,6 +90,11 @@ class Question(Contract):
     message: str | None = None
     """The chat message that answered it, when the user answered by writing to the
     session."""
+
+    @property
+    def recommended(self) -> str | None:
+        """The label of the option the agent recommended, if it marked one."""
+        return next((option.label for option in self.options if option.recommended), None)
 
 
 _COLUMNS: Final = (
@@ -187,13 +195,16 @@ class Questions:
                 detail=None
                 if option.detail is None
                 else agent_text(option.detail, f"option {number}'s detail"),
+                recommended=option.recommended,
             )
             for number, option in enumerate(offered, 1)
         )
         labels = [option.label for option in cleaned]
         if any(not label for label in labels) or len(set(labels)) != len(labels):
             raise ControlError(INVALID_REQUEST, "each option has a label of its own")
-        encoded = json.dumps([o.model_dump(exclude_none=True) for o in cleaned])
+        if sum(option.recommended for option in cleaned) > 1:
+            raise ControlError(INVALID_REQUEST, "a question recommends one option at most")
+        encoded = json.dumps([o.model_dump(exclude_defaults=True) for o in cleaned])
         with self.control.write() as tx:
             db = tx.sql
             found = db.execute(

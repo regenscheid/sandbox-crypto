@@ -296,6 +296,30 @@ Admission, corruption or disk failures can prevent retaining that observation;
 the returned message identifies this and cannot promise a durable audit record.
 Unknown intents and unresolved pins are never silently evicted.
 
+### The `publish` tool
+
+`publish` takes `path`, one workspace file, or `paths`, 1 to 16 distinct files
+(`MAX_PUBLISH_PATHS`), and an optional `media_type` for every file named; a call
+gives exactly one of `path` and `paths`. Each file is published as a call with
+`path` publishes it: the same intent, transfer, receipt, limits and attribution, the
+effect class, the plan gate and the purpose note applying once to the call. A file
+of `paths` runs under an operation of its own, the call's operation ID with the
+file's index and a digest of both, so a replayed call finds each file's publication
+and publishes none of them again. A file that fails leaves the others published.
+
+The model reads one compact entry per file, in the order given: `path`, `artifact`
+(the inventory's `artifact-…` ID), `revision`, `sha256` and `size`, or `path` and
+`error` with its `kind` and `message`. A `held` receipt is the file's error
+(`unavailable`; `internal` for a `failed` one), with the receipt's message. For
+`path` the entry is the result's `published`, or the call's `error`; for `paths`,
+`published` is the list, and the call is an error only when every file failed.
+Without an inventory the entry names the worker's `art-…` snapshot ID and has no
+revision. The tool record keeps, for each file, the worker snapshot as `artifact`
+and the receipt as `artifact_inventory`: at the top of the record for `path`, in
+order under `publications` for `paths` (`tool_entry.publications` reads either). The
+review's actions, its artifact items, a delegated run's result files and the tool
+status read every file of either form.
+
 ## Retention bounds
 
 `ArtifactLimits` supplies programmatic limits; no deployed configuration changes

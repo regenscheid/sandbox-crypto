@@ -119,6 +119,8 @@ SHOWN_OUTPUTS: Final = 20
 SHOWN_ENTRIES: Final = 200
 MAX_DETAILS_BYTES: Final = 2048
 """The JSON bytes of a refusal's details a failed call shows; what does not fit is counted."""
+MAX_PUBLISH_PATHS: Final = 16
+"""The most files one ``publish`` call names in ``paths``."""
 READING_OUTPUT_CHARS: Final = 40_000
 """The most characters of a reading tool's result (``descriptors.PAGED``: a paper's pages
 or passages), however large ``output_chars`` is; it gets twice ``output_chars`` up to
@@ -453,11 +455,24 @@ SPECS: Final = (
     ),
     ToolSpec(
         "publish",
-        "Publish a workspace file as an immutable project artifact, recording its hash.",
+        "Publish workspace files as immutable project artifacts, recording each one's hash: "
+        f"path names one file, paths up to {MAX_PUBLISH_PATHS}. Each file is published on "
+        "its own, so one that fails leaves the others published. The result lists the "
+        "files in the order given, each with its artifact ID, revision and SHA-256, the "
+        "pin for ledger evidence, or with its error.",
         {
             "type": "object",
-            "properties": {"path": {"type": "string"}, "media_type": {"type": "string"}},
-            "required": ["path"],
+            "properties": {
+                "path": {"type": "string"},
+                "paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                    "maxItems": MAX_PUBLISH_PATHS,
+                    "uniqueItems": True,
+                },
+                "media_type": {"type": "string", "description": "For every file named"},
+            },
             "additionalProperties": False,
         },
     ),
@@ -1830,22 +1845,95 @@ class Toolbox:
             shown //= 2
 
     async def _publish(self, call: Request) -> ToolOutcome:
-        request = PublishRequest.model_validate(
-            {"context": self.context, **_known(call.args, "path", "media_type")}
+        """The file ``path`` names under the call's operation, or each of ``paths`` under
+        an operation of its own derived from the call's, so a replayed call finds each
+        file's publication (W2). A file that fails leaves the others published."""
+        args = call.args
+        if ("path" in args) == ("paths" in args):
+            raise WorkerAPIError(
+                ErrorKind.INVALID_REQUEST, "give path for one file or paths for several"
+            )
+        if "path" in args:
+            request = self._publish_request(args.get("path"), args)
+            shown, record = await self._publish_one(request, call.operation, call)
+            if "error" in shown:
+                record["error"] = shown["error"]["kind"]
+                return ToolOutcome(dump({"error": shown["error"]}), record)
+            return ToolOutcome(dump({"published": shown}), record)
+        paths = args.get("paths")
+        if (
+            not isinstance(paths, list)
+            or not 1 <= len(cast(list[object], paths)) <= MAX_PUBLISH_PATHS
+            or len(set(map(str, cast(list[object], paths)))) != len(cast(list[object], paths))
+        ):
+            raise WorkerAPIError(
+                ErrorKind.INVALID_REQUEST,
+                f"paths names 1 to {MAX_PUBLISH_PATHS} files, each once",
+            )
+        listed: list[dict[str, Any]] = []
+        records: list[dict[str, Any]] = []
+        for index, path in enumerate(cast(list[object], paths)):
+            shown: dict[str, Any]
+            record: dict[str, Any] = {}
+            try:
+                request = self._publish_request(path, args)
+                shown, record = await self._publish_one(request, _part(call.operation, index), call)
+            except ValidationError as exc:
+                shown = {"path": str(path), "error": _invalid(exc)}
+            except WorkerAPIError as exc:
+                if exc.uncertain:
+                    raise
+                error = {"kind": exc.kind.value, "message": exc.message}
+                shown = {"path": str(path), "error": error}
+            if "error" in shown:
+                record |= {"path": str(path), "error": shown["error"]["kind"]}
+            listed.append(shown)
+            records.append(record)
+        outcome: dict[str, Any] = {"publications": records}
+        if all("error" in shown for shown in listed):
+            outcome["error"] = listed[0]["error"]["kind"]
+        return ToolOutcome(self._bound(dump({"published": listed})), outcome)
+
+    def _publish_request(self, path: object, args: dict[str, Any]) -> PublishRequest:
+        return PublishRequest.model_validate(
+            {"context": self.context, "path": path, **_known(args, "media_type")}
         )
-        if self.artifacts is not None:
-            result = await self.artifacts.publish(
-                request, call.operation, tool_call=call.call.id, model=call.model
-            )
-            worker = result.worker.model_dump(mode="json") if result.worker is not None else None
-            receipt = result.receipt.model_dump(mode="json")
-            return ToolOutcome(
-                self._bound(dump({"published": worker, "inventory": receipt})),
-                {"artifact": worker, "artifact_inventory": receipt},
-            )
-        artifact = await self.client.publish(request)
-        record = artifact.model_dump(mode="json")
-        return ToolOutcome(dump({"published": record}), {"artifact": record})
+
+    async def _publish_one(
+        self, request: PublishRequest, operation: str, call: Request
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """What the model reads of one file's publication, compact (``artifact``, the
+        inventory's ``artifact-…`` ID; ``revision``; ``sha256``; ``path``; ``size``) or its
+        error, and what the record keeps of it: the worker's snapshot and the receipt."""
+        if self.artifacts is None:
+            artifact = await self.client.publish(request)
+            shown = {
+                "path": request.path,
+                "artifact": artifact.artifact_id,
+                "sha256": artifact.sha256,
+                "size": artifact.size,
+            }
+            return shown, {"artifact": artifact.model_dump(mode="json")}
+        result = await self.artifacts.publish(
+            request, operation, tool_call=call.call.id, model=call.model
+        )
+        worker = result.worker.model_dump(mode="json") if result.worker is not None else None
+        receipt = result.receipt
+        record = {"artifact": worker, "artifact_inventory": receipt.model_dump(mode="json")}
+        revision = receipt.revision
+        if receipt.state != "recorded" or revision is None:
+            # Held: the worker may have its snapshot, but the inventory kept no revision.
+            kind = ErrorKind.UNAVAILABLE if receipt.state == "held" else ErrorKind.INTERNAL
+            message = receipt.message or f"the publication was {receipt.state}"
+            return {"path": request.path, "error": {"kind": kind.value, "message": message}}, record
+        shown = {
+            "path": request.path,
+            "artifact": revision.artifact_id,
+            "revision": revision.revision,
+            "sha256": revision.sha256,
+            "size": revision.size,
+        }
+        return shown, record
 
 
 def _describe(
@@ -2188,6 +2276,20 @@ def _search_note(stopped: SearchStop | None, cut: bool, skipped: Sequence[str]) 
 
 def _known(args: dict[str, Any], *names: str) -> dict[str, Any]:
     return {name: args[name] for name in names if name in args}
+
+
+def _part(operation: str, index: int) -> str:
+    """The operation of the file at ``index`` of a ``publish`` call's ``paths``: the
+    call's operation and the index, with a digest of both, within 128 characters."""
+    digest = hashlib.sha256(f"{operation}\0{index}".encode()).hexdigest()[:16]
+    return f"{operation[:105].rstrip('-._')}-{index}-{digest}"
+
+
+def _invalid(error: ValidationError) -> dict[str, str]:
+    """A request's first validation error, as a failed call shows it."""
+    first = error.errors()[0]
+    where = ".".join(str(part) for part in first.get("loc", ()))
+    return {"kind": ErrorKind.INVALID_REQUEST.value, "message": f"{where}: {first.get('msg')}"}
 
 
 def _failure(

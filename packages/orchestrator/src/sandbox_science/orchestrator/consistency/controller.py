@@ -36,6 +36,7 @@ from sandbox_science.orchestrator.model import ChatModel, Message, ToolSpec
 from sandbox_science.orchestrator.notices import REVIEW_COUNTS, REVIEW_FINDINGS, unframed
 from sandbox_science.orchestrator.projects import recorded
 from sandbox_science.orchestrator.purpose import without
+from sandbox_science.orchestrator.tool_entry import publications
 from sandbox_science.orchestrator.view_image import ImageViewer
 
 from .actions import action_of
@@ -513,15 +514,18 @@ class ReviewController:
             for raw in [raw_execution, *ended]:
                 if isinstance(raw, dict):
                     await self._execution(cast(Json, raw))
-            raw_artifact = tool.get("artifact")
-            if isinstance(raw_artifact, dict) and self.artifact_consumer is None:
+            # A publish of several files is one artifact item each (W2).
+            for index, publication in enumerate(publications(tool)):
+                raw_artifact = publication.get("artifact")
+                if not isinstance(raw_artifact, dict) or self.artifact_consumer is not None:
+                    continue
                 artifact = cast(Json, raw_artifact)
                 encoded = dump(artifact)
                 self.effects = True
                 await asyncio.to_thread(
                     self.store.observe,
                     *self.scope,
-                    f"{self.instance}:artifact:{self.position}",
+                    f"{self.instance}:artifact:{self.position}" + (f":{index}" if index else ""),
                     "artifact",
                     {"artifact": clipped(encoded, 1000), "run": self.run_id},
                     {

@@ -51,8 +51,8 @@ const question = (fields: Partial<Question> = {}): Question => ({
   tool_call: 'call-1',
   text: 'Which curve should sign the release?',
   options: [
-    { label: 'Ed25519', detail: 'The common choice' },
-    { label: 'Ed448', detail: null },
+    { label: 'Ed25519', detail: 'The common choice', recommended: true },
+    { label: 'Ed448', detail: null, recommended: false },
   ],
   multiple: false,
   state: 'open',
@@ -79,6 +79,9 @@ describe('an open question', () => {
     expect(root.textContent).toContain('asked 5 minutes ago');
     expect(root.textContent).toContain('Which curve should sign the release?');
     expect(root.textContent).toContain('The common choice');
+    // The option the agent recommends is marked, and only that one.
+    expect(root.querySelectorAll('li strong')).toHaveLength(1);
+    expect(root.querySelector('li')?.textContent).toContain('(recommended)');
     expect(root.textContent).toContain('write it in the message box');
     button(root, 'Ed448').click();
     await settle();
@@ -115,8 +118,8 @@ describe('an open question', () => {
     const { root } = card({
       text: `Which${ZWSP} curve?`,
       options: [
-        { label: `Ed${ZWSP}448`, detail: `safe${ZWSP}` },
-        { label: 'Ed25519', detail: null },
+        { label: `Ed${ZWSP}448`, detail: `safe${ZWSP}`, recommended: false },
+        { label: 'Ed25519', detail: null, recommended: false },
       ],
     });
     expect(root.textContent).toContain('⟦U+200B⟧ curve?');
@@ -144,7 +147,7 @@ describe("options named as an object's own properties", () => {
     const labels = ['toString', '__proto__', 'constructor', 'hasOwnProperty'];
     const { root, sent } = card({
       multiple: true,
-      options: labels.map((label) => ({ label, detail: null })),
+      options: labels.map((label) => ({ label, detail: null, recommended: false })),
     });
     const boxes = [...root.querySelectorAll<HTMLInputElement>('input[type=checkbox]')];
     expect(boxes.map((box) => box.checked)).toEqual([false, false, false, false]);

@@ -167,11 +167,18 @@ async def test_the_first_slice_through_the_harness(client: WorkerClient) -> None
     other = await client.kernel_status(CONTEXT.model_copy(update={"session_id": "other"}))
     assert other.kernels == ()
     assert write["state"] == "succeeded"
+    # The model reads a compact record; the transcript keeps the worker's snapshot.
     artifact = published["published"]
-    assert artifact["sha256"] == hashlib.sha256(b"a,b\n1,2\n").hexdigest()
-    assert artifact["produced_by"] == write["attempt_id"]
+    assert artifact == {
+        "path": "out.csv",
+        "artifact": artifact["artifact"],
+        "sha256": hashlib.sha256(b"a,b\n1,2\n").hexdigest(),
+        "size": 8,
+    }
+    kept = next(r for r in transcript.tool_records if r.get("tool") == "publish")
+    assert kept["artifact"]["produced_by"] == write["attempt_id"]
     assert read["content"] == "a,b\n1,2\n"
-    assert await client.artifact_content(artifact["artifact_id"]) == b"a,b\n1,2\n"
+    assert await client.artifact_content(artifact["artifact"]) == b"a,b\n1,2\n"
     # The model saw every earlier tool result before its next turn.
     assert len(model.requests) == 6
     assert model.requests[-1][-1]["role"] == "tool"
@@ -1037,7 +1044,9 @@ async def test_the_pdf_tools_read_cite_and_render_in_the_sandbox(client: WorkerC
     assert "300x112 px" in rendered
     png = rendered.split(" to ", 1)[1].split(":", 1)[0]
     published = json.loads(await tool("publish", "op-pdf-publish", path=png))
-    assert published["published"]["media_type"] == "image/png"
+    assert published["published"]["path"] == png
+    content = await client.artifact_content(published["published"]["artifact"])
+    assert content.startswith(b"\x89PNG")
     missing = json.loads(await tool("pdf_pages", "op-pdf-missing", path="gone.pdf", pages="1"))
     assert missing["error"]["kind"] == "invalid_request"
     assert "does not exist" in missing["error"]["message"]

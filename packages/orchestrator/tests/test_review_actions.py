@@ -396,6 +396,27 @@ def test_a_memory_proposal_and_a_cancel_are_actions_and_a_read_is_not() -> None:
     assert action_of(messages, call) is None
 
 
+def test_a_publish_of_several_files_made_each_revision_it_recorded() -> None:
+    """W2: a ``publish`` of ``paths`` made one revision a file; a file it could not
+    publish made nothing, and the call is an error only when no file was published."""
+
+    def published(artifact: str) -> dict[str, Any]:
+        receipt = {"state": "recorded", "revision": {"artifact_id": artifact, "revision": 1}}
+        return {"artifact": {"artifact_id": f"worker-{artifact}"}, "artifact_inventory": receipt}
+
+    failed = {"path": "b.txt", "error": "unavailable"}
+    record = {"effect": "effect", "publications": [published("artifact-a"), failed]}
+    messages, call = called(1, "publish", {"paths": ["a.txt", "b.txt"]}, **record)
+    found = action_of(messages, call)
+    assert found is not None
+    assert (found["outcome"], found["made"]) == ("ok", ["artifact artifact-a r1"])
+    record = {"effect": "effect", "publications": [failed], "error": "unavailable"}
+    messages, call = called(2, "publish", {"paths": ["b.txt"]}, **record)
+    found = action_of(messages, call)
+    assert found is not None
+    assert (found["outcome"], found["made"]) == ("error", [])
+
+
 @pytest.mark.asyncio
 async def test_a_plan_change_is_an_action_and_the_review_holds_the_plan(store: Any) -> None:
     """Lab 42's B2: run 3 recorded its steps, finished its plan and said so. Its review

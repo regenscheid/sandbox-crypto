@@ -34,7 +34,7 @@ The target is the platform's record; the role, type and scope are your assertion
 
 ## Pin computed artifacts
 
-Computational evidence points at the artifact revision that holds the computation's output. Write the output to a JSON or text file, publish it (or let the run record it), and get its artifact ID, revision and SHA-256 from the publish result or from `find_artifacts`, which works in any later run too:
+Computational evidence points at the artifact revision that holds the computation's output. Write the output to a JSON or text file, publish it (or let the run record it), and take its artifact ID (the one that begins with artifact-), revision and SHA-256 from the file's entry in the publish result or from `find_artifacts`, which works in any later run too:
 
 ```json
 {"role": "supports", "type": "exact_computation", "artifact": "<artifact ID>", "revision": 2,

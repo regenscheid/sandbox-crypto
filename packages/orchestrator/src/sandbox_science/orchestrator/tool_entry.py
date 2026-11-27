@@ -7,7 +7,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import partial
-from typing import Any, Final
+from typing import Any, Final, cast
 
 from .hooks import Effect, Notice
 from .model import ToolCall, ToolSpec
@@ -177,3 +177,17 @@ def deferred(
         if (found := tuple(e for e in entries if GROUP_OF.get(e.spec.name) == group.name))
     }
     return core, groups
+
+
+def publications(record: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The files a ``publish`` call's record holds, each a mapping with the worker's
+    snapshot as ``artifact`` and the inventory's receipt as ``artifact_inventory``, or
+    a file's ``error``: the record itself for a call that named one ``path``, its
+    ``publications``, in order, for one that named ``paths``; none for any other call."""
+    listed = record.get("publications")
+    if isinstance(listed, list):
+        found = cast(list[object], listed)
+        return [cast(dict[str, Any], entry) for entry in found if isinstance(entry, dict)]
+    if "artifact" in record or "artifact_inventory" in record:
+        return [dict(record)]
+    return []

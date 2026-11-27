@@ -155,23 +155,31 @@ async def test_a_deleted_file_is_no_result() -> None:
     assert "wrote or published no file table.txt" in outcome.errors[0]
 
 
+@pytest.mark.parametrize("several", [False, True])
 async def test_a_published_file_is_a_result_in_a_results_only_project(
-    delegating: Harness,
+    delegating: Harness, several: bool
 ) -> None:
     """RA-39: a project that records results only records none of a call's files; the
-    child publishes its result, which is pinned from its publication."""
+    child publishes its result, which is pinned from its publication, whether the call
+    named it as its ``path`` or among its ``paths`` (W2)."""
     documents = delegating.documents()
     try:
         change = {"expected": 0, "recording": "results", "ignore": list(DEFAULT_IGNORE)}
         ProjectFiles(documents).change(PROJECT, {**change, "operation_id": "o1"}, USER)
     finally:
         documents.close()
+    table = f"{AREA}/table.txt"
+    published = (
+        call("publish", paths=[f"{AREA}/absent.txt", table])
+        if several
+        else call("publish", path=table)
+    )
     root = await delegating.run(
         "root",
         [Reply(calls=[TASK]), wait(), Reply("Done.")],
         delegated=[
             Reply(calls=[WRITE]),
-            Reply(calls=[call("publish", path=f"{AREA}/table.txt")]),
+            Reply(calls=[published]),
             *submitted(WRITTEN, "Done."),
         ],
     )

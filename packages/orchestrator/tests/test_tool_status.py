@@ -89,6 +89,8 @@ def test_a_call_that_recorded_files_names_ten_and_counts_the_rest() -> None:
     assert gloss["more_files"] == 2
     published = tool_gloss({"artifact": {"source_path": "report.pdf"}}, "{}")
     assert (published["files"], published["more_files"]) == (["report.pdf"], 0)
+    several = {"publications": [{"artifact": {"source_path": p}} for p in ("a.pdf", "b.pdf")]}
+    assert tool_gloss(several, "{}")["files"] == ["a.pdf", "b.pdf"]
 
 
 def test_a_result_without_streams_is_measured_by_its_text() -> None:

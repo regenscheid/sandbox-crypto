@@ -57,7 +57,7 @@ def ask(
     questions: Questions,
     operation: str = "op-1",
     text: str = "Which curve should the signatures use?",
-    options: list[dict[str, str]] | None = None,
+    options: list[dict[str, Any]] | None = None,
     *,
     multiple: bool = False,
     run: str = "run-1",
@@ -110,6 +110,12 @@ def test_questions_are_listed_oldest_first(questions: Questions) -> None:
         ("Which?", [], True, "only a question with options"),
         ("Which?", [{"label": "a"}, {"label": ""}], False, "an option's label"),
         ("Which?", [{"label": "a"}, {"label": "b", "colour": "red"}], False, "an option's"),
+        (
+            "Which?",
+            [{"label": "a", "recommended": True}, {"label": "b", "recommended": True}],
+            False,
+            "one option at most",
+        ),
     ],
 )
 def test_a_question_has_text_and_two_to_four_distinct_options(
@@ -384,6 +390,48 @@ async def test_the_tool_says_what_a_decide_or_a_cancel_means(
     value = answer_of((await waiting)[0])
     assert value["answer"] == expected
     assert value["note"]
+
+
+async def test_a_decide_answer_names_the_option_the_agent_recommended(
+    questions: Questions, tool: QuestionTool
+) -> None:
+    """W6: an option may be marked recommended, and the question keeps the mark; when
+    the user leaves the choice to the agent, the result and the record name it."""
+    options = [{"label": "Ed25519", "recommended": True}, {"label": "Ed448"}]
+    waiting = asyncio.create_task(
+        tool.call({"question": "Which curve?", "options": options}, operation="o", call_id="c")
+    )
+    asked = await until_open(questions)
+    assert [option.recommended for option in asked.options] == [True, False]
+    questions.answer("p", "s", asked.question_id, Answer(kind="decide"))
+    text, record = await waiting
+    value = answer_of(text)
+    assert (value["answer"], value["recommended"]) == ("decide", "Ed25519")
+    assert "recommended" in value["note"]
+    assert record["question"]["recommended"] == "Ed25519"
+    # A pick says nothing of the mark: the user chose.
+    tool.in_reply = False  # the model's next reply
+    picking = asyncio.create_task(
+        tool.call({"question": "Which?", "options": options}, operation="o2", call_id="c2")
+    )
+    asked = await until_open(questions)
+    questions.answer("p", "s", asked.question_id, Answer(kind="picked", picked=("Ed448",)))
+    text, record = await picking
+    assert "recommended" not in answer_of(text)
+    assert "recommended" not in record["question"]
+
+
+def test_an_unmarked_option_is_stored_as_before(questions: Questions) -> None:
+    """The mark is kept only where it is given, so earlier questions read as they were."""
+    asked = ask(questions)
+    assert not any(option.recommended for option in asked.options)
+    assert asked.recommended is None
+    stored = questions.control
+    with stored.read() as tx:
+        (options,) = tx.sql.execute(
+            "SELECT options FROM user_questions WHERE question_id=?", (asked.question_id,)
+        ).fetchone()
+    assert "recommended" not in options
 
 
 @pytest.mark.parametrize(

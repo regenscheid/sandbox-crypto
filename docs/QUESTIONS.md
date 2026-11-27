@@ -7,7 +7,7 @@ A main run can ask the user a question and wait for the answer: a preference or 
 A main run is offered `ask_user`. Its arguments:
 
 - `question`: the question, 1 to 4,000 characters, with what the user needs to answer it.
-- `options`: none, or two to four choices, each a `label` (at most 120 characters, distinct from the others) and an optional `detail` (at most 400) saying what it means.
+- `options`: none, or two to four choices, each a `label` (at most 120 characters, distinct from the others), an optional `detail` (at most 400) saying what it means, and an optional `recommended`, true for the one option the agent would take. At most one option is recommended; the tool's description asks the agent to put it first and give its reason in the detail. The mark is stored with the option, and an option without it is stored as before.
 - `multiple`: whether several options may be chosen; only with options.
 
 The question, its labels and its details are the agent's text: line ends become line feeds, and a text holding a character the user may not see is refused (`check_agent_text`, threat model A3).
@@ -22,11 +22,11 @@ The answer is the call's result, so it reaches the run and the call that asked, 
 | --- | --- |
 | `picked` | The user picked the options in `picked`, in the question's order. |
 | `own_words` | The user answered in their own words, in `text`: trimmed, and otherwise as they wrote it. |
-| `decide` | The user leaves it to the agent; a `note` asks it to decide and say what it chose and why. |
+| `decide` | The user leaves it to the agent; a `note` asks it to decide and say what it chose and why. When an option was recommended, `recommended` names its label and the `note` asks the agent to take it unless something has changed and say which it took. |
 | `cancelled` | The user cancelled the question; a `note` asks the agent not to ask it again unless something changes. |
 | `null` | The question closed without an answer; `state` and `note` say why. |
 
-The tool's effect class is `read`: asking changes nothing a plan governs, so a run may ask while its plan is a draft. The run's record keeps the call's result and the question's ID, state and answer.
+The tool's effect class is `read`: asking changes nothing a plan governs, so a run may ask while its plan is a draft. The run's record keeps the call's result and the question's ID, state and answer, and, for a `decide` answer, the label of the recommended option as `recommended`.
 
 A run's limits are checked between model calls, so none ends the wait. A run that ends while it waits closes its question, as no one is left to read the answer: `cancelled` with the reason "the run was cancelled" when the user cancelled the run (RS-11), and `interrupted` with the reason "the run stopped before it was answered" when it stopped otherwise, as when the run service stops. A replayed call (the same operation ID) finds the question it asked and returns as soon as that question is closed.
 
@@ -72,7 +72,7 @@ The session's chat panel (`ChatQuestion.svelte`, `src/lib/questions.ts`) reads t
 - **Open questions** show above the message box, oldest first, each with:
   - how long ago it was asked;
   - the agent's text exactly, through `ApprovalText`, with a preview apart;
-  - its options, with every character a person may not see shown as its code point (`visible`): a button for each when one is chosen, or check boxes and "Answer with the N chosen" when several may be (ticked by their place, so a label such as `__proto__` is only a label);
+  - its options, with every character a person may not see shown as its code point (`visible`): a button for each when one is chosen, or check boxes and "Answer with the N chosen" when several may be (ticked by their place, so a label such as `__proto__` is only a label), the one the agent recommends marked "(recommended)";
   - "Let the agent decide" and "Cancel the question".
 - **The message box hint.** While the run that holds the session waits for an answer, the box says "Your message will answer:" and the start of the oldest such question, and how many are open when there are several. The button then reads "Send as the answer", and the message holds at most the 16,000 characters an answer may. The question's card says the user's own words go in the message box. The message names the question the box showed (`question_id`, or null): when the server answers that the question changed (`question_changed`), as when a button or another tab answered it first, nothing was written, the error says so, and the draft stays for the user to read the chat again.
 - **Stale questions.** An open question whose run no longer holds the session shows no buttons: it takes no answer (the server refuses one, `run_ended`), and the card says to write to the agent as a message instead.
