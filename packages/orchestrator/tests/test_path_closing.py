@@ -386,6 +386,8 @@ class World:
     reviewer: Recorder = field(default_factory=lambda: Recorder(flags=0))
     max_turns: int | None = None
     last_turn: bool = False
+    answered: asyncio.Event = field(default_factory=asyncio.Event)
+    """Set as the model writes A1."""
 
 
 def plans(harness: Harness) -> tuple[SessionPlans, Callable[[], None]]:
@@ -465,6 +467,21 @@ def returned_child(w: World) -> None:
     w.arrive.append(arrive)
 
 
+async def waits_for_children(w: World) -> None:
+    """Once the parent waits for its children: at its closing, or, with no turn after A1,
+    as its end waits (``Delegations.finishing``). A run that does not wait for them at its
+    end, as one whose answer stands on its last turn, is let go a while after A1."""
+    if not w.last_turn:
+        await awaiting_children(w.harness)
+        return
+    await w.answered.wait()
+    waiting = asyncio.create_task(awaiting_children(w.harness))
+    try:
+        await asyncio.wait((waiting,), timeout=RELEASE_SECONDS)
+    finally:
+        waiting.cancel()
+
+
 def running_child(w: World) -> None:
     """A task still running at A1's closing, which returns once its parent waits (or,
     with no turn after A1, a while later)."""
@@ -475,10 +492,7 @@ def running_child(w: World) -> None:
         await free.wait()
 
     async def release() -> None:
-        if w.last_turn:
-            await asyncio.sleep(RELEASE_SECONDS)
-        else:
-            await awaiting_children(w.harness)
+        await waits_for_children(w)
         free.set()
 
     w.prefix.append(Reply(calls=[call("delegate", task=task)]))
@@ -506,9 +520,8 @@ def agent_message(w: World) -> None:
     async def later() -> None:
         free.set()
 
-    async def bounded() -> None:
-        await asyncio.wait_for(sent.wait(), 60)
-        await asyncio.sleep(RELEASE_SECONDS)
+    async def no_second_turn() -> None:
+        await waits_for_children(w)
         free.set()
 
     w.prefix.append(Reply(calls=[call("delegate", task=task)]))
@@ -517,8 +530,10 @@ def agent_message(w: World) -> None:
         *submitted(DONE, "Done.", before=report_then_block),
     ]
     w.arrive.append(arrive)
-    w.second.append(later)
-    w.background.append(bounded)
+    if w.last_turn:
+        w.background.append(no_second_turn)
+    else:
+        w.second.append(later)
 
 
 def running_job(w: World) -> None:
@@ -667,7 +682,8 @@ def number(text: object) -> int | None:
 
 def world(harness: Harness, pending: tuple[str, ...]) -> World:
     w = World(harness)
-    for name in pending:
+    # The last turn first: the children's conditions read it.
+    for name in sorted(pending, key=lambda name: name != "last_turn"):
         CONDITIONS[name](w)
     w.prefix += w.last
     if w.last_turn:
@@ -691,9 +707,13 @@ async def drive(w: World, answers: int, *, run_id: str = "run-1") -> Seen:
         await step()
     harness.configure_reviews(w.config)
     harness.gateway.reviewer = w.reviewer
+
+    async def answered() -> None:
+        w.answered.set()
+
     script = [
         *w.prefix,
-        Reply(ANSWER.format(1), before=each(w.arrive)),
+        Reply(ANSWER.format(1), before=each([answered, *w.arrive])),
         *(
             Reply(ANSWER.format(n), before=each(w.second) if n == 2 else None)
             for n in range(2, answers + 1)
@@ -953,14 +973,29 @@ async def a_child_records_progress_during_its_parents_reply(harness: Harness) ->
     """PD-9, PD-12: a child's progress on its own track is the plan's, not another
     author's change to it; the parent's next effect in the same reply is not refused."""
     track_plan(harness)
-    progressed, free = asyncio.Event(), asyncio.Event()
+    thinking, free = asyncio.Event(), asyncio.Event()
 
-    async def reported() -> None:
-        progressed.set()
-        await free.wait()
+    def recorded() -> bool:
+        store, close = plans(harness)
+        try:
+            current = store.compact_current(USER_PLANS)
+        finally:
+            close()
+        assert current is not None
+        latest = next(s.latest for s in current.steps if s.step_id == "table")
+        return latest is not None and latest.author.role == "delegated"
+
+    async def after_the_turns_notices() -> None:
+        # The child records only once the parent's call is made, its notices given.
+        await asyncio.wait_for(thinking.wait(), 30)
 
     async def after_progress() -> None:
-        await asyncio.wait_for(progressed.wait(), 30)
+        # The parent's effect call comes only once the child's record is stored.
+        thinking.set()
+        await eventually(recorded, describe="the child's track progress")
+
+    async def blocked() -> None:
+        await free.wait()
 
     async def release() -> None:
         free.set()
@@ -984,9 +1019,10 @@ async def a_child_records_progress_during_its_parents_reply(harness: Harness) ->
                         call(
                             "track_progress", step_id="table", status="in_progress", note="Started."
                         )
-                    ]
+                    ],
+                    before=after_the_turns_notices,
                 ),
-                *submitted(DONE, "Done.", before=reported),
+                *submitted(DONE, "Done.", before=blocked),
             ]
         },
     )
@@ -1091,6 +1127,28 @@ def finding_for(harness: Harness, run_id: str) -> None:
         reviews.finish(PROJECT, SESSION, review, "fixture", "findings", "A checkpoint.")
     finally:
         documents.close()
+
+
+def waiting_on(harness: Harness, key: str) -> bool:
+    """Whether the run holding the session recorded that it waits on ``key``'s items."""
+    store = ProjectStore(harness.state)
+    try:
+        state = RunState(store.control)
+        held = state.lease(PROJECT, SESSION)
+        return held is not None and any(
+            event.kind == "waiting" and event.data.get(key)
+            for event in state.events(PROJECT, SESSION, held.run)
+        )
+    finally:
+        store.close()
+
+
+def open_questions(harness: Harness) -> bool:
+    store = ProjectStore(harness.state)
+    try:
+        return bool(Questions(store.control).open(PROJECT, SESSION))
+    finally:
+        store.close()
 
 
 @dataclass(frozen=True)
@@ -1200,13 +1258,13 @@ async def woken(harness: Harness, monkeypatch: pytest.MonkeyPatch, wake: Wake) -
 
     async def watch() -> None:
         try:
-            if wake.wait == "closing_children":
+            # The input arrives once the run's wait is recorded as begun, not after a while.
+            if wake.wait in ("closing_children", "wait_delegations"):
                 await awaiting_children(harness)
+            elif wake.wait == "wait_jobs":
+                await eventually(lambda: waiting_on(harness, "job_ids"), describe="wait_jobs")
             else:
-                await eventually(
-                    lambda: len(harness.gateway.main) >= waits_at, describe="the waiting call"
-                )
-                await asyncio.sleep(0.5)
+                await eventually(lambda: open_questions(harness), describe="the question")
             await arrive()
             taken.append(await bounded(lambda: len(harness.gateway.main) > waits_at, WAKE_SECONDS))
         finally:
