@@ -296,6 +296,37 @@ Admission, corruption or disk failures can prevent retaining that observation;
 the returned message identifies this and cannot promise a durable audit record.
 Unknown intents and unresolved pins are never silently evicted.
 
+### The `publish` tool
+
+`publish` takes `path`, one workspace file, or `paths`, 1 to 16 distinct files
+(`MAX_PUBLISH_PATHS`), and an optional `media_type` for every file named; a call
+gives exactly one of `path` and `paths`. Each file is published as a call with
+`path` publishes it: the same intent, transfer, receipt, limits and attribution, the
+effect class, the plan gate and the purpose note applying once to the call. A file
+of `paths` runs under an operation of its own, the call's operation ID with the
+file's index and a digest of both, so a replayed call finds each file's publication
+and publishes none of them again. A file that fails leaves the others published.
+
+The model reads one compact entry per file, in the order given: `path`, `artifact`
+(the inventory's `artifact-…` ID), `revision`, `sha256` and `size`, or `path` and
+`error` with its `kind` and a `message` that starts with the path. A file the
+inventory kept no revision of is the file's error: the kind of the worker's definite
+refusal, which the publisher keeps beside the held receipt
+(`ArtifactPublicationOutcome.refused`), so a path with no file is `not_found` and a
+directory `invalid_request`, as a path outside the workspace is; `internal` for a
+`failed` receipt; otherwise `unavailable`, for a worker or store that could not finish
+it, whose message says the call may be made again. A replay of the same operation
+after a refusal finds the held intent, which is never published again under that
+operation, and answers `unavailable`. For
+`path` the entry is the result's `published`, or the call's `error`; for `paths`,
+`published` is the list, and the call is an error only when every file failed.
+Without an inventory the entry names the worker's `art-…` snapshot ID and has no
+revision. The tool record keeps, for each file, the worker snapshot as `artifact`
+and the receipt as `artifact_inventory`: at the top of the record for `path`, in
+order under `publications` for `paths` (`tool_entry.publications` reads either). The
+review's actions, its artifact items, a delegated run's result files and the tool
+status read every file of either form.
+
 ## Retention bounds
 
 `ArtifactLimits` supplies programmatic limits; no deployed configuration changes
@@ -457,9 +488,12 @@ count a new revision twice; reproductions count zero new revisions. Remaining wo
 is explicit incomplete ingestion and resumes at the next live boundary.
 
 A source copy is at most 64 KiB of exact verified bytes, decoded as strict UTF-8.
-The initial allowlist is `text/plain`, `text/markdown`, `text/csv`,
-`text/tab-separated-values` and `application/json`, with no parameter or only a
-UTF-8/US-ASCII charset parameter. JSON and Markdown remain raw strings, never parsed
+The media types copied are any `text/*` type but `text/html`, `application/json`,
+`application/toml`, `application/yaml`, `application/x-yaml`, `application/x-sh`,
+`application/x-tex`, `application/x-latex` and `application/octet-stream` (the type a
+file gets whose name the worker does not know, such as a `.sage` script), with no
+parameter or only a UTF-8/US-ASCII charset parameter (`consistency.artifacts.text_media`);
+the bytes decide the rest. JSON and Markdown remain raw strings, never parsed
 or rendered. Quotes, backslashes, CRLF and a BOM are preserved. Binary control
 characters, other media/charsets, invalid UTF-8, oversized or unavailable bytes
 produce metadata-only incomplete evidence with a reason. No clipped source is
@@ -470,7 +504,8 @@ A snapshot's copied text cannot change when the worker path or artifact head cha
 
 An unresolved operation gets one finite `artifact:operation:<ID>` observation:
 unknown remote outcome is distinct from a known worker snapshot whose control bytes
-are not retained. Neither grants source content or initiates a worker request. A
+are not retained, and the observation says why the publication was held (`held`, the
+receipt's message the run was told, such as a worker's refusal of a path with no file). Neither grants source content or initiates a worker request. A
 later successful retention emits its normal event. Old uncertainty belongs to its
 own reviewed window and does not make every future window incomplete. This is a
 first uncertainty observation, not an audit of every transfer retry.

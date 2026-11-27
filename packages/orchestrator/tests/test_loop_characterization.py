@@ -287,10 +287,8 @@ async def test_closing_sources_take_turns_in_todays_order(harness: Harness) -> N
     # Closing 4: nothing new; both delivered findings are bounded.
     assert shape(record.messages) == [*calls_seen[4], ANSWER]
     assert (record.stopped, record.final_text) == ("answered", "Answer 4.")
-    # An inconclusive review leaves its evidence queued for a later window. Two windows:
-    # the plan notices no longer repeat the plan's state after each read, so less evidence
-    # comes due.
-    assert reviewer.windows == 2
+    # The run's end is one final review (CR-48); the answering turn starts none.
+    assert reviewer.windows == 1
     assert all_delivered(record) == {
         **NOTHING,
         "requests": [request],
@@ -381,41 +379,36 @@ async def test_a_review_response_round_then_the_bound(harness: Harness) -> None:
     reviewer = Reviewer()
     harness.gateway.reviewer = reviewer
     record = await harness.run(
-        "run-1",
-        [Reply("The task is done."), Reply("It is done."), Reply("It is done, as stated.")],
-        reviewer=True,
+        "run-1", [Reply("The task is done."), Reply("It is done.")], reviewer=True
     )
-    first, second, third = harness.gateway.main
+    first, second = harness.gateway.main
     assert shape(first) == [SYSTEM, TASK_MESSAGE]
     flagged = shape(second)[-2][2]
     (finding,) = {notice_id.rsplit("-r", 1)[0] for notice_id in flagged}
     assert shape(second) == [
         *shape(first), ANSWER, notice("reviews", f"{finding}-r1"), counts(fail_open=1)
     ]  # fmt: skip
-    # Each later window re-flags the same finding at a new revision; the counts are
-    # unchanged, so they are not repeated.
-    assert shape(third) == [*shape(second), ANSWER, notice("reviews", f"{finding}-r2")]
-    assert shape(record.messages) == [*shape(third), ANSWER]
-    assert (record.stopped, record.final_text) == ("answered", "It is done, as stated.")
-    # Two response rounds, then a third window whose re-flag (r3) reaches no model:
-    # the delivered findings stay open at their bound. A-02 step 4 keeps this or
-    # changes it deliberately: the bound also covers the re-flag no model saw.
-    assert reviewer.windows == 3
-    assert summary(record, "reviews")["reviews_total"] == 3
-    assert all_delivered(record) == {**NOTHING, "reviews": [f"{finding}-r1", f"{finding}-r2"]}
+    assert shape(record.messages) == [*shape(second), ANSWER]
+    assert (record.stopped, record.final_text) == ("answered", "It is done.")
+    # One final review and one answering turn (CR-48): no review follows the turn, and
+    # the delivered finding stays open at its bound.
+    assert reviewer.windows == 1
+    assert summary(record, "reviews")["reviews_total"] == 1
+    assert all_delivered(record) == {**NOTHING, "reviews": [f"{finding}-r1"]}
     reviews = summary(record, "reviews")
     assert (reviews["outcome"], len(reviews["reviews"]), reviews["counts"]) == (
         "findings",
-        3,
+        1,
         {"fail:open": 1},
     )
+    assert reviews["final_review"]["answered"]
     assert harness.findings() == {"review": "open at bound"}
 
     again = await harness.run("run-2", [Reply("Fine.")], reviewer=True)
     (seen,) = harness.gateway.main
     assert shape(seen) == [SYSTEM, TASK_MESSAGE, counts(fail_open=1)]
     assert all_delivered(again) == NOTHING
-    assert reviewer.windows == 3  # a conversational answer starts no review
+    assert reviewer.windows == 1  # a conversational answer starts no review
 
 
 async def test_a_user_plan_edit_mid_run_holds_the_answer_once_with_the_plan(

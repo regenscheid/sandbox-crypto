@@ -568,6 +568,21 @@ def _forward_auth_secret(site: Site, bundle: BundleConfig) -> dict[str, bytes]:
     return {FORWARD_AUTH_SECRET: value}
 
 
+def site_notices(site: Site, bundle: BundleConfig) -> tuple[str, ...]:
+    """What a valid site gives some projects and not others, in plain words: with
+    ``[mcp_direct]``, the connectors reach the runs of its one project alone, since the
+    runtime's sandbox is bound to that project's policy revision (D98)."""
+    direct = bundle.mcp_direct
+    others = [project.id for project in site.projects if direct and project.id != direct.project]
+    if direct is None or not others:
+        return ()
+    return (
+        f"[mcp_direct] gives the MCP servers' tools to project {direct.project} only; "
+        f"the runs of {', '.join(others)} have no connector tools "
+        "(docs/KUBERNETES-BUNDLE.md#the-direct-mcp-path-opt-in)",
+    )
+
+
 def plan(site: Site, bundle: BundleConfig) -> dict[str, bytes]:
     """Every file to write, by its path in the output directory; nothing is written."""
     shared = _check_inputs(site, bundle)

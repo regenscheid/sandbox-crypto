@@ -12,6 +12,7 @@ from sandbox_science.orchestrator.model import (
     Message,
     ModelTurn,
     ToolSpec,
+    timed,
 )
 from sandbox_science.orchestrator.model_profiles import ModelProfile, ModelRole
 from sandbox_science.orchestrator.projects import ModelUsage
@@ -73,6 +74,8 @@ def usage(turn: ModelTurn) -> ModelUsage:
         thinking_replay=(turn.thinking_replay or "")[:300] or None,
         retried=list(turn.retried[:16]),
         refusals=[turn.refused] if turn.refused is not None else [],
+        started_at=turn.started_at,
+        duration_ms=turn.duration_ms,
     )
 
 
@@ -98,5 +101,5 @@ class PaidModel:
             "delegated" if self.kind == "delegated" else "main",
             capture.request(messages, tools),
         )
-        turn = await self.model.complete(messages, tools)
+        turn = await timed(self.model.complete(messages, tools))
         return replace(turn, intent_id=identity)

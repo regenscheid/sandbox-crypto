@@ -167,6 +167,8 @@ class AgentContext:
                 thinking_replay=(reply.thinking_replay or "")[:300] or None,
                 retried=list(reply.retried[:16]),
                 refusals=[reply.refused] if reply.refused is not None else [],
+                started_at=reply.started_at,
+                duration_ms=reply.duration_ms,
             )
         )
 

@@ -9,6 +9,8 @@ from typing import Any, Final, cast
 
 from pydantic import JsonValue
 
+from .tool_entry import publications
+
 GLOSS_FILES: Final = 10
 """The most files a gloss names; it counts the rest."""
 GLOSS_ERROR_CHARS: Final = 200
@@ -124,10 +126,11 @@ def _files(record: Mapping[str, Any]) -> tuple[list[str], int]:
         if isinstance(path := _mapping(entry).get("path"), str):
             paths.append(path)
     counted = sum(_count(recorded.get(key)) for key in ("recorded", "deleted"))
-    artifact = _mapping(record.get("artifact"))
-    if isinstance(path := artifact.get("source_path"), str) and path not in paths:
-        paths.append(path)
-        counted += 1
+    for publication in publications(record):
+        artifact = _mapping(publication.get("artifact"))
+        if isinstance(path := artifact.get("source_path"), str) and path not in paths:
+            paths.append(path)
+            counted += 1
     unique = list(dict.fromkeys(paths))
     return [_cut(path) for path in unique[:GLOSS_FILES]], max(counted, len(unique))
 

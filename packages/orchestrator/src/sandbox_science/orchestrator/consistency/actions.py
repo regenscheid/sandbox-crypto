@@ -28,6 +28,7 @@ from sandbox_science.orchestrator.documents.errors import DocumentError
 from sandbox_science.orchestrator.documents.store import DocumentStore
 from sandbox_science.orchestrator.model import Message
 from sandbox_science.orchestrator.session_plans import PlanAuthority, PlanScope, SessionPlans
+from sandbox_science.orchestrator.tool_entry import publications
 
 from .snapshot import MAX_ITEM_BYTES
 from .values import Json, dump
@@ -121,13 +122,14 @@ def _made(call: Json, given: Json) -> list[str]:
                 changed = cast(Json, entry)
                 made.append(f"ledger {changed.get('handle')} r{changed.get('revision')}")
         made += [f"work record {work}" for work in cast(list[Any], found.get("work") or [])]
-    receipt = call.get("artifact_inventory")
-    artifact = call.get("artifact")
-    if isinstance(receipt, dict) and isinstance(cast(Json, receipt).get("revision"), dict):
-        revision = cast(Json, cast(Json, receipt)["revision"])
-        made.append(f"artifact {revision.get('artifact_id')} r{revision.get('revision')}")
-    elif isinstance(artifact, dict):
-        made.append(f"artifact {cast(Json, artifact).get('artifact_id')}")
+    for publication in publications(call):
+        receipt = publication.get("artifact_inventory")
+        artifact = publication.get("artifact")
+        if isinstance(receipt, dict) and isinstance(cast(Json, receipt).get("revision"), dict):
+            revision = cast(Json, cast(Json, receipt)["revision"])
+            made.append(f"artifact {revision.get('artifact_id')} r{revision.get('revision')}")
+        elif isinstance(artifact, dict):
+            made.append(f"artifact {cast(Json, artifact).get('artifact_id')}")
     execution = call.get("execution")
     if isinstance(execution, dict):
         found = cast(Json, execution)
@@ -138,6 +140,14 @@ def _made(call: Json, given: Json) -> list[str]:
     delegation = call.get("delegation")
     if isinstance(delegation, dict) and cast(Json, delegation).get("delegation_id"):
         made.append(f"delegation {cast(Json, delegation)['delegation_id']}")
+    accept = call.get("accept")
+    if isinstance(accept, dict) and cast(Json, accept).get("delegation_id"):
+        # Whether the accepting run read the task's files whole first (PD-46, CR-48).
+        unread = cast(Json, accept).get("unread")
+        made.append(
+            f"accepted delegation {cast(Json, accept)['delegation_id']}, "
+            + (str(unread) if unread else "its files read whole")
+        )
     proposal = call.get("result") if call.get("memory") == "memory_propose" else None
     if isinstance(proposal, dict) and cast(Json, proposal).get("proposal_id"):
         found = cast(Json, proposal)

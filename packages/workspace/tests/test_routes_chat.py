@@ -299,8 +299,8 @@ async def test_the_sessions_questions_are_listed_and_answered(
     shown = listed["questions"][0]
     assert (shown["text"], shown["state"], shown["run"]) == ("Which curve?", "open", "run-x")
     assert shown["options"] == [
-        {"label": "Ed25519", "detail": "The common choice"},
-        {"label": "Ed448", "detail": None},
+        {"label": "Ed25519", "detail": "The common choice", "recommended": False},
+        {"label": "Ed448", "detail": None, "recommended": False},
     ]
     url = SESSION + f"/questions/{first}/answer"
     body = {"kind": "picked", "picked": ["Ed448"]}

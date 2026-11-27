@@ -323,7 +323,7 @@ file:
 | `pool_id` | The worker's pool, the bundle's name by default |
 | `cluster_domain` | The cluster's DNS domain, `cluster.local` by default (CoreDNS's `kubernetes <domain>` line: `kubectl -n kube-system get configmap coredns -o yaml`). OpenShell's sandbox DNS ignores the Pod's search domains, so a sandbox resolves only fully qualified names: every name a sandbox reaches is `<service>.<namespace>.svc.<cluster_domain>`: the package cache in `worker.toml`'s `package_cache`, the cache's `public_url` and the targets file, and, since the agent runtime runs in a sandbox, `runtime-manager.json`'s `control_url` (and `manager_url`, which must name the same host) and the runtime policy's control, worker and model hosts. Other trusted Pods keep the `.svc` names their search domains complete |
 | `[[projects]]`, `[skills]` | As in the launcher's config (`id`, at most 63 characters, [see projects](PROJECTS-AND-SESSIONS.md#as-built-the-harnesss-project-records); `profile`, `sessions`, `skills`; `embedding_model`, `metadata_model`, `packs`); each profile must be one of `[profiles]` |
-| `[model]` | The launcher's `[model]` without `name`, `delegated` and `reviewer`, which come from the bundle's catalog with its APIs and its efforts defaulted as the workspace's options default them (`max`, reviewer `medium`): `url`, `api_key_file` (the runtime manager's key), `watcher`, and `api`/`reasoning_effort` for aliases and roles outside the catalog. `url` is https, or http to an in-cluster Service (`*.svc`, `*.svc.<cluster_domain>`), whose key then crosses the Pod network unencrypted. The agent runtime reaches it from its sandbox, so an in-cluster name must be fully qualified (`http://litellm.litellm.svc.<cluster_domain>:4000/v1`); a bare `*.svc` name is refused |
+| `[model]` | The launcher's `[model]` without `name`, `delegated` and `reviewer`, which come from the bundle's catalog with its APIs and its efforts defaulted as the workspace's options default them (`max`, reviewer `medium`): `url`, `api_key_file` (the runtime manager's key), `watcher`, and `api`/`reasoning_effort` for aliases and roles outside the catalog. Its run service settings (`review_token_budget`, `review_calls_per_hour`, `final_review`, the watcher's limits) are control's defaults in `control.json`, as the launcher's are its run service's: `final_review = "hold"` holds every run's final answer for its review in the projects that set none of their own (`project review`). `url` is https, or http to an in-cluster Service (`*.svc`, `*.svc.<cluster_domain>`), whose key then crosses the Pod network unencrypted. The agent runtime reaches it from its sandbox, so an in-cluster name must be fully qualified (`http://litellm.litellm.svc.<cluster_domain>:4000/v1`); a bare `*.svc` name is refused |
 | `[runtime]` | The `orchestrator` image by digest, its full source `revision`, `recover_infrastructure`, and its Kata placement |
 | `[worker]` | `max_environments` (1 to 1000; the worker's default, 8, when unset): the most session environments, not job sandboxes or child environments, that the projects of control's worker client and of the workspace's may have at once, rendered into each of those two clients' `[[clients]]` entries in `worker.toml` (the runtime manager's binding-only client makes none). The worker keeps this limit per client, so that one cannot fill the pool's host with sandboxes ([clients limited to projects](WORKER.md#clients-limited-to-projects)); a client at it is refused with `policy_denied` ("this client's projects have N environments, its limit; delete one first"). Raise it when a site's projects keep more than eight session environments alive, such as scratch environments beside the sessions'; a change reaches the worker with the regenerated `worker.toml` Secret and a pool restart. `label_environments` (default `false`): `worker.toml`'s `openshell.environments.label_environments`, which gives each sandbox the worker creates the label `sandbox-science.io/environment=<environment ID>` and lets reconciliation of an unknown creation look for it. Confirmed on the test instance's OpenShell 0.1.5 gateway on 2026-10-26: the label appears on the OpenShell sandbox, not on the Kubernetes Sandbox object or its Pod, so select by it through `openshell sandbox list`, not `kubectl`; `[worker.job_profiles.<name>]`, the job sandbox sizes ([job sandboxes](WORKER.md#job-environments)): a placement (below) plus `description` and, optionally, `wall_time_max`, `schedule_timeout`, `max_concurrent`, `stage_max_bytes` and `collect_max_bytes`, rendered into `worker.toml`'s `openshell.environments.job_profiles`, so a `site` run keeps them; and `max_job_sandboxes`, `job_retention`, `job_retention_per_project` (the worker's defaults when unset). A project's policy grants the sizes; `[worker.child_profiles.<name>]`, the sizes of delegated runs' own environments ([child environments](WORKER.md#child-environments)): the same keys as a job size plus `isolation_tier` (3 unless set; 2 or 3, since the placement is Kata), rendered into `worker.toml`'s `openshell.environments.child_profiles`, with `default_child_profile`, `max_child_environments`, `child_retention` and `child_retention_per_project` (the worker's defaults when unset); a project's policy grants them (`resources.child_profiles`, `resources.child_environments_max`) |
 | `[profiles.<name>]` | Each research base profile's image by digest and Kata placement |
@@ -494,7 +494,10 @@ credentials = { "CF-Access-Client-Id" = "CF_ACCESS_CLIENT_ID", "CF-Access-Client
 ```
 
 Each server must be one of the site policy's, whose URL it takes, and one the floor and the
-pool ceiling admit. With it:
+pool ceiling admit. The servers' tools reach the runs of `project` only, since the runtime's
+sandbox is bound to that project's policy revision: with other `[[projects]]` in the site
+file, `site` and `check --site` say on standard error which project gets the connectors
+and which do not (`notice:` lines). With it:
 
 - **The renderer** gives the runtime manager's Pod an init container,
   `register-mcp-provider`, after its copy init: it runs
@@ -587,11 +590,12 @@ selects no Pod: delete it.
 ## Render, inspect, then qualify separately
 
 ```sh
-sandbox-science-kubernetes check --config /path/to/private-kubernetes.toml
+sandbox-science-kubernetes check --config /path/to/private-kubernetes.toml [--site /path/to/private-site.toml]
 sandbox-science-kubernetes render --config /path/to/private-kubernetes.toml --output /path/to/new-bundle.json
 ```
 
-Output is deterministic, atomically created mode 600 and never overwrites an existing
+With `--site`, `check` also loads the site file, which must name the same bundle, and
+prints its notices. Output is deterministic, atomically created mode 600 and never overwrites an existing
 file. Parse/type/cross-setting errors do not print configuration values. Offline
 validation checks only the renderer's configuration contract. Independently inspect
 the JSON, service DNS/certificates, copied settings, node/resource/storage capacity
@@ -812,6 +816,32 @@ frame a third-party context and the browser may drop the cookie. Same-site names
 separate origins, which is all D54 needs; the viewer's frames may share the workspace
 page's thread (FG-17, [preview](WORKSPACE.md#the-pdf-viewers-origin)).
 
+## Adding a project
+
+A deployment acts only for the projects its site file lists in `[[projects]]`: `site`
+writes them into `control.json`'s `projects`, which the control service admits work for,
+and into each of the worker's `[[clients]]` in `worker.toml`, which the worker lets each
+client act for. A project recorded with `project create` but not listed never runs:
+control queues no work for it, and the worker refuses its environments with
+`policy_denied` ("this client may not act for project ..."). To add one:
+
+1. Add a `[[projects]]` entry to the site file (with its `sessions`, as the others).
+2. Run `site` again into a new directory and deploy from it as the first time, the new
+   README's steps 1 and 2: a new directory has a new CA and new tokens, so every Secret
+   is replaced, the gateway's middleware CA too, and the Pods are recreated. Control and
+   the worker read their settings only when they start.
+3. Grant the policy to the new project and create it as the new README's step 3 shows
+   (`policy add --project <id>`, `project create`, `session open`).
+
+The control service records its `projects` in its state directory when it starts
+(`deployment-projects.json`). `project create` reads that list: for a project it does not
+name, the project is still recorded and the command succeeds, but it prints a warning on
+standard error that names the listed projects and this section. It warns rather than
+refuses because the host launcher creates the projects of a new config before its
+control service restarts with that config. A missing list (no control service has started
+with this state directory) gives no warning; a damaged one says the answer is unknown.
+The workspace creates no projects.
+
 ## Maintenance
 
 Workspace checkpoints to object storage, the third item on D92's list, run as Jobs in the
@@ -825,6 +855,24 @@ image with the same security context and JSON logs (`SS_LOG_FORMAT=json`) as the
 Deployments. Neither is qualified on a cluster yet. The worker's other offline commands, those that
 reach the OpenShell gateway, have a Job of their own ([offline worker
 commands](#offline-worker-commands)).
+
+### Policy revisions after an upgrade
+
+A policy setting the loader has retired is refused in a new file but read without it in
+a revision the pool's policy store already holds ([policy](POLICY.md#mcp-calls)), so a
+deployment keeps running on such a revision, and only a later `policy add` of the same
+file, for another project say, is refused. After each upgrade, as one of the checks once
+the pool runs the new image:
+
+```sh
+kubectl -n <namespace> exec deploy/<name>-pool -c worker -- sandbox-science-worker policy check \
+  --settings /private/worker.toml
+```
+
+For each project it reads the revision granted last and those its environments are on, as
+`policy add` would, and names each it would refuse with the reason and the retired keys to
+remove from the policy file (`warning:` lines). It rewrites nothing. It exits 1 only when
+a revision in force does not load at all.
 
 ### Cache trimming (opt-in)
 

@@ -548,7 +548,8 @@ def test_the_command_counts_each_session_and_the_total(
     projects.close()
     code, text = run_cli("--state-dir", str(tmp_path), capsys=capsys)
     assert code == 0
-    assert text.splitlines() == [
+    # Each count line is followed by where the time went (test_run_timing).
+    assert [line for line in text.splitlines() if not line.startswith("  ")] == [
         "p/s: 2 runs · 3 cells (python 2, sage 1) · 3 shell calls, 2 ran Python · 1 job · "
         "kernel state lost once",
         "p/t: 1 run · 0 cells · 1 shell call · 1 kernel restart",
@@ -561,6 +562,7 @@ def test_the_command_counts_each_session_and_the_total(
     assert code == 0
     found = json.loads(text)
     assert found["classifier"] == "shell-computation-1"
+    assert found["sessions"][0].pop("time")["tool_calls"] == 2
     assert found["sessions"] == [
         {
             "project": "p",
@@ -731,7 +733,7 @@ def test_the_command_counts_runs_without_a_record_from_their_events_and_says_so(
         "--state-dir", str(tmp_path), "--project", "p", "--session", "s", capsys=capsys
     )
     assert code == 0
-    assert text.splitlines() == [
+    assert [line for line in text.splitlines() if not line.startswith("  ")] == [
         "p/s: 2 runs · 1 run from events · 3 cells (python 2, sage 1) · "
         "2 shell calls, 1 ran Python · 1 job · kernel state lost once",
         "total: 2 runs · 1 run from events · 3 cells (python 2, sage 1) · "

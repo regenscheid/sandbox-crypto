@@ -18,6 +18,7 @@ import base64
 import hashlib
 import io
 import json
+import re
 import secrets
 import sqlite3
 import sys
@@ -25,7 +26,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import pytest
 import pytest_asyncio
@@ -47,13 +48,16 @@ from sandbox_science.contracts.child_environments import (
     ChildEnvironmentList,
     ChildEnvironmentRequest,
     ChildHandBack,
+    ChildLimits,
     HandBackRequest,
     InputPart,
     InputStaged,
     RetainedFile,
     RetainedInput,
+    ReturnCopyRequest,
     hand_back_path,
     hand_back_target,
+    returned_path,
 )
 from sandbox_science.contracts.context import ExecutionAuthority
 from sandbox_science.contracts.worker import (
@@ -69,6 +73,7 @@ from sandbox_science.orchestrator.delegation.environments import (
     NOT_OFFERED,
     OWN_UNDER_OFF,
     ChildPlacement,
+    account,
     continue_in,
     file_inputs,
     hand_back_plan,
@@ -97,7 +102,18 @@ from sandbox_science.worker.settings import LocalBackendSettings
 from sandbox_science.worker.store import Store
 
 from .control_versions import older_store
-from .loop_harness import AREA, PROJECT, SESSION, TOKEN, Harness, Lineage, Reply, Worker, call
+from .loop_harness import (
+    AREA,
+    PROJECT,
+    SESSION,
+    TOKEN,
+    Harness,
+    Lineage,
+    Reply,
+    Worker,
+    call,
+    own,
+)
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .test_delegation import children, delegation, results, started, submitted, wait
@@ -108,6 +124,8 @@ from .test_delegation_write_area import errors, written
 pytestmark = pytest.mark.slow
 
 DELEGATION = "dlg-" + "c" * 24
+LIMITS = ChildLimits(cpu_millicores=2000, memory_mib=4096, scratch_disk_mib=20480)
+"""What the fake worker's child environments may use (CE-3)."""
 
 
 # The fake worker side.
@@ -129,6 +147,13 @@ class ChildService:
     offers: bool = True
     """Whether the worker offers child environments (its capabilities' feature)."""
     failing_hand_back: bool = False
+    returns: list[ReturnCopyRequest] = field(default_factory=list[ReturnCopyRequest])
+    """The copies at a task's returns, as asked (CE-6, PD-46)."""
+    failing_return: bool = False
+    """Whether a return's copy fails as an unreachable worker's does."""
+    copy_max: int | None = None
+    """The bytes a hand-back or a return's copy takes at most of a file: past it, the file
+    is left out by its size, as past the profile's ``collect_max_bytes``."""
     received: dict[tuple[str, int], bytes] = field(default_factory=dict[tuple[str, int], bytes])
     """Inputs from control's retained content as their parts arrived (CE-7)."""
     parts: list[InputPart] = field(default_factory=list[InputPart])
@@ -166,6 +191,7 @@ class ChildService:
             created_at=now,
             ready_by=now + timedelta(seconds=60),
             expires_at=now + timedelta(days=7),
+            limits=LIMITS,
         )
         settled = (
             made.model_copy(update={"phase": "ready", "ready_at": now, "isolation_tier": 3})
@@ -186,39 +212,71 @@ class ChildService:
         if self.failing_hand_back:
             raise WorkerAPIError(ErrorKind.CONFLICT, "the hand-back failed")
         found = self.made[environment_id]
-        assert self.manager is not None
-        child = request.context.model_copy(update={"environment_id": environment_id})
         target = request.target
+        back = await self._copied(
+            environment_id, request.context, request.delegation_id, target, request.files,
+            request.retained, lambda path: hand_back_path(target, path),
+        )  # fmt: skip
+        self.made[environment_id] = found.model_copy(
+            update={"phase": "collecting", "hand_back": back}
+        )
+        return back
+
+    async def copy_returned(self, environment_id: str, request: ReturnCopyRequest) -> ChildHandBack:
+        """The worker's copy at a task's return: the environment stays ready."""
+        self.returns.append(request)
+        if self.failing_return:
+            raise WorkerAPIError(ErrorKind.UNAVAILABLE, "cannot reach the worker: refused")
+        found = self.made[environment_id]
+        if found.phase != "ready":
+            raise WorkerAPIError(ErrorKind.CONFLICT, f"the child environment is {found.phase}")
+        area, target = request.area, request.target
+        return await self._copied(
+            environment_id, request.context, request.delegation_id, target, request.files,
+            request.retained, lambda path: returned_path(area, target, path),
+        )  # fmt: skip
+
+    async def _copied(
+        self,
+        environment_id: str,
+        session: ExecutionContext,
+        delegation_id: str,
+        target: str,
+        files: tuple[str, ...],
+        retained: tuple[RetainedFile, ...],
+        landing: Callable[[str], str],
+    ) -> ChildHandBack:
+        """``files`` copied through the worker's own file calls, each to its landing."""
+        assert self.manager is not None
+        child = session.model_copy(update={"environment_id": environment_id})
         collected: list[ManifestFile] = []
         left: list[UncollectedFile] = []
-        for path in request.files:
+        for path in files:
             try:
                 read = await self.manager.read_file(ReadFileRequest(context=child, path=path))
             except Exception as error:
                 left.append(UncollectedFile(path=path, reason=str(error)[:300]))
                 continue
-            destination = hand_back_path(target, path)
+            if self.copy_max is not None and read.size > self.copy_max:
+                reason = f"{read.size} bytes is over the {self.copy_max} bytes left"
+                left.append(UncollectedFile(path=path, reason=reason))
+                continue
+            destination = landing(path)
             await self.manager.write_file(
-                WriteFileRequest(
-                    context=request.context, path=destination, content_b64=read.content_b64
-                )
+                WriteFileRequest(context=session, path=destination, content_b64=read.content_b64)
             )
             size = len(base64.b64decode(read.content_b64))
             collected.append(ManifestFile(path=destination, size=size, sha256=read.sha256))
-        back = ChildHandBack(
-            delegation_id=request.delegation_id,
+        return ChildHandBack(
+            delegation_id=delegation_id,
             environment_id=environment_id,
             target=target,
             collected=tuple(collected),
-            retained=request.retained,
+            retained=retained,
             not_collected=tuple(left),
             complete=not left,
             ended_at=datetime.now(UTC),
         )
-        self.made[environment_id] = found.model_copy(
-            update={"phase": "collecting", "hand_back": back}
-        )
-        return back
 
     async def stage(self, environment_id: str, part: InputPart) -> InputStaged:
         """The worker's ``stage_input``: parts in order, the whole digest checked, the
@@ -359,6 +417,10 @@ class ChildService:
                 body = HandBackRequest.model_validate_json(await request.read())
                 self.fenced(body.context)
                 return _json(await self.hand_back(environment_id, body))
+            if path.endswith("/returned"):
+                body = ReturnCopyRequest.model_validate_json(await request.read())
+                self.fenced(body.context)
+                return _json(await self.copy_returned(environment_id, body))
             if path.endswith("/end"):
                 body = ChildEnvironmentEnd.model_validate_json(await request.read())
                 self.fenced(body.context)
@@ -442,8 +504,8 @@ def test_only_path_shaped_inputs_are_copied() -> None:
 
 
 def test_the_hand_back_copies_results_and_what_was_not_retained() -> None:
-    """CE-6: declared results are copied, unless published (named by revision); files the
-    recorder kept no content of are copied; deleted ones are not."""
+    """CE-6: declared results are copied, a published one also named by its revision;
+    files the recorder kept no content of are copied; deleted ones are not."""
     recorded: dict[str, dict[str, object]] = {
         "out/a.md": {"artifact_id": "artifact-1", "revision": 1, "content_retained": True},
         "out/b.md": {"artifact_id": "artifact-2", "revision": 3, "content_retained": True},
@@ -460,8 +522,123 @@ def test_the_hand_back_copies_results_and_what_was_not_retained() -> None:
         ]
     }
     copy, retained = hand_back_plan(result, recorded, {"out/b.md"}, files)
-    assert copy == ("out/a.md", "big.bin")
+    assert copy == ("out/a.md", "out/b.md", "big.bin")
     assert retained == (RetainedFile(path="out/b.md", artifact_id="artifact-2", revision=3),)
+
+
+def _ended_environment(
+    phase: Literal["released", "retained"] = "released",
+) -> ChildEnvironment:
+    now = datetime.now(UTC)
+    return ChildEnvironment(
+        environment_id="p-child-abc",
+        delegation_id=DELEGATION,
+        project_id="p",
+        session_id="s",
+        session_environment="p-env",
+        profile="standard",
+        phase=phase,
+        created_at=now,
+        ready_by=now,
+        ready_at=now,
+        expires_at=now + timedelta(days=7),
+        retained_until=now + timedelta(days=3) if phase == "retained" else None,
+    )
+
+
+def _manifest(sha: str) -> ManifestFile:
+    return ManifestFile(path=f"work/{DELEGATION}/table.txt", size=6, sha256=sha)
+
+
+def test_a_published_file_handed_back_is_read_at_its_path_at_its_revision() -> None:
+    """CE-6: a published deliverable is copied and named by its revision; the account
+    gives the path its copy has, and the hand-back is complete only when the copy is that
+    revision's bytes."""
+    path, sha = f"work/{DELEGATION}/table.txt", "a" * 64
+    named = RetainedFile(path=path, artifact_id="artifact-1", revision=2, sha256=sha)
+
+    def back(copied: tuple[ManifestFile, ...], complete: bool = True) -> ChildHandBack:
+        return ChildHandBack(
+            delegation_id=DELEGATION,
+            environment_id="p-child-abc",
+            target=f"work/{DELEGATION}",
+            collected=copied,
+            retained=(named,),
+            complete=complete,
+            ended_at=datetime.now(UTC),
+        )
+
+    kept = account(_ended_environment(), back((_manifest(sha),)))["hand_back"]
+    assert kept == {
+        "target": f"work/{DELEGATION}",
+        "complete": True,
+        "copied": [path],
+        "retained": [{"path": path, "artifact_id": "artifact-1", "revision": 2, "at": path}],
+        "left": [],
+    }
+    # A file changed after it was published: its copy is not the revision named.
+    changed = account(_ended_environment(), back((_manifest("b" * 64),)))["hand_back"]
+    assert isinstance(changed, dict)
+    assert changed["complete"] is False
+    (entry,) = cast(list[dict[str, Any]], changed["retained"])
+    assert "at" not in entry
+    assert entry["differs"] == f"{path} is the file as the child left it, not revision 2"
+
+
+def test_a_file_over_the_copy_limit_is_reported_with_where_to_read_it() -> None:
+    """CE-6: a file past the profile's collect_max_bytes is left out; a published one is
+    named by its revision with the tool that lists it, an unpublished one by the retained
+    environment that holds it; the hand-back is not complete."""
+    published, big = f"work/{DELEGATION}/table.txt", f"work/{DELEGATION}/big.bin"
+    reason = "it is 5000000000 bytes, past the 4294967296 bytes left of the child profile's"
+    back = ChildHandBack(
+        delegation_id=DELEGATION,
+        environment_id="p-child-abc",
+        target=f"work/{DELEGATION}",
+        retained=(RetainedFile(path=published, artifact_id="artifact-1", revision=2),),
+        not_collected=(
+            UncollectedFile(path=published, reason=reason),
+            UncollectedFile(path=big, reason=reason),
+        ),
+        complete=False,
+        ended_at=datetime.now(UTC),
+    )
+    kept = account(_ended_environment("retained"), back)
+    hand_back = cast(dict[str, Any], kept["hand_back"])
+    assert hand_back["complete"] is False
+    assert hand_back["copied"] == []
+    first, second = hand_back["left"]
+    assert first["read"] == (
+        f"control keeps it as artifact artifact-1 revision 2: find_artifacts with path "
+        f"{published} lists it"
+    )
+    assert second["read"].startswith("it stays in child environment p-child-abc until ")
+    assert "at" not in hand_back["retained"][0]
+
+
+def test_a_long_return_copys_account_is_cut_to_fit() -> None:
+    """A held environment's account keeps its return's copy within the table's bound:
+    its longest list is cut first, and the copy says it was cut."""
+    from sandbox_science.orchestrator.delegation.records import (
+        ENVIRONMENT_BYTES,
+        _environment,
+    )
+
+    area = f"work/{DELEGATION}"
+    copied: list[JsonValue] = [f"{area}/.handback/returned/1/{n:04}-{'x' * 80}" for n in range(999)]
+    kept = _environment(
+        {
+            "environment_id": "p-child-000000000000",
+            "end": "held",
+            "returned": {"result": 1, "target": f"{area}/.handback/returned/1", "copied": copied},
+        }
+    )
+    assert kept is not None
+    assert len(kept.encode()) <= ENVIRONMENT_BYTES
+    returned = json.loads(kept)["returned"]
+    assert returned["cut"] is True
+    assert 0 < len(returned["copied"]) < len(copied)
+    assert returned["copied"][0] == copied[0]
 
 
 def test_a_wall_time_ends_a_run_as_a_limit() -> None:
@@ -699,21 +876,86 @@ async def test_a_task_in_its_own_environment_hands_back_and_is_released(
     area = f"work/{delegation_id}"
     assert (workspace(child_environment) / area / "table.txt").exists()
     session = owning.context().environment_id
-    assert not (workspace(session) / area / "table.txt").exists()
-    # The hand-back: the unpublished deliverable copied, the published one named.
+    # The child's calls wrote nothing in the session's: what is there, the hand-back
+    # copied.
+    assert {r.context.environment_id for r in children(owning, root)} == {child_environment}
+    # The hand-back: both deliverables copied, the published one also named by its
+    # revision.
     (back,) = service.hand_backs
-    assert back.files == (f"{area}/notes.txt",)
+    assert back.files == (f"{area}/table.txt", f"{area}/notes.txt")
     assert [r.path for r in back.retained] == [f"{area}/table.txt"]
     target = workspace(session) / "work" / delegation_id
     assert (target / "notes.txt").read_text() == "All ones.\n"
+    assert (target / "table.txt").read_text() == "1 1 1\n"
     assert found.environment is not None
     assert found.environment["end"] == "released"
     hand_back = found.environment["hand_back"]
     assert isinstance(hand_back, dict)
-    assert hand_back["copied"] == [f"work/{delegation_id}/notes.txt"]
+    assert hand_back["copied"] == [f"{area}/table.txt", f"{area}/notes.txt"]
+    (named,) = cast(list[dict[str, Any]], hand_back["retained"])
+    assert named["at"] == f"{area}/table.txt"
+    assert hand_back["complete"] is True
     # The parent's outcome says so.
     (child,) = children(owning, root)
     assert child.parent is not None
+    # What the environment may use, from the worker: in delegate's result, and as the
+    # line after the write area's in the child's brief (CE-3).
+    sizes = "2 CPUs, 4 GiB of memory and 20 GiB of scratch disk outside the workspace"
+    assert json.loads(results(root)[0])["environment"]["limits"] == sizes
+    assert f"Your environment's limits: {sizes}." in json.dumps(own(child))
+
+
+def _first_delegation(messages: list[dict[str, Any]]) -> str:
+    """The first delegation a run's tool results named."""
+    return next(
+        found
+        for message in messages
+        if message["role"] == "tool"
+        for found in re.findall(r"dlg-[0-9a-f]{24}", str(message["content"]))
+    )
+
+
+async def test_the_parent_reads_a_published_deliverable_after_acceptance(
+    owning: Harness, service: ChildService
+) -> None:
+    """CE-6: once accepted, the task's deliverables are files at work/<delegation>/ the
+    parent reads with read_file, the published one at the revision its result names, as
+    the hand-back's account says."""
+    root = await owning.run(
+        "root",
+        [
+            Reply(calls=[TASK]),
+            wait(),
+            Reply(
+                calls_from=lambda m: [call("accept_delegation", delegation_id=_first_delegation(m))]
+            ),
+            Reply(
+                calls_from=lambda m: [
+                    call("read_file", path=f"work/{_first_delegation(m)}/table.txt"),
+                    call("read_file", path=f"work/{_first_delegation(m)}/notes.txt"),
+                ]
+            ),
+            Reply("Done."),
+        ],
+        delegated=[
+            Reply(calls=[call("write_file", path=f"{AREA}/table.txt", content="1 1 1\n")]),
+            Reply(calls=[call("write_file", path=f"{AREA}/notes.txt", content="All ones.\n")]),
+            Reply(calls=[call("publish", path=f"{AREA}/table.txt")]),
+            *submitted(RESULT, "Done."),
+        ],
+    )
+    (delegation_id,) = started(root)
+    found = delegation(owning, delegation_id)
+    assert found.review == "accepted"
+    table, notes = (json.loads(r) for r in results(root)[-2:])
+    assert table["content"] == "1 1 1\n"
+    assert notes["content"] == "All ones.\n"
+    assert found.environment is not None
+    hand_back = cast(dict[str, Any], found.environment["hand_back"])
+    assert hand_back["complete"] is True
+    (named,) = hand_back["retained"]
+    assert named["at"] == f"work/{delegation_id}/table.txt"
+    assert table["sha256"] == hashlib.sha256(b"1 1 1\n").hexdigest()
 
 
 async def test_a_session_that_ran_before_delegates_hands_back_and_closes(
@@ -1202,13 +1444,13 @@ async def test_child_idle_max_releases_a_settled_environment_during_a_run(
 
 def test_the_prompts_say_when_to_ask_for_an_environment_and_what_comes_back() -> None:
     """CE-13 and CE-5: the MAIN prompt says when a task gets an environment of its own and
-    that a returned task keeps it until acceptance hands its files back (PD-46); the
+    that accepting a returned task hands its files back and releases it (PD-46); the
     task prompt, that its own environment is working memory; ``delegate``, what one
     costs in time and that a small task shares."""
     main = " ".join(SYSTEM_PROMPT.split())
     assert "heavy in compute, memory or disk" in main
     assert "keep short tasks shared (environment: shared)" in main
-    assert "A returned task keeps its environment; accepting it copies" in main
+    assert "accepting a task in an environment of its own copies its final result's" in main
     assert "work/<delegation_id>/" in main
     assert "A returned task awaits your review" in main
     task = " ".join(TASK_PROMPT.split())
@@ -1467,6 +1709,15 @@ async def test_a_resume_continues_in_its_environment_or_restarts_in_a_new_one(
                 update={"phase": "collecting", "hand_back": back}
             )
             return back
+
+        async def copy_returned(
+            self, environment_id: str, request: ReturnCopyRequest
+        ) -> ChildHandBack:
+            service.returns.append(request)
+            return ChildHandBack(
+                delegation_id=request.delegation_id, environment_id=environment_id,
+                target=request.target, complete=True, ended_at=datetime.now(UTC),
+            )  # fmt: skip
 
         async def end_child_environment(
             self, environment_id: str, request: ChildEnvironmentEnd

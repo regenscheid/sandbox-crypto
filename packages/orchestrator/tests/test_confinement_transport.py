@@ -16,7 +16,18 @@ from sandbox_science.orchestrator.confinement.transport import (
     Request,
     TransportError,
 )
-from sandbox_science.orchestrator.confinement.wire import Hello, Ready, WireMessage, WireTurn
+from sandbox_science.orchestrator.confinement.wire import (
+    Hello,
+    Ready,
+    RunGiven,
+    ToolboxGiven,
+    WireMessage,
+    WireTurn,
+    payload,
+    typed,
+)
+from sandbox_science.orchestrator.delegation.prompt import NO_CONNECTORS as DELEGATED_NO_CONNECTORS
+from sandbox_science.orchestrator.loop import NO_CONNECTORS
 from sandbox_science.orchestrator.model import AssistantMessage, ModelTurn, ToolCall
 
 
@@ -236,16 +247,18 @@ async def test_near_response_cap_assistant_append_sends_native_once() -> None:
         await right.close()
 
 
-def test_handshake_request_and_reply_accept_seven_and_reject_older() -> None:
+def test_handshake_request_and_reply_accept_eight_and_reject_older() -> None:
     hello = {"image_revision": "a" * 40}
     ready = {"generation": "runtime-test", "projects": ["p"], "control_schema": 1}
-    assert Hello.model_validate({**hello, "protocol": 7}).protocol == 7
-    assert Ready.model_validate({**ready, "protocol": 7}).protocol == 7
+    assert Hello.model_validate({**hello, "protocol": 8}).protocol == 8
+    assert Ready.model_validate({**ready, "protocol": 8}).protocol == 8
     assert Hello.model_validate({**hello, "apis": {"claude": "messages"}}).apis == {
         "claude": "messages"
     }
     with pytest.raises(ValidationError):
         Hello.model_validate({**hello, "apis": {"claude": "anthropic"}})
+    with pytest.raises(ValidationError, match="literal_error"):
+        Hello.model_validate({**hello, "protocol": 7})
     with pytest.raises(ValidationError, match="literal_error"):
         Hello.model_validate({**hello, "protocol": 6})
     with pytest.raises(ValidationError, match="literal_error"):
@@ -281,3 +294,27 @@ async def test_internal_diagnostic_keeps_stack_without_payload_or_exception_text
     finally:
         await left.close()
         await right.close()
+
+
+def test_a_run_given_carries_the_platforms_notes_to_the_runtime() -> None:
+    """Lane B4: a confined run's notes (``NO_CONNECTORS``) cross to the runtime's loop as
+    the sections they are; a run given none, as an older host sends, has none."""
+    fields: dict[str, object] = {
+        "attempt": "cap-" + "0" * 48,
+        "run_id": "run-1",
+        "task": "Find SNOVA.",
+        "history": (),
+        "max_turns": 10,
+        "max_input_chars": 100_000,
+        "system": "system",
+        "role": "main",
+        "toolbox": ToolboxGiven(specs=(), revision=0, output_chars=2000),
+        "hooks": (),
+        "logged": True,
+        "folding": False,
+        "model": "scripted",
+    }
+    notes = (NO_CONNECTORS, DELEGATED_NO_CONNECTORS)
+    given = RunGiven.model_validate({**fields, "notes": notes})
+    assert typed(RunGiven, payload(given)).notes == notes
+    assert RunGiven.model_validate(fields).notes == ()

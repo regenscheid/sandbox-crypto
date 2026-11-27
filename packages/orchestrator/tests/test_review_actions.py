@@ -396,6 +396,27 @@ def test_a_memory_proposal_and_a_cancel_are_actions_and_a_read_is_not() -> None:
     assert action_of(messages, call) is None
 
 
+def test_a_publish_of_several_files_made_each_revision_it_recorded() -> None:
+    """W2: a ``publish`` of ``paths`` made one revision a file; a file it could not
+    publish made nothing, and the call is an error only when no file was published."""
+
+    def published(artifact: str) -> dict[str, Any]:
+        receipt = {"state": "recorded", "revision": {"artifact_id": artifact, "revision": 1}}
+        return {"artifact": {"artifact_id": f"worker-{artifact}"}, "artifact_inventory": receipt}
+
+    failed = {"path": "b.txt", "error": "unavailable"}
+    record = {"effect": "effect", "publications": [published("artifact-a"), failed]}
+    messages, call = called(1, "publish", {"paths": ["a.txt", "b.txt"]}, **record)
+    found = action_of(messages, call)
+    assert found is not None
+    assert (found["outcome"], found["made"]) == ("ok", ["artifact artifact-a r1"])
+    record = {"effect": "effect", "publications": [failed], "error": "unavailable"}
+    messages, call = called(2, "publish", {"paths": ["b.txt"]}, **record)
+    found = action_of(messages, call)
+    assert found is not None
+    assert (found["outcome"], found["made"]) == ("error", [])
+
+
 @pytest.mark.asyncio
 async def test_a_plan_change_is_an_action_and_the_review_holds_the_plan(store: Any) -> None:
     """Lab 42's B2: run 3 recorded its steps, finished its plan and said so. Its review
@@ -529,7 +550,8 @@ async def test_a_terminal_review_holds_the_runs_actions_in_its_earlier_windows(
     # context so the closing answer can be checked against earlier claims.
     non_actions = [i for i in items if i["kind"] != "actions"]
     assert non_actions
-    assert {i["kind"] for i in non_actions} <= {"transcript", "document"}
+    # The user's request is pinned in every snapshot, as context (CR-48).
+    assert {i["kind"] for i in non_actions} <= {"transcript", "document", "request"}
     assert any(i["kind"] == "transcript" for i in non_actions)
     (listed,) = [i for i in items if i["kind"] == "actions"]
     found = json.loads(reviews.read_evidence("p", "s", terminal, listed["evidence"])["text"])
@@ -651,7 +673,9 @@ async def test_a_delegated_runs_executions_and_their_output_reach_the_review(
     )
     await controller.safe_point([])
     assert not reviews.due("p", "s")
-    assert not reviews.run_effects("p", "s", "author-1")
+    # The delegated run's work is the run's to answer for: its end has a final review
+    # (the cluster's live test of 2026-11-27, where a run that only delegated had none).
+    assert reviews.run_effects("p", "s", "author-1")
     review = dispatch(reviews)
     items = evidence(reviews, review)
     executions = [i for i in items if i["kind"] == "execution"]
@@ -793,7 +817,8 @@ async def test_a_split_delegation_keeps_its_outcome_in_every_evidence_window(sto
     seen: list[tuple[str, list[dict[str, Any]]]] = []
     while reviews.progress("p", "s")["remaining"]:
         now[0] += 1000
-        review = dispatch(reviews, "checkpoint")
+        # Window by window: a checkpoint this far behind would skip to the newest (CR-49).
+        review = dispatch(reviews)
         seen.append((review, evidence(reviews, review)))
         reviews.finish("p", "s", review, "owner", "inconclusive", "Checked.")
     assert len(seen) >= 2

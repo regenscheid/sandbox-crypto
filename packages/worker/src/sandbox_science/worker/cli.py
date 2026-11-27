@@ -6,6 +6,7 @@ sandbox-science-worker serve --settings worker.toml [--log-level info]
 sandbox-science-worker token --out worker.token     # prints the new token's SHA-256
 sandbox-science-worker token --sha256 client.token  # the SHA-256 of an existing token
 sandbox-science-worker policy add --settings worker.toml [--project p1] policy.yaml
+sandbox-science-worker policy check --settings worker.toml
 sandbox-science-worker environments list --settings worker.toml [--state creating]
 sandbox-science-worker environments reconcile --settings worker.toml [--no-wait] ENVIRONMENT_ID
 sandbox-science-worker child-environments list --settings worker.toml [--phase retained]
@@ -16,6 +17,8 @@ sandbox-science-worker checkpoint plan|verify|inventory|... (checkpoint_jobs_cli
 ``policy add`` is the operator's way to put a project policy revision into the pool's
 policy store, where environments can then use it (D73); the worker API cannot. With
 ``--project``, clients limited to that project may use the revision too (D78).
+``policy check`` reports each project's revision in force that ``policy add`` would now
+refuse, such as one stored before a setting retired, which the store still loads.
 """
 
 from __future__ import annotations
@@ -40,7 +43,7 @@ from sandbox_science.contracts import SYSTEM_CLOCK, ErrorKind, Identifier
 from sandbox_science.contracts.child_environments import ChildPhase
 from sandbox_science.contracts.logs import configure_logging
 from sandbox_science.policy.openshell import CompileError, compile_sandbox
-from sandbox_science.policy.store import StoreError
+from sandbox_science.policy.store import FreshRead, StoreError
 
 from . import checkpoint_cli, checkpoint_jobs_cli
 from .admission import DraftWatcher
@@ -162,6 +165,61 @@ def add_policies(settings: Settings, paths: list[Path], projects: Sequence[str] 
                 print(f"  granted to project {project}")
             for finding in compiled.findings:
                 print(f"  {finding.severity}: {finding.subject}: {finding.message}")
+    finally:
+        environments.close()
+    return status
+
+
+def check_policies(settings: Settings) -> int:
+    """Read each project's policy revisions in force with the current loader, as a fresh
+    ``policy add`` would: the revision granted to it last and those its environments are
+    on. Report each that ``policy add`` would refuse, why, and the retired settings to
+    remove from its file. A stored revision keeps loading as it is; nothing is changed.
+    Exits 1 only when a revision in force cannot be loaded at all."""
+    openshell = settings.openshell
+    if openshell is None or openshell.environments is None:
+        print("error: the settings have no [openshell.environments] table", file=sys.stderr)
+        return 1
+    try:
+        environments = Environments(openshell, openshell.environments, settings.state_dir, {})
+    except WorkerError as error:
+        print(f"error: {error.message}", file=sys.stderr)
+        return 1
+    status, refused = 0, 0
+    try:
+        uses: dict[tuple[str, str], list[str]] = {}
+        for project, revision in environments.records.latest_grants().items():
+            uses.setdefault((project, revision), []).append("the latest grant")
+        for info in environments.records.listed(None):
+            uses.setdefault((info.project_id, info.policy), []).append(info.environment_id)
+        for (project, revision), where in sorted(uses.items()):
+            said = f"project {project}: {revision} ({', '.join(where)})"
+            try:
+                environments.store.policy(revision)
+                fresh = environments.store.reread(revision)
+                if fresh.loaded is not None:
+                    compile_sandbox(
+                        fresh.loaded,
+                        environments.targets.sandbox,
+                        ceiling=environments.ceiling,
+                        floor=environments.floor,
+                        kubernetes_placement=bool(environments.settings.kubernetes),
+                    )
+            except StoreError as exc:
+                print(f"error: {said}: it does not load: {exc}", file=sys.stderr)
+                status = 1
+                continue
+            except CompileError as exc:
+                fresh = FreshRead(None, f"it does not compile: {exc}", ())
+            if fresh.refusal is None:
+                print(f"{said}: a fresh policy add takes it")
+                continue
+            refused += 1
+            print(f"warning: {said}: a fresh policy add refuses it: {fresh.refusal}")
+            if fresh.remove:
+                print(f"  remove from its file: {', '.join(fresh.remove)}")
+            print("  the stored revision still loads as it is; nothing was changed")
+        print(f"checked {len(uses)} revisions in force; a fresh policy add refuses {refused}")
     finally:
         environments.close()
     return status
@@ -496,6 +554,11 @@ def main(argv: list[str] | None = None) -> int:
         help="let clients limited to this project use the revisions (repeatable)",
     )
     add_parser.add_argument("policies", type=Path, nargs="+")
+    check_parser = policy_commands.add_parser(
+        "check",
+        help="report the projects' policy revisions in force that a fresh add would refuse",
+    )
+    check_parser.add_argument("--settings", type=Path, required=True)
     admissions_parser = commands.add_parser(
         "admissions", help="show an environment's admission decisions (D69)"
     )
@@ -602,6 +665,8 @@ def main(argv: list[str] | None = None) -> int:
         except SettingsError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
+        if args.command == "policy" and args.policy_command == "check":
+            return check_policies(settings)
         if args.command == "policy":
             return add_policies(settings, args.policies, args.projects)
         if args.command == "captures":

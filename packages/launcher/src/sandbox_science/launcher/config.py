@@ -189,6 +189,10 @@ class ModelConfig(_Strict):
     review_calls_per_hour: int | None = Field(default=None, ge=1, le=10000)
     """The reviewer calls a project may make in an hour; the run service's default when
     unset."""
+    final_review: Literal["after", "hold"] | None = None
+    """When a run's final answer reaches the user: ``after``, when the agent gives it, its
+    final review running after; ``hold``, after the final review and the turn answering
+    its findings. The run service's default (``after``) when unset."""
     watcher: str | None = Field(default=None, min_length=1)
     """The job watcher's alias, for its check-ins on long jobs; it may be the main
     agent's. None by default: no check-ins."""

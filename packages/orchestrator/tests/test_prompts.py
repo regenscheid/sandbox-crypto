@@ -34,13 +34,14 @@ from sandbox_science.orchestrator.delegation.prompt import (
     TASK_PROMPT,
     TASK_VERSION,
 )
+from sandbox_science.orchestrator.delegation.prompt import NO_CONNECTORS as DELEGATED_NO_CONNECTORS
 from sandbox_science.orchestrator.documents import DocumentStore, DocumentTool
 from sandbox_science.orchestrator.documents.annotation_tools import SPECS as ANNOTATION_SPECS
 from sandbox_science.orchestrator.harness import save
 from sandbox_science.orchestrator.hooks import TurnHook
 from sandbox_science.orchestrator.jobs import WATCHER_PROMPT
 from sandbox_science.orchestrator.ledger.tool import PROPOSALS
-from sandbox_science.orchestrator.loop import MAIN_VERSION, SYSTEM_PROMPT, run_task
+from sandbox_science.orchestrator.loop import MAIN_VERSION, NO_CONNECTORS, SYSTEM_PROMPT, run_task
 from sandbox_science.orchestrator.memory_prompt import (
     REVIEWER_FRAMING,
     REVIEWER_VERSION,
@@ -77,11 +78,25 @@ HOSTILE = "Authorization: Bearer test-secret-prompt-not-a-credential"
 # Each installed version and the SHA-256 of its UTF-8 text. Changing a text means a new
 # version: add it here, and keep the old version's entry for its records.
 GOLDEN = {
+    "sandbox-main-23": "b8d82cbed2fca2ef5846c644c9a3c7149ddf3dcb4b41d05a8c5b82440e1dc2d7",
+    "sandbox-main-22": "7369664e75e0d1a3586e52cd154bd31861074be29200384389116a22b9f501f1",
+    "sandbox-main-21": "ca636732c6ae4cf804d66b4c8fcae41868911f71fb02b66f7aa5dbc47695fbe4",
+    "sandbox-delegated-task-23": "5c562cbeeb29c472f6c88d480011e7e83b50cc9ce0b2494b0a99d17550911951",
+    "sandbox-delegated-task-22": "5dd3211a400ef077310cd82051001253cf985483d9dfcc144c29bbf9adc6169a",
+    "sandbox-delegated-check-17": (
+        "f564ab19247381185edba3377e97fdcec55de4e875010d61377cbc7dde7af39f"
+    ),
+    "sandbox-no-connectors-1": "46aa69ad48505a7d686cdd3acb1e1b3f8b4752c49c1e3ffc6487df28cc8ec7ea",
+    "sandbox-delegated-no-connectors-1": (
+        "0292b9b4ed5e73aa09a518b8e72b8314f14960fb9982573fdae37f52c85c5407"
+    ),
     "sandbox-main-20": "95ddb8d6130651b7bd01c68abe09c5b22b3eef104ed60d51ae76fc1590630303",
     "sandbox-delegated-task-21": "21b4fd679cbe45c2696d33e5f7d98d0711ae101b82432c5f904b15bb0ba4d6f5",
     "sandbox-delegated-check-16": (
         "7eb1ee655c907708a71f0f9b7b86cc3aca165706d3b76d537d4f30d204efab1e"
     ),
+    "sandbox-main-plan-6": "bbeb281a4ce99d2dad42512f36f2d5e1c09737a9fa4f9b25d0ed80556b175af6",
+    "sandbox-main-plan-5": "954a6c5b84763c33ac2ebee443a779fdf41a4dbca2ce86ad06f47bcad91f3c20",
     "sandbox-main-plan-4": "e13f0e1b551660bce8a6aa77b4a4e1633ce6b6b783c25242e5dee376a2895317",
     "sandbox-main-19": "74e546698352d3cb2ae235e460d55442ca02259c9cb2a504adbf03d3973f8bbe",
     "sandbox-delegated-task-20": "ad91ac981e56fe6d8316ec44504194103f02879d0a46a44ae6a95c26b9e3d572",
@@ -194,10 +209,14 @@ GOLDEN = {
     "sandbox-delegated-check-8": "1911d9d5cf0036fe6d952132042f96124e0845bde8271078eb65c5960b655a78",
     "sandbox-delegated-task-8": "0928db5b6b9d08a097dd67464f69ff56eae48890d32f982dd2e516d71ae157fc",
     "sandbox-job-watcher-1": "4b545fe81e35622bf1b894c435833d78fb122116f9364d429b21c6c3551e1ab1",
+    "sandbox-consistency-14": "2f7d84f5144eca7adc0241731ac6f52e409ab58571918775d62e7ed1cd81a6ea",
+    "sandbox-consistency-13": "4da258685102b66153a6758494c019f8c8b20991777978936542d81608ec65f4",
+    "sandbox-consistency-12": "5b89cbaaf87e7d8207c6e6f80edd1c9c7e27c5f59c8e9d4975365624338ba58f",
     "sandbox-consistency-11": "83e3d07282c79659c0eed43d4c1278e8dfeecf7596606a7d3d7acc9491811327",
     "sandbox-consistency-10": "5400f167e3174daab99f268bfc0ed9613ed3886d97e4a86832054a33b5b3f135",
     "sandbox-review-budget-1": "0c8b1f5f323c09ae4aef090f39a724f14efe468eeeaed0f8f72d28dbf7f14681",
     "sandbox-consistency-9": "3905f61a0b76144e6ec941e436cd37dea2343b76a7f84f34e5ecf65d8048a588",
+    "sandbox-recheck-2": "cdf78454bed55bcc25987a15f6ba46cb8f679c871e87b02ddfb708d161f4f955",
     "sandbox-recheck-1": "70923310becc982206fb8caad884bacc282ce182c065f9e978f653ff412eb7fa",
     "sandbox-memory-run-1": "b69cc482f75853487a499ac89b5701b148066e919842a9970e6e318b2bdce121",
     "sandbox-memory-reviewer-1": (
@@ -278,6 +297,8 @@ def installed() -> dict[str, str]:
         TASK_VERSION: TASK_PROMPT,
         SKILLS_VERSION: SKILLS_FRAMING,
         PASS_VERSION: PASS_PROMPT,
+        NO_CONNECTORS.version or "": NO_CONNECTORS.text,
+        DELEGATED_NO_CONNECTORS.version or "": DELEGATED_NO_CONNECTORS.text,
     }
     texts |= {select_template(t).version: select_template(t).text for t in TEMPLATE_IDS}
     texts |= {framing.version: framing.text for framing in FRAMINGS}
@@ -296,7 +317,7 @@ def test_a_refusal_is_a_decision_and_a_miss_is_not_absence() -> None:
     assert "retry once it is approved" in SYSTEM_PROMPT  # a pending approval is not a refusal
     assert "No hit means only" in pdf_search.description
     assert "not that nothing exists" in mcp_tools.description
-    assert "never conclude from a miss" in SYSTEM_PROMPT
+    assert "never shows that no result or attack is known" in " ".join(SYSTEM_PROMPT.split())
     # Lane W's saved output (#388): what a truncated result shows is a sample.
     assert "from the saved file it names, never from the sample" in SYSTEM_PROMPT
     assert "no evidence that the work or attack does not exist" in (
@@ -327,7 +348,7 @@ HEADINGS = {
     "check": ["How you check", "Your parent", "Untrusted content and policy", "Your result"],
 }
 """Each prompt's headings, in order, after its first paragraph, which says who the agent
-is (``sandbox-main-20``, ``sandbox-delegated-task-21``, ``sandbox-delegated-check-16``)."""
+is (``sandbox-main-23``, ``sandbox-delegated-task-23``, ``sandbox-delegated-check-17``)."""
 STALE = (
     "self-approve",
     "awaiting_approval",
@@ -401,12 +422,100 @@ def test_each_rule_is_said_once_and_tool_rules_are_in_their_tools() -> None:
 
 def test_the_main_prompt_says_how_to_answer_when_to_ask_and_how_to_batch() -> None:
     main = " ".join(SYSTEM_PROMPT.split())
-    assert "Lead your answer to the user with the result, then what it rests on" in main
+    assert "Lead your answer to the user with the outcome, in the plan's terms" in main
     assert "Check in with the user only for a decision that is theirs" in main
     assert "routine steps need no confirmation" in main
     assert "side by side in one reply: they run at once" in main
     for prompt in (TASK_PROMPT, CHECK_PROMPT):
         assert "side by side in one reply: they run at once" in prompt
+
+
+def test_the_baseline_runs_faults_are_answered_where_the_prompts_speak_of_them() -> None:
+    """Lane B4, from the 2026-11-26 baseline run: a tool a skill names but the run lacks,
+    a contradicted premise of the user's, a change of scope, a "decide", children's
+    environments, lessons and acceptance, where a paper's text came from, and batched
+    writes; the reviewer checks the contradicted premise."""
+    main = " ".join(SYSTEM_PROMPT.split())
+    for said in (
+        "If a skill or the user points you to a tool you are not offered, say so in your "
+        "next message, name the route you will use instead, and go on.",
+        "contradicts a statement of the user's request, as an issue of kind contradiction",
+        "say the latter in your next reply and in your final answer",
+        'When the user answers "decide", state your choice and its reason',
+        "When a message changes the scope",
+        "to an independent re-implementation, so it cannot see your code",
+        "give the tool lessons this session has learned",
+        "read its outcome and deliverables",
+        "Leave it unaccepted until your final answer, so that it can still take follow-on work",
+        "(an archive, a mirror) and its capture date",
+        "Put independent writes (files to publish, progress on different plan steps, ledger "
+        "entries) in one reply too.",
+    ):
+        assert said in main, said
+    for prompt in (TASK_PROMPT, CHECK_PROMPT):
+        flat = " ".join(prompt.split())
+        assert "points you to a tool you are not offered, tell your parent" in flat
+    flat = " ".join(RUBRIC.split())
+    assert "a statement of the request" in flat
+    assert "the final answer and report must name that statement" in flat
+    # The notes that a project the connectors do not serve gets name no project.
+    for note in (NO_CONNECTORS, DELEGATED_NO_CONNECTORS):
+        assert "mcp_tools is not offered" in note.text
+
+
+def test_the_main_prompt_says_how_a_returned_task_is_read_and_built_on() -> None:
+    """Lane B8: a returned task's files are read where ``read_files`` says, before
+    acceptance; acceptance hands an own environment's files back and releases it; work
+    that builds on an accepted task is a new delegation naming its result files."""
+    main = " ".join(SYSTEM_PROMPT.split())
+    for said in (
+        "accept_delegation ends it, so to build on it then, delegate a new task whose "
+        "references name its result files.",
+        "Before accepting, read the files its result names where its status and outcome "
+        "notice say (read_files)",
+        "accepting a task in an environment of its own copies its final result's files into "
+        "work/<delegation_id>/ and releases the environment.",
+    ):
+        assert said in main, said
+    assert ".handback" not in main
+    assert "keeps an environment of its own until it closes" not in main
+
+
+def test_the_behaviour_audits_wording_is_where_the_prompts_speak_of_it() -> None:
+    """Wave 3 of the 2026-11-26 behaviour audit: the answer leads with the plan's outcome
+    and names what is still unverified; a requested result is said when it is ready; a
+    returned task stays unaccepted until the final answer; a child's deviations and its
+    environment's limits; the links a rejected approach and a contradiction need; a
+    connector call waits for approval; a child's deviations are listed with their size,
+    and only its named files come back; the plan is made after the routes are checked
+    and told to the user with its main risk. Each rule the audit found repeated is said
+    once."""
+    main = " ".join(SYSTEM_PROMPT.split())
+    for said in (
+        "Lead your answer to the user with the outcome, in the plan's terms where there is one",
+        "name each published result still unverified with the reference the user can check "
+        "to settle it",
+        "When something the user asked for is ready mid-run, tell them in a sentence or two then",
+        "Leave it unaccepted until your final answer, so that it can still take follow-on "
+        "work, unless an environment of its own must be freed for other work",
+        "A child's deviations go with its numbers into your reports and your final answer.",
+        "against its environment's memory, CPU and disk, and say whether it may reduce depth "
+        "to fit",
+        "condition, with reopen_on links to what it watches",
+        "as an issue of kind contradiction with concerns links to both sides",
+        "A connector call that needs approval waits until the user decides; every other "
+        "request that needs approval fails with approval_required",
+    ):
+        assert said in main, said
+    assert "once no follow-on work for it is likely" not in main
+    assert main.count("reach the same content another way") == 1
+    assert main.count("no result or attack is known") == 1
+    task = " ".join(TASK_PROMPT.split())
+    assert "an empty list claims you did all of it" in task
+    assert "since only the files you name there come back to your parent" in task
+    plan = " ".join(GUIDANCE.split())
+    assert "Before creating one, load the skills the work needs" in plan
+    assert "the main risk to the requested result and what you will deliver" in plan
 
 
 def test_the_delegated_prompts_end_with_the_result_and_an_example() -> None:

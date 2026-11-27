@@ -12,7 +12,7 @@ from typing import Any, Literal, TypeVar
 
 from pydantic import ValidationError
 
-from sandbox_science.contracts import ArtifactRef, ExecutionContext, PublishRequest
+from sandbox_science.contracts import ArtifactRef, ErrorKind, ExecutionContext, PublishRequest
 from sandbox_science.contracts.artifact_inventory import (
     ArtifactPublicationSource,
     ArtifactReceipt,
@@ -38,6 +38,10 @@ class ArtifactPublicationOutcome:
 
     worker: ArtifactRef | None
     receipt: ArtifactReceipt
+    refused: ErrorKind | None = None
+    """The kind of the worker's definite refusal that held this publication, such as
+    ``not_found`` for a path with no file; ``None`` when the outcome is unknown, the
+    store held it, or it was recorded."""
 
 
 class ArtifactPublisher:
@@ -347,6 +351,9 @@ class ArtifactPublisher:
             # There is no transaction across worker and control. Keep a known worker
             # reference, including when quota or content verification refuses ingestion.
             message = str(error)[:512]
+            refused = (
+                error.kind if isinstance(error, WorkerAPIError) and not error.uncertain else None
+            )
             receipt = ArtifactReceipt(state="held", operation_id=operation, message=message)
             try:
                 receipt = await self._sql(
@@ -370,7 +377,7 @@ class ArtifactPublisher:
                         ]
                     }
                 )
-            return ArtifactPublicationOutcome(worker, receipt)
+            return ArtifactPublicationOutcome(worker, receipt, refused)
         finally:
             if staged is not None:
                 await self._sql(staged.discard)

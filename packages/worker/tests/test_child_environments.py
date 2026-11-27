@@ -52,11 +52,13 @@ from sandbox_science.contracts.child_environments import (
     ChildEnvironment,
     ChildEnvironmentEnd,
     ChildEnvironmentRequest,
+    ChildLimits,
     ChildPhase,
     HandBackRequest,
     InputPart,
     RetainedFile,
     RetainedInput,
+    ReturnCopyRequest,
     is_child_environment,
 )
 from sandbox_science.contracts.context import ExecutionAuthority
@@ -287,6 +289,12 @@ class Pool:
 
     def end(self, reason: str = "delegation_ended") -> ChildEnvironmentEnd:
         return ChildEnvironmentEnd.model_validate({"context": CONTEXT, "reason": reason})
+
+    def returned(self, result: int, files: tuple[str, ...], **fields: Any) -> ReturnCopyRequest:
+        values: dict[str, Any] = {
+            "context": CONTEXT, "delegation_id": DELEGATION, "result": result, "files": files,
+        }  # fmt: skip
+        return ReturnCopyRequest.model_validate({**values, **fields})
 
     def back(self, files: tuple[str, ...], **fields: Any) -> HandBackRequest:
         values: dict[str, Any] = {"context": CONTEXT, "delegation_id": DELEGATION, "files": files}
@@ -651,6 +659,93 @@ async def test_a_complete_hand_back_releases_the_child_environment(pool: Pool) -
     assert pool.environments.get(child).state is EnvironmentState.DELETED
     # Ending again answers the same.
     assert (await pool.children.end(child, pool.end())).phase == "released"
+
+
+async def test_each_return_copies_its_result_apart_and_the_environment_stays(
+    pool: Pool,
+) -> None:
+    """CE-6 with PD-46: at each return of a task awaiting review, its result's files are
+    copied to work/<delegation>/.handback/returned/<n>/, a file of the write area at its
+    path below the area, another at its whole path; the environment stays ready. A later
+    result's copy leaves an earlier one's as it was; asked again, the stored manifest
+    answers, copying nothing twice, and another request for the same result is refused.
+    The one hand-back is still to come, and is made as before."""
+    made = await pool.ready()
+    child = made.environment_id
+    area = f"work/{DELEGATION}"
+    pool.port.files[child, f"{area}/basis.txt"] = b"3 1\n1 2\n"
+    pool.port.files[child, "out/fig.png"] = b"png"
+    pool.port.files[child, f"{area}/.handback/x"] = b"no"
+    files = (f"{area}/basis.txt", "out/fig.png", f"{area}/.handback/x")
+    first = await pool.children.copy_returned(child, pool.returned(1, files))
+    one = f"{area}/.handback/returned/1"
+    assert first.target == one
+    assert [f.path for f in first.collected] == [f"{one}/basis.txt", f"{one}/out/fig.png"]
+    assert [f.path for f in first.not_collected] == [f"{area}/.handback/x"]
+    assert pool.port.files[SESSION, f"{one}/basis.txt"] == b"3 1\n1 2\n"
+    assert pool.children.get(child, CONTEXT).phase == "ready"
+    assert await pool.children.copy_returned(child, pool.returned(1, files)) == first
+    assert pool.port.write_counts[SESSION, f"{one}/basis.txt"] == 1
+    with pytest.raises(WorkerError, match="another copy of result 1"):
+        await pool.children.copy_returned(child, pool.returned(1, files[:1]))
+    # The child changes the file and returns result 2.
+    pool.port.files[child, f"{area}/basis.txt"] = b"4 1\n1 2\n"
+    second = await pool.children.copy_returned(child, pool.returned(2, files[:1]))
+    two = f"{area}/.handback/returned/2"
+    assert second.complete
+    assert pool.port.files[SESSION, f"{two}/basis.txt"] == b"4 1\n1 2\n"
+    assert pool.port.files[SESSION, f"{one}/basis.txt"] == b"3 1\n1 2\n"
+    # The hand-back at the close: the final result's file at its own path.
+    back = await pool.children.hand_back(child, pool.back(files[:1]))
+    assert back.complete
+    assert pool.port.files[SESSION, f"{area}/basis.txt"] == b"4 1\n1 2\n"
+    assert pool.port.files[SESSION, f"{one}/basis.txt"] == b"3 1\n1 2\n"
+    # Collecting, it copies no further result.
+    with pytest.raises(WorkerError, match="only a ready one copies a returned result"):
+        await pool.children.copy_returned(child, pool.returned(3, files[:1]))
+    assert (await pool.children.end(child, pool.end())).phase == "released"
+
+
+async def test_a_continuations_return_keeps_its_works_paths(pool: Pool) -> None:
+    """A Resume's continuation writes in its work's area (DA-19, CE-12): its return's
+    copy goes below its own delegation's directory, its work area's files at their
+    paths below the area."""
+    made = await pool.ready()
+    child = made.environment_id
+    area = "work/dlg-" + "f" * 24
+    pool.port.files[child, f"{area}/notes.md"] = b"notes\n"
+    copied = await pool.children.copy_returned(
+        child, pool.returned(1, (f"{area}/notes.md",), write_area=area)
+    )
+    target = f"work/{DELEGATION}/.handback/returned/1"
+    assert [f.path for f in copied.collected] == [f"{target}/notes.md"]
+
+
+async def test_a_returned_file_past_the_bytes_is_left_by_its_size(tmp_path: Path) -> None:
+    """A return's copy has the hand-back's bounds, the profile's collect_max_bytes among
+    them, each return's on its own: a file past them is left out with its size and the
+    limit, and the environment is not retained for it."""
+    pool = Pool(tmp_path, child_profiles={"standard": child_profile(collect_max_bytes=1000)})
+    try:
+        await pool.session()
+        made = await pool.ready()
+        child = made.environment_id
+        pool.port.files[child, "small.txt"] = b"x" * 100
+        pool.port.files[child, "huge.bin"] = b"y" * 2048
+        copied = await pool.children.copy_returned(
+            child, pool.returned(1, ("small.txt", "huge.bin"))
+        )
+        assert not copied.complete
+        assert [f.path for f in copied.collected] == [
+            f"work/{DELEGATION}/.handback/returned/1/small.txt"
+        ]
+        (left,) = copied.not_collected
+        assert left.reason.startswith("2 KiB (2048 bytes) is over the 900 bytes (900 bytes)")
+        again = await pool.children.copy_returned(child, pool.returned(2, ("small.txt",)))
+        assert again.complete  # its own bytes, not what the first used
+        assert pool.children.get(child, CONTEXT).phase == "ready"
+    finally:
+        await pool.close()
 
 
 async def test_a_file_of_the_write_area_keeps_its_path(pool: Pool) -> None:
@@ -1087,6 +1182,13 @@ async def test_the_routes_serve_the_sessions_child_environments(
     listed = await (await client.get(f"/v1/child-environments?{query}", headers=headers)).json()
     assert [c["environment_id"] for c in listed["environments"]] == [child]
     response = await client.post(
+        f"/v1/child-environments/{child}/returned",
+        json=pool.returned(1, ()).model_dump(mode="json"),
+        headers=headers,
+    )
+    assert response.status == 200
+    assert (await response.json())["target"] == f"work/{DELEGATION}/.handback/returned/1"
+    response = await client.post(
         f"/v1/child-environments/{child}/inputs",
         json=part(0, 0, b"x").model_dump(mode="json"),
         headers=headers,
@@ -1220,6 +1322,33 @@ async def test_the_limit_reaches_the_client_as_a_definite_refusal(
         assert "limit_reached: this project's child_environments_max of 1" in caught.value.message
     finally:
         await manager.close()
+        await pool.close()
+
+
+async def test_a_child_environment_says_what_it_may_use(pool: Pool) -> None:
+    """Its record gives its profile's CPU and memory limits as the session's policy
+    narrows them, and the profile's scratch disk (CE-3): the example policy's caps are
+    above the profile's."""
+    made = await pool.ready()
+    assert made.limits == ChildLimits(cpu_millicores=4000, memory_mib=8192, scratch_disk_mib=4096)
+
+
+async def test_the_policy_narrows_what_a_child_environment_may_use(tmp_path: Path) -> None:
+    small = granting(tmp_path, "small.yaml")
+    text = small.read_text()
+    assert "  cpu: 16\n" in text
+    assert "  memory: 64Gi\n" in text
+    small.write_text(
+        text.replace("  cpu: 16\n", "  cpu: 1.5\n").replace("  memory: 64Gi\n", "  memory: 3Gi\n")
+    )
+    pool = Pool(tmp_path / "pool")
+    try:
+        await pool.session(pool.add(small))
+        made = await pool.ready()
+        assert made.limits == ChildLimits(
+            cpu_millicores=1500, memory_mib=3072, scratch_disk_mib=4096
+        )
+    finally:
         await pool.close()
 
 

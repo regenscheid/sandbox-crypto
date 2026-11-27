@@ -236,10 +236,11 @@ def test_exact_raw_text_copy_and_empty_exposure(state, raw: bytes) -> None:
         (b"\xff", "text/plain", "non_utf8"),
         (b"\x00", "text/plain", "binary"),
         (b"<script>alert(1)</script>", "text/html", "binary"),
-        (b"safe bytes", "application/octet-stream", "binary"),
+        (b"\x89PNG\r\n", "image/png", "binary"),
+        (b"\x89PNG\r\n", "application/octet-stream", "non_utf8"),
         (b"text", "text/plain; charset=latin1", "binary"),
     ],
-    ids=["oversize", "non-utf8", "nul", "html", "binary-media", "charset"],
+    ids=["oversize", "non-utf8", "nul", "html", "binary-media", "unknown-binary", "charset"],
 )
 def test_unavailable_content_explicitly_prevents_pass(state, data, media, availability) -> None:
     reviews, _, _ = state
@@ -436,7 +437,7 @@ def test_fix_refs_need_relevant_same_session_exact_grants(state) -> None:
         if i["locator"]["artifact"]["artifact_id"] != unrelated.artifact_id
     )
     found = finding(reviews, review, first["evidence"])
-    with pytest.raises(DocumentError, match="unrelated"):
+    with pytest.raises(DocumentError, match="is not what the finding is pinned to"):
         fix(reviews, found, unrelated)
     foreign_source = source.model_copy(
         update={"context": source.context.model_copy(update={"session_id": "other"})}
@@ -1017,3 +1018,159 @@ def test_a_confirmation_holds_the_artifacts_the_fixed_entry_pins(state) -> None:
     api.respond("p", "s", fix(finding, revision, ["C-1", 2]), MAIN)
     confirm = dispatch(reviews, "confirmation")
     assert [i["locator"]["pinned_by"]["revision"] for i in pinned(reviews, confirm)] == [2]
+
+
+def test_a_fix_may_name_the_workers_publication_of_a_later_revision(state) -> None:
+    """``publish`` answers with the worker's name of what it published and with the
+    inventory's revision; a fix naming the former means the latter."""
+    reviews, inventory, _ = state
+    publish(state)
+    ingest_artifacts(reviews, "p", "s")
+    review = dispatch(reviews)
+    found = finding(reviews, review, items(reviews, review)[0]["evidence"])
+    new = publish(state, "op2", b"count = 17\n")
+    ingest_artifacts(reviews, "p", "s")
+    assert inventory.published("p", "worker-op2") == new
+    assert inventory.published("p", "worker-none") is None
+    named = new.model_copy(update={"artifact_id": "worker-op2", "revision": 1})
+    fix(reviews, found, named)
+    responded = Findings(reviews).get("p", "s", found["finding_id"])["history"][-1]
+    assert responded["payload"]["artifact_revisions"] == [new.model_dump(mode="json")]
+
+
+def test_an_unrelated_fix_names_what_the_finding_is_pinned_to_and_what_it_accepts(
+    state,
+) -> None:
+    reviews, _, _ = state
+    pinned = publish(state)
+    unrelated = publish(state, "unrelated", path="elsewhere.txt")
+    ingest_artifacts(reviews, "p", "s")
+    review = dispatch(reviews)
+    first = next(
+        i
+        for i in items(reviews, review)
+        if i["locator"]["artifact"]["artifact_id"] == pinned.artifact_id
+    )
+    found = finding(reviews, review, first["evidence"])
+    with pytest.raises(DocumentError) as refused:
+        fix(reviews, found, unrelated)
+    assert refused.value.kind == "policy_denied"
+    assert refused.value.message == (
+        f"artifact {unrelated.artifact_id} is not what the finding is pinned to; it is pinned "
+        f"to artifact {pinned.artifact_id} r1. It accepts a later revision of a pinned "
+        "artifact (artifact_revisions) or a dismissal with a reason (action dismiss)"
+    )
+    assert refused.value.details == {"pinned": [f"artifact {pinned.artifact_id} r1"]}
+    # The worker's name of another file's publication is no name of the pinned one.
+    other = unrelated.model_copy(update={"artifact_id": "worker-unrelated"})
+    with pytest.raises(DocumentError, match=f"artifact {unrelated.artifact_id} is not what"):
+        fix(reviews, found, other, "fix-other")
+
+
+@pytest.mark.parametrize(
+    ("path", "media"),
+    [("recompute.py", "text/x-python"), ("search.sage", "application/octet-stream")],
+    ids=["python", "unknown-name"],
+)
+def test_a_published_script_is_given_whole(state, path: str, media: str) -> None:
+    """The cluster's live test of 2026-11-27: a 196-byte ``recompute.py`` the run published
+    was ``text/x-python``, outside the text types, so every review of the run was given no
+    text and ended inconclusive. A text file is now copied whole whatever its ``text/*``
+    type, and a file whose name the worker did not know is copied when its bytes are text."""
+    reviews, _, _ = state
+    data = b"EXPECTED = {'a': 1024}\nRECOMPUTED = dict(EXPECTED)\nprint('match')\n"
+    publish(state, data=data, media=media, path=path)
+    ingest_artifacts(reviews, "p", "s")
+    review = dispatch(reviews)
+    (evidence,) = items(reviews, review)
+    read = reviews.read_evidence("p", "s", review, evidence["evidence"], owner="owner")
+    assert (read["availability"], read["complete"], read["text"]) == ("text", True, data.decode())
+    reviews.finish("p", "s", review, "owner", "passed", "The script copies its values.")
+    run = reviews.run("p", "s", review)
+    assert (run["state"], run["coverage_complete"], run["coverage"]["unread"]) == (
+        "passed",
+        1,
+        [],
+    )
+
+
+def ledger_revision(reviews, entry: str = "entry-1") -> None:
+    """A ledger entry's revision in the session's feed, as the ledger's ingestion copies
+    one (``consistency/ledger.py``)."""
+    reviews.observe(
+        "p",
+        "s",
+        f"ledger:{entry}:1",
+        "ledger",
+        {"entry": entry, "revision": 1},
+        {"handle": "C-1", "claim": "The count is 16."},
+    )
+
+
+@pytest.mark.parametrize("unreadable", [False, True], ids=["all-read", "one-unread"])
+def test_an_unread_artifact_is_a_named_gap_and_credits_no_ledger_entry(
+    state, unreadable: bool
+) -> None:
+    """A review that read its window but one artifact keeps its verdict; the artifact is
+    named unread in its coverage and its final summary, and its coverage stays incomplete,
+    so the ledger gate credits no entry the review held, which may rest on the artifact."""
+    from sandbox_science.orchestrator.ledger.gate import reviewed
+
+    reviews, _, _ = state
+    ledger_revision(reviews)
+    publish(state, data=b"count = 16\n")
+    if unreadable:
+        publish(state, "op2", data=b"\x89PNG\r\n", media="image/png", path="plot.png")
+    ingest_artifacts(reviews, "p", "s")
+    review = dispatch(reviews)
+    reviews.finish("p", "s", review, "owner", "passed", "The entry matches result.txt.")
+    run = reviews.run("p", "s", review)
+    listed = items(reviews, review)
+    png = [i["evidence"] for i in listed if i["locator"].get("artifact", {}).get("media_type")
+           == "image/png"]  # fmt: skip
+    assert (run["state"], run["coverage_complete"], run["coverage"]["unread"]) == (
+        "passed",
+        int(not unreadable),
+        png,
+    )
+    with reviews.documents.control.read() as tx:
+        assert reviewed(tx.sql, "entry-1") == ([] if unreadable else [1])
+    summary = reviews.final_summary("p", "s", review)
+    assert [(u["kind"], u["why"]) for u in summary["unread"]] == (
+        [("artifact", "media type is outside the raw text evidence allowlist")]
+        if unreadable
+        else []
+    )
+
+
+def test_a_window_with_nothing_to_read_is_inconclusive(state) -> None:
+    """``inconclusive`` is for a review that could not do its job: every new item of its
+    window held nothing to read."""
+    reviews, _, _ = state
+    publish(state, data=b"\x89PNG\r\n", media="image/png", path="plot.png")
+    ingest_artifacts(reviews, "p", "s")
+    review = dispatch(reviews)
+    reviews.finish("p", "s", review, "owner", "passed", "Nothing to check.")
+    assert reviews.run("p", "s", review)["state"] == "inconclusive"
+
+
+def test_a_refused_publication_says_why_and_leaves_the_pass(state) -> None:
+    """The cluster's live test: a ``publish`` of several paths whose worker refused one
+    left that path's operation an intent, observed as a publication of unknown outcome,
+    which made every review after it inconclusive. It is named unread, with the reason the
+    run was told, beside a pass of what the review read."""
+    reviews, inventory, source = state
+    publish(state, data=b"count = 16\n")
+    inventory.begin(source, "op-missing", "out/missing.txt", None)
+    inventory.hold(source, "op-missing", "out/missing.txt", None, "out/missing.txt: no file")
+    ingest_artifacts(reviews, "p", "s")
+    review = dispatch(reviews)
+    (held,) = [i for i in items(reviews, review) if "operation" in i["locator"]]
+    payload = reviews.evidence("p", "s", review, held["evidence"])["payload"]
+    assert (payload["availability"], payload["held"]) == (
+        "unknown_remote_outcome",
+        "out/missing.txt: no file",
+    )
+    reviews.finish("p", "s", review, "owner", "passed", "result.txt holds the count.")
+    run = reviews.run("p", "s", review)
+    assert (run["state"], run["coverage"]["unread"]) == ("passed", [held["evidence"]])

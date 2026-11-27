@@ -15,7 +15,7 @@ The system message is its sections' texts joined by a blank line, in order
 ([`loop.py`](../packages/orchestrator/src/sandbox_science/orchestrator/loop.py)
 `_sections`):
 
-1. `main`, version `sandbox-main-20`: `SYSTEM_PROMPT`. A caller's other system text is
+1. `main`, version `sandbox-main-23`: `SYSTEM_PROMPT`. A caller's other system text is
    a `custom` section with no version; supplying the exact built-in text counts as
    `main`, which says what the text is, not who supplied it. Its first paragraph says
    who the agent is; Markdown headings follow, each once: *How you work* (with *Tools
@@ -33,10 +33,16 @@ The system message is its sections' texts joined by a blank line, in order
    section, and its pin, are the same for the same memory version. Its text is not from
    the catalog, so the section pin has no version; the `memory` pin below names the
    framing's.
-4. `skills`, with no version, when the project pins skills: the framing
+4. `no-connectors`, version `sandbox-no-connectors-1` (`loop.NO_CONNECTORS`), when the
+   deployment's connectors serve another project: the project has no connector tools,
+   `mcp_tools` is not offered, and the agent tells the user before using another route to
+   a paper or a source. A delegated run's is `delegated-no-connectors`, version
+   `sandbox-delegated-no-connectors-1`, which says to tell its parent
+   ([connectors](MCP-CONNECTORS.md#the-harnesss-client)).
+5. `skills`, with no version, when the project pins skills: the framing
    `sandbox-skills-index-4`, the index of the run's skills and the skills loaded at its
    start ([skills](SKILLS.md)); the `skills` pin below names the framing's version.
-5. `planning`, version `sandbox-main-plan-4`, when the plan tools are offered. Plan
+6. `planning`, version `sandbox-main-plan-6`, when the plan tools are offered. Plan
    tools offered without their hook, or the hook without the tools, refuse before any
    model call.
 
@@ -47,7 +53,9 @@ evidence-based stopping. They preserve bounded tasks, finite child briefs and
 resource ceilings. These are prompt rules, not a new quality gate; existing runs
 retain their original pins and do not receive a live prompt replacement. Since MAIN
 version 20 and planning version 4 the base alone says what both said (ceilings, finite
-briefs, when to stop), and the planning guidance keeps what is the plan's.
+briefs, when to stop), and the planning guidance keeps what is the plan's. Planning
+version 5 adds that work the user pauses is recorded `blocked` and resumes `in_progress`,
+and that a revision leaves finished steps' text as it is.
 
 ## Pins
 

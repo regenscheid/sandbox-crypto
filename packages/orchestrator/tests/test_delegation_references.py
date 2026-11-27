@@ -216,8 +216,15 @@ def test_a_range_is_of_the_parents_own_run_and_ends_where_the_archive_did(
     world.said(ROOT, "three")
     (found,) = world.resolve(ROOT, {"from": 1, "to": 50}, delegated=False)
     assert found == {"range": [1, 3], "run": ROOT}
-    assert "no range of 1 to 50" in refusal(world, ROOT, {"from": 1, "to": 51}, delegated=False)
-    assert "no range" in refusal(world, ROOT, {"from": 3, "to": 2}, delegated=False)
+    # A refusal says what is wrong, the span with both ends included and the limit, and
+    # gives a range that fits.
+    long = refusal(world, ROOT, {"from": 327, "to": 377}, delegated=False)
+    assert "reference 1 (positions 327 to 377) spans 51 positions" in long
+    assert "from and to included, past the limit of 50" in long
+    assert "from 327 to 376 fits" in long
+    backwards = refusal(world, ROOT, {"from": 3, "to": 2}, delegated=False)
+    assert "ends before it starts" in backwards
+    assert "as in from 2 to 3" in backwards
     assert "no message of your own run" in refusal(
         world, ROOT, {"from": 2, "to": 2}, delegated=False
     )
@@ -484,7 +491,7 @@ async def test_a_task_is_shown_a_messages_references_with_it(world: World) -> No
 
 def test_the_task_prompt_says_references_exist_and_how_to_ask() -> None:
     """DA-15: a child lacking context asks its parent, which may answer with references."""
-    assert TASK_VERSION == "sandbox-delegated-task-21"
+    assert TASK_VERSION == "sandbox-delegated-task-23"
     assert "When you lack context to go on, ask your parent with message_parent" in TASK_PROMPT
     assert "by reference" in TASK_PROMPT
     assert references.PREFIX == "reference_refused: "

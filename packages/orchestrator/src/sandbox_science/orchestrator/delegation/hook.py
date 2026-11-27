@@ -66,7 +66,7 @@ from sandbox_science.contracts import (
     new_id,
     write_area,
 )
-from sandbox_science.contracts.child_environments import RetainedFile
+from sandbox_science.contracts.child_environments import ChildLimits, RetainedFile
 from sandbox_science.orchestrator.aio import held, threaded
 from sandbox_science.orchestrator.context.history.collections import Collection, Members
 from sandbox_science.orchestrator.continuity.blueprints import Blueprint
@@ -85,6 +85,7 @@ from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.session_plans import PlanRef
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, dump
 
+from .acceptance import unread_text
 from .child_inputs import reference_files
 from .environments import NOT_OFFERED, ChildPlacement, placement, reconcile, waiting_notice
 from .models import Choice, ModelChoice
@@ -110,7 +111,16 @@ from .records import (
 )
 from .references import ReferenceInput, resolve
 from .review import Closer
-from .specs import Accepting, CheckBrief, Named, TaskBrief, WaitRequest, brief_of, offered
+from .specs import (
+    Accepting,
+    CheckBrief,
+    Named,
+    StatusRequest,
+    TaskBrief,
+    WaitRequest,
+    brief_of,
+    offered,
+)
 from .work import record_work
 
 if TYPE_CHECKING:
@@ -132,6 +142,38 @@ IDLE_SWEEP_SECONDS: Final = 300.0
 WRITES: Final = 3
 """Tries at writing an outcome; one never written ends ``interrupted`` at the session's
 next main run."""
+ACCEPTED_NOTE: Final = (
+    "Accepted, which is final: {0} takes no follow-on work, and message_child to it is "
+    "refused. Its files are under work/{0}/; to continue the work, delegate a new task "
+    "whose references name them."
+)
+"""What ``accept_delegation``'s result says of the task's close (PD-46)."""
+
+
+def _cores(millicores: int) -> str:
+    cores = f"{millicores / 1000:.2f}".rstrip("0").rstrip(".")
+    return f"{cores} CPU" if cores == "1" else f"{cores} CPUs"
+
+
+def _mib(mib: int) -> str:
+    if mib < 1024:
+        return f"{mib} MiB"
+    return f"{mib / 1024:.1f}".removesuffix(".0") + " GiB"
+
+
+def limits_text(limits: ChildLimits, *, own: bool = True) -> str:
+    """What a child environment may use, as its brief's line says it (``own``) and as
+    ``delegate``'s result gives it to the parent (CE-3)."""
+    sizes = (
+        f"{_cores(limits.cpu_millicores)}, {_mib(limits.memory_mib)} of memory and "
+        f"{_mib(limits.scratch_disk_mib)} of scratch disk outside the workspace"
+    )
+    if not own:
+        return sizes
+    return (
+        f"Your environment's limits: {sizes}. Size the work to fit them: a process past the "
+        "memory limit is killed."
+    )
 
 
 @dataclass(eq=False)
@@ -401,7 +443,7 @@ class Delegations(TurnHook):
             case "wait_delegations":
                 return await self._wait(WaitRequest.model_validate(args))
             case "delegation_status":
-                return await self._status(Named.model_validate(args).delegation_id)
+                return await self._status(StatusRequest.model_validate(args))
             case "accept_delegation":
                 return await self._accept(Accepting.model_validate(args))
             case _:
@@ -481,12 +523,19 @@ class Delegations(TurnHook):
             environment_id=environment.environment_id if environment is not None else None,
         )
         area = write_area(delegation_id)
+        first = (
+            f"{planned.text}\n\n{write_area_text(area, own_environment=environment is not None)}"
+        )
+        if environment is not None and environment.limits is not None:
+            # What its own environment may use, from the worker (CE-3), so that a budget
+            # the brief names can be checked against it (CE-3).
+            first += f"\n{limits_text(environment.limits)}"
         child = Child(
             delegation_id,
             run_id,
             started,
             # The platform's line naming the child's write area closes its brief (DA-19).
-            f"{planned.text}\n\n{write_area_text(area, own_environment=environment is not None)}",
+            first,
             max_turns=planned.turns,
             tokens=tokens,
             target=planned.target,
@@ -542,6 +591,11 @@ class Delegations(TurnHook):
             started_with["environment"] = {
                 "environment_id": environment.environment_id,
                 "profile": environment.profile,
+                **(
+                    {"limits": limits_text(environment.limits, own=False)}
+                    if environment.limits is not None
+                    else {}
+                ),
                 "state": environment.phase,
                 "notice": waiting_notice(delegation_id),
             }
@@ -859,6 +913,15 @@ class Delegations(TurnHook):
         ended = [i for i, d in found.items() if d.ended is not None]
         return dump(result), {"wait": {"reason": reason, "ended": ended}}
 
+    async def child_ended(self) -> str:
+        """``delegation_ended`` once a delegated run of this run's that is running now
+        ends, as by returning; never while none runs. A ``wait_jobs`` ends with it."""
+        running = {c.task for c in self.children.values() if not c.task.done()}
+        if not running:
+            await asyncio.Event().wait()
+        await asyncio.wait(running, return_when=asyncio.FIRST_COMPLETED)
+        return "delegation_ended"
+
     async def _wait_for(self, pending: set[asyncio.Task[None]], when: str) -> str:
         """Wait without spending model turns; cancelling this wait leaves cleanup
         of the children's tasks to the owning lease."""
@@ -879,10 +942,11 @@ class Delegations(TurnHook):
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await future
 
-    async def _status(self, delegation_id: str) -> tuple[str, dict[str, Any]]:
+    async def _status(self, request: StatusRequest) -> tuple[str, dict[str, Any]]:
+        delegation_id = request.delegation_id
         found = await self._read(delegation_id)
         left = await self._unreceived([found])
-        shown = self._shown(found, 0, left.get(delegation_id, ()))
+        shown = self._shown(found, 0, left.get(delegation_id, ()), files=request.files)
         return dump(shown), {"status": {"delegation_id": delegation_id}}
 
     async def _cancel_one(self, delegation_id: str) -> tuple[str, dict[str, Any]]:
@@ -928,8 +992,12 @@ class Delegations(TurnHook):
         hands back and is released, and its kernels stop. Refused for a delegation that
         is not this run's child, or not a returned task awaiting review."""
         closed = await self._close(request.delegation_id, note=request.note or None)
-        shown = self._shown(closed)
-        return dump(shown), {"accept": {"delegation_id": closed.delegation_id}}
+        shown = accepted(closed)
+        unread = unread_text(closed.review_reads)
+        record: dict[str, object] = {"delegation_id": closed.delegation_id}
+        if unread is not None:
+            record["unread"] = unread
+        return dump(shown), {"accept": record}
 
     async def _close(
         self,
@@ -1049,30 +1117,36 @@ class Delegations(TurnHook):
         return task if isinstance(task, str) else None
 
     def _shown(
-        self, delegation: Delegation, used: int = 0, left: Sequence[Delegation] = ()
+        self,
+        delegation: Delegation,
+        used: int = 0,
+        left: Sequence[Delegation] = (),
+        *,
+        files: bool = False,
     ) -> dict[str, object]:
         """A delegation as a tool returns it: a running one's state, or an ended one's
-        whole outcome when it fits the output limit with the ``used`` characters before
-        it, which then counts as received once a model call has seen it; otherwise its
-        summary. ``left`` are its own children's outcomes it never received."""
+        outcome when it fits the output limit with the ``used`` characters before it,
+        which then counts as received once a model call has seen it; otherwise its
+        summary. ``left`` are its own children's outcomes it never received; ``files``
+        lists every file its calls recorded, not only its result files."""
         if delegation.ended is None:
             child = self.children.get(delegation.delegation_id)
             limits = {"limits": child.limits} if child is not None else {}
             return {**_named(delegation), "state": "running", **limits}
-        whole = outcome(delegation, left)
+        whole = outcome(delegation, left, files=files)
         if used and used + len(dump(whole)) > self.output_chars:
             return {**summarized(delegation, left), "more": "read it with delegation_status"}
         # Alone, a check's result always fits: the list of files is cut first, then a long
         # answer to its head and tail. A task's result, at most 28 KiB (PD-45), is never
         # cut, and may pass the limit alone.
-        files = whole.get("files")
-        while isinstance(files, dict) and len(dump(whole)) > self.output_chars:
-            listed = cast(dict[str, object], files).get("files")
+        recorded = whole.get("files")
+        while isinstance(recorded, dict) and len(dump(whole)) > self.output_chars:
+            listed = cast(dict[str, object], recorded).get("files")
             if not isinstance(listed, list) or not listed:
                 break
             kept = cast(list[object], listed)[: len(cast(list[object], listed)) // 2]
-            files = {**cast(dict[str, object], files), "files": kept, "cut": True}
-            whole = {**whole, "files": files}
+            recorded = {**cast(dict[str, object], recorded), "files": kept, "cut": True}
+            whole = {**whole, "files": recorded}
         results = whole.get("result_files")
         while isinstance(results, list) and results and len(dump(whole)) > self.output_chars:
             kept = cast(list[object], results)[: len(cast(list[object], results)) // 2]
@@ -1613,31 +1687,107 @@ def _ending(delegation: Delegation) -> dict[str, object]:
                 "by": delegation.reviewed_by,
                 "reason": delegation.review_reason,
                 **({"note": delegation.review_note} if delegation.review_note else {}),
+                **({"unread": unread} if (unread := unread_text(delegation.review_reads)) else {}),
             }
     if delegation.environment is not None:
         found["environment"] = {k: v for k, v in delegation.environment.items() if k != "plan"}
     elif delegation.environment_id is not None:
         found["environment"] = {"environment_id": delegation.environment_id}
+    if (read := files_read(delegation)) is not None:
+        found["read_files"] = read
     return found
 
 
-def outcome(delegation: Delegation, left: Sequence[Delegation] = ()) -> dict[str, object]:
-    """A delegation's whole outcome as its parent receives it (PD-20): how it ended,
-    whether it read the entry it checked, and its result, with why the child's own did
-    not validate when the result is the platform's, or, when that is missing, its answer
-    as returned and why it did not validate; then the files its calls recorded,
-    the platform's list apart from the child's own claims (RA-36); and the outcomes of
-    its own children that it never received, ``left``, each summarized (PD-15)."""
-    files: dict[str, object] = {}
+def accepted(delegation: Delegation) -> dict[str, object]:
+    """What ``accept_delegation`` returns (PD-46): the acceptance, with each result file
+    and deliverable and whether the accepting run read it, ``accepted unread: …`` naming
+    those it did not, and the hand-back's account; not the outcome, which the parent has
+    read already."""
+    found: dict[str, object] = {**_named(delegation), "review": delegation.review}
+    if delegation.review_reason is not None:
+        found["reviewed"] = {
+            "by": delegation.reviewed_by,
+            "reason": delegation.review_reason,
+            **({"note": delegation.review_note} if delegation.review_note else {}),
+        }
+    reads = delegation.review_reads or {}
+    if reads.get("files"):
+        found["files"] = reads["files"]
+    if isinstance(cut := reads.get("cut"), int) and cut:
+        found["files_cut"] = cut
+    if (unread := unread_text(delegation.review_reads)) is not None:
+        found["unread"] = unread
+    if delegation.environment is not None:
+        found["environment"] = {k: v for k, v in delegation.environment.items() if k != "plan"}
+    found["closed"] = ACCEPTED_NOTE.format(delegation.delegation_id)
+    return found
+
+
+READ_BEFORE: Final = "read them there with read_file before you accept"
+
+
+def files_read(delegation: Delegation) -> str | None:
+    """Where the parent reads a task's files while the task awaits its review (PD-46):
+    a shared task's at the paths its result names; one in an environment of its own at
+    the copy its return made of this result (CE-6), with where earlier results' copies
+    stay and where acceptance brings the final result's. ``None`` for any other."""
+    if delegation.kind != "task" or delegation.review != "awaiting":
+        return None
+    if delegation.environment_id is None:
+        return (
+            "Its result's files are in the session's environment, at the paths its result "
+            f"names; {READ_BEFORE}."
+        )
+    copy = (delegation.environment or {}).get("returned")
+    if not isinstance(copy, dict):
+        return None
+    number, target, area = copy.get("result"), copy.get("target"), copy.get("area")
+    accepted = f"Accepting copies the final result's files to {area}/."
+    if isinstance(error := copy.get("error"), str):
+        return (
+            f"Result {number}'s files were not copied into the session's environment "
+            f"({error}); they stay in the task's own environment. {accepted}"
+        )
+    copied, left = copy.get("copied"), copy.get("left")
+    if not copied and not left:
+        return f"Result {number} names no files to copy. {accepted}"
+    text = (
+        f"Result {number}'s files are copied to {target}/ in the session's environment, "
+        f"a file of {area}/ at its path below it and any other at its whole path; "
+        f"{READ_BEFORE}."
+    )
+    if isinstance(left, list) and left:
+        count = len(cast(list[object], left))
+        files = "1 file was" if count == 1 else f"{count} files were"
+        text += f" {files} left out: environment.returned.left says why."
+    if isinstance(number, int) and number > 1 and isinstance(target, str):
+        root = target.rsplit("/", 1)[0]
+        text += f" Each earlier result's copy stays as it was, at {root}/<its number>/."
+    return f"{text} {accepted}"
+
+
+def outcome(
+    delegation: Delegation, left: Sequence[Delegation] = (), *, files: bool = False
+) -> dict[str, object]:
+    """A delegation's outcome as its parent receives it (PD-20): how it ended, whether it
+    read the entry it checked, and its result, with why the child's own did not validate
+    when the result is the platform's, or, when that is missing, its answer as returned
+    and why it did not validate; then its result files, pinned, and a count of the other
+    files its calls recorded, or with ``files`` the platform's whole list, apart from the
+    child's own claims (RA-36); and the outcomes of its own children that it never
+    received, ``left``, each summarized (PD-15)."""
+    listed: dict[str, object] = {}
     if delegation.files is not None:
         recorded = dict(delegation.files)
         results = recorded.pop("results", None)
         if results:
-            files["result_files"] = results  # the child's results, pinned (RA-38)
-        if recorded.get("total") or recorded.get("gaps"):
-            files["files"] = recorded
+            listed["result_files"] = results  # the child's results, pinned (RA-38)
+        if files and (recorded.get("total") or recorded.get("gaps")):
+            listed["files"] = recorded
+        elif (others := other_files(delegation)) is not None:
+            listed["other_files"] = others
     if left:
-        files["unreceived"] = [summarized(d) for d in left]
+        listed["unreceived"] = [summarized(d) for d in left]
     asked = asked_of(delegation.brief) if delegation.kind == "task" else ()
     if delegation.result is not None:
         result = dict(delegation.result)
@@ -1651,7 +1801,7 @@ def outcome(delegation: Delegation, left: Sequence[Delegation] = ()) -> dict[str
         if by_platform(delegation.result) and delegation.errors:
             # The child submitted none that checked: what was wrong with those it gave.
             shown["errors"] = list(delegation.errors)
-        return {**_ending(delegation), "result": result, **shown, **files}
+        return {**_ending(delegation), "result": result, **shown, **listed}
     unaccounted: dict[str, object] = {}
     if asked:
         # It accounts for nothing: the platform's observation (PD-45).
@@ -1662,8 +1812,46 @@ def outcome(delegation: Delegation, left: Sequence[Delegation] = ()) -> dict[str
         "errors": list(delegation.errors),
         "answer": delegation.report,
         **unaccounted,
-        **files,
+        **listed,
     }
+
+
+OTHER_FILES: Final = "delegation_status with files: true lists them"
+"""How a parent lists the files a child's calls recorded beside its result files."""
+
+
+def other_files(delegation: Delegation) -> dict[str, object] | None:
+    """How many file revisions and tombstones a delegation's calls recorded that are not
+    its pinned result files, with the calls' gaps, and how to list them; ``None`` when
+    there are none."""
+    recorded = delegation.files
+    if recorded is None:
+        return None
+    pinned = {
+        (found.get("path"), found.get("revision"))
+        for found in (
+            cast(dict[str, object], r)
+            for r in cast(list[object], recorded.get("results") or [])
+            if isinstance(r, dict)
+        )
+    }
+    listed = cast(list[object], recorded.get("files") or [])
+    results = sum(
+        1
+        for r in listed
+        if isinstance(r, dict)
+        and (cast(dict[str, object], r).get("path"), cast(dict[str, object], r).get("revision"))
+        in pinned
+    )
+    total = recorded.get("total")
+    count = max(0, (total if isinstance(total, int) else len(listed)) - results)
+    gaps = recorded.get("gaps")
+    if not count and not gaps:
+        return None
+    found: dict[str, object] = {"count": count, "list": OTHER_FILES}
+    if gaps:
+        found["gaps"] = gaps
+    return found
 
 
 LESSONS_FRAMING: Final = (
@@ -1724,7 +1912,8 @@ def summarized(delegation: Delegation, left: Sequence[Delegation] = ()) -> dict[
     if left:
         found["unreceived"] = [d.delegation_id for d in left[:10]]
     if delegation.files is not None:
-        found["files_recorded"] = delegation.files.get("total")
+        if (others := other_files(delegation)) is not None:
+            found["other_files"] = others
         results = delegation.files.get("results")
         if isinstance(results, list) and results:
             found["result_files"] = [

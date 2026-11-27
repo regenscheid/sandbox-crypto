@@ -15,13 +15,17 @@ challenge, ``sandbox-consistency-8`` to suggest the handle of a ledger entry an 
 relies on without naming it, ``sandbox-consistency-9`` to check cryptographic claims
 from their form, ``sandbox-consistency-10`` to finish within its budget, with the
 manifest marking the window's new items and the run record naming what a review covered,
-and ``sandbox-consistency-11`` to read a library text as a quote's source;
+``sandbox-consistency-11`` to read a library text as a quote's source, and
+``sandbox-consistency-12`` to name a statement of the user's request the evidence contradicts;
 a change to any of them changes what a reviewer sees. The finding
 lifecycle (CR-40 to CR-47) changed them once more without a rubric: a copied finding
 carries its queued re-check and the author's dismissal, a fix leaves it ``open``, and the
 run record counts the dismissals the review rejected. A fix now names something later than
 what its finding reviewed (CR-42), so the confirmation's finding reviews a document's
-first revision and its fix names the second, which the snapshots hold."""
+first revision and its fix names the second, which the snapshots hold. The final review's
+setting (CR-48) changed them once more, by the configuration digest the run records, and
+``sandbox-consistency-13`` again, with the user's request pinned in every snapshot, and
+``sandbox-consistency-14``."""
 
 from __future__ import annotations
 
@@ -51,9 +55,9 @@ from .test_consistency import store as store
 
 GOLDEN = {
     # Author and fallback windows now include recent prior evidence for boundary checks.
-    "author": "4cced345ecf5ae71a5efe704f4dedabb88faa6daad3a334561b27ce3b6adb18f",
-    "confirmation": "48c3c6b63f56e09eaae5c24d90804b3bc42ee0ce257e39eb0dbd87a673f65e08",
-    "fallback": "7c75deb4888063028241719937a36224c8b8d5d63c67c9371f4d6a4b730bb790",
+    "author": "61bdda1f6fc1c95c028b4dce824229b0438d0fd7bb13c12bf914ff032b8a3994",
+    "confirmation": "c2bad7f0babae0facf483a332430a1bb26e0f462e357adb9fbb717a73f5c03a9",
+    "fallback": "1e2c9e9e99f59ba9b7ccd761f1af983039b27d01140398f954f5732b86e8c8f4",
 }
 
 

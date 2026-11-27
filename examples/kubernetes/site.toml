@@ -35,6 +35,7 @@ api_key_file = "secure/model.key"      # the runtime manager's key, mode 600
 watcher = "research-watcher"
 api = { "research-watcher" = "responses" }
 reasoning_effort = { watcher = "low" }
+# final_review = "hold"            # hold each run's final answer until its review ends; "after" (the default) shows it when given
 
 # The agent runtime: the orchestrator image by digest, its full 40-hex source revision,
 # and its Kata placement. kubernetes.io/arch = amd64 is always added.

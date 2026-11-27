@@ -10,6 +10,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from sandbox_science.contracts.worker import PROTOCOL_HEADER, PROTOCOL_VERSION
+from sandbox_science.orchestrator import deployment_scope
 from sandbox_science.orchestrator.confinement.server import ControlSettings, create_app
 from sandbox_science.orchestrator.confinement.transport import (
     CONTROL_HEADER,
@@ -89,7 +90,7 @@ async def test_control_checks_auth_protocol_readiness_scope_and_rotation(tmp_pat
                 hello = await ask(3, Capability.HANDSHAKE, {"image_revision": "a" * 40})
                 assert hello.error is None
                 assert isinstance(hello.payload, dict)
-                assert hello.payload["protocol"] == CONTROL_PROTOCOL == 7
+                assert hello.payload["protocol"] == CONTROL_PROTOCOL == 8
                 assert seen == ["ready"]
                 with pytest.raises(aiohttp.WSServerHandshakeError) as duplicate:
                     await client.ws_connect("/control", headers=headers)
@@ -191,3 +192,21 @@ async def test_dead_runtime_health_is_distinct_from_exclusive_cleanup(
                     await asyncio.sleep(0)
             async with client.ws_connect("/control", headers=headers):
                 assert (await (await client.get("/health")).json())["runtime_connected"]
+
+
+async def test_control_records_its_projects_for_project_create(tmp_path: Path) -> None:
+    settings = ControlSettings(
+        state_dir=tmp_path / "state",
+        worker="http://127.0.0.1:9",
+        worker_token_file=private(tmp_path / "worker.token", WORKER),
+        runtime_token_file=private(tmp_path / "runtime.token", TOKEN),
+        generation="runtime-test",
+        projects=("crypto", "lattice"),
+        main="main",
+        image_revision="a" * 40,
+    )
+    async with TestClient(TestServer(create_app(settings))):
+        assert deployment_scope.read(settings.state_dir) == (
+            frozenset({"crypto", "lattice"}),
+            None,
+        )

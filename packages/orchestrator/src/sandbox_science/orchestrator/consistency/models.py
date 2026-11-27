@@ -13,6 +13,39 @@ from sandbox_science.contracts.model import Contract
 from sandbox_science.orchestrator.documents.project_macros import MacroContext
 
 ReviewType = Literal["checkpoint", "terminal", "confirmation"]
+FinalReview = Literal["after", "hold"]
+"""When a run's final answer reaches the user (CR-48): ``after``, when the agent gives
+it, the final review running after it; ``hold``, after the final review and its one
+answering turn, or ``FINAL_HOLD_SECONDS``."""
+FINAL_REVIEW_CALLS: Final = 30
+"""The calls one final review may make: its own budget, outside ``calls_per_hour``."""
+FINAL_REVIEW_TOKENS: Final = 1_500_000
+"""The tokens one final review may use over all its calls, input and output."""
+FINAL_REVIEW_SECONDS: Final = 480
+"""How long one final review may take."""
+FINAL_FEED_ITEMS: Final = 48
+"""The most new evidence items a final review is given, newest first."""
+FINAL_FEED_BYTES: Final = 1024 * 1024
+"""The approximate new-evidence byte budget of a final review."""
+FINAL_CITED_ENTRIES: Final = 8
+"""The most ledger entries a final answer names by handle that come into its review."""
+END_WAIT_SECONDS: Final = FINAL_REVIEW_SECONDS + 60
+"""How long the end of a run waits for its reviews in all: a checkpoint still running
+has the minute beyond the final review's own time, and a review the wait outlasts is
+ended at its deadline, its window recorded unreviewed (CR-48)."""
+FINAL_HOLD_SECONDS: Final = 600
+"""How long ``hold`` keeps a final answer from the user for its review (CR-48)."""
+REQUEST_BYTES: Final = 32 * 1024
+"""The most bytes of the user's messages each review's snapshot holds as the request."""
+MAX_ACCEPTANCES: Final = 50
+"""The most accepted delegated tasks a final review's acceptances item lists."""
+FINAL_RECHECK_CALLS: Final = 8
+"""The calls of the one re-check after a final review's answering turn (CR-48)."""
+FINAL_RECHECK_SECONDS: Final = 180
+"""How long that re-check may take: a bound of its own, after the end's wait."""
+BACKLOG_WINDOWS: Final = 3
+"""A checkpoint that starts with more than this many windows of new items after the
+watermark skips to the newest window and records the rest as unreviewed (CR-49)."""
 REVIEWER_MAX_RESPONSE_BYTES: Final = 6 * 1024 * 1024
 """Finite gateway envelope for a max-effort reviewer response.
 
@@ -100,7 +133,10 @@ class ReviewConfig(Contract):
     max_feed_bytes: int = Field(default=256 * 1024, ge=16 * 1024, le=8 * 1024 * 1024, strict=True)
     """The approximate new-evidence byte budget for one review window."""
     max_terminal_windows: int = Field(default=24, ge=1, le=64, strict=True)
-    """Bounded catch-up of pending evidence when an author turn closes."""
+    """Kept so that stored settings stay readable; a run's end has one final review."""
+    final_review: FinalReview = "after"
+    """When a run's final answer reaches the user: before (``after``) or after
+    (``hold``) its final review (CR-48)."""
     # The call limits allow a bounded evidence window to finish even when the reviewer
     # reads every item; the SNOVA audit showed that larger windows repeatedly capped.
     max_turns: int = Field(default=24, ge=1, le=30, strict=True)

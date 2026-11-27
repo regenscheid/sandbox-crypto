@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 /** Review text and pinned evidence are untrusted data, never browser HTML. */
-import type { Json, MacroContext } from './api';
+import type { FinalReviewSummary, Json, MacroContext } from './api';
 import { get, post } from './http';
 export interface Review {
   review_id: string;
@@ -240,4 +240,45 @@ export function parseRevisionReferences(value: string): [string, number][] {
     if (!match) throw new Error('Changed revisions use document-ID:revision, separated by spaces.');
     return [match[1]!, Number(match[2]!)];
   });
+}
+
+/**
+ * A run's final review as one line (CR-48): how it ended, the open findings by severity,
+ * whether the answer went out before it, and what is left unreviewed, by feed position:
+ * "Final review: findings, after the answer; the agent answered its findings. Open: 1 fail.
+ * Unreviewed: positions 1–40 (reviewed through 96 of 101)." Null for a record without one.
+ */
+export function finalReviewLine(final: FinalReviewSummary | undefined): string | null {
+  if (!final) return null;
+  const outcome = final.finished === false ? 'did not finish' : (final.outcome ?? 'pending');
+  const parts = [
+    `Final review: ${outcome}${final.mode === 'after' ? ', after the answer' : ', before the answer'}` +
+      (final.answered
+        ? '; the agent answered its findings.'
+        : final.answering_failed
+          ? '; the turn answering its findings failed, so they were not answered.'
+          : '.'),
+  ];
+  const open = Object.entries(final.open ?? {}).filter(([, n]) => n > 0);
+  parts.push(
+    open.length
+      ? `Open: ${open.map(([severity, n]) => `${n} ${severity}`).join(', ')}.`
+      : 'No open findings.',
+  );
+  if (final.fixes_claimed) parts.push(`${final.fixes_claimed} fix claimed, its re-check pending.`);
+  const left = final.unreviewed ?? [];
+  if (final.complete || !left.length) parts.push('All work reviewed.');
+  else {
+    const ranges = left.map((r) => (r.start === r.end ? `${r.start}` : `${r.start}–${r.end}`));
+    const more = (final.unreviewed_ranges ?? left.length) - left.length;
+    parts.push(
+      `Unreviewed: positions ${ranges.join(', ')}${more > 0 ? ` and ${more} more ${more === 1 ? 'range' : 'ranges'}` : ''}` +
+        (final.feed_end !== undefined
+          ? ` (reviewed through ${final.reviewed_through ?? 0} of ${final.feed_end}).`
+          : '.'),
+    );
+  }
+  if (final.not_recorded_through)
+    parts.push(`Coverage is not recorded through position ${final.not_recorded_through}.`);
+  return parts.join(' ');
 }

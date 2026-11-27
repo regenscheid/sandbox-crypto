@@ -6,16 +6,18 @@ These reads own no review transaction, lease, watermark update or call accountin
 
 from __future__ import annotations
 
+import bisect
 import json
 import sqlite3
 from collections.abc import Sequence
 from dataclasses import replace
-from typing import Any
+from typing import Any, cast
 
 from sandbox_science.orchestrator.control import ControlStore
 
 from .actions import Earlier
 from .snapshot import (
+    MAX_ITEM_BYTES,
     MAX_SNAPSHOT_BYTES,
     MAX_SNAPSHOT_FINDINGS,
     MAX_SNAPSHOT_ITEMS,
@@ -323,6 +325,295 @@ def feed_items(
                 replace(item, complete=0) if item.kind == "delegation" else item for item in items
             ]
     return end, items
+
+
+_FOLDED = "(kind='action' OR (kind='source' AND source_key NOT GLOB 'quoted:*'))"
+"""Feed rows that are not items one by one: actions, which the actions item lists, and
+raw sources, which only a quote brings in."""
+
+
+def backlog_skip(
+    db: sqlite3.Connection, project: str, session: str, window: SnapshotWindow, items: int
+) -> int | None:
+    """For a checkpoint whose window starts with more than ``BACKLOG_WINDOWS`` windows of
+    ``items`` new items, the last position before the newest window, which it skips to
+    (CR-49); None when the backlog is smaller or a failed window waits for its retry."""
+    from .models import BACKLOG_WINDOWS
+
+    if window.retry is not None or window.failures:
+        return None
+    (count,) = db.execute(
+        f"SELECT count(*) FROM review_feed WHERE project=? AND session=? AND seq>? AND seq<=? "  # noqa: S608 - fixed fragment
+        f"AND NOT {_FOLDED}",
+        (project, session, window.watermark, window.end),
+    ).fetchone()
+    if count <= BACKLOG_WINDOWS * items:
+        return None
+    (skip,) = db.execute(
+        f"SELECT seq FROM review_feed WHERE project=? AND session=? AND seq>? AND seq<=? "  # noqa: S608 - fixed fragment
+        f"AND NOT {_FOLDED} ORDER BY seq DESC LIMIT 1 OFFSET ?",
+        (project, session, window.watermark, window.end, items),
+    ).fetchone()
+    return int(skip)
+
+
+def reviewed_ranges(db: sqlite3.Connection, project: str, session: str) -> list[tuple[int, int]]:
+    """The feed ranges the session's author-work reviews covered with a verdict that read
+    what they were given (CR-31, CR-49): each from the first position it covered to the
+    last, merged and in order. An inconclusive review covered none; a record from before
+    coverage named its first position covered from its window's start."""
+    found: list[tuple[int, int]] = []
+    for start, payload in db.execute(
+        "SELECT r.start_seq,c.payload FROM review_runs r JOIN review_records c "
+        "ON c.review_id=r.review_id AND c.kind='coverage' WHERE r.project=? AND r.session=? "
+        "AND r.kind IN ('checkpoint','terminal') "
+        "AND r.state NOT IN ('inconclusive','failed','dropped','running')",
+        (project, session),
+    ):
+        coverage = stored_json(payload)
+        through, first = coverage.get("through"), coverage.get("from", start)
+        if coverage.get("verdict") and isinstance(through, int) and isinstance(first, int):
+            found.append((first, through))
+    return merged(found)
+
+
+def request_item(db: sqlite3.Connection, project: str, session: str) -> EvidenceItem | None:
+    """The user's request as a review's context (CR-48): the session's messages the user
+    wrote, refused ones aside, the first and each later one in order, as many as
+    ``REQUEST_BYTES`` holds, the newest whole first and the first one always, cut short
+    if it must be; or, in a session with no chat messages, its first transcript message
+    of role user, the task a run was started with. None when there is neither."""
+    from sandbox_science.orchestrator.notices import PLATFORM_AUTHORS
+
+    from .models import REQUEST_BYTES
+
+    rows = [
+        (message, text, author, created)
+        for message, text, author, created in db.execute(
+            "SELECT message_id,text,author,created_at FROM session_messages "
+            "WHERE project_id=? AND session_id=? AND state!='refused' ORDER BY number",
+            (project, session),
+        )
+        if author not in PLATFORM_AUTHORS
+    ]
+    messages: list[Json] = [
+        {"message": message, "at": created, "text": text} for message, text, _, created in rows
+    ]
+    if not messages:
+        first = db.execute(
+            "SELECT payload FROM review_feed WHERE project=? AND session=? AND kind='transcript' "
+            "AND json_extract(payload,'$.role')='user' ORDER BY seq LIMIT 1",
+            (project, session),
+        ).fetchone()
+        if first is None:
+            return None
+        messages = [{"message": None, "at": None, "text": stored_json(first[0])["content"]}]
+    room = REQUEST_BYTES
+    kept: list[Json] = []
+    for message in reversed(messages[1:]):
+        size = len(dump(message).encode())
+        if size > room - 4096:
+            break
+        kept.append(message)
+        room -= size
+    head = dict(messages[0])
+    text = str(head["text"])
+    while len(dump(head).encode()) > room and text:
+        text = text[: len(text) // 2]
+        head = {**messages[0], "text": text + " …", "clipped": True}
+    listed = [head, *reversed(kept)]
+    payload: Json = {
+        "about": "What the user asked in this session, oldest first: context, not under review.",
+        "messages": listed,
+        "omitted": len(messages) - len(listed),
+    }
+    encoded = dump(payload)
+    return EvidenceItem("request", dump({"request": session}), encoded, digest(encoded), 1)
+
+
+def acceptances_item(db: sqlite3.Connection, project: str, session: str) -> EvidenceItem | None:
+    """The session's accepted delegated tasks, the latest ``MAX_ACCEPTANCES`` first, each
+    with the files and deliverables its acceptance recorded and whether the accepting
+    run read each whole (``delegations.review_reads``, PD-46): a final review's context,
+    read from the durable record, so that an acceptance in an earlier window or by an
+    earlier run is seen too (CR-48). None when there is none."""
+    from sandbox_science.orchestrator.delegation.acceptance import unread_text
+
+    from .models import MAX_ACCEPTANCES
+
+    listed: list[Json] = []
+    for delegation, kind, reason, reads in db.execute(
+        "SELECT delegation_id,kind,review_reason,review_reads FROM delegations "
+        "WHERE project_id=? AND session_id=? AND review='accepted' "
+        "ORDER BY reviewed_at DESC LIMIT ?",
+        (project, session, MAX_ACCEPTANCES),
+    ):
+        account = cast(Json, json.loads(reads)) if reads else None
+        listed.append(
+            {
+                "delegation": delegation,
+                "kind": kind,
+                "accepted_by": reason,
+                "files": (account or {}).get("files", []),
+                "unread": unread_text(account) if account is not None else "not recorded",
+            }
+        )
+    if not listed:
+        return None
+    payload: Json = {
+        "about": "The session's accepted delegated tasks and whether the accepting run read "
+        "each result file whole after the task returned: context, not under review.",
+        "acceptances": listed,
+    }
+    encoded = dump(payload)
+    while len(encoded.encode()) > MAX_ITEM_BYTES // 4 and len(listed) > 1:
+        listed.pop()
+        encoded = dump(payload)
+    return EvidenceItem("acceptances", dump({"acceptances": session}), encoded, digest(encoded), 1)
+
+
+def unrecorded_through(db: sqlite3.Connection, project: str, session: str) -> int:
+    """The last feed position of the session's author-work reviews that ended with no
+    coverage record, from before reviews recorded their coverage: what they covered is
+    not known, so the session's coverage says so for the positions up to it rather than
+    call them unreviewed (CR-49); 0 when there are none."""
+    (found,) = db.execute(
+        "SELECT coalesce(max(r.end_seq),0) FROM review_runs r WHERE r.project=? "
+        "AND r.session=? AND r.kind IN ('checkpoint','terminal') "
+        "AND r.state IN ('passed','findings','inconclusive','capped') AND NOT EXISTS("
+        "SELECT 1 FROM review_records c WHERE c.review_id=r.review_id AND c.kind='coverage')",
+        (project, session),
+    ).fetchone()
+    return int(found)
+
+
+def merged(ranges: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
+    """``ranges`` merged and in order."""
+    found: list[tuple[int, int]] = []
+    for first, last in sorted(ranges):
+        if found and first <= found[-1][1] + 1:
+            found[-1] = (found[-1][0], max(found[-1][1], last))
+        else:
+            found.append((first, last))
+    return found
+
+
+def recorded_unreviewed(
+    db: sqlite3.Connection, project: str, session: str
+) -> list[tuple[int, int]]:
+    """The feed ranges the session's reviews recorded as unreviewed (``review.unreviewed``
+    with a start), merged: a checkpoint's skipped backlog, a final review's ranges its
+    budget left out, a review ended at its deadline, an answering turn's work."""
+    return merged(
+        [
+            (int(start), int(end))
+            for start, end in db.execute(
+                "SELECT json_extract(payload,'$.start'),json_extract(payload,'$.end') FROM "
+                "control_events WHERE project=? AND session=? AND kind='review.unreviewed' "
+                "AND json_type(payload,'$.start')='integer' "
+                "AND json_type(payload,'$.end')='integer'",
+                (project, session),
+            )
+        ]
+    )
+
+
+def covered(ranges: Sequence[tuple[int, int]], seq: int) -> bool:
+    """Whether ``seq`` lies in one of the merged, ordered ``ranges``."""
+    index = bisect.bisect_right(ranges, (seq, float("inf"))) - 1
+    return index >= 0 and ranges[index][0] <= seq <= ranges[index][1]
+
+
+def uncovered(
+    db: sqlite3.Connection,
+    project: str,
+    session: str,
+    ranges: Sequence[tuple[int, int]],
+    after: int,
+    through: int,
+) -> list[tuple[int, int]]:
+    """The session's feed rows after ``after``, through ``through``, outside ``ranges``,
+    as ranges of rows next to each other in the session's feed: what no review covered."""
+    found: list[tuple[int, int]] = []
+    open_range = False
+    for (seq,) in db.execute(
+        "SELECT seq FROM review_feed WHERE project=? AND session=? AND seq>? AND seq<=? "
+        "ORDER BY seq",
+        (project, session, after, through),
+    ):
+        if covered(ranges, seq):
+            open_range = False
+        elif open_range:
+            found[-1] = (found[-1][0], seq)
+        else:
+            found.append((seq, seq))
+            open_range = True
+    return found
+
+
+def final_items(
+    db: sqlite3.Connection,
+    project: str,
+    session: str,
+    candidates: Sequence[tuple[int, int]],
+    end: int,
+    ranges: Sequence[tuple[int, int]],
+    room: tuple[int, int],
+    *,
+    run: str,
+    viewed: list[tuple[Json, Json]] | None = None,
+) -> tuple[int, list[EvidenceItem]]:
+    """A final review's new items (CR-48): the session's feed rows in ``candidates``,
+    merged and ordered ranges, through ``end``, that no review covered (outside
+    ``ranges``), newest first, as many
+    as ``room``, its bytes and items, allows; and the first position given. The newest
+    item is always given. The actions item lists the actions among them, as a window's
+    does, after the items, with run ``run``'s actions before them and the earlier runs'
+    calls its view held (``viewed``) as context."""
+    from .actions import MAX_ACTIONS, actions_item
+
+    max_bytes, max_items = room
+    items: list[EvidenceItem] = []
+    actions: list[tuple[Json, Json]] = []
+    revised: list[Json] = []
+    size, start = 0, end + 1
+    lower = candidates[0][0] - 1 if candidates else end
+    for seq, key, kind, locator, payload, sha, complete in db.execute(
+        "SELECT seq,source_key,kind,locator,CASE WHEN kind='source' AND source_key NOT "
+        "GLOB 'quoted:*' THEN '' ELSE payload END,sha256,complete FROM review_feed "
+        "WHERE project=? AND session=? AND seq>? AND seq<=? ORDER BY seq DESC",
+        (project, session, lower, end),
+    ):
+        if covered(ranges, seq) or not covered(candidates, seq):
+            continue
+        key = str(key)
+        if kind == "source" and not key.startswith("quoted:"):
+            start = seq
+            continue
+        if kind == "action":
+            if len(actions) >= MAX_ACTIONS:
+                break
+            actions.append((stored_json(locator), stored_json(payload)))
+            start = seq
+            continue
+        item = EvidenceItem(kind, locator, payload, sha, complete)
+        if items and (size + item.size > max_bytes or len(items) >= max_items):
+            break
+        items.append(item)
+        size += item.size
+        start = seq
+        if kind == "document" and key.startswith("document:"):
+            revised.append(revision_context(stored_json(payload)))
+    context = earlier(db, project, session, SnapshotWindow(start - 1, None, end, 0), run)
+    if viewed:
+        context = replace(context or Earlier([], [], 0, 0), runs=viewed)
+    if actions or revised or context is not None:
+        actions.reverse()
+        revised.reverse()
+        located, listed = actions_item(actions, revised, start, end, context)
+        encoded = dump(listed)
+        items.append(EvidenceItem("actions", dump(located), encoded, digest(encoded), 1))
+    return start, items
 
 
 def open_findings(

@@ -50,7 +50,7 @@ from .chat import EventLog, RunChat, SessionHeld, UserMessages
 from .connector_settings import ProjectConnectors
 from .connectors import Connectors, McpClient, ToolClassSource
 from .consistency.controller import ReviewController
-from .consistency.models import REVIEWER_MAX_RESPONSE_BYTES, ReviewConfig
+from .consistency.models import REVIEWER_MAX_RESPONSE_BYTES, FinalReview, ReviewConfig
 from .consistency.store import ReviewStore
 from .context.agent import AgentContext
 from .context.folding import FoldLifecycle
@@ -97,7 +97,7 @@ from .file_settings import ProjectFiles
 from .finalization import AttemptCompletion, AttemptFinalizer
 from .finalization import save as save
 from .hooks import Refusal, TurnHook
-from .jobs import JobTools
+from .jobs import JobTools, cancel_closed_jobs
 from .jobstate import JobState
 from .kernel_check import KernelCheck
 from .ledger import Ledger
@@ -105,6 +105,7 @@ from .ledger.tool import LedgerTool
 from .loop import (
     MAX_INPUT_CHARS,
     MAX_TURNS,
+    NO_CONNECTORS,
     SYSTEM_PROMPT,
     TURNS_CEILING,
     Interruption,
@@ -285,6 +286,9 @@ class Settings:
     none by default (D102)."""
     review_calls_per_hour: int = ReviewConfig().calls_per_hour
     """The reviewer calls a project may make in an hour."""
+    final_review: FinalReview = ReviewConfig().final_review
+    """When a run's final answer reaches the user: before (``after``) or after
+    (``hold``) its final review (consistency review, CR-48)."""
     recover_interrupted: bool = False
     """Operator policy allowing bounded automatic Resume after infrastructure loss."""
     cost_limits: bool = False
@@ -318,7 +322,9 @@ class Settings:
     def reviews(self) -> ReviewConfig:
         """The review settings of a project that has none of its own."""
         return ReviewConfig(
-            token_budget=self.review_token_budget, calls_per_hour=self.review_calls_per_hour
+            token_budget=self.review_token_budget,
+            calls_per_hour=self.review_calls_per_hour,
+            final_review=self.final_review,
         )
 
 
@@ -426,6 +432,19 @@ class McpAccess:
     classes: ToolClassSource | None = None
     """Where the listed tools' classes come from: the project's classification in force,
     on the trusted side (DA-7); without it, no connector tool has a class."""
+
+
+WITHHELD: Final = {"offered": False, "reason": "other_project"}
+"""What a run's ``started`` event and its record's ``summaries.connectors`` say when the
+deployment's connectors serve another project, which neither names."""
+
+
+def withheld(mcp: McpAccess | None, project: str) -> bool:
+    """Whether a run of ``project`` gets no connectors although the deployment has them:
+    they serve another project. Its model is told so, and its records say why; a
+    deployment without connectors says nothing, as the skills say connectors come only
+    when the project configures them."""
+    return mcp is not None and mcp.project != project
 
 
 class RunSink(Protocol):
@@ -1198,6 +1217,15 @@ class Harness:
                         ),
                         on_tool=sink.tool,
                         research_template=admitted.request.research_template,
+                        notes=(
+                            (
+                                NO_CONNECTORS
+                                if request.parent is None
+                                else delegated_prompt.NO_CONNECTORS,
+                            )
+                            if withheld(self.mcp, admitted.context.project_id)
+                            else ()
+                        ),
                         hooks=hooks,
                         memory=for_run(*memory) if memory is not None else None,
                         role=request.role,
@@ -1217,6 +1245,8 @@ class Harness:
                 raise
             else:
                 transcript.fail("cleanup")
+        if withheld(self.mcp, admitted.context.project_id):
+            transcript.summaries["connectors"] = dict(WITHHELD)
         return Finished(
             admitted.run_id,
             admitted.context,
@@ -1522,6 +1552,10 @@ class Harness:
         )
 
         async def release_kernel(kernel: str) -> None:
+            # The worker's close stops kernels only: the jobs the task's runs left go first.
+            await cancel_closed_jobs(
+                self.client, records.control, session_context, kernel, "its review closed it"
+            )
             await self.client.close_session(session_context, run=kernel)
 
         # Every run of the tree is given the memory its root was (PM-8).
@@ -1873,12 +1907,21 @@ class Harness:
         )
         if found is not None and found.task and not end.failed and end.stopped == "answered":
             # A returned task keeps its environment while its parent reviews it; its
-            # hand-back is made, and it is released, when the task closes (PD-46).
+            # hand-back is made, and it is released, when the task closes (PD-46). This
+            # result's files are copied now, apart, for the parent to read before it
+            # accepts (CE-6).
             files, retained = plan
+            ending = await threaded(
+                records.get, context.project_id, context.session_id, finished.delegation
+            )
+            copied = await placement.returned(
+                environment_id, finished.delegation, ending.results + 1, plan
+            )
             kept: dict[str, JsonValue] = {
                 "environment_id": environment_id,
                 "end": "held",
                 "message": "kept while the parent reviews the task",
+                "returned": copied,
                 "plan": {
                     "files": list(files),
                     "retained": [r.model_dump(mode="json") for r in retained],
@@ -2136,6 +2179,17 @@ class Harness:
             await connectors.load(taken=HARNESS_TOOL_NAMES)
             if chat is not None and connectors.failed:
                 chat.unavailable = dict(connectors.failed)
+        elif self.mcp is not None:
+            # The operator's log names the bound project; the run's records and its model
+            # are told only that the connectors serve another one (WITHHELD, NO_CONNECTORS).
+            _log.info(
+                "run %s: the deployment's connectors serve project %s, not %s: none offered",
+                run_id,
+                self.mcp.project,
+                context.project_id,
+            )
+            if chat is not None:
+                chat.connectors = WITHHELD
         if delegations is not None:
             # A task brief's narrowing is checked against these (DA-6).
             delegations.connectors = connectors

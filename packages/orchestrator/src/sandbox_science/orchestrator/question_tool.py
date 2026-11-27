@@ -58,7 +58,8 @@ SPEC: Final = ToolSpec(
     "the work should be. Ask when the answer changes what you do next: one question per "
     f"reply, and at most {MAX_ASKED} in a run. Give two to four options when the choices "
     "are clear, with multiple true if "
-    "several may be chosen; the user may still answer in their own words, leave the "
+    "several may be chosen. Put the option you would take first, mark it recommended, and "
+    "say why in its detail. The user may still answer in their own words, leave the "
     "decision to you, or cancel. This call waits until the user answers, however long "
     "that takes, and returns the answer. It is not a permission request: the policy "
     "decides what operations may run, and an answer here grants nothing.",
@@ -84,6 +85,10 @@ SPEC: Final = ToolSpec(
                             "minLength": 1,
                             "maxLength": MAX_DETAIL,
                             "description": "What choosing it means",
+                        },
+                        "recommended": {
+                            "type": "boolean",
+                            "description": "The one option you would take",
                         },
                     },
                     "required": ["label"],
@@ -209,6 +214,13 @@ def result(question: Question) -> tuple[str, dict[str, Any]]:
             value |= {"answer": "picked", "picked": list(answer.picked)}
         elif answer.kind == "free":
             value |= {"answer": "own_words", "text": answer.text}
+        elif (recommended := question.recommended) is not None:
+            value |= {
+                "answer": "decide",
+                "recommended": recommended,
+                "note": "The user leaves this to you: take the option you recommended unless "
+                "something has changed since you asked, and say which you took.",
+            }
         else:
             value |= {
                 "answer": "decide",
@@ -230,4 +242,6 @@ def result(question: Question) -> tuple[str, dict[str, Any]]:
     record = question.model_dump(
         mode="json", exclude={"project", "session", "text", "options"}, exclude_none=True
     )
+    if answer is not None and answer.kind == "decide" and question.recommended is not None:
+        record["recommended"] = question.recommended
     return json.dumps(value, ensure_ascii=False), {"question": record}

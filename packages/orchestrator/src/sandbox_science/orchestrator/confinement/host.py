@@ -430,6 +430,8 @@ class Prepared:
                     raise TransportError("conflict", "hook lease not entered")
                 await lease.__aexit__(None, None, None)
                 return None
+            if kind is Capability.HOLDS_ANSWERS:
+                return hook.holds_answers
             if kind is Capability.GATE:
                 if request.effect is None:
                     raise TransportError("invalid_request", "gate requires an effect")
@@ -1047,6 +1049,7 @@ class HostLoops:
             max_input_chars=min(options["max_input_chars"], 8 * 1024 * 1024),
             system=options["system"],
             research_template=options.get("research_template"),
+            notes=tuple(options.get("notes", ())),
             role=options["role"],
             memory=options.get("memory"),
             toolbox=toolbox_given(toolbox),
@@ -1056,6 +1059,7 @@ class HostLoops:
                     veto=hook.veto,
                     planning=isinstance(hook, Plans),
                     turn_limit=type(hook).turn_limit is not TurnHook.turn_limit,
+                    holds=type(hook).holds_answers is not TurnHook.holds_answers,
                 )
                 for hook in hooks
             ),

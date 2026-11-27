@@ -176,7 +176,7 @@ def test_cr_f16_a_findings_lifecycle(store) -> None:
     assert fixed["reviewer"] == {
         "alias": "reviewer",
         "resolved_model": None,
-        "rubric": "sandbox-consistency-11",
+        "rubric": "sandbox-consistency-14",
     }
 
     # Every change is an attributed record of the finding's history.
@@ -298,7 +298,7 @@ def test_a_fix_cannot_cite_the_revision_the_finding_reviewed(store) -> None:
     other = documents.create(
         "p", name="other", title="O", text="Other.\n", author=MAIN, session_id="s"
     ).document_id
-    with pytest.raises(DocumentError, match="not what the finding reviewed"):
+    with pytest.raises(DocumentError, match="not what the finding is pinned to"):
         Findings(reviews).respond("p", "s", {**body, "revisions": [[other, 1]]}, MAIN)
     assert Findings(reviews).get("p", "s", f1)["recheck"] is None
     assert reviews.confirmation_targets("p", "s") == []
@@ -320,6 +320,25 @@ def test_an_executions_output_is_no_place_of_its_own(store) -> None:
              "evidence": [{"evidence": evidence}], "operation_id": "fx"},
             MAIN,
         )  # fmt: skip
+    # A file the fix names is not what the finding is pinned to: the refusal says what
+    # it is pinned to and the answers it takes (with no message in its review's snapshot,
+    # no later message either).
+    _, documents, _ = store
+    other = documents.create(
+        "p", name="fixed", title="F", text="Fixed.\n", author=MAIN, session_id="s"
+    ).document_id
+    with pytest.raises(DocumentError) as refused:
+        Findings(reviews).respond(
+            "p",
+            "s",
+            {"finding": finding, "expected": 1, "action": "fix", "explanation": "Fixed it.",
+             "revisions": [[other, 1]], "operation_id": "fx-file"},
+            MAIN,
+        )  # fmt: skip
+    assert refused.value.message == (
+        f"document {other} is not what the finding is pinned to; it is pinned to execution "
+        "e1. It accepts a dismissal with a reason (action dismiss)"
+    )
 
 
 def test_a_fix_on_a_later_revision_that_keeps_the_block_does_not_go_stale(store) -> None:

@@ -182,15 +182,24 @@ class Named(Contract):
     delegation_id: Identifier
 
 
+class StatusRequest(Named):
+    """``delegation_status``: one delegation, and whether to list every file its calls
+    recorded beside its result files (``files``)."""
+
+    files: bool = False
+
+
 SPECS: Final = (
     ToolSpec(
         "delegate",
         "Start a delegated run, which works with a fresh context: it sees none of your "
         "conversation, only its brief, and has kernels of its own. Delegate a finite piece "
-        "of work of another kind than yours, or one that can run while you go on, not "
-        "volume: fewer children is usually right. When new work relates to what a child did, "
-        "message that child (message_child) rather than start a new one; checks are the "
-        "exception, each a new delegation with a fresh context. Its brief is a check or "
+        "of work of another kind than yours, one that can run while you go on, or a phase "
+        "heavy in reading whose details you will not need afterwards; not volume: fewer "
+        "children is usually right. When new work relates to what a child did, message that "
+        "child (message_child) while it awaits your review; once it is accepted, delegate a "
+        "new task whose references name its result files. Checks are the exception, each a "
+        "new delegation with a fresh context. Its brief is a check or "
         "a task. A check (check) independently checks one ledger entry at one revision, "
         "such as a proved result before you establish it: the platform writes its task, "
         "check whether the entry holds at that revision, and lists the entry's evidence as "
@@ -214,8 +223,9 @@ SPECS: Final = (
         "the revision it checked; one of the same material that refuted it, or completed "
         "inconclusive, keeps any from counting. "
         "Where the project gives tasks environments of their own, a task in one starts "
-        "once it is ready, about one to five minutes; give a small task environment: "
-        "shared.",
+        "once it is ready, about one to five minutes, and this result gives that "
+        "environment's CPUs, memory and disk (environment.limits); give a small task "
+        "environment: shared.",
         {
             "type": "object",
             "properties": {
@@ -328,10 +338,11 @@ SPECS: Final = (
     ToolSpec(
         "wait_delegations",
         "Keep this turn open without calling your model until all the delegated runs "
-        "named (or the first with mode=first) end, or a user message arrives. Returns the "
-        "outcomes of those that ended, with their whole reports, as many as fit; call it "
-        "again for the rest. Any ended delegation of this session can be named, such as "
-        "one a notice summarized.",
+        "named (or the first with mode=first) end, or until a user message, a message from "
+        "another agent, or a child's resource check-in waiting for you arrives; reason says "
+        "which. Returns the outcomes of those that ended, as many as fit; call it again for "
+        "the rest. Any ended delegation of this session can be named, such as one a notice "
+        "summarized.",
         {
             "type": "object",
             "properties": {
@@ -350,10 +361,18 @@ SPECS: Final = (
     ToolSpec(
         "delegation_status",
         "Read a delegation of this session: a running one's limits, or an ended one's "
-        "whole outcome.",
+        "outcome, which lists its result files and deliverables and counts the other files "
+        "its calls recorded.",
         {
             "type": "object",
-            "properties": {"delegation_id": {"type": "string"}},
+            "properties": {
+                "delegation_id": {"type": "string"},
+                "files": {
+                    "type": "boolean",
+                    "description": "Optional: also list every file revision its calls "
+                    "recorded, not only its result files",
+                },
+            },
             "required": ["delegation_id"],
             "additionalProperties": False,
         },
@@ -373,9 +392,14 @@ SPECS: Final = (
     ToolSpec(
         "accept_delegation",
         "Accept a returned task you delegated, once you have reviewed its outcome: it "
-        "closes, its own environment hands its files back and is released, and its kernels "
-        "stop. To have it continue instead, send it feedback with message_child. A task "
-        "you leave unreviewed is accepted when your run ends. Returns its outcome.",
+        "closes, its own environment hands its files back to work/<delegation_id>/ and is "
+        "released, and its kernels stop. Acceptance is final: the task takes no follow-on "
+        "work, and message_child to it is refused. To have it continue instead, send it "
+        "feedback with message_child before you accept; later, delegate a new task that "
+        "references its result files. A task you leave unreviewed is accepted when your "
+        "run ends. Returns the acceptance and the hand-back, not the outcome again: each "
+        "result file and deliverable with whether you read it whole, at the revision its "
+        "result names, after it returned; those you did not are named as accepted unread.",
         {
             "type": "object",
             "properties": {

@@ -27,6 +27,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from sandbox_science.contracts import (
     MAX_ADMISSION_HOSTS,
+    SYSTEM_CLOCK,
     CellRequest,
     EditFileRequest,
     ErrorKind,
@@ -43,6 +44,7 @@ from sandbox_science.contracts import (
     ShellRequest,
     WriteFileRequest,
 )
+from sandbox_science.contracts.clock import Clock
 from sandbox_science.contracts.context import WriteArea
 from sandbox_science.contracts.worker import (
     DEFAULT_GREP_RESULTS,
@@ -55,7 +57,7 @@ from sandbox_science.contracts.worker import (
 
 from . import capabilities as caps
 from .agent_messages import AgentMailbox
-from .artifact_publisher import ArtifactPublisher
+from .artifact_publisher import ArtifactPublicationOutcome, ArtifactPublisher
 from .connectors import (
     MAX_LOAD,
     MAX_LOADED_CHARS,
@@ -115,6 +117,10 @@ TRACEBACK_LINES: Final = 20
 SHOWN_OUTPUTS: Final = 20
 """Rich outputs shown to the model, the first and last half; a note counts the rest."""
 SHOWN_ENTRIES: Final = 200
+MAX_DETAILS_BYTES: Final = 2048
+"""The JSON bytes of a refusal's details a failed call shows; what does not fit is counted."""
+MAX_PUBLISH_PATHS: Final = 16
+"""The most files one ``publish`` call names in ``paths``."""
 READING_OUTPUT_CHARS: Final = 40_000
 """The most characters of a reading tool's result (``descriptors.PAGED``: a paper's pages
 or passages), however large ``output_chars`` is; it gets twice ``output_chars`` up to
@@ -449,11 +455,24 @@ SPECS: Final = (
     ),
     ToolSpec(
         "publish",
-        "Publish a workspace file as an immutable project artifact, recording its hash.",
+        "Publish workspace files as immutable project artifacts, recording each one's hash: "
+        f"path names one file, paths up to {MAX_PUBLISH_PATHS}. Each file is published on "
+        "its own, so one that fails leaves the others published. The result lists the "
+        "files in the order given, each with its artifact ID, revision and SHA-256, the "
+        "pin for ledger evidence, or with its error.",
         {
             "type": "object",
-            "properties": {"path": {"type": "string"}, "media_type": {"type": "string"}},
-            "required": ["path"],
+            "properties": {
+                "path": {"type": "string"},
+                "paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                    "maxItems": MAX_PUBLISH_PATHS,
+                    "uniqueItems": True,
+                },
+                "media_type": {"type": "string", "description": "For every file named"},
+            },
             "additionalProperties": False,
         },
     ),
@@ -615,6 +634,7 @@ class Toolbox:
         capabilities: caps.CapabilitySet | None = None,
         write_area: str | None = None,
         outcome: Outcome | None = None,
+        clock: Clock = SYSTEM_CLOCK,
     ) -> None:
         """For a ``delegated`` run, a call to a tool it is not offered, such as a review,
         plan, delegate or question tool, is refused with ``not_permitted_for_role`` (PD-16,
@@ -681,6 +701,8 @@ class Toolbox:
         self.outcome = capabilities.service(caps.RESULT)
         """A delegated run's result, which its ``submit_result`` records."""
         self.delegated = delegated
+        self.clock = clock
+        """Times each call for its record's ``timing``."""
         self.check_kernels = check_kernels
         self.sweep_left_kernels = sweep_left_kernels
         self.kernel_run = kernel_run
@@ -1041,6 +1063,10 @@ class Toolbox:
         handlers, raw ones included, gets the call without it; the record keeps it as
         ``purpose`` (Purpose 2 and 3).
 
+        Its record's ``timing`` says when the call entered the toolbox, by the wall
+        clock, and how long it took to its outcome, gates and holds included, by the
+        monotonic clock, in milliseconds (``started_at``, ``duration_ms``).
+
         ``model`` is the model that asked for the call, as the gateway named it, which
         document revisions record. Each of ``gates`` may refuse the call by its effect
         class; with plan tools, the plan's gate is always among them. After the call, the
@@ -1052,10 +1078,15 @@ class Toolbox:
         except PurposeError as error:
             return _failure(ErrorKind.INVALID_REQUEST, error.message)
         call, purpose = parts.call, parts.purpose
+        started, begun = self.clock.now(), self.clock.monotonic()
         outcome = await self._dispatch(call, operation, model, gates)
         if self.tool_mix is not None:
             self.tool_mix.count(call.name, call.arguments, outcome.record)
         outcome.record["purpose"] = purpose
+        outcome.record["timing"] = {
+            "started_at": started.isoformat(),
+            "duration_ms": max(0, round((self.clock.monotonic() - begun) * 1000)),
+        }
         return outcome
 
     async def _dispatch(
@@ -1171,7 +1202,7 @@ class Toolbox:
         try:
             outcome = await entry.handler(Request(call, args, operation, model))
         except DocumentError as error:
-            return _failure(ErrorKind(error.kind), error.message)
+            return _failure(ErrorKind(error.kind), error.message, error.details)
         except ValidationError as exc:
             first = exc.errors()[0]
             where = ".".join(str(part) for part in first.get("loc", ()))
@@ -1814,22 +1845,98 @@ class Toolbox:
             shown //= 2
 
     async def _publish(self, call: Request) -> ToolOutcome:
-        request = PublishRequest.model_validate(
-            {"context": self.context, **_known(call.args, "path", "media_type")}
+        """The file ``path`` names under the call's operation, or each of ``paths`` under
+        an operation of its own derived from the call's, so a replayed call finds each
+        file's publication (W2). A file that fails leaves the others published."""
+        args = call.args
+        if ("path" in args) == ("paths" in args):
+            raise WorkerAPIError(
+                ErrorKind.INVALID_REQUEST, "give path for one file or paths for several"
+            )
+        if "path" in args:
+            request = self._publish_request(args.get("path"), args)
+            shown, record = await self._publish_one(request, call.operation, call)
+            if "error" in shown:
+                record["error"] = shown["error"]["kind"]
+                return ToolOutcome(dump({"error": shown["error"]}), record)
+            return ToolOutcome(dump({"published": shown}), record)
+        paths = args.get("paths")
+        if (
+            not isinstance(paths, list)
+            or not 1 <= len(cast(list[object], paths)) <= MAX_PUBLISH_PATHS
+            or len(set(map(str, cast(list[object], paths)))) != len(cast(list[object], paths))
+        ):
+            raise WorkerAPIError(
+                ErrorKind.INVALID_REQUEST,
+                f"paths names 1 to {MAX_PUBLISH_PATHS} files, each once",
+            )
+        listed: list[dict[str, Any]] = []
+        records: list[dict[str, Any]] = []
+        for index, path in enumerate(cast(list[object], paths)):
+            shown: dict[str, Any]
+            record: dict[str, Any] = {}
+            try:
+                request = self._publish_request(path, args)
+                shown, record = await self._publish_one(request, _part(call.operation, index), call)
+            except ValidationError as exc:
+                shown = {"path": str(path), "error": _invalid(exc)}
+            except WorkerAPIError as exc:
+                if exc.uncertain:
+                    raise
+                error = {"kind": exc.kind.value, "message": exc.message}
+                shown = {"path": str(path), "error": error}
+            if "error" in shown:
+                record |= {"path": str(path), "error": shown["error"]["kind"]}
+            listed.append(shown)
+            records.append(record)
+        outcome: dict[str, Any] = {"publications": records}
+        if all("error" in shown for shown in listed):
+            outcome["error"] = listed[0]["error"]["kind"]
+        return ToolOutcome(self._bound(dump({"published": listed})), outcome)
+
+    def _publish_request(self, path: object, args: dict[str, Any]) -> PublishRequest:
+        return PublishRequest.model_validate(
+            {"context": self.context, "path": path, **_known(args, "media_type")}
         )
-        if self.artifacts is not None:
-            result = await self.artifacts.publish(
-                request, call.operation, tool_call=call.call.id, model=call.model
-            )
-            worker = result.worker.model_dump(mode="json") if result.worker is not None else None
-            receipt = result.receipt.model_dump(mode="json")
-            return ToolOutcome(
-                self._bound(dump({"published": worker, "inventory": receipt})),
-                {"artifact": worker, "artifact_inventory": receipt},
-            )
-        artifact = await self.client.publish(request)
-        record = artifact.model_dump(mode="json")
-        return ToolOutcome(dump({"published": record}), {"artifact": record})
+
+    async def _publish_one(
+        self, request: PublishRequest, operation: str, call: Request
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """What the model reads of one file's publication, compact (``artifact``, the
+        inventory's ``artifact-…`` ID; ``revision``; ``sha256``; ``path``; ``size``) or its
+        error, and what the record keeps of it: the worker's snapshot and the receipt."""
+        if self.artifacts is None:
+            try:
+                artifact = await self.client.publish(request)
+            except WorkerAPIError as exc:
+                if exc.uncertain:
+                    raise
+                error = {"kind": exc.kind.value, "message": f"{request.path}: {exc.message}"}
+                return {"path": request.path, "error": error}, {}
+            shown = {
+                "path": request.path,
+                "artifact": artifact.artifact_id,
+                "sha256": artifact.sha256,
+                "size": artifact.size,
+            }
+            return shown, {"artifact": artifact.model_dump(mode="json")}
+        result = await self.artifacts.publish(
+            request, operation, tool_call=call.call.id, model=call.model
+        )
+        worker = result.worker.model_dump(mode="json") if result.worker is not None else None
+        receipt = result.receipt
+        record = {"artifact": worker, "artifact_inventory": receipt.model_dump(mode="json")}
+        revision = receipt.revision
+        if receipt.state != "recorded" or revision is None:
+            return {"path": request.path, "error": _held(request.path, result)}, record
+        shown = {
+            "path": request.path,
+            "artifact": revision.artifact_id,
+            "revision": revision.revision,
+            "sha256": revision.sha256,
+            "size": revision.size,
+        }
+        return shown, record
 
 
 def _describe(
@@ -2174,8 +2281,74 @@ def _known(args: dict[str, Any], *names: str) -> dict[str, Any]:
     return {name: args[name] for name in names if name in args}
 
 
-def _failure(kind: ErrorKind, message: str) -> ToolOutcome:
-    return ToolOutcome(
-        dump({"error": {"kind": kind.value, "message": bound(message, 4000)}}),
-        {"error": kind.value},
-    )
+def _part(operation: str, index: int) -> str:
+    """The operation of the file at ``index`` of a ``publish`` call's ``paths``: the
+    call's operation and the index, with a digest of both, within 128 characters."""
+    digest = hashlib.sha256(f"{operation}\0{index}".encode()).hexdigest()[:16]
+    return f"{operation[:105].rstrip('-._')}-{index}-{digest}"
+
+
+def _held(path: str, outcome: ArtifactPublicationOutcome) -> dict[str, str]:
+    """A publication the inventory kept no revision of, as the model reads its error,
+    naming the path: the worker's refusal as it gave it (``not_found`` for no file,
+    ``invalid_request`` for a directory); ``internal`` for a ``failed`` receipt; else
+    ``unavailable``, which says the call may be made again."""
+    receipt = outcome.receipt
+    message = f"{path}: {receipt.message or f'the publication was {receipt.state}'}"
+    if outcome.refused is not None:
+        kind = outcome.refused
+    else:
+        kind = ErrorKind.UNAVAILABLE if receipt.state == "held" else ErrorKind.INTERNAL
+    if kind == ErrorKind.UNAVAILABLE:
+        message += "; the worker or the store could not finish it, and the call may be made again"
+    return {"kind": kind.value, "message": message}
+
+
+def _invalid(error: ValidationError) -> dict[str, str]:
+    """A request's first validation error, as a failed call shows it."""
+    first = error.errors()[0]
+    where = ".".join(str(part) for part in first.get("loc", ()))
+    return {"kind": ErrorKind.INVALID_REQUEST.value, "message": f"{where}: {first.get('msg')}"}
+
+
+def _failure(
+    kind: ErrorKind, message: str, details: Mapping[str, object] | None = None
+) -> ToolOutcome:
+    error: dict[str, object] = {"kind": kind.value, "message": bound(message, 4000)}
+    if details:
+        error["details"] = _shown_details(details)
+    return ToolOutcome(dump({"error": error}), {"error": kind.value})
+
+
+def _shown_details(details: Mapping[str, object]) -> dict[str, object]:
+    """A refusal's details as a failed call shows them: whole within ``MAX_DETAILS_BYTES``,
+    else the keys and list items that fit, in order, and ``omitted``, the count of the
+    rest. Details are the platform's own identifiers, counters and references, never text
+    a server or a user wrote, so they need no untrusted-text framing."""
+    plain = cast(dict[str, object], json.loads(json.dumps(dict(details), default=str)))
+    budget = MAX_DETAILS_BYTES - len('"omitted":999999,')
+
+    def fits(value: object) -> bool:
+        return len(dump(value).encode()) <= budget
+
+    if fits(plain):
+        return plain
+    shown: dict[str, object] = {}
+    omitted = 0
+    for key, value in plain.items():
+        if isinstance(value, list):
+            items = cast(list[object], value)
+            kept: list[object] = []
+            for item in items:
+                if not fits({**shown, key: [*kept, item]}):
+                    break
+                kept.append(item)
+            omitted += len(items) - len(kept)
+            if fits({**shown, key: kept}):
+                shown[key] = kept
+        elif fits({**shown, key: value}):
+            shown[key] = value
+        else:
+            omitted += 1
+    shown["omitted"] = omitted
+    return shown

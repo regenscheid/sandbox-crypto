@@ -14,20 +14,36 @@ import pytest
 
 from sandbox_science.contracts import ErrorKind, ExecutionContext
 from sandbox_science.orchestrator.connectors import Connectors
+from sandbox_science.orchestrator.delegation.narrowing import (
+    NO_CONNECTORS as NARROWING_NO_CONNECTORS,
+)
 from sandbox_science.orchestrator.delegation.narrowing import Narrowing, narrow, of_brief
+from sandbox_science.orchestrator.delegation.prompt import NO_CONNECTORS as DELEGATED_NO_CONNECTORS
 from sandbox_science.orchestrator.delegation.specs import TaskBrief, brief_of
 from sandbox_science.orchestrator.harness import McpAccess
+from sandbox_science.orchestrator.loop import NO_CONNECTORS
 from sandbox_science.orchestrator.notices import CONNECTOR_RESULT
-from sandbox_science.orchestrator.projects import run_name
+from sandbox_science.orchestrator.projects import ProjectStore, RunRecord, run_name
+from sandbox_science.orchestrator.prompts import PromptPins
+from sandbox_science.orchestrator.runstate import RunEvent, RunState
 from sandbox_science.orchestrator.tools import Toolbox
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 
-from .loop_harness import PROJECT, Harness, Reply, call
+from .loop_harness import PROJECT, SESSION, Harness, Reply, call
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
 from .scripted import ToolCall
-from .test_delegation import children, configure, delegation, results, started, submitted, wait
+from .test_delegation import (
+    children,
+    configure,
+    delegation,
+    results,
+    started,
+    submitted,
+    tools,
+    wait,
+)
 from .test_delegation import delegating as delegating
 from .test_delegation_tasks import DONE
 from .test_run_service import ended, post, serving
@@ -153,6 +169,22 @@ async def test_a_brief_naming_an_unknown_server_is_refused() -> None:
         narrow(["web"], configured=(), offered=None)
 
 
+def test_a_brief_naming_connectors_where_the_connectors_serve_another_project_is_refused() -> None:
+    """Lane B8: servers are configured but the parent is offered none, so any entry, a
+    configured server's, one behind it or an unknown one, is refused as naming connectors
+    this project has none of, and the reason names none of the deployment's servers."""
+    for entry in ("web", "portal/e-print-mcp", "e-print-mcp", "nowhere"):
+        with pytest.raises(WorkerAPIError) as raised:
+            narrow([entry], configured=(PORTAL, WEB), offered=None)
+        assert raised.value.kind == ErrorKind.INVALID_REQUEST
+        assert raised.value.message == NARROWING_NO_CONNECTORS
+        assert "this project has no connector tools" in raised.value.message
+        assert PORTAL not in raised.value.message
+        assert WEB not in raised.value.message
+    # A brief that narrows to nothing asks for nothing, and is taken.
+    assert narrow([], configured=(PORTAL, WEB), offered=None) == ()
+
+
 async def test_a_brief_cannot_widen_past_its_parents_connectors() -> None:
     parent = await loaded(Narrowing((("portal/e-print-mcp", "web/fetch"),)))
     # Within the parent's: normalized as the delegation records it.
@@ -175,6 +207,16 @@ async def test_a_check_takes_no_narrowing_and_a_brief_names_at_most_32() -> None
     assert isinstance(brief_of({"task": "Read.", "connectors": []}), TaskBrief)
     with pytest.raises(ValueError, match="at most 32"):
         brief_of({"task": "Read.", "connectors": ["web"] * 33})
+
+
+def run_events(harness: Harness, record: RunRecord) -> list[RunEvent]:
+    store = ProjectStore(harness.state)
+    try:
+        return RunState(store.control).events(
+            PROJECT, SESSION, run_name(record.started_at, record.run_id)
+        )
+    finally:
+        store.close()
 
 
 # --- End to end -----------------------------------------------------------------------------
@@ -271,3 +313,58 @@ async def test_a_narrowed_task_narrows_its_own_children_and_never_widens_them(
     assert isinstance(connectors, dict)
     assert connectors["narrowing"] == [["portal/e-print-mcp"], ["portal"]]
     assert connectors["listed"] == 2
+
+
+async def test_a_project_the_connectors_do_not_serve_is_told_so(delegating: Harness) -> None:
+    """Lane B4: the deployment's connectors serve another project, so neither the root nor
+    its child is offered mcp_tools; each run's system message says so once, in a section
+    its record pins, without naming that project; and its started event and its record
+    say why. Nothing is asked of the connectors. A brief that narrows the child's
+    connectors is refused, saying the project has none (lane B8), and starts nothing."""
+    client = FakeClient()
+    post(delegating, "m-1", "Read the papers.")
+    root_script = [
+        Reply(calls=[call("delegate", task="Search there.", connectors=["e-print-mcp"])]),
+        Reply(calls=[call("delegate", task="Search ePrint.")]),
+        wait(),
+        Reply("Done."),
+    ]
+    delegating.gateway.routed = {"Search ePrint.": [*submitted(DONE, "Done.")]}
+    async with serving(delegating, *root_script) as service:
+        service.harness.mcp = McpAccess(client, (PORTAL, WEB), "elsewhere")
+        found = await ended(delegating, 2)
+    (root,) = [record for record in found if record.parent is None]
+    (child,) = children(delegating, root)
+    assert NARROWING_NO_CONNECTORS in results(root)[0]
+    assert client.asked == []
+    for record, note in ((root, NO_CONNECTORS), (child, DELEGATED_NO_CONNECTORS)):
+        assert "mcp_tools" not in tools(record)
+        assert record.summaries["connectors"] == {"offered": False, "reason": "other_project"}
+        pins = record.prompt_provenance
+        assert isinstance(pins, PromptPins)
+        assert [(pin.id, pin.version) for pin in pins.sections].count((note.id, note.version)) == 1
+        events = run_events(delegating, record)
+        assert events[0].kind == "started"
+        assert events[0].data["connectors"] == {"offered": False, "reason": "other_project"}
+    system = str(delegating.gateway.main[0][0]["content"])
+    assert system.count(NO_CONNECTORS.text) == 1
+    assert "elsewhere" not in system
+    child_system = str(delegating.gateway.children[0][0]["content"])
+    assert child_system.count(DELEGATED_NO_CONNECTORS.text) == 1
+    assert "elsewhere" not in child_system
+
+
+async def test_a_project_the_connectors_serve_gets_no_such_note(delegating: Harness) -> None:
+    """The negative case: a run of the bound project, and one in a deployment without
+    connectors, are given no note, and their records and started events say nothing of a
+    project elsewhere."""
+    for count, mcp in enumerate((McpAccess(FakeClient(), (PORTAL, WEB), PROJECT), None), 1):
+        post(delegating, f"m-{count}", "Read the papers.")
+        async with serving(delegating, Reply("Done.")) as service:
+            service.harness.mcp = mcp
+            record = max(await ended(delegating, count), key=lambda run: run.started_at)
+        system = str(delegating.gateway.main[-1][0]["content"])
+        assert NO_CONNECTORS.text not in system
+        summary = record.summaries.get("connectors")
+        assert not isinstance(summary, dict) or "offered" not in summary
+        assert "connectors" not in run_events(delegating, record)[0].data

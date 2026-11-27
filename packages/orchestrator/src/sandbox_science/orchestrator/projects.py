@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Annotated, Final, Literal, cast
 
 from pydantic import (
+    AwareDatetime,
     Field,
     JsonValue,
     StringConstraints,
@@ -196,6 +197,12 @@ class ModelUsage(Contract):
     alias its fallback answered for; for a run's last entry when it stopped
     ``model_refused``, each declined call, the entry's model and tokens being the last's.
     ``cost`` is then all of them together, as far as the gateway reported it."""
+    started_at: AwareDatetime | None = None
+    """When the call was sent; null in older records."""
+    duration_ms: int | None = Field(default=None, ge=0)
+    """How long the call took, in milliseconds: by a monotonic clock where the call was
+    made (a run's own calls), or else the control store's time from the call's intent to
+    its observed usage (``continuity.models.observed``); null in older records."""
 
 
 def _summary(value: JsonValue | None) -> dict[str, JsonValue]:
@@ -331,10 +338,11 @@ class RunRecord(Contract):
 
     @model_validator(mode="after")
     def _failure_is_not_an_answer(self) -> RunRecord:
-        if self.failure is not None and (
-            self.stopped != "error" or self.final_text is not None or self.answer is not None
-        ):
-            raise ValueError("a failed run must have error status and no final answer")
+        # A failed run keeps an answer the agent gave before the turn that failed, such
+        # as the one a final review's answering turn followed (consistency review,
+        # CR-48); it has no final text.
+        if self.failure is not None and (self.stopped != "error" or self.final_text is not None):
+            raise ValueError("a failed run must have error status and no final text")
         return self
 
     def to_json(self) -> str:

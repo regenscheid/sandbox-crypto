@@ -206,7 +206,7 @@ def test_progress_matches_stable_intent_but_changed_step_needs_new_assertion(pla
     snapshot = plans.current(actor())
     assert snapshot.steps[0].latest.ref == first.ref
     assert not snapshot.steps[0].matches_current_step
-    with pytest.raises(DocumentError, match="open, changed"):
+    with pytest.raises(DocumentError, match="not all finished"):
         status(plans, changed.ref, "completed", result=outcome())
     update(plans, changed.ref, cursor=1, operation="reaffirm")
     status(plans, changed.ref, "completed", result=outcome())
@@ -325,7 +325,7 @@ def test_terminal_workflow_accounting_is_distinct_from_goal_success(
     first = made(plans)
     update(plans, first.ref, status=step_status)
     if not allowed:
-        with pytest.raises(DocumentError, match="open, changed"):
+        with pytest.raises(DocumentError, match="not all finished"):
             status(plans, first.ref, "completed", result=outcome(goal_status))
         assert plans.current(actor()).head.status == "draft"
     else:

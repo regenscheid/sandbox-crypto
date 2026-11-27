@@ -118,6 +118,19 @@ class ExecutionJournal:
         if live.execution.state in TERMINAL_STATES:
             return
         execution_id = live.execution.execution_id
+        error = result.error
+        if (
+            state is ExecutionState.CANCELLED
+            and live.execution.kind == "job"
+            and live.cancel_source is not None
+            and error is not None
+            and error.kind is ErrorKind.CANCELLED
+        ):
+            # A job's end is reported in a later run's notices: it says who cancelled it.
+            message = f"{error.message} (asked by {live.cancel_source})"
+            result = result.model_copy(
+                update={"error": error.model_copy(update={"message": message})}
+            )
         final, events = self.final(live.execution, state, result)
         source = SOURCE_EVENT.get()
         acknowledged = live.final_source_seq

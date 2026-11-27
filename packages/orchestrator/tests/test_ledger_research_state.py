@@ -452,7 +452,7 @@ def test_the_prompts_say_when_to_record_the_research_state() -> None:
     """CM-48 to CM-48b, as far as these fields go: the main run records constraints,
     abandoned approaches with their reopen conditions, failures, caveats and
     contradictions; a task proposes; a check reports them in its result. The prompts say
-    when; ``ledger_change``'s schema says how (``sandbox-main-20``)."""
+    when; ``ledger_change``'s schema says how (``sandbox-main-23``)."""
     for phrase in (
         "standing constraint the user sets, as a decision in effect with basis user_quoted",
         "fields.session",

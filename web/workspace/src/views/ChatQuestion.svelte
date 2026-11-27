@@ -1,9 +1,9 @@
 <!-- SPDX-License-Identifier: MIT -->
 <!-- A question the main agent asks the user (docs/QUESTIONS.md, PD-23 to PD-26). Open, it
-     shows its age, the agent's text exactly (ApprovalText) and its options with every
-     character a person may not see shown as its code point, and takes the answer: an
-     option, several, the agent to decide, or a cancel; the user's own words go in the
-     message box. An open question whose run no longer holds the session takes no answer:
+     shows its age, the agent's text exactly (ApprovalText) and its options, the one the
+     agent recommends marked, with every character a person may not see shown as its code
+     point, and takes the answer: an option, several, the agent to decide, or a cancel;
+     the user's own words go in the message box. An open question whose run no longer holds the session takes no answer:
      the server refuses one (`run_ended`), since no one would read it. Closed, it says how,
      and why when no answer came. A question is not a permission request: an answer grants
      nothing. -->
@@ -92,6 +92,7 @@
                 >{visible(option.label)}</button
               >
             {/if}
+            {#if option.recommended}<strong>(recommended)</strong>{/if}
             {#if option.detail}<span class="muted">{visible(option.detail)}</span>{/if}
           </li>
         {/each}

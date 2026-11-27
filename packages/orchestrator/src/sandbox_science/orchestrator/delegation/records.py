@@ -52,6 +52,8 @@ from sandbox_science.orchestrator.control.errors import (
 from sandbox_science.orchestrator.documents import DocumentStore
 from sandbox_science.orchestrator.runstate import LEASE_SECONDS, cancel_requested, close_events
 
+from .acceptance import acceptance_reads
+
 Ended = Literal["returned", "failed", "cancelled", "limit_reached", "interrupted"]
 """How a delegated run ended, as the harness observed it (PD-17)."""
 MAX_DEPTH: Final = 2
@@ -74,13 +76,13 @@ _COLUMNS: Final = (
     "delegation_id, parent, run, kind, brief, started_at, ended, stopped, report, "
     "ended_at, refused, acknowledged, result, errors, alias, models, read_entry, "
     "read_proofs, files, environment_id, environment, results, review, reviewed_at, "
-    "reviewed_by, review_reason, review_note"
+    "reviewed_by, review_reason, review_note, review_reads"
 )
 _RESULT_COLUMNS: Final = (
     "delegation_id, number, run, ended, stopped, report, ended_at, refused, result, errors, "
     "alias, models, read_entry, read_proofs, files, environment"
 )
-_JSON: Final = ("brief", "result", "errors", "models", "files", "environment")
+_JSON: Final = ("brief", "result", "errors", "models", "files", "environment", "review_reads")
 ENVIRONMENT_BYTES: Final = 65536
 """The most a delegation's environment outcome takes, as UTF-8 JSON."""
 ChildEnvironments = Literal["off", "tasks", "all"]
@@ -152,6 +154,8 @@ MAX_MODELS: Final = 10
 REVIEW_MAX: Final = 86_400
 """Seconds a returned task awaits its parent's review by default before the platform
 accepts it (PD-46)."""
+PLATFORM: Final = "platform"
+"""Who closes a returned task the parent left unreviewed (PD-46)."""
 NOTE_BYTES: Final = 2048
 """The most a parent's note on an acceptance takes, as UTF-8; it is at most 500
 characters."""
@@ -298,6 +302,12 @@ class Delegation(Contract):
     review_reason: ReviewReason | None = None
     review_note: str | None = None
     """The parent's note on its acceptance, agent text."""
+    review_reads: dict[str, JsonValue] | None = None
+    """What an acceptance found of its reads (``acceptance.acceptance_reads``): each
+    result file and deliverable by path with whether the accepting run read it whole,
+    after the task returned, at the revision its result names; ``None`` before an
+    acceptance, for a cancel, for the session's close (``close_awaiting``) and for an
+    acceptance from before it was recorded."""
 
 
 class DelegationResult(Contract):
@@ -911,7 +921,8 @@ class DelegationRecords:
         with self.control.write() as tx:
             db = tx.sql
             row = db.execute(
-                "SELECT d.parent, d.review, d.ended, d.kind, d.environment, w.kernel "  # noqa: S608
+                "SELECT d.parent, d.review, d.ended, d.kind, d.environment, w.kernel, "  # noqa: S608
+                "d.files, d.brief, d.result, d.ended_at "
                 f"FROM delegations d {_WORK_JOIN}"
                 "WHERE d.project_id = ? AND d.session_id = ? AND d.delegation_id = ?",
                 (project, session, delegation_id),
@@ -951,10 +962,29 @@ class DelegationRecords:
                 closing: dict[str, JsonValue] = {**environment, "end": "closing"}
                 closing["plan"] = marked
                 environment = closing
+            reads = None
+            if review == "accepted":
+                # What the parent read of the files before it accepted, recorded beside the
+                # acceptance, which it never holds up (PD-46).
+                reads = acceptance_reads(
+                    db,
+                    project,
+                    session,
+                    files=_loaded(row[6]),
+                    brief=_loaded(row[7]) or {},
+                    result=_loaded(row[8]),
+                    returned=(
+                        datetime.fromisoformat(str(row[9]))
+                        if row[9] is not None
+                        else datetime.min.replace(tzinfo=UTC)
+                    ),
+                    runs=list(dict.fromkeys(r for r in (str(row[0]), by) if r != PLATFORM)),
+                )
             db.execute(
                 "UPDATE delegations SET review = ?, reviewed_at = ?, reviewed_by = ?, "
-                "review_reason = ?, review_note = ?, environment = ? WHERE project_id = ? "
-                "AND session_id = ? AND delegation_id = ? AND review = 'awaiting'",
+                "review_reason = ?, review_note = ?, environment = ?, review_reads = ? "
+                "WHERE project_id = ? AND session_id = ? AND delegation_id = ? "
+                "AND review = 'awaiting'",
                 (
                     review,
                     self._now(),
@@ -962,6 +992,7 @@ class DelegationRecords:
                     reason,
                     _clipped(note, NOTE_BYTES) if note else None,
                     _environment(environment),
+                    _json(reads) if reads is not None else None,
                     project,
                     session,
                     delegation_id,
@@ -1395,18 +1426,19 @@ def _union(
 def _merge(
     plans: Sequence[tuple[tuple[str, ...], tuple[dict[str, JsonValue], ...]]],
 ) -> tuple[tuple[str, ...], tuple[dict[str, JsonValue], ...]]:
-    """Hand-back plans as one, the first's first, each path once: a file a plan names by
-    its revision is not copied."""
+    """Hand-back plans as one, the first's first, each path once: copied, and named by
+    its revision when the first plan that gives it publishes it (CE-6)."""
     files: dict[str, None] = {}
     retained: dict[str, dict[str, JsonValue]] = {}
     for copy, named in plans:
         for item in named:
             path = item.get("path")
-            if isinstance(path, str) and path not in retained and path not in files:
+            if isinstance(path, str) and path not in files:
                 retained[path] = item
+                # A plan made before published files were copied names them only.
+                files[path] = None
         for path in copy:
-            if path not in retained:
-                files.setdefault(path, None)
+            files.setdefault(path, None)
     return tuple(files), tuple(retained.values())
 
 
@@ -1489,23 +1521,35 @@ def _environment(environment: dict[str, JsonValue] | None) -> str | None:
             }
             found["plan"] = {**cut_plan, "cut": True}
             continue
-        back = found.get("hand_back")
-        if not isinstance(back, dict):
-            return _json({k: v for k, v in found.items() if k not in ("hand_back", "plan")})
-        cut = dict(back)
+        # Then the hand-back's account or a return copy's, the longer first.
+        accounts = [k for k in ("hand_back", "returned") if isinstance(found.get(k), dict)]
+        if not accounts:
+            return _json({k: v for k, v in found.items() if k not in _CUT_ACCOUNTS})
+        name = max(accounts, key=lambda k: len(_json(found[k])))
+        cut = dict(cast(dict[str, JsonValue], found[name]))
         longest = max(
             (k for k, v in cut.items() if isinstance(v, list) and v),
             key=lambda k: len(_json(cut[k])),
             default=None,
         )
         if longest is None:
-            found.pop("hand_back")
+            found.pop(name)
             continue
         listed = cast(list[JsonValue], cut[longest])
         cut[longest] = listed[: len(listed) // 2]
         cut["cut"] = True
-        found["hand_back"] = cut
+        found[name] = cut
     return _json(found)
+
+
+_CUT_ACCOUNTS: Final = ("hand_back", "returned", "plan")
+"""What an environment's outcome leaves out when nothing else of it can be cut."""
+
+
+def _loaded(text: object) -> dict[str, JsonValue] | None:
+    """A JSON object column as stored; ``None`` for a null or another value."""
+    found: object = json.loads(text) if isinstance(text, str) else None
+    return cast(dict[str, JsonValue], found) if isinstance(found, dict) else None
 
 
 def _json(value: object) -> str:

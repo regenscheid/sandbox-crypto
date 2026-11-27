@@ -17,7 +17,7 @@ from pydantic import AfterValidator, AwareDatetime, Field, StringConstraints, mo
 from .context import ExecutionContext
 from .model import Contract, Counter, Identifier, Sha256
 
-PROTOCOL_VERSION: Final = 21
+PROTOCOL_VERSION: Final = 23
 """The worker API's version. Releases are lockstep (docs/COMPATIBILITY.md): it changes with
 any change to what the worker or its clients send, and each side refuses another version."""
 PROTOCOL_HEADER: Final = "X-Worker-Protocol"
@@ -714,7 +714,9 @@ class SessionCloseRequest(Contract):
     """Stop a session's kernels and jobs in one environment. Files and foreground calls stay.
 
     With ``run``, stop only that delegated run's own kernels, when the run ends (PD-37);
-    the session's kernels and its jobs stay."""
+    the session's kernels and its jobs stay, and its starts are not held while the close
+    runs. A job names no run, so a run's close cancels none, not even one that run
+    started."""
 
     context: ExecutionContext
     run: Identifier | None = None

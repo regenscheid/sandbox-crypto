@@ -66,6 +66,25 @@ def test_usage_is_accounted_per_session_run_and_role_the_reviewer_included(proje
     assert found.daily_cost_limit is None
 
 
+def test_a_reviewers_calls_leave_the_reviewed_runs_event_log_alone(projects):
+    """A reviewer call's profile is its review's to record, not a row of the run it
+    reviews (CR-49: 590 such rows were in one root's log); its usage still counts under
+    the reviewer's role."""
+    from sandbox_science.orchestrator.model_profiles import requested
+
+    _, parent, _, _ = setup(projects)
+    intents = ModelIntents(projects.control)
+    profile = requested("fixture")
+    for kind in ("reviewer", "reviewer", "fold"):
+        identity = intents.begin(parent, kind=kind, alias="fixture", profile=profile)
+        intents.observe(parent, identity, ModelUsage(input_tokens=40, output_tokens=10, cost=0.5))
+    events = RunState(projects.control).events("p", "s", RUN)
+    noticed = [e.data["kind"] for e in events if e.data.get("source") == "model_profile"]
+    assert noticed == ["fold"]
+    roles = {item.role: item for item in account(RunState(projects.control), "p").total.by_role}
+    assert (roles["reviewer"].calls, roles["reviewer"].cost) == (2, 1.0)
+
+
 def test_usage_by_model_names_each_model_and_leaves_unnamed_ones_unknown(projects):
     # The Monitor view's spend by model (D103), from the same sources as the costs.
     _, _, child, _ = setup(projects)

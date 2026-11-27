@@ -5,7 +5,7 @@ description: Starting delegated runs, either a check of one ledger entry that ca
 
 # Delegating work
 
-A main run is offered `delegate`, `wait_delegations`, `delegation_status` and `cancel_delegation` once the project's delegation setting allows it. A delegated run starts with a fresh context: it sees none of your conversation, only its brief and the project memory, and it has kernels of its own. It works in the same session, so it reads and writes the session's files. It cannot ask the user anything: when it needs an answer, it ends blocked with the question among its open questions.
+A main run is offered `delegate`, `wait_delegations`, `delegation_status` and `cancel_delegation` once the project's delegation setting allows it. A delegated run starts with a fresh context: it sees none of your conversation, only its brief and the project memory, and it has kernels of its own. It works in the same session: in the session's environment it reads and writes the session's files; in an environment of its own it reads copies of its inputs. It cannot ask the user anything: when it needs an answer, it asks you with `message_parent`, and ends blocked with the question among its open questions only when you do not answer.
 
 ## Checks and tasks
 
@@ -36,6 +36,8 @@ A task can also name:
 
 A task works with a delegated agent's authority. It can create ledger entries in their first status and add evidence and work records, but it changes no status. A task never counts as an entry's independent check.
 
+A literature task's brief asks for each quote as a ledger claim citing its reference, with its page and the quote form the citation check confirms (the literature-search skill), not only in a Markdown file.
+
 ## When a check counts
 
 The gate counts a delegation as an entry's independent check only when all of these hold:
@@ -60,16 +62,18 @@ A check that comes back refuted or inconclusive is information, not an obstacle.
 
 ## Reading outcomes
 
-`delegate` returns a delegation ID at once, and the child runs while you go on. Its end arrives as a delegation notice, or as the result of `wait_delegations`, which keeps the turn open until all (or the first) of the named delegations end, or a user message arrives. `delegation_status` reads a running delegation's limits, or an ended one's whole outcome. `cancel_delegation` stops one, keeping its record.
+`delegate` returns a delegation ID at once, and the child runs while you go on. Its end arrives as a delegation notice, or as the result of `wait_delegations`, which keeps the turn open until all (or the first) of the named delegations end, or a user or agent message, or a child's resource check-in, arrives. `delegation_status` reads a running delegation's limits, or an ended one's outcome. `cancel_delegation` stops one, keeping its record.
 
 An outcome separates what the platform saw from what the child said:
 
 - how it ended: returned, failed, cancelled, limit_reached or interrupted;
 - its result: a status (complete, partial or blocked) and a summary; for a check, the verdict and coverage; for a task, its deviations, open questions, dismissals and obstructions;
-- the files its calls recorded;
+- a count of the other files its calls recorded, which `delegation_status` lists when you ask for its files;
 - for a task, its result files: the files it named as its results, each pinned to the revision its own calls made. Cite those pinned revisions rather than the paths, which can change later.
 
 The result is the child's claim. Weigh it like any other evidence, and check what matters.
+
+A returned task awaits your review. Read the files its result names where its status and outcome notice say (their read_files field), then send it feedback with `message_child`, which reopens it, or accept it with `accept_delegation`, whose result names each file you did not read as accepted unread. Acceptance is final: `message_child` to an accepted task is refused, so to build on it, delegate a new task whose references name its result files. So leave a returned task unaccepted until your final answer, which lets it take follow-on work, unless an environment of its own must be freed for other work; a task left unreviewed is accepted when your run ends. Carry its deviations with its numbers into what you report.
 
 ## Limits
 
@@ -77,4 +81,4 @@ The result is the child's claim. Weigh it like any other evidence, and check wha
 - The project's cap bounds how many delegated runs the session runs at once, across the whole tree.
 - Checks and tasks have turn and token limits from the project's setting, and a child never gets more turns than its parent has left.
 - There are at most two levels. A task allowed to delegate starts tasks, never checks, and on no track; its own children delegate nothing.
-- A delegated run has no connector, review, plan or delegate tools (unless allowed), and no `ask_user`. Search the literature in the main run, and pass what a task needs as files.
+- A delegated run has no review, plan or delegate tools (unless allowed), and no `ask_user`. It has the project's connector tools, which its brief may narrow, a check only those that read; where the project has none, search the literature in the main run and pass what a task needs as files.

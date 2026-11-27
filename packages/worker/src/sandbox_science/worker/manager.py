@@ -82,6 +82,7 @@ from .lifecycle import (
     Notices,
     Recycle,
 )
+from .live import CancelSource
 from .package_admission import PackageAdmission, guard_reuse
 from .package_changes import PackageChanges
 from .package_gate import PackageGate
@@ -347,7 +348,7 @@ class ExecutionManager:
             for job in self._journal.running_jobs(environment_id)
             if not self._dispatcher.sandboxed(job)
         ]
-        await self._dispatcher.cancel_jobs(jobs)
+        await self._dispatcher.cancel_jobs(jobs, source=CancelSource.RELEASE)
         await self._connections.release(environment_id)
 
     async def end_job_sandboxes(self, environment_id: str) -> None:
@@ -365,7 +366,7 @@ class ExecutionManager:
             for job in self._journal.running_jobs(environment_id)
             if self._dispatcher.sandboxed(job)
         ]
-        await self._close_job_sandboxes(jobs, deleted=True)
+        await self._close_job_sandboxes(jobs, source=CancelSource.DELETION, deleted=True)
         await sandboxes.release_retained(environment_id)
 
     def environment_given_up(self, environment_id: str) -> None:
@@ -590,13 +591,21 @@ class ExecutionManager:
             return await self._kernels.restart(request)
 
     async def close_session(self, request: SessionCloseRequest) -> SessionClosed:
-        """Cancel and reap jobs, then stop kernels. Starts racing the close are refused."""
+        """Cancel and reap jobs, then stop kernels. Starts racing the close are refused.
+
+        A close naming a run stops only that run's own kernels (PD-37): a job names no
+        run, so none is cancelled, and the session's starts are not held while it runs.
+        """
         with self.store.recovery_fences.bind(request.context):
             return await self._close_owned_session(request)
 
     async def _close_owned_session(self, request: SessionCloseRequest) -> SessionClosed:
         context = request.context
+        # An observation in flight lists the run's kernels too, so it must not report.
         self._kernels.invalidate(context)
+        if request.run is not None:
+            # The executor refuses a late cell of the ended run itself (``end_run``).
+            return await self._close_session(request)
         with self._usability.closing_session(context):
             jobs = [
                 job
@@ -607,13 +616,19 @@ class ExecutionManager:
             sandboxed = {job.execution_id for job in jobs if self._dispatcher.sandboxed(job)}
             await asyncio.gather(
                 self._dispatcher.cancel_jobs(
-                    [job for job in jobs if job.execution_id not in sandboxed]
+                    [job for job in jobs if job.execution_id not in sandboxed],
+                    source=CancelSource.SESSION_CLOSE,
                 ),
-                self._close_job_sandboxes([job for job in jobs if job.execution_id in sandboxed]),
+                self._close_job_sandboxes(
+                    [job for job in jobs if job.execution_id in sandboxed],
+                    source=CancelSource.SESSION_CLOSE,
+                ),
             )
             return await self._close_session(request)
 
-    async def _close_job_sandboxes(self, jobs: list[Execution], *, deleted: bool = False) -> None:
+    async def _close_job_sandboxes(
+        self, jobs: list[Execution], *, source: CancelSource, deleted: bool = False
+    ) -> None:
         """Cancel job sandboxes' jobs, which collect (unless their session environment is
         ``deleted``) and then release their sandboxes without retention (JS-25). A job
         still collecting after the cancel grace goes on in the background, and is never
@@ -623,7 +638,9 @@ class ExecutionManager:
             return
         for job in jobs:
             sandboxes.release_on_close(job, deleted=deleted)
-        await asyncio.gather(*(self._dispatcher.cancel(job.execution_id) for job in jobs))
+        await asyncio.gather(
+            *(self._dispatcher.cancel(job.execution_id, source=source) for job in jobs)
+        )
         with contextlib.suppress(TimeoutError):
             async with asyncio.timeout(self._timeouts.cancel_grace):
                 await asyncio.gather(*(self._journal.wait(job.execution_id) for job in jobs))

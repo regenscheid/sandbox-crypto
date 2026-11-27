@@ -48,6 +48,7 @@ from .hooks import Closing, Effect, Notice, Point, Refusal, RunView, TurnHook
 from .notices import PLATFORM_INPUT, REDELIVERED
 from .projects import ModelUsage, RunRecord
 from .purpose import purpose_of, without
+from .run_timing import TIMING_KEYS
 from .runstate import (
     MAX_EVENT_BYTES,
     PAGE,
@@ -108,6 +109,9 @@ class RunChat:
         self.unavailable: Mapping[str, str] = {}
         """The MCP servers whose listing failed at the run's start, with why: the
         ``started`` event says so (lab 41, B4)."""
+        self.connectors: Mapping[str, object] | None = None
+        """Why the run was offered no connectors although the deployment has them
+        (``harness.WITHHELD``): the ``started`` event says so."""
         self.parent, self.delegation = parent, delegation
         self.poll, self.clock = poll, clock
         self.offered: set[str] = set()
@@ -325,6 +329,10 @@ def _notice(message: ChatMessage, shown: Mapping[str, str]) -> Notice:
     return Notice(SOURCE, ids, message.text, None, user=True)
 
 
+HELD: Final = "The agent's answer is being reviewed; it is shown when the review ends."
+"""The run's event for a closing answer kept from the user while its final review runs."""
+
+
 class EventLog(TurnHook):
     """The run's events, written as it goes (RS-13, RS-14). The last hook."""
 
@@ -340,6 +348,9 @@ class EventLog(TurnHook):
         self.replies = self.calls = 0
         self.purposes: dict[str, str] = {}
         """Each call's purpose, by its ID, for the result's event to carry."""
+        self.withholding: int | None = None
+        """The message whose answer is kept from the user, which a notice says is being
+        reviewed, until its closing ends (consistency review, CR-48)."""
 
     async def notices(self, point: Point, run: RunView) -> Sequence[Notice]:
         await self._catch_up(
@@ -407,6 +418,9 @@ class EventLog(TurnHook):
                         if chat.unavailable
                         else {}
                     ),
+                    **(
+                        {"connectors": dict(chat.connectors)} if chat.connectors is not None else {}
+                    ),
                 },
             )
             if chat.task is not None:
@@ -424,7 +438,21 @@ class EventLog(TurnHook):
                     await chat.write("user", {"message_id": message_id, "text": text})
             else:
                 await chat.write("notice", {"source": source, "ids": new})
-        for message in messages[self.seen :]:
+        for index in range(self.seen, len(messages)):
+            message = messages[index]
+            if (
+                run is not None
+                and run.withheld
+                and message.get("role") == "assistant"
+                and not message.get("tool_calls")
+                and index == len(messages) - 1
+            ):
+                # The closing answer waits for its review; the user is told so, once.
+                if self.withholding != index:
+                    self.withholding = index
+                    await chat.write("notice", {"source": "reviews", "ids": [], "text": HELD})
+                self.seen = index
+                return
             if message.get("role") == "assistant":
                 await self._reply(message, usage)
             elif message.get("role") == "tool":
@@ -446,6 +474,8 @@ class EventLog(TurnHook):
                         # both without pairing the result with its call.
                         "gloss": tool_gloss(record, result),
                         **({"purpose": purpose} if purpose is not None else {}),
+                        # When the call started and how long it took (run_timing).
+                        **{key: record[key] for key in TIMING_KEYS if key in record},
                     },
                 )
         self.seen = len(messages)

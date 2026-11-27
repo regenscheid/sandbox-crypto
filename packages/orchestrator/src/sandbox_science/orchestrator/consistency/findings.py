@@ -42,7 +42,17 @@ from .models import (
     FindingResponse,
     ReviewConfig,
 )
-from .store import RECEIPTS, ReviewStore, agent_text, digest, dump, identifier, stored_json, text
+from .store import (
+    RECEIPTS,
+    ReviewStore,
+    agent_text,
+    digest,
+    dump,
+    identifier,
+    is_final,
+    stored_json,
+    text,
+)
 
 # Heterogeneous persisted JSON is validated at the mutation boundary.
 Json = dict[str, Any]
@@ -168,6 +178,30 @@ def _unique(values: list[Json]) -> list[Json]:
     return kept
 
 
+MAX_PINS: Final = 8
+"""The places a refused fix names of those its finding is pinned to; it counts the rest."""
+
+
+def _pin(location: Json) -> str | None:
+    """What an anchor's locator names, as a refused fix names it, or ``None`` for a place
+    a fix never answers by name (an action window, a plan state)."""
+    archived = location.get("archive")
+    if "document" in location:
+        return f"document {location['document']} r{location.get('revision')}"
+    if isinstance(location.get("artifact"), dict):
+        ref = cast(Json, location["artifact"])
+        return f"artifact {ref.get('artifact_id')} r{ref.get('revision')}"
+    if "entry" in location:
+        return f"entry {location.get('handle') or location['entry']} r{location.get('revision')}"
+    if "execution" in location:
+        return f"execution {location['execution']}"
+    if "operation" in location:
+        return f"publication {location['operation']}"
+    if isinstance(archived, dict) and isinstance(cast(Json, archived).get("id"), str):
+        return f"message {cast(Json, archived)['id']}"
+    return None
+
+
 @dataclass(frozen=True)
 class Marks:
     """What a finding reviewed, as a re-check's evidence must be later than it (CR-42):
@@ -178,6 +212,33 @@ class Marks:
     artifacts: dict[str, int]
     entries: dict[str, int]
     position: int | None
+    pinned: tuple[str, ...] = ()
+    """What the finding's anchors name, in order, each once (``_pin``)."""
+
+    def unrelated(self, what: str) -> DocumentError:
+        """The refusal of a fix that names ``what``, which the finding is not pinned to:
+        what it is pinned to, and the answers it accepts."""
+        named = ", ".join(self.pinned[:MAX_PINS]) or "no document, artifact, entry or message"
+        if len(self.pinned) > MAX_PINS:
+            named += f" and {len(self.pinned) - MAX_PINS} more"
+        accepted = [
+            text
+            for held, text in (
+                (self.documents, "a later revision of a pinned document (revisions)"),
+                (self.artifacts, "a later revision of a pinned artifact (artifact_revisions)"),
+                (self.entries, "a later revision of a pinned ledger entry (entry_revisions)"),
+                (self.position is not None, "a later message that corrects it (messages)"),
+            )
+            if held
+        ]
+        accepted.append("a dismissal with a reason (action dismiss)")
+        return DocumentError(
+            POLICY_DENIED,
+            f"{what} is not what the finding is pinned to; it is pinned to {named}. It "
+            f"accepts {', '.join(accepted[:-1])}{' or ' if len(accepted) > 1 else ''}"
+            f"{accepted[-1]}",
+            {"pinned": list(self.pinned)},
+        )
 
     def later(self, location: Json) -> tuple[str, Json]:
         """The place, ``("place", ...)``, or the archive message, ``("message", ...)``,
@@ -189,9 +250,7 @@ class Marks:
         if "document" in location and type(location.get("revision")) is int:
             document, revision = str(location["document"]), cast(int, location["revision"])
             if document not in self.documents:
-                raise DocumentError(
-                    POLICY_DENIED, f"document {document} is not what the finding reviewed"
-                )
+                raise self.unrelated(f"document {document}")
             if revision <= self.documents[document]:
                 raise DocumentError(
                     INVALID_REQUEST,
@@ -203,7 +262,7 @@ class Marks:
             ref = cast(Json, location["artifact"])
             artifact, revision = str(ref.get("artifact_id")), ref.get("revision")
             if artifact not in self.artifacts:
-                raise DocumentError(POLICY_DENIED, "changed artifact is unrelated to this finding")
+                raise self.unrelated(f"artifact {artifact}")
             if type(revision) is not int or revision <= self.artifacts[artifact]:
                 raise DocumentError(
                     INVALID_REQUEST,
@@ -214,7 +273,7 @@ class Marks:
         if "entry" in location and type(location.get("revision")) is int:
             entry, revision = str(location["entry"]), cast(int, location["revision"])
             if entry not in self.entries:
-                raise DocumentError(POLICY_DENIED, "changed entry is unrelated to this finding")
+                raise self.unrelated(f"entry {location.get('handle') or entry}")
             if revision <= self.entries[entry]:
                 raise DocumentError(
                     INVALID_REQUEST,
@@ -586,6 +645,7 @@ class Findings:
         *,
         reflag: bool = False,
         notify: bool = True,
+        carry: bool = False,
         answer: str | None = None,
         recheck: Json | None = None,
         columns: Json | None = None,
@@ -598,7 +658,11 @@ class Findings:
         finding at or above the project's interrupt severity, and not at its re-flag
         bound, is offered to its session's runs, unless ``notify`` is false: an agent's
         own response leaves it open, and offering it back to the agent that wrote it made
-        a run answer it again and again until its turns ran out (lab 40)."""
+        a run answer it again and again until its turns ran out (lab 40). ``carry`` keeps
+        a notice of the revision before that no run was given or holds, for the new
+        revision (one a live run was offered stays that run's, acknowledged or not): the
+        platform's own bookkeeping, such as queueing a re-check or recording one that could
+        not decide, does not take a finding from the agent it has not reached (CR-48)."""
         revision = found["revision"] + 1
         flags = found["reflags"] + int(reflag)
         changes = dict(columns or {})
@@ -675,7 +739,22 @@ class Findings:
         threshold = (
             ReviewConfig.model_validate_json(configuration[0]) if configuration else ReviewConfig()
         ).interrupt_severity
+        if review is not None and threshold == "fail":
+            # A final review's warn findings reach the agent too (CR-48).
+            raised = db.execute(
+                "SELECT classifier FROM review_runs WHERE review_id=?", (review,)
+            ).fetchone()
+            if raised is not None and is_final({"classifier": raised[0]}):
+                threshold = "warn"
         bounded = bool(changes.get("at_bound", found.get("at_bound", False)))
+        if carry and not notify and not bounded and status == "open":
+            db.execute(
+                "INSERT OR IGNORE INTO review_notices(finding_id,revision,project,session) "
+                "SELECT finding_id,?,project,session FROM review_notices WHERE finding_id=? "
+                "AND revision=? AND delivered_run IS NULL "
+                "AND (claimed_run IS NULL OR claim_until<=?)",
+                (revision, found["finding_id"], found["revision"], self.store.clock()),
+            )
         if (
             notify
             and not bounded
@@ -1058,11 +1137,12 @@ class Findings:
         with self.store.documents.control.read() as tx:
             marks = self.marks(tx.sql, target)
         artifact_pins: list[Json] = []
-        for ref in value.artifact_revisions:
+        for given in value.artifact_revisions:
+            ref = self._inventory_ref(project, marks, given)
             marks.later({"artifact": ref.model_dump(mode="json")})
             self.store.artifact_pin(project, session, ref)
             artifact_pins.append(ref.model_dump(mode="json"))
-        entry_pins = self._entry_revisions(project, target, value.entry_revisions)
+        entry_pins = self._entry_revisions(project, target, marks, value.entry_revisions)
         pinned: list[Json] = []
         for document, number in value.revisions:
             if type(number) is not int or not 1 <= number <= 999999999:
@@ -1251,6 +1331,7 @@ class Findings:
         artifacts: dict[str, int] = {}
         entries: dict[str, int] = {}
         positions: list[int] = []
+        pinned: dict[str, None] = {}
 
         def keep(into: dict[str, int], key: object, revision: object) -> None:
             if type(revision) is int:
@@ -1258,6 +1339,8 @@ class Findings:
 
         for anchor in found["anchors"]:
             location = cast(Json, anchor.get("locator") or {})
+            if (pin := _pin(location)) is not None:
+                pinned[pin] = None
             if "document" in location:
                 keep(documents, location["document"], location.get("revision"))
             elif isinstance(location.get("artifact"), dict):
@@ -1276,7 +1359,22 @@ class Findings:
             ).fetchone()
             if type(held) is int:
                 positions.append(held)
-        return Marks(documents, artifacts, entries, max(positions) if positions else None)
+        return Marks(
+            documents, artifacts, entries, max(positions) if positions else None, tuple(pinned)
+        )
+
+    def _inventory_ref(
+        self, project: str, marks: Marks, given: ArtifactRevisionRef
+    ) -> ArtifactRevisionRef:
+        """``given``, or the inventory's revision it names when it names the worker's
+        publication (``art-…``, from ``publish``) of a revision of a pinned artifact
+        (``artifact-…``, from ``find_artifacts``) with the same content."""
+        if given.artifact_id in marks.artifacts or self.store.artifacts is None:
+            return given
+        found = self.store.artifacts.published(project, given.artifact_id)
+        if found is None or found.sha256 != given.sha256:
+            return given
+        return found
 
     def _messages(
         self, project: str, session: str, marks: Marks, named: tuple[str, ...]
@@ -1306,7 +1404,7 @@ class Findings:
         return found
 
     def _entry_revisions(
-        self, project: str, target: Json, cited: tuple[tuple[str, int], ...]
+        self, project: str, target: Json, marks: Marks, cited: tuple[tuple[str, int], ...]
     ) -> list[tuple[Json, tuple[Json, Json, bool]]]:
         """The changed ledger entry revisions a claimed fix cites, each pinned with the
         evidence a confirmation review reads: a revision of an entry the finding is
@@ -1329,7 +1427,7 @@ class Findings:
         for reference, revision in cited:
             view = ledger.entry(project, reference, revision)
             if view.entry_id not in anchored:
-                raise DocumentError(POLICY_DENIED, "changed entry is unrelated to this finding")
+                raise marks.unrelated(f"entry {reference}")
             if revision <= max(number for number, _ in anchored[view.entry_id]):
                 raise DocumentError(
                     INVALID_REQUEST,
@@ -1677,6 +1775,7 @@ class Findings:
             why,
             {"review": review, "decision": "inconclusive", "attempt": attempts},
             notify=False,
+            carry=True,
             answer="inconclusive",
             recheck=record,
             columns={"latest_recheck": record, "recheck": {**recheck, "attempts": attempts}},
@@ -2049,6 +2148,7 @@ class Findings:
                     f"queued for the next review of session {session}.",
                     {"recheck": "queued", "places": recheck["places"], "session": session},
                     notify=False,
+                    carry=True,
                     columns={"recheck": recheck},
                 )
                 queued_now += 1

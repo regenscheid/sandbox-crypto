@@ -77,6 +77,8 @@ def state(run: Transcript) -> LoopState:
         offered={},
         final_text=run.final_text,
         answer=run.answer,
+        held_answer=run.held_answer,
+        withheld=run.withheld,
         pending=run.pending,
         room=run.room,
         response_rounds=run.response_rounds,
@@ -97,6 +99,20 @@ class RemoteHook(TurnHook):
         self.channel, self.attempt, self.slot = channel, attempt, slot
         self.name, self.veto = given.name, given.veto
         self.limits_turns = given.turn_limit
+        self.holds = given.holds
+        self._holding = False
+        """The host's hook's ``holds_answers``, as last asked: it changes only when its
+        lease is entered and in a closing."""
+
+    @property
+    def holds_answers(self) -> bool:
+        return self._holding
+
+    async def _refresh(self) -> None:
+        if self.holds:
+            self._holding = TypeAdapter(bool).validate_python(
+                await self.ask(Capability.HOLDS_ANSWERS)
+            )
 
     async def ask(
         self,
@@ -123,6 +139,7 @@ class RemoteHook(TurnHook):
     async def lease(self) -> AsyncGenerator[None]:
         await self.ask(Capability.HOOK_ENTER)
         try:
+            await self._refresh()
             yield
         finally:
             await owned(self.ask(Capability.HOOK_EXIT))
@@ -169,9 +186,11 @@ class RemoteHook(TurnHook):
         await self.ask(Capability.OBSERVE_TOOL, run, record=record)
 
     async def closing(self, run: RunView, answer: str | None) -> Closing:
-        return TypeAdapter(Closing).validate_python(
+        closing = TypeAdapter(Closing).validate_python(
             await self.ask(Capability.CLOSING, run, answer=answer)
         )
+        await self._refresh()
+        return closing
 
     async def accept(self, run: RunView) -> None:
         await self.ask(Capability.ACCEPT, run)
@@ -394,6 +413,7 @@ class RuntimeLoops:
                 max_input_chars=given.max_input_chars,
                 system=given.system,
                 research_template=given.research_template,
+                notes=given.notes,
                 hooks=hooks,
                 memory=given.memory,
                 role=given.role,

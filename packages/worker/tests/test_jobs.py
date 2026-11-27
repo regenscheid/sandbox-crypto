@@ -17,10 +17,12 @@ import pytest_asyncio
 from aiohttp.test_utils import TestClient
 
 from sandbox_science.contracts import (
+    CellRequest,
     ExecutionContext,
     ExecutionState,
     JobRequest,
     ReadFileRequest,
+    SessionClosed,
     SessionCloseRequest,
     ShellRequest,
 )
@@ -221,8 +223,83 @@ async def test_close_cancels_jobs_but_foreground_calls_stay(jobs: ExecutionManag
         ShellRequest(operation_id="stay", context=CONTEXT, script="sleep 0.2; echo stayed")
     )
     await jobs.close_session(SessionCloseRequest(context=CONTEXT))
-    assert (await jobs.wait(job.execution_id)).state is ExecutionState.CANCELLED
+    ended = await jobs.wait(job.execution_id)
+    assert ended.state is ExecutionState.CANCELLED
+    # Who asked is in the error a job notice shows.
+    assert ended.result is not None
+    assert ended.result.error is not None
+    assert ended.result.error.message == "cancelled on request (asked by its session's close)"
     assert (await jobs.wait(call.execution_id)).state is ExecutionState.SUCCEEDED
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_job_says_cancel_job_asked(jobs: ExecutionManager) -> None:
+    job, _ = await jobs.submit(request("cancelled", "sleep 60"))
+    await running(jobs, job.execution_id)
+    await jobs.cancel(job.execution_id)
+    ended = await jobs.wait(job.execution_id)
+    assert ended.result is not None
+    assert ended.result.error is not None
+    assert ended.result.error.message == "cancelled on request (asked by cancel_job)"
+
+
+def cell(operation: str, code: str, run: str | None = None) -> CellRequest:
+    return CellRequest(operation_id=operation, context=CONTEXT, code=code, run=run)
+
+
+@pytest.mark.asyncio
+async def test_a_runs_close_stops_its_kernel_only(jobs: ExecutionManager) -> None:
+    """A delegated run's end closes its own kernels (PD-37): the session's job keeps
+    running to its end, and the session's kernel keeps its state and generation."""
+    job, _ = await jobs.submit(request("sweep", "printf running; sleep 2; printf done"))
+    await running(jobs, job.execution_id)
+    session, _ = await jobs.submit(cell("session", "kept = 1"))
+    before = (await jobs.wait(session.execution_id)).kernel
+    child, _ = await jobs.submit(cell("child", "mine = 2", run="r1"))
+    assert (await jobs.wait(child.execution_id)).state is ExecutionState.SUCCEEDED
+    closed = await jobs.close_session(SessionCloseRequest(context=CONTEXT, run="r1"))
+    assert [kernel.run for kernel in closed.kernels] == ["r1"]
+    assert jobs.get(job.execution_id).state is ExecutionState.RUNNING
+    ended = await jobs.wait(job.execution_id)
+    assert ended.state is ExecutionState.SUCCEEDED
+    assert ended.result is not None
+    assert ended.result.stdout is not None
+    assert ended.result.stdout.text == "runningdone"
+    again, _ = await jobs.submit(cell("again", "kept"))
+    after = await jobs.wait(again.execution_id)
+    assert after.result is not None
+    assert not after.kernel_state_lost
+    assert after.result.outputs[0].data["text/plain"] == "1"
+    assert before is not None
+    assert after.kernel is not None
+    assert after.kernel.generation == before.generation
+    late, _ = await jobs.submit(cell("late", "mine", run="r1"))
+    refused = await jobs.wait(late.execution_id)
+    assert refused.result is not None
+    assert refused.result.error is not None
+    assert "has ended" in refused.result.error.message
+
+
+@pytest.mark.asyncio
+async def test_a_runs_close_holds_no_start_of_the_session(
+    jobs: ExecutionManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def blocked(_request: SessionCloseRequest) -> Any:
+        entered.set()
+        await release.wait()
+        return SessionClosed()
+
+    monkeypatch.setattr(jobs, "_close_session", blocked)
+    closing = asyncio.create_task(
+        jobs.close_session(SessionCloseRequest(context=CONTEXT, run="r1"))
+    )
+    await asyncio.wait_for(entered.wait(), 5)
+    started, _ = await jobs.submit(request("during-run-close", "true"))
+    release.set()
+    await closing
+    assert (await jobs.wait(started.execution_id)).state is ExecutionState.SUCCEEDED
 
 
 @pytest.mark.asyncio

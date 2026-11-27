@@ -26,6 +26,9 @@ does not offer a service turned off, and a running run's calls to it are refused
 Each service also shows its latest scheduled canary (``canary``), read from the control
 store, where the launcher's canary runner records one bounded listing per server every
 interval (docs/MCP-CONNECTORS.md, "Canaries"); reading it calls nothing.
+
+A project the launcher's connectors are not bound to lists no service, and ``elsewhere``
+says that they serve another project, without naming it.
 """
 
 from __future__ import annotations
@@ -133,6 +136,9 @@ class McpInventory(Contract):
     observation_scope: str
     checks: bool = False
     """Whether the user's availability check is configured."""
+    elsewhere: bool = False
+    """Whether the deployment's connectors serve another project, which the view does not
+    name: this project's runs are offered none, and told so."""
 
 
 def add_routes(app: web.Application) -> None:
@@ -262,6 +268,7 @@ def _inventory(
         ],
         inspected_runs=inspected,
         skipped_runs=skipped,
+        elsewhere=config.project not in (None, project) and bool(config.services),
         observation_scope=(
             "At most 24 main runs sampled from 8 recently opened sessions, "
             "examining no more than 64 recent run entries and 8 main runs per "

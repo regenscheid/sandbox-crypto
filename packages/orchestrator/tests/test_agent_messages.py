@@ -178,13 +178,58 @@ def test_unseen_message_to_ended_child_returns_to_root(
     assert mailbox.pending(PROJECT, SESSION, None) == [sent]
     mailbox.acknowledge(PROJECT, SESSION, None, "root", [sent.message_id])
     assert mailbox.pending(PROJECT, SESSION, None) == []
-    assert mailbox.status(PROJECT, SESSION, "root", sent.message_id).delivered_run == "root"
-    assert mailbox.send_child(
-        PROJECT, SESSION, "root", None, child_id, "Correct the proof.", "op-1"
-    ) == mailbox.status(PROJECT, SESSION, "root", sent.message_id)
-    # A later message to the accepted task goes to the root as a delivery failure.
-    later = mailbox.send_child(PROJECT, SESSION, "root", None, child_id, "Another.", "op-2")
-    assert mailbox.pending(PROJECT, SESSION, None) == [later]
+    # The root received it as a failure: it was delivered to no run of the recipient's.
+    kept = mailbox.status(PROJECT, SESSION, "root", sent.message_id)
+    assert (kept.delivered_run, kept.failure_run) == (None, "root")
+    assert (
+        mailbox.send_child(PROJECT, SESSION, "root", None, child_id, "Correct the proof.", "op-1")
+        == kept
+    )
+    # A later message to the accepted task is refused: acceptance is final (PD-46).
+    with pytest.raises(ControlError, match=r"^task_accepted: ") as refused:
+        mailbox.send_child(PROJECT, SESSION, "root", None, child_id, "Another.", "op-2")
+    assert f"{child_id} was accepted by you at " in refused.value.message
+    assert "takes no follow-on work and nothing was sent" in refused.value.message
+    assert "call delegate with a new task" in refused.value.message
+    assert mailbox.pending(PROJECT, SESSION, None) == []
+
+
+def test_a_message_to_an_accepted_task_names_its_results(
+    tree: tuple[ControlStore, str, str],
+) -> None:
+    """PD-46 as decided: a message to an accepted task is refused with its own reason,
+    saying when it was accepted and how to continue the work: a new delegate whose
+    references name its result files and deliverables, by path and revision."""
+    control, child_id, _ = tree
+    records = DelegationRecords(control)
+    area = f"work/{child_id}"
+    records.end(
+        PROJECT,
+        SESSION,
+        child_id,
+        Ending(
+            ended="returned",
+            stopped="answered",
+            result={
+                **DONE,
+                "deliverables": [{"id": "d1", "status": "produced", "path": f"{area}/b.md"}],
+            },
+            files={
+                "total": 1,
+                "results": [{"path": f"{area}/a.py", "artifact_id": "artifact-1", "revision": 3}],
+            },
+        ),
+    )
+    records.accept(PROJECT, SESSION, child_id, by="platform", reason="parent_ended")
+    with pytest.raises(ControlError, match=r"^task_accepted: ") as refused:
+        AgentMessageStore(control).send_child(
+            PROJECT, SESSION, "root", None, child_id, "Go on.", "op"
+        )
+    text = refused.value.message
+    assert f"{child_id} was accepted for you (parent_ended) at " in text
+    assert f'{{"file": "{area}/a.py"}} (artifact artifact-1 revision 3)' in text
+    assert f'{{"file": "{area}/b.md"}}' in text
+    assert refused.value.kind == "conflict"
 
 
 async def test_status_distinguishes_root_fallback_from_child_delivery(
@@ -208,6 +253,9 @@ async def test_status_distinguishes_root_fallback_from_child_delivery(
     store.acknowledge(PROJECT, SESSION, None, "root", [sent.message_id])
     delivered, _ = await mailbox.call("agent_message_status", {"message_id": sent.message_id}, "q")
     assert json.loads(delivered)["state"] == "delivery_failed"
+    # Its sender, the root, received it back; it was delivered to no one.
+    assert json.loads(delivered)["delivered_run"] is None
+    assert store.status(PROJECT, SESSION, "root", sent.message_id).delivered_run is None
 
 
 async def test_root_mailbox_wait_wakes_for_user_message(
@@ -296,6 +344,83 @@ async def test_root_correction_reaches_a_child_at_its_next_safe_point(
     finally:
         projects.close()
     assert delegation_id in json.dumps(results(root))
+
+
+async def test_status_says_delivered_once_the_model_call_that_carried_it_returns(
+    delegating: Harness,
+) -> None:
+    """PD-44: a message counts as delivered once the recipient's model call that saw it
+    returns and its reply is saved, not only when the recipient's run ends: the parent's
+    agent_message_status says so while the child still works, with the child's run."""
+    held, release = asyncio.Event(), asyncio.Event()
+    saw, checked = asyncio.Event(), asyncio.Event()
+
+    async def hold() -> None:
+        held.set()
+        await release.wait()
+
+    async def after_child_started() -> None:
+        await asyncio.wait_for(held.wait(), 10)
+
+    async def child_saw_it() -> None:
+        # The call after the one that carried the message: that one has returned.
+        saw.set()
+        await asyncio.wait_for(checked.wait(), 30)
+
+    async def released_then_seen() -> None:
+        release.set()
+        await asyncio.wait_for(saw.wait(), 30)
+
+    async def done_checking() -> None:
+        checked.set()
+
+    def first(messages: list[dict[str, object]], pattern: str) -> str:
+        return next(
+            found.group()
+            for message in messages
+            if message["role"] == "tool"
+            and (found := re.search(pattern, str(message["content"]))) is not None
+        )
+
+    waiting = wait()
+    waiting.before = done_checking
+    root = await delegating.run(
+        "root",
+        [
+            Reply(calls=[call("delegate", task="Check the finite-field cases.")]),
+            Reply(
+                calls_from=lambda m: [
+                    call(
+                        "message_child",
+                        delegation_id=first(m, r"dlg-[0-9a-f]{24}"),
+                        text="Check GF(19) as well.",
+                    )
+                ],
+                before=after_child_started,
+            ),
+            Reply(
+                calls_from=lambda m: [
+                    call("agent_message_status", message_id=first(m, r"agm-[0-9a-f]+"))
+                ],
+                before=released_then_seen,
+            ),
+            waiting,
+            Reply("Done."),
+        ],
+        routed={
+            "Check the finite-field cases.": [
+                Reply(calls=[call("list_files", path=".")], before=hold),
+                Reply(calls=[call("list_files", path=".")]),
+                Reply(calls=[call("list_files", path=".")], before=child_saw_it),
+                *submitted(DONE, "Done."),
+            ]
+        },
+    )
+    (child,) = children(delegating, root)
+    queued, status = (json.loads(r) for r in results(root)[1:3])
+    assert queued["state"] == "queued"
+    assert status["state"] == "delivered"
+    assert status["delivered_run"] == run_name(child.started_at, child.run_id)
 
 
 async def test_child_reports_to_parent_while_working(

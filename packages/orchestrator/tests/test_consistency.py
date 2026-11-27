@@ -1113,9 +1113,9 @@ async def test_confirmation_coverage_is_independent_of_failed_author_window(
         ]
     )
     await ReviewerRunner(reviews, "p", "s", confirmation, "owner", model).run()
-    assert reviews.run("p", "s", confirmation)["state"] == (
-        "passed" if original_complete and checked else "inconclusive"
-    )
+    # A window read whole passes though an item was cut short; its coverage stays
+    # incomplete (CR-49).
+    assert reviews.run("p", "s", confirmation)["state"] == ("passed" if checked else "inconclusive")
     assert Findings(reviews).get("p", "s", finding["finding_id"])["status"] == "fixed"
     with documents.control.read() as tx:
         db = tx.sql

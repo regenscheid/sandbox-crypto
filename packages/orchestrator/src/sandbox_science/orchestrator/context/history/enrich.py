@@ -481,4 +481,6 @@ def _usage(turn: ModelTurn) -> ModelUsage:
         cost=turn.cost,
         gateway_version=turn.gateway_version,
         retried=list(turn.retried[:16]),
+        started_at=turn.started_at,
+        duration_ms=turn.duration_ms,
     )

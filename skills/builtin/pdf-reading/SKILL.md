@@ -14,7 +14,7 @@ The PDF tools parse a file inside the project sandbox and name it by its SHA-256
 3. Find a term with `pdf_search`. It is case-insensitive, and each hit gives the physical page, the printed label, the line number and the line.
 4. Make a PNG of a page, or of a region of it, with `pdf_render` when an equation, matrix, table or figure matters. For a region, read the page with `pdf_pages` and boxes set to true: each line then shows its box, [x0, y0, x1, y1] in points from the page's bottom left, and a box that covers the lines you want, with a margin, is the region to render. Publish the PNG to keep it as evidence.
 
-For a long paper, read bounded page ranges, and say which pages you did not read. A summary of a paper is only as good as the pages behind it.
+For a long paper, read bounded page ranges, and say which pages you did not read. A summary of a paper is only as good as the pages behind it. A claim that a paper first states something on a page, or never states it, needs every earlier page (or every page) read, or a `pdf_search` for each phrasing it could take; otherwise name the unread pages beside the claim.
 
 ## Page labels and page numbers
 
@@ -26,13 +26,9 @@ A line has the same number in `pdf_pages` and `pdf_search`. Running headers, foo
 
 `pdf_info` names the pages without extractable text, such as scanned pages. `pdf_pages` returns no lines for them, and `pdf_search` does not look at them, so a search that found nothing has not searched those pages.
 
-Agents have no tool to look at an image, so rendering such a page does not let you read it yourself. What helps:
+Where `view_image` is offered, look at such a page yourself: name the PDF and its page, and a region (as `pdf_render` takes it) to read a table, a matrix or a formula closely. Say in your answer that you read a scanned page from its image. Without `view_image`, name the pages you could not read instead of guessing what they say, and render them, publish the PNGs and ask the user to read the part that matters (a delegated run asks its parent). OCR run in the sandbox, if the project lets you install it, is another route.
 
-- name the pages you could not read in your answer, instead of guessing what they say;
-- render them, publish the PNGs, and ask the user to read the part that matters (a delegated run asks its parent);
-- run OCR in the sandbox, if the project lets you install it. OCR text is your own computation, not a line the PDF tools returned, so it cannot serve as a quote's source.
-
-Extracted text of formulas can drop subscripts and superscripts, merge symbols, or reorder a matrix. Before relying on a formula from extracted text, derive it again or have the user compare it with a render.
+A value you read from an image, or from OCR, is your own transcription, not a line the PDF tools returned: it cannot serve as a quote's source, and a quote comes only from text lines. Extracted text of formulas can drop subscripts and superscripts, merge symbols, or reorder a matrix. Before relying on a formula from extracted text, compare it with the page's image through `view_image`, derive it again, or have the user compare it with a render.
 
 ## Citing a place
 
@@ -43,7 +39,7 @@ Cite a line as p<page>:<line>, with the physical page, and add the printed label
 A claim or result can quote the reference it cites. The consistency reviewer's citation check then looks for the quoted text in what a PDF tool returned in this session, and records whether it holds the quote and supports the entry. For the check to find the quote:
 
 - The reference entry names the PDF in its pdf field, as an artifact revision of the project. Publish the PDF first, or find its artifact ID and revision with `find_artifacts`. The check matches the PDF by its SHA-256, so the file you read must be that revision's bytes.
-- Read the quoted lines with `pdf_pages`, or with `pdf_search` for a single line, in this session before recording the quote. The check reads this session's tool results, not the file.
+- Read the quoted lines with `pdf_pages`, or with `pdf_search` for a single line, in this session before recording the quote. The check reads this session's tool results, not the file. Just before recording the quote, read its page alone (pages set to that one page): the check loads the whole result that holds the quote, and a result of many pages can be cut short before the quoted one.
 - Give the physical page, the first and last line, and the printed label. The quote must start in the first line and end in the last, so choose the lines tightly.
 - Copy the text exactly as those lines read, joined by single spaces: the same case, punctuation, hyphens at line ends and odd characters. Only white space may differ. A quote holds at least 20 characters besides white space, and at most 2,000.
 

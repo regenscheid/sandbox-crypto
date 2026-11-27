@@ -552,7 +552,10 @@ def test_cooldown_starts_when_the_slow_failure_ends(store) -> None:
     assert dispatch(reviews)
 
 
-def test_incomplete_finding_span_remains_a_historical_gap(store) -> None:
+def test_an_item_cut_short_leaves_the_window_reviewed_and_says_so(store) -> None:
+    """A window read whole is reviewed though an item in it was cut short: its verdict
+    stands, its coverage names the item partial, and no gap is left (CR-49); its
+    coverage_complete stays false, so the ledger gate credits nothing from it."""
     reviews, _, _ = store
     reviews.defaults = ReviewConfig(max_feed_items=1)
     reviews.observe(
@@ -568,10 +571,14 @@ def test_incomplete_finding_span_remains_a_historical_gap(store) -> None:
     first = dispatch(reviews)
     assert not reviews.span_complete("p", "s", first)
     reviews.finish("p", "s", first, "owner", "findings", "Found a problem.")
-    assert reviews.progress("p", "s")["historical_holes"]
+    run = reviews.run("p", "s", first)
+    assert (run["state"], run["coverage_complete"]) == ("findings", 0)
+    assert run["coverage"]["partial"] == run["coverage"]["covered"]
+    assert not reviews.progress("p", "s")["historical_holes"]
     second = dispatch(reviews)
     reviews.finish("p", "s", second, "owner", "passed", "Checked later span.")
-    assert reviews.progress("p", "s")["historical_holes"]
+    assert reviews.run("p", "s", second)["state"] == "passed"
+    assert reviews.coverage("p", "s")["complete"]
 
 
 def test_prior_ledger_claim_is_context_and_cannot_count_as_new_coverage(store) -> None:
@@ -656,42 +663,55 @@ def test_oversized_delegated_observation_is_an_incomplete_marker(
         in reviews.read_evidence("p", "s", review, items[1]["evidence"])["text"]
     )
     reviews.finish("p", "s", review, "owner", "passed", "Claimed all checked.")
-    assert reviews.run("p", "s", review)["state"] == "inconclusive"
-    assert reviews.progress("p", "s")["historical_holes"]
+    # The execution left out for its size could not be read, and is named unread; a pass
+    # of the outcome stands, unless it was left out too and nothing could be read (CR-49
+    # as amended). Either way the ledger gate credits nothing the review held.
+    run = reviews.run("p", "s", review)
+    assert (run["state"], run["coverage_complete"]) == (
+        "inconclusive" if near_limit_outcome else "passed",
+        0,
+    )
+    assert len(run["coverage"]["partial"]) == 2
+    unread = [items[0]["evidence"]] if near_limit_outcome else []
+    assert run["coverage"]["unread"] == [*unread, items[1]["evidence"]]
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("max_terminal_windows", [5, 24])
-async def test_terminal_hold_catches_up_more_than_three_small_windows(
-    store, max_terminal_windows: int
-) -> None:
+async def test_a_runs_end_is_one_final_review_of_its_backlog_newest_first(store) -> None:
+    """A backlog of five checkpoint windows is one final review at the run's end, not a
+    walk through them (CR-48): it is given the newest item first and covers them all."""
     from sandbox_science.orchestrator.consistency.controller import ReviewController
 
     from .test_consistency import context_for
 
     reviews, _, _ = store
-    reviews.defaults = ReviewConfig(max_feed_items=4, max_terminal_windows=max_terminal_windows)
-    for n in range(20):
-        claim(reviews, f"Claim {n} is supported.", key=f"claim-{n}")
-
-    class FreshReviewer(LabReviewer):
-        async def complete(self, messages: Sequence[Any], tools: Sequence[Any]) -> ModelTurn:
-            if len(messages) == 2:
-                self.calls = 0
-            return await super().complete(messages, tools)
-
+    reviews.defaults = ReviewConfig(max_feed_items=4)
+    seqs = [claim(reviews, f"Claim {n} is supported.", key=f"claim-{n}") for n in range(20)]
     controller = ReviewController(
-        reviews, context_for(reviews), run_id="author-1", model=FreshReviewer(), alias="reviewer"
+        reviews, context_for(reviews), run_id="author-1", model=LabReviewer(), alias="reviewer"
     )
     summary = await controller.terminal([], "The task is complete.")
+    (review,) = reviews.listing("p", "s")["reviews"]
+    assert (review["kind"], review["classifier"]["final"]) == ("terminal", True)
+    items = reviews.manifest("p", "s", review["review_id"], limit=50)["evidence"]
+    new = [i for i in items if i["new"]]
+    assert [i["locator"]["message"] for i in new] == [1] * 20
+    assert (
+        reviews.evidence("p", "s", review["review_id"], new[0]["evidence"])["payload"]["content"]
+        == "Claim 19 is supported."
+    )
     assert summary["outcome"] == "passed"
     assert not summary.get("pending")
-    assert not reviews.progress("p", "s")["remaining"]
-    assert len(reviews.listing("p", "s")["reviews"]) >= 5
+    final = summary["final_review"]
+    assert (final["mode"], final["finished"], final["complete"]) == ("after", True, True)
+    assert (final["reviewed_through"], final["feed_end"]) == (seqs[-1], seqs[-1])
+    assert final["unreviewed"] == []
 
 
 @pytest.mark.asyncio
-async def test_terminal_pass_keeps_an_earlier_inconclusive_gap_visible(store) -> None:
+async def test_a_final_review_takes_up_an_earlier_inconclusive_window(store) -> None:
+    """Work an inconclusive review read is not reviewed (CR-49); the run's final review is
+    given it again, with the rest no review covered."""
     from sandbox_science.orchestrator.consistency.controller import ReviewController
 
     from .test_consistency import context_for
@@ -702,13 +722,16 @@ async def test_terminal_pass_keeps_an_earlier_inconclusive_gap_visible(store) ->
         claim(reviews, f"Claim {n} is supported.", key=f"claim-{n}")
     first = dispatch(reviews)
     reviews.finish("p", "s", first, "owner", "inconclusive", "Evidence was not decisive.")
+    assert reviews.progress("p", "s")["historical_holes"]
+    assert not reviews.coverage("p", "s")["complete"]
     controller = ReviewController(
         reviews, context_for(reviews), run_id="author-1", model=LabReviewer(), alias="reviewer"
     )
     summary = await controller.terminal([], "The task is complete.")
-    assert summary["outcome"] == "inconclusive"
-    assert summary["coverage_gap"]
-    assert reviews.progress("p", "s")["historical_holes"]
+    assert summary["outcome"] == "passed"
+    assert summary["final_review"]["complete"]
+    assert "coverage_gap" not in summary
+    assert not reviews.progress("p", "s")["historical_holes"]
 
 
 @pytest.mark.asyncio

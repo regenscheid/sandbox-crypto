@@ -29,12 +29,9 @@ from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.control.errors import CONFLICT
 
 from .environments import ChildPlacement
-from .records import Closed, Delegation, DelegationRecords, ReviewReason, held_plan
+from .records import PLATFORM, Closed, Delegation, DelegationRecords, ReviewReason, held_plan
 
 _log = logging.getLogger(__name__)
-
-PLATFORM = "platform"
-"""Who closes a returned task the parent left unreviewed."""
 
 
 @dataclass

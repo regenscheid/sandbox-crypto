@@ -128,7 +128,7 @@ async def test_background_job_recovers_admission_without_waiting_or_resubmitting
     await reconciler.work(works.get("p", "s", RUN))
     await reconciler.work(works.get("p", "s", RUN))
     with projects.control.read() as tx:
-        assert tx.sql.execute("SELECT * FROM job_origins").fetchall() == [
+        assert tx.sql.execute("SELECT project, session, job, run FROM job_origins").fetchall() == [
             ("p", "s", "original-job", RUN)
         ]
     assert journal.pending("p", "s", RUN) == []

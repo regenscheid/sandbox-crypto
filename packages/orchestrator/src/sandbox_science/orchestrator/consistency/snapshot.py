@@ -119,6 +119,22 @@ class SnapshotPlan:
     complete: bool
     span_complete: bool
     confirmation_key: str | None
+    skipped: int | None = None
+    """For a checkpoint that skipped its backlog, the last position it skipped: the
+    review starts after it, and the skipped range is recorded as unreviewed (CR-49)."""
+    left: tuple[tuple[int, int], ...] = ()
+    """For a final review, the ranges of feed positions its budget left out, which its
+    record names unreviewed (CR-48)."""
+    start: int | None = None
+    """For a final review, the first position it was given; otherwise the position
+    after the watermark, or after ``skipped``."""
+
+    @property
+    def first(self) -> int:
+        """The first feed position the review's window holds."""
+        if self.start is not None:
+            return self.start
+        return (self.window.watermark if self.skipped is None else self.skipped) + 1
 
 
 @dataclass

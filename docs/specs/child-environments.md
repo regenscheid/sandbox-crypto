@@ -93,7 +93,14 @@ platform places a child by the project's settings. No change to checks' evidence
   [D43](../DECISIONS.md)). The project names a default child profile; a brief may name
   another of the project's by name (`profile`), never a size or a node. A profile whose
   tier is below the project's `min_isolation_tier` cannot be a child profile. The
-  policy's CPU and memory caps narrow the profile as they narrow a session's.
+  policy's CPU and memory caps narrow the profile as they narrow a session's. The
+  worker's record of a child environment says what it may use (`limits`: the profile's
+  CPU and memory limits so narrowed, and its ephemeral-storage limit as scratch disk, the
+  container's writable layer outside the workspace, whose size the gateway gives; none
+  once the profile or the session environment's policy is gone). `delegate`'s result
+  gives them to the parent (`environment.limits`), and the child's brief states them in
+  the line after its write area's, so that a budget the brief names can be checked
+  against them.
 - CE-4. **Lifetime.** Creating, ready, running or waiting, collecting, then released or
   retained. The environment is created when the delegation is admitted and the run
   starts once it is ready; `delegate` returns the delegation ID at once, as today, and
@@ -143,8 +150,15 @@ platform places a child by the project's settings. No change to checks' evidence
   its deliverables of kind `artifact` or `file` name (PD-45), and every recorded file
   whose content the recorder could not retain, under the job collection's bounds (JS-16:
   1,000 files, 100 MiB per write, a 30-minute deadline), with a manifest written once.
-  Files already retained in control are not copied twice: the manifest names their
-  artifact revisions. A collection past its bounds is incomplete: the delegation's
+  A result file or deliverable the child published is copied too, so that the parent
+  reads every one with `read_file` at `work/<delegation_id>/<path>`, and the manifest
+  also names its artifact revision; the account the delegation's outcome keeps gives,
+  for each, the path its copy has (`at`), or says that the copy differs from the
+  revision named (`differs`), as for a file changed after it was published, and its
+  `complete` is true only when the worker's hand-back was complete and every published
+  file's copy is its revision. A file left out names where it is read: a published one
+  by its artifact revision (`find_artifacts`), another by the retained environment that
+  holds it. A collection past its bounds is incomplete: the delegation's
   outcome lists what was left behind, the environment is retained (CE-4), and the
   parent's outcome notice says so. *As built 2026-10-27, amended 2026-10-31:* a file is
   copied whole up to the bytes left of the profile's `collect_max_bytes` (4 GiB unless
@@ -167,6 +181,26 @@ platform places a child by the project's settings. No change to checks' evidence
   (`HandBackRequest.write_area`). The parent reads handed-back files with its ordinary
   file tools, at that path; the recorder records them as the parent's files, so they
   are artifacts of the session like any other.
+  A task that returns awaits its parent's review with its environment kept (PD-46), and
+  its parent reads its result before accepting it: at each return, the result's files
+  and deliverables, as the hand-back would name them, are copied into the parent's
+  environment at `work/<delegation_id>/.handback/returned/<n>/`, where `n` is the
+  result's number, a file of the write area at its path below the area
+  (`work/<delegation_id>/x` to `…/returned/<n>/x`) and any other at its whole path,
+  under the hand-back's bounds, each return's on its own (`ReturnCopyRequest`). The
+  copy leaves the environment ready, with its kernels and jobs, and is not its
+  hand-back: that is still made once, at the close, into `work/<delegation_id>/`. Each
+  result's copy is apart, inside the hand-back's own directory, which no handed-back
+  file takes, so a reopened run's later result leaves an earlier one's copy as it was,
+  and the final hand-back writes over neither. The held environment's account keeps
+  the copy's (`returned`: the result, its `target`, what was `copied`, the published
+  files by revision with the path of each copy, what was `left` and why, `complete`),
+  or why nothing was copied (`error`), as when the worker cannot be reached; the return
+  stands either way. The delegation's status and the notice of its outcome say where
+  the parent reads them (`read_files`): this result's copy, that earlier results'
+  copies stay at their numbers, and that accepting brings the final result's files to
+  `work/<delegation_id>/`. A task in the session's environment has its files where its
+  result names them, and the same field says so.
 - CE-7. **Inputs.** The brief's `inputs` (file grants, DA-17) are copied into the child
   environment at `inputs/` before the run starts, read-only, under the job sandbox's
   staging bound (JS-10's `stage_max_bytes`, 2 GiB), from the parent's environment or

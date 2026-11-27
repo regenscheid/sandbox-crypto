@@ -2,8 +2,8 @@
 """The user's project, session and document commands of ``sandbox-science-harness``.
 
 ``project`` creates, shows or revises a project's record, its macros and its settings:
-its model budget, its files and its delegation. ``session close`` stops a session's
-kernels; the ``document`` commands act on the living documents in the state directory's
+its model budget, its files, its delegation and its final review. ``session close`` stops a
+session's kernels; the ``document`` commands act on the living documents in the state directory's
 control store, as the user: an import is attributed to an import the user started, and
 the other changes to the user. An import into an existing document names the revision
 its file was made from (``--base``), which must be the current one, so that it never
@@ -22,6 +22,7 @@ from typing import Any
 from sandbox_science.contracts import ErrorKind, ExecutionContext, new_id
 from sandbox_science.contracts.context import ExecutionAuthority
 
+from . import deployment_scope
 from .context.history.reads import Register, shown
 from .documents import USER, Author, DocumentError, DocumentStore, store_path
 from .documents.agent_text import visible
@@ -48,6 +49,10 @@ async def _project_action(args: argparse.Namespace, store: ProjectStore) -> int:
         case "create":
             record, created = store.create(args.project, args.profile, args.policy)
             print(f"{'created' if created else 'exists'}: {record.model_dump_json(indent=2)}")
+            # A warning, not a refusal: the host launcher creates a project its new config
+            # lists before control restarts with that config and records it.
+            if (warning := deployment_scope.outside(args.state_dir, args.project)) is not None:
+                print(f"warning: {warning}", file=sys.stderr)
         case "show":
             print(store.get(args.project).model_dump_json(indent=2))
         case "budget":
@@ -157,6 +162,42 @@ async def _project_action(args: argparse.Namespace, store: ProjectStore) -> int:
                 f"{found.child_environments} (profile "
                 f"{found.child_profile or 'the pool default'}); a returned task awaits review "
                 f"{found.review_max} s"
+            )
+        case "review":
+            from .consistency.models import ReviewConfig
+            from .consistency.store import ReviewStore
+            from .documents import DocumentStore, store_path
+
+            store.get(args.project)
+            held = DocumentStore(store_path(args.state_dir), producer="user-cli")
+            try:
+                reviews = ReviewStore(held)
+                own = (
+                    reviews.set_project(args.project, final_review=args.final_review)
+                    if args.final_review is not None
+                    else reviews.project_settings(args.project)
+                )
+            finally:
+                held.close()
+            final = own.get("final_review")
+            said = (
+                f"the deployment's ([model].final_review; {ReviewConfig().final_review} "
+                "unless it is set)"
+                if final is None
+                else f"{final}, the project's own"
+            )
+            others = sorted(set(own) - {"final_review"})
+            print(
+                f"project {args.project}: final review {said}: "
+                + (
+                    "the answer is held until the final review ends"
+                    if final == "hold"
+                    else "the answer reaches the user when given"
+                    if final == "after"
+                    else "after, by default"
+                )
+                + "; other review settings: "
+                + (f"the project's own ({', '.join(others)})" if others else "the deployment's")
             )
         case "macros":
             from .documents import USER, DocumentStore, store_path
@@ -532,7 +573,7 @@ def add_parsers(commands: Any) -> None:
     projects = commands.add_parser("project", help="create, show or revise a project")
     projects.add_argument(
         "action",
-        choices=("create", "show", "revise", "macros", "budget", "files", "delegation"),
+        choices=("create", "show", "revise", "macros", "budget", "files", "delegation", "review"),
     )
     projects.add_argument("--state-dir", type=Path, required=True)
     projects.add_argument("--project", required=True)
@@ -704,6 +745,13 @@ def add_parsers(commands: Any) -> None:
         "--child-profile",
         help="delegation: the worker's child profile for those environments; empty for the "
         "pool's default",
+    )
+    projects.add_argument(
+        "--final-review",
+        choices=("after", "hold"),
+        help="review: when a run's final answer reaches the user: after, when the agent "
+        "gives it, the final review running after it; or hold, once the final review and "
+        "the turn answering its findings end; omitted to read",
     )
     projects.add_argument(
         "--review-max",

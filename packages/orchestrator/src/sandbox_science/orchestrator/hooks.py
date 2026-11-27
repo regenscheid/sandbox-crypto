@@ -102,7 +102,9 @@ class Closing:
     - ``accept``: the answer may stand.
     - ``continue``: the notices are new input; the run takes another turn.
     - ``respond``: the notices are findings to answer; the run takes a response round,
-      one for every hook that asks in this closing.
+      one for every hook that asks in this closing. With ``hold_answer``, the answer is
+      not the run's answer to the user: the one after the round is (consistency review,
+      CR-48).
     - ``retry``: the answer cannot stand; another turn, or the run stops as ``stopped``.
     - ``stop``: the run ends as ``stopped``, optionally retaining its checkpoint answer.
     """
@@ -111,6 +113,7 @@ class Closing:
     notices: tuple[Notice, ...] = ()
     stopped: str = "user_message"
     retain_answer: bool = False
+    hold_answer: bool = False
 
 
 @dataclass(frozen=True)
@@ -200,6 +203,13 @@ class RunView(Protocol):
         last closing then has no turn to take."""
         ...
 
+    @property
+    def withheld(self) -> bool:
+        """Whether the closing answer the conversation ends with is kept from the user
+        while a hook decides on it (``TurnHook.holds_answers``; consistency review,
+        CR-48): the run's events write it once the closing ends."""
+        ...
+
     def delivered_ids(self, source: str) -> AbstractSet[str]: ...
 
 
@@ -209,6 +219,12 @@ class TurnHook:
     name: str = "hook"
     veto: bool = False
     """Asked about a closing answer before the others, and again once they accept it."""
+
+    @property
+    def holds_answers(self) -> bool:
+        """Whether a closing answer is kept from the user until this hook's closing ends,
+        as a final review in ``hold`` keeps it (consistency review, CR-48)."""
+        return False
 
     def lease(self) -> AbstractAsyncContextManager[None]:
         """Held for the whole run, around every turn."""

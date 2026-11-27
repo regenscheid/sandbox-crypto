@@ -7,7 +7,9 @@ delegated run's write area is made only below it or in ``shared/`` (DA-19). A re
 for a path under ``shared/`` first syncs the project's shared files (D79); what a sync
 finds is told with the results of the calls running there, or held for the session's
 next result. The dispatcher runs the sync's steps before and after each call through
-``sync``, whose failure never fails the call.
+``sync``, whose failure never fails the call: the first failure in an environment is
+told with its reason, a repeat of it is not, and the result after it ends says that
+``shared/`` is synced again.
 """
 
 from __future__ import annotations
@@ -78,6 +80,32 @@ UNSYNCED = (
     "shared/ could not be synced with the project's other environments just now; "
     "it is synced again at the next call"
 )
+"""An attempt whose sync after it was cut short, as its executor went away."""
+SYNCED_AGAIN = "shared/ is synced again with the project's other environments"
+MAX_SYNC_REASON = 300
+"""The most characters of a failed sync's reason that its notice tells."""
+MAX_SYNC_FAILURES = 1024
+"""Environments whose failing sync is remembered, so that its notice is not repeated."""
+
+
+def unsynced(reason: str) -> str:
+    """The notice of a failed sync, told once for each environment and reason."""
+    return (
+        f"shared/ could not be synced with the project's other environments: {reason}. "
+        "It is tried again at every call; this is not told again until the reason changes, "
+        "and a notice says when shared/ is synced again"
+    )
+
+
+def sync_failure(error: BaseException, timeout: float) -> str:
+    """Why a sync step failed, bounded, as the agent and the worker's log read it."""
+    if isinstance(error, TimeoutError):
+        reason = f"it did not end within {timeout:g} s"
+    elif isinstance(error, WorkerError):
+        reason = f"{error.kind}: {error.message}"
+    else:
+        reason = f"{type(error).__name__}: {error}" if str(error) else type(error).__name__
+    return reason if len(reason) <= MAX_SYNC_REASON else reason[: MAX_SYNC_REASON - 1] + "…"
 
 
 def _range_reply(reply: Message, offset: int, length: int, *, hashed: bool) -> Range:
@@ -147,6 +175,8 @@ class Files:
         self._held: OrderedDict[tuple[str, str], list[str]] = OrderedDict()
         """Notices from syncing shared files for file requests, by environment and session,
         for the session's next result there (D79)."""
+        self._failing: OrderedDict[str, str] = OrderedDict()
+        """By environment: the reason its latest sync failed, until one succeeds."""
 
     async def _read_range(
         self,
@@ -494,20 +524,34 @@ class Files:
         context: ExecutionContext,
         channel: ExecutorChannel,
     ) -> list[str]:
-        """Run one step of the shared files' sync; its failure never fails the call (D79)."""
+        """Run one step of the shared files' sync; its failure never fails the call (D79).
+
+        A failure is told once for each environment and reason, and the first step that
+        succeeds after it says so; the worker's log has every failure with its reason.
+        """
+        environment_id = context.environment_id
         try:
-            return await asyncio.wait_for(
-                step(context.project_id, context.environment_id, context.session_id, channel),
+            notices = await asyncio.wait_for(
+                step(context.project_id, environment_id, context.session_id, channel),
                 self.timeouts.shared,
             )
         except Exception as exc:  # the call goes on with shared/ as it is
+            reason = sync_failure(exc, self.timeouts.shared)
             _log.warning(
                 "syncing the shared files of %s in %s failed: %s",
                 context.project_id,
-                context.environment_id,
-                exc,
+                environment_id,
+                reason,
             )
-            return [UNSYNCED]
+            if self._failing.get(environment_id) == reason:
+                return []
+            self._failing[environment_id] = reason
+            while len(self._failing) > MAX_SYNC_FAILURES:
+                self._failing.popitem(last=False)
+            return [unsynced(reason)]
+        if self._failing.pop(environment_id, None) is not None:
+            return [SYNCED_AGAIN, *notices]
+        return notices
 
     def take_held(self, context: ExecutionContext) -> list[str]:
         """The notices held for the session's next result in the environment, now told."""

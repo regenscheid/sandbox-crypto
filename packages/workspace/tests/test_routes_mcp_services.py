@@ -87,6 +87,30 @@ async def test_unconfigured_mcp_inventory_does_not_infer_services_from_runs(
     )
     assert found.services == []
     assert found.inspected_runs == 0
+    assert not found.elsewhere  # no connectors at all: nothing serves another project
+
+
+async def test_a_project_the_connectors_do_not_serve_is_told_they_serve_another(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
+) -> None:
+    """Lane B4: the deployment's connectors are bound to p1, so p2's view lists none and
+    says they serve another project, without naming it; p1's view does not say so."""
+    client = await workspace(
+        aiohttp_client,
+        state_dir,
+        static_dir,
+        mcp_project="p1",
+        mcp_inventory=(ServiceConfig(name="papers", purpose="Find papers"),),
+    )
+    body = await (await client.get("/api/v0/projects/p2/mcp-services")).text()
+    other = McpInventory.model_validate_json(body)
+    assert (other.services, other.elsewhere) == ([], True)
+    assert "p1" not in body
+    bound = McpInventory.model_validate_json(
+        await (await client.get("/api/v0/projects/p1/mcp-services")).text()
+    )
+    assert [service.name for service in bound.services] == ["papers"]
+    assert not bound.elsewhere
 
 
 async def test_recent_delegated_runs_do_not_hide_main_service_observation(

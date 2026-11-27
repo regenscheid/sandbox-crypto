@@ -756,6 +756,7 @@ class Connectors:
         loop = asyncio.get_running_loop()
         started = loop.time()
         waiting: object = None
+        asked = started
         try:
             while True:
                 try:
@@ -779,7 +780,7 @@ class Connectors:
                         # The same call again: its arguments' digest names the same request,
                         # so it proceeds once the user approves it, and is refused if denied.
                         if waiting is None:
-                            waiting = request
+                            waiting, asked = request, loop.time()
                             record["permission_request"] = request
                             await self.on_approval(
                                 {"permission_request": request, "server": tool.server,
@@ -800,6 +801,9 @@ class Connectors:
                         record,
                     )
         finally:
+            if waiting is not None:
+                # The part of the call's time spent waiting for the user's answer.
+                record["approval_wait_ms"] = max(0, round((loop.time() - asked) * 1000))
             if waiting is not None and self.on_approval is not None:
                 with contextlib.suppress(Exception):
                     await self.on_approval(None)

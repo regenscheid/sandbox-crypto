@@ -3994,6 +3994,63 @@ WHEN NOT ({outcome}) BEGIN SELECT RAISE(ABORT, 'CHECK constraint failed: delegat
     )
 
 
+def _agent_message_failures(schema: Schema) -> None:
+    """Version 90: the root run that received a message as a delivery failure
+    (``failure_run``, PD-44), apart from ``delivered_run``, which is only ever the
+    recipient's run, so that a message to a closed delegation is never recorded as
+    delivered to its sender. Each is set once. A failure acknowledged before kept the
+    root's run as ``delivered_run``, which the mailbox still reads as a failure."""
+    schema.execute("ALTER TABLE agent_messages ADD COLUMN failure_run TEXT")
+    schema.execute("DROP TRIGGER agent_messages_kept")
+    schema.execute(
+        """CREATE TRIGGER agent_messages_kept BEFORE UPDATE ON agent_messages
+WHEN NEW.message_id IS NOT OLD.message_id OR NEW.project_id IS NOT OLD.project_id
+OR NEW.session_id IS NOT OLD.session_id OR NEW.operation_id IS NOT OLD.operation_id
+OR NEW.sender_run IS NOT OLD.sender_run
+OR NEW.sender_delegation IS NOT OLD.sender_delegation
+OR NEW.recipient_delegation IS NOT OLD.recipient_delegation
+OR NEW.body IS NOT OLD.body OR NEW.created_at IS NOT OLD.created_at
+OR NEW.refs IS NOT OLD.refs
+OR OLD.delivered_run IS NOT NULL OR OLD.failure_run IS NOT NULL
+OR (NEW.delivered_run IS NOT NULL AND NEW.failure_run IS NOT NULL)
+BEGIN SELECT RAISE(ABORT, 'an agent message is kept'); END"""
+    )
+
+
+def _job_end_reasons(schema: Schema) -> None:
+    """Version 91: why the platform cancelled a job (``job_origins.ended_by``): the
+    delegated run that started it closed, so that its notice says so. A job's own end
+    leaves it null."""
+    schema.execute(
+        "ALTER TABLE job_origins ADD COLUMN ended_by TEXT "
+        "CHECK (ended_by IS NULL OR length(CAST(ended_by AS BLOB)) BETWEEN 1 AND 1000)"
+    )
+
+
+def _acceptance_reads(schema: Schema) -> None:
+    """Version 92: what an acceptance found the parent had read of a returned task's
+    files (``review_reads``, plans-and-delegation spec PD-46): each result file and
+    deliverable by path, with whether the accepting run read it whole after the task
+    returned. A JSON object of at most 64 KiB, written only with the acceptance that
+    closes the task, and never again."""
+    schema.execute(
+        "ALTER TABLE delegations ADD COLUMN review_reads TEXT CHECK (review_reads IS NULL OR "
+        "(json_valid(review_reads) AND json_type(review_reads) = 'object' "
+        "AND length(CAST(review_reads AS BLOB)) <= 65536))"
+    )
+    schema.execute(
+        f"""CREATE TRIGGER delegations_review_reads BEFORE UPDATE ON delegations
+WHEN NEW.review_reads IS NOT OLD.review_reads
+AND NOT ({_CLOSE} AND OLD.review_reads IS NULL AND NEW.review = 'accepted')
+BEGIN SELECT RAISE(ABORT, 'a delegation''s outcome is written once'); END"""
+    )
+    schema.execute(
+        """CREATE TRIGGER delegations_review_reads_insert BEFORE INSERT ON delegations
+WHEN NEW.review_reads IS NOT NULL
+BEGIN SELECT RAISE(ABORT, 'CHECK constraint failed: delegations'); END"""
+    )
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -4083,6 +4140,9 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _delegation_environments,
     _parent_review,
     _limit_results,
+    _agent_message_failures,
+    _job_end_reasons,
+    _acceptance_reads,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

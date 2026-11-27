@@ -772,6 +772,7 @@ export interface Delegation {
   reviewed_by: string | null;
   review_reason: "parent" | "parent_ended" | "session_closed" | "review_max" | null;
   review_note: string | null;
+  review_reads: Record<string, JsonValue> | null;
 }
 
 /** One of a delegation's outcomes, as its run ended, numbered from 1 (PD-46). */
@@ -1802,6 +1803,7 @@ export interface McpInventory {
   skipped_runs: number;
   observation_scope: string;
   checks: boolean;
+  elsewhere: boolean;
 }
 
 /** The newest listing found in the bounded sample, not its present state. */
@@ -1972,6 +1974,8 @@ export interface ModelUsage {
   thinking_replay: string | null;
   retried: string[];
   refusals: Refusal[];
+  started_at: string | null;
+  duration_ms: number | null;
 }
 
 /** What the event store's records say for the window. */
@@ -2461,6 +2465,7 @@ export interface QuestionListing {
 export interface QuestionOption {
   label: string;
   detail: string | null;
+  recommended: boolean;
 }
 
 /** A quote of the revision shown, by its evidence ID, with its checks. */

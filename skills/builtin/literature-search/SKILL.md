@@ -7,7 +7,7 @@ description: Finding, reading and quoting papers, standards and known results th
 
 ## Connector tools
 
-The project's MCP servers are reached through `mcp_tools`. Its description carries an index of the servers' tools, grouped by server, each with a short purpose in the server's own words. Main and delegated runs have it when the project configures connectors; a delegated check is offered only the tools that read, which are most of a research server's.
+The project's MCP servers are reached through `mcp_tools`. Its description carries an index of the servers' tools, grouped by server, each with a short purpose in the server's own words. Main and delegated runs have it when the project configures connectors; a delegated check is offered only the tools that read, which are most of a research server's. If you are not offered `mcp_tools`, or a tool this skill names, say so in your next message (a delegated run: to its parent), name the route you will use instead, and go on.
 
 - A query lists the tools that match it, and loads none.
 - Names, at most 16 a call, load tools. A loaded tool joins your tools for the rest of the run, and you call it by its name.
@@ -66,14 +66,17 @@ The project's policy decides each connector call. A call that needs approval wai
 
 ## Recording a reference
 
-A reference entry keeps a source's citation. Its statement is the citation text. Its fields name at least one locator (an identifier, or the PDF) and one date (published, version or retrieved). Identifiers use the schemes doi, eprint, arxiv, nist, isbn and url. Take them from the work label or the e-print tools' brackets: the label eprint/2015/1234 is the eprint identifier 2015/1234, doi:10.1007/x the doi 10.1007/x, and likewise for arxiv and nist. A paper read through both servers is one paper. The library labels a paper known by nothing better with an OpenAlex ID or a URL: a quote of that text cannot be confirmed, so record the paper's DOI, ePrint or arXiv identifier if it has one, or quote its PDF.
+A reference entry keeps a source's citation. Its statement is the citation text. Its fields name at least one locator (an identifier, or the PDF) and one date (published, version or retrieved). Identifiers use the schemes doi, eprint, arxiv, nist, isbn and url. Take them from the work label or the e-print tools' brackets: the label eprint/2015/1234 is the eprint identifier 2015/1234, doi:10.1007/x the doi 10.1007/x, and likewise for arxiv and nist. A paper read through both servers is one paper. Record the revision you read in fields.version: the e-print server's Date line, or the library's revision from the result's second line. Before you report a value a paper prints as an error, see whether another revision or the published version prints it differently, and say which you checked. The library labels a paper known by nothing better with an OpenAlex ID or a URL: a quote of that text cannot be confirmed, so record the paper's DOI, ePrint or arXiv identifier if it has one, or quote its PDF.
 
 ```json
 {"key": "ref", "type": "reference", "title": "A short title of the paper",
  "statement": "A. Author and B. Author. Title of the paper. IACR Cryptology ePrint Archive, Paper 2015/1234.",
  "fields": {"identifiers": {"eprint": "2015/1234"}, "authors": ["A. Author", "B. Author"],
-            "published": "2015-12-01", "retrieved": "2026-10-15"}}
+            "published": "2015-12-01", "retrieved": "2026-10-15"},
+ "anchors": [{"call": "<the call ID of the read that gave these details>"}]}
 ```
+
+A new entry needs anchors saying where it comes from, or evidence it holds; `ledger_change` refuses one with neither.
 
 A claim or result taken from the literature has origin published. It cites its reference with a supports link of type source_claim, best with a quote, and one change can create both, naming the new reference as new:ref. The recording-results skill covers the rest of the ledger.
 
@@ -84,7 +87,7 @@ The citation check looks for a quote inside one page or passage of the paper tha
 - quote from one page or passage, never from a header, a card, a note, the echoed phrase or the platform's line about pages left out; a quote across a page break is not found;
 - a quote of exactly what you searched for counts only when its passage holds more, so search for a phrase and quote the sentence around it;
 - copy the words exactly; only white space may differ;
-- read the page or passage in this session before recording the quote.
+- read the page or passage in this session before recording the quote, and just before it read that page alone: the check loads the whole result that holds the quote, and a result of several pages can be cut short before the quoted one.
 
 **From the library** (library-mcp_read_paper or library-mcp_search_in_paper): give the physical page, from the "## Page" heading or the "Physical page" line, and the revision from the result's second line, exactly as printed. The check finds the quote only in a read of that page at that revision. The library may file a paper under another identifier than the one you asked for, such as an ePrint report under its published DOI: read the paper by an identifier the reference carries, or give the reference every identifier the library printed.
 

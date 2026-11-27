@@ -358,7 +358,7 @@ def test_legacy_records_and_failure_classification_are_bounded():
     for failure in (HOSTILE, {"message": HOSTILE}, "model" * 10000):
         with pytest.raises(ValidationError):
             RunRecord.model_validate({**old, "stopped": "error", "failure": failure})
-    with pytest.raises(ValidationError, match="no final answer"):
+    with pytest.raises(ValidationError, match="no final text"):
         RunRecord.model_validate({**old, "failure": "model"})
 
 

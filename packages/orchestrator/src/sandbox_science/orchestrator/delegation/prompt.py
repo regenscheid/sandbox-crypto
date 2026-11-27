@@ -17,7 +17,7 @@ from sandbox_science.orchestrator.ledger.models import EvidenceLink
 from sandbox_science.orchestrator.prompts import Section
 from sandbox_science.orchestrator.purpose import GUIDANCE as PURPOSE_GUIDANCE
 
-CHECK_VERSION: Final = "sandbox-delegated-check-16"
+CHECK_VERSION: Final = "sandbox-delegated-check-17"
 """The version of ``CHECK_PROMPT``'s text."""
 CHECK_PROMPT: Final = (
     "You are a delegated research agent. Another agent of this session, your parent, "
@@ -66,8 +66,10 @@ CHECK_PROMPT: Final = (
     "approval waits in place while the user decides it in the session's chat, where its "
     "card names you and your brief, and your parent is told; a denial is the user's "
     "decision: never reach the same content another way (another tool, server or host). If "
-    "the platform refuses your calls because of the session's plan, submit status blocked "
-    "with the refusal as the obstacle.\n\n"
+    "the brief or a skill points you to a tool you are not offered, tell your parent with "
+    "message_parent, name the route you will use instead, and go on. If the platform "
+    "refuses your calls because of the session's plan, submit status blocked with the "
+    "refusal as the obstacle.\n\n"
     "## Your result\n\n"
     "Say confirmed only when your own complete check examined everything the entry rests "
     "on and supports it as it reads at that revision; a part you did not examine leaves "
@@ -87,7 +89,7 @@ CHECK_PROMPT: Final = (
 )
 CHECK: Final = Section("delegated-check", CHECK_VERSION, CHECK_PROMPT)
 
-TASK_VERSION: Final = "sandbox-delegated-task-21"
+TASK_VERSION: Final = "sandbox-delegated-task-23"
 """The version of ``TASK_PROMPT``'s text."""
 TASK_PROMPT: Final = (
     "You are a delegated research agent. Another agent of this session, your parent, "
@@ -109,8 +111,8 @@ TASK_PROMPT: Final = (
     "change direction or stop and report; save evidence as you go, so that your check-in "
     "shows progress. In an environment of your own, its disk is working memory, gone once "
     "your task closes: what you keep, record or publish, and name your results in "
-    "result_files, which come back to your parent with the files the platform could not "
-    "keep.\n\n"
+    "result_files or deliverables, since only the files you name there come back to your "
+    "parent, with any the platform could not keep.\n\n"
     "## Your parent\n\n"
     "You cannot talk to the user. When you need an answer or a decision, ask your parent "
     "with message_parent and keep working on what does not depend on it; when nothing is "
@@ -160,7 +162,9 @@ TASK_PROMPT: Final = (
     "which run on their servers through the platform under the project's policy. Your "
     "brief may narrow your connectors: mcp_tools then lists only the ones it names; any "
     "other is not permitted to you, and if the work needs one, tell your parent with "
-    "message_parent. A call that needs the user's approval waits in place while the user "
+    "message_parent. If your brief or a skill points you to a tool you are not offered, "
+    "tell your parent so with message_parent, name the route you will use instead, and go "
+    "on. A call that needs the user's approval waits in place while the user "
     "decides it in the session's chat, where its card names you and your brief, and your "
     "parent is told; a denial is the user's decision: never reach the same content another "
     "way (another tool, server or host). While the plan is a draft or the user changed it, "
@@ -172,7 +176,10 @@ TASK_PROMPT: Final = (
     "When your brief lists deliverables, account for every one, honestly: produced, in the "
     "fields of its kind and no others, as the brief's line for it shows; partial, with "
     "what exists and what is missing; or not_produced with its reason, rather than left "
-    "out. Your status is complete only when every one was produced. You may give lessons, "
+    "out. Your status is complete only when every one was produced. List in deviations "
+    "each place you used less than, or other than, what your brief named (a subsample, a "
+    "capped degree, a substituted source, code or method), with its size; an empty list "
+    "claims you did all of it. You may give lessons, "
     "at most 5, each one line of at most 200 characters: what you learned operating the "
     "tools that a later run could use, stated as observations, such as a query form that "
     "works, a fetch that stalled and what worked instead, or a limit you hit.\n\n"
@@ -186,6 +193,18 @@ TASK_PROMPT: Final = (
     'did not finish.", "dismissals": [{"what": "n = 96", "limit": "time"}]}.'
 )
 TASK: Final = Section("delegated-task", TASK_VERSION, TASK_PROMPT)
+
+NO_CONNECTORS_VERSION: Final = "sandbox-delegated-no-connectors-1"
+"""The version of ``NO_CONNECTORS``'s text."""
+NO_CONNECTORS: Final = Section(
+    "delegated-no-connectors",
+    NO_CONNECTORS_VERSION,
+    "This project has no connector tools (the paper library, ePrint, web search): "
+    "mcp_tools is not offered. Tell your parent so with message_parent before you use "
+    "another route to a paper or a source.",
+)
+"""A delegated run's note, after its base, when the deployment's connectors serve another
+project, as the main run's (``loop.NO_CONNECTORS``)."""
 
 REOPENED_TASK: Final = (
     "Your parent reviewed the result you returned and reopened this task with feedback, "
@@ -212,15 +231,16 @@ def write_area_text(area: str, *, own_environment: bool = False) -> str:
     its processes to it (DA-20). A child in the session's environment reads every file of
     the session and its parent reads the area where it is. A child in an environment of
     its own (CE-1) has only what was copied into it, which the brief's next line names
-    (CE-7), so the line does not say it reads the session's files, and says the area's
-    files come back to the same paths in the session when the task ends (CE-6)."""
+    (CE-7), so the line does not say it reads the session's files, and says the files its
+    result names come back to the same paths in the session when the task ends (CE-6)."""
     if own_environment:
         return (
             f"Your write area: {area}/, in your own environment. write_file and edit_file "
             "write only there and in shared/ (with create_only or expected_sha256); you "
             "read your own environment's files, not the session's other files; when your "
-            "task ends, the files of your write area are copied to the same paths in the "
-            f"session for your parent to read. {processes_text(True)}"
+            "task ends, only the files you name in result_files or deliverables are copied "
+            "to the same paths in the session for your parent to read. "
+            f"{processes_text(True)}"
         )
     return (
         f"Your write area: {area}/. write_file and edit_file write only there and in "
