@@ -453,6 +453,10 @@ const BACKGROUND_SOURCES: Record<string, 'jobs' | 'delegations' | 'kernels'> = {
   kernels: 'kernels',
 };
 
+/** The notices the run's events record only so they can be counted: the plan and the
+ * review counts, which name no IDs; the chat shows none of them. */
+const COUNTED_NOTICES: ReadonlySet<string> = new Set(['plans', 'review-counts']);
+
 const text = (value: unknown): string => (typeof value === 'string' ? value : '');
 const list = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
 const record = (value: unknown): Record<string, unknown> =>
@@ -693,6 +697,9 @@ export function chatEntries(events: readonly RunEvent[]): ChatEntry[] {
         ...(typeof purpose === 'string' && purpose ? { purpose } : {}),
         ...(gloss ? { gloss } : {}),
       });
+    } else if (kind === 'notice' && COUNTED_NOTICES.has(text(data['source']))) {
+      // Recorded to be counted; the plan and the review panel show what it gave.
+      continue;
     } else if (kind === 'notice') {
       const ids = list(data['ids']).map(String);
       // A notice for the user, such as a root's soft-cap check-in (D102), says itself.

@@ -23,18 +23,21 @@ from sandbox_science.orchestrator.chat import RunChat, session_lease
 from sandbox_science.orchestrator.context.history import Archive, body
 from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.jobstate import JobState
-from sandbox_science.orchestrator.notices import REDELIVERED
+from sandbox_science.orchestrator.notices import PLANS, REDELIVERED
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.runstate import RunState
+from sandbox_science.orchestrator.session_plans import PlanBody, SessionPlans
 from sandbox_science.orchestrator.worker_client import WorkerClient
 from sandbox_science.testing import FakeClock, eventually
 
 from .loop_harness import (
     API_KEY,
+    PLAN,
     PROJECT,
     SESSION,
     TASK,
     TOKEN,
+    USER_PLANS,
     Harness,
     Reply,
     call,
@@ -96,20 +99,24 @@ async def test_a_run_writes_its_events_as_it_goes(harness: Harness) -> None:
     state = runs(harness)
     (entry,) = ProjectStore(harness.state).runs(PROJECT, SESSION)
     events = state.events(PROJECT, SESSION, entry.name)
-    # The tool call's result was an event before the second model call returned.
+    # The tool call's result was an event before the second model call returned. Each
+    # call's model profile is an event of its own kind, never a notice (R13).
     assert seen == [
-        ["started", "user", "model", "notice"],
-        ["started", "user", "model", "notice", "assistant", "tool", "model", "notice"],
-    ]
+        ["started", "user", "model", "model_profile"],
+        [
+            "started", "user", "model", "model_profile", "assistant", "tool", "model",
+            "model_profile",
+        ],
+    ]  # fmt: skip
     assert [e.kind for e in events] == [
         "started",
         "user",
         "model",
-        "notice",
+        "model_profile",
         "assistant",
         "tool",
         "model",
-        "notice",
+        "model_profile",
         "assistant",
         "stopped",
     ]
@@ -132,6 +139,24 @@ async def test_a_run_writes_its_events_as_it_goes(harness: Harness) -> None:
         "record": entry.name,
     }
     assert state.lease(PROJECT, SESSION) is None
+
+
+async def test_a_plan_notice_names_no_ids_and_is_an_event(harness: Harness) -> None:
+    """R13: a notice that names no IDs, such as the plan the run had not seen, is
+    recorded as a notice event each time the run is given one, so notices can be
+    counted."""
+    documents = harness.documents()
+    try:
+        SessionPlans(documents).publish(
+            USER_PLANS, "p1", PlanBody.model_validate(PLAN), "The user's plan."
+        )
+    finally:
+        documents.close()
+    await harness.run("run-1", [Reply(calls=[call("plan_read")]), Reply("Done.")])
+    state = runs(harness)
+    (entry,) = ProjectStore(harness.state).runs(PROJECT, SESSION)
+    notices = [e.data for e in state.events(PROJECT, SESSION, entry.name) if e.kind == "notice"]
+    assert notices == [{"source": "plans", "ids": [], "framing": PLANS.version}]
 
 
 async def test_a_message_during_a_run_reaches_the_next_model_call(harness: Harness) -> None:

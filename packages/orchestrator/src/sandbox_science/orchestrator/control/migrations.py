@@ -4051,6 +4051,27 @@ BEGIN SELECT RAISE(ABORT, 'CHECK constraint failed: delegations'); END"""
     )
 
 
+def _model_profile_events(schema: Schema) -> None:
+    """Version 93: the per-call record of the model profile a call ran under is a run
+    event of its own kind, ``model_profile``, apart from the notices a run was given,
+    which it is not. The table is made again with the wider CHECK, its rows, indexes and
+    triggers as they were; rows written before keep the kind ``notice``, with the
+    source ``model_profile``."""
+    (create,) = schema.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='run_events'"
+    ).fetchone()
+    old = "'waiting', 'stopped', 'fold'))"
+    if create.count(old) != 1:
+        raise ControlError(INTERNAL, "the run_events table is not as version 52 left it")
+    # Version 52's rebuild renamed the table into place, which quotes its name.
+    create = create.replace('CREATE TABLE "run_events" (', "CREATE TABLE run_events (", 1)
+    rebuild(
+        schema,
+        "run_events",
+        create.replace(old, "'waiting', 'stopped', 'fold', 'model_profile'))", 1),
+    )
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -4143,6 +4164,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _agent_message_failures,
     _job_end_reasons,
     _acceptance_reads,
+    _model_profile_events,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

@@ -386,3 +386,32 @@ def test_an_unsaved_runs_cost_is_its_started_roles(tmp_path: Path) -> None:
         assert state.model_costs("p", now + timedelta(hours=1)) == {}
     finally:
         projects.close()
+
+
+def test_a_store_from_before_model_profile_events_keeps_its_events_and_takes_them(
+    tmp_path: Path,
+) -> None:
+    """Version 93: the run events table is made again with ``model_profile`` among its
+    kinds (R13), its rows as they were: an older model profile row stays a notice."""
+    path = store_path(tmp_path)
+    with at_version(before(migrations._model_profile_events)):
+        projects, state = store(tmp_path)
+        state.append("p", "s", "r", "started", {"run_id": "r"})
+        state.append("p", "s", "r", "notice", {"source": "model_profile", "kind": "main"})
+        projects.close()
+        with pytest.raises(sqlite3.IntegrityError), sqlite3.connect(path) as db:
+            db.execute(
+                "INSERT INTO run_events VALUES ('p','s','r',3,'2026-11-27T00:00:00+00:00',"
+                "'model_profile','{}')"
+            )
+    migrated = ProjectStore(tmp_path)
+    try:
+        state = RunState(migrated.control)
+        state.append("p", "s", "r", "model_profile", {"source": "model_profile", "kind": "main"})
+        assert [e.kind for e in state.events("p", "s", "r")] == [
+            "started",
+            "notice",
+            "model_profile",
+        ]
+    finally:
+        migrated.close()

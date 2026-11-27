@@ -2710,7 +2710,7 @@ export interface RunEntry {
 export interface RunEvent {
   seq: number;
   at: string;
-  kind: "started" | "user" | "model" | "assistant" | "tool" | "notice" | "waiting" | "stopped" | "fold";
+  kind: "started" | "user" | "model" | "assistant" | "tool" | "notice" | "waiting" | "stopped" | "fold" | "model_profile";
   data: Record<string, JsonValue>;
   pins: Record<string, JsonValue>[];
 }
