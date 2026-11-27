@@ -87,7 +87,16 @@ _MONTHS: Final = {
     )
     for name in names
 }  # fmt: skip
-_MONTH: Final = r"(?P<month>[A-Za-z]{3,9})\.?"
+_MONTH: Final = r"(?P<month>[A-Z][a-z]{2,8})\.?"
+"""A month's name as a date writes it, capitalised: "may" is a verb."""
+_COUNTED: Final = (
+    r"(?!\s+(?:rows?|columns?|entries|entry|bits?|bytes?|[KMGT]i?B|keys?|queries|query"
+    r"|samples?|equations?|variables?|cores?|threads?|seconds?|minutes?|hours?|days?|ms|s"
+    r"|rounds?|steps?|iterations?|times|operations?|ops|calls?|elements?|coefficients?"
+    r"|dimensions?|cycles?|signatures?|messages?|trials?|instances?|attempts?|nodes?"
+    r"|vectors?|matrices|monomials?|solutions?|users?|blocks?|items?|values?)\b)"
+)
+"""A number followed by a unit or a count word is a value, whatever precedes it."""
 MAX_FIELD: Final = 256
 """The largest field order ``GF(q)`` or ``F_q`` names without its number needing backing:
 a prime power up to 256, a field a construction names (GF(2), GF(16), GF(256)), not a
@@ -105,32 +114,40 @@ MAX_LINE: Final = 120
 as ``pdf_pages`` numbers them) rather than a value."""
 YEARS: Final = (1970, 2100)
 """The years a date or an ePrint report may name."""
-EPRINT_YEARS: Final = (1996, 2100)
+EPRINT_FIRST: Final = 1996
+"""The first year of ePrint reports; the last is next year."""
 
 _NAMED: Final = re.compile(
     r"\b(?:SHA-(?:1|224|256|384|512)|SHA3-(?:224|256|384|512)|SHAKE-?(?:128|256)"
     r"|AES-(?:128|192|256)|ML-KEM-(?:512|768|1024)|ML-DSA-(?:44|65|87)"
     r"|Kyber-?(?:512|768|1024)|P-(?:256|384|521)|X25519|X448|Ed25519|Ed448"
     r"|secp256[kr]1|M4RIE?)(?![\w-])"
-    r"|\b(?:FIPS\s+[0-9]{2,3}(?:-[0-9])?|SP\s+800-[0-9]{1,3}[A-Z]?|RFC\s+[0-9]{3,4}"
-    r"|ISO(?:/IEC)?\s+[0-9]{3,5}(?:-[0-9]{1,2})?|IEEE\s+(?:Std\s+)?[0-9]{3,4})(?![\w.-])"
+    r"|\b(?:FIPS\s+[0-9]{1,3}(?:-[0-9])?|SP\s+800-[0-9]{1,3}[A-Z]?(?:\s+Rev\.\s*[0-9])?"
+    r"|RFC\s+[0-9]{1,5}|ISO(?:/IEC)?\s+[0-9]{3,5}(?:-[0-9]{1,2}){0,2}(?::[0-9]{4})?"
+    r"|IEEE\s+(?:Std\s+)?[0-9]{3,4}(?:\.[0-9]{1,2})?(?:-[0-9]{4})?)(?![\w.-])" + _COUNTED
 )
-"""Named algorithms with their real parameter sets, and standards by their number."""
+"""Named algorithms with their real parameter sets, and standards by their number in
+their family's form, unless a unit or count word follows it."""
 _FIELD: Final = re.compile(
     r"\bGF\s*\(\s*(?P<q>[0-9]+)(?:\s*\^\s*\{?\s*(?P<k>[0-9]+)\s*\}?)?\s*\)"
     r"|(?:\\mathbb\s*\{?\s*F\s*\}?|\bF)\s*_\s*(?:\{\s*(?P<bq>[0-9]+)"
     r"(?:\s*\^\s*\{?\s*(?P<bk>[0-9]+)\s*\}?)?\s*\}|(?P<sq>[0-9]+)(?![0-9^]))"
 )
 _EPRINT: Final = re.compile(
-    r"(?i:\be-?print)(?:\s+(?i:archive|report))*[\s:,]*(?P<year>[0-9]{4})/[0-9]{3,5}(?![0-9])"
+    r"(?i:\be-?print)(?:\s+(?i:archive|report))*[\s:,]*(?P<year>[0-9]{4})/[0-9]{3,4}(?![0-9])"
+    + _COUNTED
 )
 _ISO_DATE: Final = re.compile(
     r"\b(?P<year>[0-9]{4})-(?P<m>[0-9]{2})-(?P<d>[0-9]{2})"
     r"(?:[T ][0-2][0-9]:[0-5][0-9](?::[0-5][0-9](?:\.[0-9]+)?)?(?:Z|[+-][0-2][0-9]:?[0-5][0-9])?)?"
     r"(?![0-9])"
 )
-_DAY_MONTH: Final = re.compile(rf"\b(?P<d>[0-3]?[0-9])\s+{_MONTH}\s+(?P<year>[0-9]{{4}})\b")
-_MONTH_DAY: Final = re.compile(rf"\b{_MONTH}\s+(?:(?P<d>[0-3]?[0-9]),?\s+)?(?P<year>[0-9]{{4}})\b")
+_DAY_MONTH: Final = re.compile(
+    rf"\b(?P<d>[0-3]?[0-9])\s+{_MONTH}\s+(?P<year>[0-9]{{4}})\b" + _COUNTED
+)
+_MONTH_DAY: Final = re.compile(
+    rf"\b{_MONTH}\s+(?:(?P<d>[0-3]?[0-9]),?\s+)?(?P<year>[0-9]{{4}})\b" + _COUNTED
+)
 _PLACE: Final = re.compile(
     r"(?i:(?P<section>\b(?:sections?|sec\.|tables?|tab\.|figures?|fig\.|algorithms?|alg\."
     r"|theorems?|thm\.|lemmas?|propositions?|prop\.|corollary|cor\.|definitions?|def\."
@@ -181,7 +198,8 @@ def _field(found: re.Match[str]) -> str:
 
 
 def _eprint(found: re.Match[str]) -> str:
-    return SEPARATOR if EPRINT_YEARS[0] <= int(found["year"]) <= EPRINT_YEARS[1] else found[0]
+    year = int(found["year"])
+    return SEPARATOR if EPRINT_FIRST <= year <= datetime_date.today().year + 1 else found[0]
 
 
 def _iso(found: re.Match[str]) -> str:

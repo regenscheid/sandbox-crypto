@@ -210,8 +210,14 @@ each path resolved to (`evidence_resolved`). Only a revision this session record
 bytes are kept, is pinned by path: a path with no recorded revision, a deleted file or a
 revision without its bytes is refused with the advice to `publish` it, and a file in
 another session's area, or a shared file another session last recorded, is refused with
-the advice to claim it by its artifact ID. A call with evidence by path is digested as
-given, so an exact retry returns its first receipt and what its paths first resolved to. Every plan change's result
+the advice to claim it by its artifact ID. A finish's outcome takes evidence the same way. An artifact claim
+given by ID is checked against the inventory: the revision must exist with that SHA-256
+and keep its bytes, and the platform names who recorded it, this session or another;
+`written_by` given by an author is refused, by the tool and by the store for every author
+but a caller that verified it. A call whose evidence the tool resolves or checks is
+digested as given, and an operation ID already recorded is answered before any check or
+resolution, after the reread fence: an exact retry returns its first receipt and what its
+paths first resolved to, whatever the plan or the files are now. Every plan change's result
 carries `plan`: the current reference, status, status revision and progress cursor, the
 number of steps in each state, and, for an open plan, the open steps (at most 16, the rest
 counted) with their cursors, which the next change names, so no read is needed for
@@ -253,11 +259,14 @@ goal, and each current step's title, track, status and CAS cursor (`step_cursor`
 `changed_since_record` when a revision changed it after its latest record); `detail: full`
 returns the full bounded body and, for every current step, a compact status, fingerprint,
 attribution and CAS projection; long notes, evidence and history are explicit pages. When
-another actor changed the plan since the run last saw it, either form adds
-`changed_by_others`: who changed what, a line each, and each step they touched in full (its
-fields, and its latest record with its note, evidence and author), every step when more
-changed than the run's event scan holds; a read too large to carry them says so and counts
-as no read, so the plans notice before the next turn shows the plan. Either satisfies the fence only after a successful
+another actor changed the plan since the run last saw it, either form, and the plans
+notice, add `changed_by_others`: who changed what, a line each; the plan's own fields a
+revision changed (`plan_fields`: goal, feasibility, outputs, tracks), as they now are; and
+each step they touched in full (its fields, and its latest record with its note, evidence
+and author), every step when more changed than the run's event scan holds. A read shows
+at most 96 KiB of steps and a notice 32 KiB; the rest (`more`) comes in the next notice or
+read, and the plan counts as read only once a delivered read or notice showed the last of
+them. A later change by another actor shows everything again. Either satisfies the fence only after a successful
 model call includes it and its plan state (ref, status, progress and event pins) is
 still current; otherwise the next safe point shows the plan again. Historical reads,
 mutation or replay receipts, a failed model call, or a read and an effect in the same
