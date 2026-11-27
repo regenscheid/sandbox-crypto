@@ -41,9 +41,37 @@ checkpoint interface. The worker then starts it again (`job_restarts.py`), up to
   overrun), a cancellation (also one stored before a worker crash), a session close or
   executor release under way, or a job sandbox's job (`profile`, which the contract
   refuses with `restart`).
-- **The bound.** Only an attempt whose command started counts against the three
-  restarts; one lost before it started (a dispatch the daemon never took) does not. The
-  record keeps at most `MAX_JOB_ATTEMPTS` (8) attempts in all.
+- **One table.** `contracts/restarts.py`'s `RESTART_POLICY` says which loss causes
+  restart the job and which do not, and why, and every reason a job is not restarted;
+  the worker decides from it, and `restart`'s description, the job notices and each
+  "not restarted: …" reason are made from it:
+
+  | Loss cause | Restarted | Why not |
+  | --- | --- | --- |
+  | its sandbox stopped (the same sandbox started again) | yes | |
+  | a new daemon answered in its sandbox, ending the old one's processes | yes | |
+  | its daemon no longer holds it | yes | |
+  | a restarted worker found it never sent | yes | |
+  | the daemon that ran it misbehaved or could not be reconciled | no | that daemon may still run it |
+  | its cancellation was never confirmed | no | it was being cancelled |
+  | a stdio executor or its worker stopped | no | its processes may outlive it |
+
+  A deleted sandbox (the environment given up), a sandbox replaced by another, and an
+  environment not usable again within 24 hours end a waiting attempt `lost`: the files it
+  would resume from went with the sandbox, or did not come back.
+- **The bound.** An attempt counts once the worker sent its command to an executor that
+  took it, or may have: its dispatch is recorded just before the send (store version
+  13), and only a definite refusal by the executor clears it (version 14). So the
+  command is sent to run at most four times (`MAX_JOB_RESTARTS` + 1) whatever reports
+  reach the worker; an attempt lost before it was sent does not count. The record keeps
+  at most `MAX_JOB_ATTEMPTS` (8) attempts in all.
+- **Where it is refused.** "Never two attempts at once" holds where the sandbox is a VM
+  the platform recycles when its daemon is replaced (OpenShell): the recycle ends every
+  process of the lost daemon. On the local backend a process that calls `setsid` and
+  clears its environment escapes both the owner mark and the noted session, so
+  `restart` is refused there unless the worker setting `job_restarts_unisolated = true`
+  allows it for development. It is refused too on the stdio transport, on an executor
+  too old for restarts, and while `job_restarts = false`.
 - **The attempt.** The worker records the lost attempt in the job's record
   (`JobDetails.attempts`: its number and attempt ID, when it started and was lost, what
   stopped, its logs), gives the execution a new attempt ID and number, and queues it. The
@@ -61,15 +89,21 @@ checkpoint interface. The worker then starts it again (`job_restarts.py`), up to
   up again without counting another loss, and after a restart the attempt's time limit
   counts from its own dispatch.
 - **Time.** The time limit applies to each attempt, so a restarted job can run for up to
-  four limits, besides its waits; the job view gives `elapsed_total_seconds` across its
-  attempts beside the current attempt's `elapsed_seconds`.
+  four limits, besides its waits. The job view gives `elapsed_total_seconds`, the sum of
+  each attempt's own running time, and `waiting_seconds`, the time between attempts since
+  the first started, beside the current attempt's `elapsed_seconds` (from its start, or
+  while it waits from the loss before it).
 - **What it is told.** The attempt's environment has `SANDBOX_JOB_ATTEMPT` (1 for the
   first attempt, then 2 and on). Its logs go to `.jobs/<ID>/attempt-<N>/`, beside the
   earlier attempts', which stay readable; `JobDetails.stdout_path` and `stderr_path` name
   the current attempt's. As it starts, its executor lists the files of the session
-  workspace and `shared/` changed since the lost attempt was queued, at most 100, and the
-  lost attempt's record keeps them (`survived`): what that attempt wrote that is still
-  there, and anything else written meanwhile.
+  workspace and `shared/` changed since the lost attempt was queued, at most 100, each
+  with its size and SHA-256 (within 4 GiB hashed in all), and the lost attempt's record
+  keeps them (`survived`), sorted against what else wrote meanwhile as a result's files
+  are: another session's uploads left out, and a file a file request wrote while the lost
+  attempt ran, or a `shared/` file while another session's attempt ran, in
+  `survived_unattributed` (after a worker restart the lost attempt's `shared/` files are
+  all unattributed).
 - **When it stops.** Cancelling the job, closing its session or releasing its
   environment's executor cancels a waiting attempt like any queued job. An environment the
   worker gives up, because its sandbox is gone, ends its waiting attempts `lost`: the
@@ -78,8 +112,16 @@ checkpoint interface. The worker then starts it again (`job_restarts.py`), up to
   meanwhile, or the last restart's loss; the error then says that the job was lost that
   many times and why it was not restarted again, and the record lists every attempt.
 - **Records.** One execution throughout: its events go on in one numbered stream, its
-  result and `written_files` are its last attempt's own, and the review feed's projection
-  of it lists the lost attempts (`lost_attempts`). Each attempt has its own output budget.
+  result and `written_files` are its last attempt's own, and each lost attempt's files
+  are in its record. The harness records the job's files as all its attempts' (RA-27):
+  the last attempt's, and each lost attempt's that no later attempt wrote, by the latest
+  attempt that wrote it, each entry naming its `attempt`. A lost attempt's file is
+  recorded only while its bytes are still the ones the worker hashed when the next
+  attempt found them; one that is gone (a later attempt deleted it, or another writer)
+  is reported as written by that attempt and gone, and one another writer changed since
+  is left out as changed. The review feed's projection lists the lost attempts
+  (`lost_attempts`), each with what it wrote and its digest. Each attempt has its own
+  output budget.
 
 A restart needs no run and no model call: the worker owns it, as it owns recovery, and it
 happens whether or not a run of the session is active. A budget stop limits model calls

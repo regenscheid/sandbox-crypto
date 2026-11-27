@@ -220,9 +220,17 @@ class Daemon:
             if isinstance(survived, list):
                 # A restarted job's account of the lost attempt's files (job restarts).
                 message["survived"] = [
-                    path
-                    for path in cast(list[object], survived)[: executor.MAX_SURVIVED]
-                    if isinstance(path, str) and len(path) <= 4096
+                    {"path": path, "size": size, "sha256": digest}
+                    for item in cast(list[object], survived)[: executor.MAX_SURVIVED]
+                    if isinstance(item, dict)
+                    and isinstance(path := cast(Message, item).get("path"), str)
+                    and len(path) <= 4096
+                    and type(size := cast(Message, item).get("size")) is int
+                    and 0 <= size < 2**63
+                    and (
+                        (digest := cast(Message, item).get("sha256")) is None
+                        or (isinstance(digest, str) and len(digest) == 64)
+                    )
                 ]
                 message["survived_truncated"] = truncated is True
         else:

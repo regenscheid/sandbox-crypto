@@ -32,7 +32,8 @@ from sandbox_science.contracts import (
     JobStatus,
 )
 from sandbox_science.contracts.model import Contract
-from sandbox_science.contracts.worker import MAX_JOB_RESTARTS, TERMINAL_STATES
+from sandbox_science.contracts.restarts import RESTART_POLICY, Refusal
+from sandbox_science.contracts.worker import TERMINAL_STATES
 
 from .aio import lease, threaded
 from .control import ControlStore
@@ -94,18 +95,7 @@ STOP_AT_FAILURE: Final = (
 P5). The harness runs a script as written: prepending the options would change what a
 single command does, such as a pipe into ``head`` or a test with ``grep``."""
 
-RESTART: Final = (
-    "Set true only when the command is safe to run again and resumes from its own "
-    "checkpoints, files it writes in the workspace as it goes. If the platform then loses "
-    "the job (its sandbox, executor or worker stops while it runs), it starts the same "
-    "command again, with the same working directory, environment and time limit, in this "
-    "session's environment once that can be used again, up to "
-    f"{MAX_JOB_RESTARTS} times; never after the command fails, times out or is cancelled. "
-    "The time limit applies to each attempt, so a restarted job can run for several in all. "
-    "Each attempt has SANDBOX_JOB_ATTEMPT (1, then 2, ...) in its environment and logs of "
-    "its own; job_status lists the attempts. A command without checkpoints starts again "
-    "from the beginning."
-)
+RESTART: Final = RESTART_POLICY.description()
 """``start_job``'s ``restart``: what opting in states, and what it does (job restarts)."""
 
 _JOB_ID = {"type": "string"}
@@ -116,8 +106,9 @@ JOB_SPECS = (
         "Give its purpose and what progress to expect. Jobs can outlive this turn, and a "
         "restart of the worker or its bridge while the job's sandbox and executor stay. If "
         "the sandbox, its executor or the worker is lost while the job runs, the job ends "
-        "lost and its command is not run again, unless it was started with restart."
-        + STOP_AT_FAILURE,
+        "lost and its command is not run again, unless it was started with restart and the "
+        "loss is one restart covers; a sandbox that was deleted or replaced never is, since "
+        "the files the job would resume from went with it." + STOP_AT_FAILURE,
         {
             "type": "object",
             "properties": {
@@ -233,7 +224,10 @@ def summary(status: JobStatus, now: datetime) -> dict[str, object]:
     """The watcher and model's bounded view of one execution, as of ``now``."""
     execution = status.execution
     now = execution.ended_at or now
-    started = execution.started_at or execution.submitted_at
+    job = execution.job
+    queued = job.attempts[-1].lost_at if job is not None and job.attempts else None
+    started = execution.started_at or queued or execution.submitted_at
+    ran, waited = _attempts_seconds(execution, now)
     result = execution.result
     written = attributed(execution, result.written_files) if result is not None else ()
     unattributed = attributed(execution, result.unattributed_files) if result is not None else ()
@@ -245,8 +239,8 @@ def summary(status: JobStatus, now: datetime) -> dict[str, object]:
         if execution.job is not None
         else "",
         "elapsed_seconds": max(0, (now - started).total_seconds()),
-        "elapsed_total_seconds": max(0, (now - started).total_seconds())
-        + _attempts_seconds(execution),
+        "elapsed_total_seconds": ran,
+        "waiting_seconds": waited,
         "exit_code": result.exit_code if result is not None else None,
         "error": clipped(result.error.message, 512)
         if result is not None and result.error
@@ -276,8 +270,9 @@ def summary(status: JobStatus, now: datetime) -> dict[str, object]:
 
 
 LOSS: Final = (
-    "a job whose sandbox, executor or worker is lost while it runs ends lost; one started "
-    f"with restart is started again instead, at most {MAX_JOB_RESTARTS} times"
+    "a job whose attempt is lost ends lost; one started with restart is started again for "
+    "the losses start_job's restart names, its command sent to run at most "
+    f"{RESTART_POLICY.max_runs} times in all"
 )
 """What the job view says of losing a job (job restarts)."""
 UNKNOWN_SURVIVORS: Final = (
@@ -285,16 +280,22 @@ UNKNOWN_SURVIVORS: Final = (
 )
 
 
-def _attempts_seconds(execution: Execution) -> float:
-    """The seconds a restarted job's lost attempts ran, from each start to its loss."""
+def _attempts_seconds(execution: Execution, now: datetime) -> tuple[float, float]:
+    """How long a job's attempts ran in all, each from its start to its loss or now, and
+    how long it waited between them, from its first start."""
     job = execution.job
-    if job is None:
-        return 0.0
-    return sum(
-        max(0.0, (attempt.lost_at - attempt.started_at).total_seconds())
-        for attempt in job.attempts
+    spans = [
+        (attempt.started_at, attempt.lost_at)
+        for attempt in (job.attempts if job is not None else ())
         if attempt.started_at is not None
-    )
+    ]
+    if execution.started_at is not None:
+        spans.append((execution.started_at, now))
+    ran = sum(max(0.0, (end - begin).total_seconds()) for begin, end in spans)
+    if not spans:
+        return 0.0, 0.0
+    since = (now - min(begin for begin, _ in spans)).total_seconds()
+    return ran, max(0.0, since - ran)
 
 
 def _attempt(attempt: JobAttempt) -> dict[str, object]:
@@ -306,11 +307,18 @@ def _attempt(attempt: JobAttempt) -> dict[str, object]:
         "started_at": attempt.started_at.isoformat() if attempt.started_at else None,
         "lost_at": attempt.lost_at.isoformat(),
         "logs": {"stdout": attempt.stdout_path, "stderr": attempt.stderr_path},
-        "survived": [clipped(path, 512) for path in attempt.survived[:20]]
+        "sent": attempt.sent,
+        "survived": [
+            {"path": clipped(file.path, 512), "size": file.size, "sha256": file.sha256}
+            for file in attempt.survived[:20]
+        ]
         if attempt.survived is not None
         else UNKNOWN_SURVIVORS,
         "survived_truncated": attempt.survived is not None
         and (attempt.survived_truncated or len(attempt.survived) > 20),
+        "survived_unattributed": [
+            clipped(path, 512) for path in attempt.survived_unattributed[:20]
+        ],
     }
 
 
@@ -375,16 +383,14 @@ def _attempts(status: JobStatus) -> int:
 def lost_notice(execution: Execution, attempt: JobAttempt) -> dict[str, object]:
     """The notice of one lost attempt of a job that the worker is starting again."""
     job = execution.job
-    total = MAX_JOB_RESTARTS + 1
     following = job.attempt if job is not None else attempt.attempt + 1
+    runs = sum(a.sent for a in job.attempts) if job is not None else int(attempt.sent)
     return {
         "job_id": execution.execution_id,
         "state": execution.state.value,
         "purpose": clipped(job.purpose, 512) if job is not None else "",
         "lost_attempt": _attempt(attempt),
-        "restart": f"being restarted: attempt {following} of at most {total}, in this "
-        "session's environment once that can be used, from the same command; it resumes "
-        "from what its checkpoints left",
+        "restart": RESTART_POLICY.restarting(following, runs),
     }
 
 
@@ -392,7 +398,7 @@ def _not_restarted(execution: Execution) -> dict[str, object]:
     """What a job that ended lost tells of its restarts and of what it left."""
     job = execution.job
     if job is None or not job.restart:
-        restart = "not restarted: it was not started with restart, so its command is not run again"
+        restart = "not restarted: " + RESTART_POLICY.refusals[Refusal.NOT_ASKED]
     else:
         restart = f"not restarted again after {len(job.attempts)} restart(s); the error says why"
     started = execution.started_at or execution.submitted_at

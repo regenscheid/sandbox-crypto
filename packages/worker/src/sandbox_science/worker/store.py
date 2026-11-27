@@ -807,10 +807,27 @@ class Store:
         """Record the first dispatch of a restartable job's attempt and its sandbox."""
         sandbox, sandbox_id = identity if identity is not None else (None, None)
         self._db.execute(
-            "INSERT INTO job_attempt_dispatches VALUES (?,?,?,?,?)"
+            "INSERT INTO job_attempt_dispatches"
+            " (execution_id, attempt, sandbox, sandbox_id, dispatched_at) VALUES (?,?,?,?,?)"
             " ON CONFLICT (execution_id, attempt) DO NOTHING",
             (execution_id, attempt, sandbox, sandbox_id, at.isoformat()),
         )
+
+    def attempt_accepted(self, execution_id: str, attempt: int, accepted: bool) -> None:
+        """Record whether the executor took an attempt's dispatch."""
+        self._db.execute(
+            "UPDATE job_attempt_dispatches SET accepted=? WHERE execution_id=? AND attempt=?",
+            (int(accepted), execution_id, attempt),
+        )
+
+    def attempt_sent(self, execution_id: str, attempt: int) -> bool:
+        """Whether an attempt's command was sent to an executor that took it, or may have:
+        it was dispatched, and the executor did not refuse it."""
+        row = self._db.execute(
+            "SELECT accepted FROM job_attempt_dispatches WHERE execution_id=? AND attempt=?",
+            (execution_id, attempt),
+        ).fetchone()
+        return row is not None and row[0] != 0
 
     def attempt_dispatch(
         self, execution_id: str, attempt: int

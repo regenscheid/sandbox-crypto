@@ -27,6 +27,7 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ExecutionContext, ExecutionState
+from sandbox_science.contracts.restarts import LossCause
 from sandbox_science.contracts.worker import EVENT_HEARTBEAT_SECONDS
 from sandbox_science.testing import WorkerApi
 from sandbox_science.worker.app import create_app
@@ -311,9 +312,9 @@ class ManagerView:
 
         patch.setattr(files, "sync", wrapped)
 
-    def lose(self, execution_id: str, what: str) -> None:
-        """End an execution as lost, as when its executor goes away."""
-        self.manager._dispatcher.lose(self.manager._journal.live[execution_id], what)
+    def lose(self, execution_id: str, what: str, cause: LossCause | None = None) -> None:
+        """End an execution as lost, as when its executor goes away, for ``cause``."""
+        self.manager._dispatcher.lose(self.manager._journal.live[execution_id], what, cause)
 
     def tell(self, context: ExecutionContext, notices: list[str]) -> None:
         """Pass on what a shared-files sync for a file request found, as it would."""
@@ -487,6 +488,7 @@ class Harness(WorkerApi):
         pool_id: str = "test-pool",
         store_name: str = "worker.sqlite3",
         job_restarts: bool = True,
+        job_restarts_unisolated: bool = True,
     ) -> None:
         self.root = root
         self.daemon = daemon
@@ -506,6 +508,7 @@ class Harness(WorkerApi):
             "timeouts": timeouts,
             "clock": clock,
             "job_restarts": job_restarts,
+            "job_restarts_unisolated": job_restarts_unisolated,
         }
         self.clock = clock
         self.heartbeat = heartbeat

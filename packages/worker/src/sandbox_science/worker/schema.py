@@ -41,6 +41,7 @@ from .artifact_retention import create_schema as _artifact_retention
 from .child_records import create_schema as _child_environments
 from .classification_receipts import create_schema as _classification_receipts
 from .errors import WorkerError
+from .job_records import create_acceptance_schema as _job_acceptance
 from .job_records import create_attempt_schema as _job_attempts
 from .job_records import create_progress_schema as _job_progress
 from .job_records import create_schema as _job_sandboxes
@@ -278,6 +279,7 @@ MIGRATIONS: list[Migration] = [
     _child_environments,
     _listing_reports,
     _job_attempts,
+    _job_acceptance,
 ]
 """Steps after the baseline: the one at index ``i`` takes a store to ``BASELINE + i + 1``."""
 

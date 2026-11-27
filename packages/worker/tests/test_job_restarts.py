@@ -4,8 +4,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import hashlib
 import os
 import signal
+import subprocess
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -27,13 +30,16 @@ from sandbox_science.contracts import (
     SessionCloseRequest,
 )
 from sandbox_science.contracts.recovery import RecoveryFence
+from sandbox_science.contracts.restarts import RESTART_POLICY, LossCause, Refusal
 from sandbox_science.contracts.worker import MAX_JOB_RESTARTS
 from sandbox_science.testing import eventually
 from sandbox_science.worker import sandbox_processes
 from sandbox_science.worker.errors import WorkerError
-from sandbox_science.worker.job_restarts import attempt_began, started_attempts
+from sandbox_science.worker.job_restarts import REASONS, attempt_began, sent_attempts
 from sandbox_science.worker.manager import ExecutionManager
 from sandbox_science.worker.recovery_fence import operator_scope
+from sandbox_science.worker.store import Store
+from sandbox_science.worker.timeouts import MANAGER_TIMEOUTS
 
 from .harness import TEST_TIMEOUTS, Harness, running
 
@@ -134,7 +140,7 @@ async def test_a_lost_job_restarts_and_its_second_attempt_resumes_from_the_check
     assert "stopped during this attempt" in lost.reason
     assert lost.started_at is not None
     assert lost.survived is not None
-    assert {"checkpoint", "attempts"} <= set(lost.survived)
+    assert {"checkpoint", "attempts"} <= {file.path for file in lost.survived}
     assert attempts_file(worker) == "attempt 1\nattempt 2\n"
     # Each attempt's whole logs stay readable, each in its own place.
     assert lost.stdout_path == f".jobs/{job.execution_id}/stdout.log"
@@ -184,9 +190,7 @@ async def test_restarts_stop_at_their_bound_and_the_job_ends_lost_with_every_att
     assert [a.attempt for a in result.job.attempts] == list(range(1, MAX_JOB_RESTARTS + 1))
     assert result.result is not None
     assert result.result.error is not None
-    assert f"not restarted: its {MAX_JOB_RESTARTS} restarts are used up" in (
-        result.result.error.message
-    )
+    assert f"not restarted: {REASONS[Refusal.RESTARTS_USED]}" in (result.result.error.message)
     expected = "".join(f"attempt {n}\n" for n in range(1, MAX_JOB_RESTARTS + 2))
     assert attempts_file(worker) == expected
 
@@ -251,7 +255,7 @@ async def test_a_given_up_environment_ends_the_waiting_restart_lost(worker: Harn
     assert result.state is ExecutionState.LOST
     assert result.result is not None
     assert result.result.error is not None
-    assert "given up" in result.result.error.message
+    assert REASONS[Refusal.SANDBOX_GONE] in result.result.error.message
     assert result.job is not None
     assert len(result.job.attempts) == 1
 
@@ -354,13 +358,14 @@ def test_a_later_attempt_counts_its_time_limit_from_its_own_dispatch() -> None:
     assert attempt_began(first, None) == base.submitted_at
 
 
-def test_only_attempts_whose_command_started_use_up_restarts() -> None:
+def test_only_attempts_whose_command_was_sent_use_up_restarts() -> None:
     base = restarted_record()
     assert base.job is not None
-    never = base.job.attempts[0].model_copy(update={"started_at": None})
-    job = base.job.model_copy(update={"attempts": (never, never, never)})
-    assert started_attempts(base.model_copy(update={"job": job})) == 0
-    assert started_attempts(base) == 1
+    never = base.job.attempts[0].model_copy(update={"started_at": None, "sent": False})
+    taken = never.model_copy(update={"sent": True})  # taken, though it never said it ran
+    job = base.job.model_copy(update={"attempts": (never, never, taken)})
+    assert sent_attempts(base.model_copy(update={"job": job})) == 1
+    assert sent_attempts(base) == 1
 
 
 @pytest.mark.asyncio
@@ -413,7 +418,7 @@ async def test_a_waiting_restart_never_runs_in_another_sandbox(worker: Harness) 
     assert result.state is ExecutionState.LOST
     assert result.result is not None
     assert result.result.error is not None
-    assert "no longer the one the lost attempt ran in" in result.result.error.message
+    assert REASONS[Refusal.OTHER_SANDBOX] in result.result.error.message
     assert attempts_file(worker) == "attempt 1\n"
 
 
@@ -474,7 +479,7 @@ async def test_the_bound_holds_across_worker_restarts(worker: Harness) -> None:
             await worker.restart()  # wherever the next attempt is: waiting or sent
     result = await ended(worker, job.execution_id)
     assert result.state is ExecutionState.LOST
-    assert started_attempts(result) == MAX_JOB_RESTARTS
+    assert sent_attempts(result) == MAX_JOB_RESTARTS
     assert attempts_file(worker).count("attempt") == MAX_JOB_RESTARTS + 1
 
 
@@ -518,6 +523,7 @@ def restarted_record() -> Execution:
         reason="the sandbox executor incarnation stopped during this attempt",
         stdout_path=".jobs/exe-1/stdout.log",
         stderr_path=".jobs/exe-1/stderr.log",
+        sent=True,
     )
     return Execution(
         execution_id="exe-1",
@@ -538,3 +544,133 @@ def restarted_record() -> Execution:
             attempts=(lost,),
         ),
     )
+
+
+@pytest.mark.asyncio
+async def test_a_lost_attempts_results_are_kept_with_their_digests(worker: Harness) -> None:
+    # Attempt 1 writes its result and a checkpoint and is lost; attempt 2 resumes, skips
+    # the result, rewrites one file and deletes another.
+    script = (
+        'if [ "$SANDBOX_JOB_ATTEMPT" = 1 ]; then '
+        "printf r1 > result.txt; printf b1 > both.txt; printf x > removed.txt; "
+        "touch checkpoint; sleep 60; "
+        "else printf b2 > both.txt; rm removed.txt; fi"
+    )
+    job, _ = await worker.manager.submit(request("results", script, restart=True))
+    await running(worker.manager, job.execution_id)
+    await eventually((worker.workspace / "checkpoint").exists, timeout=10)
+    kill_daemon(worker, job.execution_id)
+    result = await ended(worker, job.execution_id)
+    assert result.state is ExecutionState.SUCCEEDED
+    assert result.job is not None
+    [lost] = result.job.attempts
+    assert lost.sent
+    assert lost.survived is not None
+    found = {file.path: file for file in lost.survived}
+    assert found["result.txt"].sha256 == hashlib.sha256(b"r1").hexdigest()
+    assert found["both.txt"].sha256 == hashlib.sha256(b"b1").hexdigest()
+    assert "removed.txt" in found
+    assert result.result is not None
+    assert "result.txt" not in result.result.written_files  # attempt 2 never wrote it
+    assert "both.txt" in result.result.written_files
+    assert "removed.txt" in result.result.deleted_files
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cause", list(LossCause))
+async def test_every_loss_cause_does_what_the_policy_says(
+    worker: Harness, cause: LossCause
+) -> None:
+    loss = RESTART_POLICY.loss(cause)
+    # What the agent is told: the description puts each cause on the side the table does.
+    restarted, kept = RESTART_POLICY.description().split("It is not started again when")
+    assert (loss.happened in restarted) is loss.restarts
+    assert (loss.happened in kept) is not loss.restarts
+    job, _ = await worker.manager.submit(request(f"cause-{cause}", restart=True))
+    await running(worker.manager, job.execution_id)
+    worker.view.quarantine("env1")  # a restart waits, so nothing runs beside the attempt
+    worker.view.lose(job.execution_id, "the test's", cause)
+    execution = worker.manager.get(job.execution_id)
+    assert execution.job is not None
+    if loss.restarts:
+        assert execution.state is ExecutionState.QUEUED
+        assert execution.job.attempt == 2
+        await worker.manager.cancel(job.execution_id)
+    else:
+        assert execution.state is ExecutionState.LOST
+        assert execution.job.attempts == ()
+        assert execution.result is not None
+        assert execution.result.error is not None
+        assert f"not restarted: {loss.why}" in execution.result.error.message
+    worker.view.release_quarantine("env1")
+
+
+def test_an_attempt_counts_once_an_executor_took_it_or_may_have(tmp_path: Path) -> None:
+    store = Store(tmp_path / "worker.sqlite3")
+    try:
+        now = datetime.now(UTC)
+        assert not store.attempt_sent("exe-1", 1)  # never dispatched
+        store.attempt_dispatched("exe-1", 1, None, now)
+        assert store.attempt_sent("exe-1", 1)  # sent, its answer unknown: it counts
+        store.attempt_accepted("exe-1", 1, False)
+        assert not store.attempt_sent("exe-1", 1)  # refused: its command never ran
+        store.attempt_accepted("exe-1", 1, True)
+        assert store.attempt_sent("exe-1", 1)
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_restart_is_refused_on_the_local_backend_unless_allowed(tmp_path: Path) -> None:
+    async with await Harness.start(
+        tmp_path, daemon=True, timeouts=TIMEOUTS, job_restarts_unisolated=False
+    ) as strict:
+        with pytest.raises(WorkerError) as refused:
+            await strict.manager.submit(request("local", restart=True))
+        assert str(refused.value.message) == REASONS[Refusal.LOCAL_BACKEND]
+
+
+def test_a_noted_session_counts_only_while_its_leader_is_the_one_noted(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    process = subprocess.Popen(
+        ["/bin/sh", "-c", "sleep 30 & echo $!; wait"],
+        stdout=subprocess.PIPE,
+        start_new_session=True,
+    )
+    assert process.stdout is not None
+    child = int(process.stdout.readline())
+    try:
+        leader = sandbox_processes.process_info(process.pid)
+        assert leader is not None
+        sandbox_processes.note_job_session(state, (process.pid, leader.start + 1))
+        assert sandbox_processes.noted_job_sessions(state) == []  # another start time
+        sandbox_processes.note_job_session(state, (process.pid, leader.start))
+        assert {p.pid for p in sandbox_processes.noted_job_sessions(state)} >= {
+            process.pid,
+            child,
+        }
+        os.kill(process.pid, signal.SIGKILL)
+        process.wait()
+        # Its child lives on in the session, but a gone leader's number may be anyone's.
+        assert sandbox_processes.noted_job_sessions(state) == []
+        sandbox_processes.forget_job_session(state, (process.pid, leader.start))
+        sandbox_processes.forget_job_session(state, (process.pid, leader.start + 1))
+        assert not (state / sandbox_processes.JOB_SESSIONS).exists()
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(child, signal.SIGKILL)
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(process.pid, signal.SIGKILL)
+
+
+@pytest.mark.asyncio
+async def test_a_job_that_ends_forgets_its_noted_session(worker: Harness) -> None:
+    job, _ = await worker.manager.submit(request("forgotten", "true", restart=True))
+    assert (await ended(worker, job.execution_id)).state is ExecutionState.SUCCEEDED
+    noted = worker.workspace.parent.parent / ".executor" / sandbox_processes.JOB_SESSIONS
+    assert not noted.exists() or noted.read_text().strip() == ""
+
+
+def test_the_wait_the_policy_states_is_the_workers() -> None:
+    assert RESTART_POLICY.wait_hours * 3600 == MANAGER_TIMEOUTS.restart_wait
+    assert RESTART_POLICY.max_runs == MAX_JOB_RESTARTS + 1

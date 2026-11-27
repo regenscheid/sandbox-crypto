@@ -12,6 +12,7 @@ from typing import cast
 import pytest
 
 from sandbox_science.contracts import (
+    AttemptFile,
     ErrorInfo,
     ErrorKind,
     Execution,
@@ -20,9 +21,16 @@ from sandbox_science.contracts import (
     JobStatus,
     Result,
 )
+from sandbox_science.contracts.restarts import RESTART_POLICY
 from sandbox_science.contracts.worker import MAX_JOB_RESTARTS
 from sandbox_science.orchestrator.consistency.executions import execution_projection
-from sandbox_science.orchestrator.jobs import LOST_WAKE, RESTART, start_job_spec, summary
+from sandbox_science.orchestrator.jobs import (
+    LOST_WAKE,
+    RESTART,
+    lost_notice,
+    start_job_spec,
+    summary,
+)
 from sandbox_science.testing import FakeClock, eventually
 
 from .test_jobs import CONTEXT, POLL, FakeWorker, execution, tools
@@ -40,7 +48,7 @@ def lost_attempt(job: str = "exe-1", number: int = 1) -> JobAttempt:
     )
 
 
-def restarted(job: str = "exe-1", *, survived: tuple[str, ...] | None = None) -> Execution:
+def restarted(job: str = "exe-1", *, survived: tuple[AttemptFile, ...] | None = None) -> Execution:
     """``job`` with its first attempt lost and its second queued, as the worker has it."""
     base = execution(job, ExecutionState.QUEUED)
     assert base.job is not None
@@ -76,7 +84,8 @@ def test_start_job_offers_restart_with_what_opting_in_states() -> None:
     assert "safe to run again" in RESTART
     assert "checkpoints" in RESTART
     assert "starts again from the beginning" in RESTART
-    assert f"up to {MAX_JOB_RESTARTS} times" in RESTART
+    assert f"at most {MAX_JOB_RESTARTS + 1} times in all" in RESTART
+    assert "deleted" in RESTART
     assert "never run again" not in spec.description
     assert "unless it was started with restart" in spec.description
 
@@ -94,12 +103,17 @@ async def test_start_job_passes_the_opt_in_to_the_worker(tmp_path: Path) -> None
 
 
 def test_the_job_view_lists_a_restarted_jobs_attempts() -> None:
-    value = summary(JobStatus(execution=restarted(survived=("ckpt.json",))), datetime.now(UTC))
+    value = summary(
+        JobStatus(
+            execution=restarted(survived=(AttemptFile(path="ckpt.json", size=2, sha256="a" * 64),))
+        ),
+        datetime.now(UTC),
+    )
     assert value["restart"] is True
     assert value["attempt"] == 2
     [attempt] = cast(list[dict[str, object]], value["attempts"])
     assert attempt["state"] == "lost"
-    assert attempt["survived"] == ["ckpt.json"]
+    assert attempt["survived"] == [{"path": "ckpt.json", "size": 2, "sha256": "a" * 64}]
     assert attempt["logs"] == {
         "stdout": ".jobs/exe-1/stdout.log",
         "stderr": ".jobs/exe-1/stderr.log",
@@ -161,7 +175,7 @@ async def test_a_lost_attempt_is_noticed_once_with_its_restart(tmp_path: Path) -
     assert notice["notice_id"] == "exe-1#1"
     assert notice["job_id"] == "exe-1"
     assert notice["state"] == "queued"
-    assert "being restarted: attempt 2 of at most" in str(notice["restart"])
+    assert str(notice["restart"]) == RESTART_POLICY.restarting(2, 0)
     lost = notice["lost_attempt"]
     assert isinstance(lost, dict)
     lost = cast(dict[str, object], lost)
@@ -223,6 +237,47 @@ def test_the_job_view_adds_the_lost_attempts_time() -> None:
     assert lost.started_at is not None
     ran = (lost.lost_at - lost.started_at).total_seconds()
     value = summary(JobStatus(execution=record), datetime.now(UTC))
-    total = cast(float, value["elapsed_total_seconds"])
-    assert total == pytest.approx(cast(float, value["elapsed_seconds"]) + ran)
+    # The second attempt waits: only the first's running time counts, once.
+    assert value["elapsed_total_seconds"] == pytest.approx(ran)
+    now = datetime.now(UTC)
+    waited = cast(float, value["waiting_seconds"])
+    assert waited == pytest.approx((now - lost.started_at).total_seconds() - ran, abs=1.0)
     assert "The time limit applies to each attempt" in RESTART
+
+
+def test_the_total_counts_each_attempts_own_running_time_once() -> None:
+    now = datetime.now(UTC)
+    submitted = now - timedelta(seconds=10)
+    record = restarted()
+    assert record.job is not None
+    lost = record.job.attempts[0].model_copy(
+        update={"started_at": submitted, "lost_at": submitted + timedelta(seconds=8)}
+    )
+    record = record.model_copy(
+        update={
+            "submitted_at": submitted,
+            "job": record.job.model_copy(update={"attempts": (lost,)}),
+        }
+    )
+    value = summary(JobStatus(execution=record), now)
+    assert value["elapsed_total_seconds"] == pytest.approx(8)  # not 18
+    assert value["waiting_seconds"] == pytest.approx(2)
+    assert value["elapsed_seconds"] == pytest.approx(2)  # the waiting attempt's, from its queue
+
+
+def test_the_notice_and_description_say_what_the_policy_does() -> None:
+    assert RESTART_POLICY.description() == RESTART
+    base = restarted()
+    assert base.job is not None
+    attempts = tuple(
+        lost_attempt(number=n).model_copy(update={"sent": n % 2 == 1}) for n in range(1, 6)
+    )
+    record = base.model_copy(
+        update={"job": base.job.model_copy(update={"attempt": 6, "attempts": attempts})}
+    )
+    notice = lost_notice(record, attempts[-1])
+    assert notice["restart"] == RESTART_POLICY.restarting(6, 3)
+    assert "attempt 6" in str(notice["restart"])
+    assert f"3 of at most {RESTART_POLICY.max_runs} times" in str(notice["restart"])
+    for row in RESTART_POLICY.losses:
+        assert row.happened in RESTART
