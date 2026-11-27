@@ -494,7 +494,10 @@ credentials = { "CF-Access-Client-Id" = "CF_ACCESS_CLIENT_ID", "CF-Access-Client
 ```
 
 Each server must be one of the site policy's, whose URL it takes, and one the floor and the
-pool ceiling admit. With it:
+pool ceiling admit. The servers' tools reach the runs of `project` only, since the runtime's
+sandbox is bound to that project's policy revision: with other `[[projects]]` in the site
+file, `site` and `check --site` say on standard error which project gets the connectors
+and which do not (`notice:` lines). With it:
 
 - **The renderer** gives the runtime manager's Pod an init container,
   `register-mcp-provider`, after its copy init: it runs
@@ -587,11 +590,12 @@ selects no Pod: delete it.
 ## Render, inspect, then qualify separately
 
 ```sh
-sandbox-science-kubernetes check --config /path/to/private-kubernetes.toml
+sandbox-science-kubernetes check --config /path/to/private-kubernetes.toml [--site /path/to/private-site.toml]
 sandbox-science-kubernetes render --config /path/to/private-kubernetes.toml --output /path/to/new-bundle.json
 ```
 
-Output is deterministic, atomically created mode 600 and never overwrites an existing
+With `--site`, `check` also loads the site file, which must name the same bundle, and
+prints its notices. Output is deterministic, atomically created mode 600 and never overwrites an existing
 file. Parse/type/cross-setting errors do not print configuration values. Offline
 validation checks only the renderer's configuration contract. Independently inspect
 the JSON, service DNS/certificates, copied settings, node/resource/storage capacity
@@ -812,6 +816,32 @@ frame a third-party context and the browser may drop the cookie. Same-site names
 separate origins, which is all D54 needs; the viewer's frames may share the workspace
 page's thread (FG-17, [preview](WORKSPACE.md#the-pdf-viewers-origin)).
 
+## Adding a project
+
+A deployment acts only for the projects its site file lists in `[[projects]]`: `site`
+writes them into `control.json`'s `projects`, which the control service admits work for,
+and into each of the worker's `[[clients]]` in `worker.toml`, which the worker lets each
+client act for. A project recorded with `project create` but not listed never runs:
+control queues no work for it, and the worker refuses its environments with
+`policy_denied` ("this client may not act for project ..."). To add one:
+
+1. Add a `[[projects]]` entry to the site file (with its `sessions`, as the others).
+2. Run `site` again into a new directory and deploy from it as the first time, the new
+   README's steps 1 and 2: a new directory has a new CA and new tokens, so every Secret
+   is replaced, the gateway's middleware CA too, and the Pods are recreated. Control and
+   the worker read their settings only when they start.
+3. Grant the policy to the new project and create it as the new README's step 3 shows
+   (`policy add --project <id>`, `project create`, `session open`).
+
+The control service records its `projects` in its state directory when it starts
+(`deployment-projects.json`). `project create` reads that list: for a project it does not
+name, the project is still recorded and the command succeeds, but it prints a warning on
+standard error that names the listed projects and this section. It warns rather than
+refuses because the host launcher creates the projects of a new config before its
+control service restarts with that config. A missing list (no control service has started
+with this state directory) gives no warning; a damaged one says the answer is unknown.
+The workspace creates no projects.
+
 ## Maintenance
 
 Workspace checkpoints to object storage, the third item on D92's list, run as Jobs in the
@@ -825,6 +855,24 @@ image with the same security context and JSON logs (`SS_LOG_FORMAT=json`) as the
 Deployments. Neither is qualified on a cluster yet. The worker's other offline commands, those that
 reach the OpenShell gateway, have a Job of their own ([offline worker
 commands](#offline-worker-commands)).
+
+### Policy revisions after an upgrade
+
+A policy setting the loader has retired is refused in a new file but read without it in
+a revision the pool's policy store already holds ([policy](POLICY.md#mcp-calls)), so a
+deployment keeps running on such a revision, and only a later `policy add` of the same
+file, for another project say, is refused. After each upgrade, as one of the checks once
+the pool runs the new image:
+
+```sh
+kubectl -n <namespace> exec deploy/<name>-pool -c worker -- sandbox-science-worker policy check \
+  --settings /private/worker.toml
+```
+
+For each project it reads the revision granted last and those its environments are on, as
+`policy add` would, and names each it would refuse with the reason and the retired keys to
+remove from the policy file (`warning:` lines). It rewrites nothing. It exits 1 only when
+a revision in force does not load at all.
 
 ### Cache trimming (opt-in)
 

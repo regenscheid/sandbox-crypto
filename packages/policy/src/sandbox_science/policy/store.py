@@ -39,7 +39,7 @@ from typing import Final, Literal, cast
 
 from .classification import ServerClassification, revision_classification
 from .errors import PolicyLoadError
-from .loader import LoadedPolicy, parse_policy, read_limited
+from .loader import LoadedPolicy, parse_policy, read_limited, retired_settings
 
 _log = logging.getLogger(__name__)
 
@@ -158,6 +158,18 @@ def check_name(name: str, subject: str = "sandbox") -> str:
     return name
 
 
+@dataclass(frozen=True, slots=True)
+class FreshRead:
+    """A stored revision read as a new policy file is (``PolicyStore.reread``)."""
+
+    loaded: LoadedPolicy | None
+    """The revision, when a fresh ``policy add`` takes it."""
+    refusal: str | None
+    """Why a fresh ``policy add`` refuses it."""
+    remove: tuple[str, ...]
+    """The retired settings it sets, which a file must lose to be added again."""
+
+
 class PolicyStore:
     """Read and write policies, and one kind of binding, under one directory."""
 
@@ -248,6 +260,24 @@ class PolicyStore:
             if entry is not None and entry[1] == project:
                 found[path.stem] = entry[0]
         return found
+
+    def reread(self, digest: str) -> FreshRead:
+        """Read a stored revision as ``add_policy`` reads a new file, strictly: whether a
+        fresh ``policy add`` of the same bytes would take it, and if not why, with the
+        retired settings to remove. The stored revision keeps loading as it is
+        (``policy``); nothing is rewritten. Raises StoreError for a missing revision."""
+        check_digest(digest)
+        path = self._policy_path(digest)
+        try:
+            data = read_limited(path)
+        except PolicyLoadError as exc:
+            if isinstance(exc.__cause__, FileNotFoundError):
+                raise StoreError(f"no policy with revision {digest}") from exc
+            raise StoreError(f"policy revision {digest} cannot be read: {exc}") from exc
+        try:
+            return FreshRead(parse_policy(data, source=str(path)), None, ())
+        except PolicyLoadError as exc:
+            return FreshRead(None, str(exc), retired_settings(data))
 
     def add_policy(self, data: bytes) -> LoadedPolicy:
         """Validate a policy file's bytes and store them under their revision."""
