@@ -338,10 +338,11 @@ class RunRecord(Contract):
 
     @model_validator(mode="after")
     def _failure_is_not_an_answer(self) -> RunRecord:
-        if self.failure is not None and (
-            self.stopped != "error" or self.final_text is not None or self.answer is not None
-        ):
-            raise ValueError("a failed run must have error status and no final answer")
+        # A failed run keeps an answer the agent gave before the turn that failed, such
+        # as the one a final review's answering turn followed (consistency review,
+        # CR-48); it has no final text.
+        if self.failure is not None and (self.stopped != "error" or self.final_text is not None):
+            raise ValueError("a failed run must have error status and no final text")
         return self
 
     def to_json(self) -> str:

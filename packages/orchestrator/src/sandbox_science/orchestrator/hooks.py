@@ -203,6 +203,13 @@ class RunView(Protocol):
         last closing then has no turn to take."""
         ...
 
+    @property
+    def withheld(self) -> bool:
+        """Whether the closing answer the conversation ends with is kept from the user
+        while a hook decides on it (``TurnHook.holds_answers``; consistency review,
+        CR-48): the run's events write it once the closing ends."""
+        ...
+
     def delivered_ids(self, source: str) -> AbstractSet[str]: ...
 
 
@@ -212,6 +219,12 @@ class TurnHook:
     name: str = "hook"
     veto: bool = False
     """Asked about a closing answer before the others, and again once they accept it."""
+
+    @property
+    def holds_answers(self) -> bool:
+        """Whether a closing answer is kept from the user until this hook's closing ends,
+        as a final review in ``hold`` keeps it (consistency review, CR-48)."""
+        return False
 
     def lease(self) -> AbstractAsyncContextManager[None]:
         """Held for the whole run, around every turn."""

@@ -510,8 +510,9 @@ class ReviewStore:
             # Work before the watermark that no review covered: a range a checkpoint
             # skipped, a final review's budget left out, or an inconclusive review read.
             ranges = snapshot_reads.reviewed_ranges(db, project, session)
+            unrecorded = snapshot_reads.unrecorded_through(db, project, session)
             historical_holes = bool(
-                snapshot_reads.uncovered(db, project, session, ranges, 0, watermark)
+                snapshot_reads.uncovered(db, project, session, ranges, unrecorded, watermark)
             )
         return {
             "watermark": watermark,
@@ -521,14 +522,58 @@ class ReviewStore:
             "historical_holes": historical_holes,
         }
 
+    @staticmethod
+    def _covered_range(
+        db: sqlite3.Connection,
+        project: str,
+        session: str,
+        reviewed: Sequence[tuple[int, int]],
+        payload: Json,
+    ) -> bool:
+        """Whether every feed row of an unreviewed range ``payload`` names is in a range
+        a review covered."""
+        start, end = payload.get("start"), payload.get("end")
+        if not isinstance(start, int) or not isinstance(end, int):
+            return False
+        return not snapshot_reads.uncovered(db, project, session, reviewed, start - 1, end)
+
+    def record_unreviewed(
+        self, project: str, session: str, start: int, end: int, reason: str, review: str | None
+    ) -> None:
+        """Record feed positions ``start`` to ``end`` as unreviewed, and why, as the
+        session's ``review.unreviewed`` event (CR-48): such as the work of the turn that
+        answered a final review."""
+        if start > end:
+            return
+        self.scope(project, session)
+        with self.documents.control.write() as tx:
+            self.review_log.append(
+                tx.sql,
+                "review.unreviewed",
+                project,
+                session,
+                review or session,
+                {"review": review, "start": start, "end": end, "reason": reason},
+                datetime.fromtimestamp(self.clock(), UTC),
+            )
+
     def coverage(self, project: str, session: str) -> Json:
         """The session's review position and coverage (CR-49): the feed position reviewed
         up to (the watermark) and the feed's end; whether the ranges its reviews covered
         reach the end with nothing left between (``complete``); and the ranges left
-        unreviewed, the first ``UNREVIEWED_SHOWN`` and how many there are."""
+        unreviewed, the first ``UNREVIEWED_SHOWN`` and how many there are. Positions up to
+        ``not_recorded_through`` were reviewed before reviews recorded their coverage: their
+        coverage is not known, and neither complete nor unreviewed."""
         self.scope(project, session)
         if self.documents.control.missing:
-            return {"reviewed_through": 0, "feed_end": 0, "complete": True, "unreviewed": []}
+            return {
+                "reviewed_through": 0,
+                "feed_end": 0,
+                "complete": True,
+                "unreviewed": [],
+                "unreviewed_ranges": 0,
+                "not_recorded_through": None,
+            }
         with self.documents.control.read() as tx:
             db = tx.sql
             row = db.execute(
@@ -540,13 +585,15 @@ class ReviewStore:
                 (project, session),
             ).fetchone()
             ranges = snapshot_reads.reviewed_ranges(db, project, session)
-            left = snapshot_reads.uncovered(db, project, session, ranges, 0, head)
+            unrecorded = snapshot_reads.unrecorded_through(db, project, session)
+            left = snapshot_reads.uncovered(db, project, session, ranges, unrecorded, head)
         return {
             "reviewed_through": row[0] if row else 0,
             "feed_end": head,
             "complete": not left,
             "unreviewed": [{"start": a, "end": b} for a, b in left[:UNREVIEWED_SHOWN]],
             "unreviewed_ranges": len(left),
+            "not_recorded_through": unrecorded or None,
         }
 
     def final_summary(self, project: str, session: str, review: str | None) -> Json:
@@ -916,6 +963,11 @@ class ReviewStore:
             ).fetchone()
             lower = window.watermark if first is None else min(window.watermark, first - 1)
             ranges = snapshot_reads.reviewed_ranges(db, project, session)
+            # The run's own new work comes first, being newest; then what the session's
+            # reviews recorded unreviewed, as the budget allows (CR-48).
+            candidates = snapshot_reads.merged(
+                [(lower + 1, head), *snapshot_reads.recorded_unreviewed(db, project, session)]
+            )
             findings = snapshot_reads.open_findings(
                 db, project, session, (), limit=MAX_SNAPSHOT_FINDINGS
             )
@@ -924,14 +976,24 @@ class ReviewStore:
                 db,
                 project,
                 session,
-                lower,
+                candidates,
                 head,
                 ranges,
                 (config.max_feed_bytes, config.max_feed_items),
                 run=author_run,
                 viewed=snapshot_reads.viewed(db, project, session, viewed),
             )
-            left = snapshot_reads.uncovered(db, project, session, ranges, lower, start - 1)
+            known = snapshot_reads.recorded_unreviewed(db, project, session)
+            left = [
+                found
+                for first_seq, last_seq in candidates
+                if first_seq < start
+                for found in snapshot_reads.uncovered(
+                    db, project, session, ranges, first_seq - 1, min(last_seq, start - 1)
+                )
+                # A range already recorded unreviewed is not recorded again.
+                if not any(a <= found[0] and found[1] <= b for a, b in known)
+            ]
         shown: list[EvidenceItem] = []
         if planned is not None:
             encoded = dump(planned[1])
@@ -1595,9 +1657,15 @@ class ReviewStore:
         require_expired: bool = False,
         unreviewed: Sequence[str] = (),
         exhausted: bool = False,
+        deadline: bool = False,
     ) -> None:
-        """End a review. An author-work review that ends with a verdict covers its window
-        up to the first new item it names ``unreviewed``, and, when it was told its budget
+        """End a review. ``deadline``: the end of a run ended it at its time limit
+        (CR-48): it covered nothing, its findings stay, and its window is recorded as
+        unreviewed (reason ``deadline``) with the watermark past it, not left to retry;
+        so is a final review's that ended without covering anything.
+
+        An author-work review that ends with a verdict covers its window up to the first
+        new item it names ``unreviewed``, and, when it was told its budget
         was running out (``exhausted``), up to the first it did not examine (CR-31 as
         amended). The watermark moves to the end of what it covered, and a later review
         continues from there; its coverage stays complete, if it was, for what it covered:
@@ -1666,6 +1734,27 @@ class ReviewStore:
                             "confirmation_key": found["confirmation_key"],
                         },
                     )
+            elif deadline or is_final(found):
+                # A final review leaves no retry window either: what it did not cover is
+                # named, for a later final review, and the next checkpoint starts after it.
+                db.execute(
+                    "UPDATE review_windows SET watermark=max(watermark,?),retry_end=NULL "
+                    "WHERE project=? AND session=?",
+                    (found["end_seq"], project, session),
+                )
+                self.event(
+                    db,
+                    project,
+                    session,
+                    "review.unreviewed",
+                    {
+                        "review": review,
+                        "type": found["kind"],
+                        "start": found["start_seq"],
+                        "end": found["end_seq"],
+                        "reason": "deadline" if deadline else f"final_{outcome}",
+                    },
+                )
             elif coverage is None or coverage["through"] is None:
                 window = db.execute(
                     "SELECT failures FROM review_windows WHERE project=? AND session=?",
@@ -1700,6 +1789,22 @@ class ReviewStore:
                     ),
                     (coverage["through"], project, session),
                 )
+                first = coverage.get("from")
+                if is_final(found) and isinstance(first, int) and first > found["start_seq"]:
+                    # Newest first, it covered back to ``first``: the rest is named.
+                    self.event(
+                        db,
+                        project,
+                        session,
+                        "review.unreviewed",
+                        {
+                            "review": review,
+                            "type": found["kind"],
+                            "start": found["start_seq"],
+                            "end": first - 1,
+                            "reason": "final_budget",
+                        },
+                    )
             if found["kind"] != "confirmation" and (
                 coverage is None or not verdict or coverage["through"] is None
             ):
@@ -1839,6 +1944,10 @@ class ReviewStore:
                 else:
                     through, first = seq, run["start_seq"]
             else:
+                if final and not unreviewed and through is not None:
+                    # Covered back to the item after this one: the rows between, an
+                    # action or a raw source, are in the covered range, not a gap.
+                    first = seq + 1
                 unreviewed.extend(copies)
         if verdict and not unreviewed:
             through, first = run["end_seq"], run["start_seq"]
@@ -2443,9 +2552,12 @@ class ReviewStore:
                     (project, session, cursor),
                 )
             ]
+            # A range a later review covered is no longer listed (CR-48).
+            reviewed = snapshot_reads.reviewed_ranges(db, project, session)
             unreviewed = [
                 event.payload
                 for event in self.review_log.recent(db, project, session, "review.unreviewed", 50)
+                if not self._covered_range(db, project, session, reviewed, event.payload)
             ]
             # A deferral no review was dispatched after: the session's work is waiting.
             deferred = self.review_log.recent(db, project, session, "review.deferred", 1)

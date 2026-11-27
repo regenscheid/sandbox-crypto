@@ -56,6 +56,21 @@ describe("a run's final review line", () => {
     expect(finalReviewLine({ mode: 'hold', finished: false, complete: true, open: {} })).toBe(
       'Final review: did not finish, before the answer. No open findings. All work reviewed.',
     );
+    expect(
+      finalReviewLine({
+        mode: 'hold',
+        outcome: 'findings',
+        finished: true,
+        answering_failed: true,
+        complete: true,
+        open: { fail: 1 },
+        not_recorded_through: 12,
+      }),
+    ).toBe(
+      'Final review: findings, before the answer; the turn answering its findings failed, ' +
+        'so they were not answered. Open: 1 fail. All work reviewed. ' +
+        'Coverage is not recorded through position 12.',
+    );
     expect(finalReviewLine(undefined)).toBeNull();
   });
 });

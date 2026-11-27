@@ -80,7 +80,7 @@ failed, a terminal summary says `off`, and the session's review list says so, fr
 is unavailable makes zero reviewer model calls; its required window remains pending
 under a paced retry after repeated failures. Neither becomes a pass.
 
-**Limits (SNOVA follow-up).** A new author-work review takes a contiguous feed prefix of at most 16 new evidence items and approximately 256 KiB by default, with the existing 256-item/8-MiB snapshot ceiling still bounding finding groups and derived context. It also carries up to eight recent evidence items from before the watermark, within 128 KiB; prior ledger claims are carried as non-promotable context and oversized prior evidence is represented by a locator marker, so a claim and observation on opposite sides of a window boundary can be compared. One oversized first new item is admitted so the cursor cannot stall. A clean prefix can pass its own span, but its `coverage_complete` remains false while later feed rows are pending, so ledger promotion cannot use it. A partial delegated batch remains incomplete. A window read whole is `passed` or `findings` though an item in it was cut short or backlog waits before it (CR-49): its coverage names the items cut short (`partial`), and its `coverage_complete` stays false. The session's coverage is the union of the ranges its reviews covered with a verdict other than `inconclusive` (the coverage record's `from` to `through`; a record from before names no `from` and covers from its window's start): complete when the union leaves no row of the session's feed out (`ReviewStore.coverage`). The session's review list carries it as `coverage`: the position reviewed up to (the watermark), the feed's end, whether it is complete and the first 16 ranges left out.
+**Limits (SNOVA follow-up).** A new author-work review takes a contiguous feed prefix of at most 16 new evidence items and approximately 256 KiB by default, with the existing 256-item/8-MiB snapshot ceiling still bounding finding groups and derived context. It also carries up to eight recent evidence items from before the watermark, within 128 KiB; prior ledger claims are carried as non-promotable context and oversized prior evidence is represented by a locator marker, so a claim and observation on opposite sides of a window boundary can be compared. One oversized first new item is admitted so the cursor cannot stall. A clean prefix can pass its own span, but its `coverage_complete` remains false while later feed rows are pending, so ledger promotion cannot use it. A partial delegated batch remains incomplete. A window read whole is `passed` or `findings` though an item in it was cut short or backlog waits before it (CR-49), unless an item held nothing to read (an artifact whose text could not be copied, or an observation left out for its size), which keeps a pass `inconclusive`: its coverage names the items cut short (`partial`), and its `coverage_complete` stays false. The session's coverage is the union of the ranges its reviews covered with a verdict other than `inconclusive` (the coverage record's `from` to `through`; a record from before names no `from` and covers from its window's start): complete when the union leaves no row of the session's feed out (`ReviewStore.coverage`). The session's review list carries it as `coverage`: the position reviewed up to (the watermark), the feed's end, whether it is complete and the first 16 ranges left out. Positions up to `not_recorded_through` were reviewed by reviews from before coverage records: their coverage is not recorded, which the summary says, and they are neither complete nor unreviewed.
 
 **Keeping up (CR-49).** A checkpoint whose window starts with more than three windows (`BACKLOG_WINDOWS`) of new items after the watermark, and has no failed window to retry, is given the newest window: its dispatch moves the watermark past the rest and records that range as `review.unreviewed` with reason `backlog`, so the reviewer spends what it would have on the newest work, and the final review picks the range up if its budget allows.
 
@@ -106,11 +106,14 @@ of 200, at most 10,000 events per boundary, and marks remaining backlog incomple
 page's observations and its cursor commit in one change, as the artifact pages' do, and
 the session is checked once per call, not per item. A page that fails (an observation the
 store refuses) stops that ingestion as a whole: no later page is read, and the next
-boundary starts again at the same cursor. A checkpoint still running is waited for. Then
-the controller makes one final review (`dispatch(..., final=True)`, kind `terminal`, its
+boundary starts again at the same cursor. The whole wait at a run's end is bounded by
+`END_WAIT_SECONDS` (540 s: the final review's 480 s and a minute): a checkpoint still
+running is waited for within that minute, and if it has not ended it is ended at its
+deadline. Then the controller makes one final review, one a run (`dispatch(..., final=True)`, kind `terminal`, its
 classifier marked `final`), never a walk through the backlog: it is given what no review
 covered with a verdict since the run began, or since the watermark if that is earlier,
-newest first (`snapshot_reads.final_items`), at most 48 items and about 1 MiB
+newest first (`snapshot_reads.final_items`), then the ranges the session's reviews
+recorded unreviewed (`review.unreviewed` of any reason), as its budget allows, at most 48 items and about 1 MiB
 (`FINAL_FEED_ITEMS`, `FINAL_FEED_BYTES`), with the run's actions item; the files the final
 answer names by path and the ledger entries it names by handle (at most
 `FINAL_CITED_ENTRIES`), at their latest revisions, as `artifact` and `entry` items naming
@@ -118,24 +121,47 @@ answer names by path and the ledger entries it names by handle (at most
 their share first. Its settings are the project's with its own budget (`final_config`):
 30 calls, 1,500,000 tokens or the operator's lower cap, and 480 seconds; the hourly calls
 neither defer it nor refuse its calls, which still count toward that hour. Its dispatch
-records each range its budget left out as `review.unreviewed` with reason `final_budget`;
-its coverage runs newest first, back to the first item it did not cover. Re-checks are not
+records each range its budget left out, and not recorded already, as `review.unreviewed`
+with reason `final_budget`; its coverage runs newest first, back to the first item it did
+not cover, the actions and raw sources between included, and its end records the rest of
+its window with the same reason. A final review that ends without covering anything leaves
+no retry window: its window is recorded unreviewed (reason `final_<outcome>`). A review the
+end's wait outlasts, or `hold`'s limit, is ended at its deadline
+(`ReviewStore.finish(deadline=True)`): `capped`, its findings kept, its window recorded
+unreviewed with reason `deadline` and the watermark past it, no retry, and its task
+stopped. A range a later review covers is no longer listed among the session's
+unreviewed ranges. Re-checks are not
 in it: queued ones wait for the next review that holds them. The reviewer's first message
 says `final: {"order": "newest first"}`.
 
 Its `fail` and `warn` findings, whatever `interrupt_severity`, are offered to the run as one
 response round (`Closing("respond")`); the next closing records the turn's messages for
-later reviews and takes no other round (`Reviews.answering`). The platform's own
+later reviews (`review.unreviewed`, reason `answering_turn`) and takes no other round
+(`Reviews.answering`); no checkpoint is dispatched in that turn. A closing after a turn
+another hook took (a user's message typed during the review, a math round) runs no second
+final review: the turn's new work gets an ordinary checkpoint, under the hourly calls,
+waited for within the end's bound. A notice is carried to a finding's new revision only
+when no run holds it (`claimed_run` null or its claim expired), so a finding a live run
+was offered is not offered to it again. The platform's own
 transitions (queueing a re-check, recording an inconclusive one) carry a notice no run was
 given to the finding's new revision (`transition(carry=True)`). `final_review`, a project
 setting with the deployment's default (`--final-review`, `[model].final_review`), says when
 the answer reaches the user: `after`, the default, lets the answer stand when the agent
 gives it, so the record's `answer` is that text and the answering turn's reply follows as
 its `final_text`; `hold` asks for the round with `hold_answer`, so the record's `answer` is
-the reply after the turn, and waits for the review at most 10 minutes
-(`FINAL_HOLD_SECONDS`, the controller's `hold_seconds`), after which the answer goes out as
-given. The chat shows each assistant event as it is written in both settings, the held
-answer included; `hold` decides the record's answer and when the run ends. The hook's
+the reply after the turn, and waits for the review at most 10 minutes from its start
+(`FINAL_HOLD_SECONDS`, the controller's `hold_seconds`) within the end's bound, after
+which the answer goes out as given. What the user sees: with `after`, the chat shows the
+answer when the agent gives it, then any findings and the agent's reply to them; the
+record's `answer` is the answer given and its `final_text` the reply. With `hold`, the
+chat shows a notice that the answer is being reviewed in place of the answer
+(`Reviews.holds_answers`, the transcript's `withheld`, which the run's events honour), and
+shows the answer when the hold ends, however it ends (accepted, a response round, its time
+limit, a stop or a failure), then the findings and the reply; the record's `answer` is the
+reply after the round, or the answer given when the hold's time passed. If the answering
+turn fails, the run keeps the answer the agent gave as its `answer` (a failed record may
+hold one, never a `final_text`), stops `error`, and the summary says `answered: false,
+answering_failed: true`. The hook's
 summary, the run record's `review_summary`, carries `final_review`
 (`ReviewStore.final_summary`): `mode`, the review, its outcome, `finished`, `answered`, the
 open findings by severity (`open`), `fixes_claimed`, `complete`, `reviewed_through`,

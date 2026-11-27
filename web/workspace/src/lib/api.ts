@@ -194,6 +194,10 @@ export interface FinalReviewSummary {
   feed_end?: number;
   unreviewed?: { start: number; end: number }[];
   unreviewed_ranges?: number;
+  /** Positions up to here were reviewed before reviews recorded their coverage. */
+  not_recorded_through?: number | null;
+  /** The turn answering the review's findings failed or was stopped. */
+  answering_failed?: boolean;
 }
 
 /** One model call's usage, as the gateway reported it; a count it left out is null. */
