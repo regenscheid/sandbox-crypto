@@ -77,6 +77,7 @@ from sandbox_science.contracts.child_environments import (
     ChildEnvironmentRequest,
     HandBackRequest,
     InputPart,
+    ReturnCopyRequest,
 )
 from sandbox_science.contracts.classifications import (
     MAX_RUNTIME_SERVERS,
@@ -1520,6 +1521,14 @@ async def hand_back_child_environment(request: web.Request) -> web.Response:
     return _json(await _children(request).hand_back(_child_id(request), body))
 
 
+async def copy_returned_child_files(request: web.Request) -> web.Response:
+    """A returned task's result files, copied into the session before its review ends
+    (CE-6, PD-46)."""
+    body = ReturnCopyRequest.model_validate_json(await _body(request))
+    _context(request, body.context, hide=True)
+    return _json(await _children(request).copy_returned(_child_id(request), body))
+
+
 async def stage_child_input(request: web.Request) -> web.Response:
     """Part of an input from control's retained content (CE-7)."""
     body = InputPart.model_validate_json(await _body(request))
@@ -1539,6 +1548,7 @@ CHILD_ROUTES: Final = (
     web.get("/v1/child-environments/{environment_id}", get_child_environment),
     web.post("/v1/child-environments/{environment_id}/inputs", stage_child_input),
     web.post("/v1/child-environments/{environment_id}/hand-back", hand_back_child_environment),
+    web.post("/v1/child-environments/{environment_id}/returned", copy_returned_child_files),
     web.post("/v1/child-environments/{environment_id}/end", end_child_environment),
 )
 

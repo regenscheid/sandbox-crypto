@@ -174,6 +174,26 @@ platform places a child by the project's settings. No change to checks' evidence
   (`HandBackRequest.write_area`). The parent reads handed-back files with its ordinary
   file tools, at that path; the recorder records them as the parent's files, so they
   are artifacts of the session like any other.
+  A task that returns awaits its parent's review with its environment kept (PD-46), and
+  its parent reads its result before accepting it: at each return, the result's files
+  and deliverables, as the hand-back would name them, are copied into the parent's
+  environment at `work/<delegation_id>/.handback/returned/<n>/`, where `n` is the
+  result's number, a file of the write area at its path below the area
+  (`work/<delegation_id>/x` to `…/returned/<n>/x`) and any other at its whole path,
+  under the hand-back's bounds, each return's on its own (`ReturnCopyRequest`). The
+  copy leaves the environment ready, with its kernels and jobs, and is not its
+  hand-back: that is still made once, at the close, into `work/<delegation_id>/`. Each
+  result's copy is apart, inside the hand-back's own directory, which no handed-back
+  file takes, so a reopened run's later result leaves an earlier one's copy as it was,
+  and the final hand-back writes over neither. The held environment's account keeps
+  the copy's (`returned`: the result, its `target`, what was `copied`, the published
+  files by revision with the path of each copy, what was `left` and why, `complete`),
+  or why nothing was copied (`error`), as when the worker cannot be reached; the return
+  stands either way. The delegation's status and the notice of its outcome say where
+  the parent reads them (`read_files`): this result's copy, that earlier results'
+  copies stay at their numbers, and that accepting brings the final result's files to
+  `work/<delegation_id>/`. A task in the session's environment has its files where its
+  result names them, and the same field says so.
 - CE-7. **Inputs.** The brief's `inputs` (file grants, DA-17) are copied into the child
   environment at `inputs/` before the run starts, read-only, under the job sandbox's
   staging bound (JS-10's `stage_max_bytes`, 2 GiB), from the parent's environment or

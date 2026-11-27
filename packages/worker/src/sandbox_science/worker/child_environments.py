@@ -24,7 +24,10 @@ worker's ordinary ones. At the delegation's end the orchestrator asks for the ha
 wrote in its write area keeps its path, within the job collection's bounds (1,000
 files, a 30-minute deadline, the profile's byte cap; a file over 100 MiB goes in parts,
 its whole digest checked before it takes its name, ``ranged_copy``), and stores a
-manifest once. Then
+manifest once. Before that, at each return of a task that awaits its parent's review
+(PD-46), the orchestrator may ask for a copy of that result's files into
+``work/<delegation_id>/.handback/returned/<n>/``, under the same bounds, recorded by
+result and leaving the environment ready. Then
 the orchestrator ends it: released after a complete hand-back or a session close, kept
 stopped for ``child_retention`` otherwise (CE-4, JS-25's rule).
 
@@ -49,6 +52,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import hashlib
 import json
 import logging
 import posixpath
@@ -82,9 +86,11 @@ from sandbox_science.contracts.child_environments import (
     InputPart,
     InputStaged,
     RetainedInput,
+    ReturnCopyRequest,
     child_environment_id,
     hand_back_path,
     hand_back_reserved,
+    returned_path,
 )
 from sandbox_science.contracts.context import ExecutionAuthority
 from sandbox_science.contracts.monitor import ChildSeeding, SecondsSummary
@@ -745,13 +751,79 @@ class ChildEnvironments:
             self.records.record_step(environment_id, "request", text, self.clock.now())
             return await self._collect(record, request)
 
-    async def _collect(self, record: ChildRecord, request: HandBackRequest) -> ChildHandBack:
+    async def copy_returned(self, environment_id: str, request: ReturnCopyRequest) -> ChildHandBack:
+        """Copy a returned task's result files into the session's
+        ``work/<delegation_id>/.handback/returned/<result>/`` (CE-6, PD-46); the stored
+        manifest when it was made already. The child environment stays ready: its one
+        hand-back is still to come. A copy cut short goes on."""
+        self._admits(request.context)
+        async with self._lock(environment_id):
+            record = self._owned(environment_id, request.context)
+            key = _returned_step(request.delegation_id, request.result)
+            text = request.model_dump_json()
+            recorded = self.records.steps(environment_id).get(f"{key}-request")
+            if recorded is not None and _unowned(
+                ReturnCopyRequest.model_validate_json(recorded)
+            ) != _unowned(request):
+                raise WorkerError(
+                    ErrorKind.CONFLICT,
+                    f"another copy of result {request.result} of this child environment is "
+                    "recorded",
+                )
+            stored = self.records.steps(environment_id).get(key)
+            if stored is not None:
+                return ChildHandBack.model_validate_json(stored)
+            if record.phase != "ready":
+                raise WorkerError(
+                    ErrorKind.CONFLICT,
+                    f"the child environment is {record.phase}; only a ready one copies a "
+                    "returned result",
+                )
+            self.records.record_step(environment_id, f"{key}-request", text, self.clock.now())
+            area, target = request.area, request.target
+            collected, left, complete = await self._copy_named(
+                record,
+                request.context,
+                request.files,
+                prefix=f"{key}-",
+                destination=lambda path: returned_path(area, target, path),
+                # What the hand-back would leave out of its own directory, so is this.
+                reserved=lambda path: hand_back_reserved(area, path),
+            )
+            manifest = ChildHandBack(
+                delegation_id=request.delegation_id,
+                environment_id=environment_id,
+                target=target,
+                collected=tuple(collected),
+                retained=request.retained,
+                not_collected=tuple(left),
+                complete=complete,
+                ended_at=self.clock.now(),
+            )
+            return ChildHandBack.model_validate_json(
+                self.records.record_step(
+                    environment_id, key, manifest.model_dump_json(), self.clock.now()
+                )
+            )
+
+    async def _copy_named(
+        self,
+        record: ChildRecord,
+        session: ExecutionContext,
+        files: tuple[str, ...],
+        *,
+        prefix: str,
+        destination: Callable[[str], str],
+        reserved: Callable[[str], bool],
+    ) -> tuple[list[ManifestFile], list[UncollectedFile], bool]:
+        """Copy ``files`` from the child environment into the session, each to its
+        ``destination``, under the hand-back's bounds; what was copied, what was left
+        with why, and whether all was copied. Each file's outcome is a recorded step
+        (``<prefix>copy-<n>``), and the deadline runs from ``<prefix>collecting``, so a
+        copy a restart cut short goes on, copying none twice."""
         environment_id = record.environment_id
-        self._update(environment_id, phase="collecting")
-        session = request.context
         child = session.model_copy(update={"environment_id": environment_id})
-        target = request.target
-        paths = list(dict.fromkeys(request.files))
+        paths = list(dict.fromkeys(files))
         collected: list[ManifestFile] = []
         left: list[UncollectedFile] = []
         complete = True
@@ -766,7 +838,7 @@ class ChildEnvironments:
         began = datetime.fromisoformat(
             json.loads(
                 self.records.record_step(
-                    environment_id, "collecting", json.dumps(now.isoformat()), now
+                    environment_id, f"{prefix}collecting", json.dumps(now.isoformat()), now
                 )
             )
         )
@@ -786,7 +858,7 @@ class ChildEnvironments:
 
         pending: list[tuple[int, str]] = []
         for index, path in enumerate(paths):
-            recorded = steps.get(f"copy-{index}")
+            recorded = steps.get(f"{prefix}copy-{index}")
             if recorded is None:
                 pending.append((index, path))
             else:
@@ -797,21 +869,21 @@ class ChildEnvironments:
         # listed is copied.
         first: dict[str, str] = {}
         for path in paths:
-            first.setdefault(hand_back_path(target, path), path)
+            first.setdefault(destination(path), path)
         inflight: tuple[str, str] | None = None
         try:
             async with asyncio.timeout(remaining):
                 for index, path in pending:
-                    destination = hand_back_path(target, path)
-                    if first[destination] != path:
+                    landing = destination(path)
+                    if first[landing] != path:
                         copied = _Copied(
                             left=UncollectedFile(
                                 path=path[:4096],
-                                reason=f"{first[destination]!r} is handed back to the same "
-                                f"path, {destination!r}"[:300],
+                                reason=f"{first[landing]!r} is handed back to the same "
+                                f"path, {landing!r}"[:300],
                             )
                         )
-                    elif hand_back_reserved(target, path):
+                    elif reserved(path):
                         copied = _Copied(
                             left=UncollectedFile(
                                 path=path[:4096],
@@ -820,12 +892,17 @@ class ChildEnvironments:
                             )
                         )
                     else:
-                        upload = upload_id("hand-back", environment_id, str(index), destination)
-                        inflight = (upload, destination)
-                        copied = await self._copy(upload, path, destination, budget, session, child)
+                        upload = upload_id(
+                            "hand-back", environment_id, prefix + str(index), landing
+                        )
+                        inflight = (upload, landing)
+                        copied = await self._copy(upload, path, landing, budget, session, child)
                         inflight = None
                     recorded = self.records.record_step(
-                        environment_id, f"copy-{index}", copied.model_dump_json(), self.clock.now()
+                        environment_id,
+                        f"{prefix}copy-{index}",
+                        copied.model_dump_json(),
+                        self.clock.now(),
                     )
                     budget -= apply(_Copied.model_validate_json(recorded))
         except TimeoutError:
@@ -836,13 +913,28 @@ class ChildEnvironments:
             left.append(
                 UncollectedFile(path=".", reason="the hand-back ran past its 30-minute deadline")
             )
+        return collected, left[:MAX_MANIFEST_FILES], complete
+
+    async def _collect(self, record: ChildRecord, request: HandBackRequest) -> ChildHandBack:
+        environment_id = record.environment_id
+        self._update(environment_id, phase="collecting")
+        session = request.context
+        target = request.target
+        collected, left, complete = await self._copy_named(
+            record,
+            session,
+            request.files,
+            prefix="",
+            destination=lambda path: hand_back_path(target, path),
+            reserved=lambda path: hand_back_reserved(target, path),
+        )
         manifest = ChildHandBack(
             delegation_id=request.delegation_id,
             environment_id=environment_id,
             target=target,
             collected=tuple(collected),
             retained=request.retained,
-            not_collected=tuple(left[:MAX_MANIFEST_FILES]),
+            not_collected=tuple(left),
             complete=complete,
             ended_at=self.clock.now(),
         )
@@ -1349,12 +1441,21 @@ def _summary(seconds: list[float]) -> SecondsSummary | None:
     )
 
 
-def _unowned(request: HandBackRequest) -> HandBackRequest:
-    """A hand-back request without its caller's authority: the same hand-back, whichever
-    run of the session asks for it."""
+def _unowned[R: (HandBackRequest, ReturnCopyRequest)](request: R) -> R:
+    """A hand-back's or a return copy's request without its caller's authority: the same
+    copy, whichever run of the session asks for it."""
     return request.model_copy(
         update={"context": request.context.model_copy(update={"authority": None})}
     )
+
+
+def _returned_step(delegation_id: str, result: int) -> str:
+    """The recorded step of a return's copy, ``ret-<10 hex>-<result>``, the prefix of its
+    others: a step's name is at most 32 characters of ``[a-z0-9-]``, so the delegation is
+    named by its digest's head. Two delegations of one environment whose heads agreed
+    would find each other's request recorded, and be refused, never mixed."""
+    digest = hashlib.sha256(delegation_id.encode()).hexdigest()[:10]
+    return f"ret-{digest}-{result}"
 
 
 def _operation(environment_id: str) -> str:

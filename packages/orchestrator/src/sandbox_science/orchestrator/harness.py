@@ -1902,12 +1902,21 @@ class Harness:
         )
         if found is not None and found.task and not end.failed and end.stopped == "answered":
             # A returned task keeps its environment while its parent reviews it; its
-            # hand-back is made, and it is released, when the task closes (PD-46).
+            # hand-back is made, and it is released, when the task closes (PD-46). This
+            # result's files are copied now, apart, for the parent to read before it
+            # accepts (CE-6).
             files, retained = plan
+            ending = await threaded(
+                records.get, context.project_id, context.session_id, finished.delegation
+            )
+            copied = await placement.returned(
+                environment_id, finished.delegation, ending.results + 1, plan
+            )
             kept: dict[str, JsonValue] = {
                 "environment_id": environment_id,
                 "end": "held",
                 "message": "kept while the parent reviews the task",
+                "returned": copied,
                 "plan": {
                     "files": list(files),
                     "retained": [r.model_dump(mode="json") for r in retained],
