@@ -629,3 +629,200 @@ async def test_hold_keeps_the_answer_from_the_chat_until_its_closing_ends() -> N
     assert transcript.final_text == "the held answer"
     assert "the held answer" not in holds.seen_during
     assert texts() == ["the held answer"]
+
+
+def _post(reviews: ReviewStore, message: str, text: str) -> None:
+    from sandbox_science.orchestrator.runstate import RunState
+
+    RunState(reviews.documents.control).post("p", "s", message, text, author="user")
+
+
+def _request(reviews: ReviewStore, review: str) -> dict[str, Any]:
+    items = reviews.manifest("p", "s", review, limit=50)["evidence"]
+    (found,) = [i for i in items if i["kind"] == "request"]
+    assert not found["new"]
+    return reviews.evidence("p", "s", review, found["evidence"])["payload"]
+
+
+async def test_every_review_is_given_the_users_request_and_its_later_change(store) -> None:
+    """The session's first message and a later one that narrows it are context in a
+    checkpoint's snapshot and in the final review's (CR-48); they are not new items."""
+    from sandbox_science.contracts import new_id
+
+    reviews, _, _ = store
+    first, later = new_id("msg"), new_id("msg")
+    _post(reviews, first, "Compute the order for n = 16 and n = 32.")
+    claim(reviews, "Started on n = 16.", "c1")
+    _post(reviews, later, "Only n = 16 is needed now.")
+    checkpoint = dispatch(reviews, "checkpoint")
+    texts = [m["text"] for m in _request(reviews, checkpoint)["messages"]]
+    assert texts == ["Compute the order for n = 16 and n = 32.", "Only n = 16 is needed now."]
+    reviews.finish("p", "s", checkpoint, "owner", "passed", "Checked.")
+    claim(reviews, "The order for n = 16 is 8.", "c2")
+    summary = await controller(reviews, LabReviewer()).terminal([], "The task is complete.")
+    asked = _request(reviews, summary["final_review"]["review"])
+    assert [m["message"] for m in asked["messages"]] == [first, later]
+    assert summary["final_review"]["complete"]
+
+
+def test_a_long_request_keeps_the_newest_whole_and_the_first(store) -> None:
+    from sandbox_science.contracts import new_id
+    from sandbox_science.orchestrator.consistency.models import REQUEST_BYTES
+
+    reviews, _, _ = store
+    ids = [new_id("msg") for _ in range(6)]
+    for n, message in enumerate(ids):
+        _post(reviews, message, f"Message {n}: " + "x" * (REQUEST_BYTES // 4))
+    claim(reviews)
+    asked = _request(reviews, dispatch(reviews, "checkpoint"))
+    listed = [m["message"] for m in asked["messages"]]
+    assert (listed[0], listed[-1]) == (ids[0], ids[-1])
+    assert asked["omitted"] == len(ids) - len(listed) > 0
+
+
+class FixingReviewer(LabReviewer):
+    """A final review raises a fail finding on the document; the re-check after the
+    answering turn decides it resolved, anchored to the document's new revision."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.reviews: list[str] = []
+
+    async def complete(self, messages: Sequence[Any], tools: Sequence[Any]) -> ModelTurn:
+        opening = json.loads(messages[1]["content"])
+        if opening["review"] not in self.reviews:
+            self.reviews.append(opening["review"])
+            self.calls = 0
+        self.calls += 1
+        results = [json.loads(m["content"]) for m in messages if m["role"] == "tool"]
+        if not results:
+            return self.turn([("review_manifest", {})], 100)
+        listed = results[0]["evidence"]
+        documents = [i for i in listed if i["kind"] == "document"]
+        if "final" in opening and len(results) == 1:
+            finding = {
+                "severity": "fail",
+                "category": "contradicting_value",
+                "statement": "The document gives 16; the output says 15.",
+                "anchors": [{"evidence": documents[-1]["evidence"]}],
+                "operation_id": "final-doc-finding",
+            }
+            return self.turn([("review_finding", finding)], 100)
+        if "final" not in opening and len(results) == 1:
+            reads = [("review_read", {"evidence": i["evidence"]}) for i in listed[:16]]
+            return self.turn(reads, 100)
+        if "final" not in opening and len(results) == 1 + min(16, len(listed)):
+            (item,) = [i for i in listed if i["kind"] == "finding"]
+            newest = max(documents, key=lambda i: i["locator"]["revision"])
+            decision = {
+                "finding": item["locator"]["finding"],
+                "expected": item["locator"]["revision"],
+                "decision": "resolved",
+                "explanation": "The new revision gives 15.",
+                "anchors": [{"evidence": newest["evidence"]}],
+                "operation_id": "recheck-resolved",
+            }
+            checked = {"statement": "The count is 15.", "evidence": [newest["evidence"]]}
+            return self.turn([("review_decide", decision), ("review_checked", checked)], 100)
+        outcome = "findings" if "final" in opening else "passed"
+        return ModelTurn(
+            json.dumps({"outcome": outcome, "summary": "Done.", "cap_reached": False}),
+            input_tokens=100,
+            output_tokens=50,
+        )
+
+
+@pytest.mark.parametrize("mode", ["after", "hold"])
+async def test_one_recheck_after_the_answering_turn(store, mode: FinalReview) -> None:
+    """The answering turn claims the final review's finding fixed: one re-check of it
+    runs, outside the hourly calls, and the summary says resolved; no second answering
+    turn follows. In hold the reply stays held until the re-check ends (CR-48)."""
+    from sandbox_science.orchestrator.context.agent import AgentContext
+    from sandbox_science.orchestrator.loop import Transcript
+
+    from .test_consistency import revise
+
+    reviews, documents, _ = store
+    doc = documents.create(
+        "p", name="count", title="C", text="There are 16.\n", author=MAIN, session_id="s"
+    ).document_id
+    reviews.ingest_documents("p", "s")
+    reviewing = controller(reviews, FixingReviewer(), mode, calls_per_hour=1)
+    hook = Reviews(reviewing)
+    async with reviewing.active():
+        answer = {"role": "assistant", "content": "The count is 16; the task is complete."}
+        run = Transcript(context=AgentContext(messages=[answer]))
+        first = await hook.closing(run, "The count is 16; the task is complete.")
+        assert first.action == "respond"
+        assert hook.holds_answers == (mode == "hold")
+        (notice,) = [n for n in first.notices if n.ids]
+        (finding,) = cast(list[dict[str, Any]], notice.payload)
+        Findings(reviews).respond(
+            "p",
+            "s",
+            {
+                "finding": finding["finding"],
+                "expected": finding["revision"],
+                "action": "fix",
+                "explanation": "Corrected the count to 15.",
+                "revisions": revise(reviews, doc, "There are 15.\n"),
+                "operation_id": "fix-count",
+            },
+            MAIN,
+        )
+        run.response_rounds = 1
+        second = await hook.closing(run, "Corrected the count to 15.")
+        assert second.action == "accept"
+    final = cast(dict[str, Any], hook.summary())["final_review"]
+    assert (final["answered"], final["rechecked"]) == (True, True)
+    assert final["recheck"]["outcome"] == "passed"
+    assert [(f["finding"], f["recheck"]) for f in final["findings"]] == [
+        (finding["finding"], "resolved")
+    ]
+    kinds = [r["kind"] for r in reviews.listing("p", "s")["reviews"]]
+    assert sorted(kinds) == ["confirmation", "terminal"]
+    await reviewing.close()
+
+
+async def test_a_final_review_may_anchor_a_finding_to_a_file_the_answer_cites(
+    store, tmp_path
+) -> None:
+    """The answer relies on what a script it names says of itself; the final review
+    anchors its finding to that file's cited item (CR-48)."""
+    from .test_review_actions import published
+
+    reviews, documents, _ = store
+    published(documents, tmp_path, "crosscheck.py", b'"""Recomputes every number."""\n')
+    claim(reviews)
+
+    class CitedReviewer(LabReviewer):
+        raised: Any = None
+
+        async def complete(self, messages: Sequence[Any], tools: Sequence[Any]) -> ModelTurn:
+            self.calls += 1
+            results = [json.loads(m["content"]) for m in messages if m["role"] == "tool"]
+            if not results:
+                return self.turn([("review_manifest", {})], 100)
+            if len(results) == 1:
+                (cited,) = [i for i in results[0]["evidence"] if "cited_by" in i["locator"]]
+                finding = {
+                    "severity": "fail",
+                    "category": "evidence_strength",
+                    "statement": "The script compares ranks; it recomputes nothing.",
+                    "anchors": [{"evidence": cited["evidence"]}],
+                    "operation_id": "cited-finding",
+                }
+                return self.turn([("review_finding", finding)], 100)
+            self.raised = results[-1]
+            return ModelTurn(
+                json.dumps({"outcome": "findings", "summary": "Done.", "cap_reached": False}),
+                input_tokens=100,
+                output_tokens=50,
+            )
+
+    reviewer = CitedReviewer()
+    summary = await controller(reviews, reviewer).terminal(
+        [], "crosscheck.py recomputes every number independently; the task is complete."
+    )
+    assert reviewer.raised["status"] == "open"
+    assert summary["final_review"]["open"] == {"fail": 1}

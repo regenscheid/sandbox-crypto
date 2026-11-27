@@ -35,6 +35,12 @@ has the minute beyond the final review's own time, and a review the wait outlast
 ended at its deadline, its window recorded unreviewed (CR-48)."""
 FINAL_HOLD_SECONDS: Final = 600
 """How long ``hold`` keeps a final answer from the user for its review (CR-48)."""
+REQUEST_BYTES: Final = 32 * 1024
+"""The most bytes of the user's messages each review's snapshot holds as the request."""
+FINAL_RECHECK_CALLS: Final = 8
+"""The calls of the one re-check after a final review's answering turn (CR-48)."""
+FINAL_RECHECK_SECONDS: Final = 180
+"""How long that re-check may take: a bound of its own, after the end's wait."""
 BACKLOG_WINDOWS: Final = 3
 """A checkpoint that starts with more than this many windows of new items after the
 watermark skips to the newest window and records the rest as unreviewed (CR-49)."""

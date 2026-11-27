@@ -529,7 +529,8 @@ async def test_a_terminal_review_holds_the_runs_actions_in_its_earlier_windows(
     # context so the closing answer can be checked against earlier claims.
     non_actions = [i for i in items if i["kind"] != "actions"]
     assert non_actions
-    assert {i["kind"] for i in non_actions} <= {"transcript", "document"}
+    # The user's request is pinned in every snapshot, as context (CR-48).
+    assert {i["kind"] for i in non_actions} <= {"transcript", "document", "request"}
     assert any(i["kind"] == "transcript" for i in non_actions)
     (listed,) = [i for i in items if i["kind"] == "actions"]
     found = json.loads(reviews.read_evidence("p", "s", terminal, listed["evidence"])["text"])

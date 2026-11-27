@@ -23,7 +23,8 @@ carries its queued re-check and the author's dismissal, a fix leaves it ``open``
 run record counts the dismissals the review rejected. A fix now names something later than
 what its finding reviewed (CR-42), so the confirmation's finding reviews a document's
 first revision and its fix names the second, which the snapshots hold. The final review's
-setting (CR-48) changed them once more, by the configuration digest the run records."""
+setting (CR-48) changed them once more, by the configuration digest the run records, and
+``sandbox-consistency-13`` again, with the user's request pinned in every snapshot."""
 
 from __future__ import annotations
 
@@ -53,9 +54,9 @@ from .test_consistency import store as store
 
 GOLDEN = {
     # Author and fallback windows now include recent prior evidence for boundary checks.
-    "author": "d207abeafc887cec54cc23d144c8b6a24fb157b2cfb2a3c5f180e21fdefbc239",
-    "confirmation": "783181065ffc1d7edbdf576d04524ce4df1975149fd7f962a495b5ee9d77fd39",
-    "fallback": "d1281c59b50247d6fec32753d7010530feee63f26b47c4f030974aab671c2a78",
+    "author": "1b115d6690bd6b431f113c37ed71b55a2b6453dc3563b0459286a81f3d4706b3",
+    "confirmation": "2be192586fddcded84844877f6266338c5f6e7302e80f28763005ba6da88cb48",
+    "fallback": "7bc228363b4bed4f0cc2054c80975c0f7efb820951cb91d8a502f26e354006d8",
 }
 
 

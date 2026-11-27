@@ -477,7 +477,7 @@ class ReviewerRunner:
             "chronological_coverage": ("complete" if self.chronological_complete else "partial"),
             "budget": {"calls": calls},
         }
-        if is_final(self.record):
+        if is_final(self.record) and self.record["kind"] != "confirmation":
             # The run's final review: its new items are listed newest first (CR-48).
             opening["final"] = {"order": "newest first"}
         if not self.chronological_complete:

@@ -376,6 +376,60 @@ def reviewed_ranges(db: sqlite3.Connection, project: str, session: str) -> list[
     return merged(found)
 
 
+def request_item(db: sqlite3.Connection, project: str, session: str) -> EvidenceItem | None:
+    """The user's request as a review's context (CR-48): the session's messages the user
+    wrote, refused ones aside, the first and each later one in order, as many as
+    ``REQUEST_BYTES`` holds, the newest whole first and the first one always, cut short
+    if it must be; or, in a session with no chat messages, its first transcript message
+    of role user, the task a run was started with. None when there is neither."""
+    from sandbox_science.orchestrator.notices import PLATFORM_AUTHORS
+
+    from .models import REQUEST_BYTES
+
+    rows = [
+        (message, text, author, created)
+        for message, text, author, created in db.execute(
+            "SELECT message_id,text,author,created_at FROM session_messages "
+            "WHERE project_id=? AND session_id=? AND state!='refused' ORDER BY number",
+            (project, session),
+        )
+        if author not in PLATFORM_AUTHORS
+    ]
+    messages: list[Json] = [
+        {"message": message, "at": created, "text": text} for message, text, _, created in rows
+    ]
+    if not messages:
+        first = db.execute(
+            "SELECT payload FROM review_feed WHERE project=? AND session=? AND kind='transcript' "
+            "AND json_extract(payload,'$.role')='user' ORDER BY seq LIMIT 1",
+            (project, session),
+        ).fetchone()
+        if first is None:
+            return None
+        messages = [{"message": None, "at": None, "text": stored_json(first[0])["content"]}]
+    room = REQUEST_BYTES
+    kept: list[Json] = []
+    for message in reversed(messages[1:]):
+        size = len(dump(message).encode())
+        if size > room - 4096:
+            break
+        kept.append(message)
+        room -= size
+    head = dict(messages[0])
+    text = str(head["text"])
+    while len(dump(head).encode()) > room and text:
+        text = text[: len(text) // 2]
+        head = {**messages[0], "text": text + " …", "clipped": True}
+    listed = [head, *reversed(kept)]
+    payload: Json = {
+        "about": "What the user asked in this session, oldest first: context, not under review.",
+        "messages": listed,
+        "omitted": len(messages) - len(listed),
+    }
+    encoded = dump(payload)
+    return EvidenceItem("request", dump({"request": session}), encoded, digest(encoded), 1)
+
+
 def unrecorded_through(db: sqlite3.Connection, project: str, session: str) -> int:
     """The last feed position of the session's author-work reviews that ended with no
     coverage record, from before reviews recorded their coverage: what they covered is
