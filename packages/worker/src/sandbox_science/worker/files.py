@@ -9,17 +9,19 @@ finds is told with the results of the calls running there, or held for the sessi
 next result. The dispatcher runs the sync's steps before and after each call through
 ``sync``, whose failure never fails the call: the first failure in an environment is
 told with its reason, a repeat of it is not, and the result after it ends says that
-``shared/`` is synced again.
+``shared/`` is synced again. Each write and edit is noted in the journal's ``Activity``,
+so that the calls running beside it do not take its file for their own.
 """
 
 from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import logging
 import posixpath
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -217,7 +219,10 @@ class Files:
     async def write(self, request: WriteFileRequest) -> WriteFileResult:
         context = request.context
         _in_write_area(context, request.path)
-        async with self.connections.using(context.environment_id) as channel:
+        async with (
+            self.connections.using(context.environment_id) as channel,
+            self._writing(context, request.path),
+        ):
             fields: dict[str, Any] = {
                 "path": request.path,
                 "content_b64": request.content_b64,
@@ -273,7 +278,10 @@ class Files:
         if in_shared(path):
             raise WorkerError(ErrorKind.INVALID_REQUEST, "a ranged write goes to the session")
         _in_write_area(context, path)  # as a write's (DA-19); the platform's carry none
-        async with self.connections.using(context.environment_id) as channel:
+        async with (
+            self.connections.using(context.environment_id) as channel,
+            self._writing(context, path),
+        ):
             if channel.hello.get("ranged_write") != 1:
                 raise WorkerError(ErrorKind.UNSUPPORTED, UNSUPPORTED_RANGED_WRITE)
             fields: dict[str, Any] = {
@@ -308,7 +316,10 @@ class Files:
         """Replace a string in a text file, under the rules and the sync a write has."""
         context = request.context
         _in_write_area(context, request.path)
-        async with self.connections.using(context.environment_id) as channel:
+        async with (
+            self.connections.using(context.environment_id) as channel,
+            self._writing(context, request.path),
+        ):
             _file_tools(channel)
             fields: dict[str, Any] = {
                 "path": request.path,
@@ -480,6 +491,16 @@ class Files:
                 entries=tuple(listed),
                 truncated=reply.get("truncated") is True or len(entries) < len(every),
             )
+
+    @contextlib.asynccontextmanager
+    async def _writing(self, context: ExecutionContext, path: str) -> AsyncGenerator[None]:
+        """Note a file request's write, done or not, for the calls running beside it: none
+        of them wrote what it did (``attribution``)."""
+        began = self.journal.clock.monotonic()
+        try:
+            yield
+        finally:
+            self.journal.activity.wrote(context.environment_id, path, began)
 
     async def _sync_for(
         self, context: ExecutionContext, path: str, channel: ExecutorChannel

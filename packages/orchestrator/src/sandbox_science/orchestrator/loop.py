@@ -367,6 +367,10 @@ class Transcript:
     withheld: bool = field(default=False, repr=False)
     """Whether the closing answer the conversation ends with is kept from the user's
     view until its closing ends (``TurnHook.holds_answers``)."""
+    holding: bool = field(default=False, repr=False)
+    """Whether the answer a closing held for its round (``held_answer``) is still kept
+    from the user's view: until an answer stands, the hooks stop holding answers, as at
+    ``hold``'s limit, or the run ends (CR-48)."""
     """Whether a hook asked for this closing's response round with the answer held: the
     answer after the round is the run's answer to the user (CR-48)."""
     held: int = field(default=0, repr=False)
@@ -422,6 +426,7 @@ class Transcript:
         # An answer the agent had given stands, held or not; the failed turn has none.
         self.final_text = None
         self.answer = self.answer or self.held_answer
+        self.holding = False
 
 
 def notice_message(notice: Notice) -> Message:
@@ -497,10 +502,14 @@ async def _closing_hooks(
         if not transcript.answer_held:
             _stands(transcript, answer)
         else:
+            # Kept from the user, while a hook holds answers, until the round's answer
+            # stands (CR-48).
             transcript.held_answer = answer
+            transcript.holding = any(hook.holds_answers for hook in hooks)
         transcript.answer_held = False
         return True
     transcript.withheld = False  # accepted: the answer is the user's to see now
+    transcript.holding = False  # and a held one's round has its answer
     for hook in hooks:
         await hook.accept(transcript)
     for hook in vetoes:
@@ -516,6 +525,7 @@ def _stands(transcript: Transcript, answer: str | None) -> None:
     it are closing rounds (lab 42, B4)."""
     if transcript.answer is None:
         transcript.answer = answer
+    transcript.holding = False
 
 
 async def _ask(hook: TurnHook, transcript: Transcript, answer: str | None) -> Decision:
@@ -959,6 +969,9 @@ async def _run_task(
             await _report(model, toolbox, transcript, hooks, *last)
             return transcript
         transcript.withheld = False
+        if transcript.holding and not any(hook.holds_answers for hook in hooks):
+            # The hold's limit passed: the answer held for the round goes out (CR-48).
+            _stands(transcript, transcript.held_answer)
         await _notices(hooks, "turn", transcript)
         # The notices since the last call may have loaded tool groups.
         revision = _retooled(toolbox, transcript, revision)
@@ -1319,6 +1332,10 @@ async def run_task(
                             finally:
                                 if (taken := fallbacks.summary()) is not None:
                                     transcript.summaries["model_fallback"] = taken
+                        if transcript.holding:
+                            # The round ended without an answer of its own: the held
+                            # one is the run's (CR-48).
+                            _stands(transcript, transcript.held_answer)
                     except WorkingMemoryLimitError as error:
                         transcript.stopped = "memory_limit"
                         transcript.final_text = transcript.answer = None

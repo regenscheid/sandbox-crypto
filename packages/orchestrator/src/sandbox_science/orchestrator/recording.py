@@ -8,7 +8,9 @@ to 1 GiB while the project's budget allows, otherwise its hash and size; a delet
 artifact gets a tombstone. One call records at most 100 files and 2 GiB of bytes; what
 it leaves out, and why, is reported with the call. A project that records results only
 records nothing here. The worker reported the files written while the call ran; that
-is what a revision says, never that the call wrote them (RA-34).
+is what a revision says, never that the call wrote them (RA-34). Files the worker did
+not attribute to the call, and any file in another session's upload area, are not
+recorded as the call's.
 """
 
 from __future__ import annotations
@@ -37,6 +39,7 @@ from sandbox_science.contracts.artifact_inventory import (
     ArtifactRevisionRef,
     artifact_path,
 )
+from sandbox_science.contracts.context import other_sessions_upload
 
 from . import jsontext
 from .artifact_publisher import ArtifactPublisher
@@ -74,6 +77,8 @@ class Written:
     incomplete: bool = False
     """The worker's lists were cut short: some files may be missing from them."""
     execution: Execution | None = None
+    unattributed: int = 0
+    """Files that changed while the call ran that the worker did not attribute to it."""
 
     @classmethod
     def of(cls, execution: Execution) -> Written:
@@ -81,11 +86,19 @@ class Written:
         if result is None:
             return cls(execution=execution)
         return cls(
-            result.written_files,
-            result.deleted_files,
+            attributed(execution, result.written_files),
+            attributed(execution, result.deleted_files),
             result.written_files_truncated or result.deleted_files_truncated,
             execution,
+            len(attributed(execution, result.unattributed_files)),
         )
+
+
+def attributed(execution: Execution, paths: Sequence[str]) -> tuple[str, ...]:
+    """The ``paths`` an execution's result names that can be its own: never a file in
+    another session's upload area, whatever the worker reported."""
+    session = execution.context.session_id
+    return tuple(path for path in paths if not other_sessions_upload(session, path))
 
 
 @dataclass
@@ -98,10 +111,12 @@ class Recorded:
     incomplete: bool = False
     failed: str | None = None
     """Why recording stopped part way; the files recorded before stay."""
+    unattributed: int = 0
+    """Files not recorded as the call's, since the worker did not attribute them to it."""
 
     def summary(self) -> dict[str, Any] | None:
         """The call's report for the model and its record; ``None`` when nothing happened."""
-        if not self.files and not self.left_out and not self.incomplete and not self.failed:
+        if not (self.files or self.left_out or self.incomplete or self.failed or self.unattributed):
             return None
         report: dict[str, Any] = {
             "recorded": sum(1 for f in self.files if not f["deleted"]),
@@ -116,6 +131,11 @@ class Recorded:
             report["incomplete"] = "the worker's list of changed files was cut short"
         if self.failed:
             report["failed"] = self.failed
+        if self.unattributed:
+            report["not_attributed"] = (
+                f"{self.unattributed} files changed while the call ran that a file request or "
+                "another session's call may have written; not recorded as this call's"
+            )
         return report
 
 
@@ -152,7 +172,7 @@ class FileRecorder:
         """Record one call's files; failures leave gaps and never fail the call, and the
         files recorded before a failure stay recorded and reported. ``operation`` keys a
         call without an execution, such as ``write_file`` (the harness's operation ID)."""
-        recorded = Recorded(incomplete=written.incomplete)
+        recorded = Recorded(incomplete=written.incomplete, unattributed=written.unattributed)
         if not written.paths and not written.deleted:
             return recorded
         try:

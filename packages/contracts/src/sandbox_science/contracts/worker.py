@@ -17,7 +17,7 @@ from pydantic import AfterValidator, AwareDatetime, Field, StringConstraints, mo
 from .context import ExecutionContext
 from .model import Contract, Counter, Identifier, Sha256
 
-PROTOCOL_VERSION: Final = 23
+PROTOCOL_VERSION: Final = 24
 """The worker API's version. Releases are lockstep (docs/COMPATIBILITY.md): it changes with
 any change to what the worker or its clients send, and each side refuses another version."""
 PROTOCOL_HEADER: Final = "X-Worker-Protocol"
@@ -501,8 +501,9 @@ class Result(Contract):
     """When the attempt started and ended, by the sandbox's own clock."""
     written_files: tuple[str, ...] = ()
     """Files in the session workspace or the shared area (``shared/…``) created or changed
-    while the attempt ran. An attempt running at the same time in the session may have
-    written some of them."""
+    while the attempt ran, which the worker attributes to it. An attempt running at the
+    same time in the session may have written some of them; what the platform or another
+    session may have written is in ``unattributed_files`` instead."""
     written_files_truncated: bool = False
     deleted_files: tuple[str, ...] = Field(default=(), max_length=1000)
     """Files of the session workspace or the shared area that were there when the attempt
@@ -511,6 +512,14 @@ class Result(Contract):
     running at the same time, or the shared area's sync, may have deleted some of them."""
     deleted_files_truncated: bool = False
     """The list is incomplete: the comparison was cut short, or more than 1,000 went."""
+    unattributed_files: tuple[str, ...] = Field(default=(), max_length=1000)
+    """Files created, changed or deleted while the attempt ran that the worker does not
+    attribute to it, nor leaves out as known not to be its own: a file request (an upload,
+    a hand-back, a saved output, the agent's own write) wrote them while it ran, or they
+    are in ``shared/`` and another session's attempt ran in the environment meanwhile, or
+    the worker's account of that time is incomplete. The attempt may have written them
+    too; they are not its artifacts. Files in another session's upload area are in
+    neither list."""
     environment_revision: str | None = None
     """The environment's revision when the attempt ended. It differs from the location's
     when the installed packages changed while it ran, which it or an attempt running

@@ -176,7 +176,9 @@ async def test_the_summary_shows_the_finding_as_the_answering_turn_left_it(store
     assert second.action == "accept"
     final = cast(dict[str, Any], hook.summary())["final_review"]
     assert (final["open"], final["fixes_claimed"], final["answered"]) == ({}, 0, True)
-    assert len(reviews.listing("p", "s")["reviews"]) == 1
+    # The dismissal has the one re-check a claimed fix has (CR-43, CR-48).
+    kinds = [r["kind"] for r in reviews.listing("p", "s")["reviews"]]
+    assert sorted(kinds) == ["confirmation", "terminal"]
     await reviewing.close()
 
 
@@ -294,6 +296,7 @@ async def test_a_backlog_larger_than_the_final_budget_leaves_a_named_range(store
     final = summary["final_review"]
     assert (final["complete"], summary["coverage_gap"]) == (False, True)
     assert final["unreviewed"] == [{"start": seqs[0], "end": seqs[4]}]
+    assert final["unreviewed_reasons"] == {"final_budget": 1}
     (left,) = [u for u in reviews.listing("p", "s")["unreviewed"] if u.get("reason")]
     assert (left["start"], left["end"], left["reason"]) == (seqs[0], seqs[4], "final_budget")
     run = reviews.run("p", "s", final["review"])
@@ -390,6 +393,7 @@ def test_a_review_stored_before_the_final_review_still_loads(store) -> None:
         "complete": True,
         "unreviewed": [],
         "unreviewed_ranges": 0,
+        "unreviewed_reasons": {},
         "not_recorded_through": None,
     }
     assert reviews.listing("p", "s")["reviews"][0]["review_id"] == review
@@ -1052,3 +1056,119 @@ def test_a_stored_review_configuration_still_sets_every_setting(store) -> None:
     reviews.defaults = ReviewConfig(calls_per_hour=500, final_review="hold")
     config, _ = reviews.config("p")
     assert (config.calls_per_hour, config.final_review) == (10, "after")
+
+
+class DismissalReviewer(FixingReviewer):
+    """A final review raises a fail finding on the document; the re-check after the
+    answering turn decides the author's dismissal of it: accepted or rejected."""
+
+    def __init__(self, decision: str) -> None:
+        super().__init__()
+        self.decision = decision
+
+    async def complete(self, messages: Sequence[Any], tools: Sequence[Any]) -> ModelTurn:
+        opening = json.loads(messages[1]["content"])
+        if "final" in opening:
+            return await super().complete(messages, tools)
+        if opening["review"] not in self.reviews:
+            self.reviews.append(opening["review"])
+            self.calls = 0
+        self.calls += 1
+        results = [json.loads(m["content"]) for m in messages if m["role"] == "tool"]
+        if not results:
+            return self.turn([("review_manifest", {})], 100)
+        if len(results) == 1:
+            listed = results[0]["evidence"]
+            (item,) = [i for i in listed if i["kind"] == "finding"]
+            decision = {
+                "finding": item["locator"]["finding"],
+                "expected": item["locator"]["revision"],
+                "decision": self.decision,
+                "explanation": "The reason holds." if "accept" in self.decision else "It does not.",
+                "anchors": [{"evidence": item["evidence"]}],
+                "operation_id": f"recheck-{self.decision}",
+            }
+            return self.turn([("review_decide", decision)], 100)
+        return ModelTurn(
+            json.dumps({"outcome": "passed", "summary": "Decided.", "cap_reached": False}),
+            input_tokens=100,
+            output_tokens=50,
+        )
+
+
+@pytest.mark.parametrize("decision", ["accept_dismissal", "reject_dismissal"])
+async def test_a_dismissal_in_the_answering_turn_is_rechecked(store, decision: str) -> None:
+    """The answering turn dismisses the final review's fail finding: the one re-check
+    after it accepts or rejects the reason (CR-43), and the summary says which."""
+    from sandbox_science.orchestrator.context.agent import AgentContext
+    from sandbox_science.orchestrator.loop import Transcript
+
+    reviews, documents, _ = store
+    documents.create(
+        "p", name="count", title="C", text="There are 16.\n", author=MAIN, session_id="s"
+    )
+    reviews.ingest_documents("p", "s")
+    reviewing = controller(reviews, DismissalReviewer(decision), "hold")
+    hook = Reviews(reviewing)
+    async with reviewing.active():
+        answer = {"role": "assistant", "content": "The count is 16; the task is complete."}
+        run = Transcript(context=AgentContext(messages=[answer]))
+        first = await hook.closing(run, "The count is 16; the task is complete.")
+        assert first.action == "respond"
+        (notice,) = [n for n in first.notices if n.ids]
+        (finding,) = cast(list[dict[str, Any]], notice.payload)
+        Findings(reviews).respond(
+            "p",
+            "s",
+            {
+                "finding": finding["finding"],
+                "expected": finding["revision"],
+                "action": "dismiss",
+                "explanation": "Sixteen is the count the source gives.",
+                "operation_id": "dismiss-count",
+            },
+            MAIN,
+        )
+        run.response_rounds = 1
+        second = await hook.closing(run, "Sixteen stands; I set the finding aside.")
+        assert second.action == "accept"
+    final = cast(dict[str, Any], hook.summary())["final_review"]
+    assert (final["answered"], final["rechecked"]) == (True, True)
+    assert [(f["finding"], f["recheck"]) for f in final["findings"]] == [
+        (finding["finding"], "dismissal_accepted" if "accept" in decision else "dismissal_rejected")
+    ]
+    kinds = [r["kind"] for r in reviews.listing("p", "s")["reviews"]]
+    assert sorted(kinds) == ["confirmation", "terminal"]
+    await reviewing.close()
+
+
+async def test_hold_ends_at_its_limit_through_the_answering_turn(store) -> None:
+    """``hold``'s limit counts from the final review's start, its answering turn
+    included: past it, the hook no longer holds answers (CR-48)."""
+    from sandbox_science.orchestrator.context.agent import AgentContext
+    from sandbox_science.orchestrator.loop import Transcript
+
+    reviews, documents, _ = store
+    documents.create(
+        "p", name="count", title="C", text="There are 16.\n", author=MAIN, session_id="s"
+    )
+    reviews.ingest_documents("p", "s")
+    reviews.defaults = ReviewConfig(final_review="hold")
+    reviewing = ReviewController(
+        reviews,
+        context_for(reviews),
+        run_id="author-1",
+        model=FixingReviewer(),
+        alias="reviewer",
+        hold_seconds=30,
+    )
+    hook = Reviews(reviewing)
+    async with reviewing.active():
+        answer = {"role": "assistant", "content": "The count is 16; the task is complete."}
+        run = Transcript(context=AgentContext(messages=[answer]))
+        first = await hook.closing(run, "The count is 16; the task is complete.")
+        assert (first.action, first.hold_answer) == ("respond", True)
+        assert hook.holds_answers
+        reviewing.hold_until = asyncio.get_running_loop().time()  # the limit passes
+        assert not hook.holds_answers
+    await reviewing.close()

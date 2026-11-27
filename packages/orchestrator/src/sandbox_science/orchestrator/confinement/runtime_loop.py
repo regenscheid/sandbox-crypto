@@ -79,6 +79,7 @@ def state(run: Transcript) -> LoopState:
         answer=run.answer,
         held_answer=run.held_answer,
         withheld=run.withheld,
+        holding=run.holding,
         pending=run.pending,
         room=run.room,
         response_rounds=run.response_rounds,
@@ -101,8 +102,9 @@ class RemoteHook(TurnHook):
         self.limits_turns = given.turn_limit
         self.holds = given.holds
         self._holding = False
-        """The host's hook's ``holds_answers``, as last asked: it changes only when its
-        lease is entered and in a closing."""
+        """The host's hook's ``holds_answers``, as last asked: when its lease is entered,
+        after each closing, and before a turn while an answer held for its round is kept,
+        since ``hold``'s limit can pass in it."""
 
     @property
     def holds_answers(self) -> bool:
@@ -145,9 +147,12 @@ class RemoteHook(TurnHook):
             await owned(self.ask(Capability.HOOK_EXIT))
 
     async def notices(self, point: Point, run: RunView) -> Sequence[Notice]:
-        return TypeAdapter(tuple[Notice, ...]).validate_python(
+        found = TypeAdapter(tuple[Notice, ...]).validate_python(
             await self.ask(Capability.NOTICES, run, point=point)
         )
+        if point == "turn" and run.holding:
+            await self._refresh()  # a hold's limit can pass between closings (CR-48)
+        return found
 
     async def turn_limit(self, run: RunView) -> int | None:
         if not self.limits_turns:

@@ -155,6 +155,25 @@ def recheck_config(config: ReviewConfig) -> ReviewConfig:
     )
 
 
+def _recheck_answer(status: str, checked: object, dismissal: str | None) -> str:
+    """How a final review's finding ended, for its summary (CR-48): ``resolved``,
+    ``unresolved``, ``dismissal_accepted`` or ``dismissal_rejected`` as its re-check, or
+    a later review, decided it; ``dismissed`` by the user; ``inconclusive`` when the last
+    re-check could not decide; otherwise ``not_rechecked``."""
+    if status == "fixed":
+        return "resolved"
+    if status == "superseded":
+        return "unresolved"
+    if status == "dismissed":
+        found = stored_json(dismissal) if dismissal else {}
+        decided = found.get("review")
+        if isinstance(decided, dict):
+            accepted = cast(Json, decided).get("decision") == "accepted"
+            return "dismissal_accepted" if accepted else "dismissal_rejected"
+        return "not_rechecked" if found.get("by") == "agent" else "dismissed"
+    return "inconclusive" if checked == "inconclusive" else "not_rechecked"
+
+
 def is_final(run: Json) -> bool:
     """Whether ``run``, a review as ``load_run`` reads it, is a run's final review."""
     classifier = run.get("classifier")
@@ -606,6 +625,23 @@ class ReviewStore:
                 )
             ]
 
+    def dismissed(self, project: str, session: str, review: str) -> list[str]:
+        """The ``fail`` and ``warn`` findings of review ``review`` that the author
+        dismissed and no review has decided yet (CR-43): those the turn answering a final
+        review set aside, which its re-check accepts or rejects (CR-48)."""
+        self.scope(project, session)
+        with self.documents.control.read() as tx:
+            return [
+                finding
+                for (finding,) in tx.sql.execute(
+                    "SELECT finding_id FROM review_findings WHERE review_id=? "
+                    "AND severity IN ('fail','warn') AND status='dismissed' "
+                    "AND json_extract(dismissal,'$.by')='agent' "
+                    "AND json_type(dismissal,'$.review') IS 'null' ORDER BY rowid",
+                    (review,),
+                )
+            ]
+
     def record_unreviewed(
         self, project: str, session: str, start: int, end: int, reason: str, review: str | None
     ) -> None:
@@ -630,7 +666,8 @@ class ReviewStore:
         """The session's review position and coverage (CR-49): the feed position reviewed
         up to (the watermark) and the feed's end; whether the ranges its reviews covered
         reach the end with nothing left between (``complete``); and the ranges left
-        unreviewed, the first ``UNREVIEWED_SHOWN`` and how many there are. Positions up to
+        unreviewed, the first ``UNREVIEWED_SHOWN``, how many there are and why
+        (``unreviewed_reasons``: how many meet each reason recorded). Positions up to
         ``not_recorded_through`` were reviewed before reviews recorded their coverage: their
         coverage is not known, and neither complete nor unreviewed."""
         self.scope(project, session)
@@ -641,6 +678,7 @@ class ReviewStore:
                 "complete": True,
                 "unreviewed": [],
                 "unreviewed_ranges": 0,
+                "unreviewed_reasons": {},
                 "not_recorded_through": None,
             }
         with self.documents.control.read() as tx:
@@ -656,12 +694,14 @@ class ReviewStore:
             ranges = snapshot_reads.reviewed_ranges(db, project, session)
             unrecorded = snapshot_reads.unrecorded_through(db, project, session)
             left = snapshot_reads.uncovered(db, project, session, ranges, unrecorded, head)
+            reasons = snapshot_reads.unreviewed_reasons(db, project, session, left)
         return {
             "reviewed_through": row[0] if row else 0,
             "feed_end": head,
             "complete": not left,
             "unreviewed": [{"start": a, "end": b} for a, b in left[:UNREVIEWED_SHOWN]],
             "unreviewed_ranges": len(left),
+            "unreviewed_reasons": reasons,
             "not_recorded_through": unrecorded or None,
         }
 
@@ -681,12 +721,12 @@ class ReviewStore:
                 (project, session),
             ).fetchall()
         coverage = self.coverage(project, session)
-        answers = {"fixed": "resolved", "superseded": "unresolved", "dismissed": "dismissed"}
         found: list[Json] = []
         if review is not None:
             with self.documents.control.read() as tx:
-                for finding, severity, status, latest in tx.sql.execute(
-                    "SELECT finding_id,severity,status,latest_recheck FROM review_findings "
+                for finding, severity, status, latest, dismissal in tx.sql.execute(
+                    "SELECT finding_id,severity,status,latest_recheck,dismissal "
+                    "FROM review_findings "
                     "WHERE review_id=? AND category NOT IN ('math','handle_citation') "
                     "ORDER BY rowid LIMIT ?",
                     (review, UNREVIEWED_SHOWN),
@@ -697,9 +737,7 @@ class ReviewStore:
                             "finding": finding,
                             "severity": severity,
                             "status": status,
-                            "recheck": answers.get(status)
-                            if status != "open"
-                            else ("inconclusive" if checked == "inconclusive" else "not_rechecked"),
+                            "recheck": _recheck_answer(status, checked, dismissal),
                         }
                     )
         unread: list[Json] = []
@@ -722,7 +760,8 @@ class ReviewStore:
     def _named_unread(db: sqlite3.Connection, review: str) -> list[Json]:
         """The items ``review``'s coverage names unread (CR-49 as amended), the first
         ``UNREVIEWED_SHOWN``: each one's evidence, kind, what it copies (the artifact, the
-        execution or the run's message its locator names) and why it held nothing to read."""
+        execution or the run's message its locator names), an artifact's path, and why it
+        held nothing to read."""
         row = db.execute(
             "SELECT payload FROM review_records WHERE review_id=? AND kind='coverage' "
             "ORDER BY rowid DESC LIMIT 1",
@@ -745,11 +784,20 @@ class ReviewStore:
                 else locator.get("operation") or locator.get("execution") or locator.get("key")
             )
             why = payload.get("omitted") or payload.get("reason") or payload.get("contents")
+            path = None
+            if isinstance(artifact, dict):
+                # The artifact's path, which the workspace names it by.
+                named_path = db.execute(
+                    "SELECT path FROM artifact_objects WHERE id=?",
+                    (cast(Json, artifact).get("artifact_id"),),
+                ).fetchone()
+                path = named_path[0] if named_path else None
             named.append(
                 {
                     "evidence": evidence,
                     "kind": found[0],
                     "item": what,
+                    "path": path if isinstance(path, str) else None,
                     "why": clipped(str(why or payload.get("availability") or ""), 256),
                 }
             )
@@ -900,6 +948,7 @@ class ReviewStore:
         final: bool = False,
         answer: str | None = None,
         recheck_of: Collection[str] | None = None,
+        dismissals: Collection[str] = (),
     ) -> str | None:
         """Pin a bounded prefix. No unseen overflow item is skipped by the watermark,
         except by a checkpoint whose backlog it records as unreviewed (CR-49). ``viewed``
@@ -914,7 +963,9 @@ class ReviewStore:
         answer ``answer`` with the files and entries it names, the plan, the open findings
         and the work no review covered, newest first, within a budget of its own.
         ``recheck_of`` makes the one re-check after its answering turn: a confirmation of
-        those findings only, with a budget of its own (``recheck_config``).
+        those findings only, and of the author's dismissals among ``dismissals``, whose
+        reasons it accepts or rejects (CR-43), with a budget of its own
+        (``recheck_config``).
         """
         self.scope(project, session)
         config, config_revision = self.config(project)
@@ -946,7 +997,7 @@ class ReviewStore:
             targets = [target for target in targets if target[0] in recheck_of]
             config = recheck_config(config)
             classifier = {**(classifier or {}), "final": True, "recheck": True}
-        if kind == "confirmation" and not targets:
+        if kind == "confirmation" and not targets and not (recheck_of is not None and dismissals):
             return None
         plan = self._plan(
             project,
@@ -957,11 +1008,17 @@ class ReviewStore:
             author_run,
             viewed,
             config,
-            only=recheck_of,
+            only=None if recheck_of is None else {*recheck_of, *dismissals},
         )
-        if recheck_of is not None and not plan.targets:
-            return None
-        if plan.kind == "confirmation" and not plan.targets:
+        if recheck_of is not None:
+            held = {
+                stored_json(item.locator).get("finding")
+                for item in plan.items
+                if item.kind == "finding"
+            }
+            if not plan.targets and not held & set(dismissals):
+                return None
+        elif plan.kind == "confirmation" and not plan.targets:
             # Serve author work instead, with the configuration and targets as they are
             # now: the review may have been disabled or reconfigured meanwhile.
             self.scope(project, session)

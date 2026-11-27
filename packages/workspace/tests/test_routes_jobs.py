@@ -83,6 +83,7 @@ JOB_KEYS = {
     "stderr",
     "written_files",
     "written_files_truncated",
+    "unattributed_files",
     "platform_notices",
     "cpu_seconds",
     "memory_bytes",

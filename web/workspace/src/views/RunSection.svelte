@@ -6,6 +6,7 @@
   import { formatTime } from '../lib/format';
   import { finalReviewLine } from '../lib/reviews';
   import ErrorMessage from './ErrorMessage.svelte';
+  import FinalReviewEnd from './FinalReviewEnd.svelte';
   import RunView from './RunView.svelte';
 
   let {
@@ -43,6 +44,7 @@
       {#if finalReviewLine(found.review_summary?.final_review)}
         <p role="status">{finalReviewLine(found.review_summary?.final_review)}</p>
       {/if}
+      <FinalReviewEnd summary={found.review_summary} />
       {#if found.math_summary?.renderer || found.math_summary?.pending}<p role="status">
           Document math: {found.math_summary.pending
             ? 'pending at the saved run boundary'

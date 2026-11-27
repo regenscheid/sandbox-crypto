@@ -169,5 +169,6 @@ def shrunk(result: Result) -> Result:
             "written_files_truncated": bool(result.written_files),
             "deleted_files": (),
             "deleted_files_truncated": bool(result.deleted_files) or result.deleted_files_truncated,
+            "unattributed_files": (),
         }
     )

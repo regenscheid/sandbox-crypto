@@ -194,6 +194,7 @@ class KernelJournal:
                     and result.status == "ok"
                     and not result.written_files
                     and not result.deleted_files
+                    and not result.unattributed_files
                     and not result.written_files_truncated
                     and not result.deleted_files_truncated
                     and not result.overlapping_change

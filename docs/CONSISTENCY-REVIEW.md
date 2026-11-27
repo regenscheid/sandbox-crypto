@@ -167,13 +167,17 @@ response round (`Closing("respond")`); the next closing records the turn's messa
 later reviews (`review.unreviewed`, reason `answering_turn`) and takes no other round
 (`Reviews.answering`); no checkpoint is dispatched in that turn. Then one re-check runs
 (`ReviewController._recheck`): a confirmation of only the final review's findings the turn
-claimed fixed (`ReviewStore.answered`, `dispatch(recheck_of=...)`), with its own budget,
+claimed fixed (`ReviewStore.answered`, `dispatch(recheck_of=...)`) and of its `fail` and
+`warn` findings the turn dismissed (`ReviewStore.dismissed`, `dispatch(dismissals=...)`),
+whose reasons it accepts or rejects as the next review would (CR-43), with its own budget,
 `FINAL_RECHECK_CALLS` (8) calls outside the hourly calls and `FINAL_RECHECK_SECONDS`
-(180 s) after the end's wait, ended at its deadline if it outlasts it. Whatever it finds,
-no second answering turn follows. The summary gains `rechecked`, the re-check's review
-and outcome, and each finding of the final review with its state (`resolved`,
-`unresolved`, `dismissed`, `inconclusive` or `not_rechecked`). In `hold` the answering
-turn's reply is held too, until the re-check ends. A closing after a turn
+(180 s) after the end's wait, and no later than `hold`'s limit, ended at its deadline if it
+outlasts it. A turn that only dismissed has its re-check too. Whatever it finds, no second
+answering turn follows. The summary gains `rechecked`, the re-check's review and outcome,
+and each finding of the final review with how it ended (`resolved`, `unresolved`,
+`dismissal_accepted`, `dismissal_rejected`, `dismissed` by the user, `inconclusive` or
+`not_rechecked`). In `hold` the answering turn's reply is held too, until the re-check
+ends. A closing after a turn
 another hook took (a user's message typed during the review, a math round) runs no second
 final review: the turn's new work gets an ordinary checkpoint, under the hourly calls,
 waited for within the end's bound. A notice is carried to a finding's new revision only
@@ -187,14 +191,24 @@ gives it, so the record's `answer` is that text and the answering turn's reply f
 its `final_text`; `hold` asks for the round with `hold_answer`, so the record's `answer` is
 the reply after the turn, and waits for the review at most 10 minutes from its start
 (`FINAL_HOLD_SECONDS`, the controller's `hold_seconds`) within the end's bound, after
-which the answer goes out as given. What the user sees: with `after`, the chat shows the
+which the answer goes out as given; the limit runs on through the answering turn and the
+re-check, and past it whatever is held goes out. What the user sees: with `after`, the chat shows the
 answer when the agent gives it, then any findings and the agent's reply to them; the
 record's `answer` is the answer given and its `final_text` the reply. With `hold`, the
 chat shows a notice that the answer is being reviewed in place of the answer
-(`Reviews.holds_answers`, the transcript's `withheld`, which the run's events honour), and
-shows the answer when the hold ends, however it ends (accepted, a response round, its time
-limit, a stop or a failure), then the findings and the reply; the record's `answer` is the
-reply after the round, or the answer given when the hold's time passed. If the answering
+(`Reviews.holds_answers`, the transcript's `withheld`, which the run's events honour). When
+the review delivers nothing, the answer is shown when it ends. When its findings take a
+round, the answer stays out of the chat through the round (the transcript's `holding`,
+which the run's events honour too): the chat shows the answering turn's work as it goes and,
+once that turn's closing and its re-check end, its reply, which is the record's `answer`
+and `final_text`; the answer first given is kept in the record's messages and in the final
+review's snapshot, and the chat never shows it. If the round ends without an answer of its
+own (its turns run out, or it fails), the answer first given is the run's `answer`, and the
+chat shows it as the run ends. If `hold`'s limit passes during the round, the chat shows a
+notice that the review did not finish within it (`HOLD_ENDED`), then the answer first
+given, which is the run's `answer`, and later the round's reply. If the limit passes during
+the final review itself, the answer goes out as given when the review is ended, as with
+`after`. If the answering
 turn fails, the run keeps the answer the agent gave as its `answer` (a failed record may
 hold one, never a `final_text`), stops `error`, and the summary says `answered: false,
 answering_failed: true`. The hook's
@@ -202,8 +216,14 @@ summary, the run record's `review_summary`, carries `final_review`
 (`ReviewStore.final_summary`): `mode`, the review, its outcome, `finished`, `answered`, the
 open findings by severity (`open`), `fixes_claimed`, `complete`, `reviewed_through`,
 `feed_end`, the first 16 `unreviewed` ranges, and the items its coverage names unread
-(`unread`: each one's evidence, kind, what it copies and why it held nothing to read);
-the workspace's run section shows it as one line.
+(`unread`: each one's evidence, kind, what it copies, an artifact's path and why it held
+nothing to read), and how many unreviewed ranges meet each reason the reviews recorded
+(`unreviewed_reasons`, `not_reached` for a range no review has reached). The workspace's
+run section shows it as one line, and under it, in plain words with no identifier but
+file paths (`finalReviewEnd`): why no final review ran (`no_final_review`), or each unread
+item by its path or kind with its reason, the unreviewed ranges as a count with their
+reasons, the open findings by severity, and whether the findings were answered and
+re-checked, with how many ended each way.
 
 `ReviewController(persistent=True, messages=asyncio.Queue())` supplies a host boundary
 for immediate new user input while the detached review continues. The host must retain

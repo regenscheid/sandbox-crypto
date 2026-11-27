@@ -164,6 +164,7 @@ export interface BackgroundJob {
   stderr: string;
   written_files: string[];
   written_files_truncated: boolean;
+  unattributed_files: string[];
   platform_notices: string[];
   cpu_seconds: number | null;
   memory_bytes: number | null;

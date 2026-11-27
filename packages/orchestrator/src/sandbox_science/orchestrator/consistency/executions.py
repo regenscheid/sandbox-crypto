@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from typing import cast
 
+from sandbox_science.contracts.context import other_sessions_upload
+
 from .store import Json, clipped
 
 
@@ -32,6 +34,14 @@ def execution_projection(record: Json) -> tuple[Json, bool]:
         for k, v in request.items()
         if k in ("script", "code", "argv", "cwd", "language", "path")
     }
+    context = cast(Json, record.get("context") or {})
+    session = str(context.get("session_id", ""))
+    # Another session's upload is never this execution's, whatever a worker reported.
+    written = [
+        str(p)
+        for p in cast(list[object], result.get("written_files") or [])
+        if not other_sessions_upload(session, str(p))
+    ]
     complete = True
     for stream in ("stdout", "stderr"):
         output = cast(Json, result.get(stream) or {})
@@ -44,9 +54,8 @@ def execution_projection(record: Json) -> tuple[Json, bool]:
         exit_code=result.get("exit_code"),
         error=result.get("error"),
         elapsed_seconds=result.get("elapsed_seconds"),
-        written_files=[clipped(str(p), 256) for p in result.get("written_files", [])[:100]],
-        written_files_truncated=bool(result.get("written_files_truncated"))
-        or len(result.get("written_files", [])) > 100,
+        written_files=[clipped(p, 256) for p in written[:100]],
+        written_files_truncated=bool(result.get("written_files_truncated")) or len(written) > 100,
         outputs_note="Rich output and shell artifact inventory are not copied by this slice.",
     )
     if payload["error"]:
@@ -58,8 +67,6 @@ def execution_projection(record: Json) -> tuple[Json, bool]:
     payload["omitted_rich_outputs"] = len(result.get("outputs", []))
     payload["canonical_execution"] = record.get("execution_id")
     complete = complete and not (
-        payload["omitted_rich_outputs"]
-        or result.get("written_files")
-        or payload["written_files_truncated"]
+        payload["omitted_rich_outputs"] or written or payload["written_files_truncated"]
     )
     return payload, complete
