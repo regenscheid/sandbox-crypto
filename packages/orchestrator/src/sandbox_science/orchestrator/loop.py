@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import (
     AsyncGenerator,
     Awaitable,
@@ -347,6 +348,40 @@ class Interruption:
 
 
 @dataclass
+class Overhead:
+    """The loop's own time around model calls, by the monotonic clock, in seconds: the
+    usage of each call records it (``ModelUsage.prepared_ms`` and ``recorded_ms``)."""
+
+    began: float | None = None
+    """When the turn of the next call began, until that call is made."""
+    returned: float | None = None
+    """When the last call answered."""
+    tools: float = 0.0
+    """How long the tool calls since then ran, batch by batch."""
+    recorded: float | None = None
+    """The time after the last call that was not its tool calls', until the next call."""
+
+    def turn(self) -> None:
+        """A turn begins: the time since the last answer, less its tools', is recorded."""
+        self.began = time.monotonic()
+        if self.returned is not None:
+            self.recorded = max(0.0, self.began - self.returned - self.tools)
+
+    def answered(self, duration_ms: int | None) -> tuple[int | None, int | None]:
+        """A call answered, which took ``duration_ms``: its ``prepared_ms`` and
+        ``recorded_ms``, each ``None`` when its turn did not time it."""
+        now = time.monotonic()
+        prepared = (
+            max(0, round((now - self.began) * 1000) - duration_ms)
+            if self.began is not None and duration_ms is not None
+            else None
+        )
+        recorded = round(self.recorded * 1000) if self.recorded is not None else None
+        self.began, self.returned, self.tools, self.recorded = None, now, 0.0, None
+        return prepared, recorded
+
+
+@dataclass
 class Transcript:
     context: AgentContext
     tool_records: MutableSequence[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
@@ -401,6 +436,8 @@ class Transcript:
     notified: Callable[[Sequence[Notice]], object] | None = field(default=None, repr=False)
     """Told the notices that enter the conversation, as they do: the run's toolbox loads
     the tool groups they make relevant (docs/specs/tools.md, tool groups)."""
+    overhead: Overhead = field(default_factory=Overhead, repr=False)
+    """Where the loop's own time between model calls goes, for each call's usage."""
 
     def identities(self, source: str, *, delivered: bool = False) -> set[str] | Members:
         mapping = self.delivered if delivered else self.offered
@@ -693,7 +730,10 @@ async def _attempt(model: ChatModel, toolbox: Toolbox, transcript: Transcript) -
     reply = await transcript.context.complete(model, toolbox.specs)
     transcript.phase = "harness"
     transcript.pending = transcript.carried = None
-    transcript.context.record_reply(reply, input_size=size)
+    prepared, recorded = transcript.overhead.answered(reply.duration_ms)
+    transcript.context.record_reply(
+        reply, input_size=size, prepared_ms=prepared, recorded_ms=recorded
+    )
     return reply
 
 
@@ -768,6 +808,7 @@ async def _run_batch(
             await transcript.context.log.start_tool(call, operation)
         operations.append(operation)
     transcript.phase = "tool"
+    begun = time.monotonic()
     if len(batch) == 1:
         found: list[ToolOutcome | BaseException] = [await dispatch(batch[0], operations[0])]
     else:
@@ -781,6 +822,7 @@ async def _run_batch(
             *(bounded(call, operation) for call, operation in zip(batch, operations, strict=True)),
             return_exceptions=True,
         )
+    transcript.overhead.tools += time.monotonic() - begun
     transcript.phase = "harness"
     return list(zip(batch, operations, found, strict=True))
 
@@ -1003,6 +1045,7 @@ async def _run_task(
     complete = _model_call(model, toolbox, transcript, hooks)
     guard, streak, answer = Runaway(), ErrorStreak(), _Answer()
     while True:
+        transcript.overhead.turn()
         await _turn_limit(hooks, transcript)
         if transcript.turns >= transcript.max_turns:
             break

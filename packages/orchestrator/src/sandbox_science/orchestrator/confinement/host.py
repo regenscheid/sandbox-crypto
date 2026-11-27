@@ -14,7 +14,7 @@ from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontext
 from dataclasses import replace
 from typing import Any, Final, cast
 
-from pydantic import JsonValue, TypeAdapter
+from pydantic import JsonValue
 
 from sandbox_science.orchestrator.aio import owned, threaded
 from sandbox_science.orchestrator.connectors import ConnectorError
@@ -37,6 +37,7 @@ from sandbox_science.orchestrator.hooks import (
     MessageLog,
     Notice,
     TurnHook,
+    overrides,
     wraps_calls,
 )
 from sandbox_science.orchestrator.images import IMAGE
@@ -68,6 +69,7 @@ from .models import CallbackModel
 from .requests import confirm
 from .transport import PATIENCE_SECONDS, Capability, Channel, TransportError
 from .wire import (
+    HOOK_ASKS,
     AppendReply,
     Attempt,
     CancelRequest,
@@ -93,6 +95,7 @@ from .wire import (
     ToolReply,
     ToolRequest,
     WireMessage,
+    adapter,
     json_value,
     payload,
     typed,
@@ -226,7 +229,8 @@ class Prepared:
         it; the runtime's loop state must carry it."""
         self.answers = 0
         """The model answers this attempt committed: what its model calls are counted by,
-        whatever turns the runtime's loop state says, which the host keeps for display."""
+        and its tool calls' turns, whatever turns the runtime's loop state says, which the
+        host keeps for display."""
         self.reported = False
         """Whether it committed an answer at its turn limit, its report round's: after it,
         no main or delegated model call is admitted (``spent``)."""
@@ -359,9 +363,9 @@ class Prepared:
                 request = typed(LogTool, value)
                 if self.shadow is None or self.pending_calls.get(request.call.id) != request.call:
                     raise TransportError("conflict", "tool intent has no committed model call")
-                expected = operation_id(
-                    f"{self.given.run_id}-t{self.shadow.turns - 1}", request.call
-                )
+                # The call's turn is the answer that asked for it, the last one committed
+                # here: never loop state, which only some hooks' requests carry.
+                expected = operation_id(f"{self.given.run_id}-t{self.answers - 1}", request.call)
                 if request.operation != expected or self.intent is not None:
                     raise TransportError("conflict", "tool intent identity differs or is pending")
                 await self.log.start_tool(request.call, request.operation)
@@ -439,7 +443,7 @@ class Prepared:
                 if request.effect is None:
                     raise TransportError("invalid_request", "gate requires an effect")
                 refusal = await hook.gate(request.effect)
-                return json_value(TypeAdapter(type(refusal)).dump_python(refusal, mode="json"))
+                return json_value(adapter(type(refusal)).dump_python(refusal, mode="json"))
             if kind is Capability.CONSUMPTION:
                 ids = tuple(await hook.consumption())
                 if self.shadow is not None:
@@ -466,7 +470,7 @@ class Prepared:
                 else:
                     self.notices.extend(result)
                 return json_value(
-                    TypeAdapter(tuple[Notice, ...]).dump_python(tuple(result), mode="json")
+                    adapter(tuple[Notice, ...]).dump_python(tuple(result), mode="json")
                 )
             if kind is Capability.TURN_LIMIT:
                 ceiling = await hook.turn_limit(run)
@@ -485,7 +489,7 @@ class Prepared:
                     raise TransportError("invalid_request", "report notices require the limit")
                 found = tuple(await hook.report_notices(run, request.stopped))
                 self.notices.extend(found)  # admitted as the hook's, when the runtime adds them
-                return json_value(TypeAdapter(tuple[Notice, ...]).dump_python(found, mode="json"))
+                return json_value(adapter(tuple[Notice, ...]).dump_python(found, mode="json"))
             if kind is Capability.MODEL_RETURNED:
                 await hook.model_returned(run)
             elif kind is Capability.OBSERVE_TOOL:
@@ -518,11 +522,11 @@ class Prepared:
                     raise TransportError("invalid_request", "goes_on requires the answer")
                 found = tuple(await hook.goes_on(run, request.answer))
                 self.offers[request.slot] = found
-                return json_value(TypeAdapter(tuple[Notice, ...]).dump_python(found, mode="json"))
+                return json_value(adapter(tuple[Notice, ...]).dump_python(found, mode="json"))
             elif kind is Capability.CLOSING:
                 closing = await hook.closing(run, request.answer)
                 self.notices.extend(closing.notices)
-                return json_value(TypeAdapter(Closing).dump_python(closing, mode="json"))
+                return json_value(adapter(Closing).dump_python(closing, mode="json"))
             elif kind is Capability.ACCEPT:
                 await hook.accept(run)
             elif kind is Capability.FINISHING:
@@ -1080,7 +1084,7 @@ class HostLoops:
                     planning=isinstance(hook, Plans),
                     turn_limit=type(hook).turn_limit is not TurnHook.turn_limit,
                     holds=type(hook).holds_answers is not TurnHook.holds_answers,
-                    goes_on=type(hook).goes_on is not TurnHook.goes_on,
+                    asks=tuple(name for name in HOOK_ASKS if overrides(hook, name)),
                 )
                 for hook in hooks
             ),

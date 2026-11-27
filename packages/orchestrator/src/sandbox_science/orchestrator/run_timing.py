@@ -8,7 +8,9 @@ connector call held for the user's answer says how long it waited
 (``approval_wait_ms``); a model call's observed usage gives its ``duration_ms``
 (``continuity.models``). ``ask_user`` is time waiting on the user, and an approval wait
 is taken out of its call's tool time. The rest is a run's span, from its start to its
-end, less those: the harness's own work, such as folds' preparation and saving. Calls
+end, less those: the harness's own work, such as folds' preparation and saving. Of it,
+each model call's usage gives the loop's own time before the call and after the call
+before it (``prepared_ms``, ``recorded_ms``): the platform's time between calls. Calls
 that ran at once (read-class calls of one reply) are each counted whole, so tool time
 can exceed the time that passed, and the rest is then 0. A record from before timing
 existed counts its call as untimed.
@@ -51,6 +53,9 @@ class RunTiming:
     """``ask_user``'s calls: the run waiting for the user's answer."""
     approval_ms: int = 0
     """Connector calls held for the user's approval."""
+    platform_ms: int = 0
+    """The loop's own time between model calls, as their usage records it: part of the
+    rest."""
 
     @property
     def rest_ms(self) -> int:
@@ -70,12 +75,13 @@ class RunTiming:
         self.approval_ms += held
         self.tool_ms[name] = self.tool_ms.get(name, 0) + duration - held
 
-    def model(self, duration: object) -> None:
+    def model(self, duration: object, prepared: object = None, recorded: object = None) -> None:
         self.model_calls += 1
         if isinstance(duration, int):
             self.model_ms += duration
         else:
             self.untimed_model_calls += 1
+        self.platform_ms += sum(ms for ms in (prepared, recorded) if isinstance(ms, int))
 
     def add(self, other: RunTiming) -> None:
         self.span_ms += other.span_ms
@@ -88,6 +94,7 @@ class RunTiming:
         self.untimed_tool_calls += other.untimed_tool_calls
         self.user_ms += other.user_ms
         self.approval_ms += other.approval_ms
+        self.platform_ms += other.platform_ms
 
     def summary(self) -> dict[str, Any]:
         """The ``--json`` form, in milliseconds."""
@@ -103,6 +110,7 @@ class RunTiming:
             "user_ms": self.user_ms,
             "approval_ms": self.approval_ms,
             "rest_ms": self.rest_ms,
+            "platform_ms": self.platform_ms,
         }
 
     def line(self) -> str:
@@ -113,7 +121,8 @@ class RunTiming:
             f"model {_duration(self.model_ms)}",
             f"tools {_duration(tools)}",
             f"waiting {_duration(self.user_ms + self.approval_ms)}",
-            f"rest {_duration(self.rest_ms)}",
+            f"rest {_duration(self.rest_ms)}"
+            + (f" (platform {_duration(self.platform_ms)})" if self.platform_ms else ""),
         ]
         top = sorted(self.tool_ms.items(), key=lambda item: (-item[1], item[0]))[:3]
         if top:
@@ -146,12 +155,13 @@ def _models(control: ControlStore, project: str, session: str, run: str, timing:
     """The run's model calls from their intents' observed usage; whether it had any."""
     with control.read() as tx:
         rows = tx.sql.execute(
-            "SELECT json_extract(usage,'$.duration_ms') FROM research_model_calls "
+            "SELECT json_extract(usage,'$.duration_ms'),json_extract(usage,'$.prepared_ms'),"
+            "json_extract(usage,'$.recorded_ms') FROM research_model_calls "
             "WHERE project=? AND session=? AND run=? AND usage IS NOT NULL",
             (project, session, run),
         ).fetchall()
-    for (duration,) in rows:
-        timing.model(duration)
+    for duration, prepared, recorded in rows:
+        timing.model(duration, prepared, recorded)
     return bool(rows)
 
 
@@ -196,7 +206,9 @@ def scan(control: ControlStore, project: str, session: str, run: str) -> RunTimi
             entry: Mapping[str, object] = (
                 cast(Mapping[str, object], usage) if isinstance(usage, dict) else {}
             )
-            timing.model(entry.get("duration_ms"))
+            timing.model(
+                entry.get("duration_ms"), entry.get("prepared_ms"), entry.get("recorded_ms")
+            )
     return timing
 
 

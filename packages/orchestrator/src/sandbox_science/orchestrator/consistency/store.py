@@ -35,7 +35,7 @@ from sandbox_science.orchestrator.documents.errors import (
 )
 from sandbox_science.orchestrator.documents.project_macros import response_view
 from sandbox_science.orchestrator.pricing import CostSource, source_of
-from sandbox_science.orchestrator.projects import ProjectError, recorded
+from sandbox_science.orchestrator.projects import ProjectError, recorded, stored_project
 from sandbox_science.orchestrator.session_plans import SessionPlans
 
 from . import snapshot_reads
@@ -276,6 +276,23 @@ def _archived(items: Sequence[EvidenceItem]) -> Json:
     return {"archive": {"from": min(positions), "to": max(positions)}} if positions else {}
 
 
+def scoped(db: sqlite3.Connection, project: str, session: str) -> None:
+    """``ReviewStore.scope``'s check in an open transaction of the control store: the
+    project's record is whole and holds the session."""
+    try:
+        Scope(project_id=project, session_id=session)
+    except ValidationError:
+        raise DocumentError(INVALID_REQUEST, "invalid review scope") from None
+    try:
+        found = stored_project(db, project)
+    except ProjectError:
+        found = None  # a damaged record is no project here either, as ``scope`` says
+    if found is None:
+        raise DocumentError(NOT_FOUND, "no such review project")
+    if session not in found.sessions:
+        raise DocumentError(NOT_FOUND, "no such review session")
+
+
 class ReviewStore:
     """The bounded review repository; DocumentStore initializes the shared database first."""
 
@@ -409,10 +426,12 @@ class ReviewStore:
         cells: int = 0,
         effects: bool = False,
     ) -> int:
-        """Copy one platform observation. A duplicate source key has one immutable value."""
-        self.scope(project, session)
+        """Copy one platform observation. A duplicate source key has one immutable value.
+        The scope is checked in the change itself (``scoped``), which needs no connection
+        of its own, as every tool call's observation would."""
         with self.documents.control.write() as tx:
             db = tx.sql
+            scoped(db, project, session)
             return self.record_observation(
                 db,
                 project,

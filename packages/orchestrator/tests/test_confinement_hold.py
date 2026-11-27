@@ -33,11 +33,12 @@ from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.session_plans import SessionPlans
 from sandbox_science.orchestrator.tools import Toolbox
 
-from .loop_harness import API_KEY, PROJECT, SESSION, Harness, Reply
+from .loop_harness import API_KEY, PROJECT, SESSION, Harness, Reply, call
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
 from .test_confinement_drain import prepared_attempt
+from .test_confinement_loop import Relay, confined
 from .test_run_service import records, serving
 from .test_session_plans import actor, made, status
 from .test_tool_journal import projects as projects
@@ -272,6 +273,7 @@ async def test_a_confined_answer_while_the_plan_is_open_goes_on_in_the_run(
     reply is in the run's events at once, never held, then the notice that the run went
     on; one run, one closing, at its real end, and no new root for the same plan state."""
     asked: list[Capability] = []
+    carriers: set[object] = set()
     script = (Reply("Status: step one is next."), Reply("Stopping here."))
     async with serving(harness, *script, serve=False) as service:
         plans = SessionPlans(service.stores.documents)
@@ -292,6 +294,8 @@ async def test_a_confined_answer_while_the_plan_is_open_goes_on_in_the_run(
 
         async def host_handle(kind: Capability, value: JsonValue) -> JsonValue:
             asked.append(kind)
+            if kind in (Capability.GOES_ON, Capability.WENT_ON) and isinstance(value, dict):
+                carriers.add(value.get("slot"))
             return await host.capability(kind, value)
 
         async def vm_handle(kind: Capability, value: JsonValue) -> JsonValue:
@@ -352,6 +356,9 @@ async def test_a_confined_answer_while_the_plan_is_open_goes_on_in_the_run(
             ]
             assert ("notice", {"source": "plans", "ids": [went_on], "text": WENT_ON}) in events()
             assert {Capability.GOES_ON, Capability.WENT_ON} <= set(asked)
+            # Only the plan hook names them in its ``asks``: no other hook is asked.
+            assert len(carriers) == 1, carriers
+            assert None not in carriers
             # The plan state had its continuation: no new root is queued for it.
             await service.auto_continuation_tick()
             assert [m.message_id for m in service.runs.messages(PROJECT, SESSION)] == ["msg-status"]
@@ -397,3 +404,38 @@ async def test_the_host_carries_a_run_on_only_past_an_answer_with_no_tool_call(
     assert offers.committed == 0
     assert not prepared.notices
     await prepared.close()
+
+
+def active_plan(service: Any) -> None:
+    """An active session plan with a pending step, which carries a run past a bare answer."""
+    plans = SessionPlans(service.stores.documents)
+    author = actor(project=PROJECT, session=SESSION)
+    status(plans, made(plans, author).ref, "active", authority=author)
+
+
+async def test_a_confined_tool_call_after_a_run_went_on_passes_its_intent_check(
+    harness: Harness, tmp_path: Path
+) -> None:
+    """A bare answer the plan carries the run past is committed as an answer, and the run
+    goes on in the same attempt: the tool call its next answer asks for is checked
+    against the host's own count of committed answers, which the runtime's turns agree
+    with, so the call's intent is admitted and the call runs."""
+    asked: list[Capability] = []
+
+    async def watched(kind: Capability, value: JsonValue, relay: Relay) -> JsonValue:
+        asked.append(kind)
+        return await relay(kind, value)
+
+    script = (
+        Reply("Status: step one is next."),
+        Reply(calls=[call("shell", script="echo step one")]),
+        Reply("Stopping here."),
+    )
+    (record,) = await confined(harness, tmp_path, *script, to_host=watched, prepare=active_plan)
+    assert (record.stopped, record.final_text) == ("answered", "Stopping here.")
+    assert record.summaries["plans"] == {"went_on": 1, "states": [ANY]}
+    assert Capability.WENT_ON in asked
+    assert asked.index(Capability.WENT_ON) < asked.index(Capability.LOG_TOOL)
+    (tool,) = record.tools
+    assert tool["tool"] == "shell"
+    assert "error" not in tool
