@@ -209,11 +209,13 @@ GOLDEN = {
     "sandbox-delegated-check-8": "1911d9d5cf0036fe6d952132042f96124e0845bde8271078eb65c5960b655a78",
     "sandbox-delegated-task-8": "0928db5b6b9d08a097dd67464f69ff56eae48890d32f982dd2e516d71ae157fc",
     "sandbox-job-watcher-1": "4b545fe81e35622bf1b894c435833d78fb122116f9364d429b21c6c3551e1ab1",
+    "sandbox-consistency-13": "4da258685102b66153a6758494c019f8c8b20991777978936542d81608ec65f4",
     "sandbox-consistency-12": "5b89cbaaf87e7d8207c6e6f80edd1c9c7e27c5f59c8e9d4975365624338ba58f",
     "sandbox-consistency-11": "83e3d07282c79659c0eed43d4c1278e8dfeecf7596606a7d3d7acc9491811327",
     "sandbox-consistency-10": "5400f167e3174daab99f268bfc0ed9613ed3886d97e4a86832054a33b5b3f135",
     "sandbox-review-budget-1": "0c8b1f5f323c09ae4aef090f39a724f14efe468eeeaed0f8f72d28dbf7f14681",
     "sandbox-consistency-9": "3905f61a0b76144e6ec941e436cd37dea2343b76a7f84f34e5ecf65d8048a588",
+    "sandbox-recheck-2": "cdf78454bed55bcc25987a15f6ba46cb8f679c871e87b02ddfb708d161f4f955",
     "sandbox-recheck-1": "70923310becc982206fb8caad884bacc282ce182c065f9e978f653ff412eb7fa",
     "sandbox-memory-run-1": "b69cc482f75853487a499ac89b5701b148066e919842a9970e6e318b2bdce121",
     "sandbox-memory-reviewer-1": (
@@ -452,8 +454,9 @@ def test_the_baseline_runs_faults_are_answered_where_the_prompts_speak_of_them()
     for prompt in (TASK_PROMPT, CHECK_PROMPT):
         flat = " ".join(prompt.split())
         assert "points you to a tool you are not offered, tell your parent" in flat
-    assert "statement of it" in RUBRIC
-    assert "the final answer and report name that statement" in " ".join(RUBRIC.split())
+    flat = " ".join(RUBRIC.split())
+    assert "a statement of the request" in flat
+    assert "the final answer and report must name that statement" in flat
     # The notes that a project the connectors do not serve gets name no project.
     for note in (NO_CONNECTORS, DELEGATED_NO_CONNECTORS):
         assert "mcp_tools is not offered" in note.text

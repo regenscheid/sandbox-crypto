@@ -49,6 +49,7 @@ from .models import (
     DISMISSAL_CHARACTERS,
     END_WAIT_SECONDS,
     FINAL_HOLD_SECONDS,
+    FINAL_RECHECK_SECONDS,
     FINAL_REVIEW_SECONDS,
     FINDING_STATUSES,
     EvidenceAnchor,
@@ -342,6 +343,7 @@ class ReviewController:
         images: ImageViewer | None = None,
         hold_seconds: float = FINAL_HOLD_SECONDS,
         end_seconds: float = END_WAIT_SECONDS,
+        recheck_seconds: float = FINAL_RECHECK_SECONDS,
     ) -> None:
         """``memory`` is the project memory the reviewer is given: the one the reviewed
         run was given when it started (PM-8). ``connectors`` are the MCP servers the run's
@@ -370,6 +372,9 @@ class ReviewController:
         alias whose model is unavailable is a reviewer that fails, as CR-F10 says."""
         self.persistent = persistent
         self.hold_seconds, self.end_seconds = hold_seconds, end_seconds
+        self.recheck_seconds = recheck_seconds
+        self.rechecked: str | None = None
+        """The re-check after the final review's answering turn, once dispatched."""
         self.holding = False
         """Whether the run's final answer is kept from the user until its final review
         ends (``final_review = "hold"``), as read when the run's reviews begin."""
@@ -574,6 +579,7 @@ class ReviewController:
         *,
         final: bool = False,
         answer: str | None = None,
+        recheck_of: Collection[str] | None = None,
     ) -> str | None:
         if self.role != "main":
             return None
@@ -596,6 +602,7 @@ class ReviewController:
             viewed=self.viewed or (),
             final=final,
             answer=answer,
+            recheck_of=recheck_of,
         )
         if review is not None:
             self.review = review
@@ -814,6 +821,10 @@ class ReviewController:
         final = await self._final_summary(self.final, config)
         previous = cast(Json, summary.get("final_review") or {})
         final["answered"] = answered or previous.get("answered") is True
+        final["rechecked"] = self.rechecked is not None
+        if self.rechecked is not None:
+            ended = await asyncio.to_thread(self.store.run, *self.scope, self.rechecked)
+            final["recheck"] = {"review": self.rechecked, "outcome": ended["state"]}
         if previous.get("finished") is False:
             final["finished"] = False
         counts = await asyncio.to_thread(self.notice_store.counts, *self.scope)
@@ -838,6 +849,7 @@ class ReviewController:
                 "answering_turn",
                 self.final,
             )
+            await self._recheck()
             return
         if self.task is not None or await self._dispatch("checkpoint") is None:
             return
@@ -848,6 +860,26 @@ class ReviewController:
             return
         if not self.task.done():
             await self._expire(self.review, "The run's end left it no more time.")
+        self.task = None
+
+    async def _recheck(self) -> None:
+        """The one re-check after the answering turn (CR-48): of the findings that turn
+        claimed fixed, with its own calls (``FINAL_RECHECK_CALLS``, outside the hourly
+        calls) and time (``recheck_seconds``), ended at its deadline if it outlasts it."""
+        assert self.final is not None  # noqa: S101
+        fixed = await asyncio.to_thread(self.store.answered, *self.scope, self.final)
+        if not fixed or self.task is not None:
+            return
+        review = await self._dispatch("confirmation", recheck_of=fixed)
+        if review is None:
+            return
+        self.rechecked = review
+        assert self.task is not None  # noqa: S101
+        loop = asyncio.get_running_loop()
+        if await self._wait(self.task, loop.time() + self.recheck_seconds) is not None:
+            return
+        if not self.task.done():
+            await self._expire(review, "The re-check's time limit ended it.")
         self.task = None
 
     def _review_summary(self, summary: Json) -> Json:
@@ -1059,8 +1091,10 @@ class Reviews(TurnHook):
 
     @property
     def holds_answers(self) -> bool:
-        # Until the run's final review: the answer after it is not held again (CR-48).
-        return self.controller.holding and self.controller.final is None
+        # The answer before the final review, and in hold the reply of its answering
+        # turn, until the re-check after it ends (CR-48).
+        controller = self.controller
+        return controller.holding and (controller.final is None or self.answering)
 
     async def notices(self, point: Point, run: RunView) -> Sequence[Notice]:
         if point != "turn":

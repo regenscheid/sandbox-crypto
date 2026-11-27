@@ -122,10 +122,11 @@ def budget_records(reviews: ReviewStore, review: str) -> list[dict[str, Any]]:
 
 
 def test_the_rubric_states_the_budget_and_the_verdict_on_what_was_covered() -> None:
-    assert "fixed budget of model calls" in RUBRIC
-    assert "Before your last two calls the platform tells you how many remain" in RUBRIC
-    assert "Name in unreviewed each new item you did not examine" in RUBRIC
-    assert '"unreviewed":[]' in RUBRIC
+    said = " ".join(RUBRIC.split())
+    assert "fixed budget of model calls" in said
+    assert "Before your last two calls the platform tells you how many remain" in said
+    assert "Name in unreviewed each new item you did not examine" in said
+    assert '"unreviewed":[]' in said
     assert "Dig no further" in BUDGET
 
 

@@ -12,7 +12,7 @@ import math
 import re
 import sqlite3
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any, Final, Literal, cast
@@ -44,6 +44,8 @@ from .models import (
     FINAL_CITED_ENTRIES,
     FINAL_FEED_BYTES,
     FINAL_FEED_ITEMS,
+    FINAL_RECHECK_CALLS,
+    FINAL_RECHECK_SECONDS,
     FINAL_REVIEW_CALLS,
     FINAL_REVIEW_SECONDS,
     FINAL_REVIEW_TOKENS,
@@ -129,6 +131,14 @@ def final_config(config: ReviewConfig) -> ReviewConfig:
             "max_feed_items": FINAL_FEED_ITEMS,
             "max_feed_bytes": FINAL_FEED_BYTES,
         }
+    )
+
+
+def recheck_config(config: ReviewConfig) -> ReviewConfig:
+    """The settings of the one re-check after a final review's answering turn (CR-48):
+    ``FINAL_RECHECK_CALLS`` calls in ``FINAL_RECHECK_SECONDS``, outside the hourly calls."""
+    return config.model_copy(
+        update={"max_turns": FINAL_RECHECK_CALLS, "time_seconds": float(FINAL_RECHECK_SECONDS)}
     )
 
 
@@ -537,6 +547,20 @@ class ReviewStore:
             return False
         return not snapshot_reads.uncovered(db, project, session, reviewed, start - 1, end)
 
+    def answered(self, project: str, session: str, review: str) -> list[str]:
+        """The findings of review ``review`` whose fix waits for its re-check: those the
+        turn answering a final review claimed fixed (CR-48)."""
+        self.scope(project, session)
+        with self.documents.control.read() as tx:
+            return [
+                finding
+                for (finding,) in tx.sql.execute(
+                    "SELECT finding_id FROM review_findings WHERE review_id=? "
+                    "AND recheck IS NOT NULL AND status IN ('open','stale') ORDER BY rowid",
+                    (review,),
+                )
+            ]
+
     def record_unreviewed(
         self, project: str, session: str, start: int, end: int, reason: str, review: str | None
     ) -> None:
@@ -612,8 +636,30 @@ class ReviewStore:
                 (project, session),
             ).fetchall()
         coverage = self.coverage(project, session)
+        answers = {"fixed": "resolved", "superseded": "unresolved", "dismissed": "dismissed"}
+        found: list[Json] = []
+        if review is not None:
+            with self.documents.control.read() as tx:
+                for finding, severity, status, latest in tx.sql.execute(
+                    "SELECT finding_id,severity,status,latest_recheck FROM review_findings "
+                    "WHERE review_id=? AND category NOT IN ('math','handle_citation') "
+                    "ORDER BY rowid LIMIT ?",
+                    (review, UNREVIEWED_SHOWN),
+                ):
+                    checked = stored_json(latest).get("answer") if latest else None
+                    found.append(
+                        {
+                            "finding": finding,
+                            "severity": severity,
+                            "status": status,
+                            "recheck": answers.get(status)
+                            if status != "open"
+                            else ("inconclusive" if checked == "inconclusive" else "not_rechecked"),
+                        }
+                    )
         return {
             "review": review,
+            "findings": found,
             "outcome": "pending" if state == "running" else state,
             "finished": state not in ("pending", "running", "dropped", "failed"),
             "complete": coverage["complete"],
@@ -766,6 +812,7 @@ class ReviewStore:
         viewed: Sequence[tuple[str, str]] = (),
         final: bool = False,
         answer: str | None = None,
+        recheck_of: Collection[str] | None = None,
     ) -> str | None:
         """Pin a bounded prefix. No unseen overflow item is skipped by the watermark,
         except by a checkpoint whose backlog it records as unreviewed (CR-49). ``viewed``
@@ -779,6 +826,8 @@ class ReviewStore:
         ``final`` makes the run's final review (CR-48), of kind ``terminal``: its final
         answer ``answer`` with the files and entries it names, the plan, the open findings
         and the work no review covered, newest first, within a budget of its own.
+        ``recheck_of`` makes the one re-check after its answering turn: a confirmation of
+        those findings only, with a budget of its own (``recheck_config``).
         """
         self.scope(project, session)
         config, config_revision = self.config(project)
@@ -806,11 +855,25 @@ class ReviewStore:
                 )
             return review if committed else None
         targets = self.confirmation_targets(project, session)
+        if recheck_of is not None:
+            targets = [target for target in targets if target[0] in recheck_of]
+            config = recheck_config(config)
+            classifier = {**(classifier or {}), "final": True, "recheck": True}
         if kind == "confirmation" and not targets:
             return None
         plan = self._plan(
-            project, session, kind, targets, coverage_complete, author_run, viewed, config
+            project,
+            session,
+            kind,
+            targets,
+            coverage_complete,
+            author_run,
+            viewed,
+            config,
+            only=recheck_of,
         )
+        if recheck_of is not None and not plan.targets:
+            return None
         if plan.kind == "confirmation" and not plan.targets:
             # Serve author work instead, with the configuration and targets as they are
             # now: the review may have been disabled or reconfigured meanwhile.
@@ -849,8 +912,11 @@ class ReviewStore:
         author_run: str,
         viewed: Sequence[tuple[str, str]] = (),
         config: ReviewConfig | None = None,
+        *,
+        only: Collection[str] | None = None,
     ) -> SnapshotPlan:
         """Read scoped evidence for the planner, preserving both materialization passes.
+        ``only`` limits the findings it holds to those named.
 
         Repository reads stay outside the admission policy. In particular a finding
         rejected from the initial reservation is read again after selecting the feed,
@@ -864,7 +930,10 @@ class ReviewStore:
             findings = snapshot_reads.open_findings(
                 db, project, session, targets, limit=MAX_SNAPSHOT_FINDINGS
             )
+            if only is not None:
+                findings = [row for row in findings if row[0] in only]
             planned = None if plans is None else plan_item(plans, db, project, session, author_run)
+            request = snapshot_reads.request_item(db, project, session)
             earlier = (
                 snapshot_reads.earlier(db, project, session, window, author_run)
                 if kind == "terminal"
@@ -881,6 +950,8 @@ class ReviewStore:
         if planned is not None:
             encoded = dump(planned[1])
             shown = (EvidenceItem("plan", dump(planned[0]), encoded, digest(encoded), 1),)
+        if request is not None:
+            shown = (request, *shown)
         planner = SnapshotPlanner(
             SnapshotInputs(
                 kind=kind,
@@ -972,6 +1043,7 @@ class ReviewStore:
                 db, project, session, (), limit=MAX_SNAPSHOT_FINDINGS
             )
             planned = None if plans is None else plan_item(plans, db, project, session, author_run)
+            request = snapshot_reads.request_item(db, project, session)
             start, pinned = snapshot_reads.final_items(
                 db,
                 project,
@@ -994,7 +1066,7 @@ class ReviewStore:
                 # A range already recorded unreviewed is not recorded again.
                 if not any(a <= found[0] and found[1] <= b for a, b in known)
             ]
-        shown: list[EvidenceItem] = []
+        shown: list[EvidenceItem] = [] if request is None else [request]
         if planned is not None:
             encoded = dump(planned[1])
             shown.append(EvidenceItem("plan", dump(planned[0]), encoded, digest(encoded), 1))
