@@ -57,6 +57,7 @@ class Site:
             max_artifact_size=1 << 20,
             state_dir=root,
             timeouts=replace(MANAGER_TIMEOUTS, restart_retry=0.05, restart_retry_max=0.2),
+            job_restarts_unisolated=True,  # this test's job leaves no process behind
             lifecycle=EnvironmentLifecycle(
                 daemon_identity=lambda _environment: ("synthetic-sandbox", "synthetic-id"),
                 environment_stopped=lambda _environment: self.stopped,

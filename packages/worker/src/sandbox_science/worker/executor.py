@@ -129,6 +129,9 @@ MAX_WRITTEN = 1000
 MAX_SURVIVED = 100
 """Paths a restarted job's attempt reports as changed since the lost attempt started (the
 worker's ``MAX_SURVIVED_FILES``)."""
+MAX_SURVIVED_HASHED = 4 * 1024**3
+"""Bytes a restarted job's attempt hashes of the lost attempt's files as it starts; a file
+past them is listed without its digest."""
 MAX_JOB_ATTEMPT = 64
 """The highest attempt number a job request may carry; the worker's bound is lower."""
 JOB_ATTEMPT_VARIABLE = "SANDBOX_JOB_ATTEMPT"
@@ -1608,7 +1611,9 @@ class Executor:
             if running.kind == "job":
                 logs = await asyncio.to_thread(self.job_logs, session, execution, running.attempt)
                 if running.since is not None:
-                    survived = _survived(before[0], running.since)
+                    survived = await asyncio.to_thread(
+                        self.survived, session, before[0], running.since
+                    )
             self.admission.own(running.owner, execution)
             # The process is the executor's child before its pid is in spawned.
             with sandbox_processes.starting_children():
@@ -1709,6 +1714,9 @@ class Executor:
                 os.close(descriptor)
             if running.process is not None:
                 sandbox_processes.spawned.discard(running.process.pid)
+            if running.kind == "job" and running.leader is not None:
+                # Its processes were ended with it: no later daemon need look for them.
+                sandbox_processes.forget_job_session(self.root / ".executor", running.leader)
             self.lifecycle.finish(execution)
             observations = written.pop("output_observations", None)
             result = {
@@ -1750,6 +1758,50 @@ class Executor:
                     raise
             if text:
                 await self.stream(execution, capture.name, text)
+
+    def survived(
+        self, session: str, before: dict[str, tuple[int, int, int]], since: float
+    ) -> Message:
+        """The ``state`` event's account of the files changed since ``since`` that a
+        restarted job's attempt finds as it starts: at most ``MAX_SURVIVED``, each with its
+        size and SHA-256, within ``MAX_SURVIVED_HASHED`` bytes hashed in all."""
+        threshold = int(since * 1_000_000_000)
+        paths = sorted(path for path, stamp in before.items() if stamp[0] >= threshold)
+        budget = MAX_SURVIVED_HASHED
+        files: list[Message] = []
+        for path in paths[:MAX_SURVIVED]:
+            size = before[path][1]
+            digest = self.file_sha256(session, path) if size <= budget else None
+            if digest is not None:
+                budget -= size
+            files.append(
+                {"path": sandbox_files.printable_path(path), "size": size, "sha256": digest}
+            )
+        return {"survived": files, "survived_truncated": len(paths) > MAX_SURVIVED}
+
+    def file_sha256(self, session: str, path: str) -> str | None:
+        """A workspace or shared file's SHA-256, read through no symlink; None if it cannot
+        be read as a regular file."""
+        try:
+            base, rest = self.files.split(session, path)
+            if not rest:
+                return None
+            parent = sandbox_files.walk(self.files.open_base(base), rest[:-1], path, create=False)
+        except (OSError, ToolError):
+            return None
+        try:
+            flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+            with os.fdopen(os.open(rest[-1], flags, dir_fd=parent), "rb") as handle:
+                if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                    return None
+                digest = hashlib.sha256()
+                while block := handle.read(1024 * 1024):
+                    digest.update(block)
+                return digest.hexdigest()
+        except OSError:
+            return None
+        finally:
+            os.close(parent)
 
     def job_logs(self, session: str, execution: str, attempt: int = 1) -> dict[str, int]:
         """Create two private regular files through held, symlink-free directory FDs: in
@@ -2560,17 +2612,6 @@ def _attempt(request: Message) -> tuple[int, float | None]:
     ):
         raise ToolError("invalid_request", "a restarted job needs when its lost attempt started")
     return attempt, float(since)
-
-
-def _survived(before: dict[str, tuple[int, int, int]], since: float) -> Message:
-    """The ``state`` event's account of the files changed since ``since`` that a restarted
-    job's attempt finds as it starts, at most ``MAX_SURVIVED`` paths."""
-    threshold = int(since * 1_000_000_000)
-    paths = sorted(path for path, stamp in before.items() if stamp[0] >= threshold)
-    return {
-        "survived": [sandbox_files.printable_path(path) for path in paths[:MAX_SURVIVED]],
-        "survived_truncated": len(paths) > MAX_SURVIVED,
-    }
 
 
 def _running(environment: str | None) -> Message:

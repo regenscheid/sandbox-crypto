@@ -104,6 +104,16 @@ def create_attempt_schema(db: sqlite3.Connection) -> None:
     )
 
 
+def create_acceptance_schema(db: sqlite3.Connection) -> None:
+    """Append-only worker migration (version 14): whether the executor took each dispatch
+    of a restartable job's attempt: 1 it did, 0 it refused it, unset not known (the send
+    failed part way, or the worker stopped), which counts as taken."""
+    db.execute(
+        "ALTER TABLE job_attempt_dispatches ADD COLUMN accepted INTEGER"
+        " CHECK (accepted IS NULL OR accepted IN (0, 1))"
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class JobSandboxRecord:
     """A job sandbox's row."""

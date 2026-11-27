@@ -215,6 +215,7 @@ def _build(settings: Settings, token: str, clock: Clock, lock: StateLock) -> Wor
         lifecycle=build_lifecycle(settings, backend, environments, store),
         clock=clock,
         job_restarts=settings.job_restarts,
+        job_restarts_unisolated=settings.job_restarts_unisolated,
     )
     if environments is not None:
         environments.release = manager.release
