@@ -396,6 +396,9 @@ class ReviewController:
         self.holding = False
         """Whether the run's final answer is kept from the user until its final review
         ends (``final_review = "hold"``), as read when the run's reviews begin."""
+        self.hold_until: float | None = None
+        """When ``hold``'s limit ends, by the event loop's clock: from the final review's
+        start, its answering turn and the re-check after it included (CR-48)."""
         self.final: str | None = None
         """The run's final review, once dispatched (CR-48)."""
         self.author_alias = author_alias
@@ -691,6 +694,7 @@ class ReviewController:
         final: bool = False,
         answer: str | None = None,
         recheck_of: Collection[str] | None = None,
+        dismissals: Collection[str] = (),
     ) -> str | None:
         if self.role != "main":
             return None
@@ -714,6 +718,7 @@ class ReviewController:
             final=final,
             answer=answer,
             recheck_of=recheck_of,
+            dismissals=dismissals,
         )
         if review is not None:
             self.review = review
@@ -890,7 +895,8 @@ class ReviewController:
         deadline = ending
         if config.final_review == "hold":
             # The hold's limit runs from when its final review starts.
-            deadline = min(deadline, clock() + self.hold_seconds)
+            self.hold_until = clock() + self.hold_seconds
+            deadline = min(deadline, self.hold_until)
         message = await self._wait(self.task, deadline)
         if message is not None:
             return self._review_summary({**summary, "pending": True, "user_message": message})
@@ -976,9 +982,8 @@ class ReviewController:
         ended = await asyncio.to_thread(self.store.run, *self.scope, self.final)
         coverage = await asyncio.to_thread(self.store.coverage, *self.scope)
         start, head = int(ended["end_seq"]) + 1, int(coverage["feed_end"])
-        if head < start:
-            return
         if answered:
+            # A dismissal changes nothing in the feed, and is re-checked all the same.
             await asyncio.to_thread(
                 self.store.record_unreviewed,
                 *self.scope,
@@ -988,6 +993,8 @@ class ReviewController:
                 self.final,
             )
             await self._recheck()
+            return
+        if head < start:
             return
         if self.task is not None or await self._dispatch("checkpoint") is None:
             return
@@ -1002,23 +1009,38 @@ class ReviewController:
 
     async def _recheck(self) -> None:
         """The one re-check after the answering turn (CR-48): of the findings that turn
-        claimed fixed, with its own calls (``FINAL_RECHECK_CALLS``, outside the hourly
-        calls) and time (``recheck_seconds``), ended at its deadline if it outlasts it."""
+        claimed fixed, and of those it dismissed, whose reasons the re-check accepts or
+        rejects (CR-43), with its own calls (``FINAL_RECHECK_CALLS``, outside the hourly
+        calls) and time (``recheck_seconds``, and no later than ``hold``'s limit), ended
+        at its deadline if it outlasts it."""
         assert self.final is not None  # noqa: S101
         fixed = await asyncio.to_thread(self.store.answered, *self.scope, self.final)
-        if not fixed or self.task is not None:
+        dismissed = await asyncio.to_thread(self.store.dismissed, *self.scope, self.final)
+        if not (fixed or dismissed) or self.task is not None:
             return
-        review = await self._dispatch("confirmation", recheck_of=fixed)
+        review = await self._dispatch("confirmation", recheck_of=fixed, dismissals=dismissed)
         if review is None:
             return
         self.rechecked = review
         assert self.task is not None  # noqa: S101
         loop = asyncio.get_running_loop()
-        if await self._wait(self.task, loop.time() + self.recheck_seconds) is not None:
+        deadline = loop.time() + self.recheck_seconds
+        held = self.holding and self.hold_until is not None and self.hold_until < deadline
+        if held:
+            assert self.hold_until is not None  # noqa: S101
+            deadline = self.hold_until
+        if await self._wait(self.task, deadline) is not None:
             return
         if not self.task.done():
-            await self._expire(review, "The re-check's time limit ended it.")
+            why = "The hold's limit ended it." if held else "The re-check's time limit ended it."
+            await self._expire(review, why)
         self.task = None
+
+    def hold_passed(self) -> bool:
+        """Whether ``hold``'s limit has ended: what it held then goes to the user."""
+        if self.hold_until is None:
+            return False
+        return asyncio.get_running_loop().time() >= self.hold_until
 
     def _review_summary(self, summary: Json) -> Json:
         # A terminal hold may dispatch another window after the initial metadata
@@ -1232,7 +1254,11 @@ class Reviews(TurnHook):
         # The answer before the final review, and in hold the reply of its answering
         # turn, until the re-check after it ends (CR-48).
         controller = self.controller
-        return controller.holding and (controller.final is None or self.answering)
+        return (
+            controller.holding
+            and (controller.final is None or self.answering)
+            and not controller.hold_passed()
+        )
 
     async def notices(self, point: Point, run: RunView) -> Sequence[Notice]:
         if point != "turn":

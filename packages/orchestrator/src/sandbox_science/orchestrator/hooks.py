@@ -210,6 +210,18 @@ class RunView(Protocol):
         CR-48): the run's events write it once the closing ends."""
         ...
 
+    @property
+    def answer(self) -> str | None:
+        """The run's answer to the user, once a closing let one stand."""
+        ...
+
+    @property
+    def holding(self) -> bool:
+        """Whether the answer a closing held for its response round is still kept from the
+        user (consistency review, CR-48): the run's events write it only if it becomes the
+        run's answer, not when the round's own answer stands."""
+        ...
+
     def delivered_ids(self, source: str) -> AbstractSet[str]: ...
 
 
