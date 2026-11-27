@@ -274,6 +274,8 @@ def test_a_checkpoint_skips_a_backlog_to_the_newest_work_and_says_so(store) -> N
     assert coverage["items"] == {
         "total": count,
         "reviewed": grown,
+        "read_in_part": 0,
+        "not_read": 0,
         "unreviewed": count - grown,
         "not_recorded": 0,
     }
@@ -416,7 +418,14 @@ def test_a_review_stored_before_the_final_review_still_loads(store) -> None:
         "unreviewed": [],
         "unreviewed_ranges": 0,
         "unreviewed_reasons": {},
-        "items": {"total": 3, "reviewed": 3, "unreviewed": 0, "not_recorded": 0},
+        "items": {
+            "total": 3,
+            "reviewed": 3,
+            "read_in_part": 0,
+            "not_read": 0,
+            "unreviewed": 0,
+            "not_recorded": 0,
+        },
         "not_recorded_through": None,
     }
     assert reviews.listing("p", "s")["reviews"][0]["review_id"] == review
@@ -696,7 +705,9 @@ async def test_every_review_is_given_the_users_request_and_its_later_change(stor
     assert summary["final_review"]["complete"]
 
 
-def test_a_long_request_keeps_the_newest_whole_and_the_first(store) -> None:
+def test_a_long_request_keeps_every_message_the_newest_whole_and_the_rest_clipped(store) -> None:
+    """The user's messages are never left out: those that do not fit whole, the oldest
+    first after the first, are kept as clipped stubs with their IDs (CR-48 as amended)."""
     from sandbox_science.contracts import new_id
     from sandbox_science.orchestrator.consistency.models import REQUEST_BYTES
 
@@ -706,9 +717,12 @@ def test_a_long_request_keeps_the_newest_whole_and_the_first(store) -> None:
         _post(reviews, message, f"Message {n}: " + "x" * (REQUEST_BYTES // 4))
     claim(reviews)
     asked = _request(reviews, dispatch(reviews, "checkpoint"))
-    listed = [m["message"] for m in asked["messages"]]
-    assert (listed[0], listed[-1]) == (ids[0], ids[-1])
-    assert asked["omitted"] == len(ids) - len(listed) > 0
+    listed = asked["messages"]
+    assert [m["message"] for m in listed] == ids
+    assert not listed[-1].get("clipped")
+    assert listed[-1]["text"].startswith("Message 5: ")
+    assert asked["clipped_messages"] == sum(1 for m in listed if m.get("clipped")) > 0
+    assert asked["omitted"] == 0
 
 
 class FixingReviewer(LabReviewer):

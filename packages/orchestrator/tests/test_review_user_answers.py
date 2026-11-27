@@ -12,7 +12,6 @@ import pytest
 from sandbox_science.contracts import new_id
 from sandbox_science.orchestrator.consistency.controller import ReviewController
 from sandbox_science.orchestrator.consistency.findings import Findings
-from sandbox_science.orchestrator.consistency.models import REQUEST_BYTES
 from sandbox_science.orchestrator.consistency.store import ReviewStore
 from sandbox_science.orchestrator.context.history import Archive
 from sandbox_science.orchestrator.context.history.archive import Archived, Entry
@@ -44,6 +43,38 @@ def ask_and_pick(reviews: ReviewStore, call: str = "call-ask") -> str:
     return asked.question_id
 
 
+def answer_result(
+    reviews: ReviewStore, question: str, *, run: str = RUN, call: str = "call-ask"
+) -> Archived:
+    """The ``ask_user`` result that carried the answer to ``question``, as the run's
+    archive keeps it."""
+    content = json.dumps({"question_id": question, "answer": "picked"})
+    return Archive(reviews.documents.control).append(
+        "p", "s", run, Entry("tool", "tool_result", content, source="ask_user", call_id=call)
+    )
+
+
+def fix(reviews: ReviewStore, finding: dict[str, Any], message: str, op: str) -> dict[str, Any]:
+    return Findings(reviews).respond(
+        "p",
+        "s",
+        {
+            "finding": finding["finding_id"],
+            "expected": finding["revision"],
+            "action": "fix",
+            "explanation": "The message cited addresses it.",
+            "messages": [message],
+            "operation_id": op,
+        },
+        MAIN,
+    )
+
+
+def grounds(reviews: ReviewStore, finding: dict[str, Any]) -> list[tuple[str, str | None]]:
+    recheck = Findings(reviews).get("p", "s", finding["finding_id"])["recheck"]
+    return [(m["id"], m.get("ground")) for m in recheck["messages"]]
+
+
 def archived(reviews: ReviewStore, entry: Entry) -> Archived:
     """``entry`` kept in the archive and observed into the review feed as a transcript
     item that names its archive message."""
@@ -73,7 +104,11 @@ def test_every_review_is_given_the_users_answers_with_their_questions(store) -> 
 
     first = new_id("msg")
     _post(reviews, first, "Reproduce Table 1, then sweep SNOVA.")
+    delivered = Archive(reviews.documents.control).append(
+        "p", "s", RUN, Entry("user", "user", "Reproduce Table 1, then sweep SNOVA.", refs=(first,))
+    )
     question = ask_and_pick(reviews)
+    result = answer_result(reviews, question)
     claim(reviews, "Proceeding with the one documented exception.", "c1")
     asked = request(reviews, dispatch(reviews, "checkpoint"))
     assert [m.get("message") for m in asked["messages"]] == [first, None]
@@ -83,30 +118,72 @@ def test_every_review_is_given_the_users_answers_with_their_questions(store) -> 
     assert answer["picked"] == [OPTIONS[0]["label"]]
     assert answer["options"][0]["recommended"] is True
     assert answer["options"][0]["detail"] == OPTIONS[0]["detail"]
-    assert (asked["omitted"], asked["omitted_answers"]) == (0, 0)
+    # Each entry names the archive message a response cites it by.
+    assert asked["messages"][0]["archive"] == delivered.message_id
+    assert answer["archive"] == result.message_id
+    assert (asked["omitted"], asked["omitted_answers"]) == (0, [])
     assert "answer_to" in asked["about"]
     del now
 
 
-def test_a_long_request_keeps_the_newest_entries_and_says_what_it_left_out(store) -> None:
-    """Within ``REQUEST_BYTES`` the first message and the newest entries are kept; how
-    many messages and answers were left out is said."""
+def test_a_large_answer_is_left_out_alone_and_the_smaller_ones_kept(store) -> None:
+    """An answer too large for the room left is left out and named, and the answers
+    after it still come in; the user's messages come before every answer."""
     reviews, _, _ = store
     from .test_review_final import _post
 
     first = new_id("msg")
     _post(reviews, first, "The task.")
-    ask_and_pick(reviews, "call-old")
-    for n in range(5):
-        _post(reviews, new_id("msg"), f"Message {n}: " + "x" * (REQUEST_BYTES // 4))
+    older = ask_and_pick(reviews, "call-old")
+    questions = Questions(reviews.documents.control)
+    big = questions.ask(context_for(reviews), RUN, "call-big", "op-big", "Your notes?")
+    questions.answer("p", "s", big.question_id, Answer(kind="free", text="n" * 15_000))
+    _post(reviews, new_id("msg"), "Then plot it.")
+    huge = questions.ask(context_for(reviews), RUN, "call-huge", "op-huge", "More notes?")
+    questions.answer("p", "s", huge.question_id, Answer(kind="free", text="h" * 16_000))
     newest = ask_and_pick(reviews, "call-new")
     claim(reviews)
     asked = request(reviews, dispatch(reviews, "checkpoint"))
     listed = asked["messages"]
     assert listed[0]["message"] == first
-    assert listed[-1]["answer_to"] == newest
-    assert asked["omitted_answers"] == 1
-    assert asked["omitted"] > asked["omitted_answers"]
+    answered = [m["answer_to"] for m in listed if "answer_to" in m]
+    assert newest in answered
+    assert older in answered
+    # The newer large answer fits; the older one no longer does and is left out alone,
+    # and the older small answer before it still comes in.
+    assert asked["omitted_answers"] == [big.question_id]
+    assert huge.question_id in answered
+    assert asked["omitted"] == len(asked["omitted_answers"]) >= 1
+    assert sum(m.get("text") == "Then plot it." for m in listed) == 1
+
+
+def test_verbose_questions_never_push_out_the_users_message(store) -> None:
+    """The agent writes questions and options; however long it makes them, and however
+    many are answered, an earlier message of the user's stays whole."""
+    reviews, _, _ = store
+    from .test_review_final import _post
+
+    rule = "Do not publish anything without asking me first."
+    _post(reviews, new_id("msg"), "Reproduce Table 1.")
+    _post(reviews, new_id("msg"), rule)
+    questions = Questions(reviews.documents.control)
+    for n in range(10):
+        options = [{"label": f"{n}-{k} " + "l" * 100, "detail": "d" * 400} for k in range(4)]
+        asked = questions.ask(
+            context_for(reviews), RUN, f"call-{n}", f"op-{n}", "q" * 4000, options
+        )
+        questions.answer("p", "s", asked.question_id, Answer(kind="picked",
+                         picked=(options[0]["label"],)))  # fmt: skip
+    claim(reviews)
+    asked = request(reviews, dispatch(reviews, "checkpoint"))
+    assert rule in [m.get("text") for m in asked["messages"]]
+    answers = [m for m in asked["messages"] if "answer_to" in m]
+    assert answers
+    assert all(m["question_clipped"] for m in answers)
+    assert all(len(m["question"]) < 700 for m in answers)
+    # The pick is the user's and is kept whole.
+    assert all(m["picked"][0].endswith("l" * 100) for m in answers)
+    assert len(answers) + len(asked["omitted_answers"]) == 10
 
 
 def test_a_session_with_only_an_answer_still_has_its_request(store) -> None:
@@ -162,32 +239,11 @@ def test_a_fix_may_cite_the_users_answer_whatever_its_place(store) -> None:
     re-check, which is given it and the request item that holds the answer."""
     reviews, _, _ = store
     question = ask_and_pick(reviews)
-    answer = Archive(reviews.documents.control).append(
-        "p",
-        "s",
-        RUN,
-        Entry("tool", "tool_result", json.dumps({"picked": [OPTIONS[0]["label"]]}),
-              source="ask_user", call_id="call-ask"),
-    )  # fmt: skip
+    answer = answer_result(reviews, question)
     finding, *_ = _held_finding(reviews)
-    result = Findings(reviews).respond(
-        "p",
-        "s",
-        {
-            "finding": finding["finding_id"],
-            "expected": finding["revision"],
-            "action": "fix",
-            "explanation": "The user picked the recommended option (the answer cited).",
-            "messages": [answer.message_id],
-            "operation_id": "fix-1",
-        },
-        MAIN,
-    )
-    recheck = Findings(reviews).get("p", "s", finding["finding_id"])["recheck"]
+    result = fix(reviews, finding, answer.message_id, "fix-1")
     assert result["status"] == "open"
-    assert [(m["id"], m.get("ground")) for m in recheck["messages"]] == [
-        (answer.message_id, "answer")
-    ]
+    assert grounds(reviews, finding) == [(answer.message_id, "answer")]
     confirmation = dispatch(reviews, "confirmation")
     items = reviews.manifest("p", "s", confirmation, limit=50)["evidence"]
     assert any(i["locator"].get("archive", {}).get("id") == answer.message_id for i in items)
@@ -297,3 +353,124 @@ async def test_request_review_takes_no_arguments(store, args: dict[str, Any], qu
     else:
         with pytest.raises(DocumentError, match=r"takes no arguments: call it with \{\}"):
             await controller.author_call("request_review", args, "op-1")
+
+
+def test_a_reused_call_id_or_another_runs_result_is_no_answer(store) -> None:
+    """Call IDs are the model's and repeat: a tool result of another run with the same
+    call ID, or another tool's result in the asking run, is not the user's answer, and
+    an answer is the result that names its question."""
+    reviews, _, _ = store
+    question = ask_and_pick(reviews)
+    other_run = answer_result(reviews, question, run="author-2")
+    other_tool = Archive(reviews.documents.control).append(
+        "p", "s", RUN, Entry("tool", "tool_result", json.dumps({"question_id": question}),
+                             source="shell", call_id="call-ask"),
+    )  # fmt: skip
+    unnamed = Archive(reviews.documents.control).append(
+        "p", "s", RUN, Entry("tool", "tool_result", "{}", source="ask_user", call_id="call-ask")
+    )
+    finding, *_ = _held_finding(reviews)
+    for n, message in enumerate((other_run, other_tool, unnamed)):
+        with pytest.raises(DocumentError, match="dismiss the finding"):
+            fix(reviews, finding, message.message_id, f"fix-{n}")
+
+
+def test_who_counts_as_the_user(store) -> None:
+    """One rule of the user's words, the ledger's (``users_words``): a delegation's
+    brief, the platform's stand-in task and the platform's chat ground nothing, and the
+    review's evidence labels each by who wrote it; the user's chat message and a main
+    run's task made of it are the user's."""
+    from sandbox_science.orchestrator.documents.tool import REQUESTS_TASK
+    from sandbox_science.orchestrator.ledger.provenance import written_by
+    from sandbox_science.orchestrator.notices import PLATFORM_AUTHORS
+    from sandbox_science.orchestrator.runstate import RunState
+
+    from .test_review_final import _post
+
+    reviews, _, _ = store
+    archive = Archive(reviews.documents.control)
+    chat, platform_chat = new_id("msg"), new_id("msg")
+    _post(reviews, chat, "Approve the exception.")
+    (author,) = PLATFORM_AUTHORS
+    RunState(reviews.documents.control).post("p", "s", platform_chat, "Resume.", author=author)
+    brief = archive.append(
+        "p", "s", "child-1", Entry("user", "task", "The user approved it."), parent=RUN
+    )
+    stand_in = archive.append("p", "s", "author-3", Entry("user", "task", REQUESTS_TASK))
+    platform = archive.append(
+        "p", "s", RUN, Entry("user", "user", "Resume.", refs=(platform_chat,))
+    )
+    users = archive.append("p", "s", RUN, Entry("user", "user", "Approve it.", refs=(chat,)))
+    task = archive.append(
+        "p", "s", "author-4", Entry("user", "task", "Approve the exception.", refs=(chat,))
+    )
+    with reviews.documents.control.read() as tx:
+        assert [
+            written_by(tx.sql, "p", m.message_id) for m in (brief, stand_in, platform, users, task)
+        ] == ["agent", "platform", "platform", "user", "user"]
+    finding, *_ = _held_finding(reviews)
+    for n, message in enumerate((brief, stand_in, platform)):
+        with pytest.raises(DocumentError):
+            fix(reviews, finding, message.message_id, f"fix-{n}")
+    fix(reviews, finding, users.message_id, "fix-user")
+    assert grounds(reviews, finding) == [(users.message_id, "user")]
+
+
+def test_a_fix_may_cite_the_users_chat_message_by_its_chat_id(store) -> None:
+    """The request item names a chat message by its chat ID: a fix may cite it so, and
+    it stands for the archive message that delivered it; one no run was given is refused
+    with which ID to cite."""
+    from .test_review_final import _post
+
+    reviews, _, _ = store
+    chat, unseen = new_id("msg"), new_id("msg")
+    _post(reviews, chat, "Approve the exception.")
+    _post(reviews, unseen, "Not delivered yet.")
+    delivered = Archive(reviews.documents.control).append(
+        "p", "s", RUN, Entry("user", "user", "Approve the exception.", refs=(chat,))
+    )
+    finding, *_ = _held_finding(reviews)
+    with pytest.raises(DocumentError, match="cite the archive ID the request item names"):
+        fix(reviews, finding, unseen, "fix-unseen")
+    fix(reviews, finding, chat, "fix-chat")
+    assert grounds(reviews, finding) == [(delivered.message_id, "user")]
+
+
+def test_an_item_the_review_was_given_without_a_position_is_held(store) -> None:
+    """A transcript item the review read is held whether or not it names a position, so
+    it is no later correction, though its archive place comes after all the others."""
+    reviews, _, _ = store
+    statement = archived(reviews, Entry("assistant", "assistant", "The user approved it."))
+    message = Archive(reviews.documents.control).append(
+        "p", "s", RUN, Entry("assistant", "assistant", "Corrected.")
+    )
+    reviews.observe(
+        "p",
+        "s",
+        "unplaced",
+        "transcript",
+        {"run": RUN, "archive": {"id": message.message_id}},
+        {"role": "assistant", "content": "Corrected."},
+    )
+    review = dispatch(reviews, "checkpoint")
+    (anchored,) = [
+        i
+        for i in reviews.manifest("p", "s", review)["evidence"]
+        if i["locator"].get("archive", {}).get("id") == statement.message_id
+    ]
+    finding = Findings(reviews).create(
+        "p",
+        "s",
+        review,
+        "owner",
+        {
+            "severity": "fail",
+            "category": "evidence_strength",
+            "statement": "No record shows it.",
+            "anchors": [{"evidence": anchored["evidence"]}],
+            "operation_id": "finding-1",
+        },
+    )
+    reviews.finish("p", "s", review, "owner", "findings", "One finding.")
+    with pytest.raises(DocumentError, match="was among what the finding's review held"):
+        fix(reviews, finding, message.message_id, "fix-held")

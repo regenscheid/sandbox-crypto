@@ -274,7 +274,7 @@ export function finalReviewLine(final: FinalReviewSummary | undefined): string |
     const items = final.items;
     parts.push(
       `Unreviewed: positions ${ranges.join(', ')}${more > 0 ? ` and ${more} more ${more === 1 ? 'range' : 'ranges'}` : ''}` +
-        (items ? ` (${items.reviewed} of ${items.total} items reviewed).` : '.'),
+        (items ? ` (${items.reviewed} of ${items.total} items reviewed whole).` : '.'),
     );
   }
   if (final.not_recorded_through)
@@ -340,10 +340,22 @@ export function finalReviewEnd(
     lines.push(`Not read: ${what}${unread.why ? `, ${unread.why}` : ''}.`);
   }
   const items = final.items;
-  if (items && items.total > 0)
+  if (items && items.total > 0) {
+    const rest = [
+      [items.read_in_part ?? 0, 'read in part'],
+      [items.not_read ?? 0, 'with nothing to read'],
+      [items.unreviewed, 'not reviewed'],
+    ] as const;
+    const said = rest.filter(([n]) => n > 0).map(([n, words]) => `${n} ${words}`);
     lines.push(
-      `Reviewed: ${items.reviewed} of ${items.total} items of the session's work` +
-        (items.unreviewed ? `; ${items.unreviewed} not reviewed.` : '.'),
+      `Reviewed whole: ${items.reviewed} of ${items.total} items of the session's work` +
+        (said.length ? `; ${said.join(', ')}.` : '.'),
+    );
+  }
+  const working = final.working_files_deleted ?? 0;
+  if (working > 0)
+    lines.push(
+      `${working} working ${working === 1 ? 'file' : 'files'} the run made and deleted had nothing to read.`,
     );
   const ranges = final.unreviewed_ranges ?? final.unreviewed?.length ?? 0;
   if (ranges > 0) {

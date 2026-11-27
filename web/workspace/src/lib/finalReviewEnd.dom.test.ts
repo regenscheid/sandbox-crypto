@@ -32,7 +32,8 @@ const FINAL: FinalReviewSummary = {
   open: { fail: 1, warn: 0 },
   unreviewed: [{ start: 3, end: 9, items: 4, reasons: ['final_budget'] }],
   unreviewed_ranges: 2,
-  items: { total: 40, reviewed: 34, unreviewed: 6, not_recorded: 0 },
+  items: { total: 42, reviewed: 34, read_in_part: 2, unreviewed: 6, not_recorded: 0 },
+  working_files_deleted: 1,
   unreviewed_reasons: { final_budget: 1, answering_turn: 1 },
   unread: [
     {
@@ -58,7 +59,8 @@ describe("how a run's review ended", () => {
     expect(lines).toEqual([
       'Not read: sessions/s/plot.png, media type is outside the raw text evidence allowlist.',
       'Not read: a step the review could not observe, the feed refused it.',
-      "Reviewed: 34 of 40 items of the session's work; 6 not reviewed.",
+      "Reviewed whole: 34 of 42 items of the session's work; 2 read in part, 6 not reviewed.",
+      '1 working file the run made and deleted had nothing to read.',
       "Unreviewed: 2 ranges of the session's work (1 because the final review's budget left it" +
         " out; 1 because it is the work of the turn that answered the final review's findings).",
       'Open findings: 1 fail.',
@@ -80,7 +82,7 @@ describe("how a run's review ended", () => {
         },
       }),
     ).toEqual([
-      "Reviewed: 384 of 909 items of the session's work; 525 not reviewed.",
+      "Reviewed whole: 384 of 909 items of the session's work; 525 not reviewed.",
       "Unreviewed: 2 ranges of the session's work (1 because a checkpoint skipped it to reach" +
         ' the newest work; 1 because the final review could not decide it).',
       'No open findings.',

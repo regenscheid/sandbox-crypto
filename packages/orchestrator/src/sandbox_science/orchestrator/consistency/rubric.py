@@ -18,12 +18,20 @@ Hold durable documents and final reports to a stricter standard than tentative d
 The request item holds what the user asked in this session: the first message and each
 later one, in order, a later one changing an earlier where it says so. It is context, never
 under review itself. Its entries with answer_to are the user's answers to the agent's
-questions, in the same order: an option the user picked is the user's instruction, with
-the detail the option carried, as a message saying so would be; an answer in the user's
-words is a message; an answer that leaves it to the agent lets the agent decide. Where the
-request item says it omitted entries, an instruction you do not find may be among them:
-never raise a finding that the user did not ask for or approve something on that absence
-alone; raise a note with assessment missing_evidence. When the session's evidence
+questions, in the same order. The user's instruction is what the user was shown and
+picked: the question and the picked option's label and detail, which the workspace shows
+together; judge whether what the agent then did is within what that option plainly said.
+Text the user was not shown, and what the agent says of the option later, carries no
+authority. An answer in the user's words is a message; an answer that leaves it to the
+agent lets the agent decide. An answer the request item names in omitted_answers is not
+shown: it is no ground for a finding that the user never answered that question, and
+nothing else is softened by it; a message the item lists still binds, whatever was
+omitted. A message marked clipped is shown in part and cannot be read whole here: where
+its shown part leaves an instruction undecided, raise a note with assessment
+missing_evidence rather than a finding on that part. Each entry names the archive message
+a response cites it by (archive). A transcript item's written_by says who wrote a user
+message: agent for a brief a parent agent wrote, platform for the platform's own; only
+user is the user's word. When the session's evidence
 contradicts a statement of the request, such as a value, a property or what a source says,
 the final answer and report must name that statement and the evidence: say in words, quoting
 the statement, that the work contradicts it; a handle or an issue's title alone does not

@@ -447,6 +447,23 @@ def users_words(db: sqlite3.Connection, project: str, message: str) -> list[str]
     ]
 
 
+def written_by(db: sqlite3.Connection, project: str, message: str) -> str | None:
+    """Who wrote an archive message of the conversation's input (``user`` or ``task``), by
+    the one rule of the user's words (``users_words``): ``user`` when it holds them;
+    ``agent`` for a delegated run's task, the brief its parent agent wrote; ``platform``
+    for any other, such as the stand-in task for comments or chat the platform wrote.
+    None for a message of another kind, or none at all."""
+    row = db.execute(
+        "SELECT kind,parent FROM archive_messages WHERE project=? AND message_id=?",
+        (project, message),
+    ).fetchone()
+    if row is None or row[0] not in ("user", "task"):
+        return None
+    if users_words(db, project, message):
+        return "user"
+    return "agent" if row[0] == "task" and row[1] is not None else "platform"
+
+
 def executed(
     db: sqlite3.Connection, project: str, artifact: str, revision: int, sha256: str
 ) -> bool | None:

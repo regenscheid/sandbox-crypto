@@ -36,8 +36,6 @@ if TYPE_CHECKING:
 
 TEXT_BYTES: Final = 64 * 1024
 PAGE: Final = 10
-WORKING_FILE: Final = "a working file the run's commands made and deleted: nothing to read"
-"""What the item of a deleted working file says (``_working_file``)."""
 ARTIFACT_FEED: Final = FeedCursor("artifact")
 """How far each session's reviewer has read the project's artifact events."""
 _TEXT_TYPES = frozenset(
@@ -105,14 +103,6 @@ def artifact_text(locator: Json, payload: Json) -> str | None:
         return projection.text
     except (ValidationError, KeyError, ValueError, UnicodeError):
         raise DocumentError(CONFLICT, "invalid pinned artifact text evidence") from None
-
-
-def projection_complete(locator: Json, payload: Json) -> bool:
-    """Whether an artifact item is whole: its text copied exactly (``artifact_text``), or
-    the deletion of a working file, which has nothing to read (``WORKING_FILE``)."""
-    if artifact_text(locator, payload) is not None:
-        return True
-    return payload.get("availability") == "unavailable" and payload.get("reason") == WORKING_FILE
 
 
 def project_artifact(
@@ -394,13 +384,6 @@ def _project_events(
             event.source,
             snapshot.source_path if snapshot is not None else None,
         )
-        if event.kind == "artifact.deleted" and _working_file(
-            store, project, event.revision.artifact_id, seq
-        ):
-            # A working file a run's commands made and removed, never published, declared
-            # or cited: its deletion is nothing to read, not a gap (CR-49 as amended).
-            payload = {**payload, "reason": WORKING_FILE}
-            complete = True
         found.append(
             _Observation(
                 f"artifact:event:{seq}",
@@ -411,29 +394,6 @@ def _project_events(
             )
         )
     return found
-
-
-def _working_file(store: ReviewStore, project: str, artifact: str, before: int) -> bool:
-    """Whether the artifact a deletion event at ``before`` removes was only ever a working
-    file: every earlier revision of it reported by an execution (``execution_record``),
-    none published or declared a result, and no ledger entry's evidence names it. A file
-    once published or cited stays unread when it is deleted."""
-    with store.documents.control.read() as tx:
-        db = tx.sql
-        kinds = {
-            str(kind)
-            for (kind,) in db.execute(
-                "SELECT coalesce(json_extract(record,'$.source.kind'),'agent_publication') "
-                "FROM artifact_events WHERE project=? AND seq<=? "
-                "AND json_extract(record,'$.revision.artifact_id')=?",
-                (project, before, artifact),
-            )
-        }
-        cited = db.execute(
-            "SELECT 1 FROM ledger_evidence WHERE target='artifact' AND target_id=? LIMIT 1",
-            (artifact,),
-        ).fetchone()
-    return kinds == {"execution_record"} and cited is None
 
 
 def _project_uncertain(

@@ -1387,9 +1387,10 @@ class Findings:
             elif "entry" in location:
                 keep(entries, location["entry"], location.get("revision"))
             archived = location.get("archive")
+            if isinstance(archived, dict) and isinstance(cast(Json, archived).get("id"), str):
+                held.add(str(cast(Json, archived)["id"]))
             if isinstance(archived, dict) and type(cast(Json, archived).get("position")) is int:
                 positions.append(cast(int, cast(Json, archived)["position"]))
-                held.add(str(cast(Json, archived).get("id")))
         anchored = max(positions) if positions else None
         if found.get("review_id") is not None:
             # What the review was given, not how far the feed reached: a message in a range
@@ -1397,11 +1398,13 @@ class Findings:
             for message, position in db.execute(
                 "SELECT json_extract(locator,'$.archive.id'),"
                 "json_extract(locator,'$.archive.position') FROM review_evidence "
-                "WHERE review_id=? AND json_type(locator,'$.archive.position')='integer'",
+                "WHERE review_id=? AND json_type(locator,'$.archive.id')='text'",
                 (found["review_id"],),
             ):
+                # An item the review was given is held, with a position or without one.
                 held.add(str(message))
-                positions.append(int(position))
+                if type(position) is int:
+                    positions.append(position)
         return Marks(
             documents,
             artifacts,
@@ -1437,11 +1440,16 @@ class Findings:
 
         archive = Archive(self.store.documents.control)
         found: list[Json] = []
-        for message in named:
+        for given in named:
+            message = self._archived(project, session, given)
             try:
                 info = archive.message_info(project, message)
             except ControlError:
-                raise DocumentError(NOT_FOUND, f"the archive has no message {message}") from None
+                raise DocumentError(
+                    NOT_FOUND,
+                    f"the archive has no message {message}: cite a message by the archive ID "
+                    "a transcript item or the request item (archive) names",
+                ) from None
             position = info["position"]
             if info["session"] != session or type(position) is not int:
                 raise DocumentError(NOT_FOUND, f"message {message} is outside this session")
@@ -1454,22 +1462,60 @@ class Findings:
             found.append(later)
         return found
 
+    def _archived(self, project: str, session: str, given: str) -> str:
+        """The archive message ``given`` names: itself, an archive ID; or, for a chat
+        message's ID, the archive message of the session that delivered it to a run."""
+        if len(given) == len("msg-") + 16:
+            return given
+        with self.store.documents.control.read() as tx:
+            found = tx.sql.execute(
+                "SELECT message_id FROM archive_messages WHERE project=? AND session=? "
+                "AND kind IN ('user','task') AND EXISTS(SELECT 1 FROM json_each(refs) "
+                "WHERE value=?) ORDER BY kind='task',position LIMIT 1",
+                (project, session, given),
+            ).fetchone()
+        if found is None:
+            raise DocumentError(
+                NOT_FOUND,
+                f"no run was given the chat message {given}: cite the archive ID the request "
+                "item names for it (archive), or a transcript item's",
+            )
+        return str(found[0])
+
     def _ground(self, project: str, session: str, info: dict[str, object]) -> str | None:
         """Whether an archive message is the user's word, which a response may cite
-        whatever its place (CR-42 as amended): ``user`` for a message the user wrote (or
-        the task), ``answer`` for the tool result that carried the user's answer to the
-        agent's question; None for any other."""
-        if info.get("role") == "user" and info.get("kind") in ("task", "user"):
-            return "user"
-        if info.get("role") != "tool" or not isinstance(info.get("call_id"), str):
-            return None
+        whatever its place (CR-42 as amended): ``user`` for one that holds the user's own
+        words by the ledger's rule (``users_words``: a chat message the user wrote, a main
+        run's task made of them, the operator's task), never a delegation's brief or
+        what the platform wrote; ``answer`` for the result of ``ask_user`` that carried
+        the user's answer to that run's own question; None for any other."""
+        from sandbox_science.orchestrator.ledger.provenance import written_by
+        from sandbox_science.orchestrator.question_tool import ASK_USER
+
+        message = str(info["message_id"])
         with self.store.documents.control.read() as tx:
-            answered = tx.sql.execute(
-                "SELECT 1 FROM user_questions WHERE project_id=? AND session_id=? "
-                "AND tool_call=? AND state='answered' LIMIT 1",
-                (project, session, info["call_id"]),
+            db = tx.sql
+            if written_by(db, project, message) == "user":
+                return "user"
+            if (
+                info.get("role") != "tool"
+                or info.get("kind") != "tool_result"
+                or info.get("source") != ASK_USER
+                or not isinstance(info.get("call_id"), str)
+            ):
+                return None
+            (content,) = db.execute(
+                "SELECT coalesce(content,'') FROM archive_messages WHERE project=? "
+                "AND message_id=?",
+                (project, message),
             ).fetchone()
-        return "answer" if answered is not None else None
+            answered = db.execute(
+                "SELECT question_id FROM user_questions WHERE project_id=? AND session_id=? "
+                "AND run=? AND tool_call=? AND state='answered'",
+                (project, session, info.get("run"), info["call_id"]),
+            ).fetchall()
+        # The result names its question; a call ID alone, which the model chose, does not.
+        return "answer" if any(str(q) in str(content) for (q,) in answered) else None
 
     def _entry_revisions(
         self, project: str, target: Json, marks: Marks, cited: tuple[tuple[str, int], ...]

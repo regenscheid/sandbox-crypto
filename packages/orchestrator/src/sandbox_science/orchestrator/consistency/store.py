@@ -158,7 +158,7 @@ def window_config(config: ReviewConfig, backlog: int) -> ReviewConfig:
     grow in proportion, each within its ceiling; a backlog that fits the configured
     window changes nothing."""
     base = config.max_feed_items
-    items = min(backlog, base * WINDOW_GROWTH)
+    items = min(backlog, base * WINDOW_GROWTH, _FEED_ITEMS_BOUND)
     if items <= base:
         return config
     scale = items / base
@@ -180,7 +180,21 @@ def window_config(config: ReviewConfig, backlog: int) -> ReviewConfig:
         update["token_budget"] = max(
             config.token_budget, min(4_000_000, math.ceil(config.token_budget * scale))
         )
-    return config.model_copy(update=update)
+    # Validated as the runner will load it, so a grown window never stores what it refuses.
+    return ReviewConfig.model_validate({**config.model_dump(), **update})
+
+
+def _field_bound(name: str) -> int:
+    """The upper bound ``ReviewConfig`` gives a field."""
+    for rule in ReviewConfig.model_fields[name].metadata:
+        bound = getattr(rule, "le", None)
+        if isinstance(bound, int):
+            return bound
+    raise AssertionError(f"{name} has no upper bound")  # pragma: no cover
+
+
+_FEED_ITEMS_BOUND: Final = _field_bound("max_feed_items")
+"""The most items a window may hold, as the review's settings bound it."""
 
 
 def recheck_config(config: ReviewConfig) -> ReviewConfig:
@@ -704,9 +718,12 @@ class ReviewStore:
         reach the end with nothing left between (``complete``); and the ranges left
         unreviewed, the first ``UNREVIEWED_SHOWN``, how many there are and why
         (``unreviewed_reasons``: how many meet each reason recorded), each range with its
-        new items and its reasons; and the session's new items, how many reviews covered,
-        how many are left unreviewed and how many predate recorded coverage (``items``):
-        the position reviewed up to is no measure of coverage. Positions up to
+        new items and its reasons, a range of no review item (actions and raw sources
+        alone) left out; and the session's new items by how they were read (``items``:
+        ``reviewed`` whole, ``read_in_part``, ``not_read`` for nothing to read, by the
+        reviews' records, ``item_readings``), how many no review covered and how many
+        predate recorded coverage: the position reviewed up to is no measure of coverage.
+        Positions up to
         ``not_recorded_through`` were reviewed before reviews recorded their coverage: their
         coverage is not known, and neither complete nor unreviewed."""
         self.scope(project, session)
@@ -718,7 +735,14 @@ class ReviewStore:
                 "unreviewed": [],
                 "unreviewed_ranges": 0,
                 "unreviewed_reasons": {},
-                "items": {"total": 0, "reviewed": 0, "unreviewed": 0, "not_recorded": 0},
+                "items": {
+                    "total": 0,
+                    "reviewed": 0,
+                    "read_in_part": 0,
+                    "not_read": 0,
+                    "unreviewed": 0,
+                    "not_recorded": 0,
+                },
                 "not_recorded_through": None,
             }
         with self.documents.control.read() as tx:
@@ -733,13 +757,20 @@ class ReviewStore:
             ).fetchone()
             ranges = snapshot_reads.reviewed_ranges(db, project, session)
             unrecorded = snapshot_reads.unrecorded_through(db, project, session)
-            left = snapshot_reads.uncovered(db, project, session, ranges, unrecorded, head)
+            found = snapshot_reads.uncovered(db, project, session, ranges, unrecorded, head)
+            # A range of actions and raw sources alone holds no review item: not shown as
+            # unreviewed work.
+            sized = zip(found, snapshot_reads.items_in(db, project, session, found), strict=True)
+            kept = [(span, n) for span, n in sized if n]
+            left = [span for span, _ in kept]
+            counts = [n for _, n in kept]
             reasons = snapshot_reads.unreviewed_reasons(db, project, session, left)
             named = snapshot_reads.range_reasons(db, project, session, left[:UNREVIEWED_SHOWN])
-            counts = snapshot_reads.items_in(db, project, session, left)
             total = snapshot_reads.backlog(db, project, session, 0)
             earlier = snapshot_reads.items_in(db, project, session, [(1, unrecorded)])[0]
-        unreviewed = sum(counts)
+            readings = snapshot_reads.item_readings(db, project, session)
+        read = [r for seq, r in readings.items() if seq > unrecorded]
+        whole, part, none = (read.count(name) for name in ("whole", "partial", "unread"))
         return {
             "reviewed_through": row[0] if row else 0,
             "feed_end": head,
@@ -752,14 +783,18 @@ class ReviewStore:
             "unreviewed_reasons": reasons,
             "items": {
                 "total": total,
-                "reviewed": total - unreviewed - earlier,
-                "unreviewed": unreviewed,
+                "reviewed": whole,
+                "read_in_part": part,
+                "not_read": none,
+                "unreviewed": total - whole - part - none - earlier,
                 "not_recorded": earlier,
             },
             "not_recorded_through": unrecorded or None,
         }
 
-    def final_summary(self, project: str, session: str, review: str | None) -> Json:
+    def final_summary(
+        self, project: str, session: str, review: str | None, *, answer: str = ""
+    ) -> Json:
         """What a run's final review found, for its record and the workspace (CR-48): the
         review and how it ended, whether the session's work is reviewed to its end, the
         open findings by severity, those whose fix waits for its re-check, and the
@@ -795,13 +830,20 @@ class ReviewStore:
                         }
                     )
         unread: list[Json] = []
+        working = 0
         if review is not None:
             with self.documents.control.read() as tx:
-                unread = self._named_unread(tx.sql, review)
+                for item in self._named_unread(tx.sql, review):
+                    # A deleted working file is nothing to read, not a gap (CR-49 as amended).
+                    if self._working_deletion(tx.sql, project, session, item, answer):
+                        working += 1
+                    else:
+                        unread.append(item)
         return {
             "review": review,
             "findings": found,
             "unread": unread,
+            "working_files_deleted": working,
             "outcome": "pending" if state == "running" else state,
             "finished": state not in ("pending", "running", "dropped", "failed"),
             "complete": coverage["complete"],
@@ -809,6 +851,56 @@ class ReviewStore:
             "fixes_claimed": sum(int(claimed or 0) for _, _, claimed in rows),
             **coverage,
         }
+
+    @staticmethod
+    def _working_deletion(
+        db: sqlite3.Connection, project: str, session: str, item: Json, answer: str
+    ) -> bool:
+        """Whether an unread item is the deletion of a working file, which has nothing to
+        read: every recorded revision of the file one the session's main run's commands
+        reported (``execution_record``), none published, declared a result or written by a
+        delegated run's job; and the file named nowhere that relies on it: not by any
+        ledger entry's evidence of the project, by its artifact or its path, not by path
+        in the final answer ``answer`` or in a document's latest revision. A file once
+        published or cited stays unread, with why."""
+        artifact, path = item.get("item"), item.get("path")
+        if item.get("kind") != "artifact" or not isinstance(artifact, str):
+            return False
+        if not isinstance(path, str) or item.get("why") != "the file was deleted":
+            return False
+        sources = db.execute(
+            "SELECT coalesce(json_extract(record,'$.source.kind'),'agent_publication'),"
+            "coalesce(json_extract(record,'$.source.role'),'main'),"
+            "json_extract(record,'$.source.context.session_id') FROM artifact_events "
+            "WHERE project=? AND json_extract(record,'$.revision.artifact_id')=?",
+            (project, artifact),
+        ).fetchall()
+        if not sources or any(
+            (kind, role, owner) != ("execution_record", "main", session)
+            for kind, role, owner in sources
+        ):
+            return False
+        prefix = f"sessions/{session}/"
+        names = {path, path.removeprefix(prefix)} - {""}
+        if any(name in answer for name in names):
+            return False
+        for name in (artifact, *names):
+            if db.execute(
+                "SELECT 1 FROM ledger_evidence v JOIN ledger_entries e USING(entry_id) "
+                "WHERE e.project=? AND (v.target_id=? OR instr(coalesce(v.locator,''),?)>0 "
+                "OR instr(coalesce(v.scope,''),?)>0) LIMIT 1",
+                (project, name, name, name),
+            ).fetchone():
+                return False
+        for name in names:
+            if db.execute(
+                "SELECT 1 FROM documents d JOIN revisions r ON r.document_id=d.document_id "
+                "AND r.number=d.head WHERE d.project_id=? AND d.deleted=0 "
+                "AND instr(r.text,?)>0 LIMIT 1",
+                (project, name),
+            ).fetchone():
+                return False
+        return True
 
     @staticmethod
     def _named_unread(db: sqlite3.Connection, review: str) -> list[Json]:
@@ -2661,9 +2753,9 @@ class ReviewStore:
         location = stored_json(row[1])
         payload = stored_json(row[2])
         if row[0] == "artifact" and payload.get("projection") == 1:
-            from .artifacts import projection_complete
+            from .artifacts import artifact_text
 
-            if projection_complete(location, payload) != bool(row[4]):
+            if (artifact_text(location, payload) is not None) != bool(row[4]):
                 raise DocumentError(
                     CONFLICT, "artifact availability differs from evidence coverage"
                 )
@@ -2704,9 +2796,9 @@ class ReviewStore:
             raise DocumentError(
                 CONFLICT, "claimed artifact reference differs from session evidence"
             )
-        from .artifacts import projection_complete
+        from .artifacts import artifact_text
 
-        if projection_complete(location, payload) != bool(row[3]):
+        if (artifact_text(location, payload) is not None) != bool(row[3]):
             raise DocumentError(CONFLICT, "artifact availability differs from evidence coverage")
         return location, payload, bool(row[3])
 

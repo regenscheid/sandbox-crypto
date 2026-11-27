@@ -52,7 +52,7 @@ describe("a run's final review line", () => {
     ).toBe(
       'Final review: findings, after the answer; the agent answered its findings. ' +
         'Open: 1 fail. 1 fix claimed, its re-check pending. ' +
-        'Unreviewed: positions 1–40, 97–101 and 1 more range (60 of 90 items reviewed).',
+        'Unreviewed: positions 1–40, 97–101 and 1 more range (60 of 90 items reviewed whole).',
     );
     expect(finalReviewLine({ mode: 'hold', finished: false, complete: true, open: {} })).toBe(
       'Final review: did not finish, before the answer. No open findings. All work reviewed.',

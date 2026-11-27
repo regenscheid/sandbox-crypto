@@ -200,11 +200,12 @@ class FindingResponse(Contract):
     """The status a ``set`` gives the finding."""
     successor: FindingID | None = None
     """For a ``set`` to ``superseded``: the finding that replaces it, if any."""
-    messages: tuple[Annotated[str, Field(pattern=r"^msg-[0-9a-f]{16}$")], ...] = Field(
-        default=(), max_length=8
+    messages: tuple[Annotated[str, Field(pattern=r"^msg-[0-9a-f]{16}(?:[0-9a-f]{8})?$")], ...] = (
+        Field(default=(), max_length=8)
     )
-    """For a ``fix`` of a finding anchored only to messages: the later archive messages
-    that correct it (CR-42)."""
+    """For a ``fix``: the archive messages that correct the finding or ground it (CR-42),
+    by their archive IDs, or a chat message the user wrote by its chat ID (as the request
+    item names it), which stands for the archive message that delivered it."""
     evidence: tuple[EvidenceAnchor, ...] = Field(default=(), max_length=8)
     # New document revisions are validated and pinned before claiming a fix.
     revisions: tuple[tuple[DocumentID, RevisionNumber], ...] = Field(default=(), max_length=16)
