@@ -797,6 +797,43 @@ class Store:
         ).fetchone()
         return (str(row[0]), str(row[1]), int(row[2]), bool(row[3])) if row else None
 
+    def attempt_dispatched(
+        self,
+        execution_id: str,
+        attempt: int,
+        identity: tuple[str, str] | None,
+        at: datetime,
+    ) -> None:
+        """Record the first dispatch of a restartable job's attempt and its sandbox."""
+        sandbox, sandbox_id = identity if identity is not None else (None, None)
+        self._db.execute(
+            "INSERT INTO job_attempt_dispatches VALUES (?,?,?,?,?)"
+            " ON CONFLICT (execution_id, attempt) DO NOTHING",
+            (execution_id, attempt, sandbox, sandbox_id, at.isoformat()),
+        )
+
+    def attempt_dispatch(
+        self, execution_id: str, attempt: int
+    ) -> tuple[tuple[str, str] | None, datetime] | None:
+        """A restartable job's attempt's sandbox and dispatch time; None if never sent."""
+        row = self._db.execute(
+            "SELECT sandbox, sandbox_id, dispatched_at FROM job_attempt_dispatches"
+            " WHERE execution_id=? AND attempt=?",
+            (execution_id, attempt),
+        ).fetchone()
+        if row is None:
+            return None
+        identity = (str(row[0]), str(row[1])) if row[0] is not None and row[1] else None
+        return identity, datetime.fromisoformat(str(row[2]))
+
+    def restart_recovery(self, execution_id: str) -> None:
+        """Forget the daemon a lost job's attempt was sent to, before its next attempt: that
+        one is dispatched afresh, and its daemon numbers its events from one."""
+        self._db.execute(
+            "UPDATE execution_recovery SET incarnation = '', source_seq = 0 WHERE execution_id = ?",
+            (execution_id,),
+        )
+
     def cancel_intent(self, execution_id: str) -> None:
         self._db.execute(
             "UPDATE execution_recovery SET cancelled = 1 WHERE execution_id = ?", (execution_id,)

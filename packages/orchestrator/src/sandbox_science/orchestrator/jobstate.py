@@ -92,7 +92,9 @@ class JobState:
             )
 
     def pending(self, context: ExecutionContext, run: str, jobs: Sequence[str]) -> list[str]:
-        """Unacknowledged completions owned by this run, or whose owner has ended."""
+        """Unacknowledged notices owned by this run, or whose owner has ended: a job's
+        completion, by its ID, or the loss of a restarted job's attempt, ``<ID>#<attempt>``,
+        which the job's origin owns."""
         with self.control.read() as tx:
             db = tx.sql
             key = context.project_id, context.session_id
@@ -118,7 +120,11 @@ class JobState:
         return [
             job
             for job in jobs
-            if job not in ack and (owned.get(job) == run or owned.get(job) not in active)
+            if job not in ack
+            and (
+                owned.get(job.split("#", 1)[0]) == run
+                or owned.get(job.split("#", 1)[0]) not in active
+            )
         ]
 
     def acknowledge(self, context: ExecutionContext, run: str, jobs: Sequence[str]) -> None:

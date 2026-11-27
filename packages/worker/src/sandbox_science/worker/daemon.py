@@ -189,6 +189,7 @@ class Daemon:
             history.state_seq = history.sequence
             # Pin only bounded lifecycle metadata, even after executor compromise.
             fingerprint = message.get("environment")
+            survived, truncated = message.get("survived"), message.get("survived_truncated")
             raw_kernel = message.get("kernel")
             kernel: Message = {}
             if isinstance(raw_kernel, dict):
@@ -216,6 +217,14 @@ class Daemon:
             message["state"] = "running"
             if isinstance(fingerprint, str) and len(fingerprint) <= 256:
                 message["environment"] = fingerprint
+            if isinstance(survived, list):
+                # A restarted job's account of the lost attempt's files (job restarts).
+                message["survived"] = [
+                    path
+                    for path in cast(list[object], survived)[: executor.MAX_SURVIVED]
+                    if isinstance(path, str) and len(path) <= 4096
+                ]
+                message["survived_truncated"] = truncated is True
         else:
             history.disposable.add(history.sequence)
         data = executor.fit_line(message)
@@ -517,8 +526,10 @@ class Daemon:
         server = await asyncio.start_unix_server(
             self.client, address(self.token, self.root), limit=executor.MAX_REQUEST
         )
-        # A dead daemon cannot own jobs any more. Reap only this endpoint's old
-        # incarnation marks, with start-time checks against PID reuse.
+        # A dead daemon cannot own jobs any more. Reap this endpoint's old incarnation
+        # marks, with start-time checks against PID reuse, and the sessions its jobs
+        # began, which hold a job's processes that dropped their mark (job restarts).
+        state = self.root / ".executor"
         for _ in range(executor.sandbox_processes.KILL_ROUNDS):
             targets = [
                 info
@@ -526,11 +537,12 @@ class Daemon:
                 if (owner := executor.sandbox_processes.process_owner(info.pid))
                 and owner.startswith(self.owner_scope)
                 and not owner.startswith(self.executor.owner_prefix)
-            ]
+            ] + executor.sandbox_processes.noted_job_sessions(state)
             if not targets:
                 break
             executor.sandbox_processes.signal_processes(targets, signal.SIGKILL)
             await asyncio.sleep(0.01)
+        executor.sandbox_processes.forget_job_sessions(state)
         loop = asyncio.get_running_loop()
         for signum in (signal.SIGTERM, signal.SIGINT):
             loop.add_signal_handler(signum, self.stop.set)

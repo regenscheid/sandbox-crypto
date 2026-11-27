@@ -138,6 +138,7 @@ def build_lifecycle(
         job_resources=environments.job_resources,
         call_resources=environments.call_resources,
         requires_workspace_prefix=environments.requires_workspace_prefix,
+        environment_stopped=environments.stopped,
     )
 
 
@@ -213,6 +214,7 @@ def _build(settings: Settings, token: str, clock: Clock, lock: StateLock) -> Wor
         package_cache=settings.openshell.package_cache if settings.openshell else None,
         lifecycle=build_lifecycle(settings, backend, environments, store),
         clock=clock,
+        job_restarts=settings.job_restarts,
     )
     if environments is not None:
         environments.release = manager.release

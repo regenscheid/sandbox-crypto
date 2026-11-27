@@ -158,6 +158,7 @@ export interface BackgroundJob {
   purpose: string;
   expected_progress: string;
   elapsed_seconds: number;
+  elapsed_total_seconds: number;
   exit_code: number | null;
   error: string | null;
   stdout: string;
@@ -170,6 +171,9 @@ export interface BackgroundJob {
   memory_bytes: number | null;
   logs: JobLogs;
   worker_restart: string;
+  restart: boolean;
+  attempt: number;
+  attempts: JobAttemptView[];
   checkin: JobCheckin | null;
   sandbox?: JobSandboxView;
   manifest?: JobManifestView;
@@ -1575,6 +1579,18 @@ export interface InspectionRow {
   alerts: number;
   blocks: number;
   uninspected: number;
+}
+
+/** An earlier attempt of a restarted job, which the worker lost (job restarts). */
+export interface JobAttemptView {
+  attempt: number;
+  state: "lost";
+  reason: string;
+  started_at: string | null;
+  lost_at: string;
+  logs: JobLogs;
+  survived: string[] | string;
+  survived_truncated: boolean;
 }
 
 export interface JobCancellation {

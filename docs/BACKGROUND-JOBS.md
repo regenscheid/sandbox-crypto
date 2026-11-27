@@ -9,13 +9,81 @@ shell's note on a computation loads it ([tool groups](specs/tools.md#tool-groups
 when the harness exits, the turn ends, or the GUI closes. [OpenShell lab 19](../.agents/docs/agent-reports/babbage-openshell-lab-19-2026-10-12.md) records worker, harness and browser acceptance checks.
 
 `start_job` takes a script or argv, a purpose and `expected_progress`, with an
-optional working directory and time limit. The worker's policy chooses an
+optional working directory, time limit and `restart` ([below](#restarting-a-lost-job)). The worker's policy chooses an
 omitted limit, bounds concurrency and provides the logs under
 `.jobs/<execution ID>/stdout.log` and `stderr.log`. `job_status` returns bounded
 head and tail output, resource measurements when the backend supplies them,
 elapsed time, terminal outcome and failure reason. The existing `read_file`
 tool reads full logs in ranges. All operations bind the job to the current
 project, session and environment. Model arguments cannot replace that context.
+
+## Restarting a lost job
+
+A job whose sandbox, executor or worker stops while it runs ends `lost`: its outcome is
+unknown, and the worker does not run its command again on its own account. A job started
+with `restart: true` says that its command is safe to run again and resumes from its own
+checkpoints, which are files it writes in the workspace as it goes; there is no other
+checkpoint interface. The worker then starts it again (`job_restarts.py`), up to
+`MAX_JOB_RESTARTS` (3) times, as attempts of the same execution:
+
+- **Never two at once.** A job restarts only when its attempt is known to have stopped:
+  its sandbox deleted, stopped or replaced, its daemon a new incarnation (which, as it
+  starts, ends the old incarnation's processes by their owner mark and by the sessions
+  the old executor noted its jobs began), or its daemon no longer holding it. A loss the
+  same daemon may still be running (an invalid replay, a failed reconciliation, an
+  unconfirmed cancel) ends the job `lost`, and its error says why it was not restarted.
+  So restarts need the sandbox daemon transport: on the stdio transport `start_job` with
+  `restart` is refused, as it is on an executor too old for restarts (`job_attempts` in
+  its `hello`; the job fails before its command when the worker learns that only as it
+  dispatches it), and when the worker's `job_restarts` setting is off.
+
+- **Not restarted.** The command's own end (a non-zero exit, a time limit, an output
+  overrun), a cancellation (also one stored before a worker crash), a session close or
+  executor release under way, or a job sandbox's job (`profile`, which the contract
+  refuses with `restart`).
+- **The bound.** Only an attempt whose command started counts against the three
+  restarts; one lost before it started (a dispatch the daemon never took) does not. The
+  record keeps at most `MAX_JOB_ATTEMPTS` (8) attempts in all.
+- **The attempt.** The worker records the lost attempt in the job's record
+  (`JobDetails.attempts`: its number and attempt ID, when it started and was lost, what
+  stopped, its logs), gives the execution a new attempt ID and number, and queues it. The
+  next attempt waits for the environment to be usable (no recovery, fence or recycle in
+  the way), with a backoff from 5 s to 5 minutes, for up to a day from the loss
+  (`ManagerTimeouts.restart_wait`); it then runs the request stored when the job was
+  accepted: the same command, working directory, bindings, write area and time limit,
+  admitted under the stored context's authority, never an operator's or that of the
+  request whose task noticed the loss, so a newer recovery epoch of the session refuses
+  it. It runs only in the sandbox the lost attempt ran in (the worker records each
+  attempt's sandbox, store version 13): an environment created again with another
+  sandbox ends it `lost`. A stopped (suspended) environment holds it until another use
+  starts the environment; the worker has no pause of a session of its own. The job's
+  concurrency place is kept throughout. A worker restart while it waits takes the wait
+  up again without counting another loss, and after a restart the attempt's time limit
+  counts from its own dispatch.
+- **Time.** The time limit applies to each attempt, so a restarted job can run for up to
+  four limits, besides its waits; the job view gives `elapsed_total_seconds` across its
+  attempts beside the current attempt's `elapsed_seconds`.
+- **What it is told.** The attempt's environment has `SANDBOX_JOB_ATTEMPT` (1 for the
+  first attempt, then 2 and on). Its logs go to `.jobs/<ID>/attempt-<N>/`, beside the
+  earlier attempts', which stay readable; `JobDetails.stdout_path` and `stderr_path` name
+  the current attempt's. As it starts, its executor lists the files of the session
+  workspace and `shared/` changed since the lost attempt was queued, at most 100, and the
+  lost attempt's record keeps them (`survived`): what that attempt wrote that is still
+  there, and anything else written meanwhile.
+- **When it stops.** Cancelling the job, closing its session or releasing its
+  environment's executor cancels a waiting attempt like any queued job. An environment the
+  worker gives up, because its sandbox is gone, ends its waiting attempts `lost`: the
+  workspace they would resume from went with the sandbox. So does an environment that is
+  not usable again within the wait, a worker whose `job_restarts` setting was turned off
+  meanwhile, or the last restart's loss; the error then says that the job was lost that
+  many times and why it was not restarted again, and the record lists every attempt.
+- **Records.** One execution throughout: its events go on in one numbered stream, its
+  result and `written_files` are its last attempt's own, and the review feed's projection
+  of it lists the lost attempts (`lost_attempts`). Each attempt has its own output budget.
+
+A restart needs no run and no model call: the worker owns it, as it owns recovery, and it
+happens whether or not a run of the session is active. A budget stop limits model calls
+only, so a restart, which makes none, goes on through it as a running job does.
 
 ## Job sandboxes
 
@@ -135,6 +203,8 @@ on the cluster ([checklist](KUBERNETES-PREP.md#14-job-sandboxes-on-kata-qualific
 `wait_jobs` takes distinct `job_ids` and `mode: all` (the default) or `first`.
 The same turn stays open while the harness reads worker status; the agent's
 model is never called to poll. Completion, timeout, a watcher attention note,
+the loss of an attempt of a job it waits on (`reason: job_lost`, whether the job is being
+restarted or ended `lost`; the other jobs keep running, and `next` says to wait again),
 or a message the user sends in the session's chat ends the wait. An interruption
 leaves the computations running. The message stays in the session's queue and
 reaches the model as the next user message, after the wait's result, so it is
@@ -213,7 +283,12 @@ the harness reconciles all worker submission pages. It returns a bounded
 batch of previously unseen completions, deferring the rest. On the run's last
 turn it skips the check before the final answer: the answer stands, and the
 next run receives the notice. Each completion
-states the outcome, exit code, elapsed time and output tail. After a tool call,
+states the outcome, exit code, elapsed time and output tail. A job that ended `lost` also
+says whether it was restarted and why not (`restart`), and, since nothing listed what its
+last attempt left, which files may be its (`survived`: those changed since it started, if
+its workspace survived). A restarted job's lost attempt has a notice of its own while the
+job goes on, `<ID>#<attempt>` in the delivered and acknowledged notices, with what was
+lost, the attempt that follows and the lost attempt's logs. After a tool call,
 the notices ride on its result; a long result keeps its head and tail. Fetch failures
 do not mark any undelivered notice seen. Notices a successful model call saw enter the run's
 `delivered["jobs"]`, and are acknowledged only after `harness.save` keeps that
@@ -225,7 +300,9 @@ harness was disconnected are found at the next safe point or turn.
 
 The session page lists every active job and the 20 most recently ended jobs,
 with live state, elapsed time, resource measurements, head and tail output,
-recent watcher notes and cancellation. It refreshes through the authenticated
+recent watcher notes and cancellation. A restarted job's card lists its lost attempts, with
+what each next attempt found of their files, and a lost job's says whether it was
+restarted. It refreshes through the authenticated
 workspace server every three seconds while the page is visible, backing off
 after failures. Active waits show their job IDs and
 check-in setting; an expired harness lease is shown as disconnected. Job text
@@ -241,7 +318,7 @@ The [sandbox daemon](WORKER.md#sandbox-daemon-and-recovery) preserves jobs under
 the same execution and attempt across worker/bridge restarts; [OpenShell lab
 20](../.agents/docs/agent-reports/babbage-openshell-lab-20-2026-10-12.md) records
 that recovery. Confirmed daemon/VM loss reports unknown outcomes as `lost` and
-never resubmits the command. A managed VM must pass its lifecycle fence before
+resubmits the command only for a job that asked for `restart`. A managed VM must pass its lifecycle fence before
 replacement work is admitted; its full log files persist across stop/start.
 
 Still pending:

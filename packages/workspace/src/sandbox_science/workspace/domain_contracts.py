@@ -476,12 +476,30 @@ class JobManifestView(TypedDict):
 
 
 @with_config(ConfigDict(extra="forbid"))
+class JobAttemptView(TypedDict):
+    """An earlier attempt of a restarted job, which the worker lost (job restarts)."""
+
+    attempt: int
+    state: Literal["lost"]
+    reason: str
+    started_at: str | None
+    lost_at: str
+    logs: JobLogs
+    survived: list[str] | str
+    """The files the next attempt found changed since this one was queued; a sentence
+    until the next attempt starts."""
+    survived_truncated: bool
+
+
+@with_config(ConfigDict(extra="forbid"))
 class BackgroundJob(TypedDict):
     job_id: str
     state: str
     purpose: str
     expected_progress: str
     elapsed_seconds: float
+    elapsed_total_seconds: float
+    """With a restarted job's lost attempts: each attempt has its own time limit."""
     exit_code: int | None
     error: str | None
     stdout: str
@@ -494,6 +512,9 @@ class BackgroundJob(TypedDict):
     memory_bytes: int | None
     logs: JobLogs
     worker_restart: str
+    restart: bool
+    attempt: int
+    attempts: list[JobAttemptView]
     checkin: JobCheckin | None
     sandbox: NotRequired[JobSandboxView]
     manifest: NotRequired[JobManifestView]
