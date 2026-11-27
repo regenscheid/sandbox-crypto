@@ -407,12 +407,21 @@ describe('the transcript of a run', () => {
 
   it('shows no notice recorded only to be counted, nor a model profile', () => {
     const entries = chatEntries([
-      event(1, 'notice', { source: 'plans', ids: [], framing: 'sandbox-notice-plans-2' }),
+      event(1, 'notice', { source: 'plans', ids: [], framing: 'sandbox-notice-plans-3' }),
       event(2, 'notice', { source: 'review-counts', ids: [] }),
       event(3, 'model_profile', { source: 'model_profile', kind: 'main' }),
       event(4, 'notice', { source: 'jobs', ids: ['j1'] }),
     ]);
     expect(entries.map((entry) => entry.seq)).toEqual([4]);
+  });
+
+  it('shows the plans notice that carried the run past an answer', () => {
+    const said = 'The agent answered while the session plan has steps it can still work.';
+    const entries = chatEntries([
+      event(1, 'notice', { source: 'plans', ids: [], framing: 'sandbox-notice-plans-3' }),
+      event(2, 'notice', { source: 'plans', ids: ['plan-open-0123456789abcdef'], text: said }),
+    ]);
+    expect(entries).toEqual([{ kind: 'note', seq: 2, text: said, problem: false }]);
   });
 
   it('shows what each event says, as text', () => {
