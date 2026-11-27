@@ -13,7 +13,14 @@ import base64
 from dataclasses import asdict
 from typing import Annotated, Any, Literal, cast
 
-from pydantic import Field, JsonValue, StringConstraints, TypeAdapter, model_validator
+from pydantic import (
+    AwareDatetime,
+    Field,
+    JsonValue,
+    StringConstraints,
+    TypeAdapter,
+    model_validator,
+)
 
 from sandbox_science.contracts.classifications import MAX_REPORTED_TOOLS, ReportedTool
 from sandbox_science.contracts.model import Contract, Counter, Identifier, Revision, Sha256
@@ -169,6 +176,8 @@ class WireTurn(Contract):
     native_b64: str | None = Field(default=None, max_length=24 * 1024 * 1024)
     intent_id: str | None = Field(default=None, max_length=128)
     refused: Refusal | None = None
+    started_at: AwareDatetime | None = None
+    duration_ms: int | None = Field(default=None, ge=0)
 
     @classmethod
     def of(cls, turn: ModelTurn) -> WireTurn:

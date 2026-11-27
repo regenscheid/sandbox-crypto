@@ -16,10 +16,19 @@ import hashlib
 import json
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import AsyncGenerator, Callable, Generator, Iterable, Mapping, Sequence
+from collections.abc import (
+    AsyncGenerator,
+    Awaitable,
+    Callable,
+    Generator,
+    Iterable,
+    Mapping,
+    Sequence,
+)
 from contextlib import aclosing, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
+from datetime import datetime
 from typing import Any, ClassVar, Final, Protocol, Self, cast
 
 import aiohttp
@@ -132,6 +141,19 @@ class ModelTurn:
     """The call this answer stands in for, when the alias's model declined it and the
     alias's fallback answered (CM-42a). ``cost`` is then both calls' when both are known;
     ``model``, ``alias``, the tokens and the rest are the answering call's."""
+    started_at: datetime | None = None
+    """When the call was sent, by the wall clock of the process that made it (``timed``)."""
+    duration_ms: int | None = None
+    """How long the call took, from sending to the whole answer, by a monotonic clock."""
+
+
+async def timed(call: Awaitable[ModelTurn], clock: Clock = SYSTEM_CLOCK) -> ModelTurn:
+    """``call``'s answer with when it was sent and how long it took, for the run's
+    records: ``started_at`` from the wall clock, ``duration_ms`` from the monotonic one."""
+    started, begun = clock.now(), clock.monotonic()
+    turn = await call
+    elapsed = max(0, round((clock.monotonic() - begun) * 1000))
+    return replace(turn, started_at=started, duration_ms=elapsed)
 
 
 LENGTH: Final = "length"

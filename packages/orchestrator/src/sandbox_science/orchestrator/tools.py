@@ -27,6 +27,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from sandbox_science.contracts import (
     MAX_ADMISSION_HOSTS,
+    SYSTEM_CLOCK,
     CellRequest,
     EditFileRequest,
     ErrorKind,
@@ -43,6 +44,7 @@ from sandbox_science.contracts import (
     ShellRequest,
     WriteFileRequest,
 )
+from sandbox_science.contracts.clock import Clock
 from sandbox_science.contracts.context import WriteArea
 from sandbox_science.contracts.worker import (
     DEFAULT_GREP_RESULTS,
@@ -617,6 +619,7 @@ class Toolbox:
         capabilities: caps.CapabilitySet | None = None,
         write_area: str | None = None,
         outcome: Outcome | None = None,
+        clock: Clock = SYSTEM_CLOCK,
     ) -> None:
         """For a ``delegated`` run, a call to a tool it is not offered, such as a review,
         plan, delegate or question tool, is refused with ``not_permitted_for_role`` (PD-16,
@@ -683,6 +686,8 @@ class Toolbox:
         self.outcome = capabilities.service(caps.RESULT)
         """A delegated run's result, which its ``submit_result`` records."""
         self.delegated = delegated
+        self.clock = clock
+        """Times each call for its record's ``timing``."""
         self.check_kernels = check_kernels
         self.sweep_left_kernels = sweep_left_kernels
         self.kernel_run = kernel_run
@@ -1043,6 +1048,10 @@ class Toolbox:
         handlers, raw ones included, gets the call without it; the record keeps it as
         ``purpose`` (Purpose 2 and 3).
 
+        Its record's ``timing`` says when the call entered the toolbox, by the wall
+        clock, and how long it took to its outcome, gates and holds included, by the
+        monotonic clock, in milliseconds (``started_at``, ``duration_ms``).
+
         ``model`` is the model that asked for the call, as the gateway named it, which
         document revisions record. Each of ``gates`` may refuse the call by its effect
         class; with plan tools, the plan's gate is always among them. After the call, the
@@ -1054,10 +1063,15 @@ class Toolbox:
         except PurposeError as error:
             return _failure(ErrorKind.INVALID_REQUEST, error.message)
         call, purpose = parts.call, parts.purpose
+        started, begun = self.clock.now(), self.clock.monotonic()
         outcome = await self._dispatch(call, operation, model, gates)
         if self.tool_mix is not None:
             self.tool_mix.count(call.name, call.arguments, outcome.record)
         outcome.record["purpose"] = purpose
+        outcome.record["timing"] = {
+            "started_at": started.isoformat(),
+            "duration_ms": max(0, round((self.clock.monotonic() - begun) * 1000)),
+        }
         return outcome
 
     async def _dispatch(

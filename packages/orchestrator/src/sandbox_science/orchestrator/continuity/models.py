@@ -7,6 +7,7 @@ import json
 import sqlite3
 from collections.abc import Sequence
 from dataclasses import replace
+from datetime import UTC, datetime
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, new_id
 from sandbox_science.orchestrator.aio import threaded
@@ -20,6 +21,7 @@ from sandbox_science.orchestrator.model import (
     Message,
     ModelTurn,
     ToolSpec,
+    timed,
 )
 from sandbox_science.orchestrator.model_profiles import ModelProfile, ModelRole
 from sandbox_science.orchestrator.projects import ModelUsage
@@ -117,7 +119,9 @@ class ModelIntents:
         """Auxiliary calls: persist observed usage before returning it to their caller."""
         with self.control.write() as tx:
             check_owner(tx.sql, owner)
-            observed(tx.sql, owner.project, owner.session, owner.run, identity, usage)
+            observed(
+                tx.sql, owner.project, owner.session, owner.run, identity, usage, clock=self.clock
+            )
 
     def pending(self, project: str, session: str, run: str, *, after: str = "") -> tuple[str, ...]:
         with self.control.read() as tx:
@@ -140,8 +144,28 @@ def observed(
     run: str,
     identity: str,
     usage: ModelUsage,
+    *,
+    clock: Clock = SYSTEM_CLOCK,
 ) -> None:
-    """Join the assistant/usage archive transaction for a main or child response."""
+    """Join the assistant/usage archive transaction for a main or child response.
+
+    A usage without its duration, as an auxiliary call's that its maker did not time,
+    is given the time from the intent's commit, before the gateway was contacted, to
+    now, by the control store's wall clock, and that commit as its start."""
+    if usage.duration_ms is None:
+        row = db.execute(
+            "SELECT created FROM research_model_calls WHERE project=? AND session=? AND run=? "
+            "AND identity=?",
+            (project, session, run, identity),
+        ).fetchone()
+        if row is not None:
+            now = clock.now().timestamp()
+            usage = usage.model_copy(
+                update={
+                    "started_at": usage.started_at or datetime.fromtimestamp(row[0], UTC),
+                    "duration_ms": max(0, round((now - float(row[0])) * 1000)),
+                }
+            )
     encoded = usage.model_dump_json()
     if len(encoded.encode()) > 16384:
         raise ValueError("model observation exceeds its 16 KiB bound")
@@ -186,5 +210,5 @@ class IntentModel:
             if exc.message.startswith("model_budget:"):
                 raise GatewayBudgetError(exc.message) from None
             raise
-        reply = await self.model.complete(messages, tools)
+        reply = await timed(self.model.complete(messages, tools), self.intents.clock)
         return replace(reply, intent_id=identity)
