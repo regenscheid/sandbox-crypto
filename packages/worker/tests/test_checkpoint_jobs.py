@@ -649,6 +649,17 @@ def second_upload(tmp_path: Path, settings: Settings) -> tuple[CheckpointPlan, s
     return plan, identity
 
 
+def kept_and_named(garage: Garage, identity: str) -> list[str]:
+    """The kept chunks an upload's manifest names too, which its promotion reads in both
+    buckets. Every chunk of an earlier checkpoint is in the upload bucket as well, so the
+    two buckets' common chunks include those the upload does not name; which of them
+    sorts first depends on the archive's bytes, and so on the filesystem's directory order
+    and the umask."""
+    with checkpoint_s3.Objects(UPLOAD) as objects:
+        named = checkpoint_remote.referenced(objects, [identity])
+    return sorted(named & garage.keys(KEPT.bucket, "chunks"))
+
+
 def source_of(settings: Settings, manifest: str) -> Any:
     found = checkpoint_jobs.inventory(settings).checkpoints
     checkpoint_id = next(c.checkpoint_id for c in found if c.manifest_sha256 == manifest)
@@ -664,7 +675,7 @@ def test_promotion_never_overwrites_a_shared_kept_chunk(tmp_path, garage, retain
     the kept copy an older checkpoint uses."""
     first = checkpointed(tmp_path, retained, "one")[1]
     plan, identity = second_upload(tmp_path, retained)
-    shared = sorted(garage.keys(KEPT.bucket, "chunks") & garage.keys(UPLOAD.bucket, "chunks"))
+    shared = kept_and_named(garage, identity)
     assert shared  # the large file's chunks are the same in both
     key = (UPLOAD.bucket, UPLOAD.key("chunks", shared[0]))
     garage.objects[key] = b"x" * len(garage.objects[key])
@@ -819,7 +830,7 @@ def test_a_kept_chunk_that_cannot_be_read_is_never_overwritten(tmp_path, garage,
     reading a good kept chunk stops the promotion, retryably, and copies nothing over it."""
     first = checkpointed(tmp_path, retained, "one")[1]
     _, identity = second_upload(tmp_path, retained)
-    shared = sorted(garage.keys(KEPT.bucket, "chunks") & garage.keys(UPLOAD.bucket, "chunks"))
+    shared = kept_and_named(garage, identity)
     garage.unavailable = {shared[0]}
     seen = len(garage.calls)
     with pytest.raises(OSError, match="request failed"):
