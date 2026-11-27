@@ -210,8 +210,14 @@ each path resolved to (`evidence_resolved`). Only a revision this session record
 bytes are kept, is pinned by path: a path with no recorded revision, a deleted file or a
 revision without its bytes is refused with the advice to `publish` it, and a file in
 another session's area, or a shared file another session last recorded, is refused with
-the advice to claim it by its artifact ID. A call with evidence by path is digested as
-given, so an exact retry returns its first receipt and what its paths first resolved to. Every plan change's result
+the advice to claim it by its artifact ID. A finish's outcome takes evidence the same way. An artifact claim
+given by ID is checked against the inventory: the revision must exist with that SHA-256
+and keep its bytes, and the platform names who recorded it, this session or another;
+`written_by` given by an author is refused, by the tool and by the store for every author
+but a caller that verified it. A call whose evidence the tool resolves or checks is
+digested as given, and an operation ID already recorded is answered before any check or
+resolution, after the reread fence: an exact retry returns its first receipt and what its
+paths first resolved to, whatever the plan or the files are now. Every plan change's result
 carries `plan`: the current reference, status, status revision and progress cursor, the
 number of steps in each state, and, for an open plan, the open steps (at most 16, the rest
 counted) with their cursors, which the next change names, so no read is needed for
