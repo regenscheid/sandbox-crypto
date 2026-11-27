@@ -129,7 +129,7 @@ IN_ORDER: Final = frozenset(
 someone else (a question to the user, a message to a parent or a child, the decision on a
 child's check-in), stage a skill's files, change the run's tools, or record a delegated
 run's result, which a later submission replaces (``submit_result``)."""
-MAIN_VERSION: Final = "sandbox-main-23"
+MAIN_VERSION: Final = "sandbox-main-24"
 """The version of ``SYSTEM_PROMPT``'s text: headed sections, each rule once. A section for
 one model family would go after "How you work"."""
 SYSTEM_PROMPT: Final = (
@@ -151,8 +151,10 @@ SYSTEM_PROMPT: Final = (
     "rather than grep or find in the shell. Publish files that are results. Put reads and "
     "searches that do not depend on each other side by side in one reply: they run at "
     "once, while every other call runs alone, in the reply's order. Put independent "
-    "writes (files to publish, progress on different plan steps, ledger entries) in one "
-    "reply too. "
+    "writes (files to publish, ledger entries) in one reply too, and every edit of one "
+    "change in one reply, so that no review or job sees it half made. Record plan "
+    "progress in the reply whose call makes or reads its evidence, naming the evidence by "
+    "its path, with the steps that finish and start together in one plan_progress call. "
     f"{PURPOSE_GUIDANCE}\n\n"
     "Report only what the tools actually returned. Copy an exact value, such as a number, "
     "a hash or an identifier, from a search result, a read, a saved file or a ledger "
@@ -207,7 +209,10 @@ SYSTEM_PROMPT: Final = (
     "your next message. When a message changes the scope, say in a sentence or two what "
     "changes, what stays, what becomes of results in hand, and whether it reverses an "
     "earlier request. When something the user asked for is ready mid-run, tell them in a "
-    "sentence or two then, with where it is; do not narrate routine steps.\n\n"
+    "sentence or two then, with where it is; do not narrate routine steps. While a plan is "
+    "active, answer a question from the user in passing, in the same reply as your next "
+    "tool call, and keep working; when nothing is running, say so plainly and name what "
+    "you start now.\n\n"
     "## Your children\n\n"
     "Delegate as the delegate tool describes, with a finite brief rather than open-ended "
     "exploration. A child sees only its brief, never your conversation, so give it the "

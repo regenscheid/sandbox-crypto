@@ -78,9 +78,11 @@ HOSTILE = "Authorization: Bearer test-secret-prompt-not-a-credential"
 # Each installed version and the SHA-256 of its UTF-8 text. Changing a text means a new
 # version: add it here, and keep the old version's entry for its records.
 GOLDEN = {
+    "sandbox-main-24": "58514e4e289bc17fe825a90c55379b60ca74d9e3ccad7d8cd1499cb82b396db3",
     "sandbox-main-23": "b8d82cbed2fca2ef5846c644c9a3c7149ddf3dcb4b41d05a8c5b82440e1dc2d7",
     "sandbox-main-22": "7369664e75e0d1a3586e52cd154bd31861074be29200384389116a22b9f501f1",
     "sandbox-main-21": "ca636732c6ae4cf804d66b4c8fcae41868911f71fb02b66f7aa5dbc47695fbe4",
+    "sandbox-delegated-task-24": "ce6e866ff7f6913208fd02b289dce058e47f0bf7b5b33f403af862bf88c87c27",
     "sandbox-delegated-task-23": "5c562cbeeb29c472f6c88d480011e7e83b50cc9ce0b2494b0a99d17550911951",
     "sandbox-delegated-task-22": "5dd3211a400ef077310cd82051001253cf985483d9dfcc144c29bbf9adc6169a",
     "sandbox-delegated-check-17": (
@@ -95,6 +97,7 @@ GOLDEN = {
     "sandbox-delegated-check-16": (
         "7eb1ee655c907708a71f0f9b7b86cc3aca165706d3b76d537d4f30d204efab1e"
     ),
+    "sandbox-main-plan-7": "9b471d3bcf1d3eb6c535d26c597a9e5b6a3c60a8dfbce5d5199827f337992d4b",
     "sandbox-main-plan-6": "bbeb281a4ce99d2dad42512f36f2d5e1c09737a9fa4f9b25d0ed80556b175af6",
     "sandbox-main-plan-5": "954a6c5b84763c33ac2ebee443a779fdf41a4dbca2ce86ad06f47bcad91f3c20",
     "sandbox-main-plan-4": "e13f0e1b551660bce8a6aa77b4a4e1633ce6b6b783c25242e5dee376a2895317",
@@ -348,7 +351,7 @@ HEADINGS = {
     "check": ["How you check", "Your parent", "Untrusted content and policy", "Your result"],
 }
 """Each prompt's headings, in order, after its first paragraph, which says who the agent
-is (``sandbox-main-23``, ``sandbox-delegated-task-23``, ``sandbox-delegated-check-17``)."""
+is (``sandbox-main-24``, ``sandbox-delegated-task-24``, ``sandbox-delegated-check-17``)."""
 STALE = (
     "self-approve",
     "awaiting_approval",
@@ -448,8 +451,7 @@ def test_the_baseline_runs_faults_are_answered_where_the_prompts_speak_of_them()
         "read its outcome and deliverables",
         "Leave it unaccepted until your final answer, so that it can still take follow-on work",
         "(an archive, a mirror) and its capture date",
-        "Put independent writes (files to publish, progress on different plan steps, ledger "
-        "entries) in one reply too.",
+        "Put independent writes (files to publish, ledger entries) in one reply too",
     ):
         assert said in main, said
     for prompt in (TASK_PROMPT, CHECK_PROMPT):
@@ -516,6 +518,41 @@ def test_the_behaviour_audits_wording_is_where_the_prompts_speak_of_it() -> None
     plan = " ".join(GUIDANCE.split())
     assert "Before creating one, load the skills the work needs" in plan
     assert "the main risk to the requested result and what you will deliver" in plan
+
+
+def test_the_second_baseline_runs_wording_is_where_the_prompts_speak_of_it() -> None:
+    """Lane G4, from the second baseline run: a question during an active plan is answered
+    beside the next tool call; one change's edits go in one reply, and plan progress goes
+    with the call that makes or reads its evidence; steps are ordered by what they need,
+    children start early and the parent works while they run; work the user moves
+    earlier is revised into the plan; a task's results go in its result, not in
+    messages before it."""
+    main = " ".join(SYSTEM_PROMPT.split())
+    for said in (
+        "While a plan is active, answer a question from the user in passing, in the same "
+        "reply as your next tool call, and keep working",
+        "when nothing is running, say so plainly and name what you start now",
+        "every edit of one change in one reply, so that no review or job sees it half made",
+        "Record plan progress in the reply whose call makes or reads its evidence, naming "
+        "the evidence by its path",
+    ):
+        assert said in main, said
+    assert "progress on different plan steps" not in main
+    plan = " ".join(GUIDANCE.split())
+    for said in (
+        "Order the steps by what each needs, not by the order the request lists them",
+        "unless the user asked it to wait",
+        "while children run, work on the steps that do not need their results, and wait for "
+        "them only when none is left",
+        "When the user moves work earlier, revise the plan so that it comes next, splitting "
+        "a step when only part of it moves",
+    ):
+        assert said in plan, said
+    assert plan.startswith(f"Planning guidance ({GUIDANCE_VERSION}): ")
+    task = " ".join(TASK_PROMPT.split())
+    assert "or to send an interim result your parent asked for" in task
+    assert "your results go in submit_result, not in messages just before it" in task
+    assert "to report progress" not in task
 
 
 def test_the_delegated_prompts_end_with_the_result_and_an_example() -> None:

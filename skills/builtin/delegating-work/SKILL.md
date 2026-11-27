@@ -62,7 +62,7 @@ A check that comes back refuted or inconclusive is information, not an obstacle.
 
 ## Reading outcomes
 
-`delegate` returns a delegation ID at once, and the child runs while you go on. Its end arrives as a delegation notice, or as the result of `wait_delegations`, which keeps the turn open until all (or the first) of the named delegations end, or a user or agent message, or a child's resource check-in, arrives. `delegation_status` reads a running delegation's limits, or an ended one's outcome. `cancel_delegation` stops one, keeping its record.
+`delegate` returns a delegation ID at once, and the child runs while you go on. Start a task as soon as what it needs is in hand, and while it runs, work on what does not need its result; wait for it only when nothing else is left. Its end arrives as a delegation notice, or as the result of `wait_delegations`, which keeps the turn open until all (or the first) of the named delegations end, or a user or agent message, or a child's resource check-in, arrives. `delegation_status` reads a running delegation's limits, or an ended one's outcome. `cancel_delegation` stops one, keeping its record.
 
 An outcome separates what the platform saw from what the child said:
 

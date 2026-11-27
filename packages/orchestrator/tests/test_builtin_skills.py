@@ -200,3 +200,34 @@ def test_the_computation_skill_leads_with_the_kernels() -> None:
     front = (PACK / "computation" / "SKILL.md").read_text(encoding="utf-8").partition("\n---\n")[0]
     (description,) = [line for line in front.splitlines() if line.startswith("description:")]
     assert description.index("kernels") < description.index("shell")
+
+
+def test_the_skills_answer_the_second_baseline_runs_sources_and_measurements() -> None:
+    """Lane G4: a held paper is read through the library, its PDF downloaded only for
+    what a page read cannot show; ``search_in_paper``'s context is a count of lines; a
+    measurement carries its code's hash; independent cells run side by side; the
+    assumption a source's count rests on is tested; a parent works while a task runs.
+    The single-page quoting rules stay."""
+    literature = " ".join(body("literature-search").split())
+    for said in (
+        "whose context is the number of lines around each passage, 0 to 20",
+        "Read a paper the library holds this way first, rather than downloading its PDF.",
+        "only for a paper neither the library nor the e-print server gives you, or to look "
+        "at a table, a matrix or an equation as an image after you have read its page",
+        "quote from one page or passage, never from a header",
+        "The check finds the quote only in a read of that page at that revision.",
+    ):
+        assert said in literature, said
+    assert "when a quote must name its lines" not in literature
+    computation = " ".join(body("computation").split())
+    for said in (
+        "Record the SHA-256 of the code with each measurement, at the moment it runs",
+        "keeps the old hash on the results it reuses, or runs them again",
+        "Run independent cells (parameter sets, seeds, rows of a table) side by side",
+        "within the budget the task sets",
+        "test it on each instance you measure and record the test beside the result",
+    ):
+        assert said in computation, said
+    delegating = " ".join(body("delegating-work").split())
+    assert "Start a task as soon as what it needs is in hand" in delegating
+    assert "wait for it only when nothing else is left" in delegating

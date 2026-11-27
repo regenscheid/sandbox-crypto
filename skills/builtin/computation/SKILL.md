@@ -40,7 +40,7 @@ Under pipefail, a pipe into head can end with status 141, which only means head 
 
 ## Write results to files
 
-Print the few aggregates a decision needs, and write the rest to files: JSON for structured results, text for logs and tables. Name the inputs, parameters and seed in the file, so the result can be traced and run again. When a result file is wrong, fix the code and regenerate the file; never edit it by hand.
+Print the few aggregates a decision needs, and write the rest to files: JSON for structured results, text for logs and tables. Name the inputs, parameters and seed in the file, so the result can be traced and run again. Record the SHA-256 of the code with each measurement, at the moment it runs, not once for the whole file: a script resumed after an edit keeps the old hash on the results it reuses, or runs them again. When a result file is wrong, fix the code and regenerate the file; never edit it by hand.
 
 Keep the list of requested cases (parameter sets, rows of a table) in one small file that the scripts read. Reports and checks take their rows and counts from that list and from the results, never from numbers written into code, and a cross-check compares the results with the list, so that a missing row still fails.
 
@@ -65,6 +65,8 @@ random.Random(int(seed))   random.Random takes an integer seed, not a Sage Integ
 
 Where a result claims exactness, compute exactly: integers, rationals and finite-field elements, not floats. A floating-point or sampled estimate is a numerical experiment, and its precision or model belongs beside the value.
 
+When a source's count or bound rests on an assumption about the instance, such as a key that is not degenerate, a system in general position or a matrix of full rank, test it on each instance you measure and record the test beside the result: a match on an instance that breaks the assumption shows nothing about the source.
+
 ## Long output is a sample
 
 Output too long for a tool's result comes back as its head and tail, marked as a sample, and is saved whole to a file the result names. Take no counts, identifiers, rows, or claims about all or none of it from the sample: read the saved file in parts, or compute from it. When the worker itself kept only the start and end of a very large stream, the saved file is a sample too; output that large belongs in a file the script writes.
@@ -81,6 +83,8 @@ Before a long or large run, check the method on a small representative case agai
 - `job_status` shows a job's state, its CPU and memory use, and the head and tail of its output. Read its full logs with `read_file`, at the stdout and stderr paths it names.
 - `wait_jobs` keeps the turn open, without calling the model, until the jobs end, the watcher needs attention, an agent message reaches you or a delegated run you started ends, and, in a main run, until the user writes.
 - `list_jobs` lists the session's jobs, and `cancel_job` stops one, keeping its logs.
+
+Run independent cells (parameter sets, seeds, rows of a table) side by side, as several processes or jobs, when the cores allow, keeping their memory together within the budget the task sets: one cell at a time on one core leaves the rest of the machine idle.
 
 A kernel cell is for interactive work. A computation of many minutes belongs in a job, where it survives the turn. A job's files are recorded when its completion notice arrives.
 
