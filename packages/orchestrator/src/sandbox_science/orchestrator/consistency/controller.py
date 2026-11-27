@@ -47,7 +47,9 @@ from .findings import Findings
 from .ledger import ingest_ledger
 from .models import (
     DISMISSAL_CHARACTERS,
+    END_WAIT_SECONDS,
     FINAL_HOLD_SECONDS,
+    FINAL_REVIEW_SECONDS,
     FINDING_STATUSES,
     EvidenceAnchor,
     ReviewConfig,
@@ -339,6 +341,7 @@ class ReviewController:
         archived_as: str | None = None,
         images: ImageViewer | None = None,
         hold_seconds: float = FINAL_HOLD_SECONDS,
+        end_seconds: float = END_WAIT_SECONDS,
     ) -> None:
         """``memory`` is the project memory the reviewer is given: the one the reviewed
         run was given when it started (PM-8). ``connectors`` are the MCP servers the run's
@@ -350,7 +353,8 @@ class ReviewController:
         (CR-2 as amended). ``archived_as`` is the run's name in the session's archive,
         when its messages are archived: each transcript item names the archived message
         it copies (CR-14 as amended). ``hold_seconds`` is how long ``final_review = "hold"``
-        keeps a final answer for its review (CR-48)."""
+        keeps a final answer for its review, from its start, and ``end_seconds`` how long
+        the end of a run waits for its reviews in all (CR-48)."""
         store.scope(context.project_id, context.session_id)
         project = recorded(store.documents.path.parent, context.project_id)
         if context.environment_id != project.sessions[context.session_id].environment_id:
@@ -365,7 +369,10 @@ class ReviewController:
         """Whether no reviewer is configured: then reviews are off (CR-35 as amended). An
         alias whose model is unavailable is a reviewer that fails, as CR-F10 says."""
         self.persistent = persistent
-        self.hold_seconds = hold_seconds
+        self.hold_seconds, self.end_seconds = hold_seconds, end_seconds
+        self.holding = False
+        """Whether the run's final answer is kept from the user until its final review
+        ends (``final_review = "hold"``), as read when the run's reviews begin."""
         self.final: str | None = None
         """The run's final review, once dispatched (CR-48)."""
         self.author_alias = author_alias
@@ -615,6 +622,9 @@ class ReviewController:
         if self.task is not None and self.task.done():
             await self.task
             self.task = None
+        if self.final is not None:
+            # The answering turn's work is named unreviewed, not checkpointed (CR-48).
+            return
         if self.task is None and await asyncio.to_thread(self.store.due, *self.scope):
             targets = await asyncio.to_thread(self.store.confirmation_targets, *self.scope)
             await self._dispatch("confirmation" if targets else "checkpoint")
@@ -693,19 +703,19 @@ class ReviewController:
         if self.off:
             await self._dispatch("terminal", label)
             return self._review_summary({**summary, "off": REVIEWS_OFF})
-        hold = config.final_review == "hold"
-        deadline = asyncio.get_running_loop().time() + self.hold_seconds if hold else None
+        clock = asyncio.get_running_loop().time
+        # The whole wait at the run's end is bounded (END_WAIT_SECONDS): a checkpoint
+        # still running has the allowance beyond the final review's own time.
+        ending = clock() + self.end_seconds
         if self.task is not None:
             if not config.terminal_hold:
                 return self._review_summary({**summary, "pending": True})
-            message = await self._wait(self.task, deadline)
+            message = await self._wait(self.task, ending - FINAL_REVIEW_SECONDS)
             if message is not None:
                 return self._review_summary({**summary, "pending": True, "user_message": message})
-            if not self.task.done():
-                # The hold's time passed with a checkpoint still running: the answer goes
-                # out, and the summary says the final review did not run (CR-48).
-                summary["final_review"] = await self._final_summary(None, config, finished=False)
-                return self._review_summary({**summary, "pending": True})
+            if not self.task.done() and self.review is not None:
+                # Ended at its deadline: its window is recorded unreviewed (CR-48).
+                await self._expire(self.review, "The run's end left it no more time.")
             self.task = None
             if conversation:
                 # An explicit checkpoint review can still be running when the
@@ -732,21 +742,51 @@ class ReviewController:
             summary["final_review"] = await self._final_summary(review, config)
             return self._review_summary({**summary, "pending": True})
         assert self.task is not None  # noqa: S101
+        deadline = ending
+        if config.final_review == "hold":
+            # The hold's limit runs from when its final review starts.
+            deadline = min(deadline, clock() + self.hold_seconds)
         message = await self._wait(self.task, deadline)
         if message is not None:
             return self._review_summary({**summary, "pending": True, "user_message": message})
-        if self.task.done():
-            self.task = None
-        else:
-            summary["pending"] = True
-        final = await self._final_summary(review, config)
+        finished = self.task.done()
+        if not finished:
+            await self._expire(review, "The final review's time limit ended it.")
+        self.task = None
+        final = await self._final_summary(review, config, finished=None if finished else False)
         summary["outcome"] = final["outcome"]
-        summary["pending"] = summary.get("pending", False) or not final["finished"]
+        summary["pending"] = not final["finished"]
         if not final["complete"]:
             summary["coverage_gap"] = True
         summary["final_review"] = final
         summary["counts"] = await asyncio.to_thread(self.notice_store.counts, *self.scope)
         return self._review_summary(summary)
+
+    async def _expire(self, review: str, why: str) -> None:
+        """End review ``review`` at its deadline (CR-48): what it recorded stays, its
+        window is recorded unreviewed with the watermark past it, and no retry waits; then
+        stop its task, whose own ending is refused as the review has ended."""
+        try:
+            await asyncio.to_thread(
+                partial(
+                    self.store.finish,
+                    *self.scope,
+                    review,
+                    self.owner,
+                    "capped",
+                    why,
+                    cap_reached=True,
+                    deadline=True,
+                )
+            )
+        except DocumentError as error:
+            if error.kind not in ("conflict", "policy_denied"):
+                raise
+        if self.task is not None and not self.task.done():
+            self.task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.task
+        self.task = None
 
     async def _final_summary(
         self, review: str | None, config: ReviewConfig, *, finished: bool | None = None
@@ -758,19 +798,57 @@ class ReviewController:
             found["finished"] = finished
         return {"mode": config.final_review, **found}
 
-    async def settled(self, messages: Sequence[Message], summary: Json) -> Json:
-        """The summary after the turn that answered the final review's findings: that
-        turn's work is recorded for later reviews, not reviewed again here (one round,
-        CR-48), and the findings' states are read as the turn left them."""
+    async def settled(
+        self, messages: Sequence[Message], summary: Json, *, answered: bool = True
+    ) -> Json:
+        """The summary at a closing after the run's final review (one a run, CR-48).
+        After the turn that answered its findings (``answered``), that turn's work is
+        recorded unreviewed, for later reviews: one round, no chain. After a turn another
+        hook took, such as for a user's message, its new work has an ordinary checkpoint,
+        under the ordinary limits, waited for within the end's bound. The findings' states
+        are read as the turn left them."""
         await self.observe(messages)
         config, _ = await asyncio.to_thread(self.store.config, self.context.project_id)
+        if self.final is not None:
+            await self._after_final(answered)
         final = await self._final_summary(self.final, config)
         previous = cast(Json, summary.get("final_review") or {})
-        final["answered"] = True
+        final["answered"] = answered or previous.get("answered") is True
         if previous.get("finished") is False:
             final["finished"] = False
         counts = await asyncio.to_thread(self.notice_store.counts, *self.scope)
         return self._review_summary({**summary, "final_review": final, "counts": counts})
+
+    async def _after_final(self, answered: bool) -> None:
+        """The work after the final review's window: recorded unreviewed after its
+        answering turn; otherwise given to an ordinary checkpoint, if the hourly calls
+        allow one, and whatever no review then covers is left after the watermark."""
+        assert self.final is not None  # noqa: S101
+        ended = await asyncio.to_thread(self.store.run, *self.scope, self.final)
+        coverage = await asyncio.to_thread(self.store.coverage, *self.scope)
+        start, head = int(ended["end_seq"]) + 1, int(coverage["feed_end"])
+        if head < start:
+            return
+        if answered:
+            await asyncio.to_thread(
+                self.store.record_unreviewed,
+                *self.scope,
+                start,
+                head,
+                "answering_turn",
+                self.final,
+            )
+            return
+        if self.task is not None or await self._dispatch("checkpoint") is None:
+            return
+        assert self.task is not None  # noqa: S101
+        assert self.review is not None  # noqa: S101
+        loop = asyncio.get_running_loop()
+        if await self._wait(self.task, loop.time() + self.end_seconds) is not None:
+            return
+        if not self.task.done():
+            await self._expire(self.review, "The run's end left it no more time.")
+        self.task = None
 
     def _review_summary(self, summary: Json) -> Json:
         # A terminal hold may dispatch another window after the initial metadata
@@ -921,6 +999,14 @@ class ReviewController:
     @asynccontextmanager
     async def active(self) -> AsyncGenerator[None]:
         await asyncio.to_thread(self.store.recover, *self.scope)
+        config, _ = await asyncio.to_thread(self.store.config, self.context.project_id)
+        self.holding = (
+            config.enabled
+            and config.terminal_hold
+            and config.final_review == "hold"
+            and self.role == "main"
+            and not self.off
+        )
         renew = partial(self.notice_store.renew, *self.scope, self.run_id)
         successful = False
         try:
@@ -971,6 +1057,11 @@ class Reviews(TurnHook):
     def lease(self) -> AbstractAsyncContextManager[None]:
         return self.controller.active()
 
+    @property
+    def holds_answers(self) -> bool:
+        # Until the run's final review: the answer after it is not held again (CR-48).
+        return self.controller.holding and self.controller.final is None
+
     async def notices(self, point: Point, run: RunView) -> Sequence[Notice]:
         if point != "turn":
             return ()
@@ -988,9 +1079,12 @@ class Reviews(TurnHook):
 
     async def closing(self, run: RunView, answer: str | None) -> Closing:
         controller = self.controller
-        if self.answering and self.result is not None:
-            # The turn that answered the final review's findings: one round, no chain.
-            self.result = await controller.settled(run.context.messages, self.result)
+        if controller.final is not None:
+            # One final review a run (CR-48): after its answering turn, or a turn another
+            # hook took, the closing reviews no more than an ordinary checkpoint would.
+            self.result = await controller.settled(
+                run.context.messages, self.result or {}, answered=self.answering
+            )
             return Closing()
         self.result = await controller.terminal(run.context.messages, answer)
         if "user_message" in self.result:
@@ -1009,6 +1103,8 @@ class Reviews(TurnHook):
             return Closing("accept", found)
         final = cast(Json, self.result.get("final_review") or {})
         self.answering = controller.final is not None
+        if isinstance(self.result.get("final_review"), dict):
+            final["answered"] = False
         # With "hold", the user's answer is the one after the round, unless the hold's
         # time passed before the review ended (CR-48).
         return Closing(
@@ -1041,6 +1137,11 @@ class Reviews(TurnHook):
                     }
 
     def summary(self) -> object | None:
+        final = (self.result or {}).get("final_review")
+        if self.answering and isinstance(final, dict) and not cast(Json, final).get("answered"):
+            # The answering turn did not end in a closing: it failed or was stopped, and
+            # the final review's findings were not answered.
+            cast(Json, final)["answering_failed"] = True
         return self.result
 
     async def acknowledge(self, record: RunRecord) -> None:

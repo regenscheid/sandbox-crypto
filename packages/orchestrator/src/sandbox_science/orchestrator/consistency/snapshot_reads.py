@@ -373,13 +373,53 @@ def reviewed_ranges(db: sqlite3.Connection, project: str, session: str) -> list[
         through, first = coverage.get("through"), coverage.get("from", start)
         if coverage.get("verdict") and isinstance(through, int) and isinstance(first, int):
             found.append((first, through))
-    merged: list[tuple[int, int]] = []
-    for first, last in sorted(found):
-        if merged and first <= merged[-1][1] + 1:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], last))
+    return merged(found)
+
+
+def unrecorded_through(db: sqlite3.Connection, project: str, session: str) -> int:
+    """The last feed position of the session's author-work reviews that ended with no
+    coverage record, from before reviews recorded their coverage: what they covered is
+    not known, so the session's coverage says so for the positions up to it rather than
+    call them unreviewed (CR-49); 0 when there are none."""
+    (found,) = db.execute(
+        "SELECT coalesce(max(r.end_seq),0) FROM review_runs r WHERE r.project=? "
+        "AND r.session=? AND r.kind IN ('checkpoint','terminal') "
+        "AND r.state IN ('passed','findings','inconclusive','capped') AND NOT EXISTS("
+        "SELECT 1 FROM review_records c WHERE c.review_id=r.review_id AND c.kind='coverage')",
+        (project, session),
+    ).fetchone()
+    return int(found)
+
+
+def merged(ranges: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
+    """``ranges`` merged and in order."""
+    found: list[tuple[int, int]] = []
+    for first, last in sorted(ranges):
+        if found and first <= found[-1][1] + 1:
+            found[-1] = (found[-1][0], max(found[-1][1], last))
         else:
-            merged.append((first, last))
-    return merged
+            found.append((first, last))
+    return found
+
+
+def recorded_unreviewed(
+    db: sqlite3.Connection, project: str, session: str
+) -> list[tuple[int, int]]:
+    """The feed ranges the session's reviews recorded as unreviewed (``review.unreviewed``
+    with a start), merged: a checkpoint's skipped backlog, a final review's ranges its
+    budget left out, a review ended at its deadline, an answering turn's work."""
+    return merged(
+        [
+            (int(start), int(end))
+            for start, end in db.execute(
+                "SELECT json_extract(payload,'$.start'),json_extract(payload,'$.end') FROM "
+                "control_events WHERE project=? AND session=? AND kind='review.unreviewed' "
+                "AND json_type(payload,'$.start')='integer' "
+                "AND json_type(payload,'$.end')='integer'",
+                (project, session),
+            )
+        ]
+    )
 
 
 def covered(ranges: Sequence[tuple[int, int]], seq: int) -> bool:
@@ -419,7 +459,7 @@ def final_items(
     db: sqlite3.Connection,
     project: str,
     session: str,
-    lower: int,
+    candidates: Sequence[tuple[int, int]],
     end: int,
     ranges: Sequence[tuple[int, int]],
     room: tuple[int, int],
@@ -427,8 +467,9 @@ def final_items(
     run: str,
     viewed: list[tuple[Json, Json]] | None = None,
 ) -> tuple[int, list[EvidenceItem]]:
-    """A final review's new items (CR-48): the session's feed rows after ``lower``,
-    through ``end``, that no review covered (outside ``ranges``), newest first, as many
+    """A final review's new items (CR-48): the session's feed rows in ``candidates``,
+    merged and ordered ranges, through ``end``, that no review covered (outside
+    ``ranges``), newest first, as many
     as ``room``, its bytes and items, allows; and the first position given. The newest
     item is always given. The actions item lists the actions among them, as a window's
     does, after the items, with run ``run``'s actions before them and the earlier runs'
@@ -440,13 +481,14 @@ def final_items(
     actions: list[tuple[Json, Json]] = []
     revised: list[Json] = []
     size, start = 0, end + 1
+    lower = candidates[0][0] - 1 if candidates else end
     for seq, key, kind, locator, payload, sha, complete in db.execute(
         "SELECT seq,source_key,kind,locator,CASE WHEN kind='source' AND source_key NOT "
         "GLOB 'quoted:*' THEN '' ELSE payload END,sha256,complete FROM review_feed "
         "WHERE project=? AND session=? AND seq>? AND seq<=? ORDER BY seq DESC",
         (project, session, lower, end),
     ):
-        if covered(ranges, seq):
+        if covered(ranges, seq) or not covered(candidates, seq):
             continue
         key = str(key)
         if kind == "source" and not key.startswith("quoted:"):

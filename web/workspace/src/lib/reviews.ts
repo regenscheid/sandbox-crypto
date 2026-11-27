@@ -253,7 +253,11 @@ export function finalReviewLine(final: FinalReviewSummary | undefined): string |
   const outcome = final.finished === false ? 'did not finish' : (final.outcome ?? 'pending');
   const parts = [
     `Final review: ${outcome}${final.mode === 'after' ? ', after the answer' : ', before the answer'}` +
-      (final.answered ? '; the agent answered its findings.' : '.'),
+      (final.answered
+        ? '; the agent answered its findings.'
+        : final.answering_failed
+          ? '; the turn answering its findings failed, so they were not answered.'
+          : '.'),
   ];
   const open = Object.entries(final.open ?? {}).filter(([, n]) => n > 0);
   parts.push(
@@ -274,5 +278,7 @@ export function finalReviewLine(final: FinalReviewSummary | undefined): string |
           : '.'),
     );
   }
+  if (final.not_recorded_through)
+    parts.push(`Coverage is not recorded through position ${final.not_recorded_through}.`);
   return parts.join(' ');
 }

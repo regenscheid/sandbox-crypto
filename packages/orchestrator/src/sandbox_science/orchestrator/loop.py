@@ -356,6 +356,12 @@ class Transcript:
     """False once a model call was refused for the conversation's length."""
     response_rounds: int = 0
     answer_held: bool = field(default=False, repr=False)
+    held_answer: str | None = field(default=None, repr=False)
+    """The answer a hook held for its round (``answer_held``), kept as given: a run
+    whose answering turn fails keeps it as its answer (CR-48)."""
+    withheld: bool = field(default=False, repr=False)
+    """Whether the closing answer the conversation ends with is kept from the user's
+    view until its closing ends (``TurnHook.holds_answers``)."""
     """Whether a hook asked for this closing's response round with the answer held: the
     answer after the round is the run's answer to the user (CR-48)."""
     held: int = field(default=0, repr=False)
@@ -408,7 +414,9 @@ class Transcript:
         """Keep the first failure classification without retaining exception data."""
         self.failure = self.failure or phase
         self.stopped = "error"
-        self.final_text = self.answer = None
+        # An answer the agent had given stands, held or not; the failed turn has none.
+        self.final_text = None
+        self.answer = self.answer or self.held_answer
 
 
 def notice_message(notice: Notice) -> Message:
@@ -457,6 +465,15 @@ async def _closing(hooks: Sequence[TurnHook], transcript: Transcript, answer: st
     hooks are asked first and, since accepting can take long enough for what they guard
     to change, again after every hook accepted.
     """
+    try:
+        return await _closing_hooks(hooks, transcript, answer)
+    finally:
+        transcript.withheld = False
+
+
+async def _closing_hooks(
+    hooks: Sequence[TurnHook], transcript: Transcript, answer: str | None
+) -> bool:
     vetoes = [hook for hook in hooks if hook.veto]
     respond = False
     transcript.answer_held = False
@@ -474,8 +491,11 @@ async def _closing(hooks: Sequence[TurnHook], transcript: Transcript, answer: st
         transcript.response_rounds += 1
         if not transcript.answer_held:
             _stands(transcript, answer)
+        else:
+            transcript.held_answer = answer
         transcript.answer_held = False
         return True
+    transcript.withheld = False  # accepted: the answer is the user's to see now
     for hook in hooks:
         await hook.accept(transcript)
     for hook in vetoes:
@@ -933,6 +953,7 @@ async def _run_task(
         if turn and (last := await _last_call(hooks, transcript)) is not None:
             await _report(model, toolbox, transcript, hooks, *last)
             return transcript
+        transcript.withheld = False
         await _notices(hooks, "turn", transcript)
         # The notices since the last call may have loaded tool groups.
         revision = _retooled(toolbox, transcript, revision)
@@ -950,6 +971,7 @@ async def _run_task(
             return transcript
         # The answer as a chat message, carrying the gateway's answer for its adapter.
         await _append(transcript, AssistantMessage.of(reply), Appended("assistant", reply=reply))
+        transcript.withheld = not reply.tool_calls and any(h.holds_answers for h in hooks)
         await _model_returned(hooks, transcript)
         await _turn_limit(hooks, transcript)
         limited = reply.finish_reason == LENGTH

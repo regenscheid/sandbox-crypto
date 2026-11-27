@@ -29,6 +29,10 @@ FINAL_FEED_BYTES: Final = 1024 * 1024
 """The approximate new-evidence byte budget of a final review."""
 FINAL_CITED_ENTRIES: Final = 8
 """The most ledger entries a final answer names by handle that come into its review."""
+END_WAIT_SECONDS: Final = FINAL_REVIEW_SECONDS + 60
+"""How long the end of a run waits for its reviews in all: a checkpoint still running
+has the minute beyond the final review's own time, and a review the wait outlasts is
+ended at its deadline, its window recorded unreviewed (CR-48)."""
 FINAL_HOLD_SECONDS: Final = 600
 """How long ``hold`` keeps a final answer from the user for its review (CR-48)."""
 BACKLOG_WINDOWS: Final = 3

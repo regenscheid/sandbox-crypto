@@ -659,7 +659,8 @@ class Findings:
         bound, is offered to its session's runs, unless ``notify`` is false: an agent's
         own response leaves it open, and offering it back to the agent that wrote it made
         a run answer it again and again until its turns ran out (lab 40). ``carry`` keeps
-        a notice of the revision before that no run was given, for the new revision: the
+        a notice of the revision before that no run was given or holds, for the new
+        revision (one a live run was offered stays that run's, acknowledged or not): the
         platform's own bookkeeping, such as queueing a re-check or recording one that could
         not decide, does not take a finding from the agent it has not reached (CR-48)."""
         revision = found["revision"] + 1
@@ -750,8 +751,9 @@ class Findings:
             db.execute(
                 "INSERT OR IGNORE INTO review_notices(finding_id,revision,project,session) "
                 "SELECT finding_id,?,project,session FROM review_notices WHERE finding_id=? "
-                "AND revision=? AND delivered_run IS NULL",
-                (revision, found["finding_id"], found["revision"]),
+                "AND revision=? AND delivered_run IS NULL "
+                "AND (claimed_run IS NULL OR claim_until<=?)",
+                (revision, found["finding_id"], found["revision"], self.store.clock()),
             )
         if (
             notify

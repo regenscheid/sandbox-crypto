@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Sequence
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 import pytest
 
@@ -22,6 +22,7 @@ from sandbox_science.orchestrator.consistency.models import FinalReview, ReviewC
 from sandbox_science.orchestrator.consistency.notices import FindingNotices
 from sandbox_science.orchestrator.consistency.runner import ReviewerRunner
 from sandbox_science.orchestrator.consistency.store import ReviewStore
+from sandbox_science.orchestrator.hooks import Closing, Notice, RunView, TurnHook
 from sandbox_science.orchestrator.loop import run_task
 from sandbox_science.orchestrator.model import ModelTurn
 from sandbox_science.orchestrator.model_profiles import requested
@@ -207,7 +208,19 @@ async def test_hold_releases_the_answer_when_its_time_passes(store) -> None:
         summary = cast(dict[str, Any], hook.summary())
         assert summary["pending"]
         final = summary["final_review"]
-        assert (final["mode"], final["outcome"], final["finished"]) == ("hold", "pending", False)
+        assert (final["mode"], final["outcome"], final["finished"]) == ("hold", "capped", False)
+        # Ended at its deadline, not dropped: no retry waits, and its window is named.
+        run = reviews.run("p", "s", final["review"])
+        assert (run["state"], run["cap_reached"]) == ("capped", 1)
+        progress = reviews.progress("p", "s")
+        assert (progress["retry_end"], progress["watermark"]) == (None, run["end_seq"])
+        (left,) = reviews.listing("p", "s")["unreviewed"]
+        assert (left["start"], left["end"], left["reason"]) == (
+            run["start_seq"],
+            run["end_seq"],
+            "deadline",
+        )
+        assert reviewing.task is None
     finally:
         model.release.set()
         await reviewing.close()
@@ -377,6 +390,7 @@ def test_a_review_stored_before_the_final_review_still_loads(store) -> None:
         "complete": True,
         "unreviewed": [],
         "unreviewed_ranges": 0,
+        "not_recorded_through": None,
     }
     assert reviews.listing("p", "s")["reviews"][0]["review_id"] == review
     assert reviews.call_provenance("p", "s", review, call).status == "legacy"
@@ -397,3 +411,221 @@ def test_a_platform_recheck_does_not_take_an_undelivered_finding_from_the_agent(
     assert Findings(reviews).queue_rechecks("p", "s") == 1
     notices = FindingNotices(reviews).pending("p", "s", "author-1", set(), raised_for="author-1")
     assert [(n["finding"], n["revision"]) for n in notices] == [(raised["finding_id"], 2)]
+
+
+class OneMoreTurn(TurnHook):
+    """Takes one more turn at the first closing it sees, as a user's message typed during
+    the final review does (``UserMessages.closing``); then accepts."""
+
+    name = "user_messages"
+
+    def __init__(self) -> None:
+        self.closings = 0
+
+    async def closing(self, run: RunView, answer: str | None) -> Closing:
+        self.closings += 1
+        if self.closings > 1:
+            return Closing()
+        return Closing("continue", (Notice(self.name, ("msg-1",), "Also check 17.", None),))
+
+
+async def test_one_final_review_a_run_and_the_hourly_cap_for_what_follows(store) -> None:
+    """A final review that passes, a user's message taken in a later turn, and a second
+    answer: no second final review; the later turn's work has an ordinary checkpoint,
+    which the hourly calls defer (CR-48)."""
+    reviews, _, _ = store
+    reviewing = controller(reviews, LabReviewer(), calls_per_hour=1)
+    main = ScriptedModel(
+        [ModelTurn("The task is complete."), ModelTurn("17 checked as well; the task is done.")]
+    )
+    async with WorkerClient("http://127.0.0.1:1", "synthetic-token") as client:
+        transcript = await run_task(
+            main,
+            Toolbox(client, context_for(reviews), reviews=reviewing),
+            "Check 16.",
+            run_id="author-1",
+            max_turns=4,
+            hooks=[Reviews(reviewing), OneMoreTurn()],
+        )
+    await reviewing.close()
+    assert transcript.final_text == "17 checked as well; the task is done."
+    listed = reviews.listing("p", "s")
+    (review,) = listed["reviews"]
+    assert review["classifier"]["final"]
+    assert listed["waiting"]["reason"] == "calls_per_hour"
+    final = cast(dict[str, Any], transcript.summaries["reviews"])["final_review"]
+    assert (final["answered"], final["review"]) == (False, review["review_id"])
+
+
+@pytest.mark.parametrize("mode", ["after", "hold"])
+async def test_a_failed_answering_turn_keeps_the_answer_given(store, mode: FinalReview) -> None:
+    """The answering turn's model call fails: the run keeps the answer the agent gave,
+    the record says the run failed, and the summary that the finding was not answered."""
+    from sandbox_science.orchestrator.model import ModelError
+
+    reviews, _, _ = store
+    reviewing = controller(reviews, FindingReviewer(), mode)
+    given = "The cross-check is mutation-tested; the task is complete."
+
+    class FailsSecond:
+        calls = 0
+
+        async def complete(self, messages: Sequence[Any], tools: Sequence[Any]) -> ModelTurn:
+            self.calls += 1
+            if self.calls == 1:
+                return ModelTurn(given)
+            raise ModelError("synthetic gateway failure")
+
+    async with WorkerClient("http://127.0.0.1:1", "synthetic-token") as client:
+        transcript = await run_task(
+            cast(Any, FailsSecond()),
+            Toolbox(client, context_for(reviews), reviews=reviewing),
+            "Check the numbers.",
+            run_id="author-1",
+            max_turns=4,
+            hooks=[Reviews(reviewing)],
+        )
+    await reviewing.close()
+    assert (transcript.stopped, transcript.final_text, transcript.answer) == ("error", None, given)
+    final = cast(dict[str, Any], transcript.summaries["reviews"])["final_review"]
+    assert (final["answered"], final["answering_failed"]) == (False, True)
+    assert final["open"] == {"fail": 1}
+
+
+def test_a_notice_offered_to_a_live_run_is_not_carried_to_it_again(store) -> None:
+    """A run was offered finding F; it edits what F reviewed without responding, and the
+    re-check is queued: F is not offered again under its new revision."""
+    from .test_consistency import raise_finding, reviewed_document, revise
+
+    reviews, _, _ = store
+    claim(reviews)
+    doc, review, anchors = reviewed_document(reviews, "There are 16.\n", "doc")
+    raised = raise_finding(reviews, review, anchors=anchors)
+    reviews.finish("p", "s", review, "owner", "findings", "The count is wrong.")
+    notices = FindingNotices(reviews)
+    (offered,) = notices.pending("p", "s", "author-1", set(), raised_for="author-1")
+    revise(reviews, doc, "There are 15.\n")
+    assert Findings(reviews).queue_rechecks("p", "s") == 1
+    seen = {offered["notice_id"]}
+    assert notices.pending("p", "s", "author-1", seen, raised_for="author-1") == []
+    assert Findings(reviews).get("p", "s", raised["finding_id"])["revision"] == 2
+
+
+async def test_no_checkpoint_runs_in_the_answering_turn(store) -> None:
+    """A safe point of the answering turn starts no review, even with one asked for; the
+    turn's work is recorded unreviewed (CR-48)."""
+    reviews, _, _ = store
+    reviewing = controller(reviews, FindingReviewer(), min_interval_seconds=0)
+    hook = Reviews(reviewing)
+    from sandbox_science.orchestrator.context.agent import AgentContext
+    from sandbox_science.orchestrator.loop import Transcript
+
+    answer = {"role": "assistant", "content": "The task is complete."}
+    run = Transcript(context=AgentContext(messages=[answer]))
+    assert (await hook.closing(run, "The task is complete.")).action == "respond"
+    reviews.request("p", "s")
+    later = [answer, {"role": "assistant", "content": "Corrected the claim."}]
+    await reviewing.safe_point(later)
+    assert reviewing.task is None
+    run.response_rounds = 1
+    run.context.messages.append(later[1])
+    assert (await hook.closing(run, "Corrected the claim.")).action == "accept"
+    listed = reviews.listing("p", "s")
+    assert len(listed["reviews"]) == 1
+    (left,) = [u for u in listed["unreviewed"] if u["reason"] == "answering_turn"]
+    final = cast(dict[str, Any], hook.summary())["final_review"]
+    assert final["answered"]
+    assert left["end"] == final["feed_end"]
+    await reviewing.close()
+
+
+async def test_a_later_final_review_takes_up_a_range_left_unreviewed(store) -> None:
+    """A range an earlier final review's budget left out is a candidate for the session's
+    next final review, after its run's own work; once reviewed it is no longer listed,
+    and every position is in a covered or a recorded range (CR-48)."""
+    from sandbox_science.orchestrator.consistency.models import FINAL_FEED_ITEMS
+
+    reviews, _, _ = store
+    seqs = [claim(reviews, f"Step {n}.", f"step-{n}") for n in range(FINAL_FEED_ITEMS + 5)]
+    first = await controller(reviews, LabReviewer()).terminal([], "The task is complete.")
+    assert first["final_review"]["unreviewed"] == [{"start": seqs[0], "end": seqs[4]}]
+    reviews.observe(
+        "p", "s", "later", "transcript", {"run": "author-2", "message": 1},
+        {"role": "assistant", "content": "Later work."},
+    )  # fmt: skip
+    later = ReviewController(
+        reviews, context_for(reviews), run_id="author-2", model=LabReviewer(), alias="reviewer"
+    )
+    summary = await later.terminal([], "The later task is complete.")
+    assert summary["final_review"]["complete"]
+    assert [u for u in reviews.listing("p", "s")["unreviewed"] if u.get("start")] == []
+
+
+def test_reviews_before_coverage_records_say_so(store) -> None:
+    """A session reviewed before reviews recorded their coverage shows that coverage as
+    not recorded, not as unreviewed work (CR-49)."""
+    reviews, _, _ = store
+    seqs = [claim(reviews, f"Claim {n}.", f"claim-{n}") for n in range(3)]
+    review = dispatch(reviews)
+    with reviews.documents.control.write() as tx:
+        tx.sql.execute(
+            "UPDATE review_runs SET state='passed',ended=1000,lease_until=NULL WHERE review_id=?",
+            (review,),
+        )
+    later = claim(reviews, "A later claim.", "later")
+    coverage = reviews.coverage("p", "s")
+    assert coverage["not_recorded_through"] == seqs[-1]
+    assert coverage["unreviewed"] == [{"start": later, "end": later}]
+
+
+async def test_hold_keeps_the_answer_from_the_chat_until_its_closing_ends() -> None:
+    """While a hook holds a closing answer, the run's events say it is being reviewed and
+    do not show it; it is written when the closing ends (CR-48)."""
+    from sandbox_science.contracts import ExecutionContext
+    from sandbox_science.orchestrator.chat import HELD, EventLog
+
+    written: list[tuple[str, dict[str, Any]]] = []
+
+    class Chat:
+        context = ExecutionContext(project_id="p", session_id="s", environment_id="env")
+        run_id, run, parent, delegation = "r", "run-r", None, None
+        message_ids: tuple[str, ...] = ()
+        unavailable: ClassVar[dict[str, str]] = {}
+        connectors = None
+        task = None
+        prefix = 2
+
+        async def write(self, kind: str, data: dict[str, Any]) -> None:
+            written.append((kind, data))
+
+    def texts() -> list[str]:
+        return [str(d.get("text")) for kind, d in written if kind == "assistant"]
+
+    class Holds(TurnHook):
+        name = "reviews"
+
+        def __init__(self) -> None:
+            self.seen_during: list[str] = []
+
+        @property
+        def holds_answers(self) -> bool:
+            return True
+
+        async def closing(self, run: Any, answer: str | None) -> Closing:
+            self.seen_during = texts()
+            assert ("notice", {"source": "reviews", "ids": [], "text": HELD}) in written
+            return Closing()
+
+    from sandbox_science.orchestrator.tools import Toolbox as Tools
+
+    holds = Holds()
+    transcript = await run_task(
+        ScriptedModel([ModelTurn("the held answer")]),
+        Tools(cast(Any, object()), Chat.context),
+        "go",
+        run_id="r",
+        hooks=[holds, EventLog(cast(Any, Chat()))],
+    )
+    assert transcript.final_text == "the held answer"
+    assert "the held answer" not in holds.seen_during
+    assert texts() == ["the held answer"]
