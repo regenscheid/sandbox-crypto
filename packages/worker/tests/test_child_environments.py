@@ -52,6 +52,7 @@ from sandbox_science.contracts.child_environments import (
     ChildEnvironment,
     ChildEnvironmentEnd,
     ChildEnvironmentRequest,
+    ChildLimits,
     ChildPhase,
     HandBackRequest,
     InputPart,
@@ -1321,6 +1322,33 @@ async def test_the_limit_reaches_the_client_as_a_definite_refusal(
         assert "limit_reached: this project's child_environments_max of 1" in caught.value.message
     finally:
         await manager.close()
+        await pool.close()
+
+
+async def test_a_child_environment_says_what_it_may_use(pool: Pool) -> None:
+    """Its record gives its profile's CPU and memory limits as the session's policy
+    narrows them, and the profile's scratch disk (CE-3): the example policy's caps are
+    above the profile's."""
+    made = await pool.ready()
+    assert made.limits == ChildLimits(cpu_millicores=4000, memory_mib=8192, scratch_disk_mib=4096)
+
+
+async def test_the_policy_narrows_what_a_child_environment_may_use(tmp_path: Path) -> None:
+    small = granting(tmp_path, "small.yaml")
+    text = small.read_text()
+    assert "  cpu: 16\n" in text
+    assert "  memory: 64Gi\n" in text
+    small.write_text(
+        text.replace("  cpu: 16\n", "  cpu: 1.5\n").replace("  memory: 64Gi\n", "  memory: 3Gi\n")
+    )
+    pool = Pool(tmp_path / "pool")
+    try:
+        await pool.session(pool.add(small))
+        made = await pool.ready()
+        assert made.limits == ChildLimits(
+            cpu_millicores=1500, memory_mib=3072, scratch_disk_mib=4096
+        )
+    finally:
         await pool.close()
 
 

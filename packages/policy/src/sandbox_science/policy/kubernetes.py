@@ -135,6 +135,18 @@ class KubernetesProfile(BaseModel):
                 raise ValueError(f"{field} request exceeds its limit")
         return self
 
+    def placed_limits(self, cap: Resources) -> tuple[int, int]:
+        """The CPU (millicores) and memory (bytes) limits a placement gives, the profile's
+        narrowed by the project's and pool's caps, as ``driver_json`` renders them."""
+        cpu = self.limits.cpu_millicores
+        memory = self.limits.memory_mib * 1024**2
+        if cap.cpu is not None:
+            ceiling = int((Decimal(str(cap.cpu)) * 1000).to_integral_value(rounding=ROUND_FLOOR))
+            cpu = min(cpu, ceiling)
+        if cap.memory is not None:
+            memory = min(memory, int(cap.memory))
+        return cpu, memory
+
     def driver_json(self, cap: Resources) -> str:
         """Render OpenShell 0.1.10's typed config, narrowing CPU/memory by project/pool caps.
 
@@ -144,13 +156,7 @@ class KubernetesProfile(BaseModel):
         workspace's disk allowance. PVC capacity and archive/restore remain separate
         lifecycle configuration.
         """
-        cpu = self.limits.cpu_millicores
-        memory = self.limits.memory_mib * 1024**2
-        if cap.cpu is not None:
-            ceiling = int((Decimal(str(cap.cpu)) * 1000).to_integral_value(rounding=ROUND_FLOOR))
-            cpu = min(cpu, ceiling)
-        if cap.memory is not None:
-            memory = min(memory, int(cap.memory))
+        cpu, memory = self.placed_limits(cap)
         if self.requests.cpu_millicores > cpu or self.requests.memory_mib * 1024**2 > memory:
             raise ValueError("Kubernetes profile requests exceed the effective CPU/memory policy")
         pod: dict[str, object] = {"node_selector": self.node_selector}

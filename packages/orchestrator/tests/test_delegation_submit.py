@@ -576,9 +576,34 @@ def test_the_delegate_tool_says_when_to_delegate() -> None:
     (delegate,) = [spec for spec in SPECS if spec.name == "delegate"]
     text = delegate.description
     assert "a finite piece of work of another kind than yours" in text
+    assert "a phase heavy in reading whose details you will not need afterwards" in text
     assert "not volume: fewer children is usually right" in text
-    assert "message that child (message_child) rather than start a new one" in text
-    assert "checks are the exception" in text
+    # A returned child takes follow-on work until it is accepted, which is final.
+    assert "message that child (message_child) while it awaits your review" in text
+    assert "once it is accepted, delegate a new task whose references name its result" in text
+    assert "rather than start a new one" not in text
+    assert "Checks are the exception" in text
+    assert "environment.limits" in text
+
+
+def test_the_other_delegation_tools_say_what_ends_a_wait_and_what_they_return() -> None:
+    found = {spec.name: spec for spec in SPECS}
+    wait = found["wait_delegations"].description
+    assert "a user message, a message from another agent, or a child's resource check-in" in wait
+    status = found["delegation_status"]
+    assert "counts the other files its calls recorded" in status.description
+    assert status.parameters["properties"]["files"]["type"] == "boolean"
+    accept = found["accept_delegation"].description
+    assert "Returns the acceptance and the hand-back, not the outcome again" in accept
+    assert "accepted unread" in accept
+
+
+def test_the_deviations_field_asks_for_each_reduction_and_reads_empty_as_full() -> None:
+    for schema in (task_schema(), check_schema()):
+        text = schema["properties"]["deviations"]["description"]
+        assert "each place you used less than, or other than, what the brief named" in text
+        assert "with its size" in text
+        assert "an empty list claims you did all the brief named" in text
 
 
 def test_the_prompts_give_one_rule_for_a_question_and_name_the_tool() -> None:

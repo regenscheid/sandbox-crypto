@@ -597,7 +597,12 @@ def _strings(description: str, most: int, limit: int = 1000) -> dict[str, Any]:
 
 _STATUSES: Final[list[Any]] = ["complete", "partial", "blocked"]
 _LISTS: Final[dict[str, Any]] = {
-    "deviations": _strings("where you departed from the brief, and why", 10),
+    "deviations": _strings(
+        "each place you used less than, or other than, what the brief named, with its size "
+        "and why: a subsample, a capped degree or size, a substituted source, code or method; "
+        "an empty list claims you did all the brief named",
+        10,
+    ),
     "open_questions": _strings(
         "what you could not settle, such as a question your parent did not answer", 10
     ),

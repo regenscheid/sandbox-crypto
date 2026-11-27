@@ -280,6 +280,16 @@ class ChildEnvironmentEnd(Contract):
     reason: ChildEndReason = "delegation_ended"
 
 
+class ChildLimits(Contract):
+    """What a child environment may use (CE-3): its profile's CPU and memory limits as the
+    project's and the pool's caps narrow them, and the profile's scratch disk, the
+    container's writable layer outside the workspace, whose size the gateway gives."""
+
+    cpu_millicores: Annotated[int, Field(ge=1)]
+    memory_mib: Annotated[int, Field(ge=1)]
+    scratch_disk_mib: Annotated[int, Field(ge=1)]
+
+
 class ChildEnvironment(Contract):
     """A child environment's record, as the worker keeps it (CE-11)."""
 
@@ -311,6 +321,9 @@ class ChildEnvironment(Contract):
     """When its profile's ``wall_time_max`` runs out: the run ends ``limit_reached``."""
     retained_until: datetime | None = None
     hand_back: ChildHandBack | None = None
+    limits: ChildLimits | None = None
+    """What it may use, by its profile and the project's policy; ``None`` when the worker
+    no longer has its profile or the session environment's policy."""
 
 
 class ChildEnvironmentList(Contract):
@@ -337,6 +350,7 @@ __all__ = [
     "ChildEnvironmentRequest",
     "ChildFailure",
     "ChildHandBack",
+    "ChildLimits",
     "ChildPhase",
     "HandBackRequest",
     "InputPart",

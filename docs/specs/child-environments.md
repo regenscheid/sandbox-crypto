@@ -93,7 +93,14 @@ platform places a child by the project's settings. No change to checks' evidence
   [D43](../DECISIONS.md)). The project names a default child profile; a brief may name
   another of the project's by name (`profile`), never a size or a node. A profile whose
   tier is below the project's `min_isolation_tier` cannot be a child profile. The
-  policy's CPU and memory caps narrow the profile as they narrow a session's.
+  policy's CPU and memory caps narrow the profile as they narrow a session's. The
+  worker's record of a child environment says what it may use (`limits`: the profile's
+  CPU and memory limits so narrowed, and its ephemeral-storage limit as scratch disk, the
+  container's writable layer outside the workspace, whose size the gateway gives; none
+  once the profile or the session environment's policy is gone). `delegate`'s result
+  gives them to the parent (`environment.limits`), and the child's brief states them in
+  the line after its write area's, so that a budget the brief names can be checked
+  against them.
 - CE-4. **Lifetime.** Creating, ready, running or waiting, collecting, then released or
   retained. The environment is created when the delegation is admitted and the run
   starts once it is ready; `delegate` returns the delegation ID at once, as today, and
