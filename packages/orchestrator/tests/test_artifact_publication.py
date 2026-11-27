@@ -163,7 +163,7 @@ async def test_publish_takes_several_paths_and_answers_one_compact_entry_each(
             }
             assert entry["artifact"].startswith("artifact-")
         assert set(shown[1]) == {"path", "error"}
-        assert shown[1]["error"]["kind"] == "unavailable"
+        assert shown[1]["error"]["kind"] == "not_found"
         assert shown[1]["error"]["message"]
         # The record keeps each file's snapshot and receipt; the call itself succeeded.
         kept = outcome.record["publications"]
@@ -174,10 +174,11 @@ async def test_publish_takes_several_paths_and_answers_one_compact_entry_each(
         ]
         assert "error" not in outcome.record
         # A replay finds each file's own operation: the same revisions, and the missing
-        # file's held intent, which is never published again.
+        # file's held intent, which is never published again under that operation.
         again = json.loads((await toolbox.call(call, "op1")).text)["published"]
         assert [again[0], again[2]] == [shown[0], shown[2]]
         assert again[1]["error"]["kind"] == "unavailable"
+        assert "may be made again" in again[1]["error"]["message"]
         await publisher.aclose()
     assert sorted(e.reference.revision for e in inventory.list("p1").entries) == [1, 1]
     documents.close()
@@ -207,8 +208,8 @@ async def test_publish_answers_one_path_in_the_compact_shape(
         # A file the inventory could not keep is the call's error, with the receipt kept.
         missing = ToolCall(id="call2", name="publish", arguments='{"path": "gone.txt"}')
         failed = await toolbox.call(missing, "op2")
-        assert json.loads(failed.text)["error"]["kind"] == "unavailable"
-        assert failed.record["error"] == "unavailable"
+        assert json.loads(failed.text)["error"]["kind"] == "not_found"
+        assert failed.record["error"] == "not_found"
         assert failed.record["artifact_inventory"]["state"] == "held"
         await publisher.aclose()
     documents.close()
@@ -234,6 +235,66 @@ async def test_publish_refuses_a_call_without_exactly_one_list_of_files(
     )
     assert json.loads(outcome.text)["error"]["kind"] == "invalid_request"
     assert client.publishes == 0
+
+
+@pytest.mark.parametrize("inventory", [True, False])
+@pytest.mark.parametrize("several", [False, True])
+async def test_a_path_with_no_file_is_refused_as_the_worker_refuses_it(
+    worker_url: str, tmp_path: Path, inventory: bool, several: bool
+) -> None:
+    """A path with no file is ``not_found``, a directory ``invalid_request``, and a path
+    outside the workspace ``invalid_request``, each naming the path, in either form and
+    with or without an inventory: kinds a model does not retry as they are."""
+    documents = DocumentStore(tmp_path / "control.sqlite3")
+    cases = {"missing.txt": "not_found", "adir": "invalid_request", "../x": "invalid_request"}
+    async with WorkerClient(worker_url, TOKEN) as client:
+        await client.write_file(
+            WriteFileRequest(context=CONTEXT, path="adir/x.txt", content_b64="aGkK")
+        )
+        publisher = (
+            ArtifactPublisher(ArtifactInventory(documents), client, CONTEXT, run_id="r")
+            if inventory
+            else None
+        )
+        toolbox = Toolbox(client, CONTEXT, artifacts=publisher)
+        if several:
+            arguments = json.dumps({"paths": list(cases)})
+            outcome = await toolbox.call(ToolCall(id="c", name="publish", arguments=arguments), "o")
+            errors = [entry["error"] for entry in json.loads(outcome.text)["published"]]
+            assert outcome.record["error"] == "not_found"
+        else:
+            errors = []
+            for n, path in enumerate(cases):
+                arguments = json.dumps({"path": path})
+                call = ToolCall(id=f"c{n}", name="publish", arguments=arguments)
+                errors.append(json.loads((await toolbox.call(call, f"o{n}")).text)["error"])
+        assert [error["kind"] for error in errors] == list(cases.values())
+        for path, error in zip(cases, errors, strict=True):
+            assert path in error["message"]
+            assert "may be made again" not in error["message"]
+        if publisher is not None:
+            await publisher.aclose()
+    documents.close()
+
+
+async def test_a_publication_the_worker_could_not_finish_may_be_made_again(
+    tmp_path: Path,
+) -> None:
+    """``unavailable`` is the worker or the store not finishing: it says so."""
+    documents = DocumentStore(tmp_path / "control.sqlite3")
+    client = SnapshotClient()
+    client.fail_transfer = True
+    publisher = ArtifactPublisher(ArtifactInventory(documents), client, CONTEXT, run_id="r")
+    toolbox = Toolbox(client, CONTEXT, artifacts=publisher)
+    for n, arguments in enumerate([{"path": "out.bin"}, {"paths": ["out.bin"]}]):
+        call = ToolCall(id=f"c{n}", name="publish", arguments=json.dumps(arguments))
+        found = json.loads((await toolbox.call(call, f"op{n}")).text)
+        error = found["error"] if "error" in found else found["published"][0]["error"]
+        assert error["kind"] == "unavailable"
+        assert error["message"].startswith("out.bin: transfer interrupted")
+        assert "may be made again" in error["message"]
+    await publisher.aclose()
+    documents.close()
 
 
 class SnapshotClient(WorkerClient):
