@@ -413,11 +413,10 @@ def _delivered(db: sqlite3.Connection, project: str, session: str, message: str)
 
 
 def _answers(db: sqlite3.Connection, project: str, session: str) -> list[Json]:
-    """The session's answered questions (PD-23), each as the request item lists it: the
-    question and its options, as the workspace showed them to the user, the agent's text
-    clipped to ``QUESTION_CHARACTERS`` and ``DETAIL_CHARACTERS``; the one the agent
-    recommended; what the user picked or wrote, or that the user left it to the agent,
-    whole; when; and the archive message of the ``ask_user`` result that carried it."""
+    """The session's answered questions (PD-23), whole: the question and its options as
+    the workspace showed them to the user, the one the agent recommended, what the user
+    picked or wrote, or that the user left it to the agent, when, and the archive message
+    of the ``ask_user`` result that carried it, which a response cites it by."""
     from sandbox_science.orchestrator.question_tool import ASK_USER
 
     found: list[Json] = []
@@ -428,14 +427,11 @@ def _answers(db: sqlite3.Connection, project: str, session: str) -> list[Json]:
         (project, session),
     ):
         given = cast(Json, json.loads(answer)) if answer else {}
-        asked_text, clipped_text = _clip(str(text), QUESTION_CHARACTERS)
         listed: list[Json] = []
         for option in cast(list[Json], json.loads(options)):
             shown: Json = {"label": option.get("label")}
             if option.get("detail") is not None:
-                detail, cut = _clip(str(option["detail"]), DETAIL_CHARACTERS)
-                shown["detail"] = detail
-                clipped_text = clipped_text or cut
+                shown["detail"] = option["detail"]
             if option.get("recommended"):
                 shown["recommended"] = True
             listed.append(shown)
@@ -443,12 +439,10 @@ def _answers(db: sqlite3.Connection, project: str, session: str) -> list[Json]:
             "answer_to": question,
             "at": closed,
             "asked_at": asked,
-            "question": asked_text,
+            "question": text,
             "options": listed,
             "answer": given.get("kind"),
         }
-        if clipped_text:
-            entry["question_clipped"] = True
         if given.get("picked"):
             entry["picked"] = given["picked"]
         if given.get("text") is not None:
@@ -479,23 +473,23 @@ def _when(entry: Json) -> tuple[int, str]:
     return (0, (at if at.tzinfo else at.replace(tzinfo=UTC)).astimezone(UTC).isoformat())
 
 
+def entry_time(entry: Json) -> str:
+    """An entry's time as UTC ISO 8601, for comparing; empty for none."""
+    return _when(entry)[1]
+
+
 def _size(entry: Json) -> int:
-    return len(dump(entry).encode())
+    return len(dump(entry).encode()) + 1
 
 
-def request_item(db: sqlite3.Connection, project: str, session: str) -> EvidenceItem | None:
-    """The user's request as a review's context (CR-48): the session's messages the user
-    wrote, refused ones aside, and the user's answers to the agent's questions, in time
-    order, within ``REQUEST_BYTES``. The user's messages come first and are never left
-    out: those that do not fit whole, the oldest first, are kept as clipped stubs with
-    their IDs (``clipped``), and only then do answers take what room is left, the newest
-    first, each that does not fit left out and named (``omitted_answers``). Each entry
-    names the archive message a response cites it by (``archive``). In a session with no
-    chat messages, its first transcript message of role user, the task a run was started
-    with, stands as the first message. None when there is nothing of the user's."""
+def request_entries(db: sqlite3.Connection, project: str, session: str) -> list[Json]:
+    """Everything of the user's a review weighs, whole and in order (CR-48 as amended):
+    the session's messages the user wrote, refused ones and the platform's aside, the
+    first first, and the user's answers to the agent's questions, by time; each message
+    with the archive message that delivered it to a run (``archive``). In a session with
+    no chat messages, its first transcript message of role user, the task a run was
+    started with, stands as the first message."""
     from sandbox_science.orchestrator.notices import PLATFORM_AUTHORS
-
-    from .models import REQUEST_BYTES
 
     messages: list[Json] = []
     for message, text, author, created in db.execute(
@@ -517,56 +511,186 @@ def request_item(db: sqlite3.Connection, project: str, session: str) -> Evidence
             "AND json_extract(payload,'$.role')='user' ORDER BY seq LIMIT 1",
             (project, session),
         ).fetchone()
-        if first is None and not answers:
-            return None
         if first is not None:
             messages = [{"message": None, "at": None, "text": stored_json(first[0])["content"]}]
-    room = REQUEST_BYTES - 1024
-    # The user's messages, all of them: whole while they fit, the newest and the first
-    # kept longest; the later ones from the oldest, then the first, become stubs, and
-    # only past that do stubs lose their text.
-    kept = list(messages)
-    order = [*range(1, len(kept)), 0][: len(kept)]
-    for limit in (STUB_CHARACTERS, 0):
-        for index in order:
-            if sum(_size(e) for e in kept) <= room:
-                break
-            text = str(kept[index]["text"])
-            if len(text) > limit:
-                kept[index] = {**kept[index], "text": _clip(text, limit)[0] if limit else "",
-                               "clipped": True}  # fmt: skip
-    left = room - sum(_size(e) for e in kept)
-    # The answers in the room the messages leave, the newest first; one too large for it
-    # is left out and named, and the others still go on.
-    taken: list[Json] = []
-    omitted: list[str] = []
-    for entry in reversed(answers):
-        size = _size(entry)
-        if size > left:
-            omitted.append(str(entry["answer_to"]))
-            continue
-        taken.append(entry)
-        left -= size
-    head, rest = (kept[0], kept[1:]) if kept else (None, [])
-    listed = ([] if head is None else [head]) + sorted([*rest, *taken], key=_when)
+    head, rest = (messages[:1], messages[1:])
+    return head + sorted([*rest, *answers], key=_when)
+
+
+def entry_id(entry: Json) -> str | None:
+    """The ID the request item names an entry by: its chat message's or its question's."""
+    found = entry.get("answer_to") or entry.get("message")
+    return None if found is None else str(found)
+
+
+def _shown(entry: Json) -> Json:
+    """An entry as the request item first lists it: a message whole; an answer with the
+    agent's question and option details clipped to ``QUESTION_CHARACTERS`` and
+    ``DETAIL_CHARACTERS``, the user's pick or words whole."""
+    if "answer_to" not in entry:
+        return dict(entry)
+    shown = dict(entry)
+    question, cut = _clip(str(entry["question"]), QUESTION_CHARACTERS)
+    shown["question"] = question
+    options: list[Json] = []
+    for option in cast(list[Json], entry.get("options") or []):
+        copied = dict(option)
+        if option.get("detail") is not None:
+            copied["detail"], more = _clip(str(option["detail"]), DETAIL_CHARACTERS)
+            cut = cut or more
+        options.append(copied)
+    shown["options"] = options
+    if cut:
+        shown["question_clipped"] = True
+    return shown
+
+
+def _summarised(entry: Json) -> Json:
+    """An answer that picked the agent's option, or left it to the agent, in brief: the
+    choice and the question's start; the user's own words are never summarised."""
+    question, _ = _clip(str(entry["question"]), STUB_CHARACTERS // 2)
+    brief: Json = {
+        k: entry[k] for k in ("answer_to", "at", "archive", "answer", "picked") if k in entry
+    }
+    return {**brief, "question": question, "summarised": True}
+
+
+def _stub(entry: Json) -> Json:
+    """``entry`` with its text, and an answer's question, clipped to ``STUB_CHARACTERS``,
+    saying how long each is whole (``characters``, ``question_characters``)."""
+    stubbed = dict(entry)
+    for key, length in (("text", "characters"), ("question", "question_characters")):
+        whole = entry.get(key)
+        if isinstance(whole, str) and len(whole) > STUB_CHARACTERS + 2 and length not in entry:
+            stubbed[key] = _clip(whole, STUB_CHARACTERS)[0]
+            stubbed[length] = len(whole)
+            stubbed["clipped"] = True
+    return stubbed
+
+
+def _group(entries: Sequence[Json]) -> Json:
+    """The oldest ``entries``, too many to list even clipped, as one range that names its
+    first and last and how to read them (``review_request_read``)."""
+    return {
+        "group": len(entries),
+        "messages": sum(1 for e in entries if "answer_to" not in e),
+        "answers": sum(1 for e in entries if "answer_to" in e),
+        "first": entry_id(entries[0]),
+        "last": entry_id(entries[-1]),
+        "from": entries[0].get("at"),
+        "to": entries[-1].get("at"),
+        "read_with": "review_request_read",
+    }
+
+
+def _grouped(
+    entries: Sequence[Json], listed: Sequence[Json], sizes: Sequence[int], room: int
+) -> tuple[list[Json], int]:
+    """``listed`` within ``room``: the oldest entries clipped or in brief merged into
+    ranges (``_group``), the whole short ones between them kept as they are; and, only if
+    that is not enough, the oldest of all into one range. How many entries the ranges
+    hold."""
+    bound = _size(_group([{"message": "msg-" + "0" * 24, "at": "0" * 32}] * 2)) + 64
+
+    def merge(count: int, every: bool) -> list[Json]:
+        found: list[Json] = []
+        run: list[Json] = []
+        for index in range(count):
+            if every or listed[index].get("clipped") or listed[index].get("summarised"):
+                run.append(entries[index])
+                continue
+            if run:
+                found.append(_group(run))
+                run = []
+            found.append(listed[index])
+        if run:
+            found.append(_group(run))
+        return [*found, *listed[count:]]
+
+    for every in (False, True):
+        total, runs, inside = sum(sizes), 0, False
+        for count in range(1, len(listed) + 1):
+            index = count - 1
+            reducible = every or listed[index].get("clipped") or listed[index].get("summarised")
+            if reducible:
+                total -= sizes[index]
+                runs += 0 if inside else 1
+            inside = bool(reducible)
+            if total + runs * bound <= room:
+                merged = merge(count, every)
+                return merged, sum(e.get("group", 0) for e in merged)
+    merged = merge(len(listed), True)
+    return merged, len(listed)
+
+
+def request_item(db: sqlite3.Connection, project: str, session: str) -> EvidenceItem | None:
+    """The user's request as a review's context (CR-48 as amended): an index of every
+    message the user wrote and every answer the user gave the agent's questions, each
+    with its ID, time and the archive message a response cites it by, and as much of its
+    text as fits ``REQUEST_BYTES``, a bound it always meets. Whole first; then answers
+    that picked the agent's option or left it to the agent in brief; then the longest
+    texts clipped first to ``STUB_CHARACTERS``, so a short message is never clipped
+    before a longer one; then the oldest entries grouped as ranges that name their first
+    and last. Whatever is clipped, in brief or grouped the reviewer reads whole with
+    ``review_request_read``. None when there is nothing of the user's."""
+    from .models import REQUEST_BYTES
+
+    entries = request_entries(db, project, session)
+    if not entries:
+        return None
+    answered = any("answer_to" in e for e in entries)
     payload: Json = {
         "about": (
             "What the user asked in this session, oldest first: the user's messages and "
             "the user's answers to the agent's questions (answer_to): context, not under "
-            "review."
-            if answers
+            "review. Read any entry whole with review_request_read."
+            if answered
             else "What the user asked in this session, oldest first: context, not under review."
         ),
-        "messages": listed,
-        "omitted": len(omitted),
+        "messages": [],
     }
-    clipped = sum(1 for entry in kept if entry.get("clipped"))
-    if clipped:
-        payload["clipped_messages"] = clipped
-    if answers:
-        payload["omitted_answers"] = sorted(omitted)
+    room = REQUEST_BYTES - _size(payload) - 512
+    listed = [_shown(e) for e in entries]
+    sizes = [_size(e) for e in listed]
+
+    def over() -> bool:
+        return sum(sizes) > room
+
+    if over():
+        for index, entry in enumerate(entries):
+            if "answer_to" in entry and entry.get("answer") != "free":
+                listed[index] = _summarised(entry)
+                sizes[index] = _size(listed[index])
+    if over():
+        longest = sorted(
+            range(len(listed)),
+            key=lambda i: -max(len(str(listed[i].get(k) or "")) for k in ("text", "question")),
+        )
+        for index in longest:
+            if not over():
+                break
+            listed[index] = _stub(listed[index])
+            sizes[index] = _size(listed[index])
+    grouped = 0
+    if over():
+        listed, grouped = _grouped(entries, listed, sizes, room)
+    payload["messages"] = listed
+    clipped_count = sum(1 for e in listed if e.get("clipped"))
+    if clipped_count:
+        payload["clipped"] = clipped_count
+    if any(e.get("summarised") for e in listed):
+        payload["summarised"] = sum(1 for e in listed if e.get("summarised"))
+    if grouped:
+        payload["grouped"] = grouped
     encoded = dump(payload)
     return EvidenceItem("request", dump({"request": session}), encoded, digest(encoded), 1)
+
+
+def request_entry(db: sqlite3.Connection, project: str, session: str, entry: str) -> Json | None:
+    """One message the user wrote, or one answer of the user's with its question and
+    options, whole, by the ID the request item names; None for any other ID, the
+    platform's messages included."""
+    return next((e for e in request_entries(db, project, session) if entry_id(e) == entry), None)
 
 
 def acceptances_item(db: sqlite3.Connection, project: str, session: str) -> EvidenceItem | None:

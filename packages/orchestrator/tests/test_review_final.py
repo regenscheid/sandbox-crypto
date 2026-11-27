@@ -705,9 +705,10 @@ async def test_every_review_is_given_the_users_request_and_its_later_change(stor
     assert summary["final_review"]["complete"]
 
 
-def test_a_long_request_keeps_every_message_the_newest_whole_and_the_rest_clipped(store) -> None:
-    """The user's messages are never left out: those that do not fit whole, the oldest
-    first after the first, are kept as clipped stubs with their IDs (CR-48 as amended)."""
+def test_a_long_request_keeps_every_message_the_longest_clipped_first(store) -> None:
+    """The user's messages are never left out: when they do not fit whole, the longest
+    are clipped first, each to a stub that keeps its ID and says how long it is whole
+    (CR-48 as amended)."""
     from sandbox_science.contracts import new_id
     from sandbox_science.orchestrator.consistency.models import REQUEST_BYTES
 
@@ -719,10 +720,9 @@ def test_a_long_request_keeps_every_message_the_newest_whole_and_the_rest_clippe
     asked = _request(reviews, dispatch(reviews, "checkpoint"))
     listed = asked["messages"]
     assert [m["message"] for m in listed] == ids
-    assert not listed[-1].get("clipped")
-    assert listed[-1]["text"].startswith("Message 5: ")
-    assert asked["clipped_messages"] == sum(1 for m in listed if m.get("clipped")) > 0
-    assert asked["omitted"] == 0
+    clipped = [m for m in listed if m.get("clipped")]
+    assert asked["clipped"] == len(clipped) > 0
+    assert {m["characters"] for m in clipped} == {len("Message 0: ") + REQUEST_BYTES // 4}
 
 
 class FixingReviewer(LabReviewer):

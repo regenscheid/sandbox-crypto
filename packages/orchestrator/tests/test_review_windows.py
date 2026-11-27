@@ -97,6 +97,9 @@ def test_a_deleted_working_file_is_nothing_to_read_and_a_used_one_stays_unread(
             ("child.txt", child),
             ("named.txt", recorded),
             ("cited.txt", recorded),
+            ("work/results.json", recorded),
+            ("a/out.txt", recorded),
+            ("b/out.txt", recorded),
         ):
             sha = hashlib.sha256(path.encode()).hexdigest()
             inventory.record_metadata(
@@ -111,15 +114,27 @@ def test_a_deleted_working_file_is_nothing_to_read_and_a_used_one_stays_unread(
         ingest_artifacts(reviews, "p", "s", drain=True)
         review = dispatch(reviews, "checkpoint")
         reviews.finish("p", "s", review, "owner", "passed", "Checked.")
-        summary = reviews.final_summary("p", "s", review, answer="The table is in named.txt.")
+        summary = reviews.final_summary(
+            "p",
+            "s",
+            review,
+            answer="The table is in sessions/s/named.txt; the numbers are in results.json, "
+            "the log in out.txt.",
+        )
         deleted = {u["path"] for u in summary["unread"] if u["why"] == "the file was deleted"}
         assert deleted == {
             "sessions/s/child.txt",
             "sessions/s/named.txt",
             "sessions/s/cited.txt",
             "sessions/s/report.txt",
+            "sessions/s/work/results.json",
+            "sessions/s/a/out.txt",
+            "sessions/s/b/out.txt",
         }
         assert summary["working_files_deleted"] == 1
+        # The counts agree: a working file is nothing to read, not an item not read.
+        assert summary["items"]["not_read"] == len(summary["unread"])
+        assert summary["items"]["working_files_deleted"] == 1
     finally:
         reviews.documents.close()
 

@@ -57,6 +57,13 @@ class Read(Contract):
     block: str | None = Field(default=None, pattern=r"^b[0-9]{1,9}$")
 
 
+class RequestRead(Contract):
+    entry: str | None = Field(default=None, min_length=1, max_length=64)
+    page: int = Field(default=0, ge=0, le=100000, strict=True)
+    start: int = Field(default=0, ge=0, le=100000000, strict=True)
+    count: int = Field(default=READ_CHARACTERS, ge=1, le=READ_CHARACTERS, strict=True)
+
+
 class Manifest(Contract):
     after: int = Field(default=0, ge=0, le=1000000, strict=True)
     limit: int = Field(default=MANIFEST_PAGE, ge=1, le=1000, strict=True)
@@ -142,6 +149,21 @@ SPECS = (
             "block": {"type": "string"},
         },
         ["evidence"],
+    ),
+    schema(
+        "review_request_read",
+        "Read whole one message the user wrote, or one answer of the user's with its "
+        "question and options, by the ID the request item names (message or answer_to), "
+        "in slices of characters as review_read; with no entry, list a page of the user's "
+        "messages and answers with their IDs, to read those the request item clipped, "
+        "summarised or grouped. Only the user's own; nothing else is read here.",
+        {
+            "entry": {"type": "string"},
+            "page": {"type": "integer"},
+            "start": {"type": "integer"},
+            "count": {"type": "integer"},
+        },
+        [],
     ),
     schema(
         "review_checked",
@@ -292,6 +314,16 @@ class ReviewerRunner:
                         self.session,
                         self.review,
                         **read.model_dump(),
+                        owner=self.owner,
+                    )
+                elif call.name == "review_request_read":
+                    asked = RequestRead.model_validate(raw)
+                    result = await asyncio.to_thread(
+                        self.store.read_request,
+                        self.project,
+                        self.session,
+                        self.review,
+                        **asked.model_dump(),
                         owner=self.owner,
                     )
                 elif call.name == "review_checked":
