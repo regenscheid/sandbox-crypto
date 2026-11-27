@@ -12,15 +12,22 @@ import json
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Annotated, Any, Final, Literal, TypeVar, cast
+from typing import Annotated, Any, Final, Literal, Self, TypeVar, cast
 
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, model_validator
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ExecutionContext, Identifier
 
 from .aio import threaded
+from .artifacts import ArtifactInventory, scoped_path
 from .continuity.auto_continuation import claim_in_run, continued
-from .documents.errors import CONFLICT, INVALID_REQUEST, POLICY_DENIED, DocumentError
+from .documents.errors import (
+    CONFLICT,
+    INVALID_REQUEST,
+    NOT_FOUND,
+    POLICY_DENIED,
+    DocumentError,
+)
 from .hooks import Closing, Effect, Notice, Point, Refusal, RunView, TurnHook
 from .model import ToolSpec
 from .notices import PLANS, PLANS_HELD, PLANS_WENT_ON
@@ -28,7 +35,9 @@ from .projects import ProjectError, ProjectStore, SessionSnapshot
 from .questions import Questions
 from .session_plans import (
     FINISHED,
+    MAX_PROGRESS_STEPS,
     CompactPlan,
+    CompactStep,
     Counter,
     GoalOutcome,
     PlanAuthority,
@@ -36,10 +45,14 @@ from .session_plans import (
     PlanEvent,
     PlanEvidence,
     PlanModel,
+    PlanProgress,
+    PlanReceipt,
     PlanRef,
     PlanScope,
     PlanSummary,
+    PlanWriter,
     SessionPlans,
+    StepAssertion,
     StepStatus,
     Text,
     step_changes,
@@ -95,6 +108,21 @@ steps of one that carries a run past an answer."""
 MAX_CONTINUED: Final = 32
 """The plan states a run's record names that it went on past an answer at; it counts the
 rest."""
+UNREAD = (
+    "Others changed the plan since you last saw it: these are their changes, and each step "
+    "they touched in full, with its latest record's note. Read them before you go on."
+)
+TOO_MUCH = (
+    "Others changed more of the plan since you last saw it than this read can show: the "
+    "plans notice before your next turn shows it, and until then this read counts as none."
+)
+MAX_OPEN_STEPS: Final = 16
+"""The open steps, with their cursors, a plan change's result lists; it counts the rest."""
+COMPACT = (
+    "Each step's status and the step_cursor its next plan_progress names. detail full adds "
+    "the plan's whole body and each step's latest record; the progress view pages notes "
+    "and evidence."
+)
 GUIDANCE_VERSION = "sandbox-main-plan-8"
 GUIDANCE = (
     "Planning guidance (sandbox-main-plan-8): The offered plan tools keep this session's "
@@ -147,6 +175,7 @@ GUIDANCE = (
 
 class Read(PlanModel):
     view: Literal["current", "version", "progress", "status"] = "current"
+    detail: Literal["compact", "full"] = "compact"
     ref: PlanRef | None = None
     after: Counter = 0
     target: Counter | None = None
@@ -175,15 +204,63 @@ class Activate(PlanModel):
     reason: Text
 
 
-class Progress(PlanModel):
-    operation_id: Identifier
-    base: PlanRef
+class PathEvidence(PlanModel):
+    """A workspace file as evidence, pinned to its recorded revision when the call runs."""
+
+    path: Annotated[str, Field(min_length=1, max_length=1024)]
+
+
+Evidence = tuple[PlanEvidence | PathEvidence, ...]
+
+
+class StepProgress(PlanModel):
     step_id: Identifier
     expected_step_cursor: Counter
-    expected_status_revision: Counter
     status: StepStatus
     note: Text
-    evidence: tuple[PlanEvidence, ...] = Field(default=(), max_length=8)
+    evidence: Evidence = Field(default=(), max_length=8)
+
+
+class Progress(PlanModel):
+    """One step's progress, or, with steps, several steps' progress in order as one change."""
+
+    operation_id: Identifier
+    base: PlanRef
+    expected_status_revision: Counter
+    step_id: Identifier | None = None
+    expected_step_cursor: Counter | None = None
+    status: StepStatus | None = None
+    note: Text | None = None
+    evidence: Evidence = Field(default=(), max_length=8)
+    steps: tuple[StepProgress, ...] | None = Field(
+        default=None, min_length=1, max_length=MAX_PROGRESS_STEPS
+    )
+
+    @model_validator(mode="after")
+    def _one_form(self) -> Self:
+        single = (self.step_id, self.expected_step_cursor, self.status, self.note)
+        if self.steps is None:
+            if any(value is None for value in single):
+                raise ValueError(
+                    "give step_id, expected_step_cursor, status and note, or a steps list"
+                )
+        elif any(value is not None for value in single) or self.evidence:
+            raise ValueError("give a steps list or one step's fields, not both")
+        return self
+
+    def entries(self) -> tuple[StepProgress, ...]:
+        """The steps this call records, in order."""
+        if self.steps is not None:
+            return self.steps
+        return (
+            StepProgress(
+                step_id=cast(str, self.step_id),
+                expected_step_cursor=cast(int, self.expected_step_cursor),
+                status=cast(StepStatus, self.status),
+                note=cast(str, self.note),
+                evidence=self.evidence,
+            ),
+        )
 
 
 class Finish(Activate):
@@ -201,16 +278,23 @@ REQUESTS: dict[str, type[PlanModel]] = {
 }
 NAMES = frozenset(REQUESTS)
 DESCRIPTIONS = {
-    "plan_read": "Read the current session plan and every step's compact status/CAS. "
-    "Long progress/status history is paged; historical reads do not satisfy a current reread.",
+    "plan_read": "Read the current session plan: by default each step's title, status and "
+    "step_cursor with the plan's counters; detail full adds the whole body and each step's "
+    "latest record. Long progress/status history is paged; historical reads do not satisfy "
+    "a current reread. A plan change's result already carries the counters and open steps "
+    "the next change needs.",
     "plan_create": "Create this session's draft research plan, or replace its exact terminal "
     "predecessor. Use stable step IDs and an explicit operation_id for exact retries.",
     "plan_revise": "Append a current-base plan version with stable IDs and an attributed reason. "
     "Reread USER changes; never overwrite a stale version.",
     "plan_activate": "Record a draft as active under existing task authorization. This is not "
     "USER approval or a permission grant.",
-    "plan_progress": "Immediately record a current active step assertion with exact step/status "
-    "CAS and evidence. Completed is an assertion, not scientific verification.",
+    "plan_progress": "Record progress on the active plan's steps with exact step/status CAS, in "
+    "the same reply as the call that produced the result: one step, or a steps list applied "
+    "in order as one change (finish one step and start the next together; a refused entry "
+    "refuses all). Evidence is an artifact claim or a workspace path, pinned to the file's "
+    "recorded revision. The result gives the next counters and open steps' cursors. "
+    "Completed is an assertion, not scientific verification.",
     "plan_finish": "Finish terminal steps with an explicit goal outcome, or abandon an open "
     "plan with a reason. Blocked/skipped do not mean the goal was achieved.",
 }
@@ -263,6 +347,58 @@ def _json(value: object) -> str:
     return text
 
 
+def _invalid(name: str, error: ValidationError) -> str:
+    """A refused request's first problem: the field, what it needs, and the size given."""
+    problems = error.errors(include_url=False)
+    first = problems[0]
+    where = ".".join(str(part) for part in first["loc"]) or "the request"
+    message = first["msg"].removeprefix("Value error, ")
+    given = first.get("input")
+    if first["type"] in ("string_too_long", "string_too_short") and isinstance(given, str):
+        message += f" (given {len(given):,})"
+    more = f"; and {len(problems) - 1} more problems" if len(problems) > 1 else ""
+    return f"invalid {name} request: {where}: {message}{more}"
+
+
+def _resolved(claim: PlanEvidence) -> dict[str, object]:
+    """What a path resolved to, as a result says it: the artifact revision and who
+    recorded it, when."""
+    return {
+        "artifact_id": claim.reference_id,
+        "revision": claim.revision,
+        "sha256": claim.sha256,
+        **(
+            {"written_by": claim.written_by.model_dump(mode="json")}
+            if claim.written_by is not None
+            else {}
+        ),
+    }
+
+
+def _counters(plan: CompactPlan) -> dict[str, object]:
+    """A plan's version, status and counters, as its next change names them."""
+    head = plan.head
+    return {
+        "ref": head.ref.model_dump(mode="json"),
+        "status": head.status,
+        "status_revision": head.status_revision,
+        "progress_cursor": head.progress_cursor,
+    }
+
+
+def _step_state(step: CompactStep) -> dict[str, object]:
+    """A current step's status and the cursor its next progress names: ``pending`` with
+    cursor 0 before its first record, and ``changed_since_record`` when a revision
+    changed it after its latest one."""
+    latest = step.latest
+    if latest is None:
+        return {"status": "pending", "step_cursor": 0}
+    state: dict[str, object] = {"status": latest.status, "step_cursor": latest.sequence}
+    if not step.matches_current_step:
+        state["changed_since_record"] = True
+    return state
+
+
 class PlanTools:
     """Trusted CLI MAIN adapter over the stores it borrows."""
 
@@ -277,8 +413,12 @@ class PlanTools:
         run_id: str,
         alias: str,
         clock: Clock = SYSTEM_CLOCK,
+        artifacts: ArtifactInventory | None = None,
     ) -> None:
+        """``artifacts`` resolves evidence given by a workspace path; without it, evidence
+        is given by artifact ID only."""
         self.projects, self.context, self.clock = projects, context, clock
+        self.artifacts = artifacts
         # The fence binds this run's own session record. Other sessions and the
         # project's policy revision may change: the worker enforces the current policy.
         self.registry_context = ExecutionContext(
@@ -696,19 +836,35 @@ class PlanTools:
     ) -> tuple[str, dict[str, Any]]:
         request_type = REQUESTS[name]
         try:
-            if len(arguments.encode("utf-8", "strict")) > MAX_REQUEST_BYTES:
-                raise ValueError("oversized")
-            request = request_type.model_validate_json(arguments or "{}", strict=True)
-        except (ValueError, ValidationError, RecursionError):
+            size = len(arguments.encode("utf-8", "strict"))
+        except UnicodeError:
+            raise DocumentError(INVALID_REQUEST, "plan request is not valid UTF-8") from None
+        if size > MAX_REQUEST_BYTES:
             raise DocumentError(
-                INVALID_REQUEST, "plan request is invalid or exceeds its byte budget"
-            ) from None
+                INVALID_REQUEST,
+                f"plan request is {size:,} bytes, over its budget of {MAX_REQUEST_BYTES:,}",
+            )
+        try:
+            request = request_type.model_validate_json(arguments or "{}", strict=True)
+        except ValidationError as error:
+            raise DocumentError(INVALID_REQUEST, _invalid(name, error)) from None
+        except (ValueError, RecursionError):
+            raise DocumentError(INVALID_REQUEST, f"{name} arguments are not valid JSON") from None
 
         def perform() -> tuple[str, dict[str, Any]]:
             summary = self._refresh()
+            resolved: list[dict[str, object]] = []
             if isinstance(request, Read):
                 result, pin = self._read(request)
-                text = _json(result)
+                try:
+                    text = _json(result)
+                except DocumentError:
+                    if "changed_by_others" not in result:
+                        raise
+                    # Too much changed to show here: the read reads nothing, and the
+                    # plans notice before the next turn shows the plan.
+                    result = {**result, "changed_by_others": {"about": TOO_MUCH}}
+                    text, pin = _json(result), None
                 if pin is not None:
                     self.pending_read = pin
                 return text, {"plan_read": result, "plan_call_id": call_id, "resolved_model": model}
@@ -735,17 +891,32 @@ class PlanTools:
                     raise DocumentError(POLICY_DENIED, "progress requires an active current plan")
                 if request.expected_status_revision != summary.status_revision:
                     raise DocumentError(CONFLICT, "plan status changed; reread it")
-                receipt = self.plans.progress(
-                    authority,
-                    request.operation_id,
-                    request.base,
-                    request.step_id,
-                    request.expected_step_cursor,
-                    request.status,
-                    request.note,
-                    evidence=request.evidence,
-                    expected_status_revision=request.expected_status_revision,
-                )
+                entries, resolved = self._assertions(request)
+                # Evidence by path is digested as given: an exact retry is its receipt.
+                given = request.model_dump(mode="json") if resolved else None
+                if request.steps is None:
+                    entry = entries[0]
+                    receipt = self.plans.progress(
+                        authority,
+                        request.operation_id,
+                        request.base,
+                        entry.step_id,
+                        entry.expected_step_cursor,
+                        entry.status,
+                        entry.note,
+                        evidence=entry.evidence,
+                        expected_status_revision=request.expected_status_revision,
+                        given=given,
+                    )
+                else:
+                    receipt = self.plans.progress_steps(
+                        authority,
+                        request.operation_id,
+                        request.base,
+                        entries,
+                        expected_status_revision=request.expected_status_revision,
+                        given=given,
+                    )
             else:
                 if not isinstance(request, Activate):
                     raise DocumentError(INVALID_REQUEST, "unknown planning request")
@@ -774,11 +945,18 @@ class PlanTools:
                 "historical_receipt": summary is not None
                 and receipt.event_sequence <= summary.event_cursor,
             }
+            if isinstance(request, Progress) and resolved:
+                if result["historical_receipt"]:
+                    # A retry: what the first call resolved, as its records keep it.
+                    resolved = self._first_resolved(request, receipt)
+                result["evidence_resolved"] = resolved
             if isinstance(request, Revise):
                 reopened = self._reopened(receipt.ref)
                 if reopened:
                     result["finished_steps_changed"] = reopened
                     result["note"] = REOPENED
+            if (standing := self._standing()) is not None:
+                result["plan"] = standing
             return _json(result), {
                 "plan_receipt": value,
                 "plan_call_id": call_id,
@@ -786,6 +964,223 @@ class PlanTools:
             }
 
         return await threaded(lambda: self._owned(perform))
+
+    def _standing(self) -> dict[str, object] | None:
+        """The current plan as the next plan call needs it: its version, status and
+        counters, how many steps are in each state, and the open steps with their
+        cursors; ``None`` with no current plan. A plan another actor changed since this
+        run's last read still needs that read (the plans notice) before a change."""
+        plan = self.plans.compact_current(self.authority)
+        if plan is None:
+            return None
+        counts: dict[str, int] = {}
+        workable: list[dict[str, object]] = []
+        for step in plan.steps:
+            state = _step_state(step)
+            kind = "changed" if "changed_since_record" in state else cast(str, state["status"])
+            counts[kind] = counts.get(kind, 0) + 1
+            if kind == "changed" or kind in OPEN:
+                workable.append({"step_id": step.step_id, **state})
+        standing = {**_counters(plan), "steps": counts}
+        if plan.head.status in ("completed", "abandoned"):
+            return standing
+        standing["open_steps"] = workable[:MAX_OPEN_STEPS]
+        if len(workable) > MAX_OPEN_STEPS:
+            standing["more_open_steps"] = len(workable) - MAX_OPEN_STEPS
+        return standing
+
+    def _assertions(
+        self, request: Progress
+    ) -> tuple[tuple[StepAssertion, ...], list[dict[str, object]]]:
+        """The call's step assertions, with evidence given by path pinned to the file's
+        recorded revision now, and what each path resolved to."""
+        resolved: list[dict[str, object]] = []
+        entries: list[StepAssertion] = []
+        several = request.steps is not None
+        for index, step in enumerate(request.entries()):
+            claims: list[PlanEvidence] = []
+            for number, item in enumerate(step.evidence):
+                if isinstance(item, PlanEvidence):
+                    if item.written_by is not None:
+                        raise DocumentError(
+                            INVALID_REQUEST,
+                            f"evidence[{number}]: written_by is the platform's, for evidence "
+                            "given by path; leave it out",
+                        )
+                    claims.append(item)
+                    continue
+                where = f"steps[{index}].evidence[{number}]" if several else f"evidence[{number}]"
+                claim = self._pinned(item.path, where)
+                claims.append(claim)
+                resolved.append({"path": item.path, **_resolved(claim)})
+            entries.append(
+                StepAssertion(
+                    step.step_id,
+                    step.expected_step_cursor,
+                    step.status,
+                    step.note,
+                    tuple(claims),
+                )
+            )
+        return tuple(entries), resolved
+
+    def _unread(self, plan: CompactPlan) -> dict[str, object]:
+        """What a current read shows of the changes others made since this run last saw
+        the plan, which its delivery reads as a plans notice's does: who changed what, in
+        a line each, and each step they touched in full, its fields and its latest record
+        with its note and author; every step when more changed than the run's scan holds.
+        Nothing when no other actor changed it."""
+        if not (self.changes or self.unlisted or self.held):
+            return {}
+        touched: set[str] = set()
+        whole = bool(self.unlisted or self.held)
+        for event in self.changes:
+            if event.action == "publish":
+                whole = True
+            elif event.action == "revise" and event.ref.version > 1:
+                before = self.plans.version(
+                    self.authority,
+                    PlanRef(plan_id=event.ref.plan_id, version=event.ref.version - 1),
+                )
+                after = self.plans.version(self.authority, event.ref)
+                diff = step_changes(before.body, after.body)
+                touched.update(diff.added + diff.changed)
+            elif event.action == "progress":
+                page = self.plans.history(
+                    self.authority,
+                    event.ref.plan_id,
+                    "progress",
+                    after=event.number - 1,
+                    target=event.number,
+                    limit=1,
+                )
+                touched.update(cast(PlanProgress, item).step_id for item in page.items)
+        body = {
+            step.step_id: (phase, step)
+            for phase in plan.version.body.phases
+            for step in phase.steps
+        }
+        steps: list[dict[str, object]] = []
+        for projection in plan.steps:
+            if not whole and projection.step_id not in touched:
+                continue
+            phase, step = body[projection.step_id]
+            shown: dict[str, object] = {
+                "step_id": step.step_id,
+                "phase_id": phase.phase_id,
+                "title": step.title,
+                "description": step.description,
+                "evidence_standard": step.evidence_standard,
+                **({"track_id": step.track_id} if step.track_id else {}),
+                **_step_state(projection),
+            }
+            if projection.latest is not None:
+                page = self.plans.history(
+                    self.authority,
+                    plan.head.ref.plan_id,
+                    "progress",
+                    after=projection.latest.sequence - 1,
+                    target=projection.latest.sequence,
+                    limit=1,
+                )
+                for item in page.items:
+                    record = cast(PlanProgress, item)
+                    shown["latest"] = {
+                        "status": record.status,
+                        "note": record.note,
+                        "by": self._who(record.author),
+                        "recorded_at": record.recorded_at.isoformat(),
+                        "evidence": [e.model_dump(mode="json") for e in record.evidence],
+                    }
+            steps.append(shown)
+        changed = [
+            f"{self._who(event.author)} {self._change(event, plan)}" for event in self.changes
+        ]
+        if self.unlisted:
+            changed.insert(0, f"{self.unlisted} earlier changes")
+        return {
+            "changed_by_others": {
+                "changes": changed,
+                "steps": steps,
+                "about": UNREAD,
+            }
+        }
+
+    def _first_resolved(self, request: Progress, receipt: PlanReceipt) -> list[dict[str, object]]:
+        """What the paths of the call ``receipt`` acknowledges resolved to when it was
+        first made: its progress records, the last of which the receipt names."""
+        entries = request.entries()
+        after = receipt.progress_cursor - len(entries)
+        page = self.plans.history(
+            self.authority,
+            receipt.ref.plan_id,
+            "progress",
+            after=after,
+            target=receipt.progress_cursor,
+            limit=len(entries),
+        )
+        stored = cast(tuple[PlanProgress, ...], page.items)
+        resolved: list[dict[str, object]] = []
+        for step, kept in zip(entries, stored, strict=False):
+            for item, claim in zip(step.evidence, kept.evidence, strict=False):
+                if isinstance(item, PathEvidence):
+                    resolved.append({"path": item.path, **_resolved(claim)})
+        return resolved
+
+    def _pinned(self, path: str, where: str) -> PlanEvidence:
+        """The evidence claim for the file at ``path``: its artifact at the latest
+        revision the platform recorded, published or from the file tools, with who
+        recorded it. Only a revision this session recorded, whose bytes are kept, is
+        pinned by path; another session's file is claimed by its artifact ID."""
+        if self.artifacts is None:
+            raise DocumentError(
+                INVALID_REQUEST,
+                f"{where}: evidence by path is not available in this run; give the artifact's "
+                "kind, reference_id, revision and sha256",
+            )
+        project, session = self.context.project_id, self.context.session_id
+        by_id = "give its artifact's kind, reference_id, revision and sha256 to claim it"
+        try:
+            scoped = scoped_path(path, session)
+            if scoped.startswith("sessions/") and not scoped.startswith(f"sessions/{session}/"):
+                raise DocumentError(POLICY_DENIED, f"it is in another session's area: {by_id}")
+            found, _ = self.artifacts.recent(project, at_path=scoped)
+        except DocumentError as error:
+            raise DocumentError(error.kind, f"{where}: {path}: {error.message}") from None
+        latest = found[0] if found else None
+        if latest is None or latest.deleted:
+            state = "was deleted" if latest is not None else "has no recorded revision"
+            raise DocumentError(
+                NOT_FOUND,
+                f"{where}: {path} {state}, so there is nothing to pin; publish the file "
+                "(publish with its path) and give the path again",
+            )
+        if not latest.content_retained:
+            raise DocumentError(
+                CONFLICT,
+                f"{where}: {path}'s latest revision keeps no bytes, so its hash cannot be "
+                "checked; publish the file (publish with its path) and give the path again",
+            )
+        source = latest.publication
+        if source.context.session_id != session:
+            raise DocumentError(
+                POLICY_DENIED,
+                f"{where}: {path}'s latest revision {latest.reference.revision} was recorded "
+                f"by session {source.context.session_id}'s run {source.run_id} at "
+                f"{latest.created_at.isoformat()}, not by this session: {by_id}",
+            )
+        return PlanEvidence(
+            project_id=project,
+            kind="artifact",
+            reference_id=latest.reference.artifact_id,
+            revision=latest.reference.revision,
+            sha256=latest.reference.sha256,
+            written_by=PlanWriter(
+                session_id=source.context.session_id,
+                run_id=source.run_id,
+                recorded_at=latest.created_at,
+            ),
+        )
 
     def _reopened(self, ref: PlanRef) -> list[str]:
         """The steps that were finished, completed, blocked or skipped, and that the
@@ -823,6 +1218,31 @@ class PlanTools:
                 snapshot.head.progress_cursor,
             ) != (summary.head, summary.status_revision, summary.progress_cursor):
                 raise DocumentError(CONFLICT, "plan changed during current read; reread")
+            if request.detail == "compact":
+                titles = {
+                    step.step_id: step
+                    for phase in snapshot.version.body.phases
+                    for step in phase.steps
+                }
+                return {
+                    "plan": {**_counters(snapshot), "event_cursor": summary.event_cursor},
+                    "goal": snapshot.version.body.goal,
+                    "steps": [
+                        {
+                            "step_id": step.step_id,
+                            "title": titles[step.step_id].title,
+                            **(
+                                {"track_id": titles[step.step_id].track_id}
+                                if titles[step.step_id].track_id
+                                else {}
+                            ),
+                            **_step_state(step),
+                        }
+                        for step in snapshot.steps
+                    ],
+                    "detail": COMPACT,
+                    **self._unread(snapshot),
+                }, _pin(summary)
             return {
                 "head": snapshot.head.model_dump(mode="json"),
                 "version": snapshot.version.model_dump(mode="json"),
@@ -839,6 +1259,7 @@ class PlanTools:
                 ],
                 "event_cursor": summary.event_cursor,
                 "progress_details": "Use the progress view for complete attributed notes/evidence.",
+                **self._unread(snapshot),
             }, _pin(summary)
         if request.ref is None:
             raise DocumentError(INVALID_REQUEST, "historical plan read needs an exact ref")

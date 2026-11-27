@@ -42,10 +42,11 @@ from pydantic import JsonValue
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ExecutionContext, wait_or_sleep
 
 from .aio import threaded
+from .context.history.archive import body
 from .control import ControlError
 from .control.errors import CONFLICT
 from .hooks import Closing, Effect, Notice, Point, Refusal, RunView, TurnHook
-from .notices import PLATFORM_INPUT, REDELIVERED
+from .notices import PLANS, PLATFORM_INPUT, REDELIVERED, REVIEW_COUNTS, Framing
 from .plan_tools import Plans
 from .projects import ModelUsage, RunRecord
 from .purpose import purpose_of, without
@@ -344,6 +345,10 @@ HOLD_ENDED: Final = (
 )
 """The run's event before an answer ``hold``'s limit released while the agent answered
 its review's findings (CR-48)."""
+UNNAMED_NOTICES: Final[tuple[Framing, ...]] = (PLANS, REVIEW_COUNTS)
+"""The notices that name no IDs, the plan and the review counts, which the run's events
+record each time the run is given one, by their framing (``source`` its ID), so that
+they can be counted."""
 
 
 class EventLog(TurnHook):
@@ -488,6 +493,17 @@ class EventLog(TurnHook):
                 return
             if message.get("role") == "assistant":
                 await self._reply(message, usage)
+            elif message.get("role") == "user":
+                content = message.get("content")
+                said = body(content) if isinstance(content, str) else ""
+                found = next(
+                    (framing for framing in UNNAMED_NOTICES if said.startswith(framing.text)),
+                    None,
+                )
+                if found is not None:
+                    await chat.write(
+                        "notice", {"source": found.id, "ids": [], "framing": found.version}
+                    )
             elif message.get("role") == "tool":
                 record: Mapping[str, Any] = tools[self.calls] if self.calls < len(tools) else {}
                 self.calls += 1

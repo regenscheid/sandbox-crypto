@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import re
 import threading
@@ -539,7 +540,7 @@ async def test_long_progress_notes_do_not_prevent_complete_compact_current_rerea
     with pytest.raises(DocumentError, match="current plan read limit"):
         f.core.current(f.adapter.authority)
     await f.adapter.safe_point()
-    result, _ = await call(f, "plan_read")
+    result, _ = await call(f, "plan_read", detail="full")
     assert len(result["steps"]) == 44
     assert all(
         s["status"] == "blocked" and s["latest"]["author"]["run_id"] == "main-run"
@@ -892,7 +893,7 @@ async def test_scoped_event_scan_has_a_finite_hold_and_complete_read_can_clear_i
     with pytest.raises(DocumentError, match="reread_required"):
         await f.adapter.check_dispatch("effect")
     page, _ = await call(f, "plan_read")
-    assert page["head"]["ref"] == ref
+    assert page["plan"]["ref"] == ref
     assert page["steps"][0]["step_cursor"] == 70
     await f.adapter.model_delivered()
     assert not f.adapter.held
@@ -983,7 +984,7 @@ async def test_complete_large_plan_bypasses_generic_notice_clipping_without_mark
         documents=cast(DocumentTool, documents),
         jobs=cast(JobTools, jobs),
     )
-    outcome = await toolbox.call(ToolCall("read", "plan_read", "{}"), "read")
+    outcome = await toolbox.call(ToolCall("read", "plan_read", '{"detail":"full"}'), "read")
     assert len(outcome.text) > toolbox.output_chars
     assert len(json.loads(outcome.text)["steps"]) == 128
     assert "platform_notices" not in json.loads(outcome.text)
@@ -1929,3 +1930,307 @@ async def test_the_notice_names_only_the_steps_left_to_the_run(fixture):
     notice = plans_notice(model.requests[1][-1])
     assert (notice["next_steps"], notice["with_children"]) == (["step-own"], ["step-a"])
     assert result.summaries["plans"]["went_on"] == 1
+
+
+def recorded(f, path="results/table.csv", data=b"n,t\n1,2\n", *, session="s", op="op-1", kept=True):
+    """A file the platform recorded at ``path``, by a run of ``session``: with its bytes,
+    or only its hash and size."""
+    from sandbox_science.orchestrator.artifacts import ArtifactInventory
+
+    from .test_artifact_inventory import CONTEXT, SOURCE, record
+
+    inventory = ArtifactInventory(f.documents)
+    source = SOURCE.model_copy(
+        update={"context": CONTEXT.model_copy(update={"project_id": "p", "session_id": session})}
+    )
+    if kept:
+        return inventory, record(inventory, op, data, source=source, path=path).revision
+    reference, _ = inventory.record_metadata(
+        source, path, sha256=hashlib.sha256(data).hexdigest(), size=len(data),
+        media_type="text/csv", note="quota",
+    )  # fmt: skip
+    return inventory, reference
+
+
+@pytest.mark.asyncio
+async def test_one_progress_call_finishes_a_step_and_starts_the_next(fixture):
+    """Several steps in one call, and results that carry the next call's counters, so the
+    plan is worked to its finish without a plan_read (R7)."""
+    f = fixture
+    created, _ = await call(
+        f, "plan_create", operation_id="create", body=body(count=3), reason="Initial"
+    )
+    ref = created["receipt"]["ref"]
+    assert created["plan"]["status_revision"] == 1
+    activated, _ = await call(
+        f, "plan_activate", operation_id="activate", base=ref, reason="Begin",
+        expected_status_revision=1, expected_progress_cursor=0,
+    )  # fmt: skip
+    standing = activated["plan"]
+    assert standing["steps"] == {"pending": 3}
+    assert [s["step_cursor"] for s in standing["open_steps"]] == [0, 0, 0]
+    started, _ = await call(
+        f, "plan_progress", operation_id="start", base=ref,
+        expected_status_revision=standing["status_revision"],
+        step_id="step-0", expected_step_cursor=0, status="in_progress", note="Inspecting",
+    )  # fmt: skip
+    cursors = {s["step_id"]: s["step_cursor"] for s in started["plan"]["open_steps"]}
+    moved, record = await call(
+        f, "plan_progress", operation_id="move", base=ref,
+        expected_status_revision=started["plan"]["status_revision"],
+        steps=[
+            {"step_id": "step-0", "expected_step_cursor": cursors["step-0"],
+             "status": "completed", "note": "Derived"},
+            {"step_id": "step-1", "expected_step_cursor": cursors["step-1"],
+             "status": "in_progress", "note": "Checking"},
+        ],
+    )  # fmt: skip
+    assert record["plan_receipt"]["action"] == "progress"
+    assert moved["plan"]["steps"] == {"completed": 1, "in_progress": 1, "pending": 1}
+    assert [(s["step_id"], s["status"]) for s in moved["plan"]["open_steps"]] == [
+        ("step-1", "in_progress"),
+        ("step-2", "pending"),
+    ]
+    # One event for each step, so a notice to another run names each of them.
+    events = f.core.events(f.user, after=0, target=None, limit=16).items
+    assert [e.action for e in events[-2:]] == ["progress", "progress"]
+    # An exact retry of the several-step call is its receipt again.
+    again, _ = await call(
+        f, "plan_progress", operation_id="move", base=ref,
+        expected_status_revision=started["plan"]["status_revision"],
+        steps=[
+            {"step_id": "step-0", "expected_step_cursor": cursors["step-0"],
+             "status": "completed", "note": "Derived"},
+            {"step_id": "step-1", "expected_step_cursor": cursors["step-1"],
+             "status": "in_progress", "note": "Checking"},
+        ],
+    )  # fmt: skip
+    assert again["receipt"] == moved["receipt"]
+    assert again["historical_receipt"]
+    cursors = {s["step_id"]: s["step_cursor"] for s in moved["plan"]["open_steps"]}
+    ended, _ = await call(
+        f, "plan_progress", operation_id="end", base=ref,
+        expected_status_revision=moved["plan"]["status_revision"],
+        steps=[
+            {"step_id": "step-1", "expected_step_cursor": cursors["step-1"],
+             "status": "completed", "note": "Checked"},
+            {"step_id": "step-2", "expected_step_cursor": cursors["step-2"],
+             "status": "skipped", "note": "Not needed"},
+        ],
+    )  # fmt: skip
+    assert ended["plan"]["open_steps"] == []
+    finished, _ = await call(
+        f, "plan_finish", operation_id="finish", base=ref, reason="Done",
+        expected_status_revision=ended["plan"]["status_revision"],
+        expected_progress_cursor=ended["plan"]["progress_cursor"],
+        outcome={"status": "partially_achieved", "summary": "Two of three",
+                 "evidence": [], "remaining_work": ["Step 2"]},
+    )  # fmt: skip
+    assert finished["plan"]["status"] == "completed"
+    assert "open_steps" not in finished["plan"]
+
+
+@pytest.mark.asyncio
+async def test_a_refused_entry_refuses_the_whole_call_and_names_it(fixture):
+    f = fixture
+    ref, revision = await active(f)
+
+    def entry(step, cursor, status="completed"):
+        return {"step_id": step, "expected_step_cursor": cursor, "status": status, "note": "N"}
+
+    await call(f, "plan_revise", operation_id="wider", base=ref, body=body(count=3), reason="Wider")
+    ref = {**ref, "version": 2}
+    before = f.core.summary(f.user)
+    for steps, kind, named in (
+        ([entry("step-0", 0), entry("step-1", 5)], "conflict", "steps[1] (step-1): step progress"),
+        ([entry("step-0", 0), entry("step-9", 0)], "not_found", "steps[1] (step-9): step is"),
+        ([entry("step-0", 0), entry("step-0", 0)], "invalid_request", "steps[1] (step-0)"),
+    ):
+        with pytest.raises(DocumentError) as refused:
+            await call(
+                f, "plan_progress", operation_id=f"op-{len(named)}", base=ref,
+                expected_status_revision=revision, steps=steps,
+            )  # fmt: skip
+        assert refused.value.kind == kind
+        assert named in refused.value.message
+    # Nothing of a refused call is recorded, not even its first, valid, entry.
+    assert f.core.summary(f.user) == before
+    with pytest.raises(DocumentError, match="not both"):
+        await call(
+            f, "plan_progress", operation_id="both", base=ref, expected_status_revision=revision,
+            step_id="step-0", steps=[entry("step-1", 0)],
+        )  # fmt: skip
+
+
+@pytest.mark.asyncio
+async def test_evidence_by_path_pins_the_files_recorded_revision(fixture):
+    f = fixture
+    inventory, reference = recorded(f)
+    assert reference is not None
+    f.adapter.artifacts = inventory
+    ref, revision = await active(f)
+    args = {
+        "operation_id": "done", "base": ref, "expected_status_revision": revision,
+        "step_id": "step-0", "expected_step_cursor": 0, "status": "completed", "note": "Table",
+        "evidence": [{"path": "results/table.csv"}],
+    }  # fmt: skip
+    result, _ = await call(f, "plan_progress", **args)
+    (resolved,) = result["evidence_resolved"]
+    assert (resolved["path"], resolved["artifact_id"], resolved["revision"]) == (
+        "results/table.csv", reference.artifact_id, reference.revision,
+    )  # fmt: skip
+    assert resolved["sha256"] == reference.sha256
+    assert (resolved["written_by"]["session_id"], resolved["written_by"]["run_id"]) == ("s", "run1")
+    (step,) = f.core.current(f.user).steps
+    (claim,) = step.latest.evidence
+    assert (claim.kind, claim.reference_id, claim.revision, claim.sha256) == (
+        "artifact", reference.artifact_id, reference.revision, reference.sha256,
+    )  # fmt: skip
+    assert claim.written_by.session_id == "s"
+    # The review of R7's fix: an exact retry after the file changed is its first receipt,
+    # and says what the first call resolved.
+    recorded(f, data=b"n,t\n1,3\n", op="op-2")
+    again, _ = await call(f, "plan_progress", **args)
+    assert again["receipt"] == result["receipt"]
+    assert again["evidence_resolved"] == result["evidence_resolved"]
+    with pytest.raises(DocumentError) as refused:
+        await call(
+            f, "plan_progress", operation_id="missing", base=ref,
+            expected_status_revision=revision,
+            steps=[{"step_id": "step-0", "expected_step_cursor": 1, "status": "completed",
+                    "note": "Again", "evidence": [{"path": "results/none.csv"}]}],
+        )  # fmt: skip
+    assert refused.value.kind == "not_found"
+    assert refused.value.message.startswith("steps[0].evidence[0]: results/none.csv has no")
+    assert "publish" in refused.value.message
+    f.adapter.artifacts = None
+    with pytest.raises(DocumentError, match="not available in this run"):
+        await call(
+            f, "plan_progress", operation_id="unwired", base=ref,
+            expected_status_revision=revision, step_id="step-0", expected_step_cursor=1,
+            status="completed", note="Again", evidence=[{"path": "results/table.csv"}],
+        )  # fmt: skip
+
+
+@pytest.mark.asyncio
+async def test_evidence_by_path_pins_only_this_sessions_kept_revisions(fixture):
+    """The review of R7's fix: a revision without its bytes, a file of another session's
+    area, and a shared file another session last recorded are not pinned by path; an
+    agent cannot claim who recorded a revision."""
+    f = fixture
+    inventory, _ = recorded(f, "results/meta.csv", kept=False)
+    recorded(f, "notes.csv", session="other", op="op-o")
+    recorded(f, "shared/common.csv", session="other", op="op-sh")
+    f.adapter.artifacts = inventory
+    ref, revision = await active(f)
+
+    async def progress(evidence, op):
+        with pytest.raises(DocumentError) as refused:
+            await call(
+                f, "plan_progress", operation_id=op, base=ref, expected_status_revision=revision,
+                step_id="step-0", expected_step_cursor=0, status="completed", note="N",
+                evidence=[evidence],
+            )  # fmt: skip
+        return refused.value
+
+    kept = await progress({"path": "results/meta.csv"}, "meta")
+    assert "keeps no bytes" in kept.message
+    assert "publish" in kept.message
+    other = await progress({"path": "sessions/other/notes.csv"}, "other")
+    assert "another session's area" in other.message
+    shared = await progress({"path": "shared/common.csv"}, "shared")
+    assert "recorded by session other's run run1" in shared.message
+    assert "reference_id" in shared.message
+    forged = await progress(
+        {"project_id": "p", "kind": "artifact", "reference_id": "artifact-1", "revision": 1,
+         "sha256": "0" * 64,
+         "written_by": {"session_id": "s", "run_id": "run1",
+                        "recorded_at": "2026-11-27T00:00:00+00:00"}},
+        "forged",
+    )  # fmt: skip
+    assert "written_by is the platform's" in forged.message
+    assert f.core.current(f.user).steps[0].latest is None
+
+
+@pytest.mark.asyncio
+async def test_plan_read_is_compact_by_default_and_full_on_request(fixture):
+    f = fixture
+    ref, revision = await active(f)
+    compact, _ = await call(f, "plan_read")
+    assert set(compact) == {"plan", "goal", "steps", "detail"}
+    assert compact["plan"]["ref"] == ref
+    assert compact["plan"]["status_revision"] == revision
+    assert compact["steps"] == [
+        {"step_id": "step-0", "title": "Step 0", "status": "pending", "step_cursor": 0}
+    ]
+    full, _ = await call(f, "plan_read", detail="full")
+    assert full["version"]["body"]["goal"] == "Check the claim"
+    assert full["steps"][0]["step_sha256"]
+    # Either is the current read the fence needs.
+    await f.adapter.model_delivered()
+    assert not f.adapter.requires_read
+
+
+@pytest.mark.asyncio
+async def test_an_invalid_request_names_its_field_limit_and_size(fixture):
+    f = fixture
+    long = body()
+    long["phases"][0]["steps"][0]["title"] = "T" * 200
+    with pytest.raises(DocumentError) as refused:
+        await call(f, "plan_create", operation_id="create", body=long, reason="Initial")
+    message = refused.value.message
+    assert message.startswith("invalid plan_create request: body.phases.0.steps.0.title:")
+    assert "at most 128 characters (given 200)" in message
+    with pytest.raises(DocumentError, match=r"is 98,\d{3} bytes, over its budget of 98,304"):
+        await f.adapter.call(
+            "plan_create", '"' + "x" * MAX_REQUEST_BYTES + '"', call_id="c", model=None
+        )
+    wide = body(count=20)
+    for step in wide["phases"][0]["steps"]:
+        step["description"] = "d" * 4000
+    with pytest.raises(DocumentError, match=r"body is 8\d,\d{3} bytes .* over its limit of 65,536"):
+        await call(f, "plan_create", operation_id="wide", body=wide, reason="Initial")
+
+
+@pytest.mark.asyncio
+async def test_a_current_read_shows_what_others_changed_before_it_reads_the_plan(fixture):
+    """The review of R7's fix: a compact read that clears the reread fence shows each
+    step another actor changed in full, its description and its latest note with who
+    wrote it, and who changed what; steps nobody else changed stay compact."""
+    f = fixture
+    created, _ = await call(
+        f, "plan_create", operation_id="create", body=body(count=3), reason="Initial"
+    )
+    ref = created["receipt"]["ref"]
+    await call(
+        f, "plan_activate", operation_id="activate", base=ref, reason="Begin",
+        expected_status_revision=1, expected_progress_cursor=0,
+    )  # fmt: skip
+    plain, _ = await call(f, "plan_read")
+    assert "changed_by_others" not in plain
+    await f.adapter.model_delivered()
+    edited = body(count=3)
+    edited["phases"][0]["steps"][0]["description"] = "Use ONLY seed 42; never seed 7"
+    revised = f.core.revise(
+        f.user, "user-edit", PlanRef.model_validate(ref), PlanBody.model_validate(edited),
+        "Seed policy",
+    )  # fmt: skip
+    f.core.progress(
+        f.user, "user-pause", revised.ref, "step-1", 0, "blocked",
+        "Paused: budget exhausted, wait for me",
+    )  # fmt: skip
+    with pytest.raises(DocumentError, match="reread_required"):
+        await f.adapter.check_dispatch("effect")
+    read, _ = await call(f, "plan_read")
+    changed = read["changed_by_others"]
+    assert [s["step_id"] for s in changed["steps"]] == ["step-0", "step-1"]
+    first, second = changed["steps"]
+    assert first["description"] == "Use ONLY seed 42; never seed 7"
+    assert second["latest"]["note"] == "Paused: budget exhausted, wait for me"
+    assert second["latest"]["by"] == "the user"
+    assert any("Seed policy" in line for line in changed["changes"])
+    # Its delivery is the read the fence needs; the next read shows the plan plainly.
+    await f.adapter.model_delivered()
+    await f.adapter.check_dispatch("effect")
+    again, _ = await call(f, "plan_read")
+    assert "changed_by_others" not in again

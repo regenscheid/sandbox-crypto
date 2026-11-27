@@ -759,11 +759,14 @@ async def test_the_model_gets_an_index_and_loads_tools_by_name(gated: Gated) -> 
     assert called["connector"] == "papers"
     assert gated.fake.tool_calls() == ["search"]
     listed = len(ADMITTED)  # what the native rules admit
-    # The run's record keeps the SHA-256 of each loaded tool's spec, as the model got it.
+    # The run's record keeps the SHA-256 of each loaded tool's spec, as the model got it,
+    # and its calls by server and tool with their outcomes (R13).
     assert transcript.summaries["connectors"] == {
+        "offered": True,
         "listed": listed,
         "servers": {"papers": listed},
         "loaded": [{"name": "search", "sha256": sha256["search"]}],
+        "calls": {"papers": {"search": {"ok": 1}}},
     }
     (search,) = [spec for spec in model_tools(model) if spec["name"] == "search"]
     assert (
@@ -1421,6 +1424,12 @@ async def test_a_result_is_framed_as_the_servers_data_its_hidden_characters_remo
     shown, record = await failing.call("find", {})
     assert error_of(shown) == {"kind": "tool_error", "message": "bad input"}
     assert record == {"connector": "papers", "hidden_removed": 1, "error": "tool_error"}
+    # A server's tool error counts as a failed call; a result it did not mark as one, its
+    # text whatever, as a successful call (R10).
+    await failing.call("find", {})
+    await plain.call("find", {})
+    assert failing.summary()["calls"] == {"papers": {"find": {"tool_error": 2}}}
+    assert plain.summary()["calls"] == {"papers": {"find": {"ok": 2}}}
 
 
 @pytest.mark.parametrize("text", ["[" * 9999, '{"a":' * 201 + "1" + "}" * 201])

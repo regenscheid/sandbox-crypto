@@ -65,7 +65,7 @@
   <label
     >Event category <select bind:value={category}
       ><option value="all">All</option
-      >{#each ['started', 'user', 'model', 'assistant', 'tool', 'notice', 'waiting', 'fold', 'stopped'] as kind}<option
+      >{#each ['started', 'user', 'model', 'assistant', 'tool', 'notice', 'waiting', 'fold', 'model_profile', 'stopped'] as kind}<option
           value={kind}>{kind}</option
         >{/each}</select
     ></label

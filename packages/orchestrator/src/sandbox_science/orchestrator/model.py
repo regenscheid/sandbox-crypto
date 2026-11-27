@@ -111,6 +111,9 @@ class ModelTurn:
     native_format: str | None = None
     gateway_version: str | None = None
     """The gateway's version, as ``VERSION_HEADER`` named it (CM-39)."""
+    upstream: Mapping[str, str] | None = None
+    """Which of the gateway's upstream deployments served the call, as its headers say
+    (``upstream_of``); ``None`` when it said nothing of it."""
     alias: str | None = None
     """The alias the call was made on, as the deployment names it."""
     prefix: str | None = None
@@ -178,6 +181,18 @@ COST_HEADER: Final = "x-litellm-response-cost"
 """The header in which LiteLLM's proxy reports a call's cost."""
 VERSION_HEADER: Final = "x-litellm-version"
 """The header in which LiteLLM's proxy names its version."""
+UPSTREAM_HEADERS: Final = {
+    "model_id": "x-litellm-model-id",
+    "region": "x-litellm-model-region",
+    "fallbacks": "x-litellm-attempted-fallbacks",
+    "retries": "x-litellm-attempted-retries",
+}
+"""The headers in which LiteLLM's proxy names the deployment that served a call: its
+model ID (the deployment's in the gateway's model list) and region, and the fallbacks
+and retries it tried before it. Its API base is not kept: a digest of a host name would
+let anyone holding the record confirm a guess of it."""
+MAX_UPSTREAM: Final = 128
+"""The characters of one upstream header a call's record keeps."""
 CHAT_COMPLETIONS: Final = "chat_completions"
 """The native format of this client's answers: a chat completion, as the gateway sent it."""
 
@@ -302,12 +317,26 @@ def prefix_digest(parts: Mapping[str, object]) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
-def session_cache_key(project: str, session: str) -> str:
+def upstream_of(headers: Mapping[str, str]) -> dict[str, str] | None:
+    """Which upstream deployment served a call, as the gateway's ``UPSTREAM_HEADERS``
+    name it; ``None`` with none of them."""
+    found: dict[str, str] = {}
+    for key, header in UPSTREAM_HEADERS.items():
+        if value := (headers.get(header) or "").strip():
+            found[key] = value[:MAX_UPSTREAM]
+    return found or None
+
+
+def session_cache_key(project: str, session: str, delegation: str | None = None) -> str:
     """The key under which a session's calls ask a provider to share its prompt cache
-    (OpenAI's ``prompt_cache_key``, CM-32): the same for every call of a session, whichever
-    run or role makes it, and different for every other session. A digest, since the
-    provider keeps what it is given and the IDs are the deployment's."""
-    return "ss-" + hashlib.sha256(f"{project}\0{session}".encode()).hexdigest()[:32]
+    (OpenAI's ``prompt_cache_key``, CM-32): the same for every call of a session's main
+    runs, whichever run or role makes it, so that a later run reuses an earlier one's
+    prefix, and different for every other session; a delegated run's calls, given its
+    ``delegation``, have a key of their own, so that they and the main run, working at
+    once, do not share one routing. A digest, since the provider keeps what it is given
+    and the IDs are the deployment's."""
+    named = f"{project}\0{session}" + ("" if delegation is None else f"\0{delegation}")
+    return "ss-" + hashlib.sha256(named.encode()).hexdigest()[:32]
 
 
 def review_cache_key(project: str, session: str, review: str) -> str:
@@ -736,7 +765,7 @@ class GatewayModel(ABC):
         retried: list[str] = []
         for attempt in range(self._retries + 1):
             try:
-                text, priced, version = await self._post(body)
+                text, priced, version, upstream = await self._post(body)
                 try:
                     turn = parse(text, priced)
                 except ModelError as error:  # answered, and charged, whatever it holds
@@ -749,6 +778,7 @@ class GatewayModel(ABC):
                     native=text.encode(),
                     native_format=self.FORMAT,
                     gateway_version=version,
+                    upstream=upstream,
                     alias=self.model,
                     prefix=prefix,
                     retried=tuple(retried),
@@ -786,8 +816,11 @@ class GatewayModel(ABC):
                 wait *= 2
         raise AssertionError("unreachable")  # pragma: no cover
 
-    async def _post(self, body: dict[str, Any]) -> tuple[str, str | None, str | None]:
-        """The answer's text, and its cost and version headers if it has them."""
+    async def _post(
+        self, body: dict[str, Any]
+    ) -> tuple[str, str | None, str | None, dict[str, str] | None]:
+        """The answer's text, and its cost and version headers and the upstream that
+        served it (``upstream_of``) if it has them."""
         if self._session is None:
             self._session = aiohttp.ClientSession()
         added = {k: v for k, v in self._headers(body).items() if k.lower() != "authorization"}
@@ -850,7 +883,12 @@ class GatewayModel(ABC):
                     text = text.replace(self._api_key, "[the gateway key]")
                 if 200 <= response.status < 300:
                     version = response.headers.get(VERSION_HEADER, "").strip()[:128] or None
-                    return text, response.headers.get(COST_HEADER), version
+                    return (
+                        text,
+                        response.headers.get(COST_HEADER),
+                        version,
+                        upstream_of(response.headers),
+                    )
                 status = response.status
                 said = gateway_said(text, response.content_type)
                 error = ModelError(f"the model gateway returned {status}: {said}", status=status)
@@ -917,14 +955,19 @@ class OpenAICompatibleModel(GatewayModel):
 
 
 def cached_for(
-    model: ChatModel, project: str, session: str, review: str | None = None
+    model: ChatModel,
+    project: str,
+    session: str,
+    delegation: str | None = None,
+    *,
+    review: str | None = None,
 ) -> ChatModel:
-    """``model`` calling as ``session`` of ``project``, or as its review ``review``, for the
-    prompt cache (``cached_as``); a model that is not the gateway's, such as a scripted
-    one, as it is."""
+    """``model`` calling as ``session`` of ``project``, as that session's ``delegation``,
+    or as its review ``review``, for the prompt cache (``cached_as``); a model that is not
+    the gateway's, such as a scripted one, as it is."""
     if isinstance(model, GatewayModel):
         key = (
-            session_cache_key(project, session)
+            session_cache_key(project, session, delegation)
             if review is None
             else review_cache_key(project, session, review)
         )

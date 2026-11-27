@@ -61,6 +61,9 @@ from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
 from .test_consistency import store as store
+from .test_delegation import delegating as delegating
+from .test_delegation import started, submitted, wait
+from .test_delegation_tasks import DONE
 from .test_model_limits import Waits
 
 KEY = "test-secret-responses-gateway-key"
@@ -931,6 +934,34 @@ async def test_every_call_of_a_session_sends_the_sessions_cache_key(harness: Har
     assert keys[0] == "ss-" + hashlib.sha256(f"{PROJECT}\0{SESSION}".encode()).hexdigest()[:32]
     for body in found.responses:
         wire(body)
+
+
+async def test_a_delegated_run_has_a_cache_key_of_its_own(delegating: Harness) -> None:
+    """R6: a delegated run, working while its parent does, calls under its delegation's
+    key; the session's main runs keep the session's, so a later main run reuses an
+    earlier one's prefix."""
+    options = ["--api", "main=responses"]
+    root = await delegating.run(
+        "root",
+        [Reply(calls=[call("delegate", task="Tabulate a^16 mod 17.")]), wait(), Reply("Done.")],
+        delegated=submitted(DONE, "Done."),
+        options=options,
+    )
+    await delegating.run("later", [Reply("Again.")], options=options)
+    (delegation_id,) = started(root)
+    keys = [json.loads(raw)["prompt_cache_key"] for raw in delegating.gateway.raw]
+    session, child = (
+        session_cache_key(PROJECT, SESSION),
+        session_cache_key(PROJECT, SESSION, delegation_id),
+    )
+    assert child != session
+    assert child.startswith("ss-")
+    assert len(child) == len(session)
+    # The child's two calls under its key, every main run's under the session's, the
+    # later run's last.
+    assert set(keys) == {session, child}
+    assert keys.count(child) == 2
+    assert keys[-1] == keys[0] == session
 
 
 def test_a_sessions_key_is_its_own_stable_and_short() -> None:

@@ -457,8 +457,10 @@ async def test_a_plan_change_is_an_action_and_the_review_holds_the_plan(store: A
                    expected_status_revision=2, **progress)  # fmt: skip
         await call(4, "plan_progress", operation_id="stale", step_id="step-1",
                    expected_status_revision=1, **progress)  # fmt: skip
-        await call(5, "plan_progress", operation_id="s1", step_id="step-1",
-                   expected_status_revision=2, **progress)  # fmt: skip
+        # Several steps' form, which names each step it recorded.
+        await call(5, "plan_progress", operation_id="s1", base=ref, expected_status_revision=2,
+                   steps=[{"step_id": "step-1", "expected_step_cursor": 0,
+                           "status": "completed", "note": "Done"}])  # fmt: skip
         await call(6, "plan_finish", operation_id="finish", base=ref, expected_status_revision=2,
                    expected_progress_cursor=2, reason="Finished",
                    outcome={"status": "achieved", "summary": "Checked", "evidence": [],

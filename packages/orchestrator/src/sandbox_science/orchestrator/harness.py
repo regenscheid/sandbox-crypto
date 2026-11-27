@@ -72,7 +72,7 @@ from .continuity.kernels import KernelJournal, LostKernels
 from .continuity.models import IntentModel, ModelIntents
 from .continuity.records import Ownership, WorkRecords, authority
 from .continuity.resources import ResourceRequests
-from .control import ControlError
+from .control import ControlError, ControlStore
 from .control.errors import NOT_FOUND
 from .delegation import prompt as delegated_prompt
 from .delegation.child_inputs import InventoryContent
@@ -89,7 +89,7 @@ from .delegation.narrowing import Narrowing, of_brief
 from .delegation.outcome import Asked, Outcome, Target, asked_of, result_of
 from .delegation.records import DelegationRecords
 from .delegation.requests import ChildApproval, ChildRequests
-from .delegation.tracks import TrackTools, grant, stated_outputs
+from .delegation.tracks import TrackTools, grant, regrant, stated_outputs
 from .documents import DocumentError, DocumentStore, DocumentTool
 from .documents.tool import REQUESTS_TASK, WorkRequests
 from .environment_claim import environment_claim
@@ -437,6 +437,11 @@ class McpAccess:
 WITHHELD: Final = {"offered": False, "reason": "other_project"}
 """What a run's ``started`` event and its record's ``summaries.connectors`` say when the
 deployment's connectors serve another project, which neither names."""
+
+
+NOT_OFFERED_CONNECTORS: Final = {"offered": False, "reason": "none"}
+"""What a run's record's ``summaries.connectors`` says when the run had no connector
+tools: the deployment has none, or none could be listed."""
 
 
 def withheld(mcp: McpAccess | None, project: str) -> bool:
@@ -888,7 +893,10 @@ class Harness:
         context = admitted.context
         role = self.role(admitted.request)
         model = self._reserved(
-            cached_for(role.model, context.project_id, context.session_id), role.alias
+            cached_for(
+                role.model, context.project_id, context.session_id, _cached_as(admitted.request)
+            ),
+            role.alias,
         )
         if self.stores is None or self.loop_runner is not run_task:
             return model
@@ -1247,6 +1255,8 @@ class Harness:
                 transcript.fail("cleanup")
         if withheld(self.mcp, admitted.context.project_id):
             transcript.summaries["connectors"] = dict(WITHHELD)
+        else:
+            transcript.summaries.setdefault("connectors", dict(NOT_OFFERED_CONNECTORS))
         return Finished(
             admitted.run_id,
             admitted.context,
@@ -1297,7 +1307,12 @@ class Harness:
         def former(alias: str) -> ChatModel | None:
             if self.gateway is None or self.settings.skeleton_only:
                 return None
-            return cached_for(self.gateway.model(alias, role="fold").for_former(), project, session)
+            return cached_for(
+                self.gateway.model(alias, role="fold").for_former(),
+                project,
+                session,
+                _cached_as(request),
+            )
 
         name = run_name(admitted.started_at, admitted.run_id)
         return await prepare_context(
@@ -1392,9 +1407,13 @@ class Harness:
             role = self.role(request)
             if not isinstance(role.model, GatewayModel):
                 return None
-            own = cached_for(role.model, context.project_id, context.session_id)
+            own = cached_for(
+                role.model, context.project_id, context.session_id, _cached_as(request)
+            )
             return cast(GatewayModel, self._reserved(own, role.alias)).for_role("fold")
-        return self._reserved(cached_for(model, context.project_id, context.session_id), alias)
+        return self._reserved(
+            cached_for(model, context.project_id, context.session_id, _cached_as(request)), alias
+        )
 
     def _narrator(self, project: str, session: str, request: RunRequest) -> ChatModel | None:
         """The model that writes MAIN's folds' narratives: the setting's alias through
@@ -1458,13 +1477,15 @@ class Harness:
         ``outcome`` is the one its ``submit_result`` records into (``_outcome``)."""
         request = admitted.request
         if request.parent is not None and self.stores is not None:
+            track = await threaded(_granted_track, self.stores.projects.control, admitted)
             fence = await threaded(
                 ChildFence,
                 SessionPlans(self.stores.documents),
                 self.stores.projects,
                 admitted.context,
                 run_id=admitted.run_id,
-                granted=request.track[0] if request.track is not None else None,
+                granted=track[0] if track is not None else None,
+                track=track[1] if track is not None else None,
                 # It reads each connector tool's class as the host takes it at each call
                 # (D99, DA-7).
                 connectors=connectors.classed if connectors is not None else None,
@@ -1586,6 +1607,11 @@ class Harness:
             ),
             track_grant=(
                 functools.partial(_track_grant, SessionPlans(stores.documents), context)
+                if depth == 0
+                else None
+            ),
+            track_regrant=(
+                functools.partial(threaded, regrant, SessionPlans(stores.documents), context)
                 if depth == 0
                 else None
             ),
@@ -2308,6 +2334,7 @@ class Harness:
                 run_id=run_id,
                 alias=alias,
                 clock=self.clock,
+                artifacts=inventory,
             )
             bundles.append(caps.plans(plans))
         # A main run asks the user and waits in the call; a delegated run that needs
@@ -2328,7 +2355,7 @@ class Harness:
         # executor.
         # A task on a track records its progress on that track's steps only (PD-9).
         tracks = None
-        if (track := admitted.request.track) is not None:
+        if (track := await threaded(_granted_track, stores.projects.control, admitted)) is not None:
             tracks = await threaded(
                 TrackTools,
                 SessionPlans(stores.documents),
@@ -2546,6 +2573,28 @@ async def _entry_made(ledger: Ledger, project: str, reference: str, work: frozen
         return any(record.record_id in work for record in page.records)
 
     return await threaded(look)
+
+
+def _granted_track(control: ControlStore, admitted: Admitted) -> tuple[PlanRef, str] | None:
+    """A task's plan version and track: the latest its track was granted again at when
+    its parent reopened it (``delegation_track_grants``), so that a resumed run keeps it,
+    or else its brief's. Call it in a thread."""
+    request = admitted.request
+    if request.track is None or request.delegation is None:
+        return request.track
+    context = admitted.context
+    stored = DelegationRecords(control).track_grant(
+        context.project_id, context.session_id, request.delegation
+    )
+    if stored is None or stored[2] != request.track[1]:
+        return request.track
+    return PlanRef(plan_id=stored[0], version=stored[1]), stored[2]
+
+
+def _cached_as(request: RunRequest) -> str | None:
+    """The delegation a run's calls share the prompt cache as, for a delegated run; a main
+    run's calls share the session's (CM-32)."""
+    return request.delegation if request.parent is not None else None
 
 
 async def _track_grant(plans: SessionPlans, context: ExecutionContext, track: str) -> PlanRef:

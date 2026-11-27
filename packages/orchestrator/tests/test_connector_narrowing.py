@@ -365,6 +365,10 @@ async def test_a_project_the_connectors_serve_gets_no_such_note(delegating: Harn
             record = max(await ended(delegating, count), key=lambda run: run.started_at)
         system = str(delegating.gateway.main[-1][0]["content"])
         assert NO_CONNECTORS.text not in system
-        summary = record.summaries.get("connectors")
-        assert not isinstance(summary, dict) or "offered" not in summary
+        # Every record says whether the run had connectors (R13), and none of another
+        # project.
+        summary = record.summaries["connectors"]
+        assert isinstance(summary, dict)
+        assert summary["offered"] is (mcp is not None)
+        assert summary.get("reason") in (None, "none")
         assert "connectors" not in run_events(delegating, record)[0].data

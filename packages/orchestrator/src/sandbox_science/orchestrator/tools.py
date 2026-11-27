@@ -1538,7 +1538,12 @@ class Toolbox:
         request = ReadFileRequest.model_validate(
             {"context": self.context, **_known(args, "path", "offset", "length")}
         )
-        content = await self.client.read_file(request)
+        try:
+            content = await self.client.read_file(request)
+        except WorkerAPIError as error:
+            if error.kind is not ErrorKind.NOT_FOUND or (where := self._child_area(args)) is None:
+                raise
+            return _failure(error.kind, f"{error.message}. {_child_files(where)}")
         try:
             data = base64.b64decode(content.content_b64, validate=True)
         except binascii.Error:
@@ -1585,6 +1590,15 @@ class Toolbox:
             "complete": bool(content.offset == 0 and shown and end == content.size),
         }
         return ToolOutcome(dump(summary), {"read": read})
+
+    def _child_area(self, args: dict[str, Any]) -> str | None:
+        """The delegation whose write area ``args``' path is under, when it is not this
+        run's own."""
+        path = args.get("path")
+        found = _CHILD_AREA.match(path) if isinstance(path, str) else None
+        if found is None or found.group(1) == self.write_area:
+            return None
+        return found.group(2)
 
     async def _write(self, args: dict[str, Any], operation: str) -> ToolOutcome:
         content = args.get("content")
@@ -2309,6 +2323,23 @@ def _invalid(error: ValidationError) -> dict[str, str]:
     first = error.errors()[0]
     where = ".".join(str(part) for part in first.get("loc", ()))
     return {"kind": ErrorKind.INVALID_REQUEST.value, "message": f"{where}: {first.get('msg')}"}
+
+
+_CHILD_AREA: Final = re.compile(r"(?:\./)?(work/(dlg-[0-9a-f]{24}))(?:/|$)")
+"""A path under a delegation's write area, ``work/<delegation_id>/`` (DA-19)."""
+
+
+def _child_files(delegation: str) -> str:
+    """Where and when a delegation's files appear in the session's workspace, for a read
+    of one that is not there (yet)."""
+    return (
+        f"work/{delegation}/ is delegation {delegation}'s write area: a task that shares "
+        "the session's environment writes there as it works; one in an environment of its "
+        "own has them copied in only when it returns, the files each result names into "
+        f"work/{delegation}/.handback/returned/<result number>/, and all of them into "
+        f"work/{delegation}/ when it ends. delegation_status says where it runs and whether "
+        "it returned"
+    )
 
 
 def _failure(

@@ -97,7 +97,7 @@ class ModelIntents:
                     (owner.project, owner.session, owner.run),
                 ).fetchone()
                 tx.sql.execute(
-                    "INSERT INTO run_events VALUES (?,?,?,?,?,'notice',?)",
+                    "INSERT INTO run_events VALUES (?,?,?,?,?,'model_profile',?)",
                     (
                         owner.project,
                         owner.session,
