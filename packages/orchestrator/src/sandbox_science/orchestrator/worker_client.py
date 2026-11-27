@@ -91,6 +91,7 @@ from sandbox_science.contracts.child_environments import (
     HandBackRequest,
     InputPart,
     InputStaged,
+    ReturnCopyRequest,
 )
 from sandbox_science.contracts.classifications import (
     MAX_DRAFTS,
@@ -933,6 +934,17 @@ class WorkerClient:
         return await self._call(
             "POST",
             f"/v1/child-environments/{environment_id}/hand-back",
+            ChildHandBack,
+            request,
+            max_bytes=8 * 1024 * 1024,
+        )
+
+    async def copy_returned(self, environment_id: str, request: ReturnCopyRequest) -> ChildHandBack:
+        """Copy a returned task's result files into the session's
+        ``work/<delegation_id>/.handback/returned/<result>/`` (CE-6, PD-46)."""
+        return await self._call(
+            "POST",
+            f"/v1/child-environments/{environment_id}/returned",
             ChildHandBack,
             request,
             max_bytes=8 * 1024 * 1024,

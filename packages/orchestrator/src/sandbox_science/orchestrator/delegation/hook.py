@@ -1633,7 +1633,52 @@ def _ending(delegation: Delegation) -> dict[str, object]:
         found["environment"] = {k: v for k, v in delegation.environment.items() if k != "plan"}
     elif delegation.environment_id is not None:
         found["environment"] = {"environment_id": delegation.environment_id}
+    if (read := files_read(delegation)) is not None:
+        found["read_files"] = read
     return found
+
+
+READ_BEFORE: Final = "read them there with read_file before you accept"
+
+
+def files_read(delegation: Delegation) -> str | None:
+    """Where the parent reads a task's files while the task awaits its review (PD-46):
+    a shared task's at the paths its result names; one in an environment of its own at
+    the copy its return made of this result (CE-6), with where earlier results' copies
+    stay and where acceptance brings the final result's. ``None`` for any other."""
+    if delegation.kind != "task" or delegation.review != "awaiting":
+        return None
+    if delegation.environment_id is None:
+        return (
+            "Its result's files are in the session's environment, at the paths its result "
+            f"names; {READ_BEFORE}."
+        )
+    copy = (delegation.environment or {}).get("returned")
+    if not isinstance(copy, dict):
+        return None
+    number, target, area = copy.get("result"), copy.get("target"), copy.get("area")
+    accepted = f"Accepting copies the final result's files to {area}/."
+    if isinstance(error := copy.get("error"), str):
+        return (
+            f"Result {number}'s files were not copied into the session's environment "
+            f"({error}); they stay in the task's own environment. {accepted}"
+        )
+    copied, left = copy.get("copied"), copy.get("left")
+    if not copied and not left:
+        return f"Result {number} names no files to copy. {accepted}"
+    text = (
+        f"Result {number}'s files are copied to {target}/ in the session's environment, "
+        f"a file of {area}/ at its path below it and any other at its whole path; "
+        f"{READ_BEFORE}."
+    )
+    if isinstance(left, list) and left:
+        count = len(cast(list[object], left))
+        files = "1 file was" if count == 1 else f"{count} files were"
+        text += f" {files} left out: environment.returned.left says why."
+    if isinstance(number, int) and number > 1 and isinstance(target, str):
+        root = target.rsplit("/", 1)[0]
+        text += f" Each earlier result's copy stays as it was, at {root}/<its number>/."
+    return f"{text} {accepted}"
 
 
 def outcome(delegation: Delegation, left: Sequence[Delegation] = ()) -> dict[str, object]:

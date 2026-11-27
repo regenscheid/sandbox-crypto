@@ -52,6 +52,12 @@ HAND_BACK_RESERVED: Final = ".handback"
 HAND_BACK_DIRECTORY: Final = WRITE_AREA_DIRECTORY
 """The session workspace directory a hand-back writes under, one directory a delegation
 (DA-19's write area, CE-6)."""
+RETURNED_DIRECTORY: Final = f"{HAND_BACK_RESERVED}/returned"
+"""Where, under ``work/<delegation_id>/``, a returned task's result files are copied at
+each return (CE-6, PD-46): inside the hand-back's own directory, which no handed-back
+file takes, so the final hand-back never writes over them."""
+MAX_RESULTS: Final = 1000
+"""The highest result number a return's copy takes: a delegation's results (PD-46)."""
 
 ChildPhase = Literal["creating", "preparing", "ready", "collecting", "released", "retained"]
 """Where a child environment is (CE-4): being placed, then packages and inputs, then the
@@ -103,6 +109,20 @@ def hand_back_reserved(target: str, path: str) -> bool:
     into its own ``.handback/`` (CE-6), which no handed-back file takes."""
     inside = hand_back_path(target, path)[len(target) + 1 :]
     return inside == HAND_BACK_RESERVED or inside.startswith(f"{HAND_BACK_RESERVED}/")
+
+
+def returned_target(delegation_id: str, result: int) -> str:
+    """Where the copy at a task's return of ``result`` writes in the session workspace
+    (CE-6, PD-46): ``work/<delegation_id>/.handback/returned/<result>``, one directory a
+    result, so a later result's copy leaves an earlier one's as it was."""
+    return f"{hand_back_target(delegation_id)}/{RETURNED_DIRECTORY}/{result}"
+
+
+def returned_path(area: str, target: str, path: str) -> str:
+    """Where a return's copy into ``target`` writes a child environment's ``path``: a file
+    of the write area ``area`` at its path below the area, any other at its whole path,
+    so ``work/<id>/x`` and ``y/z`` are ``<target>/x`` and ``<target>/y/z``."""
+    return f"{target}/{path[len(area) + 1 :]}" if in_write_area(area, path) else f"{target}/{path}"
 
 
 class RetainedInput(Contract):
@@ -180,9 +200,44 @@ class HandBackRequest(Contract):
         return self.write_area or hand_back_target(self.delegation_id)
 
 
+class ReturnCopyRequest(Contract):
+    """Copy a returned task's result files from its child environment into the session's
+    at ``work/<delegation_id>/.handback/returned/<result>/`` (CE-6, PD-46), so that its
+    parent reads them before it accepts. The child environment stays ready, with its
+    kernels and jobs, and its one hand-back is still to come: this copy is not it.
+
+    Under the hand-back's bounds (the profile's ``collect_max_bytes``, 1,000 files, the
+    30-minute deadline), each return's on its own. The first request for a result is
+    recorded, and every later one for it must be the same: a copy a restart cut short
+    goes on, and copies none twice."""
+
+    context: ExecutionContext
+    """The session's: the copy writes into its environment."""
+    delegation_id: Identifier
+    result: Annotated[int, Field(ge=1, le=MAX_RESULTS)]
+    """The delegation's result the files are of, numbered from 1 (PD-46)."""
+    files: tuple[RelativePath, ...] = Field(default=(), max_length=2 * MAX_MANIFEST_FILES)
+    """Child environment paths to copy, in order: past 1,000 they are left out."""
+    retained: tuple[RetainedFile, ...] = Field(default=(), max_length=MAX_MANIFEST_FILES)
+    write_area: WriteArea | None = Field(default=None, exclude_if=lambda v: v is None)
+    """The write area of the delegation's research work, when it is not
+    ``work/<delegation_id>/`` (DA-19, CE-12): its files keep their paths below it."""
+
+    @property
+    def area(self) -> str:
+        """The write area whose files keep their paths below the target."""
+        return self.write_area or hand_back_target(self.delegation_id)
+
+    @property
+    def target(self) -> str:
+        """The session directory the files go to."""
+        return returned_target(self.delegation_id, self.result)
+
+
 class ChildHandBack(Contract):
     """A hand-back's manifest: stored once, and written to
-    ``work/<delegation_id>/.handback/manifest.json`` in the session (an untrusted copy)."""
+    ``work/<delegation_id>/.handback/manifest.json`` in the session (an untrusted copy).
+    A return's copy answers one too, stored once a result, with no copy in the session."""
 
     delegation_id: Identifier
     environment_id: Identifier
@@ -272,7 +327,9 @@ __all__ = [
     "HAND_BACK_RESERVED",
     "MAX_CHILD_INPUTS",
     "MAX_PART_BYTES",
+    "MAX_RESULTS",
     "MAX_RETAINED_INPUTS",
+    "RETURNED_DIRECTORY",
     "ChildEndReason",
     "ChildEnvironment",
     "ChildEnvironmentEnd",
@@ -286,9 +343,12 @@ __all__ = [
     "InputStaged",
     "RetainedFile",
     "RetainedInput",
+    "ReturnCopyRequest",
     "child_environment_id",
     "hand_back_path",
     "hand_back_reserved",
     "hand_back_target",
     "is_child_environment",
+    "returned_path",
+    "returned_target",
 ]

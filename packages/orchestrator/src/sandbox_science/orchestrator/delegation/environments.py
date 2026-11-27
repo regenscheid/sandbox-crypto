@@ -11,7 +11,9 @@ the delegation starts, refusing it at once past the project's or the pool's limi
 ``limit_reached`` that names the limit; nothing is queued, and nothing silently shares).
 
 ``ChildPlacement`` is the worker's side for one session: admission, waiting until the
-environment is ready, and, at the run's end, the hand-back into the session's
+environment is ready, at each return of a task a copy of that result's files into the
+session's ``work/<delegation_id>/.handback/returned/<n>/`` for its parent to read before
+it accepts (PD-46), and, at the delegation's end, the hand-back into the session's
 ``work/<delegation_id>/`` and the environment's end. The account of that end is what the
 delegation's outcome keeps (CE-11).
 """
@@ -37,6 +39,7 @@ from sandbox_science.contracts import (
 )
 from sandbox_science.contracts.child_environments import (
     MAX_CHILD_INPUTS,
+    MAX_RESULTS,
     ChildEndReason,
     ChildEnvironment,
     ChildEnvironmentEnd,
@@ -48,8 +51,11 @@ from sandbox_science.contracts.child_environments import (
     InputStaged,
     RetainedFile,
     RetainedInput,
+    ReturnCopyRequest,
     hand_back_path,
     hand_back_target,
+    returned_path,
+    returned_target,
 )
 from sandbox_science.contracts.worker import MAX_MANIFEST_FILES, validate_relative_path
 from sandbox_science.orchestrator.aio import threaded
@@ -207,6 +213,10 @@ class ChildEnvironmentClient(Protocol):
     async def child_environments(self, context: ExecutionContext) -> ChildEnvironmentList: ...
 
     async def hand_back(self, environment_id: str, request: HandBackRequest) -> ChildHandBack: ...
+
+    async def copy_returned(
+        self, environment_id: str, request: ReturnCopyRequest
+    ) -> ChildHandBack: ...
 
     async def stage_child_input(self, environment_id: str, part: InputPart) -> InputStaged: ...
 
@@ -367,16 +377,7 @@ class ChildPlacement:
         errors: list[str] = []
         if plan is not None:
             files, retained = plan
-            area = (
-                await threaded(
-                    self.areas.write_area,
-                    self.context.project_id,
-                    self.context.session_id,
-                    delegation_id,
-                )
-                if self.areas is not None
-                else hand_back_target(delegation_id)
-            )
+            area = await self._area(delegation_id)
             request = HandBackRequest(
                 context=self.context,
                 delegation_id=delegation_id,
@@ -405,6 +406,72 @@ class ChildPlacement:
                     "message": "; ".join(errors),
                 }
         return account(ended, back or ended.hand_back, "; ".join(errors) or None)
+
+    async def returned(
+        self,
+        environment_id: str,
+        delegation_id: str,
+        result: int,
+        plan: tuple[tuple[str, ...], tuple[RetainedFile, ...]],
+    ) -> dict[str, JsonValue]:
+        """Copy what ``plan`` names of a returned task's ``result`` into the session, at
+        ``work/<delegation_id>/.handback/returned/<result>/``, so that its parent reads
+        them before it accepts (CE-6, PD-46); the account its held environment keeps.
+        The environment stays as it is, its hand-back still to come; a copy that fails
+        is told in the account, and the return stands."""
+        files, retained = plan
+        area = await self._area(delegation_id)
+        target = returned_target(delegation_id, result)
+        if result > MAX_RESULTS:
+            return {
+                "result": result,
+                "target": target,
+                "area": area,
+                "complete": False,
+                "copied": [],
+                "error": f"a return past result {MAX_RESULTS} is not copied",
+            }
+        request = ReturnCopyRequest(
+            context=self.context,
+            delegation_id=delegation_id,
+            result=result,
+            files=files,
+            retained=retained,
+            write_area=None if area == hand_back_target(delegation_id) else area,
+        )
+        try:
+            back = await self._retried(lambda: self.client.copy_returned(environment_id, request))
+        except WorkerAPIError as failure:
+            _log.warning(
+                "child environment %s copied nothing of result %d: %s",
+                environment_id,
+                result,
+                failure,
+            )
+            return {
+                "result": result,
+                "target": target,
+                "area": area,
+                "complete": False,
+                "copied": [],
+                "error": f"the copy failed: {failure.message}"[:1000],
+            }
+        return {
+            "result": result,
+            "area": area,
+            **_handed_back(back, lambda path: returned_path(area, back.target, path)),
+        }
+
+    async def _area(self, delegation_id: str) -> str:
+        """Where a delegation's files go back to: its research work's write area."""
+        if self.areas is None:
+            return hand_back_target(delegation_id)
+        return await threaded(
+            self.areas.write_area,
+            self.context.project_id,
+            self.context.session_id,
+            delegation_id,
+        )
 
     async def _retried[T](self, call: Callable[[], Awaitable[T]]) -> T:
         for attempt in range(TRIES):
@@ -590,23 +657,28 @@ def account(
         if found.inputs_missing:
             kept["inputs_missing"] = list(found.inputs_missing)
     if back is not None:
-        kept["hand_back"] = _handed_back(found, back)
+        kept["hand_back"] = _handed_back(
+            back, lambda path: hand_back_path(back.target, path), found
+        )
     if error is not None:
         kept["error"] = error
     return kept
 
 
-def _handed_back(found: ChildEnvironment, back: ChildHandBack) -> dict[str, JsonValue]:
-    """A hand-back's account (CE-6): what it copied, by session path; each published
-    file's artifact revision, with the path its copy has in the session; what it left,
-    with why, and for a file left that control retains or that the retained environment
-    holds, where it is read. ``complete`` only when every file is readable at its path,
-    a published one at the revision its result names."""
+def _handed_back(
+    back: ChildHandBack, landing: Callable[[str], str], found: ChildEnvironment | None = None
+) -> dict[str, JsonValue]:
+    """A hand-back's account, or a return copy's (CE-6): what it copied, by session path;
+    each published file's artifact revision, with the path its copy has in the session
+    (``landing``); what it left, with why, and for a file left that control retains or
+    that the retained environment ``found`` holds, where it is read. ``complete`` only
+    when every file is readable at its path, a published one at the revision its result
+    names."""
     copies = {f.path: f for f in back.collected}
     complete = back.complete
     named: list[JsonValue] = []
     for item in back.retained:
-        at = hand_back_path(back.target, item.path)
+        at = landing(item.path)
         copy = copies.get(at)
         entry: dict[str, JsonValue] = {
             "path": item.path,
@@ -634,7 +706,7 @@ def _handed_back(found: ChildEnvironment, back: ChildHandBack) -> dict[str, Json
                 f"control keeps it as artifact {source.artifact_id} revision "
                 f"{source.revision}: find_artifacts with path {item.path} lists it"
             )
-        elif found.phase == "retained" and found.retained_until is not None:
+        elif found is not None and found.phase == "retained" and found.retained_until is not None:
             entry["read"] = (
                 f"it stays in child environment {found.environment_id} until "
                 f"{found.retained_until.isoformat()}, for an operator to recover"

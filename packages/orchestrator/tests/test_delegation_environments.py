@@ -53,8 +53,10 @@ from sandbox_science.contracts.child_environments import (
     InputStaged,
     RetainedFile,
     RetainedInput,
+    ReturnCopyRequest,
     hand_back_path,
     hand_back_target,
+    returned_path,
 )
 from sandbox_science.contracts.context import ExecutionAuthority
 from sandbox_science.contracts.worker import (
@@ -131,6 +133,13 @@ class ChildService:
     offers: bool = True
     """Whether the worker offers child environments (its capabilities' feature)."""
     failing_hand_back: bool = False
+    returns: list[ReturnCopyRequest] = field(default_factory=list[ReturnCopyRequest])
+    """The copies at a task's returns, as asked (CE-6, PD-46)."""
+    failing_return: bool = False
+    """Whether a return's copy fails as an unreachable worker's does."""
+    copy_max: int | None = None
+    """The bytes a hand-back or a return's copy takes at most of a file: past it, the file
+    is left out by its size, as past the profile's ``collect_max_bytes``."""
     received: dict[tuple[str, int], bytes] = field(default_factory=dict[tuple[str, int], bytes])
     """Inputs from control's retained content as their parts arrived (CE-7)."""
     parts: list[InputPart] = field(default_factory=list[InputPart])
@@ -188,39 +197,71 @@ class ChildService:
         if self.failing_hand_back:
             raise WorkerAPIError(ErrorKind.CONFLICT, "the hand-back failed")
         found = self.made[environment_id]
-        assert self.manager is not None
-        child = request.context.model_copy(update={"environment_id": environment_id})
         target = request.target
+        back = await self._copied(
+            environment_id, request.context, request.delegation_id, target, request.files,
+            request.retained, lambda path: hand_back_path(target, path),
+        )  # fmt: skip
+        self.made[environment_id] = found.model_copy(
+            update={"phase": "collecting", "hand_back": back}
+        )
+        return back
+
+    async def copy_returned(self, environment_id: str, request: ReturnCopyRequest) -> ChildHandBack:
+        """The worker's copy at a task's return: the environment stays ready."""
+        self.returns.append(request)
+        if self.failing_return:
+            raise WorkerAPIError(ErrorKind.UNAVAILABLE, "cannot reach the worker: refused")
+        found = self.made[environment_id]
+        if found.phase != "ready":
+            raise WorkerAPIError(ErrorKind.CONFLICT, f"the child environment is {found.phase}")
+        area, target = request.area, request.target
+        return await self._copied(
+            environment_id, request.context, request.delegation_id, target, request.files,
+            request.retained, lambda path: returned_path(area, target, path),
+        )  # fmt: skip
+
+    async def _copied(
+        self,
+        environment_id: str,
+        session: ExecutionContext,
+        delegation_id: str,
+        target: str,
+        files: tuple[str, ...],
+        retained: tuple[RetainedFile, ...],
+        landing: Callable[[str], str],
+    ) -> ChildHandBack:
+        """``files`` copied through the worker's own file calls, each to its landing."""
+        assert self.manager is not None
+        child = session.model_copy(update={"environment_id": environment_id})
         collected: list[ManifestFile] = []
         left: list[UncollectedFile] = []
-        for path in request.files:
+        for path in files:
             try:
                 read = await self.manager.read_file(ReadFileRequest(context=child, path=path))
             except Exception as error:
                 left.append(UncollectedFile(path=path, reason=str(error)[:300]))
                 continue
-            destination = hand_back_path(target, path)
+            if self.copy_max is not None and read.size > self.copy_max:
+                reason = f"{read.size} bytes is over the {self.copy_max} bytes left"
+                left.append(UncollectedFile(path=path, reason=reason))
+                continue
+            destination = landing(path)
             await self.manager.write_file(
-                WriteFileRequest(
-                    context=request.context, path=destination, content_b64=read.content_b64
-                )
+                WriteFileRequest(context=session, path=destination, content_b64=read.content_b64)
             )
             size = len(base64.b64decode(read.content_b64))
             collected.append(ManifestFile(path=destination, size=size, sha256=read.sha256))
-        back = ChildHandBack(
-            delegation_id=request.delegation_id,
+        return ChildHandBack(
+            delegation_id=delegation_id,
             environment_id=environment_id,
             target=target,
             collected=tuple(collected),
-            retained=request.retained,
+            retained=retained,
             not_collected=tuple(left),
             complete=not left,
             ended_at=datetime.now(UTC),
         )
-        self.made[environment_id] = found.model_copy(
-            update={"phase": "collecting", "hand_back": back}
-        )
-        return back
 
     async def stage(self, environment_id: str, part: InputPart) -> InputStaged:
         """The worker's ``stage_input``: parts in order, the whole digest checked, the
@@ -361,6 +402,10 @@ class ChildService:
                 body = HandBackRequest.model_validate_json(await request.read())
                 self.fenced(body.context)
                 return _json(await self.hand_back(environment_id, body))
+            if path.endswith("/returned"):
+                body = ReturnCopyRequest.model_validate_json(await request.read())
+                self.fenced(body.context)
+                return _json(await self.copy_returned(environment_id, body))
             if path.endswith("/end"):
                 body = ChildEnvironmentEnd.model_validate_json(await request.read())
                 self.fenced(body.context)
@@ -554,6 +599,31 @@ def test_a_file_over_the_copy_limit_is_reported_with_where_to_read_it() -> None:
     )
     assert second["read"].startswith("it stays in child environment p-child-abc until ")
     assert "at" not in hand_back["retained"][0]
+
+
+def test_a_long_return_copys_account_is_cut_to_fit() -> None:
+    """A held environment's account keeps its return's copy within the table's bound:
+    its longest list is cut first, and the copy says it was cut."""
+    from sandbox_science.orchestrator.delegation.records import (
+        ENVIRONMENT_BYTES,
+        _environment,
+    )
+
+    area = f"work/{DELEGATION}"
+    copied: list[JsonValue] = [f"{area}/.handback/returned/1/{n:04}-{'x' * 80}" for n in range(999)]
+    kept = _environment(
+        {
+            "environment_id": "p-child-000000000000",
+            "end": "held",
+            "returned": {"result": 1, "target": f"{area}/.handback/returned/1", "copied": copied},
+        }
+    )
+    assert kept is not None
+    assert len(kept.encode()) <= ENVIRONMENT_BYTES
+    returned = json.loads(kept)["returned"]
+    assert returned["cut"] is True
+    assert 0 < len(returned["copied"]) < len(copied)
+    assert returned["copied"][0] == copied[0]
 
 
 def test_a_wall_time_ends_a_run_as_a_limit() -> None:
@@ -1619,6 +1689,15 @@ async def test_a_resume_continues_in_its_environment_or_restarts_in_a_new_one(
                 update={"phase": "collecting", "hand_back": back}
             )
             return back
+
+        async def copy_returned(
+            self, environment_id: str, request: ReturnCopyRequest
+        ) -> ChildHandBack:
+            service.returns.append(request)
+            return ChildHandBack(
+                delegation_id=request.delegation_id, environment_id=environment_id,
+                target=request.target, complete=True, ended_at=datetime.now(UTC),
+            )  # fmt: skip
 
         async def end_child_environment(
             self, environment_id: str, request: ChildEnvironmentEnd

@@ -32,6 +32,7 @@ from sandbox_science.orchestrator.delegation.hook import Child, ChildEnd
 from sandbox_science.orchestrator.delegation.records import (
     Delegation,
     DelegationRecords,
+    DelegationResult,
     Ending,
     ReopenPlan,
     notice_key,
@@ -752,6 +753,207 @@ def test_a_version_87_store_keeps_each_outcome_as_its_first_result(tmp_path: Pat
         assert records.get(PROJECT, SESSION, _task(1).delegation_id).results == 0
     finally:
         migrated.close()
+
+
+# --- A returned task's files, read before its acceptance (CE-6 with PD-46) ----------------
+
+
+def _on_first_files(*paths: str) -> Reply:
+    """``read_file`` of each of ``paths`` below the first delegation's ``work/<id>/``."""
+    return Reply(
+        calls_from=lambda messages: [
+            call("read_file", path=f"work/{_ids(messages)[0]}/{path}") for path in paths
+        ]
+    )
+
+
+async def test_a_parent_reads_each_returned_result_before_it_accepts(
+    owning: Harness, service: ChildService
+) -> None:
+    """A task in its own environment returns: its result's file is copied at once to
+    work/<id>/.handback/returned/1/, which the parent reads before accepting, as the
+    wait's outcome and delegation_status say. Feedback reopens it; it changes the file
+    and returns result 2, copied apart, while result 1's copy stays as it was. The
+    acceptance then hands the final result back to work/<id>/ as before."""
+    root = await owning.run(
+        "root",
+        [
+            Reply(calls=[call("delegate", task=FIRST)]),
+            _wait(),
+            _on_first_files(".handback/returned/1/basis.txt"),
+            _on_first("delegation_status"),
+            _on_first("message_child", text=FEEDBACK),
+            _wait(),
+            _on_first_files(".handback/returned/2/basis.txt", ".handback/returned/1/basis.txt"),
+            _on_first("accept_delegation"),
+            _on_first_files("basis.txt"),
+            Reply("Reviewed and accepted."),
+        ],
+        routed={
+            FIRST: [
+                Reply(calls=[call("write_file", path=f"{AREA}/basis.txt", content="3 1\n1 2\n")]),
+                *submitted({**PARTIAL, "result_files": [f"{AREA}/basis.txt"]}, "Done."),
+                Reply(
+                    calls=[
+                        call("edit_file", path=f"{AREA}/basis.txt", old_string="3", new_string="4")
+                    ]
+                ),
+                *submitted({**COMPLETE, "result_files": [f"{AREA}/basis.txt"]}, "Done."),
+            ],
+        },
+    )
+    (identity,) = started(root)
+    area = f"work/{identity}"
+    shown = [json.loads(r) for r in results(root)]
+    first_wait, first_read, status = shown[1], shown[2], shown[3]
+    second_read, first_again = shown[6], shown[7]
+    final = shown[9]
+    assert first_read["content"] == "3 1\n1 2\n"
+    assert second_read["content"] == "4 1\n1 2\n"
+    assert first_again["content"] == "3 1\n1 2\n"
+    assert final["content"] == "4 1\n1 2\n"
+    # The returned task's outcome and its status name where its files are read.
+    told = (
+        f"Result 1's files are copied to {area}/.handback/returned/1/ in the session's "
+        f"environment, a file of {area}/ at its path below it and any other at its whole "
+        "path; read them there with read_file before you accept. Accepting copies the "
+        f"final result's files to {area}/."
+    )
+    assert told in json.dumps(first_wait)
+    assert status["read_files"] == told
+    returned = status["environment"]["returned"]
+    assert returned["copied"] == [f"{area}/.handback/returned/1/basis.txt"]
+    assert returned["complete"] is True
+    # The second return's copy is result 2's, apart from result 1's.
+    assert [(r.result, r.files) for r in service.returns] == [
+        (1, (f"{area}/basis.txt",)),
+        (2, (f"{area}/basis.txt",)),
+    ]
+    assert "Each earlier result's copy stays as it was, at " in json.dumps(shown[5])
+    # The environment stayed through both returns; the acceptance made its one hand-back.
+    found = delegation(owning, identity)
+    assert (found.review, found.results) == ("accepted", 2)
+    (back,) = [b for b in service.hand_backs if b.delegation_id == identity]
+    assert back.files == (f"{area}/basis.txt",)
+    assert found.environment is not None
+    assert found.environment["end"] == "released"
+    session = owning.context().environment_id
+    kept = _workspace(owning, session) / area
+    assert (kept / "basis.txt").read_text() == "4 1\n1 2\n"
+    assert (kept / ".handback" / "returned" / "1" / "basis.txt").read_text() == "3 1\n1 2\n"
+
+
+async def test_a_returned_file_over_the_limit_is_left_with_why(
+    owning: Harness, service: ChildService
+) -> None:
+    """A result file past the copy's bytes is left out of the return's copy, as of the
+    hand-back, and the outcome says how many and where the reason is; the others are
+    copied."""
+    service.copy_max = 16
+    root = await owning.run(
+        "root",
+        [Reply(calls=[call("delegate", task=FIRST)]), _wait(), Reply("Seen.")],
+        routed={
+            FIRST: [
+                Reply(
+                    calls=[
+                        call("write_file", path=f"{AREA}/basis.txt", content="3 1\n1 2\n"),
+                        call("write_file", path=f"{AREA}/big.txt", content="x" * 64),
+                    ]
+                ),
+                *submitted(
+                    {**PARTIAL, "result_files": [f"{AREA}/basis.txt", f"{AREA}/big.txt"]}, "Done."
+                ),
+            ],
+        },
+    )
+    (identity,) = started(root)
+    area = f"work/{identity}"
+    (first,) = _results_of(owning, identity)
+    assert first.environment is not None
+    returned = cast(dict[str, Any], first.environment["returned"])
+    assert returned["complete"] is False
+    assert returned["copied"] == [f"{area}/.handback/returned/1/basis.txt"]
+    assert returned["left"] == [
+        {"path": f"{area}/big.txt", "reason": "64 bytes is over the 16 bytes left"}
+    ]
+    told = json.loads(results(root)[1])
+    assert "1 file was left out: environment.returned.left says why." in json.dumps(told)
+
+
+async def test_a_return_whose_copy_fails_still_returns(
+    owning: Harness, service: ChildService
+) -> None:
+    """A worker that cannot reach the child's environment at the return: the task still
+    returns and awaits review, its outcome says its files were not copied and why, and
+    the acceptance still hands them back to work/<id>/."""
+    service.failing_return = True
+    root = await owning.run(
+        "root",
+        [
+            Reply(calls=[call("delegate", task=FIRST)]),
+            _wait(),
+            _on_first("accept_delegation"),
+            _on_first_files("basis.txt"),
+            Reply("Accepted."),
+        ],
+        routed={
+            FIRST: [
+                Reply(calls=[call("write_file", path=f"{AREA}/basis.txt", content="3 1\n1 2\n")]),
+                *submitted({**PARTIAL, "result_files": [f"{AREA}/basis.txt"]}, "Done."),
+            ],
+        },
+    )
+    (identity,) = started(root)
+    area = f"work/{identity}"
+    told = json.dumps(json.loads(results(root)[1]))
+    assert (
+        "Result 1's files were not copied into the session's environment (the copy failed: "
+        "cannot reach the worker: refused); they stay in the task's own environment. "
+        f"Accepting copies the final result's files to {area}/."
+    ) in told
+    assert json.loads(results(root)[3])["content"] == "3 1\n1 2\n"
+    found = delegation(owning, identity)
+    assert found.review == "accepted"
+    assert found.environment is not None
+    assert found.environment["end"] == "released"
+    (earlier,) = _results_of(owning, identity)
+    assert earlier.environment is not None
+    returned = cast(dict[str, Any], earlier.environment["returned"])
+    assert returned["copied"] == []
+    assert returned["error"] == "the copy failed: cannot reach the worker: refused"
+
+
+def _results_of(harness: Harness, identity: str) -> list[DelegationResult]:
+    """A delegation's results as kept, the first first (PD-46)."""
+    records = DelegationRecords(ProjectStore(harness.state).control)
+    return records.results(PROJECT, SESSION, identity)
+
+
+async def test_a_shared_tasks_files_are_named_where_they_are(delegating: Harness) -> None:
+    """A task in the session's environment: its outcome and status say its files are at
+    the paths its result names, in the words a task of its own's say how to read them."""
+    root = await delegating.run(
+        "root",
+        [
+            Reply(calls=[call("delegate", task=FIRST)]),
+            _wait(),
+            _on_first("delegation_status"),
+            Reply("Seen."),
+        ],
+        routed={
+            FIRST: [
+                Reply(calls=[call("write_file", path=f"{AREA}/basis.txt", content="3 1\n1 2\n")]),
+                *submitted({**PARTIAL, "result_files": [f"{AREA}/basis.txt"]}, "Done."),
+            ],
+        },
+    )
+    told = (
+        "Its result's files are in the session's environment, at the paths its result "
+        "names; read them there with read_file before you accept."
+    )
+    assert told in json.dumps(json.loads(results(root)[1]))
+    assert json.loads(results(root)[2])["read_files"] == told
 
 
 # --- An earlier result's files when a reopened task ends otherwise (the review of PD-46) --

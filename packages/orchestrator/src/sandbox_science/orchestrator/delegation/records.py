@@ -1490,23 +1490,29 @@ def _environment(environment: dict[str, JsonValue] | None) -> str | None:
             }
             found["plan"] = {**cut_plan, "cut": True}
             continue
-        back = found.get("hand_back")
-        if not isinstance(back, dict):
-            return _json({k: v for k, v in found.items() if k not in ("hand_back", "plan")})
-        cut = dict(back)
+        # Then the hand-back's account or a return copy's, the longer first.
+        accounts = [k for k in ("hand_back", "returned") if isinstance(found.get(k), dict)]
+        if not accounts:
+            return _json({k: v for k, v in found.items() if k not in _CUT_ACCOUNTS})
+        name = max(accounts, key=lambda k: len(_json(found[k])))
+        cut = dict(cast(dict[str, JsonValue], found[name]))
         longest = max(
             (k for k, v in cut.items() if isinstance(v, list) and v),
             key=lambda k: len(_json(cut[k])),
             default=None,
         )
         if longest is None:
-            found.pop("hand_back")
+            found.pop(name)
             continue
         listed = cast(list[JsonValue], cut[longest])
         cut[longest] = listed[: len(listed) // 2]
         cut["cut"] = True
-        found["hand_back"] = cut
+        found[name] = cut
     return _json(found)
+
+
+_CUT_ACCOUNTS: Final = ("hand_back", "returned", "plan")
+"""What an environment's outcome leaves out when nothing else of it can be cut."""
 
 
 def _json(value: object) -> str:
