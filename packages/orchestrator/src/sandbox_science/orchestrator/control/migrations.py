@@ -4027,6 +4027,30 @@ def _job_end_reasons(schema: Schema) -> None:
     )
 
 
+def _acceptance_reads(schema: Schema) -> None:
+    """Version 92: what an acceptance found the parent had read of a returned task's
+    files (``review_reads``, plans-and-delegation spec PD-46): each result file and
+    deliverable by path, with whether the accepting run read it whole after the task
+    returned. A JSON object of at most 64 KiB, written only with the acceptance that
+    closes the task, and never again."""
+    schema.execute(
+        "ALTER TABLE delegations ADD COLUMN review_reads TEXT CHECK (review_reads IS NULL OR "
+        "(json_valid(review_reads) AND json_type(review_reads) = 'object' "
+        "AND length(CAST(review_reads AS BLOB)) <= 65536))"
+    )
+    schema.execute(
+        f"""CREATE TRIGGER delegations_review_reads BEFORE UPDATE ON delegations
+WHEN NEW.review_reads IS NOT OLD.review_reads
+AND NOT ({_CLOSE} AND OLD.review_reads IS NULL AND NEW.review = 'accepted')
+BEGIN SELECT RAISE(ABORT, 'a delegation''s outcome is written once'); END"""
+    )
+    schema.execute(
+        """CREATE TRIGGER delegations_review_reads_insert BEFORE INSERT ON delegations
+WHEN NEW.review_reads IS NOT NULL
+BEGIN SELECT RAISE(ABORT, 'CHECK constraint failed: delegations'); END"""
+    )
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -4118,6 +4142,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _limit_results,
     _agent_message_failures,
     _job_end_reasons,
+    _acceptance_reads,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

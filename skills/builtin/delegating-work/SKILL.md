@@ -62,18 +62,18 @@ A check that comes back refuted or inconclusive is information, not an obstacle.
 
 ## Reading outcomes
 
-`delegate` returns a delegation ID at once, and the child runs while you go on. Its end arrives as a delegation notice, or as the result of `wait_delegations`, which keeps the turn open until all (or the first) of the named delegations end, or a user or agent message arrives. `delegation_status` reads a running delegation's limits, or an ended one's whole outcome. `cancel_delegation` stops one, keeping its record.
+`delegate` returns a delegation ID at once, and the child runs while you go on. Its end arrives as a delegation notice, or as the result of `wait_delegations`, which keeps the turn open until all (or the first) of the named delegations end, or a user or agent message, or a child's resource check-in, arrives. `delegation_status` reads a running delegation's limits, or an ended one's outcome. `cancel_delegation` stops one, keeping its record.
 
 An outcome separates what the platform saw from what the child said:
 
 - how it ended: returned, failed, cancelled, limit_reached or interrupted;
 - its result: a status (complete, partial or blocked) and a summary; for a check, the verdict and coverage; for a task, its deviations, open questions, dismissals and obstructions;
-- the files its calls recorded;
+- a count of the other files its calls recorded, which `delegation_status` lists when you ask for its files;
 - for a task, its result files: the files it named as its results, each pinned to the revision its own calls made. Cite those pinned revisions rather than the paths, which can change later.
 
 The result is the child's claim. Weigh it like any other evidence, and check what matters.
 
-A returned task awaits your review. Read the files its result names where its status and outcome notice say (their read_files field), then send it feedback with `message_child`, which reopens it, or accept it with `accept_delegation`. Acceptance is final: `message_child` to an accepted task is refused, so to build on it, delegate a new task whose references name its result files.
+A returned task awaits your review. Read the files its result names where its status and outcome notice say (their read_files field), then send it feedback with `message_child`, which reopens it, or accept it with `accept_delegation`, whose result names each file you did not read as accepted unread. Acceptance is final: `message_child` to an accepted task is refused, so to build on it, delegate a new task whose references name its result files.
 
 ## Limits
 

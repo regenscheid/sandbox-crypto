@@ -48,6 +48,7 @@ from sandbox_science.contracts.child_environments import (
     ChildEnvironmentList,
     ChildEnvironmentRequest,
     ChildHandBack,
+    ChildLimits,
     HandBackRequest,
     InputPart,
     InputStaged,
@@ -101,7 +102,18 @@ from sandbox_science.worker.settings import LocalBackendSettings
 from sandbox_science.worker.store import Store
 
 from .control_versions import older_store
-from .loop_harness import AREA, PROJECT, SESSION, TOKEN, Harness, Lineage, Reply, Worker, call
+from .loop_harness import (
+    AREA,
+    PROJECT,
+    SESSION,
+    TOKEN,
+    Harness,
+    Lineage,
+    Reply,
+    Worker,
+    call,
+    own,
+)
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .test_delegation import children, delegation, results, started, submitted, wait
@@ -112,6 +124,8 @@ from .test_delegation_write_area import errors, written
 pytestmark = pytest.mark.slow
 
 DELEGATION = "dlg-" + "c" * 24
+LIMITS = ChildLimits(cpu_millicores=2000, memory_mib=4096, scratch_disk_mib=20480)
+"""What the fake worker's child environments may use (CE-3)."""
 
 
 # The fake worker side.
@@ -177,6 +191,7 @@ class ChildService:
             created_at=now,
             ready_by=now + timedelta(seconds=60),
             expires_at=now + timedelta(days=7),
+            limits=LIMITS,
         )
         settled = (
             made.model_copy(update={"phase": "ready", "ready_at": now, "isolation_tier": 3})
@@ -883,6 +898,11 @@ async def test_a_task_in_its_own_environment_hands_back_and_is_released(
     # The parent's outcome says so.
     (child,) = children(owning, root)
     assert child.parent is not None
+    # What the environment may use, from the worker: in delegate's result, and as the
+    # line after the write area's in the child's brief (CE-3).
+    sizes = "2 CPUs, 4 GiB of memory and 20 GiB of scratch disk outside the workspace"
+    assert json.loads(results(root)[0])["environment"]["limits"] == sizes
+    assert f"Your environment's limits: {sizes}." in json.dumps(own(child))
 
 
 def _first_delegation(messages: list[dict[str, Any]]) -> str:

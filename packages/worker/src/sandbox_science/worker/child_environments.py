@@ -82,6 +82,7 @@ from sandbox_science.contracts.child_environments import (
     ChildEnvironmentRequest,
     ChildFailure,
     ChildHandBack,
+    ChildLimits,
     HandBackRequest,
     InputPart,
     InputStaged,
@@ -1348,6 +1349,23 @@ class ChildEnvironments:
             expires_at=record.expires_at,
             retained_until=record.retained_until,
             hand_back=self.records.hand_back(record.environment_id),
+            limits=self._limits(record),
+        )
+
+    def _limits(self, record: ChildRecord) -> ChildLimits | None:
+        """What a child environment may use (CE-3): its profile's limits, as the session
+        environment's policy narrows them at its placement; ``None`` without the profile or
+        that policy, such as once the session environment is gone."""
+        profile = self.settings.child_profiles.get(record.profile)
+        governing = self.environments.governing(record.session_environment)
+        if profile is None or governing is None:
+            return None
+        caps = effective_resources(governing.policy.policy, governing.ceiling)[0]
+        cpu, memory = profile.placed_limits(caps)
+        return ChildLimits(
+            cpu_millicores=max(1, cpu),
+            memory_mib=max(1, memory // 1024**2),
+            scratch_disk_mib=profile.limits.ephemeral_storage_mib,
         )
 
     # Helpers.

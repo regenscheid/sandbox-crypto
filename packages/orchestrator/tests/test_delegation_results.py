@@ -63,7 +63,8 @@ async def test_a_tasks_result_files_are_pinned_in_its_outcome(delegating: Harnes
         True,
     )
     waited = answer(root, 1)["delegations"][0]
-    assert list(waited)[-3:] == ["result", "result_files", "files"]
+    # Its one recorded file is its result file: nothing else is counted or listed.
+    assert list(waited)[-2:] == ["result", "result_files"]
     assert waited["result_files"] == [pinned]
     (child,) = children(delegating, root)
     outcome = child.summaries["outcome"]

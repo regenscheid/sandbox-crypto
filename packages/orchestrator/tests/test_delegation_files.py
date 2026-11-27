@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 from pydantic import JsonValue
 
-from sandbox_science.orchestrator.delegation.hook import Child, ChildEnd
+from sandbox_science.orchestrator.delegation.hook import OTHER_FILES, Child, ChildEnd, summarized
 from sandbox_science.orchestrator.delegation.records import (
     FILES_BYTES,
     Delegation,
@@ -85,9 +85,12 @@ async def test_a_checks_recorded_files_reach_its_parent_apart_from_its_result(
         1,
         False,
     )
+    # The wait counts the files that are not result files and says how to list them; the
+    # status lists them on request (PD-20).
     waited = json.loads(results(root)[1])["delegations"][0]
-    assert list(waited)[-2:] == ["result", "files"]
-    assert waited["files"] == found.files
+    assert list(waited)[-2:] == ["result", "other_files"]
+    assert waited["other_files"] == {"count": 1, "list": OTHER_FILES}
+    assert "files" not in waited
 
 
 async def test_a_check_that_wrote_nothing_has_no_files(delegating: Harness) -> None:
@@ -116,8 +119,22 @@ async def test_a_long_list_is_cut_to_fit_the_parents_answer(tmp_path: Path) -> N
             text, _ = await made.call("delegate", BRIEF)
             await asyncio.gather(*(c.task for c in made.children.values()))
             delegation_id = json.loads(text)["delegation_id"]
-            answer, _ = await made.call("delegation_status", {"delegation_id": delegation_id})
-        assert records.get(PROJECT, SESSION, delegation_id).files == files
+            counted, _ = await made.call("delegation_status", {"delegation_id": delegation_id})
+            answer, _ = await made.call(
+                "delegation_status", {"delegation_id": delegation_id, "files": True}
+            )
+        kept = records.get(PROJECT, SESSION, delegation_id)
+        assert kept.files == files
+        # Without the option the status counts them, with the calls' gaps, as the
+        # returned notice does.
+        others = {
+            "count": 250,
+            "list": OTHER_FILES,
+            "gaps": {"over the 100-file limit of a call": 50},
+        }
+        assert json.loads(counted)["other_files"] == others
+        assert "files" not in json.loads(counted)
+        assert summarized(kept)["other_files"] == others
         shown = json.loads(answer)
         assert len(answer) <= made.output_chars
         assert shown["result"] == RESULT
