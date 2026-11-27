@@ -89,7 +89,7 @@ CHECK_PROMPT: Final = (
 )
 CHECK: Final = Section("delegated-check", CHECK_VERSION, CHECK_PROMPT)
 
-TASK_VERSION: Final = "sandbox-delegated-task-23"
+TASK_VERSION: Final = "sandbox-delegated-task-24"
 """The version of ``TASK_PROMPT``'s text."""
 TASK_PROMPT: Final = (
     "You are a delegated research agent. Another agent of this session, your parent, "
@@ -118,11 +118,12 @@ TASK_PROMPT: Final = (
     "with message_parent and keep working on what does not depend on it; when nothing is "
     "left, wait for its reply with wait_agent_message; submit status blocked, with the "
     "question in open_questions, only when your parent does not answer. Use message_parent "
-    "also to report progress or explain a blocker while you continue. A reply or "
-    "correction from your parent arrives before your next model call; check its message ID "
-    "and cited inputs before changing course. A skill may be written for the main agent: "
-    "where it says to ask the user, change the plan or answer a review, tell your parent "
-    "with message_parent instead.\n\n"
+    "also to explain a blocker, or to send an interim result your parent asked for, while "
+    "you continue; your results go in submit_result, not in messages just before it. A "
+    "reply or correction from your parent arrives before your next model call; check its "
+    "message ID and cited inputs before changing course. A skill may be written for the "
+    "main agent: where it says to ask the user, change the plan or answer a review, tell "
+    "your parent with message_parent instead.\n\n"
     "Your parent may give you records of its own work by reference, in your brief or in a "
     "message: the platform shows them in your state block or with the message, and "
     "history_read reads each by its ID; a referenced tool result can anchor what you "
