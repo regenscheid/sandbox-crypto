@@ -16,8 +16,9 @@ A narrowing only narrows. The child's connectors are its default, which is its p
 (the project's servers the user did not turn off, and for a check only the tools classed
 ``read``, D99), less what each narrowing above it leaves out: a tool is offered only when
 every level admits it, the brief's own and each one its parent was given. At delegation a
-server no configured connector names is refused (``invalid_request``), and so is an entry
-that admits nothing the parent is offered (``not_permitted_for_role``): a brief that
+server no configured connector names is refused (``invalid_request``), and so is any
+entry in a project the deployment's connectors do not serve (``no_connectors``), and an
+entry that admits nothing the parent is offered (``not_permitted_for_role``): a brief that
 names it would ask for more than the parent has. The brief records the entries as
 normalized and the narrowings above them (``inherited_connectors``), so a resumed or
 reopened child gets the same tools.
@@ -127,6 +128,14 @@ def _unknown(entry: str, configured: Sequence[str]) -> WorkerAPIError:
     )
 
 
+NO_CONNECTORS: Final = (
+    "no_connectors: this project has no connector tools, so a task can be offered none; "
+    "leave connectors out of the brief"
+)
+"""The refusal of a brief that names connectors where the deployment's serve another
+project: its parent is offered none, and the reason names none of their servers."""
+
+
 def _widening(entry: str, why: str) -> WorkerAPIError:
     return WorkerAPIError(
         ErrorKind.POLICY_DENIED,
@@ -140,11 +149,15 @@ def narrow(
 ) -> tuple[str, ...]:
     """A brief's ``connectors`` checked against the parent's own and normalized, as the
     delegation records them. Refuses an entry that is malformed or names no configured
-    server, and one that admits nothing the parent is ``offered``."""
+    server, and one that admits nothing the parent is ``offered``. Where servers are
+    ``configured`` but none is ``offered``, the deployment's connectors serve another
+    project, and a brief that names any is refused (``no_connectors``)."""
     if len(entries) > MAX_ENTRIES:
         raise WorkerAPIError(
             ErrorKind.INVALID_REQUEST, f"a brief names at most {MAX_ENTRIES} connectors"
         )
+    if entries and offered is None and configured:
+        raise WorkerAPIError(ErrorKind.INVALID_REQUEST, NO_CONNECTORS)
     groups: dict[str, set[str]] = {}
     if offered is not None:
         for tool in offered.tools.values():

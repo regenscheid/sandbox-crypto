@@ -1424,13 +1424,13 @@ async def test_child_idle_max_releases_a_settled_environment_during_a_run(
 
 def test_the_prompts_say_when_to_ask_for_an_environment_and_what_comes_back() -> None:
     """CE-13 and CE-5: the MAIN prompt says when a task gets an environment of its own and
-    that a returned task keeps it until acceptance hands its files back (PD-46); the
+    that accepting a returned task hands its files back and releases it (PD-46); the
     task prompt, that its own environment is working memory; ``delegate``, what one
     costs in time and that a small task shares."""
     main = " ".join(SYSTEM_PROMPT.split())
     assert "heavy in compute, memory or disk" in main
     assert "keep short tasks shared (environment: shared)" in main
-    assert "A task keeps an environment of its own until it closes, which copies" in main
+    assert "accepting a task in an environment of its own copies its final result's" in main
     assert "work/<delegation_id>/" in main
     assert "A returned task awaits your review" in main
     task = " ".join(TASK_PROMPT.split())

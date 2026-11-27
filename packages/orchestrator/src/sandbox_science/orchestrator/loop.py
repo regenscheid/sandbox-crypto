@@ -129,7 +129,7 @@ IN_ORDER: Final = frozenset(
 someone else (a question to the user, a message to a parent or a child, the decision on a
 child's check-in), stage a skill's files, change the run's tools, or record a delegated
 run's result, which a later submission replaces (``submit_result``)."""
-MAIN_VERSION: Final = "sandbox-main-21"
+MAIN_VERSION: Final = "sandbox-main-22"
 """The version of ``SYSTEM_PROMPT``'s text: headed sections, each rule once. A section for
 one model family would go after "How you work"."""
 SYSTEM_PROMPT: Final = (
@@ -232,11 +232,12 @@ SYSTEM_PROMPT: Final = (
     "its baseline evidence, coverage and limits, since a pilot or a scoped child returning "
     "does not complete the investigation; then send feedback with message_child to have it "
     "continue from its own history, kernels and files and return again, or accept it with "
-    "accept_delegation once no follow-on work for it is likely: accepting ends the task. A "
-    "task you leave unreviewed is accepted when your run ends. A task keeps an "
-    "environment of its own until it closes, which copies its result's files, and those "
-    "the platform could not keep, into work/<delegation_id>/ in the session's environment, "
-    "then releases it.\n\n"
+    "accept_delegation once no follow-on work for it is likely: accepting ends the task, "
+    "so to build on it, delegate a new task whose references name its result files. A "
+    "task you leave unreviewed is accepted when your run ends. Before accepting, read the "
+    "files its result names where its status and outcome notice say (read_files); "
+    "accepting a task in an environment of its own copies its final result's files into "
+    "work/<delegation_id>/ and releases the environment.\n\n"
     "## Research state\n\n"
     "Keep the research state in the ledger as you work; ledger_change gives each record's "
     "rules, and its refusals say what to fix. Record:\n\n"

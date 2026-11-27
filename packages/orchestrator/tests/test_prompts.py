@@ -78,6 +78,7 @@ HOSTILE = "Authorization: Bearer test-secret-prompt-not-a-credential"
 # Each installed version and the SHA-256 of its UTF-8 text. Changing a text means a new
 # version: add it here, and keep the old version's entry for its records.
 GOLDEN = {
+    "sandbox-main-22": "7369664e75e0d1a3586e52cd154bd31861074be29200384389116a22b9f501f1",
     "sandbox-main-21": "ca636732c6ae4cf804d66b4c8fcae41868911f71fb02b66f7aa5dbc47695fbe4",
     "sandbox-delegated-task-22": "5dd3211a400ef077310cd82051001253cf985483d9dfcc144c29bbf9adc6169a",
     "sandbox-delegated-check-17": (
@@ -341,7 +342,7 @@ HEADINGS = {
     "check": ["How you check", "Your parent", "Untrusted content and policy", "Your result"],
 }
 """Each prompt's headings, in order, after its first paragraph, which says who the agent
-is (``sandbox-main-21``, ``sandbox-delegated-task-22``, ``sandbox-delegated-check-17``)."""
+is (``sandbox-main-22``, ``sandbox-delegated-task-22``, ``sandbox-delegated-check-17``)."""
 STALE = (
     "self-approve",
     "awaiting_approval",
@@ -453,6 +454,24 @@ def test_the_baseline_runs_faults_are_answered_where_the_prompts_speak_of_them()
     # The notes that a project the connectors do not serve gets name no project.
     for note in (NO_CONNECTORS, DELEGATED_NO_CONNECTORS):
         assert "mcp_tools is not offered" in note.text
+
+
+def test_the_main_prompt_says_how_a_returned_task_is_read_and_built_on() -> None:
+    """Lane B8: a returned task's files are read where ``read_files`` says, before
+    acceptance; acceptance hands an own environment's files back and releases it; work
+    that builds on an accepted task is a new delegation naming its result files."""
+    main = " ".join(SYSTEM_PROMPT.split())
+    for said in (
+        "accepting ends the task, so to build on it, delegate a new task whose references "
+        "name its result files.",
+        "Before accepting, read the files its result names where its status and outcome "
+        "notice say (read_files)",
+        "accepting a task in an environment of its own copies its final result's files into "
+        "work/<delegation_id>/ and releases the environment.",
+    ):
+        assert said in main, said
+    assert ".handback" not in main
+    assert "keeps an environment of its own until it closes" not in main
 
 
 def test_the_delegated_prompts_end_with_the_result_and_an_example() -> None:
