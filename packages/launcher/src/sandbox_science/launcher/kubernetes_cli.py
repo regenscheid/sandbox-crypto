@@ -64,6 +64,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         command.add_argument("--config", type=Path, required=True)
         if name != "check":
             command.add_argument("--output", type=Path, required=True)
+    commands.choices["check"].add_argument(
+        "--site", type=Path, help="also check the site file that names this bundle"
+    )
     release = commands.choices["release-job"]
     release.add_argument("--preview", action="store_true", help="report without releasing")
     release.add_argument("--after", help="the previous report's next_after")
@@ -194,6 +197,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "site":
             site, bundle = kubernetes_site_config.load(args.config)
             kubernetes_site.write(args.output, kubernetes_site.plan(site, bundle))
+            for notice in kubernetes_site.site_notices(site, bundle):
+                print(f"notice: {notice}", file=sys.stderr)
             print(
                 f"generated the Secrets' contents in {args.output}; read its README.md, "
                 "which lists what is left to the operator; no cluster changes made"
@@ -239,6 +244,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             print("rendered offline; no images published and no cluster changes made")
         else:
+            if args.site is not None:
+                site, named = kubernetes_site_config.load(args.site)
+                if named != config:
+                    raise BundleError("the site file names another bundle than --config")
+                for notice in kubernetes_site.site_notices(site, named):
+                    print(f"notice: {notice}", file=sys.stderr)
             print(
                 "valid offline configuration; Secret contents and cluster compatibility unverified"
             )
