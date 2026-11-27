@@ -99,9 +99,10 @@ async def test_actual_model_inputs_keep_control_reads_and_job_recovery_scoped(
             if background:
                 (start,) = [tool for tool in offered if tool.name == "start_job"]
                 assert all(
-                    word in start.description for word in ("original", "daemon", "VM", "lost")
+                    word in start.description
+                    for word in ("sandbox", "executor", "worker", "lost", "restart")
                 )
-                assert "automatically resubmitted" in start.description
+                assert "unless it was started with restart" in start.description
                 assert "until the executor daemon is available" not in start.description
         tool_inputs = [m for m in model.requests[-1] if m["role"] == "tool"]
         assert len(tool_inputs) == 1

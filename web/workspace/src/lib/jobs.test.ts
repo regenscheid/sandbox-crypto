@@ -37,7 +37,10 @@ const job: BackgroundJob = {
   cpu_seconds: 120,
   memory_bytes: 1048576,
   logs: { stdout: '.jobs/exe-1/stdout.log', stderr: '.jobs/exe-1/stderr.log' },
-  worker_restart: 'running jobs become lost until the executor daemon is available',
+  worker_restart: 'a job whose sandbox, executor or worker is lost while it runs ends lost',
+  restart: false,
+  attempt: 1,
+  attempts: [],
 };
 
 describe('job card', () => {
@@ -56,7 +59,34 @@ describe('job card', () => {
       props: { job: { ...job, state: 'lost' }, oncancel: () => undefined },
     }).body;
     expect(html).not.toContain('Cancel job');
-    expect(html).toContain('It was not run again.');
+    expect(html).toContain('so it was not run again.');
+  });
+  it('lists the lost attempts of a restarted job and what the next one found', () => {
+    const restarted: BackgroundJob = {
+      ...job,
+      restart: true,
+      attempt: 2,
+      attempts: [
+        {
+          attempt: 1,
+          state: 'lost',
+          reason: 'the sandbox executor incarnation stopped during this attempt',
+          started_at: '2026-11-27T10:00:00+00:00',
+          lost_at: '2026-11-27T11:00:00+00:00',
+          logs: { stdout: '.jobs/exe-1/stdout.log', stderr: '.jobs/exe-1/stderr.log' },
+          survived: ['checkpoint.json'],
+          survived_truncated: false,
+        },
+      ],
+    };
+    const html = render(JobCard, { props: { job: restarted } }).body;
+    expect(html).toContain('Lost 1 time, restarted; attempt 2');
+    expect(html).toContain('checkpoint.json');
+    expect(html).not.toContain('did not restart it again');
+    const ended = render(JobCard, {
+      props: { job: { ...restarted, state: 'lost', attempt: 4 } },
+    }).body;
+    expect(ended).toContain('did not restart it again');
   });
 });
 

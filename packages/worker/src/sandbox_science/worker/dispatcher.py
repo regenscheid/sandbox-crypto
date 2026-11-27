@@ -43,7 +43,11 @@ from sandbox_science.contracts import (
     StreamEvent,
     new_id,
 )
-from sandbox_science.contracts.worker import DEFAULT_OUTPUT_LIMIT, MAX_PATH_BYTES
+from sandbox_science.contracts.worker import (
+    DEFAULT_OUTPUT_LIMIT,
+    MAX_PATH_BYTES,
+    MAX_SURVIVED_FILES,
+)
 from sandbox_science.policy.model import Resources
 
 from .channel import ExecutorChannel, Message
@@ -51,6 +55,7 @@ from .connections import Connection, EnvironmentConnections
 from .errors import ExecutorRefusalError, WorkerError
 from .files import UNSYNCED, Files
 from .identity import execution_digest, same_execution
+from .job_restarts import JobRestarts
 from .journal import SOURCE_EVENT, ExecutionJournal
 from .kernels import (
     KernelRegistry,
@@ -151,6 +156,18 @@ class Dispatcher:
         """Admission notices, job limits and bindings, where the worker manages sandboxes."""
         self._noticed: dict[tuple[str, str], datetime] = {}
         """The time of the last admission notice each session got, by environment."""
+        self.restarts = JobRestarts(
+            store,
+            journal,
+            connections,
+            usability,
+            clock=clock,
+            timeouts=timeouts,
+            connect=connect,
+            spawn=spawn,
+            dispatch=self._dispatch,
+        )
+        """Lost jobs that asked for ``restart``, started again (``job_restarts``)."""
 
     async def submit(
         self, request: ExecutionRequest, *, origin: str | None = None
@@ -254,6 +271,7 @@ class Dispatcher:
                 stderr_path=f".jobs/{execution_id}/stderr.log",
                 profile=plan.profile if plan is not None else None,
                 sandbox=plan.sandbox if plan is not None else None,
+                restart=request.restart,
             )
         execution = Execution(
             execution_id=execution_id,
@@ -372,6 +390,20 @@ class Dispatcher:
             "timeout": time_limit(request),
             "limit": request.output_limit_bytes,
         }
+        job = live.execution.job
+        if job is not None and job.attempt > 1:
+            if channel_hello(environment).get("job_attempts") != 1:
+                raise WorkerError(
+                    ErrorKind.UNSUPPORTED,
+                    "this environment's executor predates job restarts; recycle the environment",
+                )
+            # Its logs go to a directory of its own; the files changed since the lost
+            # attempt was queued (the job's submission, or the loss before it) are what
+            # it finds of that attempt's work, whatever the two clocks' grain.
+            queued = (
+                job.attempts[-2].lost_at if len(job.attempts) > 1 else live.execution.submitted_at
+            )
+            fields.update(attempt=job.attempt, since=queued.timestamp())
         if isinstance(request, ShellRequest | JobRequest):
             fields.update(cwd=request.cwd)
             if request.argv is not None:
@@ -617,6 +649,9 @@ class Dispatcher:
                             kernel=kernel,
                             kernel_state_lost=live.execution.kernel_state_lost or kernel_state_lost,
                         )
+                    job = _survived(live.execution.job, message)
+                    if job is not None:
+                        update["job"] = job
                     return live.execution.model_copy(update={**update, "last_seq": event.seq})
 
                 source = SOURCE_EVENT.get()
@@ -785,7 +820,9 @@ class Dispatcher:
         """
         live.events += 1
         live.stored += size
-        if live.stored > OUTPUT_BUDGET * live.limit + 65536:
+        # A restarted job's attempts share the execution's events, each with its budget.
+        attempts = live.execution.job.attempt if live.execution.job is not None else 1
+        if live.stored > attempts * (OUTPUT_BUDGET * live.limit + 65536):
             if not live.overflowed:
                 live.overflowed = True
                 _log.warning(
@@ -794,13 +831,13 @@ class Dispatcher:
                 )
                 self.spawn(self._cancel_quietly(live))
             return False
-        if live.events == MAX_EVENTS + 1:
+        if live.events == attempts * MAX_EVENTS + 1:
             _log.warning(
                 "execution %s: over %d events; dropping the rest",
                 live.execution.execution_id,
-                MAX_EVENTS,
+                attempts * MAX_EVENTS,
             )
-        return live.events <= MAX_EVENTS
+        return live.events <= attempts * MAX_EVENTS
 
     async def _cancel_quietly(self, live: Live) -> None:
         with contextlib.suppress(WorkerError):
@@ -974,19 +1011,24 @@ class Dispatcher:
             await asyncio.gather(*(channel.shutdown() for channel in channels))
 
     def lose(self, live: Live, what: str) -> None:
-        """End an attempt whose outcome is unknown, because ``what`` stopped during it."""
+        """End an attempt whose outcome is unknown, because ``what`` stopped during it; a
+        job that asked for ``restart`` is started again instead, while it may be."""
         message = f"{what} stopped during this attempt; its outcome is unknown"
-        if live.execution.job is not None:
+        job = live.execution.job
+        if job is not None:
             message += (
-                "; partial whole logs remain at "
-                + live.execution.job.stdout_path
-                + " and "
-                + live.execution.job.stderr_path
+                "; partial whole logs remain at " + job.stdout_path + " and " + job.stderr_path
             )
+            if job.restart and live.final is None:
+                refusal = self.restarts.refusal(live)
+                if refusal is not None:
+                    message += f"; not restarted: {refusal}"
         try:
             if live.final is not None:
                 # The outcome is known; only the shared files' sync after it was cut short.
                 self._complete(live, [*live.notices, UNSYNCED])
+                return
+            if self.restarts.take(live, what):
                 return
             self.journal.finish(
                 live,
@@ -1009,7 +1051,8 @@ class Dispatcher:
     async def restore(self, *, daemon_enabled: bool) -> None:
         """Load the executions a previous worker left unfinished, and reattach those its
         daemons still run; the others are lost, except job sandboxes' jobs, which
-        ``JobSandboxes.start`` resumes. Nothing is ever resubmitted."""
+        ``JobSandboxes.start`` resumes. Nothing is resubmitted but a job that asked for
+        ``restart``, as its next attempt (``job_restarts``)."""
         endpoints = tuple(set(self.store.endpoints()) | set(self.store.pending_recycles()))
         if endpoints and not daemon_enabled:
             raise WorkerError(
@@ -1043,10 +1086,35 @@ class Dispatcher:
                 # A job sandbox's job is never dispatched itself: its run resumes it
                 # once its own execution in the sandbox is recovered (JS-19).
                 live.cancel_requested = saved is not None and saved[3]
+            elif daemon_enabled and self.restarts.pending(live, saved):
+                # A restarted job's attempt that waited for its environment waits on.
+                self.spawn(self.restarts.start(live))
             else:
                 self.lose(live, "the worker that restarted without a recoverable daemon dispatch")
         for environment_id in recovery:
             await self.recovery.recover(environment_id, startup=True)
+
+
+def channel_hello(environment: Connection) -> dict[str, Any]:
+    """The ``hello`` of the environment's open executor; empty without one."""
+    channel = environment.channel
+    return channel.hello if channel is not None else {}
+
+
+def _survived(job: JobDetails | None, message: Message) -> JobDetails | None:
+    """A restarted job's details with what its new attempt's executor found of the lost
+    one's files as it started; ``None`` when there is nothing to record."""
+    if job is None or not job.attempts or "survived" not in message:
+        return None
+    paths = _paths(message.get("survived"))
+    previous = job.attempts[-1].model_copy(
+        update={
+            "survived": tuple(paths[:MAX_SURVIVED_FILES]),
+            "survived_truncated": message.get("survived_truncated") is True
+            or len(paths) > MAX_SURVIVED_FILES,
+        }
+    )
+    return job.model_copy(update={"attempts": (*job.attempts[:-1], previous)})
 
 
 def _paths(raw: object) -> list[str]:

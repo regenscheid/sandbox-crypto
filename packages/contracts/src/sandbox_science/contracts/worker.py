@@ -17,7 +17,7 @@ from pydantic import AfterValidator, AwareDatetime, Field, StringConstraints, mo
 from .context import ExecutionContext
 from .model import Contract, Counter, Identifier, Sha256
 
-PROTOCOL_VERSION: Final = 24
+PROTOCOL_VERSION: Final = 25
 """The worker API's version. Releases are lockstep (docs/COMPATIBILITY.md): it changes with
 any change to what the worker or its clients send, and each side refuses another version."""
 PROTOCOL_HEADER: Final = "X-Worker-Protocol"
@@ -128,6 +128,11 @@ MAX_JOB_INPUTS: Final = 64
 """Session workspace files or directories one job sandbox's request copies in (JS-5)."""
 JobProfileName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")]
 """A job profile the worker's settings define, such as ``large`` (D93, JS-8)."""
+MAX_JOB_RESTARTS: Final = 3
+"""Times the worker starts a job that asked for ``restart`` again after losing it, so a
+job has at most this many attempts beyond its first."""
+MAX_SURVIVED_FILES: Final = 100
+"""Paths a lost attempt's record names as still there when the next attempt starts."""
 
 
 class ShellRequest(Contract):
@@ -180,11 +185,19 @@ class JobRequest(Contract):
     min_isolation_tier: IsolationTier | None = None
     """The harness's own minimum tier, never the agent's: a job sandbox below it, or below
     the session environment's, fails before its command; only with ``profile``."""
+    restart: bool = False
+    """The command is safe to run again and resumes from its own checkpoints: when the
+    worker loses it with its sandbox, executor or worker (``lost``), it starts it again,
+    the same command with the same working directory, bindings and limits, up to
+    ``MAX_JOB_RESTARTS`` times. Never after the command's own failure, a time limit or a
+    cancellation; not for a job sandbox's job (``profile``)."""
 
     @model_validator(mode="after")
     def _one_command(self) -> Self:
         if self.profile is None and (self.inputs or self.min_isolation_tier is not None):
             raise ValueError("inputs and min_isolation_tier need a job profile")
+        if self.restart and self.profile is not None:
+            raise ValueError("a job sandbox's job is never restarted; restart needs no profile")
         if len(set(self.inputs)) != len(self.inputs):
             raise ValueError("inputs name each path once")
         if any(path == "." or path == ".jobs" or path.startswith(".jobs/") for path in self.inputs):
@@ -588,6 +601,30 @@ class JobSandboxReleased(Contract):
     phase: Literal["released"] = "released"
 
 
+class JobAttempt(Contract):
+    """An earlier attempt of a job that asked for ``restart``: the worker lost it, and
+    started the job again."""
+
+    attempt: Annotated[int, Field(ge=1, le=MAX_JOB_RESTARTS)]
+    attempt_id: Identifier
+    started_at: datetime | None = None
+    """When its command started, by the worker's clock; ``None`` if it never did."""
+    lost_at: datetime
+    reason: Annotated[str, StringConstraints(max_length=1024)]
+    """What stopped during it, so that its outcome is unknown."""
+    stdout_path: RelativePath
+    stderr_path: RelativePath
+    """Its whole logs, which stay where it wrote them."""
+    survived: tuple[Annotated[str, StringConstraints(max_length=MAX_PATH_BYTES)], ...] | None = (
+        Field(default=None, max_length=MAX_SURVIVED_FILES)
+    )
+    """The files of the session workspace and ``shared/`` modified since it was queued (the
+    job's submission, or the loss before it) that the next attempt found as it started:
+    what it wrote that is still there, and anything else written meanwhile. ``None`` until
+    the next attempt starts."""
+    survived_truncated: bool = False
+
+
 class JobDetails(Contract):
     """Durable job metadata, including its whole-output files in the session workspace."""
 
@@ -597,9 +634,17 @@ class JobDetails(Contract):
     timeout_seconds: Annotated[float, Field(gt=0, le=604800, allow_inf_nan=False)]
     stdout_path: RelativePath
     stderr_path: RelativePath
+    """The current attempt's whole logs: ``.jobs/<ID>/`` for the first, then
+    ``.jobs/<ID>/attempt-<N>/``."""
     profile: JobProfileName | None = None
     """The job profile its sandbox has; ``None`` for a job in the session environment."""
     sandbox: JobSandbox | None = None
+    restart: bool = False
+    """The request's ``restart``: the worker starts it again when it loses it."""
+    attempt: Annotated[int, Field(ge=1, le=MAX_JOB_RESTARTS + 1)] = 1
+    """The current attempt: 1, then one more for each restart."""
+    attempts: tuple[JobAttempt, ...] = Field(default=(), max_length=MAX_JOB_RESTARTS)
+    """The earlier attempts, each lost, oldest first."""
 
 
 class ManifestFile(Contract):

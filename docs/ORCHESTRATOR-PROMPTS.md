@@ -86,9 +86,12 @@ What each input does:
   then passes the call on without it, so no gate, plan fence, approval, handler, worker
   request or connector call sees it; the run's records keep it as `purpose`.
 - **Tool descriptions.** These are model-facing product guidance and need the same
-  review as system text. `start_job` says that recovery after a worker or bridge
-  restart needs the original executor daemon and sandbox, and that confirmed daemon
-  or VM loss reports unknown outcomes as `lost` without resubmitting the command.
+  review as system text. `start_job` says that a job outlives a worker or bridge
+  restart while its sandbox and executor stay, and that a job whose sandbox, executor or
+  worker is lost ends `lost` and is not run again unless it was started with `restart`;
+  `restart`'s own description says that opting in states that the command is safe to run
+  again and resumes from its own checkpoints, what is started again and how often, and
+  that a command without checkpoints starts from the beginning.
   `shell` and `start_job` ask a script of several steps to begin with
   `set -euo pipefail`, or to check each step, so that a failed step does not hide
   behind a later one's success, and to check that the files it should make exist

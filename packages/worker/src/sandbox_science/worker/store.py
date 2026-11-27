@@ -797,6 +797,14 @@ class Store:
         ).fetchone()
         return (str(row[0]), str(row[1]), int(row[2]), bool(row[3])) if row else None
 
+    def restart_recovery(self, execution_id: str) -> None:
+        """Forget the daemon a lost job's attempt was sent to, before its next attempt: that
+        one is dispatched afresh, and its daemon numbers its events from one."""
+        self._db.execute(
+            "UPDATE execution_recovery SET incarnation = '', source_seq = 0 WHERE execution_id = ?",
+            (execution_id,),
+        )
+
     def cancel_intent(self, execution_id: str) -> None:
         self._db.execute(
             "UPDATE execution_recovery SET cancelled = 1 WHERE execution_id = ?", (execution_id,)

@@ -189,6 +189,7 @@ class Daemon:
             history.state_seq = history.sequence
             # Pin only bounded lifecycle metadata, even after executor compromise.
             fingerprint = message.get("environment")
+            survived, truncated = message.get("survived"), message.get("survived_truncated")
             raw_kernel = message.get("kernel")
             kernel: Message = {}
             if isinstance(raw_kernel, dict):
@@ -216,6 +217,14 @@ class Daemon:
             message["state"] = "running"
             if isinstance(fingerprint, str) and len(fingerprint) <= 256:
                 message["environment"] = fingerprint
+            if isinstance(survived, list):
+                # A restarted job's account of the lost attempt's files (job restarts).
+                message["survived"] = [
+                    path
+                    for path in cast(list[object], survived)[: executor.MAX_SURVIVED]
+                    if isinstance(path, str) and len(path) <= 4096
+                ]
+                message["survived_truncated"] = truncated is True
         else:
             history.disposable.add(history.sequence)
         data = executor.fit_line(message)

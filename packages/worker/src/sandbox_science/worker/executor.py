@@ -31,6 +31,7 @@ import hashlib
 import importlib
 import importlib.util
 import json
+import math
 import os
 import platform
 import re
@@ -125,6 +126,13 @@ MAX_REQUEST = 4 * ((100 * 1024 * 1024 + 2) // 3) + 64 * 1024
 MAX_READ = 8 * 1024 * 1024
 MAX_LIST = 5000
 MAX_WRITTEN = 1000
+MAX_SURVIVED = 100
+"""Paths a restarted job's attempt reports as changed since the lost attempt started (the
+worker's ``MAX_SURVIVED_FILES``)."""
+MAX_JOB_ATTEMPT = 64
+"""The highest attempt number a job request may carry; the worker's bound is lower."""
+JOB_ATTEMPT_VARIABLE = "SANDBOX_JOB_ATTEMPT"
+"""Set in a job's environment to its attempt: 1, then 2 and on once the worker restarted it."""
 SEARCH_SECONDS = 20.0
 """How long a glob or grep searches before it stops and returns what it found."""
 SEARCH_GRACE = 10.0
@@ -359,6 +367,11 @@ class Running:
     bindings_dropped: tuple[str, ...] = ()
     """The skill bindings left out as naming the environment's own variables, which the
     result names for the run's notice."""
+    attempt: int = 1
+    """A job's attempt: more than one once the worker restarted it after losing it."""
+    since: float | None = None
+    """For a restarted job, when the lost attempt was queued (epoch seconds): the files
+    changed since then are what this attempt finds of that one's work."""
 
 
 def _not_retired(kernel: Kernel) -> None:
@@ -1302,6 +1315,7 @@ class Executor:
             ranged_write=RANGED_WRITE,
             run_kernels=1,
             conditional_kernel_restart=1,
+            job_attempts=1,
             confinement=self.confinement_report(),
             environment=await self.baseline(),
             package_epoch=self.admission.epoch,
@@ -1529,11 +1543,16 @@ class Executor:
         if is_job and re.fullmatch(r"exe-[0-9a-f]{24}", execution) is None:
             raise ToolError("invalid_request", "invalid job execution id")
         env = self.environment(session)
+        attempt, since = _attempt(request) if is_job else (1, None)
+        if is_job:
+            # A script that resumes from its checkpoints can tell a restart (job restarts).
+            env[JOB_ATTEMPT_VARIABLE] = str(attempt)
         if confinement is not None:
             env.update(confinement.variables())
             argv = [*confinement.prefix(), *argv]
         bindings, dropped = self.bindings(request, env)
         running = self.accept(request, "job" if is_job else "shell")
+        running.attempt, running.since = attempt, since
         running.session = session
         running.bindings = bindings
         running.bindings_dropped = dropped
@@ -1585,8 +1604,11 @@ class Executor:
             if running.cancel_requested:
                 state, error = "cancelled", not_started
                 return
+            survived: Message = {}
             if running.kind == "job":
-                logs = await asyncio.to_thread(self.job_logs, session, execution)
+                logs = await asyncio.to_thread(self.job_logs, session, execution, running.attempt)
+                if running.since is not None:
+                    survived = _survived(before[0], running.since)
             self.admission.own(running.owner, execution)
             # The process is the executor's child before its pid is in spawned.
             with sandbox_processes.starting_children():
@@ -1617,7 +1639,7 @@ class Executor:
             running.leader = (process.pid, info.start) if info is not None else None
             running.process = process
             running.started = True
-            await self.event(execution, "state", **_running(start))
+            await self.event(execution, "state", **_running(start), **survived)
             readers = [
                 asyncio.ensure_future(
                     self.pump(execution, process.stdout, captures["stdout"], logs.get("stdout"))
@@ -1727,16 +1749,20 @@ class Executor:
             if text:
                 await self.stream(execution, capture.name, text)
 
-    def job_logs(self, session: str, execution: str) -> dict[str, int]:
-        """Create two private regular files through held, symlink-free directory FDs."""
+    def job_logs(self, session: str, execution: str, attempt: int = 1) -> dict[str, int]:
+        """Create two private regular files through held, symlink-free directory FDs: in
+        ``.jobs/<execution>/`` for a job's first attempt, and in ``attempt-<N>/`` there for
+        a later one, beside the earlier attempts' logs."""
+        names = [".jobs"] if attempt == 1 else [".jobs", execution]
         parent = sandbox_files.walk(
-            self.files.open_base(["sessions", session]), [".jobs"], ".jobs", create=True
+            self.files.open_base(["sessions", session]), names, "/".join(names), create=True
         )
+        name = execution if attempt == 1 else f"attempt-{attempt}"
         descriptors: dict[str, int] = {}
         try:
             # A preexisting job path is never reused, even if research code planted it.
-            os.mkdir(execution, mode=0o700, dir_fd=parent)
-            directory = os.open(execution, sandbox_files.DIRECTORY_FLAGS, dir_fd=parent)
+            os.mkdir(name, mode=0o700, dir_fd=parent)
+            directory = os.open(name, sandbox_files.DIRECTORY_FLAGS, dir_fd=parent)
             try:
                 for name in ("stdout", "stderr"):
                     flags = (
@@ -2514,6 +2540,35 @@ def _bounded_reason(text: str) -> str:
 
 def _count(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _attempt(request: Message) -> tuple[int, float | None]:
+    """A job request's attempt and, for a restart, when the lost attempt was queued."""
+    attempt = request.get("attempt", 1)
+    since = request.get("since")
+    if type(attempt) is not int or not 1 <= attempt <= MAX_JOB_ATTEMPT:
+        raise ToolError("invalid_request", "invalid job attempt")
+    if attempt == 1:
+        return 1, None
+    if (
+        not isinstance(since, int | float)
+        or isinstance(since, bool)
+        or not math.isfinite(since)
+        or since < 0
+    ):
+        raise ToolError("invalid_request", "a restarted job needs when its lost attempt started")
+    return attempt, float(since)
+
+
+def _survived(before: dict[str, tuple[int, int, int]], since: float) -> Message:
+    """The ``state`` event's account of the files changed since ``since`` that a restarted
+    job's attempt finds as it starts, at most ``MAX_SURVIVED`` paths."""
+    threshold = int(since * 1_000_000_000)
+    paths = sorted(path for path, stamp in before.items() if stamp[0] >= threshold)
+    return {
+        "survived": [sandbox_files.printable_path(path) for path in paths[:MAX_SURVIVED]],
+        "survived_truncated": len(paths) > MAX_SURVIVED,
+    }
 
 
 def _running(environment: str | None) -> Message:

@@ -64,6 +64,21 @@ def execution_projection(record: Json) -> tuple[Json, bool]:
             for k, v in payload["error"].items()
             if k in ("kind", "message")
         }
+    job = cast(Json, record.get("job") or {})
+    if job.get("attempts"):
+        # A restarted job is one execution: its earlier attempts were lost, and its result
+        # and written files are its last attempt's own (job restarts).
+        payload["attempt"] = job.get("attempt")
+        payload["lost_attempts"] = [
+            {
+                "attempt": attempt.get("attempt"),
+                "attempt_id": attempt.get("attempt_id"),
+                "started_at": attempt.get("started_at"),
+                "lost_at": attempt.get("lost_at"),
+                "reason": clipped(str(attempt.get("reason", "")), 512),
+            }
+            for attempt in cast(list[Json], job.get("attempts"))[:10]
+        ]
     payload["omitted_rich_outputs"] = len(result.get("outputs", []))
     payload["canonical_execution"] = record.get("execution_id")
     complete = complete and not (

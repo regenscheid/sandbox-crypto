@@ -2,12 +2,14 @@
 <script lang="ts">
   import type { BackgroundJob } from '../lib/api';
   import {
+    attemptsText,
     canRelease,
     collectionText,
     cpuText,
     deadlineText,
     finishedStates,
     jobElapsed,
+    lostText,
     manifestText,
     memoryText,
     phaseText,
@@ -108,8 +110,31 @@
         <pre>{job.stderr}</pre>{/if}
     </details>
   {/if}
+  {#if job.attempts.length}
+    <details class="attempts">
+      <summary>{attemptsText(job)}</summary>
+      <ul>
+        {#each job.attempts as attempt}
+          <li>
+            Attempt {attempt.attempt} lost: {attempt.reason}. Logs:
+            <code>{attempt.logs.stdout}</code>.
+            {#if typeof attempt.survived === 'string'}
+              <span class="muted">{attempt.survived}</span>
+            {:else if attempt.survived.length}
+              Found by the next attempt: {#each attempt.survived as path, i}{#if i > 0},
+                {/if}<code>{path}</code>{/each}{attempt.survived_truncated ? ', …' : ''}
+            {:else}
+              <span class="muted"
+                >The next attempt found no file changed since this one was queued.</span
+              >
+            {/if}
+          </li>
+        {/each}
+      </ul>
+    </details>
+  {/if}
   {#if job.state === 'lost'}
-    <p class="warning">The worker lost this job. It was not run again.</p>
+    <p class="warning">{lostText(job)}</p>
   {/if}
 </article>
 

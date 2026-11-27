@@ -23,14 +23,16 @@ from sandbox_science.contracts import (
     ErrorKind,
     Execution,
     ExecutionContext,
+    ExecutionState,
     Identifier,
+    JobAttempt,
     JobListing,
     JobProfileOffer,
     JobRequest,
     JobStatus,
 )
 from sandbox_science.contracts.model import Contract
-from sandbox_science.contracts.worker import TERMINAL_STATES
+from sandbox_science.contracts.worker import MAX_JOB_RESTARTS, TERMINAL_STATES
 
 from .aio import lease, threaded
 from .control import ControlStore
@@ -92,15 +94,29 @@ STOP_AT_FAILURE: Final = (
 P5). The harness runs a script as written: prepending the options would change what a
 single command does, such as a pipe into ``head`` or a test with ``grep``."""
 
+RESTART: Final = (
+    "Set true only when the command is safe to run again and resumes from its own "
+    "checkpoints, files it writes in the workspace as it goes. If the platform then loses "
+    "the job (its sandbox, executor or worker stops while it runs), it starts the same "
+    "command again, with the same working directory, environment and time limit, in this "
+    "session's environment once that can be used again, up to "
+    f"{MAX_JOB_RESTARTS} times; never after the command fails, times out or is cancelled. "
+    "Each attempt has SANDBOX_JOB_ATTEMPT (1, then 2, ...) in its environment and logs of "
+    "its own; job_status lists the attempts. A command without checkpoints starts again "
+    "from the beginning."
+)
+"""``start_job``'s ``restart``: what opting in states, and what it does (job restarts)."""
+
 _JOB_ID = {"type": "string"}
 JOB_SPECS = (
     ToolSpec(
         "start_job",
         "Run a long shell computation in the background; returns its ID. "
-        "Give its purpose and what progress to expect. Jobs can outlive this turn. Recovery "
-        "after worker or bridge restart requires the original executor daemon and its "
-        "sandbox to remain available. Confirmed daemon or VM loss reports unknown outcomes "
-        "as lost; the command is never automatically resubmitted." + STOP_AT_FAILURE,
+        "Give its purpose and what progress to expect. Jobs can outlive this turn, and a "
+        "restart of the worker or its bridge while the job's sandbox and executor stay. If "
+        "the sandbox, its executor or the worker is lost while the job runs, the job ends "
+        "lost and its command is not run again, unless it was started with restart."
+        + STOP_AT_FAILURE,
         {
             "type": "object",
             "properties": {
@@ -110,6 +126,7 @@ JOB_SPECS = (
                 "purpose": {"type": "string"},
                 "expected_progress": {"type": "string"},
                 "timeout_seconds": {"type": "number"},
+                "restart": {"type": "boolean", "description": RESTART},
                 "wake_session": {
                     "type": "boolean",
                     "description": "Currently unsupported: use false",
@@ -189,7 +206,7 @@ def start_job_spec(profiles: Sequence[JobProfileOffer]) -> ToolSpec:
             ".jobs/<job ID>/ (written files under files/), within a size limit; files under "
             ".jobs/ and anything left out are deleted with the sandbox, which job_status's "
             "manifest lists. A sandbox that is evicted or deleted makes the job lost; it is "
-            "never run again."
+            "never run again, and restart does not apply."
         ),
     }
     parameters["properties"]["inputs"] = {
@@ -245,8 +262,40 @@ def summary(status: JobStatus, now: datetime) -> dict[str, object]:
         "logs": {"stdout": execution.job.stdout_path, "stderr": execution.job.stderr_path}
         if execution.job is not None
         else {},
-        "worker_restart": "running jobs become lost until the executor daemon is available",
+        "worker_restart": LOSS,
+        "restart": execution.job.restart if execution.job is not None else False,
+        "attempt": execution.job.attempt if execution.job is not None else 1,
+        "attempts": [_attempt(attempt) for attempt in execution.job.attempts]
+        if execution.job is not None
+        else [],
         **_sandbox(status),
+    }
+
+
+LOSS: Final = (
+    "a job whose sandbox, executor or worker is lost while it runs ends lost; one started "
+    f"with restart is started again instead, at most {MAX_JOB_RESTARTS} times"
+)
+"""What the job view says of losing a job (job restarts)."""
+UNKNOWN_SURVIVORS: Final = (
+    "not known yet: the next attempt lists the files changed since this one was queued"
+)
+
+
+def _attempt(attempt: JobAttempt) -> dict[str, object]:
+    """A restarted job's earlier, lost attempt, for the job view and its notices."""
+    return {
+        "attempt": attempt.attempt,
+        "state": ExecutionState.LOST.value,
+        "reason": clipped(attempt.reason, 512),
+        "started_at": attempt.started_at.isoformat() if attempt.started_at else None,
+        "lost_at": attempt.lost_at.isoformat(),
+        "logs": {"stdout": attempt.stdout_path, "stderr": attempt.stderr_path},
+        "survived": [clipped(path, 512) for path in attempt.survived[:20]]
+        if attempt.survived is not None
+        else UNKNOWN_SURVIVORS,
+        "survived_truncated": attempt.survived is not None
+        and (attempt.survived_truncated or len(attempt.survived) > 20),
     }
 
 
@@ -293,6 +342,51 @@ WOKEN: Final = (
     "next, then call wait_jobs again to go on waiting."
 )
 """What a wait an agent message or a child's end woke says to do."""
+LOST_WAKE: Final = (
+    "An attempt of a job was lost: its sandbox, executor or worker stopped while it ran. "
+    "Its state and attempts say whether it is being started again (restart) or ended "
+    "lost. The other jobs keep running: call wait_jobs again to go on waiting."
+)
+"""What a wait that the loss of a job's attempt woke says to do (job restarts)."""
+
+
+def _attempts(status: JobStatus) -> int:
+    """How many of the job's attempts were lost and restarted, or 1 more if it ended lost."""
+    job = status.execution.job
+    lost = len(job.attempts) if job is not None else 0
+    return lost + (status.execution.state is ExecutionState.LOST)
+
+
+def lost_notice(execution: Execution, attempt: JobAttempt) -> dict[str, object]:
+    """The notice of one lost attempt of a job that the worker is starting again."""
+    job = execution.job
+    total = MAX_JOB_RESTARTS + 1
+    following = job.attempt if job is not None else attempt.attempt + 1
+    return {
+        "job_id": execution.execution_id,
+        "state": execution.state.value,
+        "purpose": clipped(job.purpose, 512) if job is not None else "",
+        "lost_attempt": _attempt(attempt),
+        "restart": f"being restarted: attempt {following} of at most {total}, in this "
+        "session's environment once that can be used, from the same command; it resumes "
+        "from what its checkpoints left",
+    }
+
+
+def _not_restarted(execution: Execution) -> dict[str, object]:
+    """What a job that ended lost tells of its restarts and of what it left."""
+    job = execution.job
+    if job is None or not job.restart:
+        restart = "not restarted: it was not started with restart, so its command is not run again"
+    else:
+        restart = f"not restarted again after {len(job.attempts)} restart(s); the error says why"
+    started = execution.started_at or execution.submitted_at
+    return {
+        "restart": restart,
+        "survived": "not checked: files of the session workspace changed since "
+        f"{started.isoformat()} are what it may have written, if its workspace survived; "
+        "its logs are at the paths given",
+    }
 
 
 async def _reason(wake: Awaitable[object], reason: str | None) -> str:
@@ -495,6 +589,7 @@ class JobTools:
             "expected_progress",
             "wake_session",
             "timeout_seconds",
+            "restart",
         }
         if self.job_profiles:
             allowed |= {"profile", "inputs"}
@@ -646,18 +741,34 @@ class JobTools:
             for job in listing.jobs:
                 self.check_owner(job)
             ended = [job.execution_id for job in listing.jobs if job.state in TERMINAL_STATES]
+            # A running job's lost attempts, each its own notice: ``<job ID>#<attempt>``.
+            restarted = {
+                f"{job.execution_id}#{attempt.attempt}": (job, attempt)
+                for job in listing.jobs
+                if job.state not in TERMINAL_STATES and job.job is not None
+                for attempt in job.job.attempts
+            }
+            keys = [*restarted, *ended]
             pending = (
-                ended
+                keys
                 if self.state is None
-                else await asyncio.to_thread(self.state.pending, self.context, self.run_id, ended)
+                else await asyncio.to_thread(self.state.pending, self.context, self.run_id, keys)
             )
             for job in pending:
                 if job in self.seen:
+                    continue
+                if job in restarted:
+                    notice = lost_notice(*restarted[job])
+                    if len(dump([*values, notice])) > max_chars:
+                        self.seen.update(str(value["notice_id"]) for value in values)
+                        return values
+                    values.append({"notice_id": job, **notice})
                     continue
                 status = await self.owned(job)
                 value = summary(status, self.clock.now())
                 bound = max(32, min(1024, max_chars // 16))
                 notice: dict[str, object] = {
+                    "notice_id": job,
                     "job_id": job,
                     "state": value["state"],
                     "purpose": clipped(str(value["purpose"]), min(512, bound)),
@@ -667,6 +778,11 @@ class JobTools:
                     "stderr_tail": str(value["stderr"])[-bound:],
                     "error": value["error"],
                 }
+                if value["attempts"]:
+                    notice["attempt"] = value["attempt"]
+                    notice["attempts"] = value["attempts"]
+                if status.execution.state is ExecutionState.LOST:
+                    notice.update(_not_restarted(status.execution))
                 if self.state is not None and (
                     why := await threaded(
                         ended_by,
@@ -681,11 +797,11 @@ class JobTools:
                 if recorded is not None:
                     notice["recorded_files"] = recorded
                 if len(dump([*values, notice])) > max_chars:
-                    self.seen.update(str(value["job_id"]) for value in values)
+                    self.seen.update(str(value["notice_id"]) for value in values)
                     return values
                 values.append(notice)
             if not listing.truncated:
-                self.seen.update(str(value["job_id"]) for value in values)
+                self.seen.update(str(value["notice_id"]) for value in values)
                 return values
             if listing.next_after is None or listing.next_after == after:
                 raise WorkerAPIError(ErrorKind.INTERNAL, "worker job page has no usable cursor")
@@ -711,7 +827,8 @@ class JobTools:
         if len(set(request.job_ids)) != len(request.job_ids):
             raise WorkerAPIError(ErrorKind.INVALID_REQUEST, "wait job IDs must be distinct")
         # Check ownership before creating a visible wait or consuming a message.
-        await asyncio.gather(*(self.owned(job) for job in request.job_ids))
+        before = await asyncio.gather(*(self.owned(job) for job in request.job_ids))
+        lost = {status.execution.execution_id: _attempts(status) for status in before}
         waiting: dict[str, object] = {
             "run_id": self.run_id,
             "state": "waiting",
@@ -722,7 +839,7 @@ class JobTools:
             "checkins": [],
         }
         await self._waiting(waiting)
-        running = asyncio.create_task(self._wait_loop(request, waiting))
+        running = asyncio.create_task(self._wait_loop(request, waiting, lost))
         # A user message ends the wait, as an agent message or a child's end does. The
         # message itself is not consumed here: it follows this result, the user's as the
         # user's own message and an agent's as its notice, before the next model call.
@@ -766,18 +883,25 @@ class JobTools:
             await self.on_wait(payload)
 
     async def _wait_loop(
-        self, request: WaitRequest, waiting: dict[str, object]
+        self, request: WaitRequest, waiting: dict[str, object], lost: dict[str, int]
     ) -> dict[str, object]:
+        """Wait for the jobs' end, as ``mode`` asks; the loss of any job's attempt, whether
+        it is restarted or ends lost, ends the wait too (``job_lost``)."""
         while True:
             statuses = list(await asyncio.gather(*(self.owned(job) for job in request.job_ids)))
             ended = [status for status in statuses if status.execution.state in TERMINAL_STATES]
-            if (request.mode == "first" and ended) or len(ended) == len(statuses):
+            done = (request.mode == "first" and ended) or len(ended) == len(statuses)
+            losses = [s for s in statuses if _attempts(s) > lost[s.execution.execution_id]]
+            if done or losses:
                 whole = [await self._whole(status) for status in ended]
-                return {
-                    "reason": "ended",
+                value: dict[str, object] = {
+                    "reason": "ended" if done else "job_lost",
                     "jobs": [summary(status, self.clock.now()) for status in statuses],
                     _ENDED: [status.execution.model_dump(mode="json") for status in whole],
                 }
+                if not done:
+                    value["next"] = LOST_WAKE
+                return value
             for status in statuses:
                 if status.execution.state in TERMINAL_STATES:
                     continue
@@ -934,4 +1058,5 @@ def _notices(found: list[dict[str, object]], framing: str) -> tuple[Notice, ...]
     # Job output is untrusted tool data, never a system instruction.
     if not found:
         return ()
-    return (Notice("jobs", tuple(str(n["job_id"]) for n in found), framing, found),)
+    ids = tuple(str(n.pop("notice_id", n["job_id"])) for n in found)
+    return (Notice("jobs", ids, framing, found),)
