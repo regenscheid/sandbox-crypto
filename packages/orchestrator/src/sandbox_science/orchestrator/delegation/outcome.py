@@ -78,6 +78,7 @@ from sandbox_science.orchestrator.ledger.models import EvidenceLink
 from sandbox_science.orchestrator.model import ToolSpec
 from sandbox_science.orchestrator.notices import OUTCOME_LAST_CALL, OUTCOME_REPORT, OUTCOME_SUBMIT
 from sandbox_science.orchestrator.purpose import without
+from sandbox_science.orchestrator.tool_entry import publications
 from sandbox_science.orchestrator.worker_client import dump
 
 from .prompt import PRODUCED, produced_form
@@ -1094,7 +1095,7 @@ class Outcome(TurnHook):
         )
 
     def _files(self, record: dict[str, Any]) -> None:
-        """The revisions a call made: those it recorded, and the one it published."""
+        """The revisions a call made: those it recorded, and those it published."""
         if "error" in record:
             return
         report = record.get("recorded_files")
@@ -1105,25 +1106,27 @@ class Outcome(TurnHook):
                 if isinstance(path := found.get("path"), str):
                     self.recorded[path] = found
                     self._revision(path, found)
-        snapshot, receipt = record.get("artifact"), record.get("artifact_inventory")
-        if isinstance(snapshot, dict) and isinstance(receipt, dict):
-            published = cast(dict[str, Any], receipt)
-            ref = published.get("revision")
-            path = cast(dict[str, Any], snapshot).get("source_path")
-            recorded = published.get("state") == "recorded"
-            if recorded and isinstance(ref, dict) and isinstance(path, str):
-                self.published.add(path)
-                pinned = cast(dict[str, Any], ref)
-                self.recorded[path] = {
-                    "path": path,
-                    "artifact_id": pinned.get("artifact_id"),
-                    "revision": pinned.get("revision"),
-                    "sha256": pinned.get("sha256"),
-                    "size": pinned.get("size"),
-                    "content_retained": published.get("worker_snapshot") is not None,
-                    "deleted": False,
-                }
-                self._revision(path, self.recorded[path])
+        for publication in publications(record):
+            snapshot = publication.get("artifact")
+            receipt = publication.get("artifact_inventory")
+            if isinstance(snapshot, dict) and isinstance(receipt, dict):
+                published = cast(dict[str, Any], receipt)
+                ref = published.get("revision")
+                path = cast(dict[str, Any], snapshot).get("source_path")
+                recorded = published.get("state") == "recorded"
+                if recorded and isinstance(ref, dict) and isinstance(path, str):
+                    self.published.add(path)
+                    pinned = cast(dict[str, Any], ref)
+                    self.recorded[path] = {
+                        "path": path,
+                        "artifact_id": pinned.get("artifact_id"),
+                        "revision": pinned.get("revision"),
+                        "sha256": pinned.get("sha256"),
+                        "size": pinned.get("size"),
+                        "content_retained": published.get("worker_snapshot") is not None,
+                        "deleted": False,
+                    }
+                    self._revision(path, self.recorded[path])
 
     def _revision(self, path: str, found: Mapping[str, object]) -> None:
         revision = found.get("revision")

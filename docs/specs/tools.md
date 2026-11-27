@@ -205,7 +205,7 @@ The worker's conformance suite runs these through the worker API against any bac
 
 1. **Shell basics.** `echo hello; echo err >&2; exit 3` gives stdout `hello\n`, stderr `err\n` and exit code 3. The location names the sandbox, not the orchestrator's host.
 2. **Stateful cells.** Cell 1 `x = 41`, then cell 2 `x + 1`, gives an `execute_result` with `text/plain` `42`, in generation 1 of the same kernel.
-3. **Publication.** A shell call writes `out.csv` containing `a,b\n1,2\n`; publishing it gives an `ArtifactRef` with that content's SHA-256, `text/csv` and the shell call's attempt ID. Reading the artifact returns the same bytes.
+3. **Publication.** A shell call writes `out.csv` containing `a,b\n1,2\n`; publishing it gives the file's compact entry with that content's SHA-256 and size, and the call's record keeps the `ArtifactRef`, with `text/csv` and the shell call's attempt ID. Reading the artifact returns the same bytes.
 4. **Interrupt.** A cell running `time.sleep(60)` is interrupted. It ends with `KeyboardInterrupt` within 5 seconds, and the next cell still sees `x == 41`.
 5. **Cancel.** A shell call running `sleep 60` is cancelled. It ends `cancelled`, and no process from it remains.
 6. **Reconnection.** A cell prints 1 to 10 at half-second intervals. The client disconnects after three output events and reconnects asking for events after the third. It receives the rest exactly once, then the final result.

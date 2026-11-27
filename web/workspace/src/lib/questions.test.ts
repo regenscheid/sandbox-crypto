@@ -14,8 +14,8 @@ const question = (fields: Partial<Question> = {}): Question => ({
   tool_call: 'call-1',
   text: 'Which curve?',
   options: [
-    { label: 'Ed25519', detail: 'The common choice' },
-    { label: 'Ed448', detail: null },
+    { label: 'Ed25519', detail: 'The common choice', recommended: true },
+    { label: 'Ed448', detail: null, recommended: false },
   ],
   multiple: false,
   state: 'open',

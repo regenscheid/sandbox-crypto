@@ -130,6 +130,112 @@ async def test_real_worker_http_publication_and_trusted_gateway_model(
     documents.close()
 
 
+async def test_publish_takes_several_paths_and_answers_one_compact_entry_each(
+    worker_url: str, tmp_path: Path
+) -> None:
+    """W2: each of ``paths`` is published as one ``path`` is, in order; a file that fails
+    leaves the others published, and a replayed call publishes nothing again."""
+    documents = DocumentStore(tmp_path / "control.sqlite3")
+    inventory = ArtifactInventory(documents)
+    files = {"a.txt": b"first\n", "b.txt": b"second\n"}
+    async with WorkerClient(worker_url, TOKEN) as client:
+        for path, data in files.items():
+            await client.write_file(
+                WriteFileRequest(
+                    context=CONTEXT, path=path, content_b64=base64.b64encode(data).decode()
+                )
+            )
+        publisher = ArtifactPublisher(inventory, client, CONTEXT, run_id="run1")
+        toolbox = Toolbox(client, CONTEXT, artifacts=publisher)
+        paths = ["b.txt", "missing.txt", "a.txt"]
+        call = ToolCall(id="call1", name="publish", arguments=json.dumps({"paths": paths}))
+        outcome = await toolbox.call(call, "op1")
+        shown = json.loads(outcome.text)["published"]
+        assert [entry["path"] for entry in shown] == paths
+        for entry in (shown[0], shown[2]):
+            data = files[entry["path"]]
+            assert entry == {
+                "path": entry["path"],
+                "artifact": entry["artifact"],
+                "revision": 1,
+                "sha256": hashlib.sha256(data).hexdigest(),
+                "size": len(data),
+            }
+            assert entry["artifact"].startswith("artifact-")
+        assert set(shown[1]) == {"path", "error"}
+        assert shown[1]["error"]["kind"] == "unavailable"
+        assert shown[1]["error"]["message"]
+        # The record keeps each file's snapshot and receipt; the call itself succeeded.
+        kept = outcome.record["publications"]
+        assert [entry.get("artifact_inventory", {}).get("state") for entry in kept] == [
+            "recorded",
+            "held",
+            "recorded",
+        ]
+        assert "error" not in outcome.record
+        # A replay finds each file's own operation: the same revisions, and the missing
+        # file's held intent, which is never published again.
+        again = json.loads((await toolbox.call(call, "op1")).text)["published"]
+        assert [again[0], again[2]] == [shown[0], shown[2]]
+        assert again[1]["error"]["kind"] == "unavailable"
+        await publisher.aclose()
+    assert sorted(e.reference.revision for e in inventory.list("p1").entries) == [1, 1]
+    documents.close()
+
+
+async def test_publish_answers_one_path_in_the_compact_shape(
+    worker_url: str, tmp_path: Path
+) -> None:
+    documents = DocumentStore(tmp_path / "control.sqlite3")
+    async with WorkerClient(worker_url, TOKEN) as client:
+        await client.write_file(
+            WriteFileRequest(context=CONTEXT, path="out.txt", content_b64="aGkK")
+        )
+        publisher = ArtifactPublisher(ArtifactInventory(documents), client, CONTEXT, run_id="r")
+        toolbox = Toolbox(client, CONTEXT, artifacts=publisher)
+        call = ToolCall(id="call1", name="publish", arguments='{"path": "out.txt"}')
+        outcome = await toolbox.call(call, "op1")
+        shown = json.loads(outcome.text)["published"]
+        assert shown == {
+            "path": "out.txt",
+            "artifact": outcome.record["artifact_inventory"]["revision"]["artifact_id"],
+            "revision": 1,
+            "sha256": hashlib.sha256(b"hi\n").hexdigest(),
+            "size": 3,
+        }
+        assert outcome.record["artifact"]["artifact_id"] != shown["artifact"]
+        # A file the inventory could not keep is the call's error, with the receipt kept.
+        missing = ToolCall(id="call2", name="publish", arguments='{"path": "gone.txt"}')
+        failed = await toolbox.call(missing, "op2")
+        assert json.loads(failed.text)["error"]["kind"] == "unavailable"
+        assert failed.record["error"] == "unavailable"
+        assert failed.record["artifact_inventory"]["state"] == "held"
+        await publisher.aclose()
+    documents.close()
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {},
+        {"path": "a.txt", "paths": ["b.txt"]},
+        {"paths": []},
+        {"paths": ["a.txt", "a.txt"]},
+        {"paths": [f"f{i}.txt" for i in range(17)]},
+        {"paths": "a.txt"},
+    ],
+)
+async def test_publish_refuses_a_call_without_exactly_one_list_of_files(
+    arguments: dict[str, object],
+) -> None:
+    client = SnapshotClient()
+    outcome = await Toolbox(client, CONTEXT).call(
+        ToolCall(id="c", name="publish", arguments=json.dumps(arguments)), "op1"
+    )
+    assert json.loads(outcome.text)["error"]["kind"] == "invalid_request"
+    assert client.publishes == 0
+
+
 class SnapshotClient(WorkerClient):
     def __init__(self) -> None:
         super().__init__("http://trusted-worker.invalid", "test-secret-artifact")

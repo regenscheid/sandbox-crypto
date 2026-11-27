@@ -2464,6 +2464,7 @@ export interface QuestionListing {
 export interface QuestionOption {
   label: string;
   detail: string | null;
+  recommended: boolean;
 }
 
 /** A quote of the revision shown, by its evidence ID, with its checks. */
