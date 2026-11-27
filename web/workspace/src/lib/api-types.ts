@@ -2132,6 +2132,7 @@ export interface PlanEvidence {
   revision: number | null;
   sha256: string | null;
   attempt_id: string | null;
+  written_by: PlanWriter | null;
 }
 
 export interface PlanHead {
@@ -2196,6 +2197,13 @@ export interface PlanVersion {
   body: PlanBody;
   author: PlanAuthority;
   reason: string;
+  recorded_at: string;
+}
+
+/** Who recorded the artifact revision evidence given by a workspace path names, as the inventory attributes it, set by the platform when it resolves the path. */
+export interface PlanWriter {
+  session_id: string;
+  run_id: string;
   recorded_at: string;
 }
 
