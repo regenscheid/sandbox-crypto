@@ -21,6 +21,7 @@ from pydantic import Field, JsonValue, ValidationError, field_validator, model_v
 
 from sandbox_science.contracts.logs import configure_logging
 from sandbox_science.contracts.model import Contract, Identifier
+from sandbox_science.orchestrator import deployment_scope
 from sandbox_science.orchestrator.consistency.models import REVIEWER_MAX_RESPONSE_BYTES
 from sandbox_science.orchestrator.control import ControlStore
 from sandbox_science.orchestrator.control import store_path as control_path
@@ -629,6 +630,12 @@ def create_app(settings: ControlSettings) -> web.Application:
     if settings.canaries is not None:
         _canaries(app, settings, settings.canaries, lifecycle, runtime_seen)
     app.on_shutdown.append(lifecycle.shutdown)
+
+    async def record_scope(app: web.Application) -> None:
+        # For `project create`, which reads only the state directory (deployment_scope).
+        await asyncio.to_thread(deployment_scope.record, settings.state_dir, settings.projects)
+
+    app.on_startup.append(record_scope)
     digest_file, generation_file = settings.manager_token_sha256_file, settings.generation_file
     if digest_file is not None and generation_file is not None:
         credentials = RuntimeCredentials(

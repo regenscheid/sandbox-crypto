@@ -22,6 +22,7 @@ from typing import Any
 from sandbox_science.contracts import ErrorKind, ExecutionContext, new_id
 from sandbox_science.contracts.context import ExecutionAuthority
 
+from . import deployment_scope
 from .context.history.reads import Register, shown
 from .documents import USER, Author, DocumentError, DocumentStore, store_path
 from .documents.agent_text import visible
@@ -48,6 +49,10 @@ async def _project_action(args: argparse.Namespace, store: ProjectStore) -> int:
         case "create":
             record, created = store.create(args.project, args.profile, args.policy)
             print(f"{'created' if created else 'exists'}: {record.model_dump_json(indent=2)}")
+            # A warning, not a refusal: the host launcher creates a project its new config
+            # lists before control restarts with that config and records it.
+            if (warning := deployment_scope.outside(args.state_dir, args.project)) is not None:
+                print(f"warning: {warning}", file=sys.stderr)
         case "show":
             print(store.get(args.project).model_dump_json(indent=2))
         case "budget":
