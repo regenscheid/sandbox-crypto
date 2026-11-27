@@ -65,6 +65,7 @@ from .context.history.limits import WorkingMemoryLimitError
 from .context.history.retention import fits
 from .context.history.snapshot import inline
 from .context.preparation import FoldLimits, HistoryScope, PreparedContext, prepare_context
+from .continuity.auto_recovery import mark_transient
 from .continuity.blueprints import Blueprint, Blueprints
 from .continuity.child_settlement import ChildSettlement
 from .continuity.hook import WorkHook
@@ -92,7 +93,7 @@ from .delegation.requests import ChildApproval, ChildRequests
 from .delegation.tracks import TrackTools, grant, regrant, stated_outputs
 from .documents import DocumentError, DocumentStore, DocumentTool
 from .documents.tool import REQUESTS_TASK, WorkRequests
-from .environment_claim import environment_claim
+from .environment_claim import ClaimLostError, environment_claim
 from .file_settings import ProjectFiles
 from .finalization import AttemptCompletion, AttemptFinalizer
 from .finalization import save as save
@@ -574,6 +575,44 @@ async def admit(
     )
 
 
+class ClaimWatch:
+    """What a root's environment claim tells of the worker (``environment_claim``): that it
+    is away and until when the run waits for it, as the run's events say, and why the
+    claim was lost, which marks the run's interruption transient (D100), for automatic
+    recovery to take up once the worker answers, and for its ``stopped`` event to say."""
+
+    def __init__(self, stores: Stores | None, admitted: Admitted) -> None:
+        self.stores, self.admitted = stores, admitted
+        self.chat: RunChat | None = None
+        self._writes: set[asyncio.Task[None]] = set()
+
+    def outage(self, since: datetime | None, until: datetime | None) -> None:
+        if self.chat is None:
+            return
+        task = asyncio.get_running_loop().create_task(self.chat.worker_away(since, until))
+        self._writes.add(task)
+        task.add_done_callback(self._writes.discard)
+
+    def lost(self, why: str) -> None:
+        if self.stores is None:
+            return
+        context, admitted = self.admitted.context, self.admitted
+        try:
+            mark_transient(
+                self.stores.projects.control,
+                context.project_id,
+                context.session_id,
+                run_name(admitted.started_at, admitted.run_id),
+                "worker_loss",
+                clock=SYSTEM_CLOCK,
+                why=why,
+            )
+        except Exception:
+            _log.exception(
+                "the loss of run %s's environment claim was not recorded", admitted.run_id
+            )
+
+
 @dataclass
 class Finished:
     """A run that reached the tool loop, with the hooks that acknowledge its record."""
@@ -1042,6 +1081,7 @@ class Harness:
             async with AsyncExitStack() as stack:
                 stack.enter_context(profiles(admitted.request.model_profiles or {}))
                 with interruption.protect():
+                    watch = ClaimWatch(self.stores, admitted)
                     if (
                         admitted.stateful
                         and admitted.request.parent is None
@@ -1058,6 +1098,8 @@ class Harness:
                                     f"the project's policy changed to {revision}; "
                                     "this run continues under it"
                                 ),
+                                outage=watch.outage,
+                                lost=watch.lost,
                             )
                         )
                     if self.prepare_attempt is not None:
@@ -1071,7 +1113,7 @@ class Harness:
                         # The session's view is the earlier conversation (CM-29).
                         request = dataclasses.replace(admitted.request, history=view.messages)
                         admitted = dataclasses.replace(admitted, request=request)
-                    chat = self.chat(admitted)
+                    chat = watch.chat = self.chat(admitted)
                     if chat is not None and view is not None:
                         chat.shown = view.shown
                     delegations = await self._delegations(
@@ -1243,6 +1285,9 @@ class Harness:
         except BaseException as error:
             if transcript is not None and user_cancelled(error, stop):
                 pass  # it came as the run closed: the run's own outcome stands
+            elif isinstance(error, ClaimLostError) and transcript is None:
+                # The claim cancelled the run's work to stop it: the loss is its end.
+                raise
             elif interruption.error is not None:
                 raise interruption.error from None
             elif isinstance(error, WorkingMemoryLimitError):

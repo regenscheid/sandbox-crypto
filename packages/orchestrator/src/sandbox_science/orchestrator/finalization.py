@@ -10,7 +10,7 @@ import sqlite3
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Final, Literal, cast
 
 from pydantic import ValidationError
 
@@ -177,6 +177,56 @@ class AttemptFinalizer:
         return "released"
 
 
+SALVAGE_ROUNDS: Final = 8
+"""How many times a record that does not validate is pruned of what failed and checked
+again before none is kept (``salvaged``)."""
+SALVAGED: Final = "record_salvaged"
+"""Where a salvaged record names what it left out."""
+
+
+def salvaged(fields: dict[str, object], error: ValidationError) -> RunRecord | None:
+    """``fields`` as a record without what failed ``error``: a delivered ID, or a source or
+    summary, is left out (its notices are then given again, never consumed unsaid); any
+    other optional field is reset to its default. ``None`` when a field the record cannot
+    do without failed. ``summaries`` names what was left out."""
+    kept: dict[str, object] = dict(fields)
+    dropped: list[str] = []
+    for _ in range(SALVAGE_ROUNDS):
+        for problem in error.errors():
+            loc = problem["loc"]
+            name = str(loc[0]) if loc else ""
+            field = RunRecord.model_fields.get(name)
+            if field is None or field.is_required():
+                return None
+            value = kept.get(name)
+            if name in ("delivered", "summaries") and isinstance(value, dict) and len(loc) > 1:
+                inner = dict(cast(dict[str, object], value))
+                key = str(loc[1])
+                found = inner.get(key)
+                index = loc[2] if len(loc) > 2 else None
+                if name == "delivered" and isinstance(index, int) and isinstance(found, list):
+                    items = cast(list[object], found)
+                    inner[key] = [v for i, v in enumerate(items) if i != index]
+                    dropped.append(f"{name}.{key}[{index}]")
+                else:
+                    inner.pop(key, None)
+                    dropped.append(f"{name}.{key}")
+                kept[name] = inner
+            else:
+                kept[name] = field.get_default(call_default_factory=True)
+                dropped.append(name)
+        summaries = kept.get("summaries")
+        summaries = dict(cast(dict[str, object], summaries)) if isinstance(summaries, dict) else {}
+        candidate = {**kept, "summaries": {**summaries, SALVAGED: {"left_out": dropped[:100]}}}
+        try:
+            return RunRecord.model_validate(candidate)
+        except ValidationError as again:
+            error = again
+        except RecursionError:
+            return None
+    return None
+
+
 async def save(
     fields: dict[str, object],
     status: int,
@@ -270,6 +320,12 @@ async def _save(
         invalid = ""
     except (ValidationError, RecursionError) as exc:
         record, invalid = None, str(exc)[:300]
+        if isinstance(exc, ValidationError):
+            # What was checked where it was contributed cannot fail here; whatever still
+            # does is left out, so that the run keeps a record that ends as it ended.
+            record = await threaded(salvaged, fields, exc)
+            if record is not None:
+                error(f"the run's record was kept without what did not validate: {invalid}")
     if transcript is not None:
         try:
             text = record.to_json() if record is not None else json.dumps(fields, default=str)

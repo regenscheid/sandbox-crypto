@@ -675,7 +675,11 @@ async def test_h2_heartbeats_keep_a_quiet_stream_open_and_silence_ends_it() -> N
     async with (
         TestServer(app) as server,
         WorkerClient(
-            str(server.make_url("")), TOKEN, stream_timeout=0.5, reconnect_delay=0.01
+            str(server.make_url("")),
+            TOKEN,
+            stream_timeout=0.5,
+            reconnect_delay=0.01,
+            outage_seconds=2.0,
         ) as client,
     ):
         assert [item.seq async for item in client.events("exe-1")] == [1]
@@ -685,7 +689,8 @@ async def test_h2_heartbeats_keep_a_quiet_stream_open_and_silence_ends_it() -> N
         with pytest.raises(WorkerAPIError) as raised:
             [item async for item in client.events("exe-2")]
         assert raised.value.kind is ErrorKind.UNAVAILABLE
-        assert loop.time() - started < 10
+        # Followed again for the outage window from its last event, then given up.
+        assert 2.0 <= loop.time() - started < 10
 
 
 async def test_h2_run_gives_up_when_no_result_comes() -> None:

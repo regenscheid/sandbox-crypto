@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from datetime import UTC, datetime
 import signal
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, replace
@@ -39,9 +40,15 @@ import pytest
 import pytest_asyncio
 from pydantic import ValidationError
 
-from sandbox_science.contracts import Execution, ExecutionContext, ExecutionState, JobRequest
+from sandbox_science.contracts import (
+    Execution,
+    ExecutionContext,
+    ExecutionState,
+    JobRequest,
+    JobStatus,
+)
 from sandbox_science.contracts.restarts import RESTART_POLICY, LossCause, Refusal
-from sandbox_science.orchestrator.jobs import JOB_SPECS, RESTART
+from sandbox_science.orchestrator.jobs import JOB_SPECS, RESTART, summary
 from sandbox_science.orchestrator.jobs import _not_restarted as not_restarted
 from sandbox_science.testing import eventually
 from sandbox_science.worker.errors import WorkerError
@@ -323,6 +330,11 @@ async def test_a_lost_job_ends_as_its_tool_texts_say(
             raise NotAsClaimed(f"{result.state}, {len(details.attempts)} lost: {error}")
         assert result.result.stdout is not None
         assert result.result.stdout.text == "resumed"
+        # Each lost attempt's reason is the restart table's for its cause: one wording.
+        assert ending.loss is not None
+        happened = RESTART_POLICY.loss(ending.loss).happened
+        if not all(a.reason.startswith(happened) for a in details.attempts):
+            raise NotAsClaimed(f"reasons {[a.reason for a in details.attempts]}, not {happened!r}")
     elif expected == "lost":
         if result.state is not ExecutionState.LOST:
             raise NotAsClaimed(f"{result.state}: {error}")
@@ -332,6 +344,10 @@ async def test_a_lost_job_ends_as_its_tool_texts_say(
             ending.refusal is not None and [a.attempt for a in details.attempts] == [1]
         ), details.attempts
         assert (worker.workspace / "attempts").read_text() == "attempt 1\n"
+        # The job's view names the attempt that ran, not the restart's that never did.
+        shown = summary(JobStatus(execution=result), datetime.now(UTC))["attempt"]
+        if shown != 1:
+            raise NotAsClaimed(f"the view says attempt {shown}; only attempt 1 ran")
     else:
         assert result.state is ExecutionState.SUCCEEDED, (result.state, error)
         assert details.attempts == ()

@@ -26,16 +26,26 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import re
+import signal
+import sys
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Mapping, Sequence
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Final, Literal, cast
 
 import pytest
+import pytest_asyncio
+from aiohttp.test_utils import TestServer
 from pydantic import JsonValue
 
+from sandbox_science.contracts import ErrorKind, new_id
+from sandbox_science.contracts.environment_claims import EnvironmentClaim, EnvironmentClaimResult
+from sandbox_science.contracts.restarts import RESTART_POLICY
+from sandbox_science.orchestrator import environment_claim
 from sandbox_science.orchestrator.confinement.host import HostLoops
 from sandbox_science.orchestrator.confinement.models import (
     CallbackGateway,
@@ -44,29 +54,51 @@ from sandbox_science.orchestrator.confinement.models import (
 )
 from sandbox_science.orchestrator.confinement.runtime_loop import RuntimeLoops
 from sandbox_science.orchestrator.confinement.transport import Capability, Channel, TransportError
+from sandbox_science.orchestrator.consistency.models import ReviewConfig
 from sandbox_science.orchestrator.context import agent
 from sandbox_science.orchestrator.context.history import body
+from sandbox_science.orchestrator.continuity.auto_recovery import interruption
 from sandbox_science.orchestrator.continuity.records import Work, WorkRecords
 from sandbox_science.orchestrator.continuity.resources import ResourceRequests
+from sandbox_science.orchestrator.finalization import SALVAGED, record_and_acknowledge
 from sandbox_science.orchestrator.harness import Role
+from sandbox_science.orchestrator.hooks import REFUSED, Notice, contribute
+from sandbox_science.orchestrator.jobstate import lost_notice_id, notice_job
 from sandbox_science.orchestrator.loop import MAX_TURNS, RUNAWAY, Transcript
 from sandbox_science.orchestrator.model import ChatModel, ModelGateway
 from sandbox_science.orchestrator.notices import FRAMINGS, REPORT, SUPERVISOR
+from sandbox_science.orchestrator.plan_tools import went_on
 from sandbox_science.orchestrator.projects import ProjectError, ProjectStore, RunRecord
 from sandbox_science.orchestrator.questions import Questions
 from sandbox_science.orchestrator.runstate import RunEvent
 from sandbox_science.orchestrator.service import RunService
 from sandbox_science.orchestrator.session_plans import SessionPlans
 from sandbox_science.orchestrator.tools import Toolbox
+from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
+from sandbox_science.testing import eventually
+from sandbox_science.worker import sandbox_processes
+from sandbox_science.worker.app import create_app
+from sandbox_science.worker.artifacts import Blobs
+from sandbox_science.worker.backends import LocalBackend
+from sandbox_science.worker.lifecycle import EnvironmentLifecycle
+from sandbox_science.worker.manager import ExecutionManager
+from sandbox_science.worker.settings import LocalBackendSettings
+from sandbox_science.worker.store import Store
+from sandbox_science.worker.timeouts import MANAGER_TIMEOUTS
 
 from .loop_harness import (
     API_KEY,
+    POLICY,
     PROJECT,
     SESSION,
+    TOKEN,
     USER_HEADER,
     USER_PLANS,
+    Gateway,
     Harness,
+    Lineage,
     Reply,
+    Worker,
     call,
     start_job,
 )
@@ -125,6 +157,7 @@ class Case:
     service: RunService
     monkeypatch: pytest.MonkeyPatch
     gate: Gate = field(default_factory=Gate)
+    claims: Claims | None = None
 
     def work(self) -> Work:
         """The research work of the run that holds the session."""
@@ -224,6 +257,64 @@ async def lower_memory_ceiling(case: Case) -> None:
     the model call is out (the fixture of ``test_confinement_loop`` patches the property
     that checks it instead)."""
     case.monkeypatch.setattr(agent, "VIEW_BYTES", 1)
+
+
+@dataclass
+class Claims:
+    """The worker's environment claims, as a managed environment answers them, through
+    the harness's worker client: the in-process worker's environments are unmanaged. While
+    ``away``, the worker does not answer, as while its Pod restarts."""
+
+    away: bool = False
+    calls: int = 0
+
+    async def claim(self, request: EnvironmentClaim) -> EnvironmentClaimResult:
+        self.calls += 1
+        if self.away:
+            raise WorkerAPIError(ErrorKind.UNAVAILABLE, "cannot reach the worker: synthetic")
+        if not request.seconds:
+            return EnvironmentClaimResult(
+                environment_id=request.context.environment_id, state="released"
+            )
+        return EnvironmentClaimResult(
+            environment_id=request.context.environment_id,
+            state="held",
+            sandbox_id="ss-synthetic",
+            expires_at=datetime.now(UTC) + timedelta(seconds=request.seconds),
+        )
+
+
+WINDOW: Final = 0.5
+"""The outage window a case gives the run, in place of minutes (``OUTAGE_SECONDS``)."""
+
+
+async def managed_claims(case: Case) -> None:
+    """The session's environment is managed: its root holds a claim, renewed often, with
+    a short outage window (the claim's own module constants, the run's pace)."""
+    claims = Claims()
+    case.monkeypatch.setattr(environment_claim, "RENEW_SECONDS", WINDOW / 10)
+    case.monkeypatch.setattr(environment_claim, "OUTAGE_SECONDS", WINDOW)
+    case.monkeypatch.setattr(case.service.harness.client, "claim_environment", claims.claim)
+    case.claims = claims
+
+
+async def worker_away(case: Case) -> None:
+    """The worker stops answering while the run's model call is out, for longer than the
+    outage window: the claim gives up, and the run is interrupted, marked transient. The
+    worker answers again once the run has ended."""
+    assert case.claims is not None
+    case.claims.away = True
+    control = case.service.stores.projects.control
+    run = case.work().current
+    await eventually(lambda: interruption(control, PROJECT, SESSION, run) is not None, timeout=20)
+
+
+async def worker_back(case: Case) -> None:
+    task = case.service.active[PROJECT, SESSION].task
+    assert task is not None
+    await eventually(task.done, timeout=20)
+    assert case.claims is not None
+    case.claims.away = False
 
 
 async def interrupted_reply(kind: Capability, value: JsonValue, runtime: Relay) -> JsonValue:
@@ -458,6 +549,21 @@ ENDINGS: Final[tuple[Ending, ...]] = (
         lambda case: [Reply("Never.", before=case.gate)],
         during=bridge_lost_at_gate,
         saved=False,
+        work=("blocked", "interrupted"),
+        messages="held",
+        owed=frozenset({"messages"}),
+        next="recovery",
+        given=(TASK, NEW_ATTEMPT, "redelivered"),
+        known={"owed": HELD_UNSAID, "given": RESENT},
+    ),
+    Ending(
+        "interrupted_worker_away",
+        "interrupted",
+        lambda case: [Reply("Never.", before=lambda: worker_away(case))],
+        setup=managed_claims,
+        during=worker_back,
+        saved=False,
+        reason="worker_unreachable",
         work=("blocked", "interrupted"),
         messages="held",
         owed=frozenset({"messages"}),
@@ -998,3 +1104,258 @@ async def test_a_run_that_answers_with_a_job_running(
         },
         {"owed": "I2, V-05", "wake": "V-05"},
     )
+
+
+# --- A run that hears of a job's restart --------------------------------------------------
+
+
+@dataclass
+class RestartSite:
+    """The worker of a restart case: the local backend's sandbox daemon, whose environment
+    can be held stopped, so that a lost job's next attempt waits for the case to let it."""
+
+    root: Path
+    manager: ExecutionManager
+    stopped: bool = True
+    environment: str | None = None
+    """The session's environment, whose executor the case's end releases."""
+
+    def kill_daemon(self) -> None:
+        """Lose the environment's daemon, this case's own child found by its command line
+        under the case's directory, and the job's attempt with it."""
+        for pid in sandbox_processes.process_table():
+            try:
+                line = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+            except OSError:
+                continue
+            if any(b"daemon" in part for part in line) and str(self.root).encode() in b" ".join(
+                line
+            ):
+                os.kill(pid, signal.SIGKILL)
+
+
+@pytest_asyncio.fixture
+async def restart_site(tmp_path: Path) -> AsyncIterator[tuple[RestartSite, Worker]]:
+    root = tmp_path / "worker"
+    root.mkdir()
+    store = Store(root / "worker.sqlite3")
+    site: RestartSite | None = None
+    manager = ExecutionManager(
+        store,
+        LocalBackend(LocalBackendSettings(python=sys.executable, daemon=True), root),
+        Blobs(root / "artifacts"),
+        pool_id="test-pool",
+        max_artifact_size=1 << 20,
+        state_dir=root,
+        timeouts=replace(MANAGER_TIMEOUTS, restart_retry=0.05, restart_retry_max=0.2),
+        job_restarts_unisolated=True,  # the case's job leaves no process behind
+        lifecycle=EnvironmentLifecycle(
+            daemon_identity=lambda _environment: ("synthetic-sandbox", "synthetic-id"),
+            environment_stopped=lambda _environment: site is not None and site.stopped,
+        ),
+    )
+    site = RestartSite(root, manager, stopped=False)
+    await manager.start()
+    try:
+        async with TestServer(create_app(manager, TOKEN)) as server:
+            yield site, Worker(str(server.make_url("/")).rstrip("/"), Lineage())
+    finally:
+        site.stopped = False
+        if site.environment is not None:
+            await manager.release(site.environment)
+        await manager.close()
+        store.close()
+
+
+@pytest_asyncio.fixture
+async def restart_harness(
+    tmp_path: Path, restart_site: tuple[RestartSite, Worker], gateway: Gateway
+) -> Harness:
+    projects = ProjectStore(tmp_path / "state")
+    projects.create(PROJECT, "minimal", POLICY)
+    projects.open_session(PROJECT, SESSION, dedicated=False)
+    projects.close()
+    found = Harness(tmp_path, restart_site[1], gateway)
+    found.configure_reviews(ReviewConfig(enabled=False))
+    restart_site[0].environment = found.context().environment_id
+    return found
+
+
+RESUMABLE: Final = "touch started-$SANDBOX_JOB_ATTEMPT; sleep 60"
+"""A job whose first attempt runs until the case loses it."""
+
+
+def _job_of(messages: list[Json]) -> str:
+    for message in reversed(messages):
+        found = re.search(r'"job_id":\s*"(exe-[0-9a-f]+)"', str(message.get("content")))
+        if found:
+            return found[1]
+    raise AssertionError("no job was started")
+
+
+@pytest.mark.parametrize("way", WAYS)
+async def test_a_run_woken_by_a_restart_notice_keeps_its_record(
+    restart_harness: Harness,
+    restart_site: tuple[RestartSite, Worker],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    way: Way,
+) -> None:
+    """A run waits for its restartable job; the job's attempt is lost and the worker
+    starts it again (job restarts). The wait wakes with the loss, whose notice rides on its
+    result; the run answers and ends. Its whole record is kept, naming the notice as
+    delivered (RS-13), which is then acknowledged, and its ``stopped`` event is the
+    record's: a hook's notice never costs the run its record (D-G1)."""
+    harness, (site, _) = restart_harness, restart_site
+    workspace = site.root / "environments" / harness.context().environment_id
+    started = workspace / "project" / "sessions" / SESSION / "started-1"
+
+    async def lose() -> None:
+        await eventually(started.exists, timeout=20)
+        site.stopped = True  # the next attempt waits: nothing starts the environment
+        site.kill_daemon()
+
+    script = [
+        Reply(
+            calls=[
+                call(
+                    "start_job",
+                    script=RESUMABLE,
+                    purpose="a resumable sweep",
+                    expected_progress="a checkpoint a cell",
+                    restart=True,
+                )
+            ]
+        ),
+        Reply(calls_from=lambda seen: [call("wait_jobs", job_ids=[_job_of(seen)])], before=lose),
+        Reply("The sweep's attempt was lost; it starts again when the environment runs."),
+    ]
+    async with arrangement(harness, tmp_path, way) as service:
+        case = Case(harness, service, monkeypatch)
+        run = await run_one(case, script)
+        left = await left_of(case, run, then=False)
+        job = _job_of(harness.gateway.main[-1])
+        with service.stores.projects.control.read() as tx:
+            rows = tx.sql.execute("SELECT job FROM job_acknowledged WHERE project=?", (PROJECT,))
+            acknowledged = {str(row[0]) for row in rows}
+        site.stopped = False
+        async with WorkerClient(harness.worker.url, TOKEN) as client:
+            await client.cancel(job, project_id=PROJECT)
+    record = left.record
+    delivered = record.delivered.get("jobs", []) if record is not None else []
+    lost = [notice for notice in delivered if notice != job]
+    stopped = left.stopped or {}
+    verdict(
+        {
+            "record": None
+            if record is not None and record.stopped == "answered"
+            else f"record: {None if record is None else record.stopped}",
+            "delivered": None if len(lost) == 1 else f"delivered: {delivered}",
+            "acknowledged": None
+            if lost and set(lost) <= acknowledged
+            else f"acknowledged: {acknowledged}",
+            "event": None if stopped.get("stopped") == "answered" else f"event: {stopped}",
+            "work": None
+            if left.work is not None and left.work.state == "completed"
+            else f"work: {left.work}",
+        },
+        {},
+    )
+
+
+def test_every_notice_id_a_hook_can_produce_is_an_identifier() -> None:
+    """A run's record keeps each notice ID it delivered as an ``Identifier``
+    (``RunRecord.delivered``). A notice is checked as it is made, so no hook can hand out
+    one the record cannot keep; and each way a hook makes its IDs, walked over its range,
+    makes only identifiers (D-G1)."""
+    with pytest.raises(ValueError, match="not an identifier"):
+        Notice("jobs", ("exe-0123456789abcdef01234567#1",), "f", None)
+    with pytest.raises(ValueError, match="not an identifier"):
+        Notice("job notices", (), "f", None)
+    made: list[tuple[str, str]] = []
+    for _ in range(64):
+        job = new_id("exe")
+        made.append(("jobs", job))
+        made += [
+            ("jobs", lost_notice_id(job, attempt))
+            for attempt in range(1, RESTART_POLICY.max_attempts + 1)
+        ]
+        request = new_id("req")
+        made += [("resources", f"decision-{request}"), ("resources", f"progress-{request}")]
+        made.append(("math", f"{new_id('fnd')}-r{1 << 30}"))
+    made += [("plans", went_on((new_id("pln"), 1, 2, 3, 2**31)))]
+    for source, notice in made:
+        assert Notice(source, (notice,), "f", None).ids == (notice,)
+        if source == "jobs":
+            assert notice_job(notice) == notice.partition(".")[0]
+    RunRecord.model_validate(
+        {
+            "run_id": "run-1",
+            "context": {"project_id": PROJECT, "session_id": SESSION, "environment_id": "e"},
+            "task": TASK,
+            "started_at": "2026-11-27T12:00:00+00:00",
+            "ended_at": "2026-11-27T12:00:01+00:00",
+            "stopped": "answered",
+            "messages": [],
+            "tools": [],
+            "delivered": {source: [notice] for source, notice in made},
+        }
+    )
+
+
+async def test_a_record_that_does_not_validate_is_kept_without_what_failed(
+    tmp_path: Path,
+) -> None:
+    """A save that still meets a record it cannot keep whole keeps it without what failed
+    (a delivered ID, a summary), naming what it left out, and the run ends as it ended
+    (D-G1): never no record and ``interrupted``."""
+    projects = ProjectStore(tmp_path / "state")
+    try:
+        projects.create(PROJECT, "minimal", POLICY)
+        projects.open_session(PROJECT, SESSION, dedicated=False)
+        environment = projects.get(PROJECT).sessions[SESSION].environment_id
+        fields: dict[str, object] = {
+            "run_id": "run-salvaged",
+            "context": {
+                "project_id": PROJECT,
+                "session_id": SESSION,
+                "environment_id": environment,
+            },
+            "task": TASK,
+            "started_at": "2026-11-27T12:00:00+00:00",
+            "ended_at": "2026-11-27T12:00:01+00:00",
+            "stopped": "answered",
+            "answer": "Done.",
+            "final_text": "Done.",
+            "messages": [],
+            "tools": [],
+            "delivered": {"jobs": ["exe-1", "exe-1#1"], "bad source": ["x"]},
+            "summaries": {"kept": 1},
+        }
+        errors: list[str] = []
+        completion = await record_and_acknowledge(
+            fields, 0, (), projects=projects, error=errors.append
+        )
+        assert completion.recorded, errors
+        assert completion.status == 0, errors
+        (entry,) = projects.runs(PROJECT, SESSION)
+        record = projects.run(PROJECT, SESSION, entry.name)
+        assert (record.stopped, record.answer, record.final_text) == ("answered", "Done.", "Done.")
+        assert record.delivered == {"jobs": ["exe-1"]}
+        assert record.summaries["kept"] == 1
+        left_out = cast(dict[str, Any], record.summaries[SALVAGED])["left_out"]
+        assert set(left_out) == {"delivered.jobs[1]", "delivered.bad source"}
+        assert errors
+        assert "kept without" in errors[0]
+    finally:
+        projects.close()
+
+
+def test_a_summary_that_is_not_json_is_refused_where_it_is_contributed() -> None:
+    summaries: dict[str, Any] = {}
+    contribute(summaries, "jobs", {"ok": [1, "two"]})
+    contribute(summaries, "bad", {"when": object()})
+    contribute(summaries, "bad name", 1)
+    assert summaries["jobs"] == {"ok": [1, "two"]}
+    assert set(summaries[REFUSED]) == {"bad", "bad name"}
+    assert "bad" not in summaries

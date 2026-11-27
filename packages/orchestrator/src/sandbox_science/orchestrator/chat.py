@@ -191,6 +191,21 @@ class RunChat:
                 },
             )
 
+    async def worker_away(self, since: datetime | None, until: datetime | None) -> None:
+        """The worker stopped answering at ``since``, and the run waits for it until
+        ``until``; or it answers again (``None``)."""
+        if since is None:
+            await self.write("waiting", {"worker": None})
+        else:
+            await self.write(
+                "waiting",
+                {
+                    "worker": "unreachable",
+                    "since": since.isoformat(),
+                    "until": until.isoformat() if until is not None else None,
+                },
+            )
+
     async def waiting(self, wait: dict[str, object] | None) -> None:
         """A job wait began, or ended (``None``)."""
         if wait is None:

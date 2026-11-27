@@ -161,6 +161,15 @@ class ChildService:
     """When set, a part's answer waits for it."""
     refusals: list[str] = field(default_factory=list[str])
     """What the routes refused, as the worker would have."""
+    gone: set[str] = field(default_factory=set[str])
+    """Child environments whose sandbox was deleted: the worker's reads of them answer
+    that there is no such environment, as it does once it gave one up."""
+
+    def delete(self, environment_id: str) -> None:
+        """The child environment's sandbox is deleted under its run."""
+        self.gone.add(environment_id)
+        found = self.made[environment_id]
+        self.made[environment_id] = found.model_copy(update={"phase": "released"})
 
     def alive(self) -> list[ChildEnvironment]:
         return [c for c in self.made.values() if c.phase in ("creating", "ready", "collecting")]
@@ -389,6 +398,11 @@ class ChildService:
         handler: Callable[[web.Request], Awaitable[web.StreamResponse]],
     ) -> web.StreamResponse:
         path = request.path
+        if path == "/v1/jobs" and (gone := request.query.get("environment_id")) in self.gone:
+            return web.json_response(
+                {"error": {"kind": "not_found", "message": f"no environment {gone!r}"}},
+                status=404,
+            )
         if path == "/v1/capabilities":
             # The session's environment offers child environments, as a pool with child
             # profiles does.

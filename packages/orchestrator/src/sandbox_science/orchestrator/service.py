@@ -40,7 +40,7 @@ from .context.history import Archive, Folder
 from .context.history.markers import Decided, current_decisions
 from .context.history.receipts import Receipts
 from .continuity.auto_continuation import AutoContinuation
-from .continuity.auto_recovery import AutoRecovery, mark_transient
+from .continuity.auto_recovery import AutoRecovery, interruption, mark_transient
 from .continuity.records import WorkRecords
 from .continuity.recovery import Recovery
 from .continuity.transient import Transient
@@ -459,6 +459,12 @@ class RunService:
                 "final_text": None,
                 "record": None,
             }
+            lost = await threaded(interruption, self.stores.projects.control, project, session, run)
+            if lost is not None and lost.get("kind") == "worker_loss":
+                # The worker was away past the outage window: automatic recovery takes the
+                # run up once it answers (D100).
+                stopped["reason"] = "worker_unreachable"
+                stopped["detail"] = lost.get("why")
         if hold:
             offered = await threaded(runs.offered_to, project, session, run)
             await threaded(runs.hold, project, session, offered)

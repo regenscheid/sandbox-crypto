@@ -374,6 +374,27 @@ describe("a session's chat, polled", () => {
 });
 
 describe('the transcript of a run', () => {
+  it('says when the worker does not answer and when it answers again', () => {
+    expect(
+      chatEntries([
+        event(1, 'waiting', {
+          worker: 'unreachable',
+          since: '2026-11-27T20:07:48+00:00',
+          until: '2026-11-27T20:12:18+00:00',
+        }),
+        event(2, 'waiting', { worker: null }),
+      ]),
+    ).toEqual([
+      {
+        kind: 'note',
+        seq: 1,
+        text: 'The worker does not answer since 20:07:48 UTC; the run waits for it until 20:12:18 UTC, then stops and resumes once the worker is back.',
+        problem: true,
+      },
+      { kind: 'note', seq: 2, text: 'The worker answers again; the run goes on.', problem: false },
+    ]);
+  });
+
   it('shows the start and end of a parent waiting for delegated work', () => {
     expect(
       chatEntries([

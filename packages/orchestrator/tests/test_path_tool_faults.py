@@ -20,8 +20,8 @@ audit's invariants I4 and I8):
   action of unknown effect, a write is looked up by its operation ID), and the resumed
   run reads the reconciled result.
 
-A fault the client is built to absorb (an event stream dropped and back within the
-reconnect window) may also give the call's ordinary result. A row whose fault never
+A fault the client is built to absorb (an event stream dropped and back, a worker that
+restarts within the outage window) may also give the call's ordinary result. A row whose fault never
 reached the call fails, so that no row passes by accident.
 
 Where the code does something else today the row is ``xfail(strict=True)`` with the
@@ -84,9 +84,11 @@ from sandbox_science.orchestrator.effects import UnknownEffectError
 from sandbox_science.orchestrator.environment_claim import environment_claim
 from sandbox_science.orchestrator.harness import Harness as Core
 from sandbox_science.orchestrator.harness import Role, Settings, Stores
+from sandbox_science.orchestrator.hooks import GAPS
 from sandbox_science.orchestrator.jobs import JobTools, lost_notice
 from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.model import Message, ModelTurn, ToolSpec
+from sandbox_science.orchestrator.notices import HOOK_GAP
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.service import RunService
@@ -227,16 +229,23 @@ FAULTS: Final[tuple[Fault, ...]] = (
 """``refused``: a definite 4xx at the call. ``server_error``: a 5xx before the worker
 acts. ``reset``: the connection is reset before the reply, the worker not having acted.
 ``reply_lost``: the worker acts, and its reply is lost. ``stream_drop``: the event
-stream drops twice and comes back, inside the reconnect window. ``restart``: the worker
-is unreachable, from just after the submission, for longer than the reconnect window,
-while the execution goes on. ``lost``: the worker reports the call lost (its executor
-gone). ``restart_lost``: both: the worker comes back and reports the call lost.
+stream drops twice and comes back. ``restart``: the worker is unreachable, from just
+after the submission (or, for ``wait_jobs``, while its job runs), for longer than the
+reconnect window the client had before the outage window (``RESTART_RESETS`` tries),
+while the execution goes on, and then answers again, as a worker whose Pod restarted
+does. ``lost``: the worker reports the call lost (its executor gone). ``restart_lost``:
+both: the worker comes back and reports the call (or the waited job) lost.
 ``environment_gone``: the worker answers that the sandbox is gone (its ``_abandon``
 text). ``disk_full``: no space left on the device. ``quota``: a limit of the worker's
 policy is reached."""
 
-ABSORBED: Final = frozenset({"stream_drop"})
-"""Faults the client is built to absorb, so that the call's ordinary result is right."""
+ABSORBED: Final = frozenset({"stream_drop", "restart"})
+"""Faults the client is built to absorb, so that the call's ordinary result is right: a
+worker restart inside the outage window (``WORKER_OUTAGE_SECONDS``) among them."""
+
+RIDDEN: Final = frozenset(("wait_jobs", f) for f in ("server_error", "reset", "reply_lost"))
+"""A wait for jobs reads them again while the worker does not answer, the jobs going on,
+so that a blip at its read is absorbed too."""
 
 ONE_REQUEST: Final = "the call is one request with no reconnect window: as reset"
 NOT_APPLICABLE: Final[dict[tuple[str, Fault], str]] = {
@@ -245,13 +254,16 @@ NOT_APPLICABLE: Final[dict[tuple[str, Fault], str]] = {
         for t in TOOLS
         if t.name not in STREAMED
         for f in ("stream_drop", "restart")
+        if (t.name, f) != ("wait_jobs", "restart")
     },
     **{
         (t.name, f): "the call has no execution for the worker to report lost"
         for t in TOOLS
         if t.name not in STREAMED
         for f in ("lost", "restart_lost")
+        if (t.name, f) != ("wait_jobs", "restart_lost")
     },
+    ("wait_jobs", "lost"): "a job lost while the worker answers is a job ending (job endings)",
     **{
         (name, "environment_gone"): "the job records are the worker's; no sandbox is reached"
         for name in ("job_status", "wait_jobs", "list_jobs", "cancel_job")
@@ -334,7 +346,7 @@ KNOWN: Final[dict[tuple[str, Fault], Known]] = {
     # A GET tool's failure is shown, with no word on retrying or that the jobs go on.
     **{
         (name, fault): Known("V6", NotTold, "a worker blip reads as `cannot reach the worker`")
-        for name in ("job_status", "wait_jobs", "list_jobs")
+        for name in ("job_status", "list_jobs")
         for fault in ("server_error", "reset", "reply_lost")
     },
     # A submission the worker never saw: the lookup finds nothing and recovery stops,
@@ -354,14 +366,11 @@ KNOWN: Final[dict[tuple[str, Fault], Known]] = {
         (name, "lost"): Known("V6", NotTold, "`… outcome is unknown`, with no next step")
         for name in EXECUTIONS_TOOLS
     },
+    # A worker restart is ridden out (V1's first half, fixed): the call's result, here
+    # its loss, reaches the model as usual, with no word on a rerun.
     **{
-        (name, "restart_lost"): Known(
-            "V1",
-            RecoveryBlocked,
-            "a worker restart past the window ends the run, and the "
-            "lost call stops recovery with lost_operation",
-        )
-        for name in EXECUTIONS_TOOLS
+        (name, "restart_lost"): Known("V6", NotTold, "`… outcome is unknown`, with no next step")
+        for name in (*EXECUTIONS_TOOLS, "wait_jobs")
     },
     # Disk full: a write tool's ENOSPC is a 503, so an unknown effect; a command's is its
     # own stderr.
@@ -435,6 +444,8 @@ class Faults:
 
     rules: list[Rule] = field(default_factory=list[Rule])
     lose: bool = False
+    lose_waited: bool = False
+    """Lose the job the next job read is of, while the worker is away."""
     lost: list[str] = field(default_factory=list[str])
 
     def arm(self, rule: Rule) -> None:
@@ -443,7 +454,7 @@ class Faults:
     def lift(self) -> None:
         for rule in self.rules:
             rule.times = 0
-        self.lose = False
+        self.lose = self.lose_waited = False
 
     def met(self) -> list[str]:
         return [line for rule in self.rules for line in rule.met]
@@ -504,6 +515,13 @@ async def worker(tmp_path: Path) -> AsyncIterator[FaultyWorker]:
     async def channel(
         request: web.Request, handler: Callable[[web.Request], Awaitable[web.StreamResponse]]
     ) -> web.StreamResponse:
+        if faults.lose_waited and request.path.startswith("/v1/jobs/"):
+            faults.lose_waited = False
+            execution = request.path.rsplit("/", 1)[1]
+            live = manager._journal.live.get(execution)
+            assert live is not None, "the waited job ended before the worker went away"
+            manager._dispatcher.lose(live, "the sandbox executor incarnation", LossCause.NEW_DAEMON)
+            faults.lost.append(execution)
         rule = next((r for r in faults.rules if r.matches(request)), None)
         if rule is None:
             response = await handler(request)
@@ -539,8 +557,9 @@ async def worker(tmp_path: Path) -> AsyncIterator[FaultyWorker]:
         store.close()
 
 
-OUTAGE: Final = 1000
-"""Requests an outage fails until the walk lifts it, once the run has stopped."""
+RESTART_RESETS: Final = 20
+"""Requests a worker restart fails before the worker answers again: more than the five
+reconnects the client once gave a stream, within its outage window."""
 RETRIED: Final = 2
 """aiohttp sends an idempotent request again, once, when a reused connection closes
 before its reply: a fault at a GET meets both, or the client never sees it."""
@@ -553,10 +572,14 @@ def arm(faults: Faults, case: Case) -> None:
     match fault:
         case "stream_drop":
             faults.arm(Rule(fault, ("GET /v1/executions/",), times=RETRIED))
+        case "restart" | "restart_lost" if tool.name == "wait_jobs":
+            # The wait's job reads fail while its job runs; the job is lost meanwhile.
+            faults.arm(Rule(fault, ("GET /v1/jobs/",), times=RESTART_RESETS))
+            faults.lose_waited = fault == "restart_lost"
         case "restart" | "restart_lost":
-            # Every reconnection and the final read fail, past the reconnect window,
-            # until the run has stopped and the walk lifts the outage.
-            faults.arm(Rule(fault, ("GET /v1/executions/",), times=OUTAGE))
+            # Reconnections fail, past the old reconnect window, and the worker answers
+            # again within the outage window.
+            faults.arm(Rule(fault, ("GET /v1/executions/",), times=RESTART_RESETS))
             faults.lose = fault == "restart_lost"
         case "lost":
             faults.lose = True
@@ -683,7 +706,9 @@ async def service_for(harness: Harness, model: Model) -> AsyncIterator[RunServic
     projects = ProjectStore(harness.state)
     documents = DocumentStore(store_path(harness.state), producer="harness")
     try:
-        async with WorkerClient(harness.worker.url, TOKEN, reconnect_delay=0.01) as client:
+        async with WorkerClient(
+            harness.worker.url, TOKEN, reconnect_delay=0.01, max_reconnect_delay=0.05
+        ) as client:
             stores = Stores(
                 projects,
                 documents,
@@ -793,7 +818,8 @@ def judge(case: Case, walked: Walk, faults: Faults) -> None:
             reached = faults.met() or faults.lost or not _injected(case)
             assert reached, f"the fault never reached the call: {detail}"
             errors = errors_in(parsed(walked.result))
-            if case.fault in ABSORBED and not any(_channel(error) for error in errors):
+            absorbed = case.fault in ABSORBED or (case.tool.name, case.fault) in RIDDEN
+            if absorbed and not any(_channel(error) for error in errors):
                 return  # the call's own result, the fault absorbed
             assert errors, f"the call succeeded as if the fault had not been: {detail}"
             if not all(told(error) for error in errors):
@@ -816,6 +842,8 @@ def row_calls(case: Case) -> tuple[list[tuple[str, Json]], tuple[str, Json]]:
     elif case.fault == "quota" and tool.name == "start_job":
         # The session's four active jobs (the policy's default jobs_per_session).
         before += [job("sleep 60")] * 4  # cancelled when the row ends (``cancel_jobs``)
+    elif case.fault == "restart_lost" and tool.name == "wait_jobs":
+        before = [job("sleep 30")]  # lost while the worker is away; cancelled at the end
     elif case.fault == "quota" and tool.name == "publish":
         before = [
             ("shell", {"script": "head -c 2000000 /dev/zero > big.bin"}),
@@ -884,21 +912,11 @@ class Point:
 
 
 POINTS: Final = (
-    # The job-notice hook at the run's start and at its final answer (O/loop.py:500-502,
-    # 616). A blip there fails the run (phase ``harness``, transient); recovery (D100)
-    # then resumes the tree. At the start nothing was done yet; at the closing point the
-    # Resume asks the model again for the answer it had given.
+    # The job-notice hook at the run's start and at its final answer (V16): a blip there
+    # is a gap the run is told of (``hooks.guarded``), and the run goes on to its end; the
+    # answer the model gave stands, never asked for again.
     Point("start", "GET /v1/jobs", None),
-    Point(
-        "closing",
-        "GET /v1/jobs",
-        Known(
-            "V16",
-            AnswerAskedAgain,
-            "the closing notice hook is unguarded: the run "
-            "fails after its answer and the Resume asks the model again",
-        ),
-    ),
+    Point("closing", "GET /v1/jobs", None),
 )
 
 
@@ -935,17 +953,28 @@ async def test_a_blip_at_a_hook_outside_a_call_does_not_end_the_run(
     # The answer the model gave stands: it is not asked for, and paid for, again.
     if len(model.seen) != 1:
         raise AnswerAskedAgain(f"{walked}; model calls: {len(model.seen)}")
+    # It went on, with no failure and no Resume, and its record names the gap.
+    assert walked.outcome == "went_on", walked
+    projects = ProjectStore(harness.state)
+    try:
+        (entry,) = projects.runs(PROJECT, SESSION)
+        record = projects.run(PROJECT, SESSION, entry.name)
+    finally:
+        projects.close()
+    assert (record.stopped, record.failure) == ("answered", None)
+    gaps = cast(Json, record.summaries[GAPS])["gaps"]
+    assert [(g["source"], g["point"]) for g in gaps] == [("jobs", point.name)]
+    told = [str(m.get("content")) for m in model.seen[0] if m.get("role") == "user"]
+    # At the start the model is told; a closing has no turn left to tell it in.
+    assert any(HOOK_GAP.text in text and "jobs themselves" in text for text in told) == (
+        point.name == "start"
+    )
 
 
 class ClaimLost(Violation):
     """One failed renewal inside the worker's claim ended the root."""
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=ClaimLost,
-    reason="V22: any failed renewal cancels the root, though the worker's claim lasts 120 s",
-)
 async def test_one_failed_claim_renewal_inside_the_claim_keeps_the_root() -> None:
     """The in-process worker's environments are unmanaged, so their claims never renew:
     the claim's own scripted client stands in for the worker here."""
@@ -1093,6 +1122,62 @@ async def jobs(worker_url: str, tmp_path: Path) -> AsyncIterator[Jobs]:
     finally:
         state.close()
         projects.close()
+
+
+async def test_a_job_lost_without_restart_wakes_the_wait_as_lost(harness: Harness) -> None:
+    """A job started without ``restart`` whose executor is lost while a run waits for it:
+    the wait wakes with ``job_lost``, as any loss does, and its view of the job is lost at
+    its first attempt."""
+    site = cast(FaultyWorker, harness.worker)
+    began = asyncio.Event()
+
+    async def on_wait(payload: dict[str, object] | None) -> None:
+        if payload is not None:
+            began.set()  # the wait read its jobs as they stood: the loss comes after
+
+    async with WorkerClient(site.url, TOKEN) as client:
+        tools = JobTools(
+            client, harness.context(), run_id="run-1", poll_seconds=0.02, on_wait=on_wait
+        )
+        text, _ = await tools.start(
+            {"script": "sleep 30", "purpose": "a job the row loses", "expected_progress": "-"},
+            "op-lost",
+        )
+        job = str(json.loads(text)["job_id"])
+
+        def live() -> Any:
+            found = site.manager._journal.live.get(job)
+            return found if found is not None and found.execution.started_at else None
+
+        found = await eventually(live, timeout=20)
+        waiting = asyncio.create_task(tools.wait({"job_ids": [job]}, "op-wait"))
+        await asyncio.wait_for(began.wait(), 20)
+        site.manager._dispatcher.lose(
+            found, "the sandbox executor incarnation", LossCause.NEW_DAEMON
+        )
+        said = json.loads((await asyncio.wait_for(waiting, 20))[0])
+    assert said["reason"] == "job_lost", said
+    (view,) = said["jobs"]
+    assert (view["state"], view["attempt"]) == ("lost", 1), view
+
+
+async def test_a_waits_wake_at_a_jobs_end_shows_its_written_files(harness: Harness) -> None:
+    """The wait that wakes as a job ends shows the files it wrote, as ``job_status`` does a
+    moment later: one projection of one record."""
+    site = cast(FaultyWorker, harness.worker)
+    async with WorkerClient(site.url, TOKEN) as client:
+        tools = JobTools(client, harness.context(), run_id="run-1", poll_seconds=0.02)
+        text, _ = await tools.start(
+            {"script": "echo 1 > out-1.txt", "purpose": "writes", "expected_progress": "-"},
+            "op-writes",
+        )
+        job = str(json.loads(text)["job_id"])
+        said = json.loads((await tools.wait({"job_ids": [job]}, "op-wait"))[0])
+        status = json.loads((await tools.status({"job_id": job}, "op-status"))[0])
+    (view,) = said["jobs"]
+    assert said["reason"] == "ended", said
+    assert view["written_files"] == status["written_files"], (view, status)
+    assert "out-1.txt" in view["written_files"], view
 
 
 class NotToldWhoCancelled(Violation):

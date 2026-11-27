@@ -31,6 +31,7 @@ from sandbox_science.contracts import (
     JobRequest,
     JobStatus,
 )
+from sandbox_science.contracts.environment_claims import WORKER_OUTAGE_SECONDS
 from sandbox_science.contracts.model import Contract
 from sandbox_science.contracts.restarts import RESTART_POLICY, Refusal
 from sandbox_science.contracts.worker import TERMINAL_STATES
@@ -39,7 +40,7 @@ from .aio import lease, threaded
 from .control import ControlStore
 from .effects import UnknownEffectError
 from .hooks import Closing, Effect, Notice, Point, RunView, TurnHook
-from .jobstate import JobState
+from .jobstate import JobState, lost_notice_id
 from .memory_prompt import MemoryGiven
 from .model import ChatModel, ModelError, ToolSpec
 from .notices import JOBS, JOBS_ATTACHED
@@ -261,7 +262,7 @@ def summary(status: JobStatus, now: datetime) -> dict[str, object]:
         else {},
         "worker_restart": LOSS,
         "restart": execution.job.restart if execution.job is not None else False,
-        "attempt": execution.job.attempt if execution.job is not None else 1,
+        "attempt": _attempt_number(execution),
         "attempts": [_attempt(attempt) for attempt in execution.job.attempts]
         if execution.job is not None
         else [],
@@ -278,6 +279,18 @@ LOSS: Final = (
 UNKNOWN_SURVIVORS: Final = (
     "not known yet: the next attempt lists the files changed since this one was queued"
 )
+
+
+def _attempt_number(execution: Execution) -> int:
+    """The job's attempt, as its view says it: the current one, or, for a job that ended
+    before a restart's attempt started, as when its sandbox was deleted meanwhile, the last
+    that ran."""
+    job = execution.job
+    if job is None:
+        return 1
+    if execution.state in TERMINAL_STATES and execution.started_at is None and job.attempts:
+        return job.attempts[-1].attempt
+    return job.attempt
 
 
 def _attempts_seconds(execution: Execution, now: datetime) -> tuple[float, float]:
@@ -762,9 +775,9 @@ class JobTools:
             for job in listing.jobs:
                 self.check_owner(job)
             ended = [job.execution_id for job in listing.jobs if job.state in TERMINAL_STATES]
-            # A running job's lost attempts, each its own notice: ``<job ID>#<attempt>``.
+            # A running job's lost attempts, each its own notice (``lost_notice_id``).
             restarted = {
-                f"{job.execution_id}#{attempt.attempt}": (job, attempt)
+                lost_notice_id(job.execution_id, attempt.attempt): (job, attempt)
                 for job in listing.jobs
                 if job.state not in TERMINAL_STATES and job.job is not None
                 for attempt in job.job.attempts
@@ -848,7 +861,7 @@ class JobTools:
         if len(set(request.job_ids)) != len(request.job_ids):
             raise WorkerAPIError(ErrorKind.INVALID_REQUEST, "wait job IDs must be distinct")
         # Check ownership before creating a visible wait or consuming a message.
-        before = await asyncio.gather(*(self.owned(job) for job in request.job_ids))
+        before = await self._statuses(request.job_ids)
         lost = {status.execution.execution_id: _attempts(status) for status in before}
         waiting: dict[str, object] = {
             "run_id": self.run_id,
@@ -897,6 +910,23 @@ class JobTools:
                     await task
             await self._waiting(None)
 
+    async def _statuses(self, jobs: Sequence[str]) -> list[JobStatus]:
+        """The waited jobs' statuses. A worker that does not answer, as while it restarts,
+        is waited for, its jobs going on, for the client's outage window
+        (``WORKER_OUTAGE_SECONDS``)."""
+        away: float | None = None
+        window = float(getattr(self.client, "outage_seconds", WORKER_OUTAGE_SECONDS))
+        while True:
+            try:
+                return list(await asyncio.gather(*(self.owned(job) for job in jobs)))
+            except WorkerAPIError as error:
+                if error.kind is not ErrorKind.UNAVAILABLE:
+                    raise
+                away = self.clock.monotonic() if away is None else away
+                if self.clock.monotonic() - away >= window:
+                    raise
+                await self.clock.sleep(self.poll)
+
     async def _waiting(self, payload: dict[str, object] | None) -> None:
         if self.state is not None:
             await asyncio.to_thread(self.state.waiting, self.context, self.run_id, payload)
@@ -907,18 +937,25 @@ class JobTools:
         self, request: WaitRequest, waiting: dict[str, object], lost: dict[str, int]
     ) -> dict[str, object]:
         """Wait for the jobs' end, as ``mode`` asks; the loss of any job's attempt, whether
-        it is restarted or ends lost, ends the wait too (``job_lost``)."""
+        it is restarted or ends lost, ends the wait with ``job_lost``; a worker that does
+        not answer is waited for (``_statuses``)."""
         while True:
-            statuses = list(await asyncio.gather(*(self.owned(job) for job in request.job_ids)))
+            statuses = await self._statuses(request.job_ids)
             ended = [status for status in statuses if status.execution.state in TERMINAL_STATES]
             done = (request.mode == "first" and ended) or len(ended) == len(statuses)
             losses = [s for s in statuses if _attempts(s) > lost[s.execution.execution_id]]
             if done or losses:
-                whole = [await self._whole(status) for status in ended]
+                whole = {
+                    status.execution.execution_id: await self._whole(status) for status in ended
+                }
+                shown = [whole.get(s.execution.execution_id, s) for s in statuses]
                 value: dict[str, object] = {
-                    "reason": "ended" if done else "job_lost",
-                    "jobs": [summary(status, self.clock.now()) for status in statuses],
-                    _ENDED: [status.execution.model_dump(mode="json") for status in whole],
+                    # Any loss is told as one, whether the job ended lost or restarts.
+                    "reason": "job_lost" if losses else "ended",
+                    # An ended job's view is its whole record's, its written files among it,
+                    # as job_status shows it.
+                    "jobs": [summary(status, self.clock.now()) for status in shown],
+                    _ENDED: [status.execution.model_dump(mode="json") for status in whole.values()],
                 }
                 if not done:
                     value["next"] = LOST_WAKE
@@ -1046,6 +1083,10 @@ class JobNotices(TurnHook):
     attach to a tool result waits for the next run."""
 
     name = "jobs"
+    unread = (
+        "job notices could not be read now; the jobs themselves are not affected: they keep "
+        "running, and their notices come at a later point"
+    )
 
     def __init__(self, jobs: JobTools, *, max_chars: int) -> None:
         self.jobs = jobs

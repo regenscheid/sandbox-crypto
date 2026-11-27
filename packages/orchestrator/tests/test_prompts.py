@@ -294,6 +294,12 @@ GOLDEN = {
     "sandbox-notice-delegations-unsubmitted-1": (
         "762699801f144af1954d5f9e6affbb564f6b52e7e13435658eb999cc8556544f"
     ),
+    "sandbox-notice-hook-gap-1": (
+        "4c0318f01c69be2ff9f3ae741f50176876ef87ee5acb0ecaf6aad8cba32effbd"
+    ),
+    "sandbox-notice-hook-gap-attached-1": (
+        "d508c496ed05c2515e1b69a7694270f133f1a9190767c71587d3b02919c96d25"
+    ),
 }
 
 

@@ -143,7 +143,7 @@ async def test_a_run_that_ends_while_a_restart_waits_sees_the_loss_and_the_job_w
     # No execution ended, so the review is given none: only the wait's account of the job.
     assert "executions" not in record
     # The lost attempt's notice reached the run (delivered with the wait's result).
-    assert f"{job_id}#1" in transcript.delivered_ids("jobs")
+    assert f"{job_id}.lost-1" in transcript.delivered_ids("jobs")
     execution = await client.get(job_id, project_id="p1")
     assert execution.state is ExecutionState.QUEUED
     assert not (worker.workspace / "started-2").exists()

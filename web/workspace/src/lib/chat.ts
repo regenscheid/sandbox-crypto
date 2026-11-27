@@ -735,6 +735,17 @@ export function chatEntries(events: readonly RunEvent[]): ChatEntry[] {
             : 'The wait for approval ended.',
         problem: false,
       });
+    } else if (kind === 'waiting' && 'worker' in data) {
+      // The root's worker does not answer, and the run waits for it (or it is back).
+      const away = data['worker'] === 'unreachable';
+      entries.push({
+        kind: 'note',
+        seq,
+        text: away
+          ? `The worker does not answer since ${utc(data['since'])}; the run waits for it until ${utc(data['until'])}, then stops and resumes once the worker is back.`
+          : 'The worker answers again; the run goes on.',
+        problem: away,
+      });
     } else if (kind === 'waiting') {
       const jobs = list(data['job_ids']).map(String);
       const children = list(data['delegation_ids']).map(String);
@@ -780,6 +791,14 @@ export function chatEntries(events: readonly RunEvent[]): ChatEntry[] {
     }
   }
   return entries;
+}
+
+/** An event's ISO time as the hour, minute and second in UTC, or "an unknown time". */
+function utc(value: unknown): string {
+  const time = typeof value === 'string' ? new Date(value) : null;
+  return time && !Number.isNaN(time.getTime())
+    ? `${time.toISOString().slice(11, 19)} UTC`
+    : 'an unknown time';
 }
 
 /** The tool a running run waits on the user's approval for, or null. */

@@ -51,6 +51,7 @@ from sandbox_science.orchestrator.digest import Digest, constraints_block
 from sandbox_science.orchestrator.documents import USER
 from sandbox_science.orchestrator.harness import Harness as RunHarness
 from sandbox_science.orchestrator.harness import Role, RunRequest, Settings
+from sandbox_science.orchestrator.hooks import GAPS
 from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.model import ModelTurn
 from sandbox_science.orchestrator.notices import DELEGATIONS, DELEGATIONS_ATTACHED
@@ -718,6 +719,53 @@ async def test_a_child_ends(
 def run_name_id(run: str) -> str:
     """The run ID part of a record name."""
     return run.split("Z-", 1)[1]
+
+
+async def test_a_childs_submitted_result_outlives_its_deleted_environment(
+    harness: Harness, service: ChildService
+) -> None:
+    """A child in its own environment submits its result; its sandbox is then deleted,
+    so the worker answers its closing's job read with ``no environment``. The closing
+    still closes (D-G3: a hook that fails for a reason outside the agent's control never
+    ends a run): the child ends with its answer, its record names the gap, and the parent
+    reads the result it submitted."""
+    configure(harness, depth=1, child_environments="tasks")
+
+    async def deleted() -> None:
+        (environment,) = [c.environment_id for c in service.made.values()]
+        service.delete(environment)
+
+    child = [
+        Reply(calls=[call("write_file", path=TABLE, content="1 1 1 1 1 1 1 1\n")]),
+        Reply(calls=[call("submit_result", **TASK_RESULT)]),
+        Reply("Done.", before=deleted),
+    ]
+    root = [
+        Reply(calls=[call("delegate", task=TASK_TEXT)]),
+        Reply(calls=[STEP.calls[0]], before=until_ended(harness)),
+        waiting(),
+        on_first("delegation_status"),
+        Reply(FINAL),
+    ]
+    _, record = await drive(harness, "root", root, delegated=child)
+    (delegation_id,) = started(record)
+    found = delegation(harness, delegation_id)
+    assert service.gone, "the environment was never deleted"
+    assert (found.ended, found.stopped) == ("returned", "answered"), (found.ended, found.stopped)
+    assert found.result is not None
+    assert found.result.get("deviations") == [DEVIATION]
+    store = ProjectStore(harness.state)
+    try:
+        kept = store.run(PROJECT, SESSION, found.run)
+    finally:
+        store.close()
+    assert (kept.stopped, kept.failure, kept.final_text) == ("answered", None, "Done.")
+    gaps = cast(Json, kept.summaries[GAPS])["gaps"]
+    assert [(g["source"], g["point"]) for g in gaps] == [("jobs", "closing")], gaps
+    status = tool_results(record)[-1]
+    assert status.get("ended") == "returned", status
+    assert cast(Json, status.get("result") or {}).get("deviations") == [DEVIATION], status
+    assert (record.stopped, record.final_text) == ("answered", FINAL)
 
 
 # --- 1a. Every stop a child's run can record, as its delegation keeps it -------------

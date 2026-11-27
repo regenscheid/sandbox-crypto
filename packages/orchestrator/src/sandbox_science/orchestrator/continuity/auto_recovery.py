@@ -325,8 +325,10 @@ def mark_transient(
     kind: str,
     *,
     clock: Clock = SYSTEM_CLOCK,
+    why: str | None = None,
 ) -> None:
-    """Record that ``run``'s work was interrupted by a transient loss (bridge, worker).
+    """Record that ``run``'s work was interrupted by a transient loss (bridge, worker),
+    and ``why``, which the run's ``stopped`` event says (``interruption``).
 
     Automatic recovery then retries the interrupted tree; a process restart without such
     a record still waits for the user's Resume unless infrastructure recovery is on.
@@ -353,6 +355,26 @@ def mark_transient(
                 row[0],
                 run,
                 clock.now().timestamp(),
-                json.dumps({"kind": kind, "run": run}, separators=(",", ":")),
+                json.dumps(
+                    {"kind": kind, "run": run, **({"why": why[:500]} if why else {})},
+                    separators=(",", ":"),
+                ),
             ),
         )
+
+
+def interruption(
+    control: ControlStore, project: str, session: str, run: str
+) -> dict[str, str] | None:
+    """The transient loss that interrupted ``run``, as ``mark_transient`` recorded it: its
+    kind and why; ``None`` for none."""
+    with control.read() as tx:
+        row = tx.sql.execute(
+            "SELECT detail FROM research_observations WHERE project=? AND session=? "
+            "AND kind='transient_failure' AND identity=? ORDER BY observed DESC LIMIT 1",
+            (project, session, run),
+        ).fetchone()
+    if row is None:
+        return None
+    detail = json.loads(row[0])
+    return {key: str(detail[key]) for key in ("kind", "why") if key in detail}
