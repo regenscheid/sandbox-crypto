@@ -111,6 +111,19 @@ FAILURE_COOLDOWN_SECONDS: Final = 300
 
 DOCUMENT_FEED: Final = FeedCursor("document")
 """How far each session's reviewer has read the project's document events."""
+FeedKind = Literal[
+    "transcript",
+    "execution",
+    "document",
+    "artifact",
+    "ledger",
+    "source",
+    "action",
+    "delegation",
+    "unobserved",
+]
+"""The kinds of item a live run's observation copies into the review feed; ``unobserved``
+is the marker of one it could not copy (CR-50)."""
 UNREVIEWED_SHOWN: Final = 16
 """The most unreviewed ranges a summary or a final review's record lists."""
 _HANDLE: Final = re.compile(r"(?<![\w-])(?:REF|[ICRADT])-[1-9][0-9]{0,8}(?![\w-])")
@@ -240,16 +253,53 @@ class ReviewStore:
             raise DocumentError(NOT_FOUND, "no such review session")
 
     def config(self, project: str) -> tuple[ReviewConfig, str]:
-        row = None
-        if not self.documents.control.missing:
-            with self.documents.control.read() as tx:
-                row = tx.sql.execute(
-                    "SELECT payload FROM review_config WHERE project=? ORDER BY number DESC "
-                    "LIMIT 1",
-                    (project,),
-                ).fetchone()
-        value = ReviewConfig.model_validate_json(row[0]) if row else self.defaults
+        """The project's effective review settings and their digest: its own, over the
+        deployment's (``defaults``) for those it does not set. A row ``configure`` wrote
+        sets them all."""
+        own = self.project_settings(project)
+        value = (
+            ReviewConfig.model_validate({**self.defaults.model_dump(), **own})
+            if own
+            else self.defaults
+        )
         return value, digest(value.model_dump_json())
+
+    def project_settings(self, project: str) -> Json:
+        """The review settings the project sets itself, as its latest row holds them."""
+        if self.documents.control.missing:
+            return {}
+        with self.documents.control.read() as tx:
+            row = tx.sql.execute(
+                "SELECT payload FROM review_config WHERE project=? ORDER BY number DESC LIMIT 1",
+                (project,),
+            ).fetchone()
+        return stored_json(row[0]) if row else {}
+
+    def set_project(self, project: str, **settings: object) -> Json:
+        """Set some of the project's own review settings, keeping the others it set: those
+        it never set follow the deployment's (an operator's ``project review``). Returns
+        the project's own settings."""
+        try:
+            recorded(self.documents.path.parent, project)
+        except ProjectError:
+            raise DocumentError(NOT_FOUND, "no such review project") from None
+        with self.documents.control.write() as tx:
+            db = tx.sql
+            row = db.execute(
+                "SELECT payload,number FROM review_config WHERE project=? "
+                "ORDER BY number DESC LIMIT 1",
+                (project,),
+            ).fetchone()
+            own = {**(stored_json(row[0]) if row else {}), **settings}
+            try:
+                ReviewConfig.model_validate({**self.defaults.model_dump(), **own})
+            except ValidationError:
+                raise DocumentError(INVALID_REQUEST, "invalid review settings") from None
+            db.execute(
+                "INSERT INTO review_config VALUES(?,?,?,?)",
+                (project, (row[1] if row else 0) + 1, dump(own), self.clock()),
+            )
+        return own
 
     def configure(self, project: str, session: str, config: ReviewConfig) -> str:
         self.scope(project, session)
@@ -279,16 +329,7 @@ class ReviewStore:
         project: str,
         session: str,
         key: str,
-        kind: Literal[
-            "transcript",
-            "execution",
-            "document",
-            "artifact",
-            "ledger",
-            "source",
-            "action",
-            "delegation",
-        ],
+        kind: FeedKind,
         locator: Json,
         payload: Json,
         *,
@@ -471,15 +512,19 @@ class ReviewStore:
         )
 
     def run_effects(self, project: str, session: str, run: str) -> bool:
-        """Derive effects from durable run-attributed observations, not callbacks."""
+        """Derive effects from durable run-attributed observations, not callbacks: an
+        observation of the run's with effects, a call of its that changed something (an
+        ``action``: a delegation or its acceptance, a ledger or document change), or its
+        delegated runs' work, observed for it (``for_run``)."""
         self.scope(project, session)
         with self.documents.control.read() as tx:
             db = tx.sql
             return (
                 db.execute(
-                    "SELECT 1 FROM review_feed WHERE project=? AND session=? AND effects=1 "
-                    "AND json_extract(locator,'$.run')=? LIMIT 1",
-                    (project, session, run),
+                    "SELECT 1 FROM review_feed WHERE project=? AND session=? AND (("
+                    "(effects=1 OR kind='action') AND json_extract(locator,'$.run')=?) "
+                    "OR json_extract(locator,'$.for_run')=?) LIMIT 1",
+                    (project, session, run, run),
                 ).fetchone()
                 is not None
             )
@@ -657,9 +702,14 @@ class ReviewStore:
                             else ("inconclusive" if checked == "inconclusive" else "not_rechecked"),
                         }
                     )
+        unread: list[Json] = []
+        if review is not None:
+            with self.documents.control.read() as tx:
+                unread = self._named_unread(tx.sql, review)
         return {
             "review": review,
             "findings": found,
+            "unread": unread,
             "outcome": "pending" if state == "running" else state,
             "finished": state not in ("pending", "running", "dropped", "failed"),
             "complete": coverage["complete"],
@@ -667,6 +717,43 @@ class ReviewStore:
             "fixes_claimed": sum(int(claimed or 0) for _, _, claimed in rows),
             **coverage,
         }
+
+    @staticmethod
+    def _named_unread(db: sqlite3.Connection, review: str) -> list[Json]:
+        """The items ``review``'s coverage names unread (CR-49 as amended), the first
+        ``UNREVIEWED_SHOWN``: each one's evidence, kind, what it copies (the artifact, the
+        execution or the run's message its locator names) and why it held nothing to read."""
+        row = db.execute(
+            "SELECT payload FROM review_records WHERE review_id=? AND kind='coverage' "
+            "ORDER BY rowid DESC LIMIT 1",
+            (review,),
+        ).fetchone()
+        listed = cast(list[str], stored_json(row[0]).get("unread", [])) if row else []
+        named: list[Json] = []
+        for evidence in listed[:UNREVIEWED_SHOWN]:
+            found = db.execute(
+                "SELECT kind,locator,payload FROM review_evidence WHERE evidence_id=?",
+                (evidence,),
+            ).fetchone()
+            if found is None:
+                continue
+            locator, payload = stored_json(found[1]), stored_json(found[2])
+            artifact = locator.get("artifact")
+            what = (
+                cast(Json, artifact).get("artifact_id")
+                if isinstance(artifact, dict)
+                else locator.get("operation") or locator.get("execution") or locator.get("key")
+            )
+            why = payload.get("omitted") or payload.get("reason") or payload.get("contents")
+            named.append(
+                {
+                    "evidence": evidence,
+                    "kind": found[0],
+                    "item": what,
+                    "why": clipped(str(why or payload.get("availability") or ""), 256),
+                }
+            )
+        return named
 
     def request(self, project: str, session: str) -> None:
         self.scope(project, session)
@@ -1767,11 +1854,12 @@ class ReviewStore:
                 raise DocumentError(CONFLICT, "the review owner renewed its lease")
             if outcome != "dropped":
                 self.owner(found, owner)
-            # A pass of a window read whole stays a pass when an item was cut short or
-            # backlog waits before it (CR-49): its coverage says what was partial, and an
-            # incomplete span keeps the review's coverage_complete false for the ledger.
-            # One given an item it could not read is inconclusive.
-            if outcome == "passed" and self._unreadable(db, found):
+            # A pass stays a pass when an item was cut short, could not be read, or
+            # backlog waits before its window (CR-49 as amended): its coverage names the
+            # items partial and those unread, and an incomplete span keeps the review's
+            # coverage_complete false, so the ledger gate credits no entry it held. One
+            # that had nothing it could read is inconclusive.
+            if outcome == "passed" and self._unread(db, found)[1]:
                 outcome = "inconclusive"
             cap_reached = cap_reached or bool(found["cap_reached"])
             if cap_reached and outcome in ("passed", "findings", "inconclusive"):
@@ -1925,22 +2013,28 @@ class ReviewStore:
         return sorted(grouped.items())
 
     @staticmethod
-    def _unreadable(db: sqlite3.Connection, run: Json) -> bool:
-        """Whether a new item of an author-work review's window, or any item of a
-        re-check, holds no content to read (CR-49): an artifact whose text could not be
-        copied, or an observation left out for its size (``omitted``). An item cut short,
+    def _unread(db: sqlite3.Connection, run: Json) -> tuple[list[str], bool]:
+        """The new items of an author-work review's window, or any items of a re-check,
+        that hold no content to read (CR-49 as amended): an artifact whose text could not
+        be copied, an observation left out for its size (``omitted``) or one that was not
+        observed (CR-50); and whether the review had nothing else to read: a re-check
+        given any such item, or a window whose new items are all such. An item cut short,
         which keeps its head and tail, is read."""
-        rows = db.execute(
-            "SELECT evidence_id FROM review_evidence WHERE review_id=? AND complete=0 "
-            "AND ((kind='artifact' AND coalesce(json_extract(payload,'$.availability'),"
-            "'text')!='text') OR json_type(payload,'$.omitted') IS NOT NULL "
-            "OR json_extract(payload,'$.contents') LIKE 'Unavailable:%')",
-            (run["review_id"],),
-        ).fetchall()
+        rows = [
+            evidence
+            for (evidence,) in db.execute(
+                "SELECT evidence_id FROM review_evidence WHERE review_id=? AND complete=0 "
+                "AND ((kind='artifact' AND coalesce(json_extract(payload,'$.availability'),"
+                "'text')!='text') OR json_type(payload,'$.omitted') IS NOT NULL "
+                "OR json_extract(payload,'$.contents') LIKE 'Unavailable:%') ORDER BY ordinal",
+                (run["review_id"],),
+            )
+        ]
         if not rows or run["kind"] == "confirmation":
-            return bool(rows)
+            return rows, bool(rows)
         window = {e for _, copies in ReviewStore._window_items(db, run) for e in copies}
-        return any(evidence in window for (evidence,) in rows)
+        unread = [evidence for evidence in rows if evidence in window]
+        return unread, bool(window) and window <= set(unread)
 
     @staticmethod
     def _examined(db: sqlite3.Connection, review: str) -> set[str]:
@@ -1992,8 +2086,9 @@ class ReviewStore:
         """What an ending author-work review covered: ``through``, the feed position up to
         which it covered its window (its end when it covered every new item), or None when
         it covered none, and ``from``, the first it covered; the new items it covered,
-        those it left unreviewed, those it examined and those cut short (``partial``).
-        Without a verdict it covered none. With one, a new item is covered when the
+        those it left unreviewed, those it examined, those cut short or with nothing to
+        read (``partial``), and of these the ones with nothing to read (``unread``,
+        ``_unread``). Without a verdict it covered none. With one, a new item is covered when the
         reviewer did not name it unreviewed and, when only what it examined counts,
         examined it (``_examined``). A checkpoint covers its window in feed order, up to
         the first item it did not cover; a final review newest first, back to the first it
@@ -2041,6 +2136,7 @@ class ReviewStore:
             "from": first,
             "end": run["end_seq"],
             "partial": partial,
+            "unread": ReviewStore._unread(db, run)[0],
             "verdict": verdict,
             "examined_only": examined_only,
             "covered": covered,

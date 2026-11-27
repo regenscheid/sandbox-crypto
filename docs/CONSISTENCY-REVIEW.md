@@ -45,8 +45,10 @@ cannot read through a reviewer grant, spend budget, raise a finding or finalize 
 ## Running and scheduling
 
 With `--state-dir`, the harness observes its transcript, canonical execution projections
-(one item for each state a tool call saw an execution in, a `wait_jobs` call's ended jobs
-included, whose record keeps their executions for the review: lab 41's B7),
+(one item for each state and reading a tool call saw an execution in, a `wait_jobs` call's
+ended jobs included, whose record keeps their whole executions for the review, as
+`job_status` does: lab 41's B7; two readings of one state that differ are two items, the
+same reading again is one),
 agent-authored document revisions, the session's agents' ledger revisions and the flags
 their changes raise or clear ([ledger](LEDGER.md))
 and durable explicit-publication artifact events. A run's transcript starts after its view
@@ -80,7 +82,17 @@ failed, a terminal summary says `off`, and the session's review list says so, fr
 is unavailable makes zero reviewer model calls; its required window remains pending
 under a paced retry after repeated failures. Neither becomes a pass.
 
-**Limits (SNOVA follow-up).** A new author-work review takes a contiguous feed prefix of at most 16 new evidence items and approximately 256 KiB by default, with the existing 256-item/8-MiB snapshot ceiling still bounding finding groups and derived context. It also carries up to eight recent evidence items from before the watermark, within 128 KiB; prior ledger claims are carried as non-promotable context and oversized prior evidence is represented by a locator marker, so a claim and observation on opposite sides of a window boundary can be compared. One oversized first new item is admitted so the cursor cannot stall. A clean prefix can pass its own span, but its `coverage_complete` remains false while later feed rows are pending, so ledger promotion cannot use it. A partial delegated batch remains incomplete. A window read whole is `passed` or `findings` though an item in it was cut short or backlog waits before it (CR-49), unless an item held nothing to read (an artifact whose text could not be copied, or an observation left out for its size), which keeps a pass `inconclusive`: its coverage names the items cut short (`partial`), and its `coverage_complete` stays false. The session's coverage is the union of the ranges its reviews covered with a verdict other than `inconclusive` (the coverage record's `from` to `through`; a record from before names no `from` and covers from its window's start): complete when the union leaves no row of the session's feed out (`ReviewStore.coverage`). The session's review list carries it as `coverage`: the position reviewed up to (the watermark), the feed's end, whether it is complete and the first 16 ranges left out. Positions up to `not_recorded_through` were reviewed by reviews from before coverage records: their coverage is not recorded, which the summary says, and they are neither complete nor unreviewed.
+**What the observation cannot copy (CR-50).** Recording review evidence never ends a run.
+An observation the feed refuses (such as a second, different reading under one key), or an
+ingestion that fails (documents, ledger, artifacts, delegated work), is logged, and the
+item is a gap in the review's evidence: an `unobserved` feed row in its place
+(`ReviewController._gap`, keyed `unobserved:<digest>`), with nothing to read
+(`omitted`: `not observed: <why>`, the original item's kind and key), which the next
+review is given and names unread; a failed ingestion also leaves its coverage incomplete.
+A gap the feed refuses too is only logged. A review that cannot start, or a reviewer task
+that ended in an error, is logged at the safe point and its window waits for the next.
+
+**Limits (SNOVA follow-up).** A new author-work review takes a contiguous feed prefix of at most 16 new evidence items and approximately 256 KiB by default, with the existing 256-item/8-MiB snapshot ceiling still bounding finding groups and derived context. It also carries up to eight recent evidence items from before the watermark, within 128 KiB; prior ledger claims are carried as non-promotable context and oversized prior evidence is represented by a locator marker, so a claim and observation on opposite sides of a window boundary can be compared. One oversized first new item is admitted so the cursor cannot stall. A clean prefix can pass its own span, but its `coverage_complete` remains false while later feed rows are pending, so ledger promotion cannot use it. A partial delegated batch remains incomplete. A window read is `passed` or `findings` though an item in it was cut short, held nothing to read (an artifact whose text could not be copied, an observation left out for its size, or one not observed, CR-50) or backlog waits before it (CR-49 as amended): its coverage names the items cut short or unread (`partial`) and, of these, those with nothing to read (`unread`, `ReviewStore._unread`), and its `coverage_complete` stays false, so the ledger gate (LG-17) credits no entry revision the review held, whichever artifact that entry rests on. `inconclusive` is for a review that could not do its job: one that could not decide, a window whose new items all held nothing to read, or a re-check given an item with nothing to read. The session's coverage is the union of the ranges its reviews covered with a verdict other than `inconclusive` (the coverage record's `from` to `through`; a record from before names no `from` and covers from its window's start): complete when the union leaves no row of the session's feed out (`ReviewStore.coverage`). The session's review list carries it as `coverage`: the position reviewed up to (the watermark), the feed's end, whether it is complete and the first 16 ranges left out. Positions up to `not_recorded_through` were reviewed by reviews from before coverage records: their coverage is not recorded, which the summary says, and they are neither complete nor unreviewed.
 
 **Keeping up (CR-49).** A checkpoint whose window starts with more than three windows (`BACKLOG_WINDOWS`) of new items after the watermark, and has no failed window to retry, is given the newest window: its dispatch moves the watermark past the rest and records that range as `review.unreviewed` with reason `backlog`, so the reviewer spends what it would have on the newest work, and the final review picks the range up if its budget allows.
 
@@ -97,8 +109,15 @@ more than three windows to the newest (CR-49), and the run's final review takes 
 is left as its budget allows. A request, and a window whose review covered nothing, still make one due;
 a re-check moves nothing. The terminal rule classifier records
 its version, completion-claim match, durable run effects, open/claimed-fixed finding
-states and document/ledger/artifact ingestion coverage. Ordinary conversation without those triggers
-skips terminal review; failed/interrupted author loops do not run a terminal reviewer.
+states and document/ledger/artifact ingestion coverage. A run's durable effects
+(`ReviewStore.run_effects`) are its observations with effects, the calls it made that
+changed something (its `action` rows: a delegation, an acceptance, a ledger, document or
+plan change) and its delegated runs' work observed for it (`for_run`), so a run that only
+delegated is reviewed. Ordinary conversation without those triggers
+skips terminal review, and the run's summary says so (`no_final_review`, `NOTHING_TO_REVIEW`),
+as it does when the project's reviews are disabled (`REVIEWS_DISABLED`) or the deployment's
+end does not wait (`NOT_WAITED`); failed/interrupted author loops do not run a terminal
+reviewer.
 
 **The final review (CR-48).** When the main run gives its final answer, terminal
 ingestion drains through a pinned document-event head, and a ledger-event head, in pages
@@ -107,9 +126,12 @@ page's observations and its cursor commit in one change, as the artifact pages' 
 the session is checked once per call, not per item. A page that fails (an observation the
 store refuses) stops that ingestion as a whole: no later page is read, and the next
 boundary starts again at the same cursor. The whole wait at a run's end is bounded by
-`END_WAIT_SECONDS` (540 s: the final review's 480 s and a minute): a checkpoint still
-running is waited for within that minute, and if it has not ended it is ended at its
-deadline. Then the controller makes one final review, one a run (`dispatch(..., final=True)`, kind `terminal`, its
+`END_WAIT_SECONDS` (540 s: the final review's 480 s and a minute). A checkpoint still
+running when a final review is to follow is ended at once (`SUPERSEDED`), as a deadline
+ends one: its findings are kept and its window, recorded unreviewed, is the final review's
+to cover with the newest work, rather than waited for and then discarded. At the end of
+a conversation, which has no final review, a running checkpoint is waited for within that
+minute, and ended at its deadline if it has not ended. Then the controller makes one final review, one a run (`dispatch(..., final=True)`, kind `terminal`, its
 classifier marked `final`), never a walk through the backlog: it is given what no review
 covered with a verdict since the run began, or since the watermark if that is earlier,
 newest first (`snapshot_reads.final_items`), then the ranges the session's reviews
@@ -179,8 +201,9 @@ answering_failed: true`. The hook's
 summary, the run record's `review_summary`, carries `final_review`
 (`ReviewStore.final_summary`): `mode`, the review, its outcome, `finished`, `answered`, the
 open findings by severity (`open`), `fixes_claimed`, `complete`, `reviewed_through`,
-`feed_end` and the first 16 `unreviewed` ranges; the workspace's run section shows it as
-one line.
+`feed_end`, the first 16 `unreviewed` ranges, and the items its coverage names unread
+(`unread`: each one's evidence, kind, what it copies and why it held nothing to read);
+the workspace's run section shows it as one line.
 
 `ReviewController(persistent=True, messages=asyncio.Queue())` supplies a host boundary
 for immediate new user input while the detached review continues. The host must retain

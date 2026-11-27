@@ -39,8 +39,34 @@ PAGE: Final = 10
 ARTIFACT_FEED: Final = FeedCursor("artifact")
 """How far each session's reviewer has read the project's artifact events."""
 _TEXT_TYPES = frozenset(
-    ("text/plain", "text/markdown", "text/csv", "text/tab-separated-values", "application/json")
+    (
+        "application/json",
+        "application/toml",
+        "application/x-sh",
+        "application/x-tex",
+        "application/x-latex",
+        "application/yaml",
+        "application/x-yaml",
+        "application/octet-stream",
+    )
 )
+"""The media types besides ``text/*`` whose bytes are copied as text when they are strict
+UTF-8 with no control characters: data and scripts, and the type a file whose name the
+worker does not know gets (a ``.sage`` or ``.gp`` script, say)."""
+_NOT_TEXT: Final = frozenset(("text/html",))
+"""``text/*`` types never copied as text: markup a viewer would render."""
+
+
+def text_media(media_type: str) -> bool:
+    """Whether a file of ``media_type`` may be copied for a review as text, its bytes
+    deciding: any ``text/*`` type but rendered markup (a ``.py`` file is ``text/x-python``),
+    or one of ``_TEXT_TYPES``, with no charset but UTF-8 or ASCII."""
+    parts = media_type.casefold().split(";")
+    main = parts[0].strip()
+    params = [p.strip().replace('"', "") for p in parts[1:]]
+    return ((main.startswith("text/") and main not in _NOT_TEXT) or main in _TEXT_TYPES) and all(
+        p in ("charset=utf-8", "charset=utf8", "charset=us-ascii") for p in params
+    )
 
 
 class ArtifactProjection(Contract):
@@ -113,15 +139,11 @@ def project_artifact(
             raise DocumentError(CONFLICT, "artifact event path/session grant differs")
     available: Literal["text", "binary", "oversize", "non_utf8", "unavailable"] = "text"
     reason, copied = "", None
-    parts = reference.media_type.casefold().split(";")
-    params = [p.strip().replace('"', "") for p in parts[1:]]
     if revision.deleted:
         available, reason = "unavailable", "the file was deleted"
     elif not revision.content_retained:
         available, reason = "unavailable", f"the bytes were not kept ({revision.content_note})"
-    elif parts[0].strip() not in _TEXT_TYPES or any(
-        p not in ("charset=utf-8", "charset=utf8", "charset=us-ascii") for p in params
-    ):
+    elif not text_media(reference.media_type):
         available, reason = "binary", "media type is outside the raw text evidence allowlist"
     elif reference.size > TEXT_BYTES:
         available, reason = "oversize", "artifact exceeds the 64 KiB source copy limit"
@@ -414,6 +436,10 @@ def _project_uncertain(
             "source": source.model_dump(mode="json"),
             "reason": "Control bytes are not retained; no source content is granted.",
         }
+        if state.receipt is not None and state.receipt.message:
+            # Why the publication was held, as the run was told: a worker's refusal of a
+            # path with no file, say.
+            payload["held"] = state.receipt.message
         locator = {"operation": operation, "run": source.run_id}
         found.append(
             (op, _Observation(f"artifact:operation:{operation}", locator, payload, False, 0))

@@ -909,3 +909,146 @@ def test_an_accept_action_says_whether_its_files_were_read() -> None:
     whole = {"accept": {"delegation_id": "dlg-2"}}
     assert _made(unread, {}) == ["accepted delegation dlg-1, accepted unread: a.py"]
     assert _made(whole, {}) == ["accepted delegation dlg-2, its files read whole"]
+
+
+def _delegated(reviews: ReviewStore) -> None:
+    """The run's ``delegate`` call, an action: all the work a run that only delegates does
+    itself."""
+    reviews.observe(
+        "p",
+        "s",
+        "turn-1:action:2",
+        "action",
+        {"run": "author-1", "invocation": "turn-1", "message": 2},
+        {"tool": "delegate", "call": "call-1", "outcome": "ok", "made": ["delegation dlg-1"]},
+    )
+
+
+async def test_a_run_that_only_delegated_has_a_final_review(store) -> None:
+    """The cluster's live test of 2026-11-27: two main runs that delegated tasks and
+    accepted them, and ran nothing themselves, ended with no final review, since only a
+    run's own executions and files counted as work to review."""
+    reviews, _, _ = store
+    _delegated(reviews)
+    controller = ReviewController(
+        reviews, context_for(reviews), run_id="author-1", model=LabReviewer(), alias="reviewer"
+    )
+    summary = await controller.terminal([], "Delegated as dlg-1; out/result.txt holds line 1.")
+    assert summary["classifier"]["effects"]
+    assert summary["final_review"]["review"] is not None
+    assert "no_final_review" not in summary
+    (review,) = reviews.listing("p", "s")["reviews"]
+    assert (review["kind"], review["classifier"]["final"]) == ("terminal", True)
+
+
+async def test_a_run_end_without_a_final_review_says_why(store) -> None:
+    """A run that changed nothing and whose answer claims no work has no final review,
+    and its end state says so, as it does when the project's reviews are disabled."""
+    from sandbox_science.orchestrator.consistency.controller import (
+        NOTHING_TO_REVIEW,
+        REVIEWS_DISABLED,
+    )
+
+    reviews, _, _ = store
+    controller = ReviewController(
+        reviews, context_for(reviews), run_id="author-1", model=LabReviewer(), alias="reviewer"
+    )
+    summary = await controller.terminal([], "Which file should I read?")
+    assert (summary["no_final_review"], reviews.listing("p", "s")["reviews"]) == (
+        NOTHING_TO_REVIEW,
+        [],
+    )
+    reviews.configure("p", "s", ReviewConfig(enabled=False))
+    summary = await controller.terminal([], "Which file should I read?")
+    assert summary["no_final_review"] == REVIEWS_DISABLED
+
+
+async def test_a_checkpoint_running_at_the_end_gives_its_window_to_the_final_review(
+    store,
+) -> None:
+    """A checkpoint still running when the run's answer arrives is ended at once, its
+    window recorded unreviewed, and the final review covers that window with the newest
+    work, rather than waiting a minute for the checkpoint and then discarding it."""
+    from sandbox_science.orchestrator.consistency.controller import SUPERSEDED
+    from sandbox_science.testing import eventually
+
+    reviews, _, _ = store
+    reviews.defaults = ReviewConfig(min_interval_seconds=0)
+    seq = claim(reviews)
+    reviews.request("p", "s")
+    model = DelayedReviewer()
+    controller = ReviewController(
+        reviews, context_for(reviews), run_id="author-1", model=model, alias="reviewer"
+    )
+    await controller.safe_point([])
+    await model.started.wait()
+    (checkpoint,) = reviews.listing("p", "s")["reviews"]
+    _delegated(reviews)
+    ending = asyncio.create_task(controller.terminal([], "Delegated as dlg-1."))
+    try:
+
+        def final() -> list[Any]:
+            return [r for r in reviews.listing("p", "s")["reviews"] if r["kind"] == "terminal"]
+
+        # The final review starts while the checkpoint's model call is still unanswered.
+        (review,) = await eventually(final, timeout=10)
+        ended = reviews.run("p", "s", checkpoint["review_id"])
+        assert (ended["state"], ended["summary"]) == ("capped", SUPERSEDED)
+        model.release.set()
+        summary = await ending
+    finally:
+        model.release.set()
+        await controller.close()
+    assert summary["final_review"]["review"] == review["review_id"]
+    assert summary["final_review"]["outcome"] == "passed"
+    # The checkpoint's window is the final review's to cover: nothing is left unreviewed.
+    assert summary["final_review"]["complete"]
+    assert reviews.coverage("p", "s")["unreviewed"] == []
+    assert reviews.run("p", "s", review["review_id"])["start_seq"] <= seq
+
+
+def test_an_operator_sets_a_projects_final_review(
+    tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``project review`` shows the project's final review and sets it, the project's own
+    over the deployment's; the settings it does not set follow the deployment's."""
+    from sandbox_science.orchestrator import cli
+    from sandbox_science.orchestrator.documents import DocumentStore, store_path
+    from sandbox_science.orchestrator.projects import ProjectStore
+
+    projects = ProjectStore(tmp_path)
+    projects.create("p", "minimal", "sha256:" + "a" * 64)
+    projects.close()
+    argv = ["project", "review", "--state-dir", str(tmp_path), "--project", "p"]
+    assert cli.main(argv) == 0
+    assert capsys.readouterr().out == (
+        "project p: final review the deployment's ([model].final_review; after unless it is "
+        "set): after, by default; other review settings: the deployment's\n"
+    )
+    assert cli.main([*argv, "--final-review", "hold"]) == 0
+    assert capsys.readouterr().out == (
+        "project p: final review hold, the project's own: the answer is held until the "
+        "final review ends; other review settings: the deployment's\n"
+    )
+    documents = DocumentStore(store_path(tmp_path))
+    try:
+        reviews = ReviewStore(documents)
+        # The deployment's other settings still apply: here, its hourly calls.
+        reviews.defaults = ReviewConfig(calls_per_hour=500, final_review="after")
+        config, _ = reviews.config("p")
+        assert (config.final_review, config.calls_per_hour) == ("hold", 500)
+    finally:
+        documents.close()
+    assert cli.main([*argv, "--final-review", "after"]) == 0
+    assert "final review after, the project's own" in capsys.readouterr().out
+    assert cli.main([*argv, "--project", "missing"]) == 1
+
+
+def test_a_stored_review_configuration_still_sets_every_setting(store) -> None:
+    """A row ``configure`` wrote, as before projects set some settings of their own, sets
+    them all: the deployment's do not show through."""
+    reviews, _, _ = store
+    reviews.configure("p", "s", ReviewConfig(calls_per_hour=10))
+    reviews.defaults = ReviewConfig(calls_per_hour=500, final_review="hold")
+    config, _ = reviews.config("p")
+    assert (config.calls_per_hour, config.final_review) == (10, "after")

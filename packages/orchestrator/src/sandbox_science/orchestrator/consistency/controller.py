@@ -7,7 +7,7 @@ import asyncio
 import contextlib
 import logging
 import re
-from collections.abc import AsyncGenerator, Collection, MutableSequence, Sequence
+from collections.abc import AsyncGenerator, Callable, Collection, MutableSequence, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from functools import partial
 from typing import TYPE_CHECKING, Any, Final, cast
@@ -71,7 +71,8 @@ from .quotes import (
 )
 from .rubric import CLASSIFIER_VERSION
 from .runner import ReviewerRunner, schema
-from .store import MAX_ITEM_BYTES, Json, ReviewStore, clipped, dump
+from .store import MAX_ITEM_BYTES, FeedKind, Json, ReviewStore, clipped, dump
+from .values import digest
 
 if TYPE_CHECKING:
     from sandbox_science.orchestrator.projects import RunRecord
@@ -203,6 +204,20 @@ REVIEWS_OFF: Final = (
     "them on."
 )
 """Why a session's reviews are off, as its review list says once."""
+NOTHING_TO_REVIEW: Final = (
+    "No final review: the run changed nothing, by its own calls or its delegated runs', and "
+    "its answer claims no finished work."
+)
+"""Why a main run's end had no final review: its answer is conversation (``classify``)."""
+REVIEWS_DISABLED: Final = "No final review: consistency reviews are disabled for the project."
+"""Why a main run's end had no final review: the project's reviews are disabled."""
+NOT_WAITED: Final = (
+    "No final review: the deployment does not wait for reviews at a run's end "
+    "(terminal_hold is off); the review that was running goes on."
+)
+"""Why a main run's end had no final review: its end does not wait for reviews."""
+SUPERSEDED: Final = "Ended at the run's end: the run's final review covers its window."
+"""A checkpoint still running when the final review starts, as its summary says (CR-48)."""
 _COMPLETE = re.compile(
     r"\b(?:done|completed|finished|implemented|task is complete|work is complete)\b", re.I
 )
@@ -221,6 +236,8 @@ def classify(final_text: str | None, *, effects: bool, unresolved: bool) -> Json
 
 
 _log = logging.getLogger(__name__)
+GAP_LOCATOR_BYTES: Final = 2048
+"""The largest locator of an item not observed that its gap's marker repeats."""
 
 
 def source_of(
@@ -428,6 +445,50 @@ class ReviewController:
     def specs(self) -> tuple[ToolSpec, ...]:
         return AUTHOR_SPECS
 
+    async def _recorded(
+        self, key: str, kind: FeedKind, locator: Json, step: Callable[[], object]
+    ) -> bool:
+        """Run ``step``, which records what ``key`` names in the review feed; whether it
+        did. A step that fails, such as a second reading under a key that names different
+        evidence, leaves a gap in the review's evidence (``_gap``), never a failed run
+        (CR-50)."""
+        try:
+            await asyncio.to_thread(step)
+        except Exception as error:
+            await self._gap(key, kind, locator, error)
+            return False
+        return True
+
+    async def _gap(self, key: str, kind: FeedKind, locator: Json, error: Exception) -> None:
+        """Log that the item ``key`` names, of ``kind``, was not observed, and why, and
+        record a marker the review is given in its place (CR-50), an item of its own even
+        for an action or a source, which the feed folds: incomplete and with nothing to
+        read, so its review names it unread and credits no ledger entry its window holds.
+        A marker the feed refuses too is logged only."""
+        why = error.message if isinstance(error, DocumentError) else type(error).__name__
+        _log.warning("review evidence %s was not observed: %s", key, why)
+        marker: Json = {
+            "omitted": "not observed: " + clipped(why, 512),
+            "kind": kind,
+            "key": clipped(key, 200),
+        }
+        try:
+            await asyncio.to_thread(
+                self.store.observe,
+                *self.scope,
+                "unobserved:" + digest(dump(marker))[:32],
+                "unobserved",
+                {
+                    **(locator if len(dump(locator).encode()) <= GAP_LOCATOR_BYTES else {}),
+                    "run": self.run_id,
+                    "key": clipped(key, 200),
+                },
+                marker,
+                complete=False,
+            )
+        except Exception:
+            _log.exception("the gap in review evidence %s was not recorded", key)
+
     async def _source(self, messages: Sequence[Message], call: Json | None) -> None:
         """Record what a tool call read that a quote can cite, as a ``source``
         observation that makes no review due (CR-4), under a key that begins with its
@@ -438,8 +499,13 @@ class ReviewController:
         _, locator, record = found
         index = len(messages) - 1
         located = {"run": self.run_id, "invocation": self.instance, "message": index, **locator}
-        await asyncio.to_thread(
-            record_source, self.store, *self.scope, f"{self.instance}:{index}", located, record
+        await self._recorded(
+            f"{self.instance}:{index}",
+            "source",
+            located,
+            partial(
+                record_source, self.store, *self.scope, f"{self.instance}:{index}", located, record
+            ),
         )
 
     async def _action(self, messages: Sequence[Message], call: Json | None) -> None:
@@ -449,39 +515,53 @@ class ReviewController:
         if found is None:
             return
         index = len(messages) - 1
-        await asyncio.to_thread(
-            self.store.observe,
-            *self.scope,
-            f"{self.instance}:action:{index}",
+        key = f"{self.instance}:action:{index}"
+        located: Json = {"run": self.run_id, "invocation": self.instance, "message": index}
+        await self._recorded(
+            key,
             "action",
-            {"run": self.run_id, "invocation": self.instance, "message": index},
-            found,
+            located,
+            partial(self.store.observe, *self.scope, key, "action", located, found),
         )
 
     async def _execution(self, execution: Json) -> None:
-        """Record an execution in the state a tool call saw it: one item per state."""
+        """Record an execution in each state and reading a tool call saw it in: two
+        readings of one state that differ (a wait's and a later ``job_status``'s, say) are
+        two items, and the same reading again is one."""
         payload, complete = execution_projection(execution)
         effects = execution.get("started_at") is not None
         self.effects = self.effects or effects
-        await asyncio.to_thread(
-            self.store.observe,
-            *self.scope,
-            f"execution:{execution['execution_id']}:{execution.get('state')}",
+        key = (
+            f"execution:{execution['execution_id']}:{execution.get('state')}:"
+            + digest(dump(payload))[:16]
+        )
+        located: Json = {
+            "execution": execution["execution_id"],
+            "attempt": execution.get("attempt_id"),
+            "run": self.run_id,
+        }
+        await self._recorded(
+            key,
             "execution",
-            {
-                "execution": execution["execution_id"],
-                "attempt": execution.get("attempt_id"),
-                "run": self.run_id,
-            },
-            payload,
-            complete=complete,
-            effects=effects,
-            cells=int(execution.get("kind") == "cell"),
+            located,
+            partial(
+                self.store.observe,
+                *self.scope,
+                key,
+                "execution",
+                located,
+                payload,
+                complete=complete,
+                effects=effects,
+                cells=int(execution.get("kind") == "cell"),
+            ),
         )
 
     async def observe(
         self, messages: Sequence[Message], *, tool: Json | None = None, call: Json | None = None
     ) -> None:
+        """Copy what the run did since the last observation into the review feed. What
+        cannot be copied is a gap the review is told of, not the run's failure (CR-50)."""
         located = await self._places(messages)
         for index in range(self.position, len(messages)):
             message = messages[index]
@@ -494,14 +574,21 @@ class ReviewController:
                 "truncated": len(original) > 32000,
             }
             at = {"archive": located[index]} if index in located else {}
-            await asyncio.to_thread(
-                self.store.observe,
-                *self.scope,
-                f"{self.instance}:message:{index}",
+            key = f"{self.instance}:message:{index}"
+            where: Json = {"run": self.run_id, "invocation": self.instance, "message": index, **at}
+            await self._recorded(
+                key,
                 "transcript",
-                {"run": self.run_id, "invocation": self.instance, "message": index, **at},
-                payload,
-                complete=len(original) <= 32000,
+                where,
+                partial(
+                    self.store.observe,
+                    *self.scope,
+                    key,
+                    "transcript",
+                    where,
+                    payload,
+                    complete=len(original) <= 32000,
+                ),
             )
         self.position = len(messages)
         if tool is not None:
@@ -522,28 +609,48 @@ class ReviewController:
                 artifact = cast(Json, raw_artifact)
                 encoded = dump(artifact)
                 self.effects = True
-                await asyncio.to_thread(
-                    self.store.observe,
-                    *self.scope,
-                    f"{self.instance}:artifact:{self.position}" + (f":{index}" if index else ""),
+                key = f"{self.instance}:artifact:{self.position}" + (f":{index}" if index else "")
+                where = {"artifact": clipped(encoded, 1000), "run": self.run_id}
+                await self._recorded(
+                    key,
                     "artifact",
-                    {"artifact": clipped(encoded, 1000), "run": self.run_id},
-                    {
-                        "reference": clipped(encoded, 16000),
-                        "contents": "Unavailable: this slice pins publication metadata only.",
-                    },
-                    complete=False,
-                    artifacts=1,
-                    effects=True,
+                    where,
+                    partial(
+                        self.store.observe,
+                        *self.scope,
+                        key,
+                        "artifact",
+                        where,
+                        {
+                            "reference": clipped(encoded, 16000),
+                            "contents": "Unavailable: this slice pins publication metadata only.",
+                        },
+                        complete=False,
+                        artifacts=1,
+                        effects=True,
+                    ),
                 )
         # What the run's delegated runs did, once each delegation ends (lab 41's B5).
-        await asyncio.to_thread(observe_delegated, self.store, *self.scope, self.run_id)
-        ingestion = await asyncio.to_thread(self.store.ingest_documents, *self.scope)
-        self.documents_complete = ingestion["complete"]
+        await self._recorded(
+            f"delegated:{self.run_id}",
+            "delegation",
+            {"run": self.run_id},
+            partial(observe_delegated, self.store, *self.scope, self.run_id),
+        )
+        try:
+            ingestion = await asyncio.to_thread(self.store.ingest_documents, *self.scope)
+            self.documents_complete = ingestion["complete"]
+        except Exception as error:
+            self.documents_complete = False
+            await self._gap("documents", "document", {}, error)
         self.ledger_complete = await self._ledger()
         if self.artifact_consumer is not None:
-            artifact_ingestion = await self.artifact_consumer.ingest()
-            self.artifacts_complete = artifact_ingestion["complete"]
+            try:
+                artifact_ingestion = await self.artifact_consumer.ingest()
+                self.artifacts_complete = artifact_ingestion["complete"]
+            except Exception as error:
+                self.artifacts_complete = False
+                await self._gap("artifacts", "artifact", {}, error)
 
     async def _places(self, messages: Sequence[Message]) -> dict[int, Json]:
         """The archive place of each message not observed yet, by its index, when the
@@ -571,8 +678,8 @@ class ReviewController:
         than failing every safe point after it (the review of CR-4)."""
         try:
             read = await asyncio.to_thread(ingest_ledger, self.store, *self.scope, drain=drain)
-        except DocumentError as error:
-            _log.warning("the ledger's events were not read for review: %s", error.message)
+        except Exception as error:
+            await self._gap("ledger", "ledger", {}, error)
             return False
         return bool(read["complete"])
 
@@ -628,17 +735,22 @@ class ReviewController:
         self, messages: Sequence[Message], *, tool: Json | None = None, call: Json | None = None
     ) -> None:
         """``tool`` is the record of the tool call ``messages`` ends with, and ``call`` that
-        call as the run executed it (its ``tool_records`` entry)."""
+        call as the run executed it (its ``tool_records`` entry). The review's bookkeeping
+        never ends the run: a review that cannot start, or ended in an error, is logged
+        and its window waits for the next (CR-50)."""
         await self.observe(messages, tool=tool, call=call)
-        if self.task is not None and self.task.done():
-            await self.task
-            self.task = None
-        if self.final is not None:
-            # The answering turn's work is named unreviewed, not checkpointed (CR-48).
-            return
-        if self.task is None and await asyncio.to_thread(self.store.due, *self.scope):
-            targets = await asyncio.to_thread(self.store.confirmation_targets, *self.scope)
-            await self._dispatch("confirmation" if targets else "checkpoint")
+        try:
+            if self.task is not None and self.task.done():
+                task, self.task = self.task, None
+                await task
+            if self.final is not None:
+                # The answering turn's work is named unreviewed, not checkpointed (CR-48).
+                return
+            if self.task is None and await asyncio.to_thread(self.store.due, *self.scope):
+                targets = await asyncio.to_thread(self.store.confirmation_targets, *self.scope)
+                await self._dispatch("confirmation" if targets else "checkpoint")
+        except Exception:
+            _log.exception("a review of session %s/%s did not start or end", *self.scope)
 
     async def notices(self) -> list[Json]:
         if self.role != "main":
@@ -682,15 +794,23 @@ class ReviewController:
 
     async def terminal(self, messages: Sequence[Message], final_text: str | None) -> Json:
         await self.observe(messages)
-        ingestion = await asyncio.to_thread(self.store.ingest_documents, *self.scope, drain=True)
-        self.documents_complete = ingestion["complete"]
+        ingestion: Json = {"complete": False}
+        try:
+            ingestion = await asyncio.to_thread(
+                self.store.ingest_documents, *self.scope, drain=True
+            )
+        except Exception as error:
+            await self._gap("documents", "document", {}, error)
+        self.documents_complete = bool(ingestion["complete"])
         self.ledger_complete = await self._ledger(drain=True)
-        artifact_ingestion = (
-            await self.artifact_consumer.ingest(drain=True)
-            if self.artifact_consumer is not None
-            else {"complete": True, "enabled": False}
-        )
-        self.artifacts_complete = artifact_ingestion["complete"]
+        artifact_ingestion: Json = {"complete": True, "enabled": False}
+        if self.artifact_consumer is not None:
+            try:
+                artifact_ingestion = await self.artifact_consumer.ingest(drain=True)
+            except Exception as error:
+                artifact_ingestion = {"complete": False, "enabled": True}
+                await self._gap("artifacts", "artifact", {}, error)
+        self.artifacts_complete = bool(artifact_ingestion["complete"])
         states = await asyncio.to_thread(self.store.finding_states, *self.scope)
         effects = await asyncio.to_thread(self.store.run_effects, *self.scope, self.run_id)
         counts = await asyncio.to_thread(self.notice_store.counts, *self.scope)
@@ -706,11 +826,13 @@ class ReviewController:
             "classifier": label,
             "counts": counts,
         }
-        if not config.enabled or self.role != "main":
+        if self.role != "main":
             return self._review_summary(summary)
+        if not config.enabled:
+            return self._review_summary({**summary, "no_final_review": REVIEWS_DISABLED})
         conversation = label["label"] == "conversation"
         if conversation and self.task is None:
-            return self._review_summary(summary)
+            return self._review_summary({**summary, "no_final_review": NOTHING_TO_REVIEW})
         if self.off:
             await self._dispatch("terminal", label)
             return self._review_summary({**summary, "off": REVIEWS_OFF})
@@ -720,15 +842,27 @@ class ReviewController:
         ending = clock() + self.end_seconds
         if self.task is not None:
             if not config.terminal_hold:
-                return self._review_summary({**summary, "pending": True})
-            message = await self._wait(self.task, ending - FINAL_REVIEW_SECONDS)
-            if message is not None:
-                return self._review_summary({**summary, "pending": True, "user_message": message})
-            if not self.task.done() and self.review is not None:
-                # Ended at its deadline: its window is recorded unreviewed (CR-48).
-                await self._expire(self.review, "The run's end left it no more time.")
+                return self._review_summary(
+                    {**summary, "pending": True, "no_final_review": NOT_WAITED}
+                )
+            if not conversation:
+                # The final review is given the checkpoint's window, newest first, with
+                # the work since: the checkpoint ends now rather than at its allowance,
+                # its findings kept and its window recorded unreviewed (CR-48 as amended).
+                if not self.task.done() and self.review is not None:
+                    await self._expire(self.review, SUPERSEDED)
+            else:
+                message = await self._wait(self.task, ending - FINAL_REVIEW_SECONDS)
+                if message is not None:
+                    return self._review_summary(
+                        {**summary, "pending": True, "user_message": message}
+                    )
+                if not self.task.done() and self.review is not None:
+                    # Ended at its deadline: its window is recorded unreviewed (CR-48).
+                    await self._expire(self.review, "The run's end left it no more time.")
             self.task = None
             if conversation:
+                summary["no_final_review"] = NOTHING_TO_REVIEW
                 # An explicit checkpoint review can still be running when the
                 # author's last words merely say it is waiting. Its findings
                 # need the ordinary response round before this run ends.

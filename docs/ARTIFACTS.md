@@ -488,9 +488,12 @@ count a new revision twice; reproductions count zero new revisions. Remaining wo
 is explicit incomplete ingestion and resumes at the next live boundary.
 
 A source copy is at most 64 KiB of exact verified bytes, decoded as strict UTF-8.
-The initial allowlist is `text/plain`, `text/markdown`, `text/csv`,
-`text/tab-separated-values` and `application/json`, with no parameter or only a
-UTF-8/US-ASCII charset parameter. JSON and Markdown remain raw strings, never parsed
+The media types copied are any `text/*` type but `text/html`, `application/json`,
+`application/toml`, `application/yaml`, `application/x-yaml`, `application/x-sh`,
+`application/x-tex`, `application/x-latex` and `application/octet-stream` (the type a
+file gets whose name the worker does not know, such as a `.sage` script), with no
+parameter or only a UTF-8/US-ASCII charset parameter (`consistency.artifacts.text_media`);
+the bytes decide the rest. JSON and Markdown remain raw strings, never parsed
 or rendered. Quotes, backslashes, CRLF and a BOM are preserved. Binary control
 characters, other media/charsets, invalid UTF-8, oversized or unavailable bytes
 produce metadata-only incomplete evidence with a reason. No clipped source is
@@ -501,7 +504,8 @@ A snapshot's copied text cannot change when the worker path or artifact head cha
 
 An unresolved operation gets one finite `artifact:operation:<ID>` observation:
 unknown remote outcome is distinct from a known worker snapshot whose control bytes
-are not retained. Neither grants source content or initiates a worker request. A
+are not retained, and the observation says why the publication was held (`held`, the
+receipt's message the run was told, such as a worker's refusal of a path with no file). Neither grants source content or initiates a worker request. A
 later successful retention emits its normal event. Old uncertainty belongs to its
 own reviewed window and does not make every future window incomplete. This is a
 first uncertainty observation, not an audit of every transfer retry.
