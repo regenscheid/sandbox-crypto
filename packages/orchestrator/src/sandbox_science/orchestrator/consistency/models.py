@@ -37,6 +37,8 @@ FINAL_HOLD_SECONDS: Final = 600
 """How long ``hold`` keeps a final answer from the user for its review (CR-48)."""
 REQUEST_BYTES: Final = 32 * 1024
 """The most bytes of the user's messages each review's snapshot holds as the request."""
+MAX_ACCEPTANCES: Final = 50
+"""The most accepted delegated tasks a final review's acceptances item lists."""
 FINAL_RECHECK_CALLS: Final = 8
 """The calls of the one re-check after a final review's answering turn (CR-48)."""
 FINAL_RECHECK_SECONDS: Final = 180

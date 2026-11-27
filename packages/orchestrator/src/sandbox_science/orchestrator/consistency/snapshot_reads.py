@@ -11,12 +11,13 @@ import json
 import sqlite3
 from collections.abc import Sequence
 from dataclasses import replace
-from typing import Any
+from typing import Any, cast
 
 from sandbox_science.orchestrator.control import ControlStore
 
 from .actions import Earlier
 from .snapshot import (
+    MAX_ITEM_BYTES,
     MAX_SNAPSHOT_BYTES,
     MAX_SNAPSHOT_FINDINGS,
     MAX_SNAPSHOT_ITEMS,
@@ -428,6 +429,47 @@ def request_item(db: sqlite3.Connection, project: str, session: str) -> Evidence
     }
     encoded = dump(payload)
     return EvidenceItem("request", dump({"request": session}), encoded, digest(encoded), 1)
+
+
+def acceptances_item(db: sqlite3.Connection, project: str, session: str) -> EvidenceItem | None:
+    """The session's accepted delegated tasks, the latest ``MAX_ACCEPTANCES`` first, each
+    with the files and deliverables its acceptance recorded and whether the accepting
+    run read each whole (``delegations.review_reads``, PD-46): a final review's context,
+    read from the durable record, so that an acceptance in an earlier window or by an
+    earlier run is seen too (CR-48). None when there is none."""
+    from sandbox_science.orchestrator.delegation.acceptance import unread_text
+
+    from .models import MAX_ACCEPTANCES
+
+    listed: list[Json] = []
+    for delegation, kind, reason, reads in db.execute(
+        "SELECT delegation_id,kind,review_reason,review_reads FROM delegations "
+        "WHERE project_id=? AND session_id=? AND review='accepted' "
+        "ORDER BY reviewed_at DESC LIMIT ?",
+        (project, session, MAX_ACCEPTANCES),
+    ):
+        account = cast(Json, json.loads(reads)) if reads else None
+        listed.append(
+            {
+                "delegation": delegation,
+                "kind": kind,
+                "accepted_by": reason,
+                "files": (account or {}).get("files", []),
+                "unread": unread_text(account) if account is not None else "not recorded",
+            }
+        )
+    if not listed:
+        return None
+    payload: Json = {
+        "about": "The session's accepted delegated tasks and whether the accepting run read "
+        "each result file whole after the task returned: context, not under review.",
+        "acceptances": listed,
+    }
+    encoded = dump(payload)
+    while len(encoded.encode()) > MAX_ITEM_BYTES // 4 and len(listed) > 1:
+        listed.pop()
+        encoded = dump(payload)
+    return EvidenceItem("acceptances", dump({"acceptances": session}), encoded, digest(encoded), 1)
 
 
 def unrecorded_through(db: sqlite3.Connection, project: str, session: str) -> int:
