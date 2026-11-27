@@ -322,6 +322,14 @@ def kind(message: Message) -> str:
         if PLAN_OPEN[:60] in text:
             return PW
         return PH if '"answer_held"' in text else "plans"
+    # The notices that carry a run past an answer and that hold one have framings of
+    # their own; each is still that notice only with what it says to do.
+    for framing, says, name in (
+        (framings.PLANS_WENT_ON, PLAN_OPEN[:60], PW),
+        (framings.PLANS_HELD, '"answer_held"', PH),
+    ):
+        if text.startswith(framing.text):
+            return name if says in text else f"{framing.id}:without-{name}"
     for prefix, name in _FRAMINGS:
         if text.startswith(prefix):
             return name

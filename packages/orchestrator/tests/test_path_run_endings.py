@@ -307,7 +307,7 @@ ENDINGS: Final[tuple[Ending, ...]] = (
         answer="Second.",
         final_text="Second.",
         owed=frozenset({"plan"}),
-        given=("digest", "plans", TASK, "plans", "plans", NEXT),
+        given=("digest", "plans", TASK, "plans-went-on", "plans", NEXT),
         known={"owed": PLAN_UNSAID},
     ),
     Ending(
@@ -373,7 +373,7 @@ ENDINGS: Final[tuple[Ending, ...]] = (
         report=True,
         work=("paused", "gateway_budget"),
         owed=frozenset({"plan"}),
-        given=("digest", "plans", TASK, "plans", "plans", NEXT),
+        given=("digest", "plans", TASK, "plans-went-on", "plans", NEXT),
         known={
             "record": "V-07: a halt after a go-on closes on the mid-plan status as the final text",
             "event": "V-07: a halt after a go-on closes on the mid-plan status as the final text",
