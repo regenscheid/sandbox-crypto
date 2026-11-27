@@ -226,6 +226,22 @@ def _archived(items: Sequence[EvidenceItem]) -> Json:
     return {"archive": {"from": min(positions), "to": max(positions)}} if positions else {}
 
 
+def scoped(db: sqlite3.Connection, project: str, session: str) -> None:
+    """``ReviewStore.scope``'s check in an open transaction of the control store: the
+    project and its session are recorded."""
+    try:
+        Scope(project_id=project, session_id=session)
+    except ValidationError:
+        raise DocumentError(INVALID_REQUEST, "invalid review scope") from None
+    if db.execute("SELECT 1 FROM projects WHERE project_id=?", (project,)).fetchone() is None:
+        raise DocumentError(NOT_FOUND, "no such review project")
+    found = db.execute(
+        "SELECT 1 FROM sessions WHERE project_id=? AND session_id=?", (project, session)
+    ).fetchone()
+    if found is None:
+        raise DocumentError(NOT_FOUND, "no such review session")
+
+
 class ReviewStore:
     """The bounded review repository; DocumentStore initializes the shared database first."""
 
@@ -359,10 +375,12 @@ class ReviewStore:
         cells: int = 0,
         effects: bool = False,
     ) -> int:
-        """Copy one platform observation. A duplicate source key has one immutable value."""
-        self.scope(project, session)
+        """Copy one platform observation. A duplicate source key has one immutable value.
+        The scope is checked in the change itself (``scoped``), which needs no connection
+        of its own, as every tool call's observation would."""
         with self.documents.control.write() as tx:
             db = tx.sql
+            scoped(db, project, session)
             return self.record_observation(
                 db,
                 project,

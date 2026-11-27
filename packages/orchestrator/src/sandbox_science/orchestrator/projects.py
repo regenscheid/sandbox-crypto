@@ -203,6 +203,15 @@ class ModelUsage(Contract):
     """How long the call took, in milliseconds: by a monotonic clock where the call was
     made (a run's own calls), or else the control store's time from the call's intent to
     its observed usage (``continuity.models.observed``); null in older records."""
+    prepared_ms: int | None = Field(default=None, ge=0)
+    """The platform's own time before the call, in milliseconds, where the loop ran: from
+    the start of its turn, through the hooks before the call and the call's intent, to its
+    request (``loop._attempt``); null for a report round's call and in older records."""
+    recorded_ms: int | None = Field(default=None, ge=0)
+    """The platform's own time after the previous call, in milliseconds: from its answer
+    to the start of this call's turn, less the time its tool calls ran, which is their
+    results' notices, records and observers (``loop._run_task``); null for a run's first
+    call and in older records."""
 
 
 def _summary(value: JsonValue | None) -> dict[str, JsonValue]:

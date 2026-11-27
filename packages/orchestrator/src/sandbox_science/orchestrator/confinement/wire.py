@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import base64
 from dataclasses import asdict
-from typing import Annotated, Any, Literal, cast
+from functools import cache
+from typing import Annotated, Any, Final, Literal, cast, get_args
 
 from pydantic import (
     AwareDatetime,
@@ -66,7 +67,7 @@ _MAX_BINARY_B64 = 4 * -(-MAX_BINARY_BYTES // 3)
 
 
 class Hello(Contract):
-    protocol: Literal[9] = CONTROL_PROTOCOL
+    protocol: Literal[10] = CONTROL_PROTOCOL
     image_revision: str = Field(min_length=1, max_length=128)
     apis: dict[ModelAlias, ApiKind] | None = Field(default=None, max_length=256)
     """The adapter the runtime chose for each of its aliases from the gateway's model
@@ -74,7 +75,7 @@ class Hello(Contract):
 
 
 class Ready(Contract):
-    protocol: Literal[9] = CONTROL_PROTOCOL
+    protocol: Literal[10] = CONTROL_PROTOCOL
     generation: Identifier
     projects: tuple[Identifier, ...] = Field(min_length=1, max_length=128)
     control_schema: Counter
@@ -191,7 +192,7 @@ class WireTurn(Contract):
         )
 
     def turn(self) -> ModelTurn:
-        return TypeAdapter(ModelTurn).validate_python(
+        return adapter(ModelTurn).validate_python(
             {
                 **self.model_dump(exclude={"native_b64"}),
                 "native": base64.b64decode(self.native_b64, validate=True)
@@ -199,6 +200,23 @@ class WireTurn(Contract):
                 else None,
             }
         )
+
+
+type HookAsk = Literal[
+    "notices",
+    "halt",
+    "last_call",
+    "report_notices",
+    "consumption",
+    "model_returned",
+    "observe_tool",
+    "closing",
+    "accept",
+    "finishing",
+]
+"""The hook methods the runtime asks the host for at the loop's points."""
+HOOK_ASKS: Final[tuple[HookAsk, ...]] = get_args(HookAsk.__value__)
+"""Every one of them, as a hook given without ``asks`` is asked."""
 
 
 class HookGiven(Contract):
@@ -212,6 +230,10 @@ class HookGiven(Contract):
     """Whether the hook may keep a closing answer from the user (``holds_answers``), which
     the runtime then asks it when its lease is entered and after each closing
     (``holds_answers``)."""
+    asks: tuple[HookAsk, ...] = Field(default=HOOK_ASKS, max_length=len(HOOK_ASKS))
+    """The methods the host's hook has of its own, which the runtime asks it; for the
+    others the runtime takes ``TurnHook``'s default, which does nothing, without a round
+    trip to the host."""
 
 
 class ToolboxGiven(Contract):
@@ -484,14 +506,21 @@ def payload(value: Contract) -> JsonValue:
     return cast(JsonValue, value.model_dump(mode="json"))
 
 
+@cache
+def adapter(kind: Any) -> TypeAdapter[Any]:
+    """The validator of ``kind``, made once: building one builds its schema, which costs
+    more than most of the checks a capability call makes with it."""
+    return TypeAdapter(kind)
+
+
 def typed[T](kind: type[T], value: JsonValue) -> T:
     """Validate before a named capability's handler observes its arguments."""
-    return TypeAdapter(kind).validate_python(value)
+    return adapter(kind).validate_python(value)
 
 
 def json_value(value: Any) -> JsonValue:
     """Reject non-JSON host values, instead of invoking an arbitrary encoder."""
-    return TypeAdapter(JsonValue).validate_python(value)
+    return adapter(JsonValue).validate_python(value)
 
 
 class ModelReply(Contract):

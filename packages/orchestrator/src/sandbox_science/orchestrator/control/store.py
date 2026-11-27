@@ -83,9 +83,15 @@ class ControlStore:
         *,
         readonly: bool = False,
         timeout: float = DEFAULT_TIMEOUT,
+        durable: bool = True,
     ) -> None:
         self.path = path
         self.readonly = readonly
+        self.durable = durable
+        """Whether each change is on disk when it is reported done (``synchronous=FULL``).
+        A store that is a disposable cache, deleted when its user ends, as a confined
+        runtime's paged scratch history, waits for no disk at each change
+        (``synchronous=NORMAL``): it stays whole after a crash of its process."""
         self.timeout = timeout
         self._lock = threading.RLock()
         self._db: sqlite3.Connection | None = None
@@ -341,7 +347,7 @@ class ControlStore:
                 time.sleep(0.01)
         if str(mode).lower() != "wal":
             raise ControlError(INTERNAL, f"{self.path} cannot use write-ahead logging")
-        db.execute("PRAGMA synchronous=FULL")
+        db.execute("PRAGMA synchronous=FULL" if self.durable else "PRAGMA synchronous=NORMAL")
         # Migrations run with foreign keys off, as a table rebuild needs (they cannot be
         # switched inside a transaction); migrate() checks them all before committing.
         db.execute("PRAGMA foreign_keys=OFF")

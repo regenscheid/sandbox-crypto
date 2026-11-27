@@ -78,7 +78,7 @@ class RunMemory:
         The caller closes ``control`` after finishing transport/finalization. Canonical
         evidence must have committed at the host before the remote log returns.
         """
-        control = ControlStore(path)
+        control = ControlStore(path, durable=False)  # deleted with its attempt
         control.initialize()
         return cls(control, scope)
 

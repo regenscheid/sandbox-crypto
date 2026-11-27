@@ -14,7 +14,7 @@ from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontext
 from dataclasses import replace
 from typing import Any, Final, cast
 
-from pydantic import JsonValue, TypeAdapter
+from pydantic import JsonValue
 
 from sandbox_science.orchestrator.aio import owned, threaded
 from sandbox_science.orchestrator.connectors import ConnectorError
@@ -37,6 +37,7 @@ from sandbox_science.orchestrator.hooks import (
     MessageLog,
     Notice,
     TurnHook,
+    overrides,
     wraps_calls,
 )
 from sandbox_science.orchestrator.images import IMAGE
@@ -68,6 +69,7 @@ from .models import CallbackModel
 from .requests import confirm
 from .transport import PATIENCE_SECONDS, Capability, Channel, TransportError
 from .wire import (
+    HOOK_ASKS,
     AppendReply,
     Attempt,
     CancelRequest,
@@ -93,6 +95,7 @@ from .wire import (
     ToolReply,
     ToolRequest,
     WireMessage,
+    adapter,
     json_value,
     payload,
     typed,
@@ -436,7 +439,7 @@ class Prepared:
                 if request.effect is None:
                     raise TransportError("invalid_request", "gate requires an effect")
                 refusal = await hook.gate(request.effect)
-                return json_value(TypeAdapter(type(refusal)).dump_python(refusal, mode="json"))
+                return json_value(adapter(type(refusal)).dump_python(refusal, mode="json"))
             if kind is Capability.CONSUMPTION:
                 ids = tuple(await hook.consumption())
                 if self.shadow is not None:
@@ -463,7 +466,7 @@ class Prepared:
                 else:
                     self.notices.extend(result)
                 return json_value(
-                    TypeAdapter(tuple[Notice, ...]).dump_python(tuple(result), mode="json")
+                    adapter(tuple[Notice, ...]).dump_python(tuple(result), mode="json")
                 )
             if kind is Capability.TURN_LIMIT:
                 ceiling = await hook.turn_limit(run)
@@ -482,7 +485,7 @@ class Prepared:
                     raise TransportError("invalid_request", "report notices require the limit")
                 found = tuple(await hook.report_notices(run, request.stopped))
                 self.notices.extend(found)  # admitted as the hook's, when the runtime adds them
-                return json_value(TypeAdapter(tuple[Notice, ...]).dump_python(found, mode="json"))
+                return json_value(adapter(tuple[Notice, ...]).dump_python(found, mode="json"))
             if kind is Capability.MODEL_RETURNED:
                 await hook.model_returned(run)
             elif kind is Capability.OBSERVE_TOOL:
@@ -502,7 +505,7 @@ class Prepared:
             elif kind is Capability.CLOSING:
                 closing = await hook.closing(run, request.answer)
                 self.notices.extend(closing.notices)
-                return json_value(TypeAdapter(Closing).dump_python(closing, mode="json"))
+                return json_value(adapter(Closing).dump_python(closing, mode="json"))
             elif kind is Capability.ACCEPT:
                 await hook.accept(run)
             elif kind is Capability.FINISHING:
@@ -1060,6 +1063,7 @@ class HostLoops:
                     planning=isinstance(hook, Plans),
                     turn_limit=type(hook).turn_limit is not TurnHook.turn_limit,
                     holds=type(hook).holds_answers is not TurnHook.holds_answers,
+                    asks=tuple(name for name in HOOK_ASKS if overrides(hook, name)),
                 )
                 for hook in hooks
             ),

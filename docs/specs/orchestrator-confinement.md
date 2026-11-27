@@ -311,7 +311,12 @@ host's run events honour, and the answer a hook held for its round (`held_answer
 Private control protocol 9 carries whether that answer is still kept from the user
 (`holding`), until the round's own answer stands, and asks a hook that may hold answers
 whether it does before each turn while one is kept, as `hold`'s limit can pass between
-closings. Older control/runtime peers are refused.
+closings. Private control protocol 10 names, for each hook, the methods its class has of
+its own (`asks`): the runtime asks the host only for those, and takes the default of
+the others, which does nothing (no notices, no halt, an accepted closing), without a
+round trip. A runtime that asks for one all the same is answered as before, so this
+changes no check the host makes on what it is asked. Older control/runtime peers are
+refused.
 
 How long each request may wait:
 
