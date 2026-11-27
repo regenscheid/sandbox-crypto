@@ -89,7 +89,7 @@ from .delegation.narrowing import Narrowing, of_brief
 from .delegation.outcome import Asked, Outcome, Target, asked_of, result_of
 from .delegation.records import DelegationRecords
 from .delegation.requests import ChildApproval, ChildRequests
-from .delegation.tracks import TrackTools, grant, stated_outputs
+from .delegation.tracks import TrackTools, grant, regrant, stated_outputs
 from .documents import DocumentError, DocumentStore, DocumentTool
 from .documents.tool import REQUESTS_TASK, WorkRequests
 from .environment_claim import environment_claim
@@ -1465,6 +1465,7 @@ class Harness:
                 admitted.context,
                 run_id=admitted.run_id,
                 granted=request.track[0] if request.track is not None else None,
+                track=request.track[1] if request.track is not None else None,
                 # It reads each connector tool's class as the host takes it at each call
                 # (D99, DA-7).
                 connectors=connectors.classed if connectors is not None else None,
@@ -1586,6 +1587,11 @@ class Harness:
             ),
             track_grant=(
                 functools.partial(_track_grant, SessionPlans(stores.documents), context)
+                if depth == 0
+                else None
+            ),
+            track_regrant=(
+                functools.partial(threaded, regrant, SessionPlans(stores.documents), context)
                 if depth == 0
                 else None
             ),
