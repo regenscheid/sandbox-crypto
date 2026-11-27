@@ -16,12 +16,14 @@ from sandbox_science.contracts import (
     Execution,
     ExecutionState,
     JobStatus,
+    ReadFileRequest,
     Result,
     WriteFileRequest,
 )
 from sandbox_science.orchestrator.consistency.executions import execution_projection
 from sandbox_science.orchestrator.jobs import summary
 from sandbox_science.orchestrator.recording import Written
+from sandbox_science.orchestrator.worker_client import WorkerAPIError
 
 from .test_artifact_publication import CONTEXT
 from .test_artifact_publication import worker_url as worker_url
@@ -78,7 +80,13 @@ async def test_an_upload_to_another_session_during_a_call_is_not_recorded(
     other = CONTEXT.model_copy(update={"session_id": "s2", "actor": "user"})
 
     async def deliver() -> None:
-        await asyncio.sleep(0.3)
+        # Once the call runs: it writes mine.txt first.
+        while True:
+            try:
+                await client.read_file(ReadFileRequest(context=CONTEXT, path="mine.txt"))
+                break
+            except WorkerAPIError:
+                await asyncio.sleep(0.05)
         for context, path in ((other, OTHERS), (CONTEXT, "gate")):
             await client.write_file(
                 WriteFileRequest(
