@@ -113,7 +113,7 @@ def test_numbers_are_read_in_one_notation() -> None:
         assert numbers(written) == {"2^80"}, written
     assert numbers("1e24, 1.0E+24 and $10^{24}$, or 1e24.") == {"10^24"}
     assert numbers("1.2e-5 and $1.2 \\times 10^{-5}$ and 1.2·10^-5") == {"1.2e-5"}
-    assert numbers("80bit, AES-128, x₁, ١٢٣ and 0x50") == {"80", "128", "1", "123", "0x50"}
+    assert numbers("80bit, 128-bit, x₁, ١٢٣ and 0x50") == {"80", "128", "1", "123", "0x50"}
     assert unread("p = 17, 2^{80}") is None
     assert unread("the ① case") == "the ① case"
     # Low items of #457's re-check: other numerals, exponents that are no plain number,
@@ -122,6 +122,41 @@ def test_numbers_are_read_in_one_notation() -> None:
         assert unread(written) is not None, written
     assert numbers("1 000 003 and 1\u00a0000") == {"1000003", "1000"}
     assert unread("1 000 003, x^{n} and x^2") is None
+
+
+def test_numbers_in_names_and_standard_notations_are_not_measured_values() -> None:
+    """R10: the 16 of GF(16) is no measured value, nor are the numbers of a named
+    algorithm, a standard, a paper, a place in it or a date; a measured number beside
+    them still is."""
+    for named in (
+        "GF(16)", "GF(2^8)", "GF(2⁸)", "GF16", "F_16", "F_{2^8}", r"\mathbb{F}_{16}",
+        "SHA-256", "SHA3-256", "AES-128", "ML-KEM-768", "P-256", "Kyber512", "X25519",
+        "secp256k1", "M4RIE", "FIPS 203", "SP 800-38D", "RFC 8446", "ePrint 2024/096",
+        "Section 3.2", "Table 1", "Fig. 2", "Eq. (5)", "§4.1", "p. 12", "p12:43",
+        "2026-11-27", "2026-11-27T08:49:33Z", "27 November 2026", "Nov 27, 2026",
+    ):  # fmt: skip
+        assert numbers(named) == set(), named
+        assert unread(named) is None, named
+    assert numbers("rank 16 over GF(16), Table 1 row 637") == {"16", "637"}
+    assert numbers("Table 1, 673 rows") == {"673"}
+    assert numbers("a 128-bit key for AES-128") == {"128"}
+    # The run's memory proposal holds no measured number; its two ledger refusals keep
+    # the numbers they were refused for.
+    assert (
+        numbers(
+            "can raise MemoryError far below the packed GF(16) matrix's nominal size. For "
+            "large exact M4RIE ranks, create `matrix(F,rows,cols,sparse=False)`"
+        )
+        == set()
+    )
+    assert {"637", "673"} <= numbers(
+        "Beullens Table 1 p12:43 prints $673$ for $(n,m,k,d)=(12,5,2,4)$ while its p12:2\u20137 "
+        "formula and the UOV measurement yield $637$"
+    )
+    assert {"16176936", "66286"} <= numbers(
+        "the cumulative-degree Macaulay ranks at $d=2,3,4,5$ are respectively "
+        "$16,176,936,3002$ with respectively $66,286,1001,3003$ columns over GF(16)"
+    )
 
 
 def test_an_agents_change_names_its_anchor_or_holds_evidence(ledger: Ledger) -> None:

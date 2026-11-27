@@ -73,6 +73,50 @@ _NUMBER: Final = re.compile(
 _NAMES: Final = re.compile(r"\b(?:I|C|R|A|D|T|REF)-[0-9]+\b|msg-[0-9a-f]{16}|\b\w+-[0-9a-f]{24}\b")
 """Ledger handles and the platform's IDs, whose digits are names, not numbers."""
 _MESSAGE_ID: Final = re.compile(r"msg-[0-9a-f]{16}")
+_MONTH: Final = (
+    r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|Aug(?:ust)?|"
+    r"Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?"
+)
+_NOTATIONS: Final = re.compile(
+    "|".join(
+        (
+            # A finite field or ring: GF(16), GF(2^8), GF16, F_16, F_{2^8}, \mathbb{F}_{16}.
+            r"\bGF\s*\(\s*[0-9]+(?:\s*\^\s*\{?\s*[0-9]+\s*\}?)?\s*\)",
+            r"(?:\\mathbb\s*\{?\s*|\\mathbf\s*\{?\s*|\b)[FZ]\}?\s*_\s*\{?\s*[0-9]+"
+            r"(?:\s*\^\s*\{?\s*[0-9]+\s*\}?)?\s*\}?",
+            # A name with a number: SHA-256, AES-128, ML-KEM-768, P-256, SHA3-256,
+            # Kyber512, X25519, SHAKE128, M4RIE, GF16, secp256k1.
+            r"\b[A-Za-z]*[A-Z][A-Za-z0-9]*(?:-[0-9]+[A-Za-z]?)+\b",
+            r"\b[A-Za-z]*[A-Z][A-Za-z]*[0-9]+[A-Za-z0-9]*\b",
+            r"\bsecp[0-9]+[kr][0-9]\b",
+            # A standard, a paper or a place in one: FIPS 203, SP 800-38D, RFC 8446,
+            # ePrint 2024/096, Section 3.2, Table 1, p. 12, p12:43, Eq. (5).
+            r"\b(?:FIPS|SP|RFC|ISO(?:/IEC)?|IEEE)\s+[0-9]+(?:[-.:][0-9]+)*[A-Za-z]?\b",
+            r"(?i:\be-?print)(?:\s+(?i:archive|report))*[\s:,]*(?:[0-9]{4}/[0-9]{3,5}(?:,\s*)?)+",
+            r"(?i:\b(?:sections?|sec|tables?|tab|figures?|fig|algorithms?|alg|theorems?|thm|"
+            r"lemmas?|propositions?|prop|corollary|cor|definitions?|def|equations?|eqs?|"
+            r"appendix|chapters?|ch|remarks?|examples?|pages?|pp?|lines?)\b\.?)\s*"
+            r"\(?[0-9]+(?:\.[0-9]+)*[a-z]?\)?(?:\s*[-\u2013:]\s*[0-9]+(?:\.[0-9]+)*)*",
+            r"§+\s*[0-9]+(?:\.[0-9]+)*",
+            r"\bp[0-9]+:[0-9]+(?:\s*[-\u2013]\s*[0-9]+)?",
+            # A date: 2026-11-27 (with a time), 27 November 2026, November 27, 2026.
+            r"\b[0-9]{4}-[01][0-9]-[0-3][0-9](?:[T ][0-2][0-9]:[0-5][0-9](?::[0-5][0-9]"
+            r"(?:\.[0-9]+)?)?(?:Z|[+-][0-2][0-9]:?[0-5][0-9])?)?\b",
+            rf"\b[0-3]?[0-9]\s+{_MONTH}\s+[0-9]{{4}}\b",
+            rf"\b{_MONTH}\s+(?:[0-3]?[0-9],?\s+)?[0-9]{{4}}\b",
+        )
+    )
+)
+"""Numbers inside a name or a standard notation, which are no measured value: a field
+(``GF(16)``, ``F_16``), a named algorithm or parameter set (``SHA-256``, ``AES-128``), a
+standard, an ePrint report, a section, table, page or line, and a date."""
+
+
+def _unnamed(text: str) -> str:
+    """``text`` without its handles, IDs and named notations, whose digits are names,
+    looked for as written and once its numbers are in one notation (``GF(2⁸)``)."""
+    text = _NOTATIONS.sub(" ", _NAMES.sub(" ", text))
+    return _NOTATIONS.sub(" ", normal(text))
 
 
 @dataclass(frozen=True)
@@ -133,16 +177,17 @@ def _scientific(mantissa: str, exponent: str) -> str:
 
 
 def numbers(text: str) -> set[str]:
-    """The numbers ``text`` holds, normalized, leaving out ledger handles and IDs; digits
-    next to letters count (``80bit``, ``AES-128``)."""
-    return {n.lower() for n in _NUMBER.findall(normal(_NAMES.sub(" ", text)))}
+    """The numbers ``text`` holds, normalized, leaving out ledger handles, IDs and the
+    numbers of names and standard notations (``_NOTATIONS``: ``GF(16)``, ``AES-128``,
+    ``Table 1``, a date); digits before letters count (``80bit``, ``128-bit``)."""
+    return {n.lower() for n in _NUMBER.findall(_unnamed(text))}
 
 
 def unread(text: str) -> str | None:
     """What of ``text`` holds a number ``numbers`` does not read, if anything, with what
     surrounds it: a power whose exponent is no plain number (``2^{80+1}``), or a digit or
     numeral left over (``①``, ``½``, ``Ⅷ``)."""
-    read = normal(_NAMES.sub(" ", text))
+    read = _unnamed(text)
     found = _EXPRESSION.search(read)
     if found is not None:
         return read[max(0, found.start() - 10) : found.end() + 10].strip()
@@ -357,8 +402,10 @@ def check(
     found = set[str]().union(*(numbers(text) for text in seen))
     missing = sorted(set[str]().union(*(numbers(text) for text in texts)) - found)
     if missing:
+        named = ", ".join(missing[:5])
+        more = f" and {len(missing) - 5} more" if len(missing) > 5 else ""
         raise refused(
-            f"{where} is observed, but {', '.join(missing[:5])} "
+            f"{where} is observed, but {named}{more} "
             f"{'is' if len(missing) == 1 else 'are'} in none of its observations: copy "
             "numbers from what was observed, or record it as interpreted. Every number it "
             "holds appears in a tool result or artifact it anchors on, or an artifact or "
