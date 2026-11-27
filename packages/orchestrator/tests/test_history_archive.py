@@ -6,7 +6,6 @@ worker and the scripted gateway."""
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import sqlite3
 import threading
@@ -468,7 +467,8 @@ def test_filtered_scan_keeps_scope_and_releases_its_read_between_rows(state: Pat
 
 async def test_each_call_records_the_upstream_that_served_it(harness: Harness) -> None:
     """R6: what the gateway's headers say of the deployment that served each call is in
-    the call's usage, its API base only as a digest; a call they say nothing of has none."""
+    the call's usage, never its API base, even as a digest; a call they say nothing of has
+    none."""
     base = "https://upstream.invalid/v1"
     harness.gateway.upstream = {
         "x-litellm-model-id": "deployment-a",
@@ -477,11 +477,8 @@ async def test_each_call_records_the_upstream_that_served_it(harness: Harness) -
     }
     record = await harness.run("run-1", [Reply("Done.")])
     (usage,) = record.usage
-    assert usage.upstream == {
-        "model_id": "deployment-a",
-        "api_base_sha256": hashlib.sha256(base.encode()).hexdigest()[:16],
-        "fallbacks": "0",
-    }
+    assert usage.upstream == {"model_id": "deployment-a", "fallbacks": "0"}
+    assert base not in record.model_dump_json()
     harness.gateway.upstream = {}
     record = await harness.run("run-2", [Reply("Again.")])
     assert [u.upstream for u in record.usage] == [None]

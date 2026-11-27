@@ -180,19 +180,19 @@ def cut_call(turn: ModelTurn) -> ToolCall | None:
 COST_HEADER: Final = "x-litellm-response-cost"
 """The header in which LiteLLM's proxy reports a call's cost."""
 VERSION_HEADER: Final = "x-litellm-version"
+"""The header in which LiteLLM's proxy names its version."""
 UPSTREAM_HEADERS: Final = {
     "model_id": "x-litellm-model-id",
-    "api_base": "x-litellm-model-api-base",
     "region": "x-litellm-model-region",
     "fallbacks": "x-litellm-attempted-fallbacks",
     "retries": "x-litellm-attempted-retries",
 }
 """The headers in which LiteLLM's proxy names the deployment that served a call: its
-model ID (the deployment's in the gateway's model list), its API base, its region, and
-the fallbacks and retries it tried before it."""
+model ID (the deployment's in the gateway's model list) and region, and the fallbacks
+and retries it tried before it. Its API base is not kept: a digest of a host name would
+let anyone holding the record confirm a guess of it."""
 MAX_UPSTREAM: Final = 128
 """The characters of one upstream header a call's record keeps."""
-"""The header in which LiteLLM's proxy names its version."""
 CHAT_COMPLETIONS: Final = "chat_completions"
 """The native format of this client's answers: a chat completion, as the gateway sent it."""
 
@@ -319,16 +319,10 @@ def prefix_digest(parts: Mapping[str, object]) -> str:
 
 def upstream_of(headers: Mapping[str, str]) -> dict[str, str] | None:
     """Which upstream deployment served a call, as the gateway's ``UPSTREAM_HEADERS``
-    name it; the API base as the first 16 hexadecimal digits of its SHA-256, which tell
-    two bases apart without keeping the deployment's address. ``None`` with none of them."""
+    name it; ``None`` with none of them."""
     found: dict[str, str] = {}
     for key, header in UPSTREAM_HEADERS.items():
-        value = (headers.get(header) or "").strip()
-        if not value:
-            continue
-        if key == "api_base":
-            found["api_base_sha256"] = hashlib.sha256(value.encode()).hexdigest()[:16]
-        else:
+        if value := (headers.get(header) or "").strip():
             found[key] = value[:MAX_UPSTREAM]
     return found or None
 

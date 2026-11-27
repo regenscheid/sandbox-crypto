@@ -187,8 +187,8 @@ class ModelUsage(Contract):
     (docs/specs/context-management.md, CM-39); null when it sent none."""
     upstream: dict[str, str] | None = Field(default=None, max_length=8)
     """Which upstream deployment served the call, as the gateway's headers named it
-    (``model.upstream_of``: its model ID, a digest of its API base, its region, and the
-    fallbacks and retries it tried); null when they said nothing of it."""
+    (``model.upstream_of``: its model ID, its region, and the fallbacks and retries it
+    tried); null when they said nothing of it."""
     thinking_replay: str | None = Field(default=None, max_length=300)
     """Whether the call sent Claude's thinking back: ``on``, or ``off:`` and why (CM-39);
     null for a client without thinking replay."""
