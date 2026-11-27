@@ -23,6 +23,7 @@ const job: BackgroundJob = {
   error: null,
   written_files: [],
   written_files_truncated: false,
+  unattributed_files: [],
   platform_notices: [],
   checkin: null,
   job_id: 'exe-1',

@@ -1136,8 +1136,14 @@ def test_an_unread_artifact_is_a_named_gap_and_credits_no_ledger_entry(
     with reviews.documents.control.read() as tx:
         assert reviewed(tx.sql, "entry-1") == ([] if unreadable else [1])
     summary = reviews.final_summary("p", "s", review)
-    assert [(u["kind"], u["why"]) for u in summary["unread"]] == (
-        [("artifact", "media type is outside the raw text evidence allowlist")]
+    assert [(u["kind"], u["path"], u["why"]) for u in summary["unread"]] == (
+        [
+            (
+                "artifact",
+                "sessions/s/plot.png",
+                "media type is outside the raw text evidence allowlist",
+            )
+        ]
         if unreadable
         else []
     )

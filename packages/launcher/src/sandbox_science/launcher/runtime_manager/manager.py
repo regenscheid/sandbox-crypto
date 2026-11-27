@@ -216,6 +216,7 @@ class RuntimeManager:
             steady=steady,
             delays=delays,
             retryable=True,
+            say=say,  # a record of the manager's, like its other lines
         )
         self.process: asyncio.subprocess.Process | None = None
         self.attached: str | None = None

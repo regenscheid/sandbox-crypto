@@ -30,6 +30,10 @@ class RecoveryState(Contract):
     error: str | None = Field(default=None, max_length=512)
 
 
+def _print(text: str) -> None:
+    print(text, flush=True)
+
+
 class InfrastructureRecovery:
     """Persist each replacement decision before effect, with a ten-attempt bound.
 
@@ -44,6 +48,7 @@ class InfrastructureRecovery:
     With ``retryable`` each attempt is journaled as one a restart may retry, until the
     owner calls ``irreversible`` before its first effect that a retry could not repeat
     safely (a deletion or a creation); the attempt still counts toward the bound.
+    ``say`` writes its lines: the owner's log, as the owner formats it.
     """
 
     def __init__(
@@ -59,8 +64,10 @@ class InfrastructureRecovery:
         steady: float = 60,
         delays: tuple[float, ...] = (2, 4, 8, 16, 32, 60),
         retryable: bool = False,
+        say: Callable[[str], None] = _print,
     ) -> None:
         self.path, self.enabled, self.alive = path, enabled, alive
+        self.say = say
         self.retryable = retryable
         self.replacement, self.stopping = replace, stopping
         self.clock, self.poll, self.steady, self.delays = clock, poll, steady, delays
@@ -139,15 +146,13 @@ class InfrastructureRecovery:
                 retry_after=self.clock.now().timestamp() + delay,
             )
         )
-        print(
-            f"automatic agent replacement attempt {attempts}/10; research VM retained", flush=True
-        )
+        self.say(f"automatic agent replacement attempt {attempts}/10; research VM retained")
         error: str | None = None
         try:
             await self.replacement()
         except (LauncherError, OSError, ValueError) as exc:
             error = error_text(exc)
-            print("automatic agent replacement failed: " + error, flush=True)
+            self.say("automatic agent replacement failed: " + error)
         self.save(
             RecoveryState(
                 attempts=attempts,

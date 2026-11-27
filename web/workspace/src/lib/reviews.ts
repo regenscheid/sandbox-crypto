@@ -282,3 +282,99 @@ export function finalReviewLine(final: FinalReviewSummary | undefined): string |
     parts.push(`Coverage is not recorded through position ${final.not_recorded_through}.`);
   return parts.join(' ');
 }
+
+/** Why a range of a session's work is unreviewed, in plain words (CR-48, CR-49). */
+const UNREVIEWED_REASONS: Record<string, string> = {
+  final_budget: "the final review's budget left it out",
+  backlog: 'a checkpoint skipped it to reach the newest work',
+  deadline: 'a review was ended at its time limit',
+  answering_turn: "it is the work of the turn that answered the final review's findings",
+  not_reached: 'no review has reached it yet',
+};
+
+/** What an unread item is, in plain words. */
+const UNREAD_KINDS: Record<string, string> = {
+  artifact: 'a file',
+  execution: "a call's output",
+  transcript: 'a message of the run',
+  unobserved: 'a step the review could not observe',
+  source: 'a source the run read',
+  document: 'a document',
+};
+
+/** How a final review's findings ended, in plain words, with their count. */
+const RECHECKS: [string, string][] = [
+  ['resolved', 'resolved'],
+  ['dismissal_accepted', 'dismissed, the dismissal accepted'],
+  ['dismissal_rejected', 'dismissed, the dismissal rejected'],
+  ['dismissed', 'dismissed by the user'],
+  ['unresolved', 'unresolved'],
+  ['inconclusive', 're-checked without a decision'],
+  ['not_rechecked', 'not re-checked'],
+];
+
+function reason(name: string): string {
+  if (name in UNREVIEWED_REASONS) return UNREVIEWED_REASONS[name]!;
+  if (name.startsWith('final_')) return 'the final review ended without covering it';
+  return name.replace(/_/g, ' ');
+}
+
+/**
+ * How a run's review ended, as plain lines for its section in the session view (CR-48):
+ * why no final review ran, or the items it could not read by name (a file by its path)
+ * with why, the unreviewed ranges as a count with their reasons, the open findings by
+ * severity, and whether its findings were answered and re-checked, with how each ended.
+ * No internal identifiers beyond file paths. Empty for a record without a summary.
+ */
+export function finalReviewEnd(
+  summary: { no_final_review?: string; final_review?: FinalReviewSummary } | undefined,
+): string[] {
+  if (!summary) return [];
+  if (summary.no_final_review) return [summary.no_final_review];
+  const final = summary.final_review;
+  if (!final) return [];
+  const lines: string[] = [];
+  for (const unread of final.unread ?? []) {
+    const what = unread.path ?? UNREAD_KINDS[unread.kind] ?? `an item (${unread.kind})`;
+    lines.push(`Not read: ${what}${unread.why ? `, ${unread.why}` : ''}.`);
+  }
+  const ranges = final.unreviewed_ranges ?? final.unreviewed?.length ?? 0;
+  if (ranges > 0) {
+    const why = Object.entries(final.unreviewed_reasons ?? {})
+      .filter(([, n]) => n > 0)
+      .map(([name, n]) => `${n} because ${reason(name)}`);
+    lines.push(
+      `Unreviewed: ${ranges} ${ranges === 1 ? 'range' : 'ranges'} of the session's work` +
+        (why.length ? ` (${why.join('; ')}).` : '.'),
+    );
+  }
+  const open = Object.entries(final.open ?? {}).filter(([, n]) => n > 0);
+  lines.push(
+    open.length
+      ? `Open findings: ${open.map(([severity, n]) => `${n} ${severity}`).join(', ')}.`
+      : 'No open findings.',
+  );
+  const findings = final.findings ?? [];
+  if (findings.length) {
+    const answered = final.answered
+      ? 'The agent answered its findings'
+      : final.answering_failed
+        ? 'The turn answering its findings failed'
+        : 'Its findings were not answered';
+    const rechecked =
+      final.rechecked && final.recheck
+        ? `; one re-check ran (${final.recheck.outcome})`
+        : final.answered
+          ? '; no re-check ran'
+          : '';
+    const ended = RECHECKS.map(
+      ([key, words]) => [findings.filter((f) => f.recheck === key).length, words] as const,
+    )
+      .filter(([n]) => n > 0)
+      .map(([n, words]) => `${n} ${words}`);
+    lines.push(
+      `${answered}${rechecked}.` + (ended.length ? ` Findings: ${ended.join(', ')}.` : ''),
+    );
+  }
+  return lines;
+}

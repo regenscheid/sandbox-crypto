@@ -36,6 +36,7 @@ from sandbox_science.contracts import (
 )
 from sandbox_science.contracts.worker import DEFAULT_OUTPUT_LIMIT, MAX_EVENT_BYTES
 
+from .attribution import Activity
 from .connections import EnvironmentConnections
 from .errors import WorkerError
 from .live import Live
@@ -70,6 +71,8 @@ class ExecutionJournal:
         self.timeouts = timeouts
         self.live: dict[str, Live] = {}
         """Executions not ended, and those ended lately, by ID."""
+        self.activity = Activity(self.live, clock)
+        """What changed each environment's files besides a call, while it ran."""
         self.streams_ended = False
         """Set by ``end_streams``: event streams end without waiting for more."""
 
@@ -145,6 +148,7 @@ class ExecutionJournal:
         )
         live.execution = final
         self.changed(live)
+        self.activity.ended(live)
         environment = self.connections.get(live.environment_id)
         if environment is not None:
             environment.running.discard(execution_id)
@@ -282,6 +286,7 @@ class ExecutionJournal:
                     "outputs": (),
                     "written_files": (),
                     "deleted_files": (),
+                    "unattributed_files": (),
                     "notices": (),
                     "error": error,
                 }

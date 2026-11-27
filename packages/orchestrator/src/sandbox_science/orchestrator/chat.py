@@ -331,6 +331,12 @@ def _notice(message: ChatMessage, shown: Mapping[str, str]) -> Notice:
 
 HELD: Final = "The agent's answer is being reviewed; it is shown when the review ends."
 """The run's event for a closing answer kept from the user while its final review runs."""
+HOLD_ENDED: Final = (
+    "The review did not finish within the hold's limit; this is the agent's answer as it "
+    "was before the review."
+)
+"""The run's event before an answer ``hold``'s limit released while the agent answered
+its review's findings (CR-48)."""
 
 
 class EventLog(TurnHook):
@@ -351,6 +357,10 @@ class EventLog(TurnHook):
         self.withholding: int | None = None
         """The message whose answer is kept from the user, which a notice says is being
         reviewed, until its closing ends (consistency review, CR-48)."""
+        self.kept: Mapping[str, Any] | None = None
+        """That answer, when its closing held it for a response round: written only if it
+        becomes the run's answer (the round ended without one, or ``hold``'s limit passed),
+        never once the round's own answer stands. The run's record keeps it either way."""
 
     async def notices(self, point: Point, run: RunView) -> Sequence[Notice]:
         await self._catch_up(
@@ -377,6 +387,9 @@ class EventLog(TurnHook):
 
     async def acknowledge(self, record: RunRecord) -> None:
         await self._catch_up(record.messages, record.usage, record.tools, {}, None)
+        kept, self.kept = self.kept, None
+        if kept is not None and record.answer is not None and kept.get("content") == record.answer:
+            await self._reply(kept, record.usage)
         await self.chat.write(
             "stopped",
             {
@@ -438,8 +451,18 @@ class EventLog(TurnHook):
                     await chat.write("user", {"message_id": message_id, "text": text})
             else:
                 await chat.write("notice", {"source": source, "ids": new})
+        if self.kept is not None and run is not None and not run.holding:
+            kept, self.kept = self.kept, None
+            if run.answer is not None and kept.get("content") == run.answer:
+                # Released by the hold's limit, before the round's own answer.
+                await chat.write("notice", {"source": "reviews", "ids": [], "text": HOLD_ENDED})
+                await self._reply(kept, usage)
         for index in range(self.seen, len(messages)):
             message = messages[index]
+            if run is not None and run.holding and index == self.withholding:
+                # Held for its review's response round: the round's answer replaces it.
+                self.kept = message
+                continue
             if (
                 run is not None
                 and run.withheld

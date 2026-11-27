@@ -42,7 +42,7 @@ from .model import ChatModel, ModelError, ToolSpec
 from .notices import JOBS, JOBS_ATTACHED
 from .pricing import CostSource
 from .projects import run_id_of
-from .recording import FileRecorder, Written
+from .recording import FileRecorder, Written, attributed
 from .watcher_prompt import assemble_watcher
 from .worker_client import WorkerAPIError, WorkerClient, dump
 
@@ -217,6 +217,8 @@ def summary(status: JobStatus, now: datetime) -> dict[str, object]:
     now = execution.ended_at or now
     started = execution.started_at or execution.submitted_at
     result = execution.result
+    written = attributed(execution, result.written_files) if result is not None else ()
+    unattributed = attributed(execution, result.unattributed_files) if result is not None else ()
     return {
         "job_id": execution.execution_id,
         "state": execution.state.value,
@@ -231,11 +233,10 @@ def summary(status: JobStatus, now: datetime) -> dict[str, object]:
         else None,
         "stdout": clipped(status.stdout.text) if status.stdout is not None else "",
         "stderr": clipped(status.stderr.text) if status.stderr is not None else "",
-        "written_files": [clipped(path, 512) for path in result.written_files[:100]]
-        if result is not None
-        else [],
+        "written_files": [clipped(path, 512) for path in written[:100]],
         "written_files_truncated": result is not None
-        and (result.written_files_truncated or len(result.written_files) > 100),
+        and (result.written_files_truncated or len(written) > 100),
+        "unattributed_files": [clipped(path, 512) for path in unattributed[:20]],
         "platform_notices": [clipped(notice, 512) for notice in result.notices[:20]]
         if result is not None
         else [],

@@ -160,3 +160,33 @@ async def test_replacement_refuses_disconnected_but_draining_or_invalid_health(
             await orchestrator.replace(config, layout, supervisor)
         # Refusal happens before generation/token rotation or new VM creation.
         assert not (layout.root / "orchestrator").exists()
+
+
+async def test_the_runtime_managers_recovery_lines_are_its_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """In the runtime manager, a replacement attempt's lines are records of the manager's,
+    as its other lines are, not plain text among them."""
+    import json
+
+    from sandbox_science.launcher.runtime_manager.manager import say
+
+    async def fail() -> None:
+        raise LauncherError("the runtime did not become ready in time")
+
+    monkeypatch.setenv("SS_LOG_FORMAT", "json")
+    recovery = InfrastructureRecovery(
+        tmp_path / "recovery.json",
+        enabled=True,
+        alive=lambda: None,
+        replace=fail,
+        stopping=asyncio.Event(),
+        clock=FakeClock(),
+        say=say,
+    )
+    await recovery.replace()
+    lines = capsys.readouterr().out.splitlines()
+    records = [json.loads(line) for line in lines]
+    assert [record["service"] for record in records] == ["runtime-manager"] * 2
+    assert "attempt 1/10" in records[0]["msg"]
+    assert "did not become ready" in records[1]["msg"]

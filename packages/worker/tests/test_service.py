@@ -889,7 +889,9 @@ async def test_a_calls_own_write_after_the_sync_wrote_the_file_is_its_own(synced
     assert status == 201
     await synced.wait_running(long["execution_id"])
     await _shell(synced, "op-1", _in("env1", "s1"), 'echo r > "$PROJECT_SHARED/r.txt"')
-    await _shell(synced, "op-2", _in("env2", "s3"), "true")  # brings r.txt in while s2 runs
+    # Brings r.txt in while s2 runs: a call of s2's, as one of another session beside it
+    # would leave its shared/ files unattributed.
+    await _shell(synced, "op-2", _in("env2", "s2"), "true")
     status, _ = await synced.post(
         "/v1/files/write", {"context": b, "path": "go", "content_b64": "", "create_only": True}
     )

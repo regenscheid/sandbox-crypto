@@ -488,6 +488,7 @@ class BackgroundJob(TypedDict):
     stderr: str
     written_files: list[str]
     written_files_truncated: bool
+    unattributed_files: list[str]
     platform_notices: list[str]
     cpu_seconds: float | None
     memory_bytes: int | None

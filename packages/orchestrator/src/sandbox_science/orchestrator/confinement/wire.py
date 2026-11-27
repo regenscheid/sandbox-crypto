@@ -66,7 +66,7 @@ _MAX_BINARY_B64 = 4 * -(-MAX_BINARY_BYTES // 3)
 
 
 class Hello(Contract):
-    protocol: Literal[8] = CONTROL_PROTOCOL
+    protocol: Literal[9] = CONTROL_PROTOCOL
     image_revision: str = Field(min_length=1, max_length=128)
     apis: dict[ModelAlias, ApiKind] | None = Field(default=None, max_length=256)
     """The adapter the runtime chose for each of its aliases from the gateway's model
@@ -74,7 +74,7 @@ class Hello(Contract):
 
 
 class Ready(Contract):
-    protocol: Literal[8] = CONTROL_PROTOCOL
+    protocol: Literal[9] = CONTROL_PROTOCOL
     generation: Identifier
     projects: tuple[Identifier, ...] = Field(min_length=1, max_length=128)
     control_schema: Counter
@@ -267,6 +267,8 @@ class LoopState(Contract):
     withheld: bool = False
     """Whether the closing answer the conversation ends with is kept from the user's view
     until its closing ends: the host's run events then leave it out (CR-48)."""
+    holding: bool = False
+    """Whether the answer held for its round is still kept from the user's view (CR-48)."""
     pending: str | None = Field(default=None, max_length=MAX_VIEW_BYTES)
     room: bool
     response_rounds: Counter

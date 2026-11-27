@@ -761,16 +761,20 @@ class Dispatcher:
         changes: dict[str, Any] = {}
         if held or notices:
             changes["notices"] = (*result.notices, *held, *notices)
+        written = result.written_files
         shared = self.shared
-        if shared is not None and result.written_files:
+        if shared is not None and written:
             # Files the sync wrote during the call, unchanged since, are not the call's own.
             synced = shared.unchanged_writes(
-                live.environment_id, result.written_files, live.dispatched_at, live.ended_at
+                live.environment_id, written, live.dispatched_at, live.ended_at
             )
-            if synced:
-                changes["written_files"] = tuple(
-                    path for path in result.written_files if path not in synced
-                )
+            written = tuple(path for path in written if path not in synced)
+        # What a file request or another session may have written is not the call's own.
+        wrote, went = self.journal.activity.attribute(live, written, result.deleted_files)
+        if wrote.own != result.written_files or went.own != result.deleted_files:
+            changes.update(written_files=wrote.own, deleted_files=went.own)
+        if wrote.unattributed or went.unattributed:
+            changes["unattributed_files"] = (*wrote.unattributed, *went.unattributed)[:MAX_WRITTEN]
         self.journal.finish(live, state, result.model_copy(update=changes) if changes else result)
 
     def _admit(self, live: Live, size: int) -> bool:
@@ -1030,6 +1034,7 @@ class Dispatcher:
                 request.output_limit_bytes if request else DEFAULT_OUTPUT_LIMIT,
             )
             live.events, live.stored = self.store.event_usage(execution_id)
+            live.restored = True
             if saved is not None and saved[1] and daemon_enabled:
                 live.dispatched = True
                 live.cancel_requested = saved[3] or execution.origin is not None

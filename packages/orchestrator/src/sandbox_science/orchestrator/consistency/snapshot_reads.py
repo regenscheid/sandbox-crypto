@@ -518,6 +518,31 @@ def recorded_unreviewed(
     )
 
 
+def unreviewed_reasons(
+    db: sqlite3.Connection, project: str, session: str, left: Sequence[tuple[int, int]]
+) -> dict[str, int]:
+    """How many of the ranges ``left`` unreviewed meet a range the session's reviews
+    recorded as unreviewed with each reason (``review.unreviewed``); ``not_reached`` counts
+    those no record names, which no review has reached yet. A range of several reasons
+    counts under each."""
+    recorded = [
+        (int(start), int(end), str(reason))
+        for start, end, reason in db.execute(
+            "SELECT json_extract(payload,'$.start'),json_extract(payload,'$.end'),"
+            "json_extract(payload,'$.reason') FROM control_events WHERE project=? AND "
+            "session=? AND kind='review.unreviewed' AND json_type(payload,'$.start')='integer' "
+            "AND json_type(payload,'$.end')='integer' AND json_type(payload,'$.reason')='text'",
+            (project, session),
+        )
+    ]
+    counts: dict[str, int] = {}
+    for start, end in left:
+        reasons = {reason for a, b, reason in recorded if a <= end and b >= start}
+        for reason in reasons or {"not_reached"}:
+            counts[reason] = counts.get(reason, 0) + 1
+    return counts
+
+
 def covered(ranges: Sequence[tuple[int, int]], seq: int) -> bool:
     """Whether ``seq`` lies in one of the merged, ordered ``ranges``."""
     index = bisect.bisect_right(ranges, (seq, float("inf"))) - 1

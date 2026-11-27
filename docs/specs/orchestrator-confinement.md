@@ -308,7 +308,10 @@ raises as the same refusal. Private control protocol 8 carries a held answer
 the user whether it does now (`holds_answers`), when its lease is entered and after each
 closing, and the loop's state carries whether the answer is kept (`withheld`), which the
 host's run events honour, and the answer a hook held for its round (`held_answer`).
-Older control/runtime peers are refused.
+Private control protocol 9 carries whether that answer is still kept from the user
+(`holding`), until the round's own answer stands, and asks a hook that may hold answers
+whether it does before each turn while one is kept, as `hold`'s limit can pass between
+closings. Older control/runtime peers are refused.
 
 How long each request may wait:
 
