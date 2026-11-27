@@ -10,6 +10,7 @@ import base64
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 import pytest
 import pytest_asyncio
@@ -127,13 +128,19 @@ async def test_the_same_session_beside_a_call_leaves_its_shared_files_attributed
 # The account itself, with the clock in hand.
 
 
-def _live(clock: FakeClock, session: str, operation: str) -> Live:
+def _live(
+    clock: FakeClock,
+    session: str,
+    operation: str,
+    area: str | None = None,
+    kind: Literal["shell", "cell", "pdf", "job"] = "shell",
+) -> Live:
     execution = Execution(
         execution_id=f"exe-{operation}",
         attempt_id=f"att-{operation}",
         operation_id=operation,
-        kind="shell",
-        context=A.model_copy(update={"session_id": session}),
+        kind=kind,
+        context=A.model_copy(update={"session_id": session, "write_area": area}),
         state=ExecutionState.RUNNING,
         submitted_at=datetime(2026, 1, 1, tzinfo=UTC),
     )
@@ -211,3 +218,31 @@ async def test_no_account_is_kept_while_nothing_runs() -> None:
     lives["mine"].ended_at = clock.monotonic()
     wrote, _ = activity.attribute(lives["mine"], ["file"], [])
     assert wrote.own == ("file",)
+
+
+async def test_a_delegated_runs_write_area_is_its_own_and_no_one_elses() -> None:
+    """A delegated run's processes write only in its write area (DA-20): what changed
+    elsewhere is not its own, but for its job's logs; what changed in its area while it
+    ran is not another attempt's own."""
+    clock = FakeClock()
+    lives: dict[str, Live] = {}
+    activity = Activity(lives, clock)
+    main = lives["main"] = _live(clock, "s1", "main", kind="job")
+    child = lives["child"] = _live(clock, "s1", "child", "work/dlg-1", kind="job")
+    clock.advance(1)
+    child.ended_at = main.ended_at = clock.monotonic()
+    paths = ["work/dlg-1/out.txt", "notes.md", f".jobs/{child.execution.execution_id}/stdout.log"]
+    wrote, _ = activity.attribute(child, paths, [])
+    assert wrote.own == ("work/dlg-1/out.txt", f".jobs/{child.execution.execution_id}/stdout.log")
+    assert wrote.unattributed == ("notes.md",)
+    wrote, _ = activity.attribute(main, paths, [])
+    assert wrote.own == ("notes.md",)
+    assert wrote.unattributed == (
+        "work/dlg-1/out.txt",
+        f".jobs/{child.execution.execution_id}/stdout.log",
+    )
+    # A PDF helper's render is the platform's, wherever it places it.
+    render = _live(clock, "s1", "render", "work/dlg-1", kind="pdf")
+    render.ended_at = clock.monotonic()
+    wrote, _ = activity.attribute(render, ["figures/p1.png"], [])
+    assert wrote.own == ("figures/p1.png",)

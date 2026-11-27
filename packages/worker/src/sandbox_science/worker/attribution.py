@@ -17,6 +17,11 @@ the attempt's list:
 - a file in ``shared/`` is unattributed when an attempt of another session ran in the
   environment meanwhile, since both write the same directory and the worker cannot
   tell their writes apart;
+- a delegated run's shell call, cell or job has a write area its processes are held to
+  (DA-20): a file outside it is unattributed in its list, but for its job's logs, which
+  the executor writes (``.jobs/<execution_id>/``); and a file in the write area of a
+  delegated run's attempt that ran meanwhile, or in the logs of a job that ran
+  meanwhile, is unattributed in any other attempt's;
 - the rest is the attempt's own.
 
 A session's own workspace is its own: an attempt of another session could write there
@@ -36,7 +41,7 @@ from dataclasses import dataclass, field
 from typing import Final
 
 from sandbox_science.contracts import TERMINAL_STATES, Clock
-from sandbox_science.contracts.context import other_sessions_upload
+from sandbox_science.contracts.context import in_write_area, other_sessions_upload
 
 from .live import Live
 
@@ -51,10 +56,11 @@ class _Account:
 
     writes: deque[tuple[float, float, str]] = field(default_factory=deque[tuple[float, float, str]])
     """When each began and ended, by the monotonic clock, and its path."""
-    attempts: deque[tuple[float, float, str]] = field(
-        default_factory=deque[tuple[float, float, str]]
+    attempts: deque[tuple[float, float, str, str | None, str]] = field(
+        default_factory=deque[tuple[float, float, str, str | None, str]]
     )
-    """When each was dispatched and ended, and its session."""
+    """When each was dispatched and ended, its session, its write area if any, and its
+    execution."""
     forgotten: float = -math.inf
     """The latest end of an entry dropped while an attempt could still need it."""
 
@@ -65,6 +71,10 @@ class Attributed:
 
     own: tuple[str, ...]
     unattributed: tuple[str, ...]
+
+
+_CONFINED: Final = frozenset({"shell", "cell", "job"})
+"""The kinds of attempt whose processes a delegated run's write area holds (DA-20)."""
 
 
 def _shared(path: str) -> bool:
@@ -98,13 +108,17 @@ class Activity:
             return None
         since = min(live.dispatched_at for live in running)
         account = self._accounts.setdefault(environment_id, _Account())
-        for entries in (account.writes, account.attempts):
-            while entries and entries[0][1] < since:
-                entries.popleft()
+        while account.writes and account.writes[0][1] < since:
+            account.writes.popleft()
+        while account.attempts and account.attempts[0][1] < since:
+            account.attempts.popleft()
         return account
 
     @staticmethod
-    def _bound(account: _Account, entries: deque[tuple[float, float, str]]) -> None:
+    def _bound(
+        account: _Account,
+        entries: deque[tuple[float, float, str]] | deque[tuple[float, float, str, str | None, str]],
+    ) -> None:
         while len(entries) > MAX_KEPT:
             account.forgotten = max(account.forgotten, entries.popleft()[1])
 
@@ -122,29 +136,52 @@ class Activity:
         account = self._keep(live.environment_id)
         if account is not None:
             ended = live.ended_at or self.clock.monotonic()
-            account.attempts.append((live.dispatched_at, ended, live.execution.context.session_id))
+            context = live.execution.context
+            account.attempts.append(
+                (
+                    live.dispatched_at,
+                    ended,
+                    context.session_id,
+                    context.write_area,
+                    live.execution.execution_id,
+                )
+            )
             self._bound(account, account.attempts)
 
     def attribute(
         self, live: Live, written: Iterable[str], deleted: Iterable[str]
     ) -> tuple[Attributed, Attributed]:
         """Sort the files ``live``'s attempt wrote and deleted, as the module says."""
-        session = live.execution.context.session_id
+        execution = live.execution
+        session, area = execution.context.session_id, execution.context.write_area
+        held = area if execution.kind in _CONFINED else None
+        logs = f".jobs/{execution.execution_id}/"
         since, until = live.dispatched_at, live.ended_at or self.clock.monotonic()
         account = self._accounts.get(live.environment_id) or _Account()
         requested = {path for began, end, path in account.writes if began <= until and end >= since}
-        others = any(
-            other is not live
+        beside = [
+            (
+                other.execution.context.session_id,
+                other.execution.context.write_area,
+                other.execution.execution_id,
+            )
+            for other in self.live.values()
+            if other is not live
             and other.environment_id == live.environment_id
             and other.dispatched
             and other.execution.state not in TERMINAL_STATES
-            and other.execution.context.session_id != session
             and other.dispatched_at <= until
-            for other in self.live.values()
-        ) or any(
-            owner != session and began <= until and end >= since
-            for began, end, owner in account.attempts
-        )
+        ] + [
+            (owner, written, other)
+            for began, end, owner, written, other in account.attempts
+            if began <= until and end >= since
+        ]
+        others = any(owner != session for owner, _, _ in beside)
+        areas = {
+            written
+            for owner, written, _ in beside
+            if owner == session and written is not None and written != area
+        } | {f".jobs/{other}" for _, _, other in beside if other != execution.execution_id}
         gap = live.restored or account.forgotten >= since
 
         def sort(paths: Iterable[str]) -> Attributed:
@@ -153,7 +190,16 @@ class Activity:
             for path in paths:
                 if other_sessions_upload(session, path):
                     continue
-                if path in requested or (_shared(path) and (others or gap)):
+                if (
+                    path in requested
+                    or (
+                        held is not None
+                        and not in_write_area(held, path)
+                        and not path.startswith(logs)
+                    )
+                    or (_shared(path) and (others or gap))
+                    or any(in_write_area(written, path) for written in areas)
+                ):
                     unattributed.append(path)
                 else:
                     own.append(path)
