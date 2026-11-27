@@ -1044,6 +1044,7 @@ class ReviewStore:
             )
             planned = None if plans is None else plan_item(plans, db, project, session, author_run)
             request = snapshot_reads.request_item(db, project, session)
+            acceptances = snapshot_reads.acceptances_item(db, project, session)
             start, pinned = snapshot_reads.final_items(
                 db,
                 project,
@@ -1070,6 +1071,8 @@ class ReviewStore:
         if planned is not None:
             encoded = dump(planned[1])
             shown.append(EvidenceItem("plan", dump(planned[0]), encoded, digest(encoded), 1))
+        if acceptances is not None:
+            shown.append(acceptances)
         shown.extend(self._cited(project, session, author_run, answer or ""))
         planner = SnapshotPlanner(
             SnapshotInputs(

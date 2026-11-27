@@ -826,3 +826,86 @@ async def test_a_final_review_may_anchor_a_finding_to_a_file_the_answer_cites(
     )
     assert reviewer.raised["status"] == "open"
     assert summary["final_review"]["open"] == {"fail": 1}
+
+
+class AcceptanceReviewer(LabReviewer):
+    """Reads the final review's acceptances item; a task accepted with files unread whose
+    result the answer calls verified draws a warn of category evidence_strength."""
+
+    unread: Any = None
+
+    async def complete(self, messages: Sequence[Any], tools: Sequence[Any]) -> ModelTurn:
+        self.calls += 1
+        results = [json.loads(m["content"]) for m in messages if m["role"] == "tool"]
+        if not results:
+            return self.turn([("review_manifest", {})], 100)
+        listed = results[0]["evidence"]
+        if len(results) == 1:
+            (item,) = [i for i in listed if i["kind"] == "acceptances"]
+            return self.turn([("review_read", {"evidence": item["evidence"]})], 100)
+        if len(results) == 2:
+            accepted = json.loads(results[1]["text"])["acceptances"]
+            self.unread = [a["unread"] for a in accepted]
+            answer = next(i for i in listed if i["new"])
+            if any(self.unread):
+                finding = {
+                    "severity": "warn",
+                    "category": "evidence_strength",
+                    "statement": "The answer calls the table verified; its task was accepted "
+                    "with files unread.",
+                    "anchors": [{"evidence": answer["evidence"]}],
+                    "operation_id": "accepted-unread",
+                }
+                return self.turn([("review_finding", finding)], 100)
+            checked = {"statement": "The task's files were read.", "evidence": [answer["evidence"]]}
+            return self.turn([("review_checked", checked)], 100)
+        outcome = "findings" if any(self.unread or []) else "passed"
+        return ModelTurn(
+            json.dumps({"outcome": outcome, "summary": "Done.", "cap_reached": False}),
+            input_tokens=100,
+            output_tokens=50,
+        )
+
+
+@pytest.mark.parametrize("read_whole", [False, True])
+async def test_a_final_review_sees_a_task_accepted_unread(store, read_whole: bool) -> None:
+    """A task accepted with its files unread, whose result the answer presents as verified,
+    draws the finding; one read whole before acceptance does not (CR-48, PD-46)."""
+    from datetime import UTC, datetime
+
+    from sandbox_science.orchestrator.context.history import Archive
+    from sandbox_science.orchestrator.delegation.records import DelegationRecords, Ending
+    from sandbox_science.testing import FakeClock
+
+    from . import test_acceptance_reads as reads
+
+    reviews, _, _ = store
+    clock = FakeClock(datetime(2026, 11, 26, 12, tzinfo=UTC))
+    records = DelegationRecords(reviews.documents.control, clock=clock)
+    archive = Archive(reviews.documents.control, clock=clock)
+    records.start("p", "s", reads.task())
+    records.end("p", "s", reads.DELEGATION, Ending("returned", "answered", "{}",
+                result=reads.RESULT, files=reads.FILES))  # fmt: skip
+    clock.advance(60)
+    if read_whole:
+        for sha in (reads.A, reads.B, reads.C):
+            reads.read(archive, reads.PARENT, sha)
+    records.accept("p", "s", reads.DELEGATION, by=reads.PARENT, reason="parent")
+    claim(reviews, "The table is verified.", "answer")
+    reviewer = AcceptanceReviewer()
+    summary = await controller(reviews, reviewer).terminal([], "The verified table is done.")
+    if read_whole:
+        assert reviewer.unread == [None]
+        assert summary["final_review"]["open"] == {}
+    else:
+        assert reviewer.unread[0].startswith("accepted unread: ")
+        assert summary["final_review"]["open"] == {"warn": 1}
+
+
+def test_an_accept_action_says_whether_its_files_were_read() -> None:
+    from sandbox_science.orchestrator.consistency.actions import _made
+
+    unread = {"accept": {"delegation_id": "dlg-1", "unread": "accepted unread: a.py"}}
+    whole = {"accept": {"delegation_id": "dlg-2"}}
+    assert _made(unread, {}) == ["accepted delegation dlg-1, accepted unread: a.py"]
+    assert _made(whole, {}) == ["accepted delegation dlg-2, its files read whole"]

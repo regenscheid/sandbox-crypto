@@ -24,7 +24,8 @@ run record counts the dismissals the review rejected. A fix now names something 
 what its finding reviewed (CR-42), so the confirmation's finding reviews a document's
 first revision and its fix names the second, which the snapshots hold. The final review's
 setting (CR-48) changed them once more, by the configuration digest the run records, and
-``sandbox-consistency-13`` again, with the user's request pinned in every snapshot."""
+``sandbox-consistency-13`` again, with the user's request pinned in every snapshot, and
+``sandbox-consistency-14``."""
 
 from __future__ import annotations
 
@@ -54,9 +55,9 @@ from .test_consistency import store as store
 
 GOLDEN = {
     # Author and fallback windows now include recent prior evidence for boundary checks.
-    "author": "1b115d6690bd6b431f113c37ed71b55a2b6453dc3563b0459286a81f3d4706b3",
-    "confirmation": "2be192586fddcded84844877f6266338c5f6e7302e80f28763005ba6da88cb48",
-    "fallback": "7bc228363b4bed4f0cc2054c80975c0f7efb820951cb91d8a502f26e354006d8",
+    "author": "61bdda1f6fc1c95c028b4dce824229b0438d0fd7bb13c12bf914ff032b8a3994",
+    "confirmation": "c2bad7f0babae0facf483a332430a1bb26e0f462e357adb9fbb717a73f5c03a9",
+    "fallback": "1e2c9e9e99f59ba9b7ccd761f1af983039b27d01140398f954f5732b86e8c8f4",
 }
 
 

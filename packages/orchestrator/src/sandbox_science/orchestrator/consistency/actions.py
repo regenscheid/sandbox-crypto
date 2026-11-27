@@ -140,6 +140,14 @@ def _made(call: Json, given: Json) -> list[str]:
     delegation = call.get("delegation")
     if isinstance(delegation, dict) and cast(Json, delegation).get("delegation_id"):
         made.append(f"delegation {cast(Json, delegation)['delegation_id']}")
+    accept = call.get("accept")
+    if isinstance(accept, dict) and cast(Json, accept).get("delegation_id"):
+        # Whether the accepting run read the task's files whole first (PD-46, CR-48).
+        unread = cast(Json, accept).get("unread")
+        made.append(
+            f"accepted delegation {cast(Json, accept)['delegation_id']}, "
+            + (str(unread) if unread else "its files read whole")
+        )
     proposal = call.get("result") if call.get("memory") == "memory_propose" else None
     if isinstance(proposal, dict) and cast(Json, proposal).get("proposal_id"):
         found = cast(Json, proposal)
