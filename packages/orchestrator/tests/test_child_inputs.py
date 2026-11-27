@@ -190,6 +190,9 @@ def test_the_write_area_line_is_true_of_each_placement() -> None:
     assert "every file of the session" not in own
     assert "not the session's other files" in own
     assert "copied to the same paths in the session" in own
+    # Only the result's files come back (CE-6), not the whole write area.
+    assert "only the files you name in result_files or deliverables are copied" in own
+    assert "the files of your write area are copied" not in own
 
 
 def test_the_briefs_line_maps_each_input_to_its_copy() -> None:

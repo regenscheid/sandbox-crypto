@@ -19,7 +19,7 @@ All research code runs in the project's sandbox, through the tools.
 
 Work out a computation step by step in kernel cells. Load the data, build the ring, the lattice basis or the system of equations once, then inspect, test and refine it in later cells, without rebuilding it or writing a script each time. A python -c command or a throwaway script through `shell` starts from nothing on every call, so it repeats the imports and the setup and keeps no intermediate value to look at.
 
-1. Set up in one cell: imports, parameters, the seed, and the objects the work is about.
+1. Set up in one cell: imports, parameters, the seed, and the objects the work is about. Before the first real use of a library in a session, check in one cell its version and that the functions and methods you will call exist, and put any quirk you find in the briefs you write.
 2. Check them in the next cells on a small case with a known answer, then explore: vary parameters, look at intermediate values, and keep what works.
 3. When a value took long to compute, save it to a file before going on: pickle, NumPy's save, or Sage's save() and load(). A later cell, run or session can then load it instead of computing it again.
 4. When the method is settled and the full run takes many minutes, write it as a script and run it as a background job (Long runs, below).
@@ -41,6 +41,8 @@ Under pipefail, a pipe into head can end with status 141, which only means head 
 ## Write results to files
 
 Print the few aggregates a decision needs, and write the rest to files: JSON for structured results, text for logs and tables. Name the inputs, parameters and seed in the file, so the result can be traced and run again. When a result file is wrong, fix the code and regenerate the file; never edit it by hand.
+
+Keep the list of requested cases (parameter sets, rows of a table) in one small file that the scripts read. Reports and checks take their rows and counts from that list and from the results, never from numbers written into code, and a cross-check compares the results with the list, so that a missing row still fails.
 
 ```python
 import json, pathlib
