@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from pydantic import JsonValue
+from pydantic import JsonValue, ValidationError
 
 from sandbox_science.orchestrator.confinement.runtime_loop import RemoteHook
 from sandbox_science.orchestrator.confinement.transport import Capability, Channel
@@ -19,7 +19,7 @@ from sandbox_science.orchestrator.consistency.store import scoped
 from sandbox_science.orchestrator.context.agent import AgentContext
 from sandbox_science.orchestrator.context.history.memory import RunMemory
 from sandbox_science.orchestrator.documents import DocumentError
-from sandbox_science.orchestrator.hooks import Closing
+from sandbox_science.orchestrator.hooks import Closing, TurnHook, overrides
 from sandbox_science.orchestrator.loop import Transcript, run_task
 from sandbox_science.orchestrator.model import (
     AssistantMessage,
@@ -28,6 +28,7 @@ from sandbox_science.orchestrator.model import (
     ToolSpec,
     timed,
 )
+from sandbox_science.orchestrator.plan_tools import Plans
 from sandbox_science.orchestrator.projects import ProjectError, ProjectStore
 from sandbox_science.orchestrator.worker_client import dump
 
@@ -108,13 +109,23 @@ class Recorder:
 
     async def request(self, kind: Capability, value: JsonValue, **options: Any) -> JsonValue:
         self.asked.append(kind)
-        if kind in (Capability.NOTICES, Capability.REPORT_NOTICES):
+        if kind in (Capability.NOTICES, Capability.REPORT_NOTICES, Capability.GOES_ON):
             return []
+        if kind is Capability.WENT_ON:
+            return False
         if kind is Capability.CONSUMPTION:
             return {"ids": []}
         if kind is Capability.CLOSING:
             return adapter(Closing).dump_python(Closing(), mode="json")
         return None
+
+
+class Nothing(TurnHook):
+    name = "nothing"
+
+
+PLANS = cast(Plans, object.__new__(Plans))
+"""The plan hook, unbuilt: only its class's methods are looked at."""
 
 
 type Ask = Callable[[RemoteHook, Transcript], Awaitable[object]]
@@ -126,6 +137,8 @@ POINTS: dict[str, Ask] = {
     "consumption": lambda hook, run: hook.consumption(),
     "model_returned": lambda hook, run: hook.model_returned(run),
     "observe_tool": lambda hook, run: hook.observe_tool(run, {"tool": "x"}),
+    "goes_on": lambda hook, run: hook.goes_on(run, "answer"),
+    "went_on": lambda hook, run: hook.went_on(run, ()),
     "closing": lambda hook, run: hook.closing(run, "answer"),
     "accept": lambda hook, run: hook.accept(run),
     "finishing": lambda hook, run: hook.finishing(run, "answered"),
@@ -138,7 +151,9 @@ def test_every_ask_has_its_point() -> None:
     assert set(POINTS) == set(HOOK_ASKS)
 
 
-@pytest.mark.parametrize("asks", [(), ("halt", "observe_tool", "closing"), HOOK_ASKS])
+@pytest.mark.parametrize(
+    "asks", [(), ("halt", "observe_tool", "closing"), ("goes_on", "went_on"), HOOK_ASKS]
+)
 async def test_a_runtime_asks_the_host_only_for_what_its_hook_does(
     asks: tuple[Any, ...],
 ) -> None:
@@ -157,6 +172,16 @@ async def test_a_runtime_asks_the_host_only_for_what_its_hook_does(
 def test_a_hook_given_without_asks_is_asked_everything() -> None:
     """A host that names no methods has the runtime ask for all of them, as before."""
     assert HookGiven(name="h").asks == HOOK_ASKS
+
+
+def test_a_hook_that_offers_to_go_on_is_asked_to_commit_too() -> None:
+    """``goes_on`` and ``went_on`` are named together, as the plan hook, the one hook
+    that carries a run past an answer, has both; a hook given one alone is refused."""
+    assert {"goes_on", "went_on"} <= {name for name in HOOK_ASKS if overrides(PLANS, name)}
+    assert not {"goes_on", "went_on"} & {name for name in HOOK_ASKS if overrides(Nothing(), name)}
+    for alone in ("goes_on", "went_on"):
+        with pytest.raises(ValidationError, match="asked to commit too"):
+            HookGiven(name="h", asks=(alone,))
 
 
 def test_an_observations_scope_is_checked_in_its_own_change(tmp_path: Path) -> None:

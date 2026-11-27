@@ -67,7 +67,7 @@ _MAX_BINARY_B64 = 4 * -(-MAX_BINARY_BYTES // 3)
 
 
 class Hello(Contract):
-    protocol: Literal[10] = CONTROL_PROTOCOL
+    protocol: Literal[11] = CONTROL_PROTOCOL
     image_revision: str = Field(min_length=1, max_length=128)
     apis: dict[ModelAlias, ApiKind] | None = Field(default=None, max_length=256)
     """The adapter the runtime chose for each of its aliases from the gateway's model
@@ -75,7 +75,7 @@ class Hello(Contract):
 
 
 class Ready(Contract):
-    protocol: Literal[10] = CONTROL_PROTOCOL
+    protocol: Literal[11] = CONTROL_PROTOCOL
     generation: Identifier
     projects: tuple[Identifier, ...] = Field(min_length=1, max_length=128)
     control_schema: Counter
@@ -210,11 +210,14 @@ type HookAsk = Literal[
     "consumption",
     "model_returned",
     "observe_tool",
+    "goes_on",
+    "went_on",
     "closing",
     "accept",
     "finishing",
 ]
-"""The hook methods the runtime asks the host for at the loop's points."""
+"""The hook methods the runtime asks the host for at the loop's points; ``goes_on`` and
+``went_on`` are asked together, as a hook that offers to carry the run on commits too."""
 HOOK_ASKS: Final[tuple[HookAsk, ...]] = get_args(HookAsk.__value__)
 """Every one of them, as a hook given without ``asks`` is asked."""
 
@@ -230,14 +233,17 @@ class HookGiven(Contract):
     """Whether the hook may keep a closing answer from the user (``holds_answers``), which
     the runtime then asks it when its lease is entered and after each closing
     (``holds_answers``)."""
-    goes_on: bool = False
-    """Whether the hook may carry the run past an answer with no tool call, which the
-    runtime then asks it before that answer's closing: its offer (``goes_on``), and once
-    the run has room and no limit due, whether it commits to it (``went_on``)."""
     asks: tuple[HookAsk, ...] = Field(default=HOOK_ASKS, max_length=len(HOOK_ASKS))
     """The methods the host's hook has of its own, which the runtime asks it; for the
     others the runtime takes ``TurnHook``'s default, which does nothing, without a round
-    trip to the host."""
+    trip to the host: no offer to carry the run past an answer (``goes_on``), and no
+    commitment to one (``went_on``)."""
+
+    @model_validator(mode="after")
+    def _paired(self) -> HookGiven:
+        if ("goes_on" in self.asks) != ("went_on" in self.asks):
+            raise ValueError("a hook that offers to carry the run on is asked to commit too")
+        return self
 
 
 class ToolboxGiven(Contract):

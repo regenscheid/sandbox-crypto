@@ -247,16 +247,18 @@ async def test_near_response_cap_assistant_append_sends_native_once() -> None:
         await right.close()
 
 
-def test_handshake_request_and_reply_accept_ten_and_reject_older() -> None:
+def test_handshake_request_and_reply_accept_eleven_and_reject_older() -> None:
     hello = {"image_revision": "a" * 40}
     ready = {"generation": "runtime-test", "projects": ["p"], "control_schema": 1}
-    assert Hello.model_validate({**hello, "protocol": 10}).protocol == 10
-    assert Ready.model_validate({**ready, "protocol": 10}).protocol == 10
+    assert Hello.model_validate({**hello, "protocol": 11}).protocol == 11
+    assert Ready.model_validate({**ready, "protocol": 11}).protocol == 11
     assert Hello.model_validate({**hello, "apis": {"claude": "messages"}}).apis == {
         "claude": "messages"
     }
     with pytest.raises(ValidationError):
         Hello.model_validate({**hello, "apis": {"claude": "anthropic"}})
+    with pytest.raises(ValidationError, match="literal_error"):
+        Hello.model_validate({**hello, "protocol": 10})
     with pytest.raises(ValidationError, match="literal_error"):
         Hello.model_validate({**hello, "protocol": 9})
     with pytest.raises(ValidationError, match="literal_error"):

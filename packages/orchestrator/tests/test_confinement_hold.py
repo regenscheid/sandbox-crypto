@@ -272,6 +272,7 @@ async def test_a_confined_answer_while_the_plan_is_open_goes_on_in_the_run(
     reply is in the run's events at once, never held, then the notice that the run went
     on; one run, one closing, at its real end, and no new root for the same plan state."""
     asked: list[Capability] = []
+    carriers: set[object] = set()
     script = (Reply("Status: step one is next."), Reply("Stopping here."))
     async with serving(harness, *script, serve=False) as service:
         plans = SessionPlans(service.stores.documents)
@@ -292,6 +293,8 @@ async def test_a_confined_answer_while_the_plan_is_open_goes_on_in_the_run(
 
         async def host_handle(kind: Capability, value: JsonValue) -> JsonValue:
             asked.append(kind)
+            if kind in (Capability.GOES_ON, Capability.WENT_ON) and isinstance(value, dict):
+                carriers.add(value.get("slot"))
             return await host.capability(kind, value)
 
         async def vm_handle(kind: Capability, value: JsonValue) -> JsonValue:
@@ -352,6 +355,9 @@ async def test_a_confined_answer_while_the_plan_is_open_goes_on_in_the_run(
             ]
             assert ("notice", {"source": "plans", "ids": [went_on], "text": WENT_ON}) in events()
             assert {Capability.GOES_ON, Capability.WENT_ON} <= set(asked)
+            # Only the plan hook names them in its ``asks``: no other hook is asked.
+            assert len(carriers) == 1, carriers
+            assert None not in carriers
             # The plan state had its continuation: no new root is queued for it.
             await service.auto_continuation_tick()
             assert [m.message_id for m in service.runs.messages(PROJECT, SESSION)] == ["msg-status"]

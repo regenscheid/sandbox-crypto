@@ -103,7 +103,6 @@ class RemoteHook(TurnHook):
         self.name, self.veto = given.name, given.veto
         self.limits_turns = given.turn_limit
         self.holds = given.holds
-        self.carries = given.goes_on
         self.asks = frozenset(given.asks)
         """The methods the host's hook has of its own: the others do nothing, and the
         runtime does not ask for them."""
@@ -207,7 +206,7 @@ class RemoteHook(TurnHook):
         await self.ask(Capability.OBSERVE_TOOL, run, record=record)
 
     async def goes_on(self, run: RunView, answer: str) -> Sequence[Notice]:
-        if not self.carries:
+        if "goes_on" not in self.asks:
             return ()
         return adapter(tuple[Notice, ...]).validate_python(
             await self.ask(Capability.GOES_ON, run, answer=answer)
@@ -215,7 +214,7 @@ class RemoteHook(TurnHook):
 
     async def went_on(self, run: RunView, notices: Sequence[Notice]) -> bool:
         # The host commits the offer it keeps, never notices the runtime sends back.
-        if not self.carries:
+        if "went_on" not in self.asks:
             return False
         return adapter(bool).validate_python(await self.ask(Capability.WENT_ON, run))
 

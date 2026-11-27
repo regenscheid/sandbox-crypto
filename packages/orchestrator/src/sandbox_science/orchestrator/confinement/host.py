@@ -1084,7 +1084,6 @@ class HostLoops:
                     planning=isinstance(hook, Plans),
                     turn_limit=type(hook).turn_limit is not TurnHook.turn_limit,
                     holds=type(hook).holds_answers is not TurnHook.holds_answers,
-                    goes_on=type(hook).goes_on is not TurnHook.goes_on,
                     asks=tuple(name for name in HOOK_ASKS if overrides(hook, name)),
                 )
                 for hook in hooks
