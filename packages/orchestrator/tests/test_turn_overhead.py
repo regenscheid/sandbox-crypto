@@ -5,13 +5,16 @@ keeps (docs/specs/context-management.md, CM-28; confinement)."""
 
 from __future__ import annotations
 
+import time
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import replace
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Final, cast
 
 import pytest
 from pydantic import JsonValue, ValidationError
 
+from sandbox_science.orchestrator import loop as loop_module
 from sandbox_science.orchestrator.confinement.runtime_loop import RemoteHook
 from sandbox_science.orchestrator.confinement.transport import Capability, Channel
 from sandbox_science.orchestrator.confinement.wire import HOOK_ASKS, HookGiven, adapter
@@ -19,7 +22,7 @@ from sandbox_science.orchestrator.consistency.store import scoped
 from sandbox_science.orchestrator.context.agent import AgentContext
 from sandbox_science.orchestrator.context.history.memory import RunMemory
 from sandbox_science.orchestrator.documents import DocumentError
-from sandbox_science.orchestrator.hooks import Closing, TurnHook, overrides
+from sandbox_science.orchestrator.hooks import Closing, Notice, RunView, TurnHook, overrides
 from sandbox_science.orchestrator.loop import Transcript, run_task
 from sandbox_science.orchestrator.model import (
     AssistantMessage,
@@ -240,3 +243,72 @@ async def test_a_report_round_at_a_limit_is_timed_from_its_turns_start() -> None
     _, report = transcript.context.usage
     assert isinstance(report.prepared_ms, int)
     assert isinstance(report.recorded_ms, int)
+
+
+class Clock:
+    """The loop's monotonic clock, which a scripted model's call and a hook advance by
+    the time they say they take, as ``loop.time`` has it."""
+
+    def __init__(self) -> None:
+        self.offset = 0.0
+
+    def monotonic(self) -> float:
+        return time.monotonic() + self.offset
+
+
+class Slow(ScriptedModel):
+    """A scripted model whose calls each take ``MODEL_SECONDS`` of the clock."""
+
+    def __init__(self, clock: Clock, turns: Sequence[ModelTurn]) -> None:
+        super().__init__(turns)
+        self.clock = clock
+
+    async def complete(self, messages: Any, tools: Sequence[ToolSpec]) -> ModelTurn:
+        turn = await super().complete(messages, tools)
+        self.clock.offset += MODEL_SECONDS
+        return replace(turn, duration_ms=round(MODEL_SECONDS * 1000))
+
+
+MODEL_SECONDS: Final = 5.0
+OFFER_SECONDS: Final = 0.25
+
+
+class GoesOnce(TurnHook):
+    """Carries the run past its first answer, taking ``OFFER_SECONDS`` to offer."""
+
+    name = "goes_once"
+
+    def __init__(self, clock: Clock) -> None:
+        self.clock, self.went = clock, False
+
+    async def goes_on(self, run: RunView, answer: str) -> Sequence[Notice]:
+        if self.went:
+            return ()
+        self.clock.offset += OFFER_SECONDS
+        return (Notice(self.name, ("n1",), "Go on: ", {}),)
+
+    async def went_on(self, run: RunView, notices: Sequence[Notice]) -> bool:
+        self.went = True
+        return True
+
+
+async def test_a_turn_that_goes_on_past_an_answer_is_timed_from_that_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A run that goes on past a bare answer takes its next call with no tool call
+    between: that call's ``recorded_ms`` is the loop's work after the answer, the offer
+    included, and neither it nor ``prepared_ms`` counts the answer's own model time."""
+    clock = Clock()
+    monkeypatch.setattr(loop_module, "time", clock)
+    hook = GoesOnce(clock)
+    model = Slow(clock, [ModelTurn("Status: step one is next."), ModelTurn("Done.")])
+    transcript = await run_task(model, toolbox(), "go", run_id="r", hooks=(hook,))
+    assert (transcript.stopped, transcript.answer) == ("answered", "Done.")
+    assert hook.went
+    first, second = transcript.context.usage
+    assert first.recorded_ms is None
+    for usage in (first, second):
+        assert usage.prepared_ms is not None
+        assert 0 <= usage.prepared_ms < MODEL_SECONDS * 1000
+    assert second.recorded_ms is not None
+    assert OFFER_SECONDS * 1000 <= second.recorded_ms < MODEL_SECONDS * 1000

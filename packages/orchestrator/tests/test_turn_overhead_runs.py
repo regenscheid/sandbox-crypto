@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 from typing import Any, Final, cast
+from unittest.mock import ANY
 
 import pytest
 import pytest_asyncio
@@ -29,6 +30,7 @@ from sandbox_science.orchestrator.worker_client import dump
 from . import loop_harness
 from . import test_run_service as run_service_tests
 from .loop_harness import Gateway, Harness, Reply, call
+from .test_confinement_hold import active_plan
 from .test_confinement_loop import confined
 
 pytestmark = pytest.mark.slow
@@ -108,7 +110,7 @@ def script(turns: int, chars: int) -> list[Reply]:
 
 _VARYING: Final = re.compile(
     r"msg-[0-9a-f]{16}|run-[0-9a-f]{24}|\d{8}T\d{6}\d*Z|"
-    r"(?:exe|att|cap|art|ev|kernel|krn)-[0-9a-f]{16,48}|"
+    r"(?:exe|att|cap|art|ev|kernel|krn|plan)-[0-9a-f]{16,48}|"
     r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:\+00:00|Z)?|"
     r"\\?\"(?:duration_ms|elapsed_ms|wall_ms|elapsed_seconds)\\?\":\s*[0-9.]+"
 )
@@ -130,9 +132,20 @@ def normalized(bodies: dict[str, list[bytes]]) -> Iterator[str]:
 
 
 async def requests_of(
-    harness: Harness, tmp_path: Path, turns: int, chars: int
+    harness: Harness, tmp_path: Path, turns: int, chars: int, *, planned: bool = False
 ) -> tuple[list[str], list[RunRecord]]:
-    records = await confined(harness, tmp_path, *script(turns, chars), max_turns=turns + 5)
+    """The run's requests and records; ``planned``, with an active plan, whose run opens
+    with a bare answer the plan carries it past."""
+    found = script(turns, chars)
+    if planned:
+        found = [Reply("Status: step one is next."), *found]
+    records = await confined(
+        harness,
+        tmp_path,
+        *found,
+        max_turns=turns + 5,
+        prepare=active_plan if planned else None,
+    )
     return list(normalized(cast(Recorded, harness.gateway).bodies)), records
 
 
@@ -148,14 +161,17 @@ def every_round_trip(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.parametrize(
-    ("turns", "chars", "settings"),
+    ("turns", "chars", "settings", "planned"),
     [
-        pytest.param(40, 6_000, {}, id="unfolded"),
+        pytest.param(40, 6_000, {}, False, id="unfolded"),
+        # An active plan carries the run past its first, bare, answer (``goes_on``).
+        pytest.param(20, 2_000, {}, True, id="went-on"),
         # Skeleton-only folds, made in the loop's own time, at the same turns in both runs.
         pytest.param(
             60,
             8_000,
             {"ceiling": 120_000, "chunk": 10_000, "context_mode": "skeleton"},
+            False,
             id="folded",
         ),
     ],
@@ -166,6 +182,7 @@ async def test_a_long_confined_runs_requests_are_the_same_with_and_without_the_s
     turns: int,
     chars: int,
     settings: dict[str, Any],
+    planned: bool,
 ) -> None:
     """The prompt cache needs each request's prefix byte for byte: counting the view's
     size once and leaving out the round trips of hooks that do nothing change no
@@ -181,17 +198,19 @@ async def test_a_long_confined_runs_requests_are_the_same_with_and_without_the_s
 
     monkeypatch.setattr(host_module.Prepared, "call", counted)
     async with environment(tmp_path / "now") as harness:
-        now, records = await requests_of(harness, tmp_path / "now", turns, chars)
+        now, records = await requests_of(harness, tmp_path / "now", turns, chars, planned=planned)
     trips, asked[:] = len(asked), []
     with monkeypatch.context() as before:
         every_round_trip(before)
         async with environment(tmp_path / "before") as harness:
-            then, _ = await requests_of(harness, tmp_path / "before", turns, chars)
+            then, _ = await requests_of(harness, tmp_path / "before", turns, chars, planned=planned)
     folds = cast(dict[str, Any], records[-1].summaries["folds"])["folds_total"]
     assert (folds > 0) == bool(settings), folds
     # Each turn's hooks took fewer round trips across the boundary.
     assert trips < len(asked) // 2, (trips, len(asked))
-    assert len(now) == len(then) == turns + 1
+    assert len(now) == len(then) == turns + 1 + planned
+    if planned:
+        assert records[-1].summaries["plans"] == {"went_on": 1, "states": [ANY]}
     for index, (ours, theirs) in enumerate(zip(now, then, strict=True)):
         assert ours == theirs, f"request {index} differs"
 
