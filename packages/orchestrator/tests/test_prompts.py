@@ -78,7 +78,7 @@ HOSTILE = "Authorization: Bearer test-secret-prompt-not-a-credential"
 # Each installed version and the SHA-256 of its UTF-8 text. Changing a text means a new
 # version: add it here, and keep the old version's entry for its records.
 GOLDEN = {
-    "sandbox-main-24": "58514e4e289bc17fe825a90c55379b60ca74d9e3ccad7d8cd1499cb82b396db3",
+    "sandbox-main-24": "e07e265d62d1e6edc64d36aac402ba809b4a8948b71be454838e3c8c652e95ec",
     "sandbox-main-23": "b8d82cbed2fca2ef5846c644c9a3c7149ddf3dcb4b41d05a8c5b82440e1dc2d7",
     "sandbox-main-22": "7369664e75e0d1a3586e52cd154bd31861074be29200384389116a22b9f501f1",
     "sandbox-main-21": "ca636732c6ae4cf804d66b4c8fcae41868911f71fb02b66f7aa5dbc47695fbe4",
@@ -533,8 +533,11 @@ def test_the_second_baseline_runs_wording_is_where_the_prompts_speak_of_it() -> 
         "reply as your next tool call, and keep working",
         "when nothing is running, say so plainly and name what you start now",
         "every edit of one change in one reply, so that no review or job sees it half made",
-        "Record plan progress in the reply whose call makes or reads its evidence, naming "
-        "the evidence by its path",
+        "Record plan progress in the reply whose call makes or reads its evidence, named by "
+        "its path, finishing one step and starting the next in one plan_progress call",
+        "Before calling part of the request out of reach at a limit, try one or two methods "
+        "that could fit within it (sparse, modular, a subsystem), and report why each failed; "
+        "say what you did not attempt as such.",
     ):
         assert said in main, said
     assert "progress on different plan steps" not in main

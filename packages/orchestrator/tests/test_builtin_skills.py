@@ -206,7 +206,8 @@ def test_the_skills_answer_the_second_baseline_runs_sources_and_measurements() -
     """Lane G4: a held paper is read through the library, its PDF downloaded only for
     what a page read cannot show; ``search_in_paper``'s context is a count of lines; a
     measurement carries its code's hash; independent cells run side by side; the
-    assumption a source's count rests on is tested; a parent works while a task runs.
+    assumption a source's count rests on is tested; a cell past a limit gets one or two
+    other methods before it is called out of reach; a parent works while a task runs.
     The single-page quoting rules stay."""
     literature = " ".join(body("literature-search").split())
     for said in (
@@ -224,7 +225,14 @@ def test_the_skills_answer_the_second_baseline_runs_sources_and_measurements() -
         "Record the SHA-256 of the code with each measurement, at the moment it runs",
         "keeps the old hash on the results it reuses, or runs them again",
         "Run independent cells (parameter sets, seeds, rows of a table) side by side",
-        "within the budget the task sets",
+        "within the limit the user stated, or the sandbox's where they stated none",
+        "A cell past that limit is not yet out of reach",
+        "try one or two other methods that could fit within the limit",
+        "rather than estimate the failure from a bound on one construction",
+        "report a cell you did not try as not attempted, which is different from attempted "
+        "and failed",
+        "Never exceed a limit the user set to do so, and after one or two serious "
+        "alternatives, report rather than keep trying.",
         "test it on each instance you measure and record the test beside the result",
     ):
         assert said in computation, said
