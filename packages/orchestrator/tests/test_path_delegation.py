@@ -115,7 +115,6 @@ AUDIT: Final[Mapping[str, str]] = {
     "what a check did not examine",
     "DEL-V6": "every end of a parent's run accepts its returned tasks, and no model is told",
     "DEL-V7": "a Resume continues a child under a new delegation id its parent never sees",
-    "DEL-V8": "a reopened task keeps the plan version of its first delegate",
     "DEL-V9": "a parent at a limit waits for its children with no wake",
     "DEL-V10": "a user constraint recorded after a child started does not reach it",
     "DEL-V11": "a refusal states the wrong cause or names no next step",
@@ -1095,7 +1094,7 @@ class Walk:
 
 RETURNS: Final[list[Walk]] = [
     Walk("reopen-keeps-history-environment-and-numbers-results"),
-    Walk("reopen-takes-the-current-plan-version", {"track": "DEL-V8"}),
+    Walk("reopen-takes-the-current-plan-version"),
     Walk("review-takes-in-each-result", {"review": "DEL-V2"}),
     Walk("acceptance-records-what-was-read"),
     Walk("platform-accepts-only-at-a-final-answer", {"review": "DEL-V6"}),
