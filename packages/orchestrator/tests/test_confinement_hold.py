@@ -8,8 +8,9 @@ test of 2026-11-27, where ``final_review = "hold"`` showed the answer at once.""
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest.mock import ANY
 
 import pytest
@@ -18,14 +19,17 @@ from pydantic import JsonValue
 from sandbox_science.orchestrator.chat import HELD, WENT_ON
 from sandbox_science.orchestrator.confinement.host import HostLoops
 from sandbox_science.orchestrator.confinement.models import CallbackModel, RuntimeModels
-from sandbox_science.orchestrator.confinement.runtime_loop import RuntimeLoops
+from sandbox_science.orchestrator.confinement.runtime_loop import RuntimeLoops, state
 from sandbox_science.orchestrator.confinement.transport import Capability, Channel, TransportError
+from sandbox_science.orchestrator.confinement.wire import HookRequest, payload
+from sandbox_science.orchestrator.context.agent import AgentContext
 from sandbox_science.orchestrator.harness import Role
 from sandbox_science.orchestrator.hooks import Closing, Notice, RunView, TurnHook
 from sandbox_science.orchestrator.loop import Transcript
 from sandbox_science.orchestrator.model import ChatModel, ModelGateway
 from sandbox_science.orchestrator.model_profiles import ModelProfile
 from sandbox_science.orchestrator.plan_tools import PLAN_OPEN
+from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.session_plans import SessionPlans
 from sandbox_science.orchestrator.tools import Toolbox
 
@@ -33,8 +37,10 @@ from .loop_harness import API_KEY, PROJECT, SESSION, Harness, Reply
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
+from .test_confinement_drain import prepared_attempt
 from .test_run_service import records, serving
 from .test_session_plans import actor, made, status
+from .test_tool_journal import projects as projects
 
 pytestmark = pytest.mark.slow
 
@@ -345,7 +351,7 @@ async def test_a_confined_answer_while_the_plan_is_open_goes_on_in_the_run(
                 ("assistant", "Stopping here."),
             ]
             assert ("notice", {"source": "plans", "ids": [went_on], "text": WENT_ON}) in events()
-            assert Capability.GOES_ON in asked
+            assert {Capability.GOES_ON, Capability.WENT_ON} <= set(asked)
             # The plan state had its continuation: no new root is queued for it.
             await service.auto_continuation_tick()
             assert [m.message_id for m in service.runs.messages(PROJECT, SESSION)] == ["msg-status"]
@@ -354,3 +360,40 @@ async def test_a_confined_answer_while_the_plan_is_open_goes_on_in_the_run(
             await host_channel.close()
             await vm_channel.close()
             await models.close()
+
+
+async def test_the_host_carries_a_run_on_only_past_an_answer_with_no_tool_call(
+    projects: ProjectStore,
+) -> None:
+    """Review of de930eca: a runtime must not spend a plan state's continuation for a
+    reply that was not an answer with no tool call: the host checks the last committed
+    message itself, for the offer and for its commitment."""
+
+    class Offers(TurnHook):
+        name = "offers_fixture"
+
+        def __init__(self) -> None:
+            self.committed = 0
+
+        async def goes_on(self, run: RunView, answer: str) -> Sequence[Notice]:
+            return (Notice(self.name, (), "Go on: ", {}),)
+
+        async def went_on(self, run: RunView, notices: Sequence[Notice]) -> bool:
+            self.committed += 1
+            return True
+
+    offers = Offers()
+    prepared = prepared_attempt(projects, cast(Toolbox, object()), (offers,))
+    run = Transcript(
+        context=AgentContext(
+            messages=[{"role": "system", "content": "system"}], max_input_chars=100000
+        ),
+        max_turns=3,
+    )
+    asked = HookRequest(attempt=prepared.given.attempt, slot=0, state=state(run), answer="x")
+    for kind in (Capability.GOES_ON, Capability.WENT_ON):
+        with pytest.raises(TransportError, match="only an answer with no tool call"):
+            await prepared.call(kind, payload(asked))
+    assert offers.committed == 0
+    assert not prepared.notices
+    await prepared.close()

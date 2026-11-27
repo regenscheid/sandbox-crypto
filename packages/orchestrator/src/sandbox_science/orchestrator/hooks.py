@@ -12,9 +12,10 @@ loop alone applies the delivery rules:
 - At a closing answer, a hook gets another turn only while turns remain, and a
   response round only while response rounds remain, and either only with notices.
   Hooks check this too, before doing work for a turn that cannot come.
-- Before an answer with no tool call has its closing, a hook may carry the run past it
-  to its next turn (``goes_on``), as an open plan does: the answer is then an ordinary
-  message, never held, and no closing is asked.
+- Before an answer with no tool call has its closing, a hook may offer to carry the run
+  past it to its next turn (``goes_on``), as an open plan does, and commits to the offer
+  only once the loop found room and no limit due for that turn (``went_on``): the answer
+  is then an ordinary message, never held, and no closing is asked.
 - At a limit, the run's last model call is its report round (``loop._report``): no hook
   offers notices before it but those it gives for that call (``report_notices``), after
   the report's own; it may call no tool (``tool_choice: none``), no tool it asks for all
@@ -313,13 +314,20 @@ class TurnHook:
 
     async def goes_on(self, run: RunView, answer: str) -> Sequence[Notice]:
         """Before the closing of an answer with no tool call, once the model call that gave
-        it returned and before ``model_returned``: the notices that carry the run on to its
-        next turn instead, when work this hook governs remains, as an active plan's
-        workable steps do (``plan_tools.Plans``). The answer is then the user's to see at
-        once, as a message: no closing is asked, so no hook holds or reviews it. None to
-        let the closing decide. The loop takes the first hook's notices, only while the run
-        has room for them."""
+        it returned and before ``model_returned``: the notices that would carry the run on
+        to its next turn instead, when work this hook governs remains, as an active plan's
+        workable steps do (``plan_tools.Plans``). An offer only, which spends nothing: the
+        loop settles the run's room and limits, then asks ``went_on``. None to let the
+        closing decide."""
         return ()
+
+    async def went_on(self, run: RunView, notices: Sequence[Notice]) -> bool:
+        """The loop takes this hook's offer from ``goes_on``, the run having room and no
+        limit due for its next turn: whether the hook commits to it, spending what bounds
+        it. Only then is the answer the user's to see at once, as a message, with no
+        closing asked, so no hook holds or reviews it; otherwise the answer has its
+        closing as any other. A hook that overrides ``goes_on`` overrides this too."""
+        return False
 
     async def closing(self, run: RunView, answer: str | None) -> Closing:
         return Closing()

@@ -19,7 +19,7 @@ from pydantic import Field, ValidationError
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ExecutionContext, Identifier
 
 from .aio import threaded
-from .continuity.auto_continuation import claim_in_run
+from .continuity.auto_continuation import claim_in_run, continued
 from .documents.errors import CONFLICT, INVALID_REQUEST, POLICY_DENIED, DocumentError
 from .hooks import Closing, Effect, Notice, Point, Refusal, RunView, TurnHook
 from .model import ToolSpec
@@ -56,11 +56,12 @@ ANSWER_HELD = (
     "answer again; that answer is taken."
 )
 PLAN_OPEN = (
-    "Your reply went to the user as a message, and this run goes on: the session plan is "
-    "active and its steps in next_steps can still be worked. Go on with the next of them, "
-    "recording progress as you go. If the user asked you to stop, pause or wait, record "
-    "the steps they hold blocked with their reason. A reply with no tool call while the "
-    "plan stands as it does now ends the run."
+    "Your reply was shown to the user as a message, not taken as the end of the work: the "
+    "session plan is active and its steps in next_steps can still be worked. Go on with "
+    "the next of them, recording progress as you go; steps in with_children are with "
+    "delegated runs, so wait for or review those rather than doing them again. If the "
+    "user asked you to stop, pause or wait, record the steps they hold blocked with their "
+    "reason. A reply with no tool call while the plan stands as it does now ends the run."
 )
 """Why a run goes on past an answer while its plan is open (``Plans.goes_on``)."""
 UNAVAILABLE = (
@@ -296,7 +297,9 @@ class PlanTools:
         self.unlisted = 0
         """Others' changes since the last plans notice that ``changes`` no longer holds."""
         self.continued: list[Pin] = []
-        """The plan states this run went on past an answer at (``going_on``), in order."""
+        """The plan states this run went on past an answer at (``went_on``), in order."""
+        self.offer: PlanSummary | None = None
+        """The plan state ``going_on`` offered to go on at, until ``went_on`` commits it."""
 
     def _owned(self, action: Callable[[], _T]) -> _T:
         if self.invalid:
@@ -526,12 +529,15 @@ class PlanTools:
         ]
 
     async def going_on(self) -> PlanNotice | None:
-        """The plans notice that carries the run past an answer with no tool call: the
+        """The plans notice that would carry the run past an answer with no tool call: the
         current plan, active with steps that can still be worked (pending or in progress,
-        a step changed since its progress among them), with no question of the session's
-        open, at a state that has had no continuation yet, in this run or as a queued new
-        root (``auto_continuation.claim_in_run``), which this claims. ``None`` otherwise,
-        and while the plan is unread or cannot be read: the closing decides then."""
+        a step changed since its progress among them) other than those on a track a
+        delegated run holds, running or returned and awaiting its review, with no question
+        of the session's open, at a state that has had no continuation yet, in a run or as a
+        queued new root. An offer, which ``went_on`` commits. ``None`` otherwise, and while
+        the plan is unread or cannot be read: the closing decides then, and waits for the
+        children."""
+        self.offer = None
         try:
             return await threaded(lambda: self._owned(self._going_on))
         except DocumentError:
@@ -545,43 +551,83 @@ class PlanTools:
         if found is None:
             return None
         summary, plan = found
-        if summary.status != "active":
+        pin = _pin(summary)
+        if summary.status != "active" or pin is None or pin in self.continued:
             return None
+        scope = self.authority.scope
+        delegated = self._delegated_tracks()
+        steps = {step.step_id: step for phase in plan.version.body.phases for step in phase.steps}
         running: list[str] = []
         waiting: list[str] = []
+        children: list[str] = []
         for step in plan.steps:
             latest = step.latest
             state = latest.status if latest is not None and step.matches_current_step else None
-            if state == "in_progress":
-                running.append(step.step_id)
-            elif state in (None, "pending"):
-                waiting.append(step.step_id)
+            if state not in (None, "pending", "in_progress"):
+                continue
+            if steps[step.step_id].track_id in delegated:
+                children.append(step.step_id)
+            else:
+                (running if state == "in_progress" else waiting).append(step.step_id)
         workable = [*running, *waiting]
         if not workable:
             return None
-        scope = self.authority.scope
         if Questions(self.plans.documents).open(scope.project_id, scope.session_id):
             return None
-        pin = _pin(summary)
-        if pin is None or pin in self.continued:
-            return None
-        with self.plans.documents.control.write() as tx:
-            if self.plans.summary_in(tx.sql, self.authority) != summary or not claim_in_run(
-                tx.sql,
-                scope.project_id,
-                scope.session_id,
-                summary,
-                run=self.authority.run_id or "",
-                observed=self.clock.now().timestamp(),
-            ):
+        with self.plans.documents.control.read() as tx:
+            if continued(tx.sql, scope.project_id, scope.session_id, summary):
                 return None
-        self.continued.append(pin)
-        payload = {
+        self.offer = summary
+        payload: dict[str, object] = {
             **self._render(summary, plan, [], 0),
             "next_steps": workable[:MAX_STEP_IDS],
             "plan_open": PLAN_OPEN,
         }
+        if children:
+            payload["with_children"] = children[:MAX_STEP_IDS]
         return PlanNotice(payload, pin)
+
+    def _delegated_tracks(self) -> frozenset[str]:
+        """The tracks of the session's delegated runs that hold their steps: running, or
+        returned and awaiting the parent's review, which can send them on (PD-46)."""
+        scope = self.authority.scope
+        with self.plans.documents.control.read() as tx:
+            rows = tx.sql.execute(
+                "SELECT DISTINCT json_extract(brief,'$.track.track_id') FROM delegations "
+                "WHERE project_id=? AND session_id=? "
+                "AND (ended IS NULL OR (ended='returned' AND review='awaiting')) "
+                "AND json_extract(brief,'$.track.track_id') IS NOT NULL",
+                (scope.project_id, scope.session_id),
+            ).fetchall()
+        return frozenset(str(row[0]) for row in rows)
+
+    async def went_on(self) -> bool:
+        """Commit the offer ``going_on`` made: whether its plan state is still current and
+        had no continuation, which this records (``auto_continuation.claim_in_run``). Only
+        then does the run go on, and count it."""
+        offer, self.offer = self.offer, None
+        if offer is None:
+            return False
+
+        def claim() -> bool:
+            scope = self.authority.scope
+            with self.plans.documents.control.write() as tx:
+                return self.plans.summary_in(tx.sql, self.authority) == offer and claim_in_run(
+                    tx.sql,
+                    scope.project_id,
+                    scope.session_id,
+                    offer,
+                    run=self.authority.run_id or "",
+                    observed=self.clock.now().timestamp(),
+                )
+
+        try:
+            claimed = await threaded(lambda: self._owned(claim))
+        except DocumentError:
+            return False
+        if claimed and (pin := _pin(offer)) is not None:
+            self.continued.append(pin)
+        return claimed
 
     async def model_delivered(self) -> None:
         """After a model call returned: the current read or plans notice it saw read the
@@ -867,12 +913,19 @@ class Plans(TurnHook):
     async def goes_on(self, run: RunView, answer: str) -> Sequence[Notice]:
         # Before ``model_returned``: the plan this model call's notices showed is read now.
         await self.tools.model_delivered()
+        self.tools.offer = None
         if run.turns_left <= 0 or run.halted is not None or approval_open(run.tool_records):
             return ()
         found = await self.tools.going_on()
         if found is None or found.pin is None:
             return ()
         return (Notice(self.name, (went_on(found.pin),), PLANS.text, found.payload),)
+
+    async def went_on(self, run: RunView, notices: Sequence[Notice]) -> bool:
+        if run.turns_left <= 0 or run.halted is not None:
+            self.tools.offer = None
+            return False
+        return await self.tools.went_on()
 
     def summary(self) -> object | None:
         continued = self.tools.continued

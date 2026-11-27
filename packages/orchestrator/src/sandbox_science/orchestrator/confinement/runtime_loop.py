@@ -81,6 +81,7 @@ def state(run: Transcript) -> LoopState:
         withheld=run.withheld,
         holding=run.holding,
         pending=run.pending,
+        carried=run.carried,
         room=run.room,
         response_rounds=run.response_rounds,
         held=run.held,
@@ -197,6 +198,12 @@ class RemoteHook(TurnHook):
         return TypeAdapter(tuple[Notice, ...]).validate_python(
             await self.ask(Capability.GOES_ON, run, answer=answer)
         )
+
+    async def went_on(self, run: RunView, notices: Sequence[Notice]) -> bool:
+        # The host commits the offer it keeps, never notices the runtime sends back.
+        if not self.carries:
+            return False
+        return TypeAdapter(bool).validate_python(await self.ask(Capability.WENT_ON, run))
 
     async def closing(self, run: RunView, answer: str | None) -> Closing:
         closing = TypeAdapter(Closing).validate_python(

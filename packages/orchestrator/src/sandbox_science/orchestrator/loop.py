@@ -357,6 +357,9 @@ class Transcript:
     max_turns: int = MAX_TURNS
     pending: str | None = field(default=None, repr=False)
     """The answer a closing round was taken for, until the next reply."""
+    carried: str | None = field(default=None, repr=False)
+    """The answer a hook carried the run past (``_goes_on``), until the next reply: the
+    run's answer if the run ends before another stands, whatever ends it."""
     room: bool = field(default=True, repr=False)
     """False once a model call was refused for the conversation's length."""
     response_rounds: int = 0
@@ -425,7 +428,7 @@ class Transcript:
         self.stopped = "error"
         # An answer the agent had given stands, held or not; the failed turn has none.
         self.final_text = None
-        self.answer = self.answer or self.held_answer
+        self.answer = self.answer or self.held_answer or self.carried
         self.holding = False
 
 
@@ -472,13 +475,15 @@ async def _goes_on(
     hooks: Sequence[TurnHook], transcript: Transcript, reply: ModelTurn, answer: _Answer
 ) -> tuple[Notice, ...]:
     """The notices that carry the run past ``reply``, a complete answer with no tool call,
-    to its next turn instead of its closing: the first hook's that gives any
-    (``TurnHook.goes_on``), while the run has room for them. None for a reply with calls,
-    one the output limit cut off that is still to be continued, an empty one, a run with
-    no turn or room left, and the answer of a response round, or while one is held: a
-    closing's findings were answered, and the closing decides. Asked before the hooks hear
-    that the call returned, so that an answer that goes on is never kept from the user
-    (``withheld``)."""
+    to its next turn instead of its closing: the first hook's offer (``TurnHook.goes_on``),
+    once the run's turn limit is current, the run has room for the notices and no limit
+    makes its next call the last (``_last_call``), and the hook commits to it
+    (``went_on``). None for a reply with calls, one the output limit cut off that is still
+    to be continued, an empty one, a run with no turn or room left, and the answer of a
+    response round, or while one is held: a closing's findings were answered, and the
+    closing decides. All before the hooks hear that the call returned, so that an answer
+    that goes on is never kept from the user (``withheld``) and one that does not is kept
+    as any closing answer is."""
     if reply.tool_calls or (reply.finish_reason == LENGTH and answer.continued < CONTINUATIONS):
         return ()
     if transcript.response_rounds or transcript.holding or transcript.halted is not None:
@@ -487,8 +492,12 @@ async def _goes_on(
     if not text.strip() or not transcript.has_room():
         return ()
     for hook in hooks:
-        if found := tuple(await hook.goes_on(transcript, text)):
-            return found if transcript.has_room(found) else ()
+        if not (found := tuple(await hook.goes_on(transcript, text))):
+            continue
+        await _turn_limit(hooks, transcript)
+        if not transcript.has_room(found) or await _last_call(hooks, transcript) is not None:
+            return ()
+        return found if await hook.went_on(transcript, found) else ()
     return ()
 
 
@@ -675,7 +684,7 @@ async def _attempt(model: ChatModel, toolbox: Toolbox, transcript: Transcript) -
     transcript.overflowed = False
     reply = await transcript.context.complete(model, toolbox.specs)
     transcript.phase = "harness"
-    transcript.pending = None
+    transcript.pending = transcript.carried = None
     transcript.context.record_reply(reply, input_size=size)
     return reply
 
@@ -1050,11 +1059,12 @@ async def _run_task(
                 _counted(transcript, "empty_answers", "retried")
                 continue
             answer.retried = False
-            if going_on and transcript.has_room(going_on):
+            if going_on:
                 # The answer is a message to the user, and the run goes on with its open
-                # work; it stands for a closing only if a limit ends the run first.
+                # work; it stands for a closing only if the run ends first, and is the
+                # run's answer if it ends without one (``carried``).
                 await _offer(transcript, going_on)
-                transcript.pending = text
+                transcript.pending = transcript.carried = text
                 continue
             held = transcript.held
             if await _closing(hooks, transcript, text):
@@ -1372,6 +1382,9 @@ async def run_task(
                             # The round ended without an answer of its own: the held
                             # one is the run's (CR-48).
                             _stands(transcript, transcript.held_answer)
+                        if transcript.answer is None and transcript.carried is not None:
+                            # The run went on past an answer and ended before another.
+                            transcript.answer = transcript.carried
                     except WorkingMemoryLimitError as error:
                         transcript.stopped = "memory_limit"
                         transcript.final_text = transcript.answer = None
@@ -1398,7 +1411,8 @@ async def run_task(
                     if not user_cancelled(error, stop):
                         raise
                     transcript.stopped, transcript.final_text = "cancelled", None
-                    transcript.answer = None
+                    # Only an answer the run went on past, which the user has seen, stays.
+                    transcript.answer = transcript.carried
     except BaseException as error:
         if transcript is not None and user_cancelled(error, stop):
             pass  # it came as the run closed: the run's own outcome stands

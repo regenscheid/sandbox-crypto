@@ -213,8 +213,9 @@ class HookGiven(Contract):
     the runtime then asks it when its lease is entered and after each closing
     (``holds_answers``)."""
     goes_on: bool = False
-    """Whether the hook may carry the run past an answer with no tool call (``goes_on``),
-    which the runtime then asks it before that answer's closing (``goes_on``)."""
+    """Whether the hook may carry the run past an answer with no tool call, which the
+    runtime then asks it before that answer's closing: its offer (``goes_on``), and once
+    the run has room and no limit due, whether it commits to it (``went_on``)."""
 
 
 class ToolboxGiven(Contract):
@@ -273,6 +274,7 @@ class LoopState(Contract):
     holding: bool = False
     """Whether the answer held for its round is still kept from the user's view (CR-48)."""
     pending: str | None = Field(default=None, max_length=MAX_VIEW_BYTES)
+    carried: str | None = Field(default=None, max_length=MAX_VIEW_BYTES)
     room: bool
     response_rounds: Counter
     held: Counter

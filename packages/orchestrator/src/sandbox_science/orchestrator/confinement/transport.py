@@ -79,9 +79,13 @@ class Capability(StrEnum):
     OBSERVE_TOOL = "observe_tool"
     TOOL_DONE = "tool_done"
     GOES_ON = "goes_on"
-    """Runtime to host: a hook's notices that carry the run past an answer with no tool
-    call (``TurnHook.goes_on``), which the host then admits as it admits a hook's other
-    notices; asked only of a hook that may give them (``HookGiven.goes_on``)."""
+    """Runtime to host: a hook's offer of the notices that would carry the run past an
+    answer with no tool call (``TurnHook.goes_on``), which the host keeps and does not
+    admit yet; asked only of a hook that may give them (``HookGiven.goes_on``)."""
+    WENT_ON = "went_on"
+    """Runtime to host: the run has room and no limit due for the turn the hook offered;
+    the host's hook decides whether it commits (``TurnHook.went_on``), and only then does
+    the host admit the offered notices."""
     CLOSING = "closing"
     ACCEPT = "accept"
     FINISHING = "finishing"
