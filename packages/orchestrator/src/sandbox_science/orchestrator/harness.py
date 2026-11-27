@@ -2307,6 +2307,7 @@ class Harness:
                 context,
                 run_id=run_id,
                 alias=alias,
+                artifacts=inventory,
             )
             bundles.append(caps.plans(plans))
         # A main run asks the user and waits in the call; a delegated run that needs

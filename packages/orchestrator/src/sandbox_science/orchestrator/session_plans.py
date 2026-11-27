@@ -10,10 +10,12 @@ Its synchronous calls must finish before that owner closes the store.
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import hashlib
 import json
 import sqlite3
+from collections.abc import Generator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Annotated, Final, Literal, Self, TypeVar, cast
@@ -448,6 +450,17 @@ def _json(value: object, limit: int = MAX_RECORD) -> str:
         ) from error
 
 
+def _body_size(body: PlanBody) -> None:
+    """Refuse a body over its limit, saying its size and the limit."""
+    size = len(json.dumps(body.model_dump(mode="json"), sort_keys=True, separators=(",", ":")))
+    if size > MAX_BODY:
+        raise DocumentError(
+            INVALID_REQUEST,
+            f"the plan body is {size:,} bytes of canonical JSON, over its limit of "
+            f"{MAX_BODY:,}: shorten its descriptions or split the plan",
+        )
+
+
 def _decode[M: PlanModel](model: type[M], raw: str) -> M:
     """A record as its model, from the JSON the table holds (checked when written)."""
     try:
@@ -495,6 +508,33 @@ def _unfinished(held: dict[str, list[str]], ref: PlanRef) -> str:
     }
     parts = [f"{_named(ids)} {reasons[reason]}" for reason, ids in held.items() if ids]
     return "the plan's steps are not all finished: " + "; ".join(parts)
+
+
+MAX_PROGRESS_STEPS: Final = 16
+"""The steps one ``progress_steps`` change records."""
+
+
+@dataclass(frozen=True)
+class StepAssertion:
+    """One step's assertion in a progress change: the step, its last observed progress
+    cursor, its status, a note and evidence claims."""
+
+    step_id: str
+    expected_step_cursor: int
+    status: StepStatus
+    note: str
+    evidence: tuple[PlanEvidence, ...] = ()
+
+
+@contextlib.contextmanager
+def _named_entry(index: int, step_id: str) -> Generator[None]:
+    """A refusal of one entry of a several-step change, named by its place and step."""
+    try:
+        yield
+    except DocumentError as error:
+        raise DocumentError(
+            error.kind, f"steps[{index}] ({step_id}): {error.message}", error.details
+        ) from None
 
 
 @dataclass(frozen=True)
@@ -916,17 +956,17 @@ class SessionPlans:
         self._budget(db, authority.scope)
         return identifier, digest, None
 
-    def _finish(
+    def _event_of(
         self,
         db: sqlite3.Connection,
         authority: PlanAuthority,
         operation: str,
         action: Action,
-        identifier: str,
         digest: str,
         head: PlanHead,
         number: int,
-    ) -> PlanReceipt:
+    ) -> int:
+        """Record one change's event and make ``head`` current; its sequence."""
         pointer = self._current(db, authority.scope)
         sequence = 1 if pointer is None else pointer.event_cursor + 1
         if sequence > MAX_COUNTER:
@@ -953,6 +993,20 @@ class SessionPlans:
             CurrentPlan(scope=authority.scope, ref=head.ref, event_cursor=sequence),
         )
         self._put(db, authority.scope, "head", head.ref.plan_id, head)
+        return sequence
+
+    def _finish(
+        self,
+        db: sqlite3.Connection,
+        authority: PlanAuthority,
+        operation: str,
+        action: Action,
+        identifier: str,
+        digest: str,
+        head: PlanHead,
+        number: int,
+    ) -> PlanReceipt:
+        sequence = self._event_of(db, authority, operation, action, digest, head, number)
         receipt = PlanReceipt(
             scope=authority.scope,
             operation_id=operation,
@@ -988,7 +1042,7 @@ class SessionPlans:
         authority = _checked(PlanAuthority, authority)
         self._main(authority)
         body = _kept(authority, PlanBody, _checked(PlanBody, body), "the plan.body")
-        _json(body, MAX_BODY)
+        _body_size(body)
         expected_current = _checked(PlanRef, expected_current) if expected_current else None
         reason = _kept_text(authority, _text(reason), "the plan.reason")
         payload = {
@@ -1061,7 +1115,7 @@ class SessionPlans:
         self._main(authority)
         base = _checked(PlanRef, base)
         body = _kept(authority, PlanBody, _checked(PlanBody, body), "the plan.body")
-        _json(body, MAX_BODY)
+        _body_size(body)
         reason = _kept_text(authority, _text(reason), "the plan.reason")
         payload = {
             "base": base.model_dump(mode="json"),
@@ -1118,33 +1172,115 @@ class SessionPlans:
         """Append a current-version step assertion with a per-step optimistic cursor."""
         authority = _checked(PlanAuthority, authority)
         base = _checked(PlanRef, base)
-        note = _kept_text(authority, _text(note), "the plan.note")
+        if expected_status_revision is not None:
+            expected_status_revision = _counter(expected_status_revision)
+        entry, payload = self._assertion(
+            authority,
+            base,
+            StepAssertion(step_id, expected_step_cursor, status, note, evidence),
+        )
+        payload = {
+            "base": base.model_dump(mode="json"),
+            **payload,
+            "expected_status_revision": expected_status_revision,
+        }
+        return self._progress(
+            authority,
+            operation,
+            base,
+            ((entry, expected_step_cursor),),
+            payload,
+            expected_status_revision,
+        )
+
+    def progress_steps(
+        self,
+        authority: PlanAuthority,
+        operation: str,
+        base: PlanRef,
+        steps: tuple[StepAssertion, ...],
+        *,
+        expected_status_revision: int,
+    ) -> PlanReceipt:
+        """Append several steps' assertions, in order, as one change against one plan
+        version and status revision: each step's assertion and event is recorded as
+        ``progress`` records it, and a refused one refuses them all, named by its place.
+        The receipt is the last assertion's."""
+        authority = _checked(PlanAuthority, authority)
+        base = _checked(PlanRef, base)
+        expected_status_revision = _counter(expected_status_revision)
+        if not 1 <= len(steps) <= MAX_PROGRESS_STEPS:
+            raise DocumentError(INVALID_REQUEST, f"progress names 1 to {MAX_PROGRESS_STEPS} steps")
+        seen: set[str] = set()
+        entries: list[tuple[PlanProgress, int]] = []
+        payloads: list[dict[str, object]] = []
+        for index, step in enumerate(steps):
+            if step.step_id in seen:
+                raise DocumentError(
+                    INVALID_REQUEST,
+                    f"steps[{index}] ({step.step_id}): the step is named twice; give it once, "
+                    "with its latest status",
+                )
+            seen.add(step.step_id)
+            with _named_entry(index, step.step_id):
+                entry, payload = self._assertion(authority, base, step)
+            entries.append((entry, step.expected_step_cursor))
+            payloads.append(payload)
+        payload: dict[str, object] = {
+            "base": base.model_dump(mode="json"),
+            "steps": payloads,
+            "expected_status_revision": expected_status_revision,
+        }
+        return self._progress(
+            authority,
+            operation,
+            base,
+            tuple(entries),
+            payload,
+            expected_status_revision,
+            named=True,
+        )
+
+    def _assertion(
+        self, authority: PlanAuthority, base: PlanRef, step: StepAssertion
+    ) -> tuple[PlanProgress, dict[str, object]]:
+        """One step's checked assertion, before the store numbers it, and its part of
+        the operation's payload."""
+        note = _kept_text(authority, _text(step.note), "the plan.note")
         request = PlanProgress(
             scope=authority.scope,
             ref=base,
             sequence=1,
-            step_id=step_id,
+            step_id=step.step_id,
             step_sha256="0" * 64,
-            status=status,
+            status=step.status,
             note=note,
-            evidence=evidence,
+            evidence=step.evidence,
             author=authority,
             recorded_at=datetime.now(UTC),
         )
         request = _checked(PlanProgress, request)
         self._evidence(authority.scope, request.evidence)
-        expected_step_cursor = _counter(expected_step_cursor)
-        if expected_status_revision is not None:
-            expected_status_revision = _counter(expected_status_revision)
-        payload = {
-            "base": base.model_dump(mode="json"),
-            "step_id": step_id,
-            "expected_step_cursor": expected_step_cursor,
-            "status": status,
+        cursor = _counter(step.expected_step_cursor)
+        return request, {
+            "step_id": step.step_id,
+            "expected_step_cursor": cursor,
+            "status": step.status,
             "note": note,
             "evidence": [item.model_dump(mode="json") for item in request.evidence],
-            "expected_status_revision": expected_status_revision,
         }
+
+    def _progress(
+        self,
+        authority: PlanAuthority,
+        operation: str,
+        base: PlanRef,
+        entries: tuple[tuple[PlanProgress, int], ...],
+        payload: dict[str, object],
+        expected_status_revision: int | None,
+        *,
+        named: bool = False,
+    ) -> PlanReceipt:
         with self.documents.control.write() as tx:
             db = tx.sql
             identifier, digest, replay = self._begin(db, authority, operation, "progress", payload)
@@ -1160,26 +1296,45 @@ class SessionPlans:
                     CONFLICT, "plan status changed; reread before asserting progress"
                 )
             steps = _steps(self._version(db, authority.scope, base).body)
-            if step_id not in steps:
-                raise DocumentError(NOT_FOUND, "step is absent from this current plan version")
-            step, fingerprint = steps[step_id]
-            if authority.role == "delegated" and (
-                authority.grant != base or authority.track_id != step.track_id
-            ):
-                raise DocumentError(
-                    POLICY_DENIED, "delegated grant does not match this current step/track/version"
+            for index, (request, expected_step_cursor) in enumerate(entries):
+                step_id = request.step_id
+                with _named_entry(index, step_id) if named else contextlib.nullcontext():
+                    if step_id not in steps:
+                        raise DocumentError(
+                            NOT_FOUND, "step is absent from this current plan version"
+                        )
+                    step, fingerprint = steps[step_id]
+                    if authority.role == "delegated" and (
+                        authority.grant != base or authority.track_id != step.track_id
+                    ):
+                        raise DocumentError(
+                            POLICY_DENIED,
+                            "delegated grant does not match this current step/track/version",
+                        )
+                    latest = self._latest(db, authority.scope, base, step_id)
+                    if (latest.sequence if latest else 0) != expected_step_cursor:
+                        raise DocumentError(
+                            CONFLICT, "step progress changed; reread before asserting progress"
+                        )
+                sequence = _increment(head.progress_cursor)
+                entry = request.model_copy(
+                    update={"sequence": sequence, "step_sha256": fingerprint}
                 )
-            latest = self._latest(db, authority.scope, base, step_id)
-            if (latest.sequence if latest else 0) != expected_step_cursor:
-                raise DocumentError(
-                    CONFLICT, "step progress changed; reread before asserting progress"
+                self._append(
+                    db, authority.scope, "progress", base.plan_id, sequence, entry, step_id
                 )
-            sequence = _increment(head.progress_cursor)
-            entry = request.model_copy(update={"sequence": sequence, "step_sha256": fingerprint})
-            self._append(db, authority.scope, "progress", base.plan_id, sequence, entry, step_id)
-            head = head.model_copy(update={"progress_cursor": sequence})
+                head = head.model_copy(update={"progress_cursor": sequence})
+                if index < len(entries) - 1:
+                    self._event_of(db, authority, operation, "progress", digest, head, sequence)
             return self._finish(
-                db, authority, operation, "progress", identifier, digest, head, sequence
+                db,
+                authority,
+                operation,
+                "progress",
+                identifier,
+                digest,
+                head,
+                head.progress_cursor,
             )
 
     def set_status(

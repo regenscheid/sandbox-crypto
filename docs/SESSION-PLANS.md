@@ -91,6 +91,12 @@ message and its details. Any status may follow any other: work the user pauses i
 `blocked` and goes back to `in_progress` when it resumes. The per-plan progress cursor is monotonic; each step's CAS cursor is
 the sequence of its latest assertion, so unrelated steps can advance independently.
 
+`progress_steps` records several steps' assertions, in order, in one transaction against
+one plan version and status revision (at most 16 steps, each once). Each assertion is
+checked as `progress` checks it, by its own step cursor, and gets its own progress record
+and event; all events carry the call's operation ID and request hash, and the receipt is
+the last one's. A refused assertion refuses the whole change, named by its place and step.
+
 The optional `expected_status_revision` on `progress` enters the operation digest
 and is checked inside the same write transaction. An adapter that checks `active`
 must supply it to detect a concurrent transition to `draft`. Omission is an internal-core choice and provides no atomic
@@ -143,7 +149,7 @@ status alone into approval or execution authority.
 
 ## Bounded reads, retention and failures
 
-Public internal methods are `publish`, `revise`, `progress`, `set_status`, `summary`,
+Public internal methods are `publish`, `revise`, `progress`, `progress_steps`, `set_status`, `summary`,
 `current`, `compact_current`, `version`, `history`, `events`, `pinned` (a handle that
 also refuses a session closed and opened again) and `has_records`. `summary` returns a small current
 reference, workflow/status/progress/event cursors, goal-outcome tag and last

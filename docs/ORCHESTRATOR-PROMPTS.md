@@ -181,6 +181,21 @@ leaves to the base.
 existing task authorization; it is neither USER approval nor a permission grant.
 There is no approval state: plan approval (PD-6) is undecided, and the unused
 `awaiting_approval` state was removed until it is (decision 10). Progress requires an active plan and exact plan, step and status CAS.
+`plan_progress` records one step, or, with a `steps` list (at most 16, each step once),
+several steps in order as one change against one plan version and status revision, so a
+call can finish one step and start the next; a refused entry refuses the whole call, and
+the refusal names it (`steps[1] (step-id): …`). Evidence is an artifact, execution or
+ledger claim, or a workspace path (`{"path": …}`), which the tool pins to the file's latest
+recorded revision in the artifact inventory when the call runs, and the result says what
+each path resolved to (`evidence_resolved`); a path with no recorded revision, or a
+deleted file, is refused with the advice to `publish` it. Every plan change's result
+carries `plan`: the current reference, status, status revision and progress cursor, the
+number of steps in each state, and, for an open plan, the open steps (at most 16, the rest
+counted) with their cursors, which the next change names, so no read is needed for
+counters. It is no current read: an unread change by someone else still holds the run's
+next change until the plans notice shows it. A request that fails validation is refused
+with its first failing field, what it needs and, for text, the length given; an oversized
+request or body says its size and limit.
 Finishing requires the core's explicit goal outcome (`achieved`,
 `partially_achieved` or `not_achieved`) and terminal assertions for all current
 steps; blocked or skipped steps cannot produce `achieved`. A refused finish names each
@@ -209,9 +224,11 @@ USER edit through the [workspace](SESSION-PLAN-EDITING.md), another main run's o
 delegated run's), an unread existing plan, corrupt history or an incomplete event scan
 requires a current read before new effects; the run's own changes do not. A plans
 notice (`sandbox-notice-plans-2`) or `plan_read(current)` is that read.
-`plan_read(current)` returns the full bounded body and, for every current step, a
-compact status, fingerprint, attribution and CAS projection; long notes, evidence
-and history are explicit pages. Either satisfies the fence only after a successful
+`plan_read(current)` returns, by default, the plan's reference, status and counters, its
+goal, and each current step's title, track, status and CAS cursor (`step_cursor`, with
+`changed_since_record` when a revision changed it after its latest record); `detail: full`
+returns the full bounded body and, for every current step, a compact status, fingerprint,
+attribution and CAS projection; long notes, evidence and history are explicit pages. Either satisfies the fence only after a successful
 model call includes it and its plan state (ref, status, progress and event pins) is
 still current; otherwise the next safe point shows the plan again. Historical reads,
 mutation or replay receipts, a failed model call, or a read and an effect in the same
