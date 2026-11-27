@@ -199,6 +199,26 @@ leaves to the base.
 existing task authorization; it is neither USER approval nor a permission grant.
 There is no approval state: plan approval (PD-6) is undecided, and the unused
 `awaiting_approval` state was removed until it is (decision 10). Progress requires an active plan and exact plan, step and status CAS.
+`plan_progress` records one step, or, with a `steps` list (at most 16, each step once),
+several steps in order as one change against one plan version and status revision, so a
+call can finish one step and start the next; a refused entry refuses the whole call, and
+the refusal names it (`steps[1] (step-id): …`). Evidence is an artifact, execution or
+ledger claim, or a workspace path (`{"path": …}`), which the tool pins to the file's latest
+recorded revision in the artifact inventory when the call runs, with who recorded it
+(`written_by`: session, run, time, set by the platform only), and the result says what
+each path resolved to (`evidence_resolved`). Only a revision this session recorded, whose
+bytes are kept, is pinned by path: a path with no recorded revision, a deleted file or a
+revision without its bytes is refused with the advice to `publish` it, and a file in
+another session's area, or a shared file another session last recorded, is refused with
+the advice to claim it by its artifact ID. A call with evidence by path is digested as
+given, so an exact retry returns its first receipt and what its paths first resolved to. Every plan change's result
+carries `plan`: the current reference, status, status revision and progress cursor, the
+number of steps in each state, and, for an open plan, the open steps (at most 16, the rest
+counted) with their cursors, which the next change names, so no read is needed for
+counters. It is no current read: an unread change by someone else still holds the run's
+next change until the plans notice shows it. A request that fails validation is refused
+with its first failing field, what it needs and, for text, the length given; an oversized
+request or body says its size and limit.
 Finishing requires the core's explicit goal outcome (`achieved`,
 `partially_achieved` or `not_achieved`) and terminal assertions for all current
 steps; blocked or skipped steps cannot produce `achieved`. A refused finish names each
@@ -228,9 +248,16 @@ delegated run's), an unread existing plan, corrupt history or an incomplete even
 requires a current read before new effects; the run's own changes do not. A plans
 notice (`sandbox-notice-plans-3`, or the went-on and held notices' `sandbox-notice-plans-went-on-1`
 and `sandbox-notice-plans-held-1`) or `plan_read(current)` is that read.
-`plan_read(current)` returns the full bounded body and, for every current step, a
-compact status, fingerprint, attribution and CAS projection; long notes, evidence
-and history are explicit pages. Either satisfies the fence only after a successful
+`plan_read(current)` returns, by default, the plan's reference, status and counters, its
+goal, and each current step's title, track, status and CAS cursor (`step_cursor`, with
+`changed_since_record` when a revision changed it after its latest record); `detail: full`
+returns the full bounded body and, for every current step, a compact status, fingerprint,
+attribution and CAS projection; long notes, evidence and history are explicit pages. When
+another actor changed the plan since the run last saw it, either form adds
+`changed_by_others`: who changed what, a line each, and each step they touched in full (its
+fields, and its latest record with its note, evidence and author), every step when more
+changed than the run's event scan holds; a read too large to carry them says so and counts
+as no read, so the plans notice before the next turn shows the plan. Either satisfies the fence only after a successful
 model call includes it and its plan state (ref, status, progress and event pins) is
 still current; otherwise the next safe point shows the plan again. Historical reads,
 mutation or replay receipts, a failed model call, or a read and an effect in the same

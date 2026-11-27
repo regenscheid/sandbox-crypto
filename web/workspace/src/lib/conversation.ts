@@ -505,6 +505,14 @@ export function callSummary(call: Pick<StepCall, 'name' | 'arguments'>): string 
     if (typeof value === 'string' && value.trim()) return firstLine(value);
     if (Array.isArray(value) && value.length && value.every((item) => typeof item === 'string'))
       return firstLine(value.join(', '));
+    // Several steps' progress names each step.
+    const steps = Array.isArray(value)
+      ? value.map((item) =>
+          item && typeof item === 'object' ? (item as Record<string, unknown>)['step_id'] : null,
+        )
+      : [];
+    if (steps.length && steps.every((step) => typeof step === 'string'))
+      return firstLine(steps.join(', '));
   }
   return '';
 }
@@ -662,7 +670,7 @@ export const MAIN_ARGUMENT: Record<string, readonly string[]> = {
   wait_delegations: ['delegation_ids'],
   delegation_status: ['delegation_id'],
   cancel_delegation: ['delegation_id'],
-  plan_progress: ['step_id'],
+  plan_progress: ['step_id', 'steps'],
   plan_create: ['reason'],
   plan_revise: ['reason'],
   plan_finish: ['reason'],
@@ -688,6 +696,14 @@ export function mainArgument(call: Pick<StepCall, 'name' | 'arguments'>): string
     if (typeof value === 'string' && value.trim()) return firstLine(value);
     if (Array.isArray(value) && value.length && value.every((item) => typeof item === 'string'))
       return firstLine(value.join(', '));
+    // Several steps' progress names each step.
+    const steps = Array.isArray(value)
+      ? value.map((item) =>
+          item && typeof item === 'object' ? (item as Record<string, unknown>)['step_id'] : null,
+        )
+      : [];
+    if (steps.length && steps.every((step) => typeof step === 'string'))
+      return firstLine(steps.join(', '));
     if (value && typeof value === 'object' && !Array.isArray(value)) {
       // A check's brief names its entry.
       const entry =

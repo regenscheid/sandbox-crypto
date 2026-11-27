@@ -562,7 +562,7 @@ def test_the_command_counts_each_session_and_the_total(
     assert code == 0
     found = json.loads(text)
     assert found["classifier"] == "shell-computation-1"
-    assert found["sessions"][0].pop("time")["tool_calls"] == 2
+    assert found["sessions"][0].pop("time")["main"]["tool_calls"] == 2
     assert found["sessions"] == [
         {
             "project": "p",

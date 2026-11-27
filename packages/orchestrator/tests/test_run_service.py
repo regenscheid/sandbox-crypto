@@ -179,7 +179,7 @@ async def test_a_first_message_starts_a_run(harness: Harness) -> None:
         "started",
         "user",
         "model",
-        "notice",  # the pinned model profile is recorded before the response
+        "model_profile",  # the pinned model profile is recorded before the response
         "assistant",
         "stopped",
     ]

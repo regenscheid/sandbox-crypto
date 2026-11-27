@@ -31,6 +31,7 @@ from typing import Final, Protocol
 from sandbox_science.contracts import ExecutionContext
 from sandbox_science.orchestrator.aio import threaded
 from sandbox_science.orchestrator.delegation.effects import reach
+from sandbox_science.orchestrator.delegation.tracks import track_standing
 from sandbox_science.orchestrator.documents.errors import CONFLICT, POLICY_DENIED
 from sandbox_science.orchestrator.hooks import Effect, Refusal, TurnHook
 from sandbox_science.orchestrator.projects import ProjectStore, SessionSnapshot
@@ -73,11 +74,12 @@ class ChildFence(TurnHook):
         *,
         run_id: str,
         granted: PlanRef | None = None,
+        track: str | None = None,
         connectors: ConnectorLookup | None = None,
     ) -> None:
         """Reads the session and its plan as the run starts; call it in a thread.
-        ``granted`` is a task's plan version on its track, which its progress needs, and
-        ``connectors`` finds the run's connector tools by name."""
+        ``granted`` is a task's plan version on its ``track``, which its progress needs,
+        and ``connectors`` finds the run's connector tools by name."""
         self.plans, self.projects, self.context = plans, projects, context
         scope = PlanScope(project_id=context.project_id, session_id=context.session_id)
         # It only reads: agent attribution without a grant is the main role's.
@@ -90,7 +92,7 @@ class ChildFence(TurnHook):
         """The plan events read so far, none of them the user's."""
         self.refused: str | None = None
         """Why the fence first refused a call, if it did."""
-        self.granted = granted
+        self.granted, self.track = granted, track
         self.connectors = connectors
 
     async def gate(self, effect: Effect) -> Refusal | None:
@@ -127,9 +129,20 @@ class ChildFence(TurnHook):
         """A task's progress on its track needs the plan version it started under."""
         summary = self.plans.summary(self.authority)
         if summary is None or summary.head != self.granted:
+            found = (
+                track_standing(self.plans, self.authority, self.granted, self.track)
+                if self.granted is not None and self.track is not None
+                else None
+            )
+            if isinstance(found, str):
+                return Refusal(
+                    CONFLICT,
+                    f"plan_changed: {found}, so your track takes no progress any more; "
+                    "say so in your result",
+                )
             return Refusal(
                 CONFLICT,
-                "plan_changed: the session's plan was revised since this delegation started; "
+                "plan_changed: the session's plan was revised since this run started; "
                 "its progress on the track is refused, and the parent can delegate the track "
                 "again",
             )

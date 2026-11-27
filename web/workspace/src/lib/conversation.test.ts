@@ -228,6 +228,12 @@ describe('batches and their rows (B10, item 1)', () => {
       ['wait_jobs', { job_ids: ['j1', 'j2'] }, 'j1, j2'],
       ['message_child', { delegation_id: 'd1', text: 'Stop' }, 'd1'],
       ['connector_search', { query: 'SNOVA' }, 'SNOVA'],
+      ['plan_progress', { step_id: 'derive', status: 'completed' }, 'derive'],
+      [
+        'plan_progress',
+        { steps: [{ step_id: 'derive' }, { step_id: 'check', status: 'in_progress' }] },
+        'derive, check',
+      ],
     ];
     for (const [name, args, expected] of cases)
       expect(mainArgument(call('c', name, args)), name).toBe(expected);

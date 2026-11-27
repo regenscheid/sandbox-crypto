@@ -166,6 +166,13 @@ def _plan_made(call: Json, given: Json) -> list[str]:
     plan = f"plan {named.get('plan_id')} v{named.get('version')}"
     action = found.get("action")
     if action == "progress":
+        steps = given.get("steps")
+        if isinstance(steps, list):
+            return [
+                f"{plan}: step {cast(Json, step).get('step_id')} {cast(Json, step).get('status')}"
+                for step in cast(list[object], steps)
+                if isinstance(step, dict)
+            ]
         return [f"{plan}: step {given.get('step_id')} {given.get('status')}"]
     if action == "status" and call.get("tool") == "plan_activate":
         return [f"{plan}: active"]

@@ -245,7 +245,7 @@ class ReviewerRunner:
         # The review's calls share a prompt cache of their own (CR-49): each sends the
         # conversation the one before sent, and more.
         self.review, self.owner = review, owner
-        self.model = None if model is None else cached_for(model, project, session, review)
+        self.model = None if model is None else cached_for(model, project, session, review=review)
         self.memory = memory
         """The project memory, given after the rubric (PM-6)."""
         self.images = images

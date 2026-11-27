@@ -234,7 +234,9 @@ class Recording(MessagesModel):
         super().__init__(*args, **kwargs)
         self.bodies: list[dict[str, Any]] = []
 
-    async def _post(self, body: dict[str, Any]) -> tuple[str, str | None, str | None]:
+    async def _post(
+        self, body: dict[str, Any]
+    ) -> tuple[str, str | None, str | None, dict[str, str] | None]:
         self.bodies.append(copy.deepcopy(body))
         return await super()._post(body)
 

@@ -14,7 +14,7 @@ from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.ledger.models import WorkRecord
 from sandbox_science.orchestrator.session_plans import PlanBody, PlanRef, SessionPlans
 
-from .loop_harness import PLAN, PROJECT, USER_PLANS, Harness, Reply, call
+from .loop_harness import PLAN, PROJECT, USER_PLANS, Harness, Reply, call, own
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
@@ -318,3 +318,140 @@ async def test_a_tasks_issue_is_an_issue(delegating: Harness) -> None:
         "invalid_request",
         "C-1 is a claim, not an issue",
     )
+
+
+def _revising(harness: Harness, ref: PlanRef, value: dict[str, Any]) -> Any:
+    """The user's revision of the plan to ``value``, while the model thinks."""
+
+    async def revise() -> None:
+        documents = harness.documents()
+        try:
+            SessionPlans(documents).revise(
+                USER_PLANS, "p3", ref, PlanBody.model_validate_json(json.dumps(value)), "Edited."
+            )
+        finally:
+            documents.close()
+
+    return revise
+
+
+def _reopening(harness: Harness, revise: Any) -> list[Reply]:
+    """The root's replies: a task on the track, which returns; the user revises the plan
+    while the root reads it; the root reopens the returned task and waits for it again."""
+    first = Reply(
+        calls_from=lambda messages: [
+            call("message_child", delegation_id=_first(messages), text="Record the table.")
+        ]
+    )
+    return [
+        READ,
+        Reply(calls=[on_track()]),
+        wait(),
+        Reply(calls=[call("plan_read")], before=revise),
+        first,
+        wait(),
+        READ,
+        Reply("Done."),
+    ]
+
+
+def _first(messages: list[dict[str, Any]]) -> str:
+    import re
+
+    return next(
+        found
+        for message in messages
+        if message["role"] == "tool"
+        for found in re.findall(r"dlg-[0-9a-f]{24}", str(message["content"]))
+    )
+
+
+def _reopened_run(harness: Harness, root: Any) -> Any:
+    runs = children(harness, root)
+    assert len(runs) == 2
+    return max(runs, key=lambda r: r.started_at)
+
+
+async def test_a_reopened_task_keeps_its_track_after_a_revision(delegating: Harness) -> None:
+    """R8: the plan is revised between the task's return and its reopening; the reopened
+    run is granted its track again at the current version, so its progress is kept."""
+    ref = active_plan(delegating)
+    root = await delegating.run(
+        "root",
+        _reopening(delegating, _revising(delegating, ref, TRACKED)),
+        delegated=[
+            *submitted(DONE, "Done."),
+            Reply(
+                calls=[
+                    call("track_read"),
+                    call("track_progress", step_id="table", status="completed", note="Done."),
+                ]
+            ),
+            *submitted(DONE, "Done."),
+        ],
+    )
+    reopened = _reopened_run(delegating, root)
+    read, progressed, *_ = (json.loads(r) for r in results(reopened))
+    revised = {**ref.model_dump(mode="json"), "version": 2}
+    assert read["plan"] == revised
+    assert progressed["receipt"]["ref"] == revised
+    seen = json.dumps(own(reopened))
+    assert "your track tables is granted again at version 2" in seen
+
+
+async def test_a_reopened_task_is_told_its_track_is_gone(delegating: Harness) -> None:
+    """A revision that takes the track's step off it: the reopened run is told so, and
+    its progress is refused with the same reason."""
+    ref = active_plan(delegating)
+    untracked = json.loads(json.dumps(TRACKED))
+    del untracked["phases"][0]["steps"][0]["track_id"]
+    root = await delegating.run(
+        "root",
+        _reopening(delegating, _revising(delegating, ref, untracked)),
+        delegated=[
+            *submitted(DONE, "Done."),
+            Reply(calls=[call("track_progress", step_id="table", status="completed", note="x")]),
+            *submitted(DONE, "Done."),
+        ],
+    )
+    reopened = _reopened_run(delegating, root)
+    refused = json.loads(results(reopened)[0])["error"]["message"]
+    gone = "version 2 of the session's plan has none of your track's steps any more"
+    assert refused.startswith(f"plan_changed: {gone}")
+    seen = json.dumps(own(reopened))
+    assert f"Your track tables takes no progress any more: {gone}." in seen
+
+
+async def test_a_reopened_tasks_new_grant_is_written_back_and_names_its_steps(
+    delegating: Harness,
+) -> None:
+    """The review of R8's fix: a revision that moves a step onto the track; the reopened
+    run is told the track's steps as they now are, the moved one marked new, and the
+    grant is written back, so a later run of the task, resumed or reopened, keeps it."""
+    from sandbox_science.orchestrator.delegation.records import DelegationRecords
+    from sandbox_science.orchestrator.projects import ProjectStore
+
+    ref = active_plan(delegating)
+    moved = json.loads(json.dumps(TRACKED))
+    moved["phases"][0]["steps"][1]["track_id"] = "tables"
+    root = await delegating.run(
+        "root",
+        _reopening(delegating, _revising(delegating, ref, moved)),
+        delegated=[
+            *submitted(DONE, "Done."),
+            Reply(calls=[call("track_read")]),
+            *submitted(DONE, "Done."),
+        ],
+    )
+    reopened = _reopened_run(delegating, root)
+    seen = json.dumps(own(reopened))
+    assert "Its steps now: table: Tabulate; write: Write up (new to your track)." in seen
+    (read,) = (json.loads(r) for r in results(reopened)[:1])
+    assert [s["step_id"] for s in read["steps"]] == ["table", "write"]
+    (delegation_id,) = started(root)
+    store = ProjectStore(delegating.state)
+    try:
+        found = DelegationRecords(store.control).track_grant(PROJECT, "s", delegation_id)
+    finally:
+        store.close()
+    assert found == (ref.plan_id, 2, "tables")

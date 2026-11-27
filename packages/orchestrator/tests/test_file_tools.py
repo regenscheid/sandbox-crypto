@@ -69,6 +69,9 @@ class FakeWorker:
     async def grep_files(self, request: GrepRequest) -> GrepResult:
         return self._reply(request)
 
+    async def read_file(self, request: object) -> object:
+        return self._reply(request)
+
 
 def _toolbox(fake: FakeWorker, *, output_chars: int = 20_000, delegated: bool = False) -> Toolbox:
     return Toolbox(
@@ -201,6 +204,30 @@ def test_the_workers_refusals_reach_the_model() -> None:
         fake.answer = WorkerAPIError(kind, message, 400)
         outcome = _call(_toolbox(fake), "edit_file", path="a.md", old_string="a", new_string="b")
         assert json.loads(outcome.text)["error"] == {"kind": kind.value, "message": message}
+
+
+def test_a_missing_file_in_a_childs_area_says_where_its_files_appear() -> None:
+    """R10: a read of a running child's file that is not in the session yet says where
+    and when a delegation's files appear; another missing file is refused as it was."""
+    fake = FakeWorker()
+    child = "dlg-" + "5" * 24
+    path = f"work/{child}/checkpoint.json"
+    fake.answer = WorkerAPIError(ErrorKind.NOT_FOUND, f"{path!r} does not exist", 404)
+    error = json.loads(_call(_toolbox(fake), "read_file", path=path).text)["error"]
+    assert error["kind"] == "not_found"
+    assert error["message"].startswith(f"{path!r} does not exist. work/{child}/ is delegation")
+    assert f"work/{child}/.handback/returned/<result number>/" in error["message"]
+    for other in ("notes/a.md", "work/mine/a.md"):
+        fake.answer = WorkerAPIError(ErrorKind.NOT_FOUND, f"{other!r} does not exist", 404)
+        error = json.loads(_call(_toolbox(fake), "read_file", path=other).text)["error"]
+        assert error["message"] == f"{other!r} does not exist"
+    # The child's own area is where it writes: its own missing file is just missing.
+    own = Toolbox(cast(WorkerClient, fake), CONTEXT, delegated=True, write_area=f"work/{child}")
+    fake.answer = WorkerAPIError(ErrorKind.NOT_FOUND, f"{path!r} does not exist", 404)
+    error = json.loads(
+        asyncio.run(own.call(ToolCall("c1", "read_file", json.dumps({"path": path})), "op1")).text
+    )["error"]
+    assert error["message"] == f"{path!r} does not exist"
 
 
 def test_an_edit_of_unknown_outcome_stops_the_attempt() -> None:

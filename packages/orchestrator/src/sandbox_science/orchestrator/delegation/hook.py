@@ -121,6 +121,7 @@ from .specs import (
     brief_of,
     offered,
 )
+from .tracks import Regranted
 from .work import record_work
 
 if TYPE_CHECKING:
@@ -335,6 +336,7 @@ class Delegations(TurnHook):
         refresh_settings: Callable[[], Awaitable[DelegationSettings]] | None = None,
         models: ModelChoice | None = None,
         track_grant: Callable[[str], Awaitable[PlanRef]] | None = None,
+        track_regrant: Callable[[PlanRef, str], Awaitable[Regranted | str]] | None = None,
         stated_outputs: Callable[[], Awaitable[tuple[str, ...]]] | None = None,
         depth: int = 0,
         stop_by: Deadline | None = None,
@@ -372,6 +374,9 @@ class Delegations(TurnHook):
         self.track_grant = track_grant
         """The plan version a task on a track works under (PD-9); without it, a task
         names no track."""
+        self.track_regrant = track_regrant
+        """The plan version a reopened task works on its track under, from the one it was
+        granted, or why its track takes no progress any more; without it, its grant."""
         self.stated_outputs = stated_outputs
         """The titles of the desired outputs the user stated in the session's current
         plan, which ``delegate`` names in a notice to a task brief that lists no
@@ -1077,9 +1082,12 @@ class Delegations(TurnHook):
         alias = cast(dict[str, object], model).get("alias") if isinstance(model, dict) else None
         track_found = brief.get("track")
         track = None
+        opening = REOPENED_TASK
         if isinstance(track_found, dict):
             named = cast(dict[str, object], track_found)
             track = (PlanRef.model_validate(named.get("plan")), str(named.get("track_id")))
+            track, said = await self._regranted(delegation.delegation_id, track)
+            opening = f"{opening} {said}" if said else opening
         task = await self._brief_text(reopened.work)
         return Child(
             delegation.delegation_id,
@@ -1096,7 +1104,51 @@ class Delegations(TurnHook):
             work=reopened.work,
             predecessor=reopened.previous,
             epoch=reopened.epoch,
-            opening=REOPENED_TASK,
+            opening=opening,
+        )
+
+    async def _regranted(
+        self, delegation_id: str, track: tuple[PlanRef, str]
+    ) -> tuple[tuple[PlanRef, str], str]:
+        """A reopened task's track at the plan's current version, when the plan still
+        holds a step of it (PD-9), written back so that its later runs, reopened or
+        resumed, keep it, and what its run is told: that the track is granted again at a
+        later version, with its steps as they now are, or why it takes no progress (the
+        old grant, which its fence and tools refuse with the same reason); nothing when
+        the plan is as it was. It starts from the latest grant written back."""
+        context = self.context
+        stored = await threaded(
+            self.records.track_grant, context.project_id, context.session_id, delegation_id
+        )
+        if stored is not None and stored[2] == track[1]:
+            track = (PlanRef(plan_id=stored[0], version=stored[1]), track[1])
+        granted, track_id = track
+        if self.track_regrant is None:
+            return track, ""
+        try:
+            found = await self.track_regrant(granted, track_id)
+        except (ControlError, WorkerAPIError):
+            return track, ""
+        if isinstance(found, str):
+            return track, (
+                f"Your track {track_id} takes no progress any more: {found}. Do not record "
+                "progress on it; say so in your result."
+            )
+        if found.ref == granted:
+            return track, ""
+        await threaded(
+            self.records.grant_track,
+            context.project_id,
+            context.session_id,
+            delegation_id,
+            (found.ref.plan_id, found.ref.version),
+            track_id,
+        )
+        return (found.ref, track_id), (
+            f"The session's plan was revised since your last run: your track {track_id} is "
+            f"granted again at version {found.ref.version}. Its steps now: "
+            + "; ".join(found.steps)
+            + ". Read them with track_read before you record progress on them."
         )
 
     async def _brief_text(self, work: str) -> str | None:

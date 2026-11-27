@@ -211,6 +211,7 @@ class AgentContext:
                 cost=reply.cost,
                 cost_source=reply.cost_source,
                 gateway_version=reply.gateway_version,
+                upstream=dict(reply.upstream) if reply.upstream else None,
                 thinking_replay=(reply.thinking_replay or "")[:300] or None,
                 retried=list(reply.retried[:16]),
                 refusals=[reply.refused] if reply.refused is not None else [],

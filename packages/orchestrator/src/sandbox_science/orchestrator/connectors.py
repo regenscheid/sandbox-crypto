@@ -373,6 +373,9 @@ class Connectors:
         """The configured servers whose listing failed, with why: unavailable, not empty."""
         self.relisted: list[str] = []
         """The servers a later listing reached, after the run's start."""
+        self.calls: dict[str, dict[str, dict[str, int]]] = {}
+        """The run's calls by server and tool, each counted by outcome: ``ok``, the
+        error kind its record names, or ``unknown`` for one whose effect is unknown."""
         self.taken: set[str] = set()
         self.retried = False
         self.narrowed: set[str] = set()
@@ -679,10 +682,12 @@ class Connectors:
         return added, before, unknown, over
 
     def summary(self) -> dict[str, Any]:
-        """What the run's record keeps: the tools each configured server offered, the
-        names refused for being listed twice, and each tool loaded, in order, with the
-        SHA-256 of the spec the model was given."""
+        """What the run's record keeps: that connectors were offered, the tools each
+        configured server offered, the names refused for being listed twice, each tool
+        loaded, in order, with the SHA-256 of the spec the model was given, and the calls
+        by server and tool with their outcomes."""
         found: dict[str, Any] = {
+            "offered": True,
             "listed": len(self.tools),
             "servers": dict(self.counts),
             "loaded": [{"name": name, "sha256": self.tools[name].sha256} for name in self.loaded],
@@ -696,6 +701,10 @@ class Connectors:
         if self.narrowing is not None:
             found["narrowing"] = self.narrowing.recorded()
             found["not_permitted"] = len(self.narrowed)
+        found["calls"] = {
+            server: {tool: dict(outcomes) for tool, outcomes in tools.items()}
+            for server, tools in self.calls.items()
+        }
         return found
 
     async def _list(self, server: str) -> list[dict[str, Any]]:
@@ -725,7 +734,18 @@ class Connectors:
         )
 
     async def call(self, name: str, arguments: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-        """Call a connector tool: its text for the model, and the record to keep."""
+        """Call a connector tool: its text for the model, and the record to keep; the
+        call is counted by its outcome (``calls``)."""
+        server, outcome = self.tools[name].server, "unknown"
+        try:
+            text, record = await self._call(name, arguments)
+            outcome = str(record.get("error") or "ok")
+            return text, record
+        finally:
+            counted = self.calls.setdefault(server, {}).setdefault(name, {})
+            counted[outcome] = counted.get(outcome, 0) + 1
+
+    async def _call(self, name: str, arguments: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         tool = self.tools[name]
         if self.classes is not None and (self.reads_only or not tool.confirmed):
             # A check calls only what is a read now; an unconfirmed class is asked again.

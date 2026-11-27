@@ -2,7 +2,8 @@
 """``sandbox-science-harness tool-mix``: how the recorded runs of a state directory
 computed, per session and in total (docs/specs/tools.md, Kernels 13), and where their
 time went: model calls, tools by tool, waiting on the user or on approvals, and the
-rest (``run_timing``).
+rest (``run_timing``), for the main runs and the delegated runs apart, with the
+reviewer's calls beside them and the session's wall clock.
 
 It reads the control store's recorded runs through a read-only connection, with no
 service running, and counts their tool calls with the classifier the live summary uses
@@ -24,8 +25,12 @@ from sandbox_science.contracts import ErrorKind
 
 from . import run_timing
 from .projects import ProjectError, ProjectStore
-from .run_timing import RunTiming
+from .run_timing import RunTiming, duration_text
 from .tool_mix import CLASSIFIER, ToolMix, scan, scan_events, unkept_runs
+
+ROLES: tuple[str, ...] = ("main", "delegated")
+"""The runs whose time is counted apart: the main runs, and the delegated runs, which
+run beside their parents."""
 
 
 def add_parser(commands: Any) -> None:
@@ -52,9 +57,11 @@ def tool_mix(args: argparse.Namespace) -> int:
         return 0
     for row in found["sessions"]:
         print(f"{row['project']}/{row['session']}: {_counted(row)} · {_line(row)}")
-        print(f"  {_timed(row)}")
+        for line in _timed(row["time"]):
+            print(f"  {line}")
     print(f"total: {_counted(found['total'])} · {_line(found['total'])}")
-    print(f"  {_timed(found['total'])}")
+    for line in _timed(found["total"]["time"]):
+        print(f"  {line}")
     return 0
 
 
@@ -65,7 +72,9 @@ def measure(store: ProjectStore, project: str | None, session: str | None) -> di
     projects = [project] if project is not None else store.project_ids()
     sessions: list[dict[str, Any]] = []
     total, total_runs, total_events = ToolMix(), 0, 0
-    total_time = RunTiming()
+    total_time = {role: RunTiming() for role in ROLES}
+    total_runs_by_role = dict.fromkeys(ROLES, 0)
+    total_wall = 0
     for project_id in projects:
         names = sorted(store.get(project_id).sessions)
         if session is not None:
@@ -73,17 +82,29 @@ def measure(store: ProjectStore, project: str | None, session: str | None) -> di
                 raise _absent(project_id, session)
             names = [name for name in names if name == session]
         for session_id in names:
-            mix, runs, timing = ToolMix(), 0, RunTiming()
+            mix, runs = ToolMix(), 0
+            timing = {role: RunTiming() for role in ROLES}
+            counted = dict.fromkeys(ROLES, 0)
+            control = store.control
             for entry in store.iter_runs(project_id, session_id):
-                mix.add(scan(store.control, project_id, session_id, entry.name))
-                timing.add(run_timing.scan(store.control, project_id, session_id, entry.name))
+                mix.add(scan(control, project_id, session_id, entry.name))
+                role = "delegated" if entry.parent is not None else "main"
+                timing[role].add(run_timing.scan(control, project_id, session_id, entry.name))
+                counted[role] += 1
                 runs += 1
-            unkept = unkept_runs(store.control, project_id, session_id)
+            unkept = unkept_runs(control, project_id, session_id)
             for name in unkept:
-                mix.add(scan_events(store.control, project_id, session_id, name))
-                timing.add(run_timing.scan_events(store.control, project_id, session_id, name))
+                mix.add(scan_events(control, project_id, session_id, name))
+                role = run_timing.unkept_role(control, project_id, session_id, name)
+                timing[role].add(run_timing.scan_events(control, project_id, session_id, name))
+                counted[role] += 1
+            whole = RunTiming()
+            for role in ROLES:
+                whole.add(timing[role])
+                total_time[role].add(timing[role])
+                total_runs_by_role[role] += counted[role]
             total.add(mix)
-            total_time.add(timing)
+            total_wall += whole.wall_ms
             total_runs += runs + len(unkept)
             total_events += len(unkept)
             sessions.append(
@@ -93,7 +114,7 @@ def measure(store: ProjectStore, project: str | None, session: str | None) -> di
                     "runs": runs + len(unkept),
                     "runs_from_events": len(unkept),
                     **mix.summary(),
-                    "time": timing.summary(),
+                    "time": _time(whole.wall_ms, timing, counted),
                 }
             )
     return {
@@ -103,8 +124,19 @@ def measure(store: ProjectStore, project: str | None, session: str | None) -> di
             "runs": total_runs,
             "runs_from_events": total_events,
             **total.summary(),
-            "time": total_time.summary(),
+            "time": _time(total_wall, total_time, total_runs_by_role),
         },
+    }
+
+
+def _time(wall: int, timing: dict[str, RunTiming], runs: dict[str, int]) -> dict[str, Any]:
+    """The ``time`` of a session or the total: its wall clock, each role's runs' time,
+    and the reviewer's calls beside them."""
+    return {
+        "wall_ms": wall,
+        "reviewer_ms": sum(t.reviewer_ms for t in timing.values()),
+        "reviewer_calls": sum(t.reviewer_calls for t in timing.values()),
+        **{role: {"runs": runs[role], **timing[role].summary()} for role in ROLES},
     }
 
 
@@ -129,17 +161,30 @@ def _line(counts: dict[str, Any]) -> str:
     return mix.line()
 
 
-def _timed(counts: dict[str, Any]) -> str:
-    time = counts["time"]
-    timing = RunTiming(
-        span_ms=time["span_ms"],
-        model_ms=time["model_ms"],
-        model_calls=time["model_calls"],
-        untimed_model_calls=time["untimed_model_calls"],
-        tool_ms=dict(time["tool_ms"]),
-        tool_calls=time["tool_calls"],
-        untimed_tool_calls=time["untimed_tool_calls"],
-        user_ms=time["user_ms"],
-        approval_ms=time["approval_ms"],
-    )
-    return timing.line()
+def _timed(time: dict[str, Any]) -> list[str]:
+    """The lines of a ``time``: the wall clock and the reviewer's calls, then a line for
+    each role that ran."""
+    lines = [f"wall clock {duration_text(time['wall_ms'])}"]
+    if time["reviewer_calls"]:
+        lines[0] += (
+            f" · reviewer {duration_text(time['reviewer_ms'])} in {time['reviewer_calls']} calls, "
+            "beside the runs"
+        )
+    for role in ROLES:
+        found = time[role]
+        if not found["runs"]:
+            continue
+        timing = RunTiming(
+            span_ms=found["span_ms"],
+            model_ms=found["model_ms"],
+            model_calls=found["model_calls"],
+            untimed_model_calls=found["untimed_model_calls"],
+            tool_ms=dict(found["tool_ms"]),
+            tool_calls=found["tool_calls"],
+            untimed_tool_calls=found["untimed_tool_calls"],
+            user_ms=found["user_ms"],
+            approval_ms=found["approval_ms"],
+            platform_ms=found["platform_ms"],
+        )
+        lines.append(f"{role} ({_runs(found['runs'])}): {timing.line()}")
+    return lines

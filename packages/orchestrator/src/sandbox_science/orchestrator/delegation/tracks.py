@@ -4,15 +4,19 @@
 A task that names a track of the session's active plan works under a grant: that plan
 version and that track. Its run reads the track's steps with ``track_read`` and records
 progress on them with ``track_progress``, and on no other step; the plan store holds the
-grant (``PlanAuthority``). A plan revised since the delegation started refuses its
-progress, as the fence says (``ChildFence``): the parent delegates the track again
-(the coordinator, 2026-10-15). The tool reads each step's cursor and the plan's status
-revision as it records: only this delegation records on its track while it runs.
+grant (``PlanAuthority``). A plan revised while the run works refuses its progress, as
+the fence says (``ChildFence``): the parent delegates the track again (the coordinator,
+2026-10-15). A returned task its parent reopens is granted its track again at the plan's
+current version (``regrant``), when the plan is active and still holds a step the track
+had, by step ID; otherwise the reopened run is told why its track takes no progress.
+The tool reads each step's cursor and the plan's status revision as it records: only
+this delegation records on its track while it runs.
 """
 
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from typing import Any, Final, Literal
 
 from pydantic import Field, ValidationError
@@ -34,6 +38,7 @@ from sandbox_science.orchestrator.session_plans import (
     PlanRef,
     PlanScope,
     SessionPlans,
+    step_changes,
 )
 from sandbox_science.orchestrator.worker_client import WorkerAPIError
 
@@ -109,6 +114,76 @@ def grant(plans: SessionPlans, context: ExecutionContext, track: str) -> PlanRef
     return current.head.ref
 
 
+def _reader(context: ExecutionContext, run: str) -> PlanAuthority:
+    return PlanAuthority(
+        scope=PlanScope(project_id=context.project_id, session_id=context.session_id),
+        role="main",
+        run_id=run,
+    )
+
+
+def track_standing(
+    plans: SessionPlans, authority: PlanAuthority, granted: PlanRef, track: str
+) -> PlanRef | str:
+    """The plan version ``track``'s progress can be recorded against now: the session's
+    current version, when its plan is the granted one, active, and still holds a step
+    the track had in ``granted`` on that track, by step ID; otherwise why not, in words
+    a delegated run reads. Call it in a thread."""
+    current = plans.compact_current(authority)
+    if current is None:
+        return "the session has no plan any more"
+    head = current.head
+    if head.ref.plan_id != granted.plan_id:
+        return f"the session's plan was replaced by plan {head.ref.plan_id}"
+    if head.status != "active":
+        return f"the session's plan is {head.status}"
+    before = {s["step_id"] for s in steps_of(plans.version(authority, granted).body, track)}
+    now = {s["step_id"] for s in steps_of(current.version.body, track)}
+    if not before & now:
+        return (
+            f"version {head.ref.version} of the session's plan has none of your track's "
+            "steps any more"
+        )
+    return head.ref
+
+
+@dataclass(frozen=True)
+class Regranted:
+    """A reopened task's track at the plan's current version: the version, and the
+    track's steps as they now are, each marked when it changed since ``granted`` or is
+    new to the track."""
+
+    ref: PlanRef
+    steps: tuple[str, ...]
+
+
+def regrant(
+    plans: SessionPlans, context: ExecutionContext, granted: PlanRef, track: str
+) -> Regranted | str:
+    """The plan version a reopened task on ``track`` works under, with its steps as they
+    now are, or why its track takes no progress any more (``track_standing``). Call it in
+    a thread."""
+    reader = _reader(context, "track-grant")
+    found = track_standing(plans, reader, granted, track)
+    if isinstance(found, str):
+        return found
+    before = plans.version(reader, granted).body
+    after = plans.version(reader, found).body
+    earlier = {s["step_id"] for s in steps_of(before, track)}
+    changed = set(step_changes(before, after).changed)
+    lines: list[str] = []
+    for step in steps_of(after, track):
+        mark = (
+            " (new to your track)"
+            if step["step_id"] not in earlier
+            else " (changed since your last run)"
+            if step["step_id"] in changed
+            else ""
+        )
+        lines.append(f"{step['step_id']}: {step['title']}{mark}")
+    return Regranted(found, tuple(lines))
+
+
 def stated_outputs(plans: SessionPlans, context: ExecutionContext) -> tuple[str, ...]:
     """The titles of the desired outputs the user stated in the session's current plan,
     which a task brief listing no deliverables is told of (PD-45). Call it in a thread."""
@@ -173,8 +248,8 @@ class TrackTools:
         if current is None or summary is None or current.head.ref != self.granted:
             raise DocumentError(
                 CONFLICT,
-                "plan_changed: the session's plan was revised since this delegation "
-                "started; your progress on its track is refused",
+                "plan_changed: the session's plan was revised since this run started"
+                f"{self._why()}; your progress on its track is refused",
             )
         if request.step_id not in {
             s["step_id"] for s in steps_of(current.version.body, self.track)
@@ -195,12 +270,23 @@ class TrackTools:
         value = receipt.model_dump(mode="json")
         return json.dumps({"receipt": value}, ensure_ascii=False), {"track_progress": value}
 
+    def _why(self) -> str:
+        """What became of the track, for a refusal: why it takes no progress now, or that
+        the track still stands in a later version, which a new grant would need."""
+        found = track_standing(self.plans, self.authority, self.granted, self.track)
+        if isinstance(found, str):
+            return f" and {found}"
+        return (
+            f" (it is now version {found.version}, which still has your track; tell your "
+            "parent, which can delegate the track again)"
+        )
+
     def _read(self) -> Json:
         current = self.plans.compact_current(self.authority)
         if current is None or current.head.ref != self.granted:
             raise DocumentError(
                 CONFLICT,
-                "plan_changed: the session's plan was revised since this delegation started",
+                f"plan_changed: the session's plan was revised since this run started{self._why()}",
             )
         status = {
             s.step_id: (s.latest.status if s.latest is not None else "pending")

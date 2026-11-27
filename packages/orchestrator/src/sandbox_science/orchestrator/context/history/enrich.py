@@ -480,6 +480,7 @@ def _usage(turn: ModelTurn) -> ModelUsage:
         cache_creation_input_tokens=turn.cache_creation_input_tokens,
         cost=turn.cost,
         gateway_version=turn.gateway_version,
+        upstream=dict(turn.upstream) if turn.upstream else None,
         retried=list(turn.retried[:16]),
         started_at=turn.started_at,
         duration_ms=turn.duration_ms,

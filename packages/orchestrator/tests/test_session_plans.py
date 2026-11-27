@@ -710,7 +710,7 @@ def test_bad_mutation_reason_leaves_no_records(plans, reason):
 
 def test_body_serialized_budget_applies_after_unicode_expansion(plans):
     value = body(*[step(f"step-{index}", description="😀" * 4096) for index in range(2)])
-    with pytest.raises(DocumentError, match="byte limit"):
+    with pytest.raises(DocumentError, match="bytes of canonical JSON, over its limit of 65,536"):
         made(plans, value=value)
     assert plans.current(actor()) is None
 

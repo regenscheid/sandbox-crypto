@@ -198,7 +198,7 @@ class _Numbers:
     def _complete(self, text: str) -> None:
         if not self.skipping and _NUMERIC.search(text):
             try:
-                self.found.numbers.update(numbers(text) & self.wanted)
+                self.found.numbers.update(numbers(text, named=True) & self.wanted)
             except (ValueError, OverflowError):
                 self.found.unproved_numeric_fragments += 1
         self.skipping = False

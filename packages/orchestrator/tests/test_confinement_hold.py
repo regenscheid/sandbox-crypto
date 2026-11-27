@@ -28,6 +28,7 @@ from sandbox_science.orchestrator.hooks import Closing, Notice, RunView, TurnHoo
 from sandbox_science.orchestrator.loop import Transcript
 from sandbox_science.orchestrator.model import ChatModel, ModelGateway
 from sandbox_science.orchestrator.model_profiles import ModelProfile
+from sandbox_science.orchestrator.notices import PLANS
 from sandbox_science.orchestrator.plan_tools import PLAN_OPEN
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.session_plans import SessionPlans
@@ -344,11 +345,14 @@ async def test_a_confined_answer_while_the_plan_is_open_goes_on_in_the_run(
             notice = str(second[-1]["content"])
             assert PLAN_OPEN in json.loads(notice[notice.index("{") :])["plan_open"]
             shown = [
-                (kind, d.get("text"))
+                (kind, d.get("text") or d.get("framing"))
                 for kind, d in events()
                 if kind == "assistant" or (kind == "notice" and d["source"] in ("plans", "reviews"))
             ]
+            # The plan the run had not seen, counted by its framing; the went-on notice
+            # once, by its plan state, not by its framing too.
             assert shown == [
+                ("notice", PLANS.version),
                 ("assistant", "Status: step one is next."),
                 ("notice", WENT_ON),
                 ("notice", HELD),
