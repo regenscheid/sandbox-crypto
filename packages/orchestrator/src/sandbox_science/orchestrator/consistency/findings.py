@@ -214,6 +214,11 @@ class Marks:
     position: int | None
     pinned: tuple[str, ...] = ()
     """What the finding's anchors name, in order, each once (``_pin``)."""
+    anchored: int | None = None
+    """The last archive position the finding's own anchors name."""
+    held: frozenset[str] = frozenset()
+    """The archive messages the finding's review was given, and those its anchors name:
+    what it held, whatever their positions."""
 
     def unrelated(self, what: str) -> DocumentError:
         """The refusal of a fix that names ``what``, which the finding is not pinned to:
@@ -287,10 +292,34 @@ class Marks:
         if isinstance(archived, dict) and isinstance(cast(Json, archived).get("id"), str):
             message = cast(Json, archived)
             position = message.get("position")
-            if self.position is None or type(position) is not int or position <= self.position:
+            if type(position) is not int:
+                raise DocumentError(INVALID_REQUEST, f"message {message['id']} has no position")
+            ground = location.get("ground")
+            if ground in ("user", "answer"):
+                # The user's word stands whatever its place: a message the user wrote, or
+                # an answer to the agent's question, is the ground of the response.
+                return "message", {
+                    "id": message["id"],
+                    "position": position,
+                    "run": location.get("run"),
+                    "ground": ground,
+                }
+            if (
+                self.position is None
+                or message["id"] in self.held
+                or (self.anchored is not None and position <= self.anchored)
+            ):
                 raise DocumentError(
                     INVALID_REQUEST,
-                    f"message {message['id']} is not later than what the finding's review held",
+                    f"message {message['id']} "
+                    + (
+                        "was among what the finding's review held"
+                        if message["id"] in self.held
+                        else "comes before what the finding is anchored to"
+                    )
+                    + ", so it is no later correction: dismiss the finding (action dismiss) "
+                    "with your reason, citing the message by its ID, or name a later revision "
+                    "or a later message that corrects it",
                 )
             return "message", {
                 "id": message["id"],
@@ -1228,7 +1257,15 @@ class Findings:
                     "user may dismiss it",
                 )
             if value.expected != found["revision"]:
-                raise DocumentError(CONFLICT, "finding changed since this response was drafted")
+                raise DocumentError(
+                    CONFLICT,
+                    f"the finding changed since this response was drafted: it is now at "
+                    f"revision {found['revision']}, {found['status']}. Read it "
+                    "(review_finding_read) and answer that revision (expected "
+                    f"{found['revision']})"
+                    + ("" if found["status"] == "open" else ", if it still takes an answer"),
+                    {"revision": found["revision"], "status": found["status"]},
+                )
             if agent and found["status"] != "open":
                 raise DocumentError(
                     CONFLICT,
@@ -1332,6 +1369,7 @@ class Findings:
         entries: dict[str, int] = {}
         positions: list[int] = []
         pinned: dict[str, None] = {}
+        held: set[str] = set()
 
         def keep(into: dict[str, int], key: object, revision: object) -> None:
             if type(revision) is int:
@@ -1351,16 +1389,27 @@ class Findings:
             archived = location.get("archive")
             if isinstance(archived, dict) and type(cast(Json, archived).get("position")) is int:
                 positions.append(cast(int, cast(Json, archived)["position"]))
+                held.add(str(cast(Json, archived).get("id")))
+        anchored = max(positions) if positions else None
         if found.get("review_id") is not None:
-            (held,) = db.execute(
-                "SELECT max(json_extract(locator,'$.archive.position')) FROM review_evidence "
-                "WHERE review_id=?",
+            # What the review was given, not how far the feed reached: a message in a range
+            # the review skipped was not held, whatever its position.
+            for message, position in db.execute(
+                "SELECT json_extract(locator,'$.archive.id'),"
+                "json_extract(locator,'$.archive.position') FROM review_evidence "
+                "WHERE review_id=? AND json_type(locator,'$.archive.position')='integer'",
                 (found["review_id"],),
-            ).fetchone()
-            if type(held) is int:
-                positions.append(held)
+            ):
+                held.add(str(message))
+                positions.append(int(position))
         return Marks(
-            documents, artifacts, entries, max(positions) if positions else None, tuple(pinned)
+            documents,
+            artifacts,
+            entries,
+            max(positions) if positions else None,
+            tuple(pinned),
+            anchored,
+            frozenset(held),
         )
 
     def _inventory_ref(
@@ -1396,12 +1445,31 @@ class Findings:
             position = info["position"]
             if info["session"] != session or type(position) is not int:
                 raise DocumentError(NOT_FOUND, f"message {message} is outside this session")
-            kind, later = marks.later(
-                {"run": info["run"], "archive": {"id": message, "position": position}}
-            )
+            located: Json = {"run": info["run"], "archive": {"id": message, "position": position}}
+            ground = self._ground(project, session, info)
+            if ground is not None:
+                located["ground"] = ground
+            kind, later = marks.later(located)
             assert kind == "message"  # noqa: S101 - an archive locator names a message
             found.append(later)
         return found
+
+    def _ground(self, project: str, session: str, info: dict[str, object]) -> str | None:
+        """Whether an archive message is the user's word, which a response may cite
+        whatever its place (CR-42 as amended): ``user`` for a message the user wrote (or
+        the task), ``answer`` for the tool result that carried the user's answer to the
+        agent's question; None for any other."""
+        if info.get("role") == "user" and info.get("kind") in ("task", "user"):
+            return "user"
+        if info.get("role") != "tool" or not isinstance(info.get("call_id"), str):
+            return None
+        with self.store.documents.control.read() as tx:
+            answered = tx.sql.execute(
+                "SELECT 1 FROM user_questions WHERE project_id=? AND session_id=? "
+                "AND tool_call=? AND state='answered' LIMIT 1",
+                (project, session, info["call_id"]),
+            ).fetchone()
+        return "answer" if answered is not None else None
 
     def _entry_revisions(
         self, project: str, target: Json, marks: Marks, cited: tuple[tuple[str, int], ...]
@@ -1635,6 +1703,9 @@ class Findings:
         entries = {(p["entry"]["entry"], p["entry"]["revision"]) for p in places if "entry" in p}
         for anchor in anchors:
             location = cast(Json, anchor["locator"])
+            if str(cast(Json, location.get("archive") or {}).get("id")) in messages:
+                # A message the fix named, vetted then; the user's word may be earlier.
+                continue
             try:
                 marks.later(location)
             except DocumentError:

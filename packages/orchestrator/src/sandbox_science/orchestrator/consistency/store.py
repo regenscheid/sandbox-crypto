@@ -50,6 +50,10 @@ from .models import (
     FINAL_REVIEW_SECONDS,
     FINAL_REVIEW_TOKENS,
     RECHECK_ATTEMPTS,
+    REVIEW_CALLS_CEILING,
+    REVIEW_CHARS_CEILING,
+    REVIEW_SECONDS_CEILING,
+    WINDOW_GROWTH,
     ReviewConfig,
     ReviewOutcome,
     ReviewType,
@@ -145,6 +149,38 @@ def final_config(config: ReviewConfig) -> ReviewConfig:
             "max_feed_bytes": FINAL_FEED_BYTES,
         }
     )
+
+
+def window_config(config: ReviewConfig, backlog: int) -> ReviewConfig:
+    """The settings a checkpoint runs with when ``backlog`` new items wait after the
+    watermark (CR-49): its window grows to hold them, up to ``WINDOW_GROWTH`` times its
+    configured ``max_feed_items``, and its calls, time, context, bytes and any token cap
+    grow in proportion, each within its ceiling; a backlog that fits the configured
+    window changes nothing."""
+    base = config.max_feed_items
+    items = min(backlog, base * WINDOW_GROWTH)
+    if items <= base:
+        return config
+    scale = items / base
+    update: dict[str, object] = {
+        "max_feed_items": items,
+        "max_feed_bytes": min(8 * 1024 * 1024, math.ceil(config.max_feed_bytes * scale)),
+        "max_turns": max(
+            config.max_turns, min(REVIEW_CALLS_CEILING, math.ceil(config.max_turns * scale))
+        ),
+        "time_seconds": max(
+            config.time_seconds, min(REVIEW_SECONDS_CEILING, config.time_seconds * scale)
+        ),
+        "max_input_chars": max(
+            config.max_input_chars,
+            min(REVIEW_CHARS_CEILING, math.ceil(config.max_input_chars * scale)),
+        ),
+    }
+    if config.token_budget is not None:
+        update["token_budget"] = max(
+            config.token_budget, min(4_000_000, math.ceil(config.token_budget * scale))
+        )
+    return config.model_copy(update=update)
 
 
 def recheck_config(config: ReviewConfig) -> ReviewConfig:
@@ -667,7 +703,10 @@ class ReviewStore:
         up to (the watermark) and the feed's end; whether the ranges its reviews covered
         reach the end with nothing left between (``complete``); and the ranges left
         unreviewed, the first ``UNREVIEWED_SHOWN``, how many there are and why
-        (``unreviewed_reasons``: how many meet each reason recorded). Positions up to
+        (``unreviewed_reasons``: how many meet each reason recorded), each range with its
+        new items and its reasons; and the session's new items, how many reviews covered,
+        how many are left unreviewed and how many predate recorded coverage (``items``):
+        the position reviewed up to is no measure of coverage. Positions up to
         ``not_recorded_through`` were reviewed before reviews recorded their coverage: their
         coverage is not known, and neither complete nor unreviewed."""
         self.scope(project, session)
@@ -679,6 +718,7 @@ class ReviewStore:
                 "unreviewed": [],
                 "unreviewed_ranges": 0,
                 "unreviewed_reasons": {},
+                "items": {"total": 0, "reviewed": 0, "unreviewed": 0, "not_recorded": 0},
                 "not_recorded_through": None,
             }
         with self.documents.control.read() as tx:
@@ -695,13 +735,27 @@ class ReviewStore:
             unrecorded = snapshot_reads.unrecorded_through(db, project, session)
             left = snapshot_reads.uncovered(db, project, session, ranges, unrecorded, head)
             reasons = snapshot_reads.unreviewed_reasons(db, project, session, left)
+            named = snapshot_reads.range_reasons(db, project, session, left[:UNREVIEWED_SHOWN])
+            counts = snapshot_reads.items_in(db, project, session, left)
+            total = snapshot_reads.backlog(db, project, session, 0)
+            earlier = snapshot_reads.items_in(db, project, session, [(1, unrecorded)])[0]
+        unreviewed = sum(counts)
         return {
             "reviewed_through": row[0] if row else 0,
             "feed_end": head,
             "complete": not left,
-            "unreviewed": [{"start": a, "end": b} for a, b in left[:UNREVIEWED_SHOWN]],
+            "unreviewed": [
+                {"start": a, "end": b, "items": n, "reasons": why}
+                for (a, b), n, why in zip(left[:UNREVIEWED_SHOWN], counts, named, strict=False)
+            ],
             "unreviewed_ranges": len(left),
             "unreviewed_reasons": reasons,
+            "items": {
+                "total": total,
+                "reviewed": total - unreviewed - earlier,
+                "unreviewed": unreviewed,
+                "not_recorded": earlier,
+            },
             "not_recorded_through": unrecorded or None,
         }
 
@@ -853,8 +907,10 @@ class ReviewStore:
         dispatched, enough has changed: artifact revisions, agent-written durable
         characters, a structural block, or kernel cells over their interval; or a review
         was asked for, or a window whose review covered nothing waits for its retry. Work
-        an earlier review left pending makes none due by itself: the next review, when
-        one is due, continues from the watermark."""
+        an earlier review left pending makes none due by itself, unless it fills a grown
+        window (``WINDOW_GROWTH``), which is due at once, so that a backlog is reviewed
+        back to back (CR-49); otherwise the next review, when one is due, continues from
+        the watermark."""
         config, _ = self.config(project)
         if not config.enabled:
             return False
@@ -884,16 +940,28 @@ class ReviewStore:
                 (project, session, since),
             ).fetchone()
             cooling = self._cooling(db, project, session, row[4], row[2])
+            # Work piled up to a grown window is reviewed back to back, not skipped later.
+            piled = (
+                row[2] is None
+                and not row[4]
+                and (
+                    snapshot_reads.backlog(db, project, session, row[0])
+                    >= config.max_feed_items * WINDOW_GROWTH
+                )
+            )
         elapsed = self.clock() - row[1] if row[1] is not None else float("inf")
         if cooling:
             return False
-        return elapsed >= config.min_interval_seconds and (
-            row[2] is not None
-            or row[3]
-            or chars >= config.text_characters
-            or structure > 0
-            or artifacts >= config.artifact_revisions
-            or (cells >= config.kernel_cells and elapsed >= config.kernel_interval_seconds)
+        return piled or (
+            elapsed >= config.min_interval_seconds
+            and (
+                row[2] is not None
+                or row[3]
+                or chars >= config.text_characters
+                or structure > 0
+                or artifacts >= config.artifact_revisions
+                or (cells >= config.kernel_cells and elapsed >= config.kernel_interval_seconds)
+            )
         )
 
     def confirmation_targets(self, project: str, session: str) -> list[tuple[str, int]]:
@@ -999,6 +1067,8 @@ class ReviewStore:
             classifier = {**(classifier or {}), "final": True, "recheck": True}
         if kind == "confirmation" and not targets and not (recheck_of is not None and dismissals):
             return None
+        if kind == "checkpoint" and recheck_of is None:
+            config = self._grown(project, session, config)
         plan = self._plan(
             project,
             session,
@@ -1045,6 +1115,16 @@ class ReviewStore:
                 classifier=classifier,
             )
         return review if committed else None
+
+    def _grown(self, project: str, session: str, config: ReviewConfig) -> ReviewConfig:
+        """A checkpoint's settings for the backlog after the watermark (``window_config``),
+        or ``config`` while a failed window waits for its retry, whose window shrinks."""
+        with self.documents.control.read() as tx:
+            window = snapshot_reads.dispatch_window(tx.sql, project, session)
+            if window.retry is not None or window.failures:
+                return config
+            waiting = snapshot_reads.backlog(tx.sql, project, session, window.watermark)
+        return window_config(config, waiting)
 
     def _plan(
         self,
@@ -2581,9 +2661,9 @@ class ReviewStore:
         location = stored_json(row[1])
         payload = stored_json(row[2])
         if row[0] == "artifact" and payload.get("projection") == 1:
-            from .artifacts import artifact_text
+            from .artifacts import projection_complete
 
-            if (artifact_text(location, payload) is not None) != bool(row[4]):
+            if projection_complete(location, payload) != bool(row[4]):
                 raise DocumentError(
                     CONFLICT, "artifact availability differs from evidence coverage"
                 )
@@ -2624,9 +2704,9 @@ class ReviewStore:
             raise DocumentError(
                 CONFLICT, "claimed artifact reference differs from session evidence"
             )
-        from .artifacts import artifact_text
+        from .artifacts import projection_complete
 
-        if (artifact_text(location, payload) is not None) != bool(row[3]):
+        if projection_complete(location, payload) != bool(row[3]):
             raise DocumentError(CONFLICT, "artifact availability differs from evidence coverage")
         return location, payload, bool(row[3])
 

@@ -194,7 +194,11 @@ export interface FinalReviewSummary {
   fixes_claimed?: number;
   reviewed_through?: number;
   feed_end?: number;
-  unreviewed?: { start: number; end: number }[];
+  /** The ranges left unreviewed, the first 16, each with its new items and why. */
+  unreviewed?: { start: number; end: number; items?: number; reasons?: string[] }[];
+  /** The session's new items: how many reviews covered, how many are left unreviewed,
+   * and how many predate recorded coverage. The position reviewed up to is no measure. */
+  items?: { total: number; reviewed: number; unreviewed: number; not_recorded: number };
   unreviewed_ranges?: number;
   /** Positions up to here were reviewed before reviews recorded their coverage. */
   not_recorded_through?: number | null;

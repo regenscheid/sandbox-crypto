@@ -332,6 +332,17 @@ _FOLDED = "(kind='action' OR (kind='source' AND source_key NOT GLOB 'quoted:*'))
 raw sources, which only a quote brings in."""
 
 
+def backlog(db: sqlite3.Connection, project: str, session: str, after: int) -> int:
+    """How many new items the session's feed holds after position ``after``: its rows but
+    actions and raw sources (``_FOLDED``)."""
+    (count,) = db.execute(
+        f"SELECT count(*) FROM review_feed WHERE project=? AND session=? AND seq>? "  # noqa: S608 - fixed fragment
+        f"AND NOT {_FOLDED}",
+        (project, session, after),
+    ).fetchone()
+    return int(count)
+
+
 def backlog_skip(
     db: sqlite3.Connection, project: str, session: str, window: SnapshotWindow, items: int
 ) -> int | None:
@@ -377,12 +388,57 @@ def reviewed_ranges(db: sqlite3.Connection, project: str, session: str) -> list[
     return merged(found)
 
 
+def _answers(db: sqlite3.Connection, project: str, session: str) -> list[Json]:
+    """The session's answered questions (PD-23), each as the request item lists it: the
+    question, its options with the one the agent recommended marked, what the user picked
+    or wrote, or that the user left it to the agent, and when, with the chat message that
+    answered it when the user wrote one."""
+    found: list[Json] = []
+    for question, text, options, asked, answer, closed, message in db.execute(
+        "SELECT question_id,text,options,asked_at,answer,closed_at,message_id "
+        "FROM user_questions WHERE project_id=? AND session_id=? AND state='answered' "
+        "ORDER BY closed_at,rowid",
+        (project, session),
+    ):
+        given = cast(Json, json.loads(answer)) if answer else {}
+        entry: Json = {
+            "answer_to": question,
+            "at": closed,
+            "asked_at": asked,
+            "question": text,
+            "options": json.loads(options),
+            "answer": given.get("kind"),
+        }
+        if given.get("picked"):
+            entry["picked"] = given["picked"]
+        if given.get("text") is not None:
+            entry["text"] = given["text"]
+        if message is not None:
+            entry["message"] = message
+        found.append(entry)
+    return found
+
+
+def _when(entry: Json) -> tuple[int, str]:
+    """An entry's place in the request's order: by its time, which the message and the
+    question stores both write as ISO 8601; one that cannot be read goes last."""
+    from datetime import UTC, datetime
+
+    try:
+        at = datetime.fromisoformat(str(entry.get("at")))
+    except ValueError:
+        return (1, "")
+    return (0, (at if at.tzinfo else at.replace(tzinfo=UTC)).astimezone(UTC).isoformat())
+
+
 def request_item(db: sqlite3.Connection, project: str, session: str) -> EvidenceItem | None:
     """The user's request as a review's context (CR-48): the session's messages the user
-    wrote, refused ones aside, the first and each later one in order, as many as
-    ``REQUEST_BYTES`` holds, the newest whole first and the first one always, cut short
-    if it must be; or, in a session with no chat messages, its first transcript message
-    of role user, the task a run was started with. None when there is neither."""
+    wrote, refused ones aside, and the user's answers to the agent's questions (each with
+    its question and options), the first message and each later entry in order, as many
+    as ``REQUEST_BYTES`` holds, the newest whole first and the first message always, cut
+    short if it must be, with how many messages and answers were left out; or, in a
+    session with no chat messages, its first transcript message of role user, the task a
+    run was started with, and the answers. None when there is nothing of the user's."""
     from sandbox_science.orchestrator.notices import PLATFORM_AUTHORS
 
     from .models import REQUEST_BYTES
@@ -399,34 +455,50 @@ def request_item(db: sqlite3.Connection, project: str, session: str) -> Evidence
     messages: list[Json] = [
         {"message": message, "at": created, "text": text} for message, text, _, created in rows
     ]
+    answers = _answers(db, project, session)
     if not messages:
         first = db.execute(
             "SELECT payload FROM review_feed WHERE project=? AND session=? AND kind='transcript' "
             "AND json_extract(payload,'$.role')='user' ORDER BY seq LIMIT 1",
             (project, session),
         ).fetchone()
-        if first is None:
+        if first is None and not answers:
             return None
-        messages = [{"message": None, "at": None, "text": stored_json(first[0])["content"]}]
+        if first is not None:
+            messages = [{"message": None, "at": None, "text": stored_json(first[0])["content"]}]
+    # The first message stays first; the later messages and the answers, in time order,
+    # are kept newest first while they fit.
+    later = sorted([*messages[1:], *answers], key=_when)
     room = REQUEST_BYTES
     kept: list[Json] = []
-    for message in reversed(messages[1:]):
-        size = len(dump(message).encode())
+    for entry in reversed(later):
+        size = len(dump(entry).encode())
         if size > room - 4096:
             break
-        kept.append(message)
+        kept.append(entry)
         room -= size
-    head = dict(messages[0])
-    text = str(head["text"])
-    while len(dump(head).encode()) > room and text:
-        text = text[: len(text) // 2]
-        head = {**messages[0], "text": text + " …", "clipped": True}
-    listed = [head, *reversed(kept)]
+    listed = list(reversed(kept))
+    if messages:
+        head = dict(messages[0])
+        text = str(head["text"])
+        while len(dump(head).encode()) > room and text:
+            text = text[: len(text) // 2]
+            head = {**messages[0], "text": text + " …", "clipped": True}
+        listed.insert(0, head)
+    left_answers = len(answers) - sum(1 for entry in listed if "answer_to" in entry)
     payload: Json = {
-        "about": "What the user asked in this session, oldest first: context, not under review.",
+        "about": (
+            "What the user asked in this session, oldest first: the user's messages and "
+            "the user's answers to the agent's questions (answer_to): context, not under "
+            "review."
+            if answers
+            else "What the user asked in this session, oldest first: context, not under review."
+        ),
         "messages": listed,
-        "omitted": len(messages) - len(listed),
+        "omitted": len(messages) + len(answers) - len(listed),
     }
+    if answers:
+        payload["omitted_answers"] = left_answers
     encoded = dump(payload)
     return EvidenceItem("request", dump({"request": session}), encoded, digest(encoded), 1)
 
@@ -518,13 +590,13 @@ def recorded_unreviewed(
     )
 
 
-def unreviewed_reasons(
+def range_reasons(
     db: sqlite3.Connection, project: str, session: str, left: Sequence[tuple[int, int]]
-) -> dict[str, int]:
-    """How many of the ranges ``left`` unreviewed meet a range the session's reviews
-    recorded as unreviewed with each reason (``review.unreviewed``); ``not_reached`` counts
-    those no record names, which no review has reached yet. A range of several reasons
-    counts under each."""
+) -> list[list[str]]:
+    """For each of the ranges ``left`` unreviewed, the reasons the session's reviews
+    recorded for the ranges it meets (``review.unreviewed``: ``backlog``,
+    ``final_budget``, ``deadline``, ``final_inconclusive`` and the like), sorted;
+    ``not_reached`` for one no record names, which no review has reached yet."""
     recorded = [
         (int(start), int(end), str(reason))
         for start, end, reason in db.execute(
@@ -535,12 +607,39 @@ def unreviewed_reasons(
             (project, session),
         )
     ]
+    return [
+        sorted({reason for a, b, reason in recorded if a <= end and b >= start} or {"not_reached"})
+        for start, end in left
+    ]
+
+
+def unreviewed_reasons(
+    db: sqlite3.Connection, project: str, session: str, left: Sequence[tuple[int, int]]
+) -> dict[str, int]:
+    """How many of the ranges ``left`` unreviewed meet a range the session's reviews
+    recorded as unreviewed with each reason (``range_reasons``); ``not_reached`` counts
+    those no record names. A range of several reasons counts under each."""
     counts: dict[str, int] = {}
-    for start, end in left:
-        reasons = {reason for a, b, reason in recorded if a <= end and b >= start}
-        for reason in reasons or {"not_reached"}:
+    for reasons in range_reasons(db, project, session, left):
+        for reason in reasons:
             counts[reason] = counts.get(reason, 0) + 1
     return counts
+
+
+def items_in(
+    db: sqlite3.Connection, project: str, session: str, ranges: Sequence[tuple[int, int]]
+) -> list[int]:
+    """How many new items (rows but actions and raw sources) each of ``ranges`` holds."""
+    return [
+        int(
+            db.execute(
+                f"SELECT count(*) FROM review_feed WHERE project=? AND session=? "  # noqa: S608 - fixed fragment
+                f"AND seq>=? AND seq<=? AND NOT {_FOLDED}",
+                (project, session, start, end),
+            ).fetchone()[0]
+        )
+        for start, end in ranges
+    ]
 
 
 def covered(ranges: Sequence[tuple[int, int]], seq: int) -> bool:

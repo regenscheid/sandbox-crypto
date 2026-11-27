@@ -1171,7 +1171,13 @@ class ReviewController:
                 {**args, "operation_id": args.get("operation_id", operation)},
                 author,
             )
-        elif name == "request_review" and not args:
+        elif name == "request_review":
+            # Some models send an empty-keyed placeholder for a tool without arguments;
+            # it says nothing and is ignored. Any other argument is refused.
+            if any(key or value not in ("", None) for key, value in args.items()):
+                raise DocumentError(
+                    "invalid_request", "request_review takes no arguments: call it with {}"
+                )
             await asyncio.to_thread(self.store.request, *self.scope)
             result = {"queued": True}
         else:

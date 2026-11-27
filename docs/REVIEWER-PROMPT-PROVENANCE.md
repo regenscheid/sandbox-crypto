@@ -12,7 +12,7 @@ separate in [MAIN-PROMPT-PROVENANCE.md](MAIN-PROMPT-PROVENANCE.md) and
 
 [consistency/prompt_bundle.py](../packages/orchestrator/src/sandbox_science/orchestrator/consistency/prompt_bundle.py)
 assembles one owned reviewer bundle from the unchanged `RUBRIC`,
-`RUBRIC_VERSION="sandbox-consistency-14"`, the re-check instructions `RECHECK`
+`RUBRIC_VERSION="sandbox-consistency-15"`, the re-check instructions `RECHECK`
 (`RECHECK_VERSION="sandbox-recheck-2"`, also in
 [rubric.py](../packages/orchestrator/src/sandbox_science/orchestrator/consistency/rubric.py)),
 the purpose guidance `PURPOSE` (`sandbox-reviewer-purpose-1`) and the ordered six `SPECS` in
@@ -98,7 +98,7 @@ is the rubric, a blank line, the re-check instructions, a blank line, the purpos
 guidance, and then, when the reviewed run had the project memory, a blank line and the
 memory section.
 
-The rubric (`sandbox-consistency-14`) holds no paragraph on confirmation: the re-check
+The rubric (`sandbox-consistency-15`) holds no paragraph on confirmation: the re-check
 instructions (`sandbox-recheck-2`), which every bundle carries, are the only ones, and say
 that a re-check reads the finding, its anchored blocks or items and the changed revisions
 completely before deciding. A finding item with a queued re-check is answered with `review_decide`

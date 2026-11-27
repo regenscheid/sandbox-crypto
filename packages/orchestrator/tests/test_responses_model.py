@@ -60,6 +60,7 @@ from .loop_harness import (
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
+from .test_consistency import store as store
 from .test_model_limits import Waits
 
 KEY = "test-secret-responses-gateway-key"
@@ -975,6 +976,38 @@ async def test_a_model_made_for_a_session_sends_its_key_and_the_others_none(
     assert fake.bodies[-1]["tool_choice"] == "none"
     scripted = Scripted()
     assert cached_for(scripted, "p", "s") is scripted
+
+
+async def test_each_review_sends_a_cache_key_of_its_own(
+    fake: Fake, gpt: ResponsesModel, store: Any
+) -> None:
+    """CR-49: a review's calls each send the conversation the one before sent, and more,
+    so they share one ``prompt_cache_key``, the review's: the same for every call of the
+    review, different for another review and from the session's."""
+    from sandbox_science.orchestrator.consistency.runner import ReviewerRunner
+    from sandbox_science.orchestrator.model import review_cache_key
+
+    from .test_consistency import claim, dispatch
+
+    reviews, _, _ = store
+    claim(reviews)
+    first = dispatch(reviews, "checkpoint")
+    reviews.finish("p", "s", first, "owner", "passed", "Checked.")
+    claim(reviews, "The order is 8.", "m2")
+    second = dispatch(reviews, "checkpoint")
+    messages: list[Message] = [
+        {"role": "system", "content": SYSTEM},
+        {"role": "user", "content": TASK},
+    ]
+    for review in (first, first, second):
+        runner = ReviewerRunner(reviews, "p", "s", review, "owner", gpt)
+        assert runner.model is not None
+        fake.then(response(said("ok")))
+        await runner.model.complete(messages, TOOLS)
+    keys = [body["prompt_cache_key"] for body in fake.bodies]
+    assert keys[0] == keys[1] == review_cache_key("p", "s", first)
+    assert keys[2] == review_cache_key("p", "s", second) != keys[0]
+    assert session_cache_key("p", "s") not in keys
 
 
 class Scripted:
