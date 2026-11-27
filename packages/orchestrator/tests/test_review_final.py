@@ -296,6 +296,7 @@ async def test_a_backlog_larger_than_the_final_budget_leaves_a_named_range(store
     final = summary["final_review"]
     assert (final["complete"], summary["coverage_gap"]) == (False, True)
     assert final["unreviewed"] == [{"start": seqs[0], "end": seqs[4]}]
+    assert final["unreviewed_reasons"] == {"final_budget": 1}
     (left,) = [u for u in reviews.listing("p", "s")["unreviewed"] if u.get("reason")]
     assert (left["start"], left["end"], left["reason"]) == (seqs[0], seqs[4], "final_budget")
     run = reviews.run("p", "s", final["review"])
@@ -392,6 +393,7 @@ def test_a_review_stored_before_the_final_review_still_loads(store) -> None:
         "complete": True,
         "unreviewed": [],
         "unreviewed_ranges": 0,
+        "unreviewed_reasons": {},
         "not_recorded_through": None,
     }
     assert reviews.listing("p", "s")["reviews"][0]["review_id"] == review

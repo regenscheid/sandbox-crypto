@@ -666,7 +666,8 @@ class ReviewStore:
         """The session's review position and coverage (CR-49): the feed position reviewed
         up to (the watermark) and the feed's end; whether the ranges its reviews covered
         reach the end with nothing left between (``complete``); and the ranges left
-        unreviewed, the first ``UNREVIEWED_SHOWN`` and how many there are. Positions up to
+        unreviewed, the first ``UNREVIEWED_SHOWN``, how many there are and why
+        (``unreviewed_reasons``: how many meet each reason recorded). Positions up to
         ``not_recorded_through`` were reviewed before reviews recorded their coverage: their
         coverage is not known, and neither complete nor unreviewed."""
         self.scope(project, session)
@@ -677,6 +678,7 @@ class ReviewStore:
                 "complete": True,
                 "unreviewed": [],
                 "unreviewed_ranges": 0,
+                "unreviewed_reasons": {},
                 "not_recorded_through": None,
             }
         with self.documents.control.read() as tx:
@@ -692,12 +694,14 @@ class ReviewStore:
             ranges = snapshot_reads.reviewed_ranges(db, project, session)
             unrecorded = snapshot_reads.unrecorded_through(db, project, session)
             left = snapshot_reads.uncovered(db, project, session, ranges, unrecorded, head)
+            reasons = snapshot_reads.unreviewed_reasons(db, project, session, left)
         return {
             "reviewed_through": row[0] if row else 0,
             "feed_end": head,
             "complete": not left,
             "unreviewed": [{"start": a, "end": b} for a, b in left[:UNREVIEWED_SHOWN]],
             "unreviewed_ranges": len(left),
+            "unreviewed_reasons": reasons,
             "not_recorded_through": unrecorded or None,
         }
 
@@ -756,7 +760,8 @@ class ReviewStore:
     def _named_unread(db: sqlite3.Connection, review: str) -> list[Json]:
         """The items ``review``'s coverage names unread (CR-49 as amended), the first
         ``UNREVIEWED_SHOWN``: each one's evidence, kind, what it copies (the artifact, the
-        execution or the run's message its locator names) and why it held nothing to read."""
+        execution or the run's message its locator names), an artifact's path, and why it
+        held nothing to read."""
         row = db.execute(
             "SELECT payload FROM review_records WHERE review_id=? AND kind='coverage' "
             "ORDER BY rowid DESC LIMIT 1",
@@ -779,11 +784,20 @@ class ReviewStore:
                 else locator.get("operation") or locator.get("execution") or locator.get("key")
             )
             why = payload.get("omitted") or payload.get("reason") or payload.get("contents")
+            path = None
+            if isinstance(artifact, dict):
+                # The artifact's path, which the workspace names it by.
+                named_path = db.execute(
+                    "SELECT path FROM artifact_objects WHERE id=?",
+                    (cast(Json, artifact).get("artifact_id"),),
+                ).fetchone()
+                path = named_path[0] if named_path else None
             named.append(
                 {
                     "evidence": evidence,
                     "kind": found[0],
                     "item": what,
+                    "path": path if isinstance(path, str) else None,
                     "why": clipped(str(why or payload.get("availability") or ""), 256),
                 }
             )

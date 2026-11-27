@@ -216,8 +216,14 @@ summary, the run record's `review_summary`, carries `final_review`
 (`ReviewStore.final_summary`): `mode`, the review, its outcome, `finished`, `answered`, the
 open findings by severity (`open`), `fixes_claimed`, `complete`, `reviewed_through`,
 `feed_end`, the first 16 `unreviewed` ranges, and the items its coverage names unread
-(`unread`: each one's evidence, kind, what it copies and why it held nothing to read);
-the workspace's run section shows it as one line.
+(`unread`: each one's evidence, kind, what it copies, an artifact's path and why it held
+nothing to read), and how many unreviewed ranges meet each reason the reviews recorded
+(`unreviewed_reasons`, `not_reached` for a range no review has reached). The workspace's
+run section shows it as one line, and under it, in plain words with no identifier but
+file paths (`finalReviewEnd`): why no final review ran (`no_final_review`), or each unread
+item by its path or kind with its reason, the unreviewed ranges as a count with their
+reasons, the open findings by severity, and whether the findings were answered and
+re-checked, with how many ended each way.
 
 `ReviewController(persistent=True, messages=asyncio.Queue())` supplies a host boundary
 for immediate new user input while the detached review continues. The host must retain

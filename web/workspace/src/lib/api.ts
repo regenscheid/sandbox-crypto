@@ -162,6 +162,8 @@ export interface RunRecord {
     outcome?: string;
     counts?: Record<string, number>;
     reviews?: string[];
+    /** Why the run's end had no final review, in plain words; absent when it had one. */
+    no_final_review?: string;
     /** The run's final review (CR-48); older records have none. */
     final_review?: FinalReviewSummary;
   };
@@ -198,6 +200,41 @@ export interface FinalReviewSummary {
   not_recorded_through?: number | null;
   /** The turn answering the review's findings failed or was stopped. */
   answering_failed?: boolean;
+  /** How many unreviewed ranges meet each recorded reason; `not_reached` for none. */
+  unreviewed_reasons?: Record<string, number>;
+  /** The items its coverage names unread, the first 16. */
+  unread?: FinalReviewUnread[];
+  /** Each of its findings, with how it ended. */
+  findings?: FinalReviewFinding[];
+  /** Whether the one re-check after the answering turn ran, and how it ended. */
+  rechecked?: boolean;
+  recheck?: { review: string; outcome: string };
+}
+
+/** An item a final review's coverage names unread: what it is and why it held nothing. */
+export interface FinalReviewUnread {
+  evidence: string;
+  kind: string;
+  item?: string | null;
+  /** An artifact's path in the project, when the item is an artifact. */
+  path?: string | null;
+  why: string;
+}
+
+/** A final review's finding and how it ended (CR-48). */
+export interface FinalReviewFinding {
+  finding: string;
+  severity: string;
+  status: string;
+  recheck:
+    | 'resolved'
+    | 'unresolved'
+    | 'dismissal_accepted'
+    | 'dismissal_rejected'
+    | 'dismissed'
+    | 'inconclusive'
+    | 'not_rechecked'
+    | string;
 }
 
 /** One model call's usage, as the gateway reported it; a count it left out is null. */
