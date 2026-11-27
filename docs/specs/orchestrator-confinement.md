@@ -303,13 +303,18 @@ CM-41). A model call's adapter is the one its attempt pinned, so a runtime build
 adapter the request's profile names. Private control protocol 7 carries a model's
 refusals (CM-42a): a turn its fallback answered keeps the declined call (`refused`), and a
 declined call comes back as a `refused` error with each declined call, which control
-raises as the same refusal. Older control/runtime peers are refused.
+raises as the same refusal. Private control protocol 8 carries a held answer
+(consistency review, CR-48): the runtime asks a hook that may keep a closing answer from
+the user whether it does now (`holds_answers`), when its lease is entered and after each
+closing, and the loop's state carries whether the answer is kept (`withheld`), which the
+host's run events honour, and the answer a hook held for its round (`held_answer`).
+Older control/runtime peers are refused.
 
 How long each request may wait:
 
 | Request | Direction | Limit |
 | --- | --- | --- |
-| A hook's calls (`hook_enter`, `hook_exit`, `notices`, `turn_limit`, `last_call`, `report_notices`, `consumption`, `model_returned`, `gate`, `observe_tool`, `closing`, `accept`, `finishing`), `tool`, `fold_before`, `fold_overflow` | runtime to host | patience: a parent's `finishing` and lease exit wait for its children, a tool may run or wait for hours, a gate or call may be held for the user |
+| A hook's calls (`hook_enter`, `hook_exit`, `notices`, `turn_limit`, `last_call`, `report_notices`, `consumption`, `model_returned`, `holds_answers`, `gate`, `observe_tool`, `closing`, `accept`, `finishing`), `tool`, `fold_before`, `fold_overflow` | runtime to host | patience: a parent's `finishing` and lease exit wait for its children, a tool may run or wait for hours, a gate or call may be held for the user |
 | `halt` | runtime to host | 2,400 s: a check-in's 1,800 s wait for its parent, then the automatic decision ([adaptive resources](adaptive-research-resources.md#check-ins)) |
 | `model` | host to runtime | patience: the runtime's client retries a slow gateway, 600 s a try |
 | `cancel` | host to runtime | patience: the cancelled loop exits its hooks' leases |

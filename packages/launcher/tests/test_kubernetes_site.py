@@ -1295,3 +1295,20 @@ def test_a_client_secret_without_hs256_is_refused(tmp_path):
     values["forward_auth_secret"] = "secure/authentik-forward-auth-client-secret"
     with pytest.raises(BundleError, match="HS256"):
         plan(*load(site_file(tmp_path, values)))
+
+
+@pytest.mark.parametrize("mode", [None, "after", "hold"])
+def test_the_sites_final_review_is_controls_default(tmp_path, mode: str | None) -> None:
+    """``[model].final_review`` in the site file is the deployment's default for projects
+    that set none of their own, as for the host launcher; without it, the run service's
+    (``after``)."""
+    values = site_values(tmp_path)
+    if mode is not None:
+        values["model"]["final_review"] = mode
+    output = tmp_path / "out"
+    write(output, plan(*load(site_file(tmp_path, values))))
+    control = ControlSettings.model_validate_json(
+        (output / "secrets/control/control.json").read_text()
+    )
+    assert control.settings.final_review == (mode or "after")
+    assert ("final_review" in _control_json(output)["settings"]) == (mode is not None)

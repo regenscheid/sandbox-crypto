@@ -663,10 +663,17 @@ def test_oversized_delegated_observation_is_an_incomplete_marker(
         in reviews.read_evidence("p", "s", review, items[1]["evidence"])["text"]
     )
     reviews.finish("p", "s", review, "owner", "passed", "Claimed all checked.")
-    # The execution left out for its size could not be read (CR-49).
+    # The execution left out for its size could not be read, and is named unread; a pass
+    # of the outcome stands, unless it was left out too and nothing could be read (CR-49
+    # as amended). Either way the ledger gate credits nothing the review held.
     run = reviews.run("p", "s", review)
-    assert (run["state"], run["coverage_complete"]) == ("inconclusive", 0)
+    assert (run["state"], run["coverage_complete"]) == (
+        "inconclusive" if near_limit_outcome else "passed",
+        0,
+    )
     assert len(run["coverage"]["partial"]) == 2
+    unread = [items[0]["evidence"]] if near_limit_outcome else []
+    assert run["coverage"]["unread"] == [*unread, items[1]["evidence"]]
 
 
 @pytest.mark.asyncio

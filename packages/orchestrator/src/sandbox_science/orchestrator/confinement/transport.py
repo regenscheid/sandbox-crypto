@@ -28,7 +28,7 @@ from sandbox_science.orchestrator.effects import UnknownEffectError
 
 _log = logging.getLogger(__name__)
 
-CONTROL_PROTOCOL: Final = 7
+CONTROL_PROTOCOL: Final = 8
 CONTROL_HEADER: Final = "X-Sandbox-Control-Protocol"
 MAX_FRAME_BYTES: Final = 24 * 1024 * 1024
 MAX_PENDING: Final = 128
@@ -71,6 +71,9 @@ class Capability(StrEnum):
     """Runtime to host: a hook's notices for the report round at a limit, which the host
     then admits as it admits a hook's other notices."""
     MODEL_RETURNED = "model_returned"
+    HOLDS_ANSWERS = "holds_answers"
+    """Runtime to host: whether a hook keeps a closing answer from the user now
+    (``TurnHook.holds_answers``), which the runtime's loop reads when a reply ends a turn."""
     CONSUMPTION = "consumption"
     GATE = "gate"
     OBSERVE_TOOL = "observe_tool"

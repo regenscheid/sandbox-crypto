@@ -603,16 +603,22 @@ class JobTools:
         except ValidationError as exc:
             raise WorkerAPIError(ErrorKind.INVALID_REQUEST, "invalid job ID") from exc
 
+    async def _whole(self, status: JobStatus) -> JobStatus:
+        """``status`` with an ended job's whole execution record, its result's output and
+        files included, which the worker's status leaves out: what the review is given of
+        it, the same from ``job_status`` and from ``wait_jobs``."""
+        if status.execution.state not in TERMINAL_STATES:
+            return status
+        execution = await self.client.get(
+            status.execution.execution_id, project_id=self.context.project_id
+        )
+        self.check_owner(execution)
+        if execution.execution_id != status.execution.execution_id:
+            raise WorkerAPIError(ErrorKind.INTERNAL, "worker returned a different job ID")
+        return status.model_copy(update={"execution": execution})
+
     async def status(self, args: dict[str, Any], operation: str) -> tuple[str, dict[str, Any]]:
-        status = await self.owned(self.job_id(args))
-        if status.execution.state in TERMINAL_STATES:
-            execution = await self.client.get(
-                status.execution.execution_id, project_id=self.context.project_id
-            )
-            self.check_owner(execution)
-            if execution.execution_id != status.execution.execution_id:
-                raise WorkerAPIError(ErrorKind.INTERNAL, "worker returned a different job ID")
-            status = status.model_copy(update={"execution": execution})
+        status = await self._whole(await self.owned(self.job_id(args)))
         value = summary(status, self.clock.now())
         return dump(value), {"job": value, "execution": status.execution.model_dump(mode="json")}
 
@@ -765,10 +771,11 @@ class JobTools:
             statuses = list(await asyncio.gather(*(self.owned(job) for job in request.job_ids)))
             ended = [status for status in statuses if status.execution.state in TERMINAL_STATES]
             if (request.mode == "first" and ended) or len(ended) == len(statuses):
+                whole = [await self._whole(status) for status in ended]
                 return {
                     "reason": "ended",
                     "jobs": [summary(status, self.clock.now()) for status in statuses],
-                    _ENDED: [status.execution.model_dump(mode="json") for status in ended],
+                    _ENDED: [status.execution.model_dump(mode="json") for status in whole],
                 }
             for status in statuses:
                 if status.execution.state in TERMINAL_STATES:

@@ -673,7 +673,9 @@ async def test_a_delegated_runs_executions_and_their_output_reach_the_review(
     )
     await controller.safe_point([])
     assert not reviews.due("p", "s")
-    assert not reviews.run_effects("p", "s", "author-1")
+    # The delegated run's work is the run's to answer for: its end has a final review
+    # (the cluster's live test of 2026-11-27, where a run that only delegated had none).
+    assert reviews.run_effects("p", "s", "author-1")
     review = dispatch(reviews)
     items = evidence(reviews, review)
     executions = [i for i in items if i["kind"] == "execution"]
