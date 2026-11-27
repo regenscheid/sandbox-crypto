@@ -235,6 +235,9 @@ class Prepared:
         self.tool_call: ToolRequest | None = None
         self.tool_notices: list[Notice] = []
         self.notices: list[Notice] = []
+        self.offers: dict[int, tuple[Notice, ...]] = {}
+        """Each hook's offer to carry the run past its last answer (``goes_on``), until
+        the runtime asks it to commit (``went_on``)."""
         self.images: list[tuple[Notice, str]] = []
         self.observed_tool: tuple[ToolCall, ToolOutcome] | None = None
         self.pending_calls: dict[str, ToolCall] = {}
@@ -499,6 +502,23 @@ class Prepared:
                 )
                 await hook.observe_tool(run, tool_record)
                 self.observed_slots.add(request.slot)
+            elif kind in (Capability.GOES_ON, Capability.WENT_ON):
+                last = run.context.messages[-1] if run.context.messages else {}
+                if last.get("role") != "assistant" or last.get("tool_calls"):
+                    raise TransportError(
+                        "conflict", "only an answer with no tool call can carry the run on"
+                    )
+                if kind is Capability.WENT_ON:
+                    offer = self.offers.pop(request.slot, ())
+                    if not offer or not await hook.went_on(run, offer):
+                        return False
+                    self.notices.extend(offer)  # admitted as the hook's, now it committed
+                    return True
+                if request.answer is None:
+                    raise TransportError("invalid_request", "goes_on requires the answer")
+                found = tuple(await hook.goes_on(run, request.answer))
+                self.offers[request.slot] = found
+                return json_value(TypeAdapter(tuple[Notice, ...]).dump_python(found, mode="json"))
             elif kind is Capability.CLOSING:
                 closing = await hook.closing(run, request.answer)
                 self.notices.extend(closing.notices)
@@ -1060,6 +1080,7 @@ class HostLoops:
                     planning=isinstance(hook, Plans),
                     turn_limit=type(hook).turn_limit is not TurnHook.turn_limit,
                     holds=type(hook).holds_answers is not TurnHook.holds_answers,
+                    goes_on=type(hook).goes_on is not TurnHook.goes_on,
                 )
                 for hook in hooks
             ),

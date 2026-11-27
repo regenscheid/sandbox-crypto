@@ -8,6 +8,7 @@ import asyncio
 import json
 import re
 import threading
+from collections.abc import Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -19,28 +20,35 @@ from sandbox_science.contracts import ErrorKind, ExecutionContext
 from sandbox_science.orchestrator import cli, harness
 from sandbox_science.orchestrator.consistency.controller import ReviewController
 from sandbox_science.orchestrator.consistency.store import ReviewStore
+from sandbox_science.orchestrator.continuity.auto_continuation import continued
+from sandbox_science.orchestrator.continuity.records import WorkRecords
 from sandbox_science.orchestrator.documents import DocumentStore, DocumentTool
 from sandbox_science.orchestrator.documents.errors import DocumentError
 from sandbox_science.orchestrator.harness import save
-from sandbox_science.orchestrator.hooks import Effect, Notice, RunView
+from sandbox_science.orchestrator.hooks import Closing, Effect, Notice, RunView, TurnHook
 from sandbox_science.orchestrator.jobs import JOB_SPECS, JobTools
 from sandbox_science.orchestrator.loop import run_task
 from sandbox_science.orchestrator.model import ModelError, ModelTurn
 from sandbox_science.orchestrator.notices import PLANS
 from sandbox_science.orchestrator.plan_tools import (
+    APPROVALS_SEEN,
     GUIDANCE,
     GUIDANCE_VERSION,
     MAX_CHANGES,
     MAX_REQUEST_BYTES,
     MAX_RESPONSE_BYTES,
     NAMES,
+    PLAN_OPEN,
     REREAD,
     UNAVAILABLE,
     PlanNotice,
     Plans,
     PlanTools,
+    approval_open,
 )
+from sandbox_science.orchestrator.plan_tools import went_on as went_on_id
 from sandbox_science.orchestrator.projects import ProjectStore
+from sandbox_science.orchestrator.questions import Questions
 from sandbox_science.orchestrator.session_plans import (
     GoalOutcome,
     PlanAuthority,
@@ -53,6 +61,7 @@ from sandbox_science.orchestrator.tools import Toolbox, ToolEntry, ToolOutcome
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 
 from .scripted import ScriptedModel, ToolCall
+from .test_tool_journal import RUN
 
 
 def body(goal="Check the claim", *, count=1):
@@ -550,7 +559,9 @@ async def test_a_user_edit_during_the_closing_await_holds_the_answer_once_if_a_t
     fixture, monkeypatch, max_turns
 ):
     """The answer of a run with no turn left stands: it was lost as ``plan_unread``. With a
-    turn left, the plan comes with the held answer and the next answer is taken."""
+    turn left, the plan comes with the held answer and the next answer is taken. The run's
+    first answer at the open plan's state went on in the run (``Plans.goes_on``); the
+    second has its closing."""
     f = fixture
     await active(f)
 
@@ -582,7 +593,9 @@ async def test_a_user_edit_during_the_closing_await_holds_the_answer_once_if_a_t
 
     toolbox = tools(f)
     monkeypatch.setattr(toolbox, "math_checks", Math())
-    model = ScriptedModel([ModelTurn("First answer"), ModelTurn("Answer with the plan")])
+    model = ScriptedModel(
+        [ModelTurn("Status"), ModelTurn("First answer"), ModelTurn("Answer with the plan")]
+    )
     if max_turns == 1:
         model = ScriptedModel([ModelTurn("First answer")])
     result = await run_task(model, toolbox, "Continue", run_id="main-run", max_turns=max_turns)
@@ -591,7 +604,7 @@ async def test_a_user_edit_during_the_closing_await_holds_the_answer_once_if_a_t
         assert (result.stopped, result.final_text) == ("answered", "First answer")
         return
     assert (result.stopped, result.final_text) == ("answered", "Answer with the plan")
-    held = model.requests[1][-1]["content"]
+    held = model.requests[2][-1]["content"]
     payload = json.loads(held[len(PLANS.text) :])
     assert "USER closing refinement" in payload["plan"]
     assert payload["changed"].startswith("the user revised it to version 2")
@@ -1399,3 +1412,518 @@ async def test_a_step_the_user_pauses_is_blocked_and_resumes_in_progress(fixture
     guidance = " ".join(GUIDANCE.split())
     assert "work the user pauses is blocked, with the user's reason" in guidance
     assert "leave finished steps' text as it is" in guidance
+
+
+class Closings(TurnHook):
+    """Stands in for the final review: counts the closings it is asked, and keeps every
+    closing answer from the user while it decides, as ``hold`` does, noting whether each
+    reply without calls was kept back when the hooks heard its call returned."""
+
+    name = "closings_fixture"
+
+    def __init__(self) -> None:
+        self.closings: list[str | None] = []
+        self.withheld: list[bool] = []
+
+    @property
+    def holds_answers(self) -> bool:
+        return True
+
+    async def model_returned(self, run: RunView) -> None:
+        last = run.context.messages[-1]
+        if last.get("role") == "assistant" and not last.get("tool_calls"):
+            self.withheld.append(run.withheld)
+
+    async def closing(self, run: RunView, answer: str | None) -> Closing:
+        self.closings.append(answer)
+        return Closing()
+
+
+async def open_plan_run(f, replies, *, max_turns=10):
+    """A run of an active two-step plan, the run's own (read, created and activated by it),
+    whose model gives ``replies``: the result, the model, and the closings it was asked."""
+    await active(f)
+    toolbox = tools(f)
+    closings = Closings()
+    model = ScriptedModel(replies)
+    result = await run_task(
+        model,
+        toolbox,
+        "Work the plan",
+        run_id="main-run",
+        max_turns=max_turns,
+        hooks=(*toolbox.turn_hooks(), closings),
+    )
+    return result, model, closings
+
+
+def plans_notice(message) -> dict[str, Any]:
+    content = message["content"]
+    assert content.startswith(PLANS.text)
+    return json.loads(content[len(PLANS.text) :])
+
+
+@pytest.mark.asyncio
+async def test_a_status_reply_while_the_plan_is_open_goes_on_in_the_same_run(fixture):
+    """Baseline run 2, R1: the owner's status question, answered without a tool call while
+    the plan had pending steps, ended the run, whose final review ran on the status
+    reply, and a new run started with nothing cached. The reply is a message, and the run
+    takes its next turn with the plan's notice; no closing is asked, nothing holds it."""
+    f = fixture
+    result, model, closings = await open_plan_run(
+        f, [ModelTurn("Status: step-0 is next."), turn("plan_read"), ModelTurn("Done for now.")]
+    )
+    assert (result.stopped, result.final_text) == ("answered", "Done for now.")
+    assert result.answer == "Done for now."
+    # Only the run's real end had a closing, and only its answer was kept back meanwhile.
+    assert closings.closings == ["Done for now."]
+    assert closings.withheld == [False, True]
+    went_on = plans_notice(model.requests[1][-1])
+    assert went_on["plan_open"] == PLAN_OPEN
+    assert went_on["next_steps"] == ["step-0"]
+    assert went_on["steps"] == ["step-0 pending: Step 0"]
+    assert [m["content"] for m in model.requests[1] if m["role"] == "assistant"][-1] == (
+        "Status: step-0 is next."
+    )
+    summary = result.summaries["plans"]
+    assert summary["went_on"] == 1
+    assert len(summary["states"]) == 1
+    assert result.delivered["plans"] == {went_on_id(tuple(summary["states"][0]))}
+
+
+@pytest.mark.asyncio
+async def test_a_second_bare_reply_at_the_same_plan_state_ends_the_run(fixture):
+    """Once per plan state: the run goes on once, and an answer before the plan changes
+    has its closing, the final review among it, and ends the run."""
+    f = fixture
+    result, model, closings = await open_plan_run(
+        f, [ModelTurn("Status: step-0 is next."), ModelTurn("Still waiting.")]
+    )
+    assert (result.stopped, result.final_text) == ("answered", "Still waiting.")
+    assert closings.closings == ["Still waiting."]
+    assert len(model.requests) == 2
+    assert result.summaries["plans"]["went_on"] == 1
+
+
+@pytest.mark.asyncio
+async def test_progress_gives_the_plan_another_continuation(fixture):
+    f = fixture
+    ref, revision = await active(f)
+    toolbox = tools(f)
+    closings = Closings()
+    progress = turn(
+        "plan_progress",
+        operation_id="start",
+        base=ref,
+        step_id="step-0",
+        expected_step_cursor=0,
+        expected_status_revision=revision,
+        status="in_progress",
+        note="Started",
+    )
+    model = ScriptedModel(
+        [ModelTurn("First status."), progress, ModelTurn("Second status."), ModelTurn("End.")]
+    )
+    result = await run_task(
+        model,
+        toolbox,
+        "Work the plan",
+        run_id="main-run",
+        hooks=(*toolbox.turn_hooks(), closings),
+    )
+    assert (result.stopped, result.final_text) == ("answered", "End.")
+    assert closings.closings == ["End."]
+    assert result.summaries["plans"]["went_on"] == 2
+    assert plans_notice(model.requests[3][-1])["next_steps"] == ["step-0"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("finished", ["completed", "abandoned", "blocked", "draft"])
+async def test_a_plan_with_nothing_to_work_lets_the_answer_end_the_run(fixture, finished):
+    """A finished plan, a draft, or one whose every open step is blocked: the answer has
+    its closing, with the final review, and the run ends."""
+    f = fixture
+    toolbox = tools(f)
+    if finished == "draft":
+        await made(f)
+    else:
+        ref, revision = await active(f)
+        if finished == "abandoned":
+            await call(
+                f,
+                "plan_finish",
+                operation_id="abandon",
+                base=ref,
+                expected_status_revision=revision,
+                expected_progress_cursor=0,
+                status="abandoned",
+                reason="The user changed course",
+            )
+        else:
+            done = "blocked" if finished == "blocked" else "completed"
+            await record(f, ref, revision, "step-0", 0, done, "finish-step")
+            if finished == "completed":
+                await call(
+                    f,
+                    "plan_finish",
+                    operation_id="finish",
+                    base=ref,
+                    expected_status_revision=revision,
+                    expected_progress_cursor=1,
+                    status="completed",
+                    reason="Done",
+                    outcome=GoalOutcome(
+                        status="achieved", summary="Shown", evidence=(), remaining_work=()
+                    ).model_dump(mode="json"),
+                )
+    assert f.core.summary(f.user).status == ("active" if finished == "blocked" else finished)
+    closings = Closings()
+    model = ScriptedModel([ModelTurn("The answer.")])
+    result = await run_task(
+        model, toolbox, "Answer", run_id="main-run", hooks=(*toolbox.turn_hooks(), closings)
+    )
+    assert (result.stopped, result.final_text) == ("answered", "The answer.")
+    assert closings.closings == ["The answer."]
+    assert "plans" not in result.summaries
+
+
+@pytest.mark.asyncio
+async def test_an_open_question_lets_the_answer_end_the_run(fixture):
+    f = fixture
+    Questions(f.documents).ask(f.context, "an-earlier-run", "call-q", "op-q", "Which branch?")
+    result, _, closings = await open_plan_run(f, [ModelTurn("Waiting for your answer.")])
+    assert (result.stopped, result.final_text) == ("answered", "Waiting for your answer.")
+    assert closings.closings == ["Waiting for your answer."]
+
+
+@pytest.mark.asyncio
+async def test_a_run_with_no_turn_left_lets_the_answer_end_the_run(fixture):
+    result, _, closings = await open_plan_run(fixture, [ModelTurn("Status.")], max_turns=1)
+    assert (result.stopped, result.final_text) == ("answered", "Status.")
+    assert closings.closings == ["Status."]
+
+
+def test_a_permission_request_waits_until_the_same_call_gets_past_it():
+    refused = {
+        "tool": "shell",
+        "arguments": '{"script":"pip install x"}',
+        "error": "approval_required",
+    }
+    other = {"tool": "shell", "arguments": '{"script":"ls"}'}
+    passed = {"tool": "shell", "arguments": '{"script":"pip install x"}'}
+    assert approval_open([refused])
+    assert approval_open([refused, other])
+    assert not approval_open([refused, passed])
+    assert approval_open([passed, refused])
+    assert not approval_open([other])
+    # Only the latest records are looked through.
+    assert not approval_open([refused, *[other] * APPROVALS_SEEN])
+
+
+@pytest.mark.asyncio
+async def test_a_waiting_permission_request_lets_the_answer_end_the_run(fixture):
+    f = fixture
+    await active(f)
+
+    async def held(request):
+        # As a connector call that gave up waiting for the user's answer records it.
+        message = {"error": {"kind": "approval_required", "message": "held for approval"}}
+        return ToolOutcome(json.dumps(message), {"error": "approval_required"})
+
+    toolbox = tools(f)
+    toolbox.entries["shell"] = ToolEntry(toolbox.entries["shell"].spec, "effect", held)
+    closings = Closings()
+    model = ScriptedModel([turn("shell", script="fetch"), ModelTurn("Waiting for your approval.")])
+    result = await run_task(
+        model, toolbox, "Fetch", run_id="main-run", hooks=(*toolbox.turn_hooks(), closings)
+    )
+    assert result.tool_records[0]["error"] == "approval_required"
+    assert (result.stopped, result.final_text) == ("answered", "Waiting for your approval.")
+    assert closings.closings == ["Waiting for your approval."]
+
+
+@pytest.mark.asyncio
+async def test_a_response_rounds_answer_has_its_closing_though_the_plan_changed(fixture):
+    """Once a closing's findings took a response round, the run is ending: the round's
+    answer has its closing, even at a plan state that has had no continuation."""
+    f = fixture
+    ref, revision = await active(f)
+    toolbox = tools(f)
+
+    class Findings(Closings):
+        async def closing(self, run: RunView, answer: str | None) -> Closing:
+            self.closings.append(answer)
+            if len(self.closings) == 1:
+                notice = Notice("findings_fixture", ("f1",), "Findings: ", {"finding": "f1"})
+                return Closing("respond", (notice,))
+            return Closing()
+
+    closings = Findings()
+    progress = turn(
+        "plan_progress",
+        operation_id="fix",
+        base=ref,
+        step_id="step-0",
+        expected_step_cursor=0,
+        expected_status_revision=revision,
+        status="in_progress",
+        note="Answering the finding",
+    )
+    model = ScriptedModel(
+        [ModelTurn("Status."), ModelTurn("Final."), progress, ModelTurn("Answered.")]
+    )
+    result = await run_task(
+        model, toolbox, "Work", run_id="main-run", hooks=(*toolbox.turn_hooks(), closings)
+    )
+    assert closings.closings == ["Final.", "Answered."]
+    assert (result.stopped, result.final_text) == ("answered", "Answered.")
+    assert result.summaries["plans"]["went_on"] == 1
+
+
+def with_root(f) -> None:
+    """The session's root work, as the run service records it: a plan state's
+    continuation is recorded against it, where the automatic continuation looks."""
+    WorkRecords(f.projects.control).admit("p", "s", RUN)
+
+
+def state_continued(f) -> bool:
+    summary = f.core.summary(f.user)
+    assert summary is not None
+    with f.projects.control.read() as tx:
+        return continued(tx.sql, "p", "s", summary)
+
+
+class Ceiling(TurnHook):
+    """A turn allowance lowered to the calls made once the first returned."""
+
+    name = "ceiling_fixture"
+
+    async def turn_limit(self, run: RunView) -> int | None:
+        return run.turns if run.turns else None
+
+
+class LastCall(TurnHook):
+    """A limit that makes the next model call the run's last, from its ``at``-th ask."""
+
+    name = "last_call_fixture"
+
+    def __init__(self, at: int = 1) -> None:
+        self.asked, self.at = 0, at
+
+    async def last_call(self, run: RunView) -> str | None:
+        self.asked += 1
+        return "run_budget" if self.asked >= self.at else None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit", [Ceiling, LastCall])
+async def test_an_answer_the_run_cannot_go_on_from_spends_no_continuation(fixture, limit):
+    """Review of de930eca: the state's continuation was claimed before the loop knew the
+    run could take its next turn; the run then ended on the answer, which no hold kept
+    back, and the automatic continuation found the state spent. Now nothing is claimed,
+    the answer has its closing, held as any closing answer, and the state keeps its
+    continuation for a new root."""
+    f = fixture
+    with_root(f)
+    await active(f)
+    toolbox = tools(f)
+    closings = Closings()
+    model = ScriptedModel([ModelTurn("Status."), ModelTurn("unused")])
+    result = await run_task(
+        model,
+        toolbox,
+        "Work",
+        run_id="main-run",
+        hooks=(*toolbox.turn_hooks(), limit(), closings),
+    )
+    assert (result.stopped, result.final_text) == ("answered", "Status.")
+    assert closings.closings == ["Status."]
+    assert closings.withheld == [True]
+    assert "plans" not in result.summaries
+    assert not state_continued(f)
+
+
+@pytest.mark.asyncio
+async def test_two_runs_at_one_plan_state_go_on_once(fixture):
+    """The bound is the session's, kept in its records, not the run's."""
+    f = fixture
+    with_root(f)
+    await active(f)
+    first, _, _ = await _run_bare(f, "main-run")
+    assert first.summaries["plans"]["went_on"] == 1
+    assert state_continued(f)
+    second, model, closings = await _run_bare(f, "main-run-2")
+    assert closings.closings == ["Status."]
+    assert len(model.requests) == 1
+    assert "plans" not in second.summaries
+
+
+async def _run_bare(f, run_id):
+    adapter = PlanTools(f.core, f.projects, f.context, run_id=run_id, alias="main")
+    toolbox = Toolbox(worker(), f.context, plans=adapter)
+    closings = Closings()
+    model = ScriptedModel([ModelTurn("Status."), ModelTurn("Ended.")])
+    result = await run_task(
+        model, toolbox, "Work", run_id=run_id, hooks=(*toolbox.turn_hooks(), closings)
+    )
+    return result, model, closings
+
+
+class Fails(ScriptedModel):
+    """The model call after the first answer fails, or is the user's cancel."""
+
+    def __init__(self, turns, error: BaseException) -> None:
+        super().__init__(turns)
+        self.error = error
+
+    async def complete(self, messages, tools):
+        if self.requests:
+            self.requests.append(list(messages))
+            raise self.error
+        return await super().complete(messages, tools)
+
+
+class Halts(TurnHook):
+    name = "halts_fixture"
+
+    async def halt(self, run: RunView) -> str | None:
+        return "budget" if run.turns else None
+
+
+class Floods(TurnHook):
+    """A notice past the run's room before its second call."""
+
+    name = "floods_fixture"
+
+    async def notices(self, point, run: RunView) -> Sequence[Notice]:
+        if point == "turn" and run.turns:
+            return (Notice(self.name, (), "Flood: ", "x" * 300_000),)
+        return ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ending", ["error", "cancelled", "halt", "out_of_room", "report"])
+async def test_an_answer_the_run_went_on_from_stays_its_answer_whatever_ends_it(fixture, ending):
+    """Review of de930eca: a run that went on past its answer and failed on its next
+    call had no answer at all, though the user saw it."""
+    f = fixture
+    await active(f)
+    toolbox = tools(f)
+    stop = asyncio.Event()
+    replies = [ModelTurn("Status: step-0 is next."), ModelTurn("unused")]
+    extra: list[TurnHook] = []
+    model: ScriptedModel = ScriptedModel(replies)
+    if ending == "error":
+        model = Fails(replies, ModelError("test-secret-failure-body"))
+    elif ending == "cancelled":
+        stop.set()
+        model = Fails(replies, asyncio.CancelledError())
+    elif ending == "halt":
+        extra.append(Halts())
+    elif ending == "out_of_room":
+        extra.append(Floods())
+    else:
+        extra.append(LastCall(at=2))
+    result = await run_task(
+        model,
+        toolbox,
+        "Work",
+        run_id="main-run",
+        stop=stop,
+        max_input_chars=200_000,
+        hooks=(*toolbox.turn_hooks(), *extra),
+    )
+    assert result.summaries["plans"]["went_on"] == 1
+    assert result.answer == "Status: step-0 is next."
+    assert (
+        result.stopped
+        == {
+            "error": "error",
+            "cancelled": "cancelled",
+            "halt": "budget",
+            "out_of_room": "answered",
+            "report": "run_budget",
+        }[ending]
+    )
+
+
+def tracked(*tracks):
+    """A plan whose step-<t> is on track <t>, and step-own on none."""
+    value = body(count=0)
+    value["tracks"] = tuple({"track_id": t, "title": f"Track {t}"} for t in tracks)
+    value["phases"] = (
+        {
+            "phase_id": "analysis",
+            "title": "Analysis",
+            "steps": tuple(
+                {
+                    "step_id": f"step-{t}",
+                    "title": f"Step {t}",
+                    "description": "Inspect and check",
+                    "evidence_standard": "Retain evidence",
+                    **({"track_id": t} if t != "own" else {}),
+                }
+                for t in tracks
+            ),
+        },
+    )
+    return value
+
+
+def delegated(f, track: str, n: int, *, returned: bool = False) -> None:
+    """A delegated run of the session on ``track``: running, or returned and awaiting
+    its parent's review."""
+    ended = ("returned", "answered", "2026-11-27T12:05:00+00:00", "awaiting")
+    with f.projects.control.write() as tx:
+        tx.sql.execute(
+            "INSERT INTO delegations (delegation_id, project_id, session_id, parent, run, "
+            "kind, brief, started_at, ended, stopped, ended_at, review) "
+            "VALUES (?, 'p', 's', 'main-run', ?, 'task', ?, ?, ?, ?, ?, ?)",
+            (
+                "dlg-" + f"{n:024x}",
+                f"child-{n}",
+                json.dumps({"track": {"track_id": track}}),
+                "2026-11-27T12:00:00+00:00",
+                *(ended if returned else (None, None, None, None)),
+            ),
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("returned", [False, True])
+async def test_steps_with_children_leave_the_closing_to_wait_for_them(fixture, returned):
+    """Review of de930eca: an answer while children ran (\"waiting for the subagent\")
+    was told to go on with the step a child was working on, and spent the state's
+    continuation; the closing is where a parent waits for its children."""
+    f = fixture
+    with_root(f)
+    receipt = f.core.publish(
+        f.adapter.authority, "plan", PlanBody.model_validate(tracked("a")), "Plan"
+    )
+    summary = f.core.summary(f.user)
+    f.core.set_status(
+        f.adapter.authority, "go", receipt.ref, summary.status_revision, 0, "active", "Begin"
+    )
+    delegated(f, "a", 1, returned=returned)
+    result, _, closings = await _run_bare(f, "main-run")
+    assert closings.closings == ["Status."]
+    assert "plans" not in result.summaries
+    assert not state_continued(f)
+
+
+@pytest.mark.asyncio
+async def test_the_notice_names_only_the_steps_left_to_the_run(fixture):
+    f = fixture
+    receipt = f.core.publish(
+        f.adapter.authority, "plan", PlanBody.model_validate(tracked("a", "own")), "Plan"
+    )
+    summary = f.core.summary(f.user)
+    f.core.set_status(
+        f.adapter.authority, "go", receipt.ref, summary.status_revision, 0, "active", "Begin"
+    )
+    delegated(f, "a", 1)
+    result, model, closings = await _run_bare(f, "main-run")
+    assert closings.closings == ["Ended."]
+    notice = plans_notice(model.requests[1][-1])
+    assert (notice["next_steps"], notice["with_children"]) == (["step-own"], ["step-a"])
+    assert result.summaries["plans"]["went_on"] == 1

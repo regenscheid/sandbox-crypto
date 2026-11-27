@@ -5,12 +5,18 @@ A plan continues only while one of its steps can still be worked: pending or in 
 When the agent has marked every unfinished step blocked, as it does when no justified step
 remains, the session waits for the user instead of starting run after run that rereads the
 plan and finds nothing to do (Mac, 2026-10-21); a plan has no status of its own for that.
+
+A plan state continues once, whichever way: a new root queued here, or a root that answered
+while its plan was open and went on in the same run (``claim_in_run``, ``plan_tools.Plans``).
+The state is the plan's head, status revision, progress cursor and event cursor, so any
+recorded change gives the plan another continuation.
 """
 
 from __future__ import annotations
 
 import json
 import sqlite3
+from typing import Final
 
 from sandbox_science.contracts import new_id
 from sandbox_science.orchestrator.control import ControlStore
@@ -30,6 +36,74 @@ from .records import tree_cancelled
 
 PAGE = 100
 AUTHOR = SUPERVISOR
+KIND: Final = "auto_continue"
+"""The observation that a plan state has had its continuation, in either form."""
+
+
+def identity(plan: PlanSummary) -> str:
+    """A plan state as its continuation's observation names it."""
+    return json.dumps(
+        (
+            plan.head.plan_id,
+            plan.head.version,
+            plan.status_revision,
+            plan.progress_cursor,
+            plan.event_cursor,
+        ),
+        separators=(",", ":"),
+    )
+
+
+def continued(db: sqlite3.Connection, project: str, session: str, plan: PlanSummary) -> bool:
+    """Whether the session's plan state ``plan`` has had its continuation."""
+    return (
+        db.execute(
+            "SELECT 1 FROM research_observations WHERE project=? AND session=? "
+            "AND kind=? AND identity=? LIMIT 1",
+            (project, session, KIND, identity(plan)),
+        ).fetchone()
+        is not None
+    )
+
+
+def claim_in_run(
+    db: sqlite3.Connection,
+    project: str,
+    session: str,
+    plan: PlanSummary,
+    *,
+    run: str,
+    observed: float,
+) -> bool:
+    """Record that root run ``run`` went on past an answer at plan state ``plan``, in the
+    caller's write transaction: whether the state had no continuation yet. The record is
+    the session's root work's, as a queued continuation's is, so that neither form follows
+    the other for the same state; a session with no root work recorded keeps none, and
+    the caller bounds its own run."""
+    if continued(db, project, session, plan):
+        return False
+    root = db.execute(
+        "SELECT w.work FROM research_sessions rs JOIN research_work w "
+        "ON w.project=rs.project AND w.session=rs.session AND w.work=rs.root "
+        "WHERE rs.project=? AND rs.session=?",
+        (project, session),
+    ).fetchone()
+    if root is not None:
+        db.execute(
+            "INSERT INTO research_observations VALUES (?,?,?,?,?,?,?)",
+            (
+                project,
+                session,
+                str(root[0]),
+                KIND,
+                identity(plan),
+                observed,
+                json.dumps(
+                    {"in_run": run, "plan": json.loads(identity(plan))}, separators=(",", ":")
+                ),
+            ),
+        )
+    return True
 
 
 class AutoContinuation:
@@ -134,7 +208,7 @@ class AutoContinuation:
             return None
         if not self._workable(self.plans.compact_current(authority)):
             return None
-        identity = json.dumps(self._identity(plan), separators=(",", ":"))
+        state = identity(plan)
         message_id = new_id("msg")
         content = self._message(plan)
 
@@ -147,22 +221,18 @@ class AutoContinuation:
                 and current == plan
                 and current.status == "active"
                 and self._workable(self.plans.compact_in(db, authority))
-                and db.execute(
-                    "SELECT 1 FROM research_observations WHERE project=? AND session=? "
-                    "AND kind='auto_continue' AND identity=?",
-                    (project, session, identity),
-                ).fetchone()
-                is None
+                and not continued(db, project, session, current)
             )
 
         def record(db: sqlite3.Connection) -> None:
             db.execute(
-                "INSERT INTO research_observations VALUES (?,?,?,'auto_continue',?,?,?)",
+                "INSERT INTO research_observations VALUES (?,?,?,?,?,?,?)",
                 (
                     project,
                     session,
                     root,
-                    identity,
+                    KIND,
+                    state,
                     self.runs.clock.now().timestamp(),
                     json.dumps(
                         {"message_id": message_id, "plan": self._identity(plan)},

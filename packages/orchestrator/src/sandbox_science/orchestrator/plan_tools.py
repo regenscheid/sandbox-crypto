@@ -7,22 +7,25 @@ SQL calls are cancellation-owned; a worker await never holds either lock.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections import deque
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Annotated, Any, Final, Literal, TypeVar, cast
 
 from pydantic import Field, ValidationError
 
-from sandbox_science.contracts import ExecutionContext, Identifier
+from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ExecutionContext, Identifier
 
 from .aio import threaded
+from .continuity.auto_continuation import claim_in_run, continued
 from .documents.errors import CONFLICT, INVALID_REQUEST, POLICY_DENIED, DocumentError
 from .hooks import Closing, Effect, Notice, Point, Refusal, RunView, TurnHook
 from .model import ToolSpec
 from .notices import PLANS
 from .projects import ProjectError, ProjectStore, SessionSnapshot
+from .questions import Questions
 from .session_plans import (
     FINISHED,
     CompactPlan,
@@ -52,6 +55,15 @@ ANSWER_HELD = (
     "steps. Check your answer against the plan in this notice, record your progress, then "
     "answer again; that answer is taken."
 )
+PLAN_OPEN = (
+    "Your reply was shown to the user as a message, not taken as the end of the work: the "
+    "session plan is active and its steps in next_steps can still be worked. Go on with "
+    "the next of them, recording progress as you go; steps in with_children are with "
+    "delegated runs, so wait for or review those rather than doing them again. If the "
+    "user asked you to stop, pause or wait, record the steps they hold blocked with their "
+    "reason. A reply with no tool call while the plan stands as it does now ends the run."
+)
+"""Why a run goes on past an answer while its plan is open (``Plans.goes_on``)."""
 UNAVAILABLE = (
     "The session plan cannot be read now; tools that change anything are refused until it "
     "can be read again."
@@ -66,6 +78,8 @@ REOPENED = (
     "leave finished steps as they are and add new steps or change open ones."
 )
 OPEN: Final = frozenset({"pending", "in_progress"})
+APPROVALS_SEEN: Final = 200
+"""The latest tool records of a run that ``approval_open`` looks through."""
 MAX_REQUEST_BYTES = 96 * 1024
 MAX_RESPONSE_BYTES = 256 * 1024
 MAX_CHANGES: Final = 8
@@ -75,7 +89,11 @@ MAX_GOAL: Final = 400
 MAX_REASON: Final = 160
 """The characters of a version's reason a plans notice shows."""
 MAX_STEP_IDS: Final = 8
-"""The step IDs a plans notice names for each kind of change in a revision."""
+"""The step IDs a plans notice names for each kind of change in a revision, and the next
+steps of one that carries a run past an answer."""
+MAX_CONTINUED: Final = 32
+"""The plan states a run's record names that it went on past an answer at; it counts the
+rest."""
 GUIDANCE_VERSION = "sandbox-main-plan-7"
 GUIDANCE = (
     "Planning guidance (sandbox-main-plan-7): The offered plan tools keep this session's "
@@ -245,8 +263,9 @@ class PlanTools:
         *,
         run_id: str,
         alias: str,
+        clock: Clock = SYSTEM_CLOCK,
     ) -> None:
-        self.projects, self.context = projects, context
+        self.projects, self.context, self.clock = projects, context, clock
         # The fence binds this run's own session record. Other sessions and the
         # project's policy revision may change: the worker enforces the current policy.
         self.registry_context = ExecutionContext(
@@ -284,6 +303,10 @@ class PlanTools:
         """Others' changes since the last plans notice, the latest of them."""
         self.unlisted = 0
         """Others' changes since the last plans notice that ``changes`` no longer holds."""
+        self.continued: list[Pin] = []
+        """The plan states this run went on past an answer at (``went_on``), in order."""
+        self.offer: PlanSummary | None = None
+        """The plan state ``going_on`` offered to go on at, until ``went_on`` commits it."""
 
     def _owned(self, action: Callable[[], _T]) -> _T:
         if self.invalid:
@@ -511,6 +534,107 @@ class PlanTools:
             for step in plan.steps
             if step.latest is None or not step.matches_current_step or step.latest.status in OPEN
         ]
+
+    async def going_on(self) -> PlanNotice | None:
+        """The plans notice that would carry the run past an answer with no tool call: the
+        current plan, active with steps that can still be worked (pending or in progress,
+        a step changed since its progress among them) other than those on a track a
+        delegated run holds, running or returned and awaiting its review, with no question
+        of the session's open, at a state that has had no continuation yet, in a run or as a
+        queued new root. An offer, which ``went_on`` commits. ``None`` otherwise, and while
+        the plan is unread or cannot be read: the closing decides then, and waits for the
+        children."""
+        self.offer = None
+        try:
+            return await threaded(lambda: self._owned(self._going_on))
+        except DocumentError:
+            return None
+
+    def _going_on(self) -> PlanNotice | None:
+        self._refresh()
+        if self.requires_read or self.held:
+            return None
+        found = self.plans.compact_summary(self.authority)
+        if found is None:
+            return None
+        summary, plan = found
+        pin = _pin(summary)
+        if summary.status != "active" or pin is None or pin in self.continued:
+            return None
+        scope = self.authority.scope
+        delegated = self._delegated_tracks()
+        steps = {step.step_id: step for phase in plan.version.body.phases for step in phase.steps}
+        running: list[str] = []
+        waiting: list[str] = []
+        children: list[str] = []
+        for step in plan.steps:
+            latest = step.latest
+            state = latest.status if latest is not None and step.matches_current_step else None
+            if state not in (None, "pending", "in_progress"):
+                continue
+            if steps[step.step_id].track_id in delegated:
+                children.append(step.step_id)
+            else:
+                (running if state == "in_progress" else waiting).append(step.step_id)
+        workable = [*running, *waiting]
+        if not workable:
+            return None
+        if Questions(self.plans.documents).open(scope.project_id, scope.session_id):
+            return None
+        with self.plans.documents.control.read() as tx:
+            if continued(tx.sql, scope.project_id, scope.session_id, summary):
+                return None
+        self.offer = summary
+        payload: dict[str, object] = {
+            **self._render(summary, plan, [], 0),
+            "next_steps": workable[:MAX_STEP_IDS],
+            "plan_open": PLAN_OPEN,
+        }
+        if children:
+            payload["with_children"] = children[:MAX_STEP_IDS]
+        return PlanNotice(payload, pin)
+
+    def _delegated_tracks(self) -> frozenset[str]:
+        """The tracks of the session's delegated runs that hold their steps: running, or
+        returned and awaiting the parent's review, which can send them on (PD-46)."""
+        scope = self.authority.scope
+        with self.plans.documents.control.read() as tx:
+            rows = tx.sql.execute(
+                "SELECT DISTINCT json_extract(brief,'$.track.track_id') FROM delegations "
+                "WHERE project_id=? AND session_id=? "
+                "AND (ended IS NULL OR (ended='returned' AND review='awaiting')) "
+                "AND json_extract(brief,'$.track.track_id') IS NOT NULL",
+                (scope.project_id, scope.session_id),
+            ).fetchall()
+        return frozenset(str(row[0]) for row in rows)
+
+    async def went_on(self) -> bool:
+        """Commit the offer ``going_on`` made: whether its plan state is still current and
+        had no continuation, which this records (``auto_continuation.claim_in_run``). Only
+        then does the run go on, and count it."""
+        offer, self.offer = self.offer, None
+        if offer is None:
+            return False
+
+        def claim() -> bool:
+            scope = self.authority.scope
+            with self.plans.documents.control.write() as tx:
+                return self.plans.summary_in(tx.sql, self.authority) == offer and claim_in_run(
+                    tx.sql,
+                    scope.project_id,
+                    scope.session_id,
+                    offer,
+                    run=self.authority.run_id or "",
+                    observed=self.clock.now().timestamp(),
+                )
+
+        try:
+            claimed = await threaded(lambda: self._owned(claim))
+        except DocumentError:
+            return False
+        if claimed and (pin := _pin(offer)) is not None:
+            self.continued.append(pin)
+        return claimed
 
     async def model_delivered(self) -> None:
         """After a model call returned: the current read or plans notice it saw read the
@@ -740,6 +864,28 @@ class PlanTools:
         raise DocumentError(INVALID_REQUEST, "one plan history item exceeds the response budget")
 
 
+def approval_open(records: Sequence[Mapping[str, Any]]) -> bool:
+    """Whether a permission request waits on the user: a call among the run's latest
+    ``APPROVALS_SEEN`` tool records refused as ``approval_required`` that no later call of
+    the same tool with the same arguments got past."""
+    passed: set[tuple[str, str]] = set()
+    for index in range(len(records) - 1, max(-1, len(records) - 1 - APPROVALS_SEEN), -1):
+        record = records[index]
+        key = (str(record.get("tool", "")), str(record.get("arguments", "")))
+        if record.get("error") != "approval_required":
+            passed.add(key)
+        elif key not in passed:
+            return True
+    return False
+
+
+def went_on(pin: Pin) -> str:
+    """The ID of the plans notice that carried a run past an answer at plan state
+    ``pin``: the run's events write it as the notice that the run went on."""
+    digest = hashlib.sha256(json.dumps(pin, separators=(",", ":")).encode()).hexdigest()
+    return f"plan-open-{digest[:16]}"
+
+
 class Plans(TurnHook):
     """The session plan in a run: the plan itself, in a notice before the turn, when
     someone other than this run changed it or the run has not seen it, whose delivery
@@ -747,7 +893,15 @@ class Plans(TurnHook):
     has open steps. The veto holds the answer once, with the plan in its notice, and takes
     the next closing answer; with no turn to give, the answer stands. A finished plan,
     or one whose steps are all done, blocked or skipped, holds no answer back (lab 41,
-    B2)."""
+    B2).
+
+    An answer with no tool call while the plan is active and has steps that can still be
+    worked does not end the run: it goes to the user as a message, and the run takes its
+    next turn with the plan in a notice that names the next steps (``goes_on``). Not while
+    a question or a permission request waits on the user, nor with no turn left, and once
+    per plan state, shared with the automatic continuation of an answered root
+    (``continuity.auto_continuation``): an answer at a plan state that has had its
+    continuation has its closing, the final review among it."""
 
     name = "plans"
     veto = True
@@ -762,6 +916,32 @@ class Plans(TurnHook):
 
     async def model_returned(self, run: RunView) -> None:
         await self.tools.model_delivered()
+
+    async def goes_on(self, run: RunView, answer: str) -> Sequence[Notice]:
+        # Before ``model_returned``: the plan this model call's notices showed is read now.
+        await self.tools.model_delivered()
+        self.tools.offer = None
+        if run.turns_left <= 0 or run.halted is not None or approval_open(run.tool_records):
+            return ()
+        found = await self.tools.going_on()
+        if found is None or found.pin is None:
+            return ()
+        return (Notice(self.name, (went_on(found.pin),), PLANS.text, found.payload),)
+
+    async def went_on(self, run: RunView, notices: Sequence[Notice]) -> bool:
+        if run.turns_left <= 0 or run.halted is not None:
+            self.tools.offer = None
+            return False
+        return await self.tools.went_on()
+
+    def summary(self) -> object | None:
+        continued = self.tools.continued
+        if not continued:
+            return None
+        return {
+            "went_on": len(continued),
+            "states": [list(pin) for pin in continued[:MAX_CONTINUED]],
+        }
 
     async def gate(self, effect: Effect) -> Refusal | None:
         try:

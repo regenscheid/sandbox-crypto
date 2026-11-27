@@ -28,7 +28,7 @@ from sandbox_science.orchestrator.effects import UnknownEffectError
 
 _log = logging.getLogger(__name__)
 
-CONTROL_PROTOCOL: Final = 9
+CONTROL_PROTOCOL: Final = 10
 CONTROL_HEADER: Final = "X-Sandbox-Control-Protocol"
 MAX_FRAME_BYTES: Final = 24 * 1024 * 1024
 MAX_PENDING: Final = 128
@@ -78,6 +78,14 @@ class Capability(StrEnum):
     GATE = "gate"
     OBSERVE_TOOL = "observe_tool"
     TOOL_DONE = "tool_done"
+    GOES_ON = "goes_on"
+    """Runtime to host: a hook's offer of the notices that would carry the run past an
+    answer with no tool call (``TurnHook.goes_on``), which the host keeps and does not
+    admit yet; asked only of a hook that may give them (``HookGiven.goes_on``)."""
+    WENT_ON = "went_on"
+    """Runtime to host: the run has room and no limit due for the turn the hook offered;
+    the host's hook decides whether it commits (``TurnHook.went_on``), and only then does
+    the host admit the offered notices."""
     CLOSING = "closing"
     ACCEPT = "accept"
     FINISHING = "finishing"
