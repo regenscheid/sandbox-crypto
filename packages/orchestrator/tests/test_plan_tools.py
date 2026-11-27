@@ -2512,3 +2512,197 @@ async def test_the_prompts_progress_call_is_one_the_tool_takes(fixture):
     )
     assert result["plan"]["steps"] == {"completed": 1, "in_progress": 1}
     assert [s["step_id"] for s in result["plan"]["open_steps"]] == ["step-1"]
+
+
+def _source(session="s"):
+    from .test_artifact_inventory import CONTEXT, SOURCE
+
+    return SOURCE.model_copy(
+        update={"context": CONTEXT.model_copy(update={"project_id": "p", "session_id": session})}
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["unkept", "other_session", "deleted"])
+async def test_an_exact_retry_is_its_receipt_whatever_became_of_its_paths(fixture, change):
+    """Round 3, A: a retry is looked up before any path is resolved again, so a file
+    that changed to something that cannot be pinned leaves the first receipt standing, for
+    one step, several steps and a finish."""
+    f = fixture
+    path = "shared/table.csv"
+    inventory, reference = recorded(f, path)
+    assert reference is not None
+    f.adapter.artifacts = inventory
+    ref, revision = await active(f)
+    one = {"operation_id": "one", "base": ref, "expected_status_revision": revision,
+           "step_id": "step-0", "expected_step_cursor": 0, "status": "completed",
+           "note": "Table", "evidence": [{"path": path}]}  # fmt: skip
+    first, _ = await call(f, "plan_progress", **one)
+    finish = {"operation_id": "finish", "base": ref, "expected_status_revision": revision,
+              "expected_progress_cursor": first["plan"]["progress_cursor"], "reason": "Done",
+              "outcome": {"status": "achieved", "summary": "Table", "evidence": [{"path": path}],
+                          "remaining_work": []}}  # fmt: skip
+    finished, _ = await call(f, "plan_finish", **finish)
+    if change == "unkept":
+        recorded(f, path, b"other", kept=False)
+    elif change == "other_session":
+        recorded(f, path, b"other", session="other", op="op-o")
+    else:
+        inventory.record_deletion(_source(), path)
+    again, _ = await call(f, "plan_progress", **one)
+    assert again["receipt"] == first["receipt"]
+    assert again["evidence_resolved"] == first["evidence_resolved"]
+    assert again["evidence_resolved"][0]["revision"] == reference.revision
+    done, _ = await call(f, "plan_finish", **finish)
+    assert done["receipt"] == finished["receipt"]
+    assert done["evidence_resolved"] == finished["evidence_resolved"]
+
+
+@pytest.mark.asyncio
+async def test_a_retry_of_several_steps_is_its_receipt_after_the_file_went(fixture):
+    f = fixture
+    inventory, _ = recorded(f)
+    f.adapter.artifacts = inventory
+    created, _ = await call(
+        f, "plan_create", operation_id="create", body=body(count=2), reason="Initial"
+    )
+    ref = created["receipt"]["ref"]
+    await call(
+        f, "plan_activate", operation_id="activate", base=ref, reason="Begin",
+        expected_status_revision=1, expected_progress_cursor=0,
+    )  # fmt: skip
+    steps = {"operation_id": "both", "base": ref, "expected_status_revision": 2,
+             "steps": [{"step_id": "step-0", "expected_step_cursor": 0, "status": "completed",
+                        "note": "A", "evidence": [{"path": "results/table.csv"}]},
+                       {"step_id": "step-1", "expected_step_cursor": 0, "status": "in_progress",
+                        "note": "B"}]}  # fmt: skip
+    first, _ = await call(f, "plan_progress", **steps)
+    inventory.record_deletion(_source(), "results/table.csv")
+    again, _ = await call(f, "plan_progress", **steps)
+    assert again["receipt"] == first["receipt"]
+    assert again["evidence_resolved"] == first["evidence_resolved"]
+
+
+@pytest.mark.asyncio
+async def test_only_the_platform_says_who_recorded_an_outcomes_evidence(fixture):
+    """Round 3, B: a finish's outcome may not name who recorded its evidence; its
+    artifact claims are checked against the inventory, and the platform names their
+    recorder, another session's too; the store refuses a recorder from any author."""
+    from sandbox_science.orchestrator.session_plans import PlanEvidence, PlanWriter
+
+    f = fixture
+    inventory, own = recorded(f)
+    _, theirs = recorded(f, "notes.csv", session="other", op="op-o")
+    assert own is not None
+    assert theirs is not None
+    f.adapter.artifacts = inventory
+    ref, revision = await active(f)
+    claimed = {"project_id": "p", "kind": "artifact", "reference_id": own.artifact_id,
+               "revision": own.revision, "sha256": own.sha256}  # fmt: skip
+    forged = {**claimed, "written_by": {"session_id": "s", "run_id": "run1",
+                                        "recorded_at": "2026-11-27T00:00:00+00:00"}}  # fmt: skip
+
+    def finishing(op, evidence, cursor=0):
+        return {"operation_id": op, "base": ref, "expected_status_revision": revision,
+                "expected_progress_cursor": cursor, "reason": "Done", "status": "abandoned",
+                "outcome": None} | ({"status": "completed", "outcome": {
+                    "status": "not_achieved", "summary": "S", "evidence": evidence,
+                    "remaining_work": ["All"]}} if evidence is not None else {})  # fmt: skip
+
+    for op, evidence, match in (
+        ("forged", [forged], "written_by is the platform's"),
+        ("missing", [{**claimed, "reference_id": "artifact-" + "0" * 24}], "revision"),
+        ("wrong", [{**claimed, "sha256": "0" * 64}], "has SHA-256"),
+    ):
+        with pytest.raises(DocumentError, match=match):
+            await call(f, "plan_finish", **finishing(op, evidence))
+    # The store refuses a recorder from an author whatever its route.
+    stated = PlanEvidence.model_validate_json(json.dumps(forged))
+    with pytest.raises(DocumentError, match="written_by is the platform's"):
+        f.core.set_status(
+            f.adapter.authority, "direct", PlanRef.model_validate(ref), revision, 0,
+            "completed", "Done",
+            outcome=GoalOutcome(status="not_achieved", summary="S", evidence=(stated,),
+                                remaining_work=("All",)),
+        )  # fmt: skip
+    with pytest.raises(DocumentError, match="written_by is the platform's"):
+        f.core.progress(
+            f.user, "user-direct", PlanRef.model_validate(ref), "step-0", 0, "completed", "N",
+            evidence=(stated,),
+        )  # fmt: skip
+    assert isinstance(stated.written_by, PlanWriter)
+    # Another session's revision is claimed by its ID, and named as theirs.
+    other = {**claimed, "reference_id": theirs.artifact_id, "revision": theirs.revision,
+             "sha256": theirs.sha256}  # fmt: skip
+    await call(
+        f, "plan_progress", operation_id="step", base=ref, expected_status_revision=revision,
+        step_id="step-0", expected_step_cursor=0, status="skipped", note="Not needed",
+    )  # fmt: skip
+    await call(f, "plan_finish", **finishing("theirs", [other], cursor=1))
+    (kept,) = f.core.current(f.user).head.outcome.evidence
+    assert (kept.written_by.session_id, kept.reference_id) == ("other", theirs.artifact_id)
+
+
+@pytest.mark.asyncio
+async def test_a_revision_of_the_plans_own_fields_is_shown_in_full(fixture):
+    """Round 3, D: another actor's revision that changes only the plan's outputs and
+    feasibility shows those fields as they now are, not only its reason."""
+    f = fixture
+    ref, _ = await active(f)
+    await read_and_deliver(f)
+    edited = body()
+    edited["feasibility"] = "Only seed 42 is feasible"
+    edited["outputs"] = (
+        {"title": "Table", "description": "Ranks by degree", "evidence_standard": "Exact"},
+    )
+    f.core.revise(
+        f.user, "fields", PlanRef.model_validate(ref), PlanBody.model_validate(edited), "Scope"
+    )
+    read, _ = await call(f, "plan_read")
+    changed = read["changed_by_others"]
+    assert changed["steps"] == []
+    assert changed["plan_fields"]["feasibility"] == "Only seed 42 is feasible"
+    assert changed["plan_fields"]["outputs"][0]["title"] == "Table"
+    assert "goal" not in changed["plan_fields"]
+
+
+@pytest.mark.asyncio
+async def test_changes_too_many_for_one_read_are_shown_in_parts_before_the_plan_is_read(
+    fixture,
+):
+    """Round 3, D: when others changed more steps than one read or notice can show, each
+    shows the next part in full, and the plan counts as read only once all were shown,
+    by reads and notices alike."""
+    f = fixture
+    created, _ = await call(
+        f, "plan_create", operation_id="create", body=body(count=60), reason="Initial"
+    )
+    ref = created["receipt"]["ref"]
+    await call(
+        f, "plan_activate", operation_id="activate", base=ref, reason="Begin",
+        expected_status_revision=1, expected_progress_cursor=0,
+    )  # fmt: skip
+    await read_and_deliver(f)
+    plan = PlanRef.model_validate(ref)
+    for i in range(60):
+        f.core.progress(f.user, f"pause-{i}", plan, f"step-{i}", 0, "blocked", f"{i} " + "n" * 3000)
+    seen: list[str] = []
+    notice = await f.adapter.safe_point()
+    part = notice.payload["changed_by_others"]
+    assert part["more"] > 0
+    assert part["steps"][0]["latest"]["note"].startswith("0 ")
+    assert notice.pin is None  # shown in part: its delivery reads nothing yet
+    seen += [s["step_id"] for s in part["steps"]]
+    await f.adapter.model_delivered()
+    while True:
+        read, _ = await call(f, "plan_read")
+        part = read["changed_by_others"]
+        seen += [s["step_id"] for s in part["steps"]]
+        await f.adapter.model_delivered()
+        if "more" not in part:
+            break
+        with pytest.raises(DocumentError, match="reread_required"):
+            await f.adapter.check_dispatch("effect")
+    assert sorted(seen) == sorted(f"step-{i}" for i in range(60))
+    assert len(seen) == len(set(seen))
+    await f.adapter.check_dispatch("effect")

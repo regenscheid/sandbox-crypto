@@ -903,9 +903,37 @@ class SessionPlans:
             raise DocumentError(POLICY_DENIED, "delegated runs may only update their granted track")
 
     @staticmethod
-    def _evidence(scope: PlanScope, evidence: tuple[PlanEvidence, ...]) -> None:
+    def _evidence(
+        scope: PlanScope, evidence: tuple[PlanEvidence, ...], *, attributed: bool = False
+    ) -> None:
+        """Evidence claims of the project; one naming who recorded its revision
+        (``written_by``) only from a caller that verified it (``attributed``): that is the
+        platform's statement, never an author's."""
         if any(item.project_id != scope.project_id for item in evidence):
             raise DocumentError(POLICY_DENIED, "plan evidence claims must belong to the project")
+        if not attributed and any(item.written_by is not None for item in evidence):
+            raise DocumentError(
+                POLICY_DENIED,
+                "written_by is the platform's, which states who recorded a revision it "
+                "verified; an author's evidence leaves it out",
+            )
+
+    def recorded(self, authority: PlanAuthority, operation: str) -> bool:
+        """Whether ``authority`` already made a change under ``operation``: a call with it
+        again is that change's exact retry, or a conflict, whatever the plan is now."""
+        authority = _checked(PlanAuthority, authority)
+        identifier = _digest([*authority.namespace, _checked_operation(operation)])
+        if self.documents.control.missing:
+            return False
+        with self.documents.control.read() as tx:
+            return (
+                tx.sql.execute(
+                    "SELECT 1 FROM session_plan_records WHERE project=? AND session=? "
+                    "AND kind='request' AND id=? AND number=0",
+                    (authority.scope.project_id, authority.scope.session_id, identifier),
+                ).fetchone()
+                is not None
+            )
 
     def _begin(
         self,
@@ -1182,6 +1210,7 @@ class SessionPlans:
         evidence: tuple[PlanEvidence, ...] = (),
         expected_status_revision: int | None = None,
         given: object = None,
+        attributed: bool = False,
     ) -> PlanReceipt:
         """Append a current-version step assertion with a per-step optimistic cursor.
         ``given`` is the request as its caller was given it, when that differs from what
@@ -1195,6 +1224,7 @@ class SessionPlans:
             authority,
             base,
             StepAssertion(step_id, expected_step_cursor, status, note, evidence),
+            attributed=attributed,
         )
         payload = {
             "base": base.model_dump(mode="json"),
@@ -1221,6 +1251,7 @@ class SessionPlans:
         *,
         expected_status_revision: int,
         given: object = None,
+        attributed: bool = False,
     ) -> PlanReceipt:
         """Append several steps' assertions, in order, as one change against one plan
         version and status revision: each step's assertion and event is recorded as
@@ -1243,7 +1274,7 @@ class SessionPlans:
                 )
             seen.add(step.step_id)
             with _named_entry(index, step.step_id):
-                entry, payload = self._assertion(authority, base, step)
+                entry, payload = self._assertion(authority, base, step, attributed=attributed)
             entries.append((entry, step.expected_step_cursor))
             payloads.append(payload)
         payload: dict[str, object] = {
@@ -1264,7 +1295,7 @@ class SessionPlans:
         )
 
     def _assertion(
-        self, authority: PlanAuthority, base: PlanRef, step: StepAssertion
+        self, authority: PlanAuthority, base: PlanRef, step: StepAssertion, *, attributed: bool
     ) -> tuple[PlanProgress, dict[str, object]]:
         """One step's checked assertion, before the store numbers it, and its part of
         the operation's payload."""
@@ -1282,7 +1313,7 @@ class SessionPlans:
             recorded_at=datetime.now(UTC),
         )
         request = _checked(PlanProgress, request)
-        self._evidence(authority.scope, request.evidence)
+        self._evidence(authority.scope, request.evidence, attributed=attributed)
         cursor = _counter(step.expected_step_cursor)
         return request, {
             "step_id": step.step_id,
@@ -1370,8 +1401,11 @@ class SessionPlans:
         reason: str,
         *,
         outcome: GoalOutcome | None = None,
+        given: object = None,
+        attributed: bool = False,
     ) -> PlanReceipt:
-        """Record workflow status; an active plan grants no execution."""
+        """Record workflow status; an active plan grants no execution. ``given`` and
+        ``attributed`` are as ``progress`` takes them, for an outcome's evidence."""
         authority = _checked(PlanAuthority, authority)
         self._main(authority)
         base = _checked(PlanRef, base)
@@ -1393,8 +1427,8 @@ class SessionPlans:
         )
         change = _checked(PlanStatusChange, change)
         if change.outcome:
-            self._evidence(authority.scope, change.outcome.evidence)
-        payload = {
+            self._evidence(authority.scope, change.outcome.evidence, attributed=attributed)
+        payload: dict[str, object] = {
             "base": base.model_dump(mode="json"),
             "expected_status_revision": status_revision,
             "expected_progress_cursor": cursor,
@@ -1402,6 +1436,8 @@ class SessionPlans:
             "reason": reason,
             "outcome": change.outcome.model_dump(mode="json") if change.outcome else None,
         }
+        if given is not None:
+            payload = {"given": given}
         with self.documents.control.write() as tx:
             db = tx.sql
             identifier, digest, replay = self._begin(db, authority, operation, "status", payload)
