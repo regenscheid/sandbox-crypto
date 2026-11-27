@@ -468,6 +468,30 @@ async def _model_returned(hooks: Sequence[TurnHook], transcript: Transcript) -> 
         await hook.model_returned(transcript)
 
 
+async def _goes_on(
+    hooks: Sequence[TurnHook], transcript: Transcript, reply: ModelTurn, answer: _Answer
+) -> tuple[Notice, ...]:
+    """The notices that carry the run past ``reply``, a complete answer with no tool call,
+    to its next turn instead of its closing: the first hook's that gives any
+    (``TurnHook.goes_on``), while the run has room for them. None for a reply with calls,
+    one the output limit cut off that is still to be continued, an empty one, a run with
+    no turn or room left, and the answer of a response round, or while one is held: a
+    closing's findings were answered, and the closing decides. Asked before the hooks hear
+    that the call returned, so that an answer that goes on is never kept from the user
+    (``withheld``)."""
+    if reply.tool_calls or (reply.finish_reason == LENGTH and answer.continued < CONTINUATIONS):
+        return ()
+    if transcript.response_rounds or transcript.holding or transcript.halted is not None:
+        return ()
+    text = "".join([*answer.parts, reply.text or ""])
+    if not text.strip() or not transcript.has_room():
+        return ()
+    for hook in hooks:
+        if found := tuple(await hook.goes_on(transcript, text)):
+            return found if transcript.has_room(found) else ()
+    return ()
+
+
 async def _closing(hooks: Sequence[TurnHook], transcript: Transcript, answer: str | None) -> bool:
     """Whether the run takes another turn past this answer.
 
@@ -945,7 +969,10 @@ async def _run_task(
     An answer the output limit cut off stays in the conversation, and the next call is
     asked to continue it (``CONTINUE``), at most ``CONTINUATIONS`` times a run; the parts
     together are the answer the closing sees. An empty answer, with no text and no call,
-    is asked for once more before its closing. A reply's calls run in its order, a run of
+    is asked for once more before its closing. An answer a hook carries on (``_goes_on``),
+    as an active plan with workable steps does, is a message to the user, and the run
+    takes its next turn with the hook's notices instead of the answer's closing. A reply's
+    calls run in its order, a run of
     read-class calls in a row at once (``_batches``); their results, records, observers
     and checks follow the reply's order whatever order the calls ended in. A call the
     output limit cut off does not run (``not_run``). Three failed calls in a row of one
@@ -989,7 +1016,10 @@ async def _run_task(
             return transcript
         # The answer as a chat message, carrying the gateway's answer for its adapter.
         await _append(transcript, AssistantMessage.of(reply), Appended("assistant", reply=reply))
-        transcript.withheld = not reply.tool_calls and any(h.holds_answers for h in hooks)
+        going_on = await _goes_on(hooks, transcript, reply, answer)
+        transcript.withheld = (
+            not reply.tool_calls and not going_on and any(h.holds_answers for h in hooks)
+        )
         await _model_returned(hooks, transcript)
         await _turn_limit(hooks, transcript)
         limited = reply.finish_reason == LENGTH
@@ -1020,6 +1050,12 @@ async def _run_task(
                 _counted(transcript, "empty_answers", "retried")
                 continue
             answer.retried = False
+            if going_on and transcript.has_room(going_on):
+                # The answer is a message to the user, and the run goes on with its open
+                # work; it stands for a closing only if a limit ends the run first.
+                await _offer(transcript, going_on)
+                transcript.pending = text
+                continue
             held = transcript.held
             if await _closing(hooks, transcript, text):
                 transcript.pending = text

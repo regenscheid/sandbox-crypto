@@ -46,6 +46,7 @@ from .control import ControlError
 from .control.errors import CONFLICT
 from .hooks import Closing, Effect, Notice, Point, Refusal, RunView, TurnHook
 from .notices import PLATFORM_INPUT, REDELIVERED
+from .plan_tools import Plans
 from .projects import ModelUsage, RunRecord
 from .purpose import purpose_of, without
 from .run_timing import TIMING_KEYS
@@ -331,6 +332,12 @@ def _notice(message: ChatMessage, shown: Mapping[str, str]) -> Notice:
 
 HELD: Final = "The agent's answer is being reviewed; it is shown when the review ends."
 """The run's event for a closing answer kept from the user while its final review runs."""
+WENT_ON: Final = (
+    "The agent answered while the session plan has steps it can still work, so the run "
+    "goes on with them."
+)
+"""The run's event for a plans notice that carried the run past an answer
+(``plan_tools.Plans.goes_on``): the answer was a message, not the run's end."""
 HOLD_ENDED: Final = (
     "The review did not finish within the hold's limit; this is the agent's answer as it "
     "was before the review."
@@ -449,6 +456,9 @@ class EventLog(TurnHook):
                 for message_id in new:
                     text = chat.texts.get(message_id, "")
                     await chat.write("user", {"message_id": message_id, "text": text})
+            elif source == Plans.name:
+                # The plan carried the run past an answer, which the user has seen already.
+                await chat.write("notice", {"source": source, "ids": new, "text": WENT_ON})
             else:
                 await chat.write("notice", {"source": source, "ids": new})
         if self.kept is not None and run is not None and not run.holding:

@@ -28,7 +28,7 @@ from sandbox_science.orchestrator.effects import UnknownEffectError
 
 _log = logging.getLogger(__name__)
 
-CONTROL_PROTOCOL: Final = 9
+CONTROL_PROTOCOL: Final = 10
 CONTROL_HEADER: Final = "X-Sandbox-Control-Protocol"
 MAX_FRAME_BYTES: Final = 24 * 1024 * 1024
 MAX_PENDING: Final = 128
@@ -78,6 +78,10 @@ class Capability(StrEnum):
     GATE = "gate"
     OBSERVE_TOOL = "observe_tool"
     TOOL_DONE = "tool_done"
+    GOES_ON = "goes_on"
+    """Runtime to host: a hook's notices that carry the run past an answer with no tool
+    call (``TurnHook.goes_on``), which the host then admits as it admits a hook's other
+    notices; asked only of a hook that may give them (``HookGiven.goes_on``)."""
     CLOSING = "closing"
     ACCEPT = "accept"
     FINISHING = "finishing"

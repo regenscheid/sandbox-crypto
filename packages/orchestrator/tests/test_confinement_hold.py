@@ -10,11 +10,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
+from unittest.mock import ANY
 
 import pytest
 from pydantic import JsonValue
 
-from sandbox_science.orchestrator.chat import HELD
+from sandbox_science.orchestrator.chat import HELD, WENT_ON
 from sandbox_science.orchestrator.confinement.host import HostLoops
 from sandbox_science.orchestrator.confinement.models import CallbackModel, RuntimeModels
 from sandbox_science.orchestrator.confinement.runtime_loop import RuntimeLoops
@@ -24,6 +25,8 @@ from sandbox_science.orchestrator.hooks import Closing, Notice, RunView, TurnHoo
 from sandbox_science.orchestrator.loop import Transcript
 from sandbox_science.orchestrator.model import ChatModel, ModelGateway
 from sandbox_science.orchestrator.model_profiles import ModelProfile
+from sandbox_science.orchestrator.plan_tools import PLAN_OPEN
+from sandbox_science.orchestrator.session_plans import SessionPlans
 from sandbox_science.orchestrator.tools import Toolbox
 
 from .loop_harness import API_KEY, PROJECT, SESSION, Harness, Reply
@@ -31,6 +34,7 @@ from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
 from .test_run_service import records, serving
+from .test_session_plans import actor, made, status
 
 pytestmark = pytest.mark.slow
 
@@ -228,6 +232,123 @@ async def test_a_held_answer_stays_out_of_a_confined_runs_events_through_its_rou
             assert [d["text"] for kind, d in events() if kind == "assistant" and d["text"]] == [
                 "The answering turn's answer."
             ]
+        finally:
+            await runtime.close()
+            await host_channel.close()
+            await vm_channel.close()
+            await models.close()
+
+
+class Closes(TurnHook):
+    """Keeps every closing answer from the user while it decides, as a final review in
+    ``hold`` does, and counts its closings."""
+
+    name = "closes_fixture"
+
+    def __init__(self) -> None:
+        self.closings: list[str | None] = []
+
+    @property
+    def holds_answers(self) -> bool:
+        return True
+
+    async def closing(self, run: RunView, answer: str | None) -> Closing:
+        self.closings.append(answer)
+        return Closing()
+
+
+async def test_a_confined_answer_while_the_plan_is_open_goes_on_in_the_run(
+    harness: Harness, tmp_path: Path
+) -> None:
+    """Baseline run 2, R1: a status reply while the plan had pending steps ended the run,
+    its final review ran on the reply, and a new run started cold. Confined, the plan
+    hook, which only the host holds, carries the run past the reply (``goes_on``): the
+    reply is in the run's events at once, never held, then the notice that the run went
+    on; one run, one closing, at its real end, and no new root for the same plan state."""
+    asked: list[Capability] = []
+    script = (Reply("Status: step one is next."), Reply("Stopping here."))
+    async with serving(harness, *script, serve=False) as service:
+        plans = SessionPlans(service.stores.documents)
+        author = actor(project=PROJECT, session=SESSION)
+        status(plans, made(plans, author).ref, "active", authority=author)
+        models = ModelGateway(harness.gateway.url, API_KEY)
+
+        def events() -> list[tuple[str, dict[str, Any]]]:
+            with service.stores.projects.control.read() as tx:
+                rows = tx.sql.execute(
+                    "SELECT kind,data FROM run_events WHERE project_id=? AND session_id=? "
+                    "ORDER BY seq",
+                    (PROJECT, SESSION),
+                ).fetchall()
+            return [(kind, json.loads(data)) for kind, data in rows]
+
+        closes = Closes()
+
+        async def host_handle(kind: Capability, value: JsonValue) -> JsonValue:
+            asked.append(kind)
+            return await host.capability(kind, value)
+
+        async def vm_handle(kind: Capability, value: JsonValue) -> JsonValue:
+            if kind is Capability.RUN:
+                return await runtime.run(value)
+            if kind is Capability.CANCEL:
+                return await runtime.cancel(value)
+            if kind is Capability.MODEL:
+                return await vm_models.complete(value)
+            if kind is Capability.MODEL_INFO:
+                return await vm_models.info(value)
+            raise TransportError("denied", "fixture refused capability")
+
+        host_channel = Channel(lambda text: vm_channel.receive(text), host_handle)
+        vm_channel = Channel(lambda text: host_channel.receive(text), vm_handle)
+        vm_models = RuntimeModels(models, frozenset({"main"}), vm_channel)
+        host = HostLoops(host_channel, frozenset({PROJECT}))
+        runtime = RuntimeLoops(vm_channel, models, tmp_path / "scratch")
+        runtime.scratch.mkdir()
+        service.harness.main = Role(
+            CallbackModel(host_channel, "main", role="main", profile=ModelProfile(alias="main")),
+            "main",
+        )
+
+        async def runner(
+            model: ChatModel, toolbox: Toolbox, task: str | None, **options: Any
+        ) -> Transcript:
+            options["hooks"] = (*options["hooks"], closes)
+            return await host.run(model, toolbox, task, **options)
+
+        service.harness.loop_runner = runner
+        service.harness.prepare_attempt = lambda admitted: host.model_scope()
+        try:
+            service.runs.post(PROJECT, SESSION, "msg-status", "Where are we?", author="user")
+            assert await service.start_selected(PROJECT, SESSION)
+            task = service.active[PROJECT, SESSION].task
+            assert task is not None
+            await task
+            (record,) = records(harness)
+            assert (record.stopped, record.final_text) == ("answered", "Stopping here.")
+            assert closes.closings == ["Stopping here."]
+            assert record.summaries["plans"] == {"went_on": 1, "states": [ANY]}
+            (went_on,) = record.delivered["plans"]
+            # The second call saw the plan's notice, which names the next step.
+            (_, second) = harness.gateway.main
+            notice = str(second[-1]["content"])
+            assert PLAN_OPEN in json.loads(notice[notice.index("{") :])["plan_open"]
+            shown = [
+                (kind, d.get("text"))
+                for kind, d in events()
+                if kind == "assistant" or (kind == "notice" and d["source"] in ("plans", "reviews"))
+            ]
+            assert shown == [
+                ("assistant", "Status: step one is next."),
+                ("notice", WENT_ON),
+                ("notice", HELD),
+                ("assistant", "Stopping here."),
+            ]
+            assert ("notice", {"source": "plans", "ids": [went_on], "text": WENT_ON}) in events()
+            assert Capability.GOES_ON in asked
+            # The plan state had its continuation: no new root is queued for it.
+            await service.auto_continuation_tick()
+            assert [m.message_id for m in service.runs.messages(PROJECT, SESSION)] == ["msg-status"]
         finally:
             await runtime.close()
             await host_channel.close()

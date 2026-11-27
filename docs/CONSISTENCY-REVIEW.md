@@ -119,7 +119,9 @@ as it does when the project's reviews are disabled (`REVIEWS_DISABLED`) or the d
 end does not wait (`NOT_WAITED`); failed/interrupted author loops do not run a terminal
 reviewer.
 
-**The final review (CR-48).** When the main run gives its final answer, terminal
+**The final review (CR-48).** An answer the session plan carries the run past is not a
+final answer: it has no closing, so no final review, and is never held (plans and
+delegation, PD-4). When the main run gives its final answer, terminal
 ingestion drains through a pinned document-event head, and a ledger-event head, in pages
 of 200, at most 10,000 events per boundary, and marks remaining backlog incomplete. A
 page's observations and its cursor commit in one change, as the artifact pages' do, and

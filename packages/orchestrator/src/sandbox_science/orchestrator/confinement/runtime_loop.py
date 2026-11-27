@@ -101,6 +101,7 @@ class RemoteHook(TurnHook):
         self.name, self.veto = given.name, given.veto
         self.limits_turns = given.turn_limit
         self.holds = given.holds
+        self.carries = given.goes_on
         self._holding = False
         """The host's hook's ``holds_answers``, as last asked: when its lease is entered,
         after each closing, and before a turn while an answer held for its round is kept,
@@ -190,6 +191,13 @@ class RemoteHook(TurnHook):
     async def observe_tool(self, run: RunView, record: dict[str, Any]) -> None:
         await self.ask(Capability.OBSERVE_TOOL, run, record=record)
 
+    async def goes_on(self, run: RunView, answer: str) -> Sequence[Notice]:
+        if not self.carries:
+            return ()
+        return TypeAdapter(tuple[Notice, ...]).validate_python(
+            await self.ask(Capability.GOES_ON, run, answer=answer)
+        )
+
     async def closing(self, run: RunView, answer: str | None) -> Closing:
         closing = TypeAdapter(Closing).validate_python(
             await self.ask(Capability.CLOSING, run, answer=answer)
@@ -204,6 +212,9 @@ class RemoteHook(TurnHook):
         return TypeAdapter(str | None).validate_python(
             await self.ask(Capability.FINISHING, run, stopped=stopped)
         )
+
+    def summary(self) -> object | None:
+        return None  # the host's hook keeps the run's record of it
 
 
 class RemotePlans(RemoteHook, Plans):

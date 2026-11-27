@@ -499,6 +499,12 @@ class Prepared:
                 )
                 await hook.observe_tool(run, tool_record)
                 self.observed_slots.add(request.slot)
+            elif kind is Capability.GOES_ON:
+                if request.answer is None:
+                    raise TransportError("invalid_request", "goes_on requires the answer")
+                found = tuple(await hook.goes_on(run, request.answer))
+                self.notices.extend(found)  # admitted as the hook's, when the runtime adds them
+                return json_value(TypeAdapter(tuple[Notice, ...]).dump_python(found, mode="json"))
             elif kind is Capability.CLOSING:
                 closing = await hook.closing(run, request.answer)
                 self.notices.extend(closing.notices)
@@ -1060,6 +1066,7 @@ class HostLoops:
                     planning=isinstance(hook, Plans),
                     turn_limit=type(hook).turn_limit is not TurnHook.turn_limit,
                     holds=type(hook).holds_answers is not TurnHook.holds_answers,
+                    goes_on=type(hook).goes_on is not TurnHook.goes_on,
                 )
                 for hook in hooks
             ),

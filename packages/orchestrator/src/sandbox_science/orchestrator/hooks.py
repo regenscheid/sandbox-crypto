@@ -12,6 +12,9 @@ loop alone applies the delivery rules:
 - At a closing answer, a hook gets another turn only while turns remain, and a
   response round only while response rounds remain, and either only with notices.
   Hooks check this too, before doing work for a turn that cannot come.
+- Before an answer with no tool call has its closing, a hook may carry the run past it
+  to its next turn (``goes_on``), as an open plan does: the answer is then an ordinary
+  message, never held, and no closing is asked.
 - At a limit, the run's last model call is its report round (``loop._report``): no hook
   offers notices before it but those it gives for that call (``report_notices``), after
   the report's own; it may call no tool (``tool_choice: none``), no tool it asks for all
@@ -307,6 +310,16 @@ class TurnHook:
     async def observe_tool(self, run: RunView, record: dict[str, Any]) -> None:
         """After each tool call that ran, with the outcome the transcript keeps, in the
         reply's order whatever order its calls ended in."""
+
+    async def goes_on(self, run: RunView, answer: str) -> Sequence[Notice]:
+        """Before the closing of an answer with no tool call, once the model call that gave
+        it returned and before ``model_returned``: the notices that carry the run on to its
+        next turn instead, when work this hook governs remains, as an active plan's
+        workable steps do (``plan_tools.Plans``). The answer is then the user's to see at
+        once, as a message: no closing is asked, so no hook holds or reviews it. None to
+        let the closing decide. The loop takes the first hook's notices, only while the run
+        has room for them."""
+        return ()
 
     async def closing(self, run: RunView, answer: str | None) -> Closing:
         return Closing()

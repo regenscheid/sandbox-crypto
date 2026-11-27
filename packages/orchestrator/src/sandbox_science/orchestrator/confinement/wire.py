@@ -66,7 +66,7 @@ _MAX_BINARY_B64 = 4 * -(-MAX_BINARY_BYTES // 3)
 
 
 class Hello(Contract):
-    protocol: Literal[9] = CONTROL_PROTOCOL
+    protocol: Literal[10] = CONTROL_PROTOCOL
     image_revision: str = Field(min_length=1, max_length=128)
     apis: dict[ModelAlias, ApiKind] | None = Field(default=None, max_length=256)
     """The adapter the runtime chose for each of its aliases from the gateway's model
@@ -74,7 +74,7 @@ class Hello(Contract):
 
 
 class Ready(Contract):
-    protocol: Literal[9] = CONTROL_PROTOCOL
+    protocol: Literal[10] = CONTROL_PROTOCOL
     generation: Identifier
     projects: tuple[Identifier, ...] = Field(min_length=1, max_length=128)
     control_schema: Counter
@@ -212,6 +212,9 @@ class HookGiven(Contract):
     """Whether the hook may keep a closing answer from the user (``holds_answers``), which
     the runtime then asks it when its lease is entered and after each closing
     (``holds_answers``)."""
+    goes_on: bool = False
+    """Whether the hook may carry the run past an answer with no tool call (``goes_on``),
+    which the runtime then asks it before that answer's closing (``goes_on``)."""
 
 
 class ToolboxGiven(Contract):

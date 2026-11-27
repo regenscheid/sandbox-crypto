@@ -100,6 +100,26 @@ describe('the folded transcript', () => {
     expect(work.steps[1]!.text).toBe('');
   });
 
+  it('shows a reply the open plan carried the run past at once, and the work after it', () => {
+    // The run goes on past the reply (plans spec, PD-4): it has not stopped, and the
+    // notice that it went on is the activity view's, not a row of the conversation.
+    const live = [
+      event(1, 0, 'started', { run_id: 'r1', message_ids: ['m1'] }),
+      event(2, 0, 'user', { message_id: 'm1', text: 'Where are we?' }),
+      event(3, 1, 'assistant', { text: 'Step two is next.', tool_calls: [] }),
+      event(4, 1, 'notice', {
+        source: 'plans',
+        ids: ['plan-open-0123456789abcdef'],
+        text: 'The agent answered while the session plan has steps it can still work.',
+      }),
+      event(5, 2, 'assistant', { text: '', tool_calls: [call('c1', 'plan_read', {})] }),
+    ];
+    const shown = foldTranscript(chatEntries(live), live);
+    expect(shown.map((item) => item.kind)).toEqual(['user', 'reply', 'work']);
+    expect(shown[1]).toMatchObject({ kind: 'reply', seq: 3, text: 'Step two is next.' });
+    expect(liveWork(shown)).toBe(2);
+  });
+
   it('says when a run stopped with a problem', () => {
     const failed = [event(1, 0, 'stopped', { stopped: 'error', failure: 'gateway' })];
     expect(foldTranscript(chatEntries(failed), failed)).toMatchObject([

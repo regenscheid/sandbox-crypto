@@ -79,6 +79,7 @@ The tool loop (`orchestrator/loop.py`) is composed of turn hooks (`hooks.py`) an
 | `wrap_tool_call` | around each tool call that runs, once its intent is saved | `wrap_tool_call` |
 | `gate`, `gate_call` | inside the toolbox, before a tool runs: a refusal becomes its error | part of `wrap_tool_call` |
 | `notices("tool")`, `observe_tool` | after each tool call, on its result | none |
+| `goes_on` | at an answer with no tool call, before `model_returned`: notices that carry the run to its next turn instead of a closing | `after_model` with a jump |
 | `closing`, `accept` | at a closing answer: accept, continue, respond, retry or stop | `after_model` with a jump |
 | `finishing`, `summary`, `acknowledge` | after the loop ends; after the run's record is saved | `after_agent` |
 
