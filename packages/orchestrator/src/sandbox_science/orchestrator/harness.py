@@ -50,7 +50,7 @@ from .chat import EventLog, RunChat, SessionHeld, UserMessages
 from .connector_settings import ProjectConnectors
 from .connectors import Connectors, McpClient, ToolClassSource
 from .consistency.controller import ReviewController
-from .consistency.models import REVIEWER_MAX_RESPONSE_BYTES, ReviewConfig
+from .consistency.models import REVIEWER_MAX_RESPONSE_BYTES, FinalReview, ReviewConfig
 from .consistency.store import ReviewStore
 from .context.agent import AgentContext
 from .context.folding import FoldLifecycle
@@ -286,6 +286,9 @@ class Settings:
     none by default (D102)."""
     review_calls_per_hour: int = ReviewConfig().calls_per_hour
     """The reviewer calls a project may make in an hour."""
+    final_review: FinalReview = ReviewConfig().final_review
+    """When a run's final answer reaches the user: before (``after``) or after
+    (``hold``) its final review (consistency review, CR-48)."""
     recover_interrupted: bool = False
     """Operator policy allowing bounded automatic Resume after infrastructure loss."""
     cost_limits: bool = False
@@ -319,7 +322,9 @@ class Settings:
     def reviews(self) -> ReviewConfig:
         """The review settings of a project that has none of its own."""
         return ReviewConfig(
-            token_budget=self.review_token_budget, calls_per_hour=self.review_calls_per_hour
+            token_budget=self.review_token_budget,
+            calls_per_hour=self.review_calls_per_hour,
+            final_review=self.final_review,
         )
 
 

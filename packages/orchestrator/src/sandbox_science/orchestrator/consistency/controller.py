@@ -10,7 +10,7 @@ import re
 from collections.abc import AsyncGenerator, Collection, MutableSequence, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from functools import partial
-from typing import TYPE_CHECKING, Any, Final, Literal, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 
 from sandbox_science.contracts import ExecutionContext, new_id
 from sandbox_science.contracts.artifact_inventory import ArtifactRevisionRef
@@ -45,7 +45,14 @@ from .delegated import observe_delegated
 from .executions import execution_projection
 from .findings import Findings
 from .ledger import ingest_ledger
-from .models import DISMISSAL_CHARACTERS, FINDING_STATUSES, EvidenceAnchor, ReviewType
+from .models import (
+    DISMISSAL_CHARACTERS,
+    FINAL_HOLD_SECONDS,
+    FINDING_STATUSES,
+    EvidenceAnchor,
+    ReviewConfig,
+    ReviewType,
+)
 from .notices import FindingNotices
 from .quotes import (
     ALIAS,
@@ -331,6 +338,7 @@ class ReviewController:
         earlier: int = 0,
         archived_as: str | None = None,
         images: ImageViewer | None = None,
+        hold_seconds: float = FINAL_HOLD_SECONDS,
     ) -> None:
         """``memory`` is the project memory the reviewer is given: the one the reviewed
         run was given when it started (PM-8). ``connectors`` are the MCP servers the run's
@@ -341,7 +349,8 @@ class ReviewController:
         whose results they hold are listed, as earlier runs' actions, with each window's
         (CR-2 as amended). ``archived_as`` is the run's name in the session's archive,
         when its messages are archived: each transcript item names the archived message
-        it copies (CR-14 as amended)."""
+        it copies (CR-14 as amended). ``hold_seconds`` is how long ``final_review = "hold"``
+        keeps a final answer for its review (CR-48)."""
         store.scope(context.project_id, context.session_id)
         project = recorded(store.documents.path.parent, context.project_id)
         if context.environment_id != project.sessions[context.session_id].environment_id:
@@ -356,6 +365,9 @@ class ReviewController:
         """Whether no reviewer is configured: then reviews are off (CR-35 as amended). An
         alias whose model is unavailable is a reviewer that fails, as CR-F10 says."""
         self.persistent = persistent
+        self.hold_seconds = hold_seconds
+        self.final: str | None = None
+        """The run's final review, once dispatched (CR-48)."""
         self.author_alias = author_alias
         self.memory = memory
         self.images = images
@@ -548,7 +560,14 @@ class ReviewController:
             return False
         return bool(read["complete"])
 
-    async def _dispatch(self, kind: ReviewType, classifier: Json | None = None) -> str | None:
+    async def _dispatch(
+        self,
+        kind: ReviewType,
+        classifier: Json | None = None,
+        *,
+        final: bool = False,
+        answer: str | None = None,
+    ) -> str | None:
         if self.role != "main":
             return None
         if self.off:
@@ -568,6 +587,8 @@ class ReviewController:
             and self.artifacts_complete
             and self.ledger_complete,
             viewed=self.viewed or (),
+            final=final,
+            answer=answer,
         )
         if review is not None:
             self.review = review
@@ -608,19 +629,27 @@ class ReviewController:
             self.seen,
         )
 
-    async def _wait(self, task: asyncio.Task[None]) -> str | None:
-        """A user message wins even if completion races; no model polling occurs."""
+    async def _wait(self, task: asyncio.Task[None], deadline: float | None = None) -> str | None:
+        """A user message wins even if completion races; no model polling occurs. With
+        ``deadline``, by the event loop's clock, the wait ends then, the task running on."""
+        loop = asyncio.get_running_loop()
+        timeout = None if deadline is None else max(0.0, deadline - loop.time())
         if self.messages is None:
-            await asyncio.shield(task)
+            await asyncio.wait((task,), timeout=timeout)
+            if task.done():
+                await asyncio.shield(task)
             return None
         incoming = asyncio.create_task(self.messages.get())
         consumed = False
         try:
-            await asyncio.wait((task, incoming), return_when=asyncio.FIRST_COMPLETED)
+            await asyncio.wait(
+                (task, incoming), timeout=timeout, return_when=asyncio.FIRST_COMPLETED
+            )
             if incoming.done() and not incoming.cancelled():
                 consumed = True
                 return incoming.result()
-            await asyncio.shield(task)
+            if task.done():
+                await asyncio.shield(task)
             return None
         finally:
             if not incoming.done():
@@ -664,12 +693,19 @@ class ReviewController:
         if self.off:
             await self._dispatch("terminal", label)
             return self._review_summary({**summary, "off": REVIEWS_OFF})
+        hold = config.final_review == "hold"
+        deadline = asyncio.get_running_loop().time() + self.hold_seconds if hold else None
         if self.task is not None:
             if not config.terminal_hold:
                 return self._review_summary({**summary, "pending": True})
-            message = await self._wait(self.task)
+            message = await self._wait(self.task, deadline)
             if message is not None:
                 return self._review_summary({**summary, "pending": True, "user_message": message})
+            if not self.task.done():
+                # The hold's time passed with a checkpoint still running: the answer goes
+                # out, and the summary says the final review did not run (CR-48).
+                summary["final_review"] = await self._final_summary(None, config, finished=False)
+                return self._review_summary({**summary, "pending": True})
             self.task = None
             if conversation:
                 # An explicit checkpoint review can still be running when the
@@ -682,70 +718,59 @@ class ReviewController:
                         summary["pending"] = True
                 summary["counts"] = await asyncio.to_thread(self.notice_store.counts, *self.scope)
                 return self._review_summary(summary)
-        # A confirmation consumes finding groups before new feed items, so a full
-        # feed cannot starve claimed fixes. Catch up bounded evidence windows here;
-        # any remaining work is explicitly pending, never labelled as passed.
-        for _ in range(config.max_terminal_windows):
-            targets = await asyncio.to_thread(self.store.confirmation_targets, *self.scope)
-            kind: Literal["confirmation", "terminal"] = "confirmation" if targets else "terminal"
-            review = await self._dispatch(kind, label)
-            if review is None:
-                # Another live process owns this session's review, or the project's
-                # reviewer has no calls left this hour: the work waits as one pending
-                # review. This one-shot driver cannot take over or wait on an unowned
-                # in-memory task.
-                summary["pending"] = True
-                break
-            if not config.terminal_hold:
-                summary["pending"] = True
-                break
-            assert self.task is not None  # noqa: S101
-            message = await self._wait(self.task)
-            if message is not None:
-                return self._review_summary({**summary, "pending": True, "user_message": message})
+        # One final review, with a budget of its own, instead of a walk through the
+        # backlog window by window (CR-48): what it is not given is named unreviewed.
+        review = await self._dispatch("terminal", label, final=True, answer=final_text)
+        if review is None:
+            # Another live process owns this session's review: the work waits as one
+            # pending review. This one-shot driver cannot take over or wait on an unowned
+            # in-memory task.
+            summary["final_review"] = await self._final_summary(None, config, finished=False)
+            return self._review_summary({**summary, "pending": True})
+        self.final = review
+        if not config.terminal_hold:
+            summary["final_review"] = await self._final_summary(review, config)
+            return self._review_summary({**summary, "pending": True})
+        assert self.task is not None  # noqa: S101
+        message = await self._wait(self.task, deadline)
+        if message is not None:
+            return self._review_summary({**summary, "pending": True, "user_message": message})
+        if self.task.done():
             self.task = None
-            ended = await asyncio.to_thread(self.store.run, *self.scope, review)
-            if ended["state"] in ("failed", "dropped"):
-                # Another immediate dispatch would repeat the same failing call.
-                # Keep its window pending for a later, paced attempt.
-                summary["outcome"] = ended["state"]
-                summary["pending"] = True
-                break
-            if (
-                ended["state"] == "capped"
-                and (await asyncio.to_thread(self.store.progress, *self.scope))["retry_end"]
-                is not None
-            ):
-                # A limit ended it before it covered anything: its window waits for a
-                # later review, not this hold, which the same limit would end again. One
-                # that covered part of its window goes on: the next continues from there.
-                summary["outcome"] = ended["state"]
-                summary["pending"] = True
-                break
-            if ended["kind"] == "confirmation":
-                # The confirmation left new feed pending; a terminal window still
-                # checks the final author answer after checking the proposed fix.
-                continue
-            summary["outcome"] = ended["state"]
-            progress = await asyncio.to_thread(self.store.progress, *self.scope)
-            if progress["remaining"]:
-                continue
-            break
         else:
-            progress = await asyncio.to_thread(self.store.progress, *self.scope)
-            if progress["retry_end"] is None and not progress["remaining"]:
-                # The final terminal window may have finished on the last
-                # allowed iteration. Keep that result instead of replacing it.
-                if "outcome" not in summary:
-                    summary["outcome"] = "unreviewed"
-            else:
-                summary["pending"] = True
-        progress = await asyncio.to_thread(self.store.progress, *self.scope)
-        if summary.get("outcome") == "passed" and progress["historical_holes"]:
-            summary["outcome"] = "inconclusive"
+            summary["pending"] = True
+        final = await self._final_summary(review, config)
+        summary["outcome"] = final["outcome"]
+        summary["pending"] = summary.get("pending", False) or not final["finished"]
+        if not final["complete"]:
             summary["coverage_gap"] = True
+        summary["final_review"] = final
         summary["counts"] = await asyncio.to_thread(self.notice_store.counts, *self.scope)
         return self._review_summary(summary)
+
+    async def _final_summary(
+        self, review: str | None, config: ReviewConfig, *, finished: bool | None = None
+    ) -> Json:
+        """The final review's summary (``ReviewStore.final_summary``), with when the answer
+        went out (``mode``) and, when its review did not run, that it did not finish."""
+        found = await asyncio.to_thread(self.store.final_summary, *self.scope, review)
+        if finished is not None:
+            found["finished"] = finished
+        return {"mode": config.final_review, **found}
+
+    async def settled(self, messages: Sequence[Message], summary: Json) -> Json:
+        """The summary after the turn that answered the final review's findings: that
+        turn's work is recorded for later reviews, not reviewed again here (one round,
+        CR-48), and the findings' states are read as the turn left them."""
+        await self.observe(messages)
+        config, _ = await asyncio.to_thread(self.store.config, self.context.project_id)
+        final = await self._final_summary(self.final, config)
+        previous = cast(Json, summary.get("final_review") or {})
+        final["answered"] = True
+        if previous.get("finished") is False:
+            final["finished"] = False
+        counts = await asyncio.to_thread(self.notice_store.counts, *self.scope)
+        return self._review_summary({**summary, "final_review": final, "counts": counts})
 
     def _review_summary(self, summary: Json) -> Json:
         # A terminal hold may dispatch another window after the initial metadata
@@ -940,6 +965,8 @@ class Reviews(TurnHook):
     def __init__(self, controller: ReviewController) -> None:
         self.controller = controller
         self.result: Json | None = None
+        self.answering = False
+        """Whether the run took its one turn to answer the final review's findings."""
 
     def lease(self) -> AbstractAsyncContextManager[None]:
         return self.controller.active()
@@ -961,6 +988,10 @@ class Reviews(TurnHook):
 
     async def closing(self, run: RunView, answer: str | None) -> Closing:
         controller = self.controller
+        if self.answering and self.result is not None:
+            # The turn that answered the final review's findings: one round, no chain.
+            self.result = await controller.settled(run.context.messages, self.result)
+            return Closing()
         self.result = await controller.terminal(run.context.messages, answer)
         if "user_message" in self.result:
             return Closing("stop", stopped="user_message")
@@ -974,7 +1005,17 @@ class Reviews(TurnHook):
         found = await self._pending()
         # Only open findings delivered to this run take a round (CR-29 as amended).
         respond = any(n.ids for n in found if n.framing == REVIEW_FINDINGS.text)
-        return Closing("respond" if respond else "accept", found)
+        if not respond:
+            return Closing("accept", found)
+        final = cast(Json, self.result.get("final_review") or {})
+        self.answering = controller.final is not None
+        # With "hold", the user's answer is the one after the round, unless the hold's
+        # time passed before the review ended (CR-48).
+        return Closing(
+            "respond",
+            found,
+            hold_answer=final.get("mode") == "hold" and final.get("finished") is not False,
+        )
 
     async def accept(self, run: RunView) -> None:
         controller, counts = self.controller, (self.result or {}).get("counts", {})
@@ -989,6 +1030,15 @@ class Reviews(TurnHook):
                 self.result["counts"] = await asyncio.to_thread(
                     controller.notice_store.counts, *controller.scope
                 )
+                if isinstance(final := self.result.get("final_review"), dict):
+                    found = await asyncio.to_thread(
+                        controller.store.final_summary, *controller.scope, controller.final
+                    )
+                    self.result["final_review"] = {
+                        **cast(Json, final),
+                        "open": found["open"],
+                        "fixes_claimed": found["fixes_claimed"],
+                    }
 
     def summary(self) -> object | None:
         return self.result

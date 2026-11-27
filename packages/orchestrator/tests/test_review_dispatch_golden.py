@@ -22,7 +22,8 @@ lifecycle (CR-40 to CR-47) changed them once more without a rubric: a copied fin
 carries its queued re-check and the author's dismissal, a fix leaves it ``open``, and the
 run record counts the dismissals the review rejected. A fix now names something later than
 what its finding reviewed (CR-42), so the confirmation's finding reviews a document's
-first revision and its fix names the second, which the snapshots hold."""
+first revision and its fix names the second, which the snapshots hold. The final review's
+setting (CR-48) changed them once more, by the configuration digest the run records."""
 
 from __future__ import annotations
 
@@ -52,9 +53,9 @@ from .test_consistency import store as store
 
 GOLDEN = {
     # Author and fallback windows now include recent prior evidence for boundary checks.
-    "author": "28b6c05eff3acddabae4c7f50582da4cd43d616e174f250e1685f029c72f9e45",
-    "confirmation": "9c4a14d18bba099c6ff1a98dd3fe62a4cf8b65ba3c2e936750d544096993065e",
-    "fallback": "9e21eca8df48cf2dd88cd5bd43b29c94de0bb60e690e5fc78331d9638e4ad7f6",
+    "author": "d207abeafc887cec54cc23d144c8b6a24fb157b2cfb2a3c5f180e21fdefbc239",
+    "confirmation": "783181065ffc1d7edbdf576d04524ce4df1975149fd7f962a495b5ee9d77fd39",
+    "fallback": "d1281c59b50247d6fec32753d7010530feee63f26b47c4f030974aab671c2a78",
 }
 
 

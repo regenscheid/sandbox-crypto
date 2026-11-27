@@ -66,7 +66,8 @@ class FindingNotices:
         # makes the older open notice unnecessary, without hiding its history.
         # A run is offered only the open findings reviews of its own work raised or
         # decided, the rest reaching it as counts (the owner, 2026-10-16; CR-16, CR-21 as
-        # amended).
+        # amended); one the platform's bookkeeping carried to a later revision is still
+        # the raising review's (CR-48).
         return self.leases.offer(
             run,
             seen,
@@ -81,7 +82,8 @@ class FindingNotices:
                 AND n.revision=f.revision AND f.status='open' AND f.at_bound=0
                 AND f.category NOT IN ('math','handle_citation')
                 AND (? IS NULL OR EXISTS(SELECT 1 FROM
-                review_runs r WHERE t.actor='review:'||r.review_id AND r.author_run=?))
+                review_runs r WHERE (t.actor='review:'||r.review_id OR r.review_id=f.review_id)
+                AND r.author_run=?))
                 AND {leased} ORDER BY n.rowid LIMIT ?""",
             parameters=(project, session, raised_for, raised_for),
             project=notice,

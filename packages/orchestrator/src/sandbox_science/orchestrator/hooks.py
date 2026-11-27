@@ -102,7 +102,9 @@ class Closing:
     - ``accept``: the answer may stand.
     - ``continue``: the notices are new input; the run takes another turn.
     - ``respond``: the notices are findings to answer; the run takes a response round,
-      one for every hook that asks in this closing.
+      one for every hook that asks in this closing. With ``hold_answer``, the answer is
+      not the run's answer to the user: the one after the round is (consistency review,
+      CR-48).
     - ``retry``: the answer cannot stand; another turn, or the run stops as ``stopped``.
     - ``stop``: the run ends as ``stopped``, optionally retaining its checkpoint answer.
     """
@@ -111,6 +113,7 @@ class Closing:
     notices: tuple[Notice, ...] = ()
     stopped: str = "user_message"
     retain_answer: bool = False
+    hold_answer: bool = False
 
 
 @dataclass(frozen=True)

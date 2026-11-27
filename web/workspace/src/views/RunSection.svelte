@@ -4,6 +4,7 @@
   import { untrack } from 'svelte';
   import { api, type RunEntry, type RunRecord } from '../lib/api';
   import { formatTime } from '../lib/format';
+  import { finalReviewLine } from '../lib/reviews';
   import ErrorMessage from './ErrorMessage.svelte';
   import RunView from './RunView.svelte';
 
@@ -38,6 +39,9 @@
             : (found.review_summary.outcome ?? 'see session review history')}. {#if found.review_summary.counts}Unresolved
             counts: {JSON.stringify(found.review_summary.counts)}.{/if}
         </p>
+      {/if}
+      {#if finalReviewLine(found.review_summary?.final_review)}
+        <p role="status">{finalReviewLine(found.review_summary?.final_review)}</p>
       {/if}
       {#if found.math_summary?.renderer || found.math_summary?.pending}<p role="status">
           Document math: {found.math_summary.pending
