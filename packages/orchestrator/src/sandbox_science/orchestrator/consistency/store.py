@@ -128,6 +128,8 @@ FeedKind = Literal[
 ]
 """The kinds of item a live run's observation copies into the review feed; ``unobserved``
 is the marker of one it could not copy (CR-50)."""
+REQUEST_PAGE: Final = 50
+"""The most of the user's entries one listing of ``read_request`` gives."""
 UNREVIEWED_SHOWN: Final = 16
 """The most unreviewed ranges a summary or a final review's record lists."""
 _HANDLE: Final = re.compile(r"(?<![\w-])(?:REF|[ICRADT])-[1-9][0-9]{0,8}(?![\w-])")
@@ -850,6 +852,12 @@ class ReviewStore:
             "open": {severity: count for severity, count, _ in rows},
             "fixes_claimed": sum(int(claimed or 0) for _, _, claimed in rows),
             **coverage,
+            # A deleted working file is nothing to read, not an item not read.
+            "items": {
+                **coverage["items"],
+                "not_read": max(0, coverage["items"]["not_read"] - working),
+                "working_files_deleted": working,
+            },
         }
 
     @staticmethod
@@ -859,9 +867,10 @@ class ReviewStore:
         """Whether an unread item is the deletion of a working file, which has nothing to
         read: every recorded revision of the file one the session's main run's commands
         reported (``execution_record``), none published, declared a result or written by a
-        delegated run's job; and the file named nowhere that relies on it: not by any
-        ledger entry's evidence of the project, by its artifact or its path, not by path
-        in the final answer ``answer`` or in a document's latest revision. A file once
+        delegated run's job; and the file named nowhere that relies on it, by its artifact,
+        its path or its name alone: not in any ledger entry's evidence of the project (its
+        target, its locator, a quote's text included, or its scope), not in the final answer
+        ``answer``, not in a document's latest revision. A file once
         published or cited stays unread, with why."""
         artifact, path = item.get("item"), item.get("path")
         if item.get("kind") != "artifact" or not isinstance(artifact, str):
@@ -881,7 +890,10 @@ class ReviewStore:
         ):
             return False
         prefix = f"sessions/{session}/"
-        names = {path, path.removeprefix(prefix)} - {""}
+        # Its path, its path in the session, or its name alone: an answer that says "the
+        # numbers are in results.json" names it, and so does a quote of a command's output
+        # in a ledger entry's evidence; a name several deleted files share keeps them all.
+        names = {path, path.removeprefix(prefix), path.rsplit("/", 1)[-1]} - {""}
         if any(name in answer for name in names):
             return False
         for name in (artifact, *names):
@@ -1033,9 +1045,16 @@ class ReviewStore:
             ).fetchone()
             cooling = self._cooling(db, project, session, row[4], row[2])
             # Work piled up to a grown window is reviewed back to back, not skipped later.
+            # Not after a review that could not start, which waits the minimum interval.
+            failed = db.execute(
+                "SELECT 1 FROM review_runs WHERE project=? AND session=? AND state='failed' "
+                "AND json_extract(classifier,'$.dispatch_failed') AND created>=? LIMIT 1",
+                (project, session, row[1] if row[1] is not None else float("inf")),
+            ).fetchone()
             piled = (
                 row[2] is None
                 and not row[4]
+                and failed is None
                 and (
                     snapshot_reads.backlog(db, project, session, row[0])
                     >= config.max_feed_items * WINDOW_GROWTH
@@ -1217,6 +1236,81 @@ class ReviewStore:
                 return config
             waiting = snapshot_reads.backlog(tx.sql, project, session, window.watermark)
         return window_config(config, waiting)
+
+    def dispatch_failed(
+        self,
+        project: str,
+        session: str,
+        kind: ReviewType,
+        *,
+        author_run: str,
+        owner: str,
+        alias: str | None,
+        reason: str,
+    ) -> str | None:
+        """Record a review that could not start (CR-50 as amended): a ``failed`` review of
+        the work after the watermark, with why, which the session's review list and the
+        run's summary show, and that work named unreviewed (``dispatch_failed``) until a
+        review covers it; the next dispatch waits the minimum interval. None when the
+        store itself refuses the record."""
+        config, config_revision = self.config(project)
+        review = new_id("rev")
+        summary = clipped(f"The review could not start: {reason}", 2000)
+        try:
+            with self.documents.control.write() as tx:
+                db = tx.sql
+                self._window(db, project, session)
+                window = snapshot_reads.dispatch_window(db, project, session)
+                now = self.clock()
+                db.execute(
+                    "INSERT INTO review_runs(review_id,project,session,kind,author_run,owner,"
+                    "state,start_seq,end_seq,created,ended,lease_until,alias,rubric,config,"
+                    "config_revision,classifier,summary,coverage_complete) "
+                    "VALUES(?,?,?,?,?,?,'failed',?,?,?,?,NULL,?,?,?,?,?,?,0)",
+                    (
+                        review,
+                        project,
+                        session,
+                        kind,
+                        author_run,
+                        owner,
+                        window.watermark + 1,
+                        window.end,
+                        now,
+                        now,
+                        alias,
+                        RUBRIC_VERSION,
+                        config.model_dump_json(),
+                        config_revision,
+                        dump({"dispatch_failed": True}),
+                        summary,
+                    ),
+                )
+                db.execute(
+                    "UPDATE review_windows SET last_dispatch=?,requested=0 WHERE project=? "
+                    "AND session=?",
+                    (now, project, session),
+                )
+                if window.end > window.watermark:
+                    self.event(
+                        db,
+                        project,
+                        session,
+                        "review.unreviewed",
+                        {
+                            "review": review,
+                            "type": kind,
+                            "start": window.watermark + 1,
+                            "end": window.end,
+                            "reason": "dispatch_failed",
+                        },
+                    )
+                self.event(
+                    db, project, session, "review.ended", {"review": review, "outcome": "failed"}
+                )
+        except (sqlite3.Error, DocumentError):
+            return None
+        return review
 
     def _plan(
         self,
@@ -1677,11 +1771,19 @@ class ReviewStore:
                 "archive": {"id": found.message_id, "position": found.position},
                 "recheck_of": finding,
             }
-            payload = {
+            payload: Json = {
                 "role": found.entry.role,
                 "content": clipped(original, 32000),
                 "truncated": len(original) > 32000,
             }
+            if found.entry.role == "user":
+                # Labelled as the feed's items are: a brief is its agent's (CR-48 as amended).
+                from sandbox_science.orchestrator.ledger.provenance import written_by
+
+                with self.documents.control.read() as tx:
+                    author = written_by(tx.sql, project, found.message_id)
+                if author is not None:
+                    payload["written_by"] = author
             encoded = dump(payload)
             items.append(
                 EvidenceItem(
@@ -2887,6 +2989,96 @@ class ReviewStore:
                 ),
                 (review, evidence, dump(result["locator"]), item["sha256"], self.clock()),
             )
+        return result
+
+    def read_request(
+        self,
+        project: str,
+        session: str,
+        review: str,
+        *,
+        entry: str | None = None,
+        page: int = 0,
+        start: int = 0,
+        count: int = 16000,
+        owner: str | None = None,
+    ) -> Json:
+        """A message the user wrote, or an answer of the user's with its question and
+        options, whole, in slices of ``count`` characters, by the ID the review's request
+        item names (CR-48 as amended); or, with no ``entry``, a page of
+        ``REQUEST_PAGE`` of the user's entries, each its ID, kind, time and length, so
+        that a grouped range can be read. Only the user's own entries, up to the newest
+        the review's request item names; a read is recorded as one of the request item's."""
+
+        if (
+            type(start) is not int
+            or type(count) is not int
+            or type(page) is not int
+            or not 0 <= start <= 100000000
+            or not 1 <= count <= 16000
+            or not 0 <= page <= 100000
+        ):
+            raise DocumentError(INVALID_REQUEST, "invalid request read")
+        with self.documents.control.read() as tx:
+            db = tx.sql
+            self.load_run(db, project, session, review)
+            held = db.execute(
+                "SELECT evidence_id,sha256,payload FROM review_evidence WHERE review_id=? "
+                "AND kind='request' LIMIT 1",
+                (review,),
+            ).fetchone()
+            if held is None:
+                raise DocumentError(NOT_FOUND, "this review holds no request item")
+            # The entries as they stood at dispatch: up to the newest the item names.
+            named = {
+                str(e.get("answer_to") or e.get("message") or e.get("last"))
+                for e in cast(list[Json], stored_json(held[2]).get("messages", []))
+            }
+            entries = snapshot_reads.request_entries(db, project, session)
+            last = max(
+                (i for i, e in enumerate(entries) if snapshot_reads.entry_id(e) in named),
+                default=-1,
+            )
+            entries = entries[: last + 1]
+        if entry is None:
+            listed = entries[page * REQUEST_PAGE : (page + 1) * REQUEST_PAGE]
+            result: Json = {
+                "entries": [
+                    {
+                        "id": snapshot_reads.entry_id(e),
+                        "kind": "answer" if "answer_to" in e else "message",
+                        "at": e.get("at"),
+                        "characters": len(dump(e)),
+                    }
+                    for e in listed
+                ],
+                "next_page": page + 1 if (page + 1) * REQUEST_PAGE < len(entries) else None,
+            }
+            locator: Json = {"request_page": page}
+        else:
+            whole = next((e for e in entries if snapshot_reads.entry_id(e) == entry), None)
+            if whole is None:
+                raise DocumentError(
+                    NOT_FOUND, f"{entry} is no message or answer of the user's in this review"
+                )
+            source = whole["text"] if "answer_to" not in whole else dump(whole)
+            text = str(source)
+            result = {
+                "entry": entry,
+                "text": text[start : start + count],
+                "start": start,
+                "next_start": start + count if start + count < len(text) else None,
+                "total_characters": len(text),
+            }
+            locator = {"request_entry": entry, "start": start, "returned": len(result["text"])}
+        if owner is not None:
+            with self.documents.control.write() as tx:
+                self.owner(self.load_run(tx.sql, project, session, review), owner)
+                tx.sql.execute(
+                    "INSERT INTO review_reads(review_id,evidence_id,locator,sha256,created) "
+                    "VALUES(?,?,?,?,?)",
+                    (review, held[0], dump(locator), held[1], self.clock()),
+                )
         return result
 
     def records(self, project: str, session: str, review: str, *, after: int = 0) -> Json:

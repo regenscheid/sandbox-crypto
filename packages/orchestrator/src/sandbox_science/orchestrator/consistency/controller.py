@@ -721,7 +721,51 @@ class ReviewController:
             await asyncio.to_thread(self.store.off, *self.scope, REVIEWS_OFF)
             return None
         await asyncio.to_thread(self.findings.queue_rechecks, *self.scope)
-        review = await asyncio.to_thread(
+        try:
+            review = await self._dispatched(kind, classifier, final, answer, recheck_of, dismissals)
+        except Exception as error:
+            # A review that cannot start is a failed review the user sees, with why, and
+            # its work is named unreviewed: never only a log line (CR-50 as amended).
+            _log.exception("a review of session %s/%s did not start", *self.scope)
+            failed = await asyncio.to_thread(
+                self.store.dispatch_failed,
+                *self.scope,
+                kind,
+                author_run=self.run_id,
+                owner=self.owner,
+                alias=self.alias,
+                reason=f"{type(error).__name__}: {clipped(str(error), 500)}",
+            )
+            if failed is not None:
+                self.review_ids.append(failed)
+            return None
+        if review is not None:
+            self.review = review
+            self.review_ids.append(review)
+            self.task = asyncio.create_task(
+                ReviewerRunner(
+                    self.store,
+                    *self.scope,
+                    review,
+                    self.owner,
+                    self.model,
+                    memory=self.memory,
+                    images=self.images.fresh() if self.images is not None else None,
+                ).run()
+            )
+        return review
+
+    async def _dispatched(
+        self,
+        kind: ReviewType,
+        classifier: Json | None,
+        final: bool,
+        answer: str | None,
+        recheck_of: Collection[str] | None,
+        dismissals: Collection[str],
+    ) -> str | None:
+        """The store's dispatch of one review (``ReviewStore.dispatch``)."""
+        return await asyncio.to_thread(
             self.store.dispatch,
             *self.scope,
             kind,
@@ -738,21 +782,6 @@ class ReviewController:
             recheck_of=recheck_of,
             dismissals=dismissals,
         )
-        if review is not None:
-            self.review = review
-            self.review_ids.append(review)
-            self.task = asyncio.create_task(
-                ReviewerRunner(
-                    self.store,
-                    *self.scope,
-                    review,
-                    self.owner,
-                    self.model,
-                    memory=self.memory,
-                    images=self.images.fresh() if self.images is not None else None,
-                ).run()
-            )
-        return review
 
     async def safe_point(
         self, messages: Sequence[Message], *, tool: Json | None = None, call: Json | None = None

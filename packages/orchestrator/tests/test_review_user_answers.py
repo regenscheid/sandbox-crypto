@@ -121,69 +121,116 @@ def test_every_review_is_given_the_users_answers_with_their_questions(store) -> 
     # Each entry names the archive message a response cites it by.
     assert asked["messages"][0]["archive"] == delivered.message_id
     assert answer["archive"] == result.message_id
-    assert (asked["omitted"], asked["omitted_answers"]) == (0, [])
+    assert not {"clipped", "summarised", "grouped"} & set(asked)
     assert "answer_to" in asked["about"]
     del now
 
 
-def test_a_large_answer_is_left_out_alone_and_the_smaller_ones_kept(store) -> None:
-    """An answer too large for the room left is left out and named, and the answers
-    after it still come in; the user's messages come before every answer."""
-    reviews, _, _ = store
+def _bound(asked: dict[str, Any]) -> int:
+    from sandbox_science.orchestrator.consistency.models import REQUEST_BYTES
+
+    size = len(json.dumps(asked, ensure_ascii=False, separators=(",", ":")).encode())
+    assert size <= REQUEST_BYTES
+    return size
+
+
+def test_three_thousand_messages_still_make_a_bounded_request_and_a_review(store) -> None:
+    """However many messages the user wrote, the request item stays within its bound,
+    the checkpoint starts, the oldest are a range that names its first and last, and the
+    reviewer can list and read every one of them."""
     from .test_review_final import _post
 
-    first = new_id("msg")
-    _post(reviews, first, "The task.")
-    older = ask_and_pick(reviews, "call-old")
-    questions = Questions(reviews.documents.control)
-    big = questions.ask(context_for(reviews), RUN, "call-big", "op-big", "Your notes?")
-    questions.answer("p", "s", big.question_id, Answer(kind="free", text="n" * 15_000))
-    _post(reviews, new_id("msg"), "Then plot it.")
-    huge = questions.ask(context_for(reviews), RUN, "call-huge", "op-huge", "More notes?")
-    questions.answer("p", "s", huge.question_id, Answer(kind="free", text="h" * 16_000))
-    newest = ask_and_pick(reviews, "call-new")
+    reviews, _, _ = store
+    ids = [new_id("msg") for _ in range(3000)]
+    for n, message in enumerate(ids):
+        _post(reviews, message, f"Note {n}: keep the cells small.")
     claim(reviews)
-    asked = request(reviews, dispatch(reviews, "checkpoint"))
-    listed = asked["messages"]
-    assert listed[0]["message"] == first
-    answered = [m["answer_to"] for m in listed if "answer_to" in m]
-    assert newest in answered
-    assert older in answered
-    # The newer large answer fits; the older one no longer does and is left out alone,
-    # and the older small answer before it still comes in.
-    assert asked["omitted_answers"] == [big.question_id]
-    assert huge.question_id in answered
-    assert asked["omitted"] == len(asked["omitted_answers"]) >= 1
-    assert sum(m.get("text") == "Then plot it." for m in listed) == 1
+    review = dispatch(reviews, "checkpoint")
+    asked = request(reviews, review)
+    _bound(asked)
+    group = asked["messages"][0]
+    assert (group["first"], group["read_with"]) == (ids[0], "review_request_read")
+    assert group["group"] == asked["grouped"] > 0
+    assert asked["messages"][-1]["message"] == ids[-1]
+    listed = reviews.read_request("p", "s", review, page=0)
+    assert [e["id"] for e in listed["entries"]] == ids[:50]
+    read = reviews.read_request("p", "s", review, entry=ids[0], owner="owner")
+    assert read["text"] == "Note 0: keep the cells small."
 
 
-def test_verbose_questions_never_push_out_the_users_message(store) -> None:
-    """The agent writes questions and options; however long it makes them, and however
-    many are answered, an earlier message of the user's stays whole."""
-    reviews, _, _ = store
+def test_a_short_early_instruction_is_never_clipped_before_longer_ones(store) -> None:
     from .test_review_final import _post
 
-    rule = "Do not publish anything without asking me first."
+    reviews, _, _ = store
     _post(reviews, new_id("msg"), "Reproduce Table 1.")
-    _post(reviews, new_id("msg"), rule)
-    questions = Questions(reviews.documents.control)
-    for n in range(10):
-        options = [{"label": f"{n}-{k} " + "l" * 100, "detail": "d" * 400} for k in range(4)]
-        asked = questions.ask(
-            context_for(reviews), RUN, f"call-{n}", f"op-{n}", "q" * 4000, options
-        )
-        questions.answer("p", "s", asked.question_id, Answer(kind="picked",
-                         picked=(options[0]["label"],)))  # fmt: skip
+    _post(reviews, new_id("msg"), "Never use synthetic data.")
+    for n in range(200):
+        _post(reviews, new_id("msg"), f"Note {n}: " + "n" * 300)
     claim(reviews)
     asked = request(reviews, dispatch(reviews, "checkpoint"))
-    assert rule in [m.get("text") for m in asked["messages"]]
-    answers = [m for m in asked["messages"] if "answer_to" in m]
-    assert answers
-    assert all(m["question_clipped"] for m in answers)
-    assert all(len(m["question"]) < 700 for m in answers)
-    # The pick is the user's and is kept whole.
-    assert all(m["picked"][0].endswith("l" * 100) for m in answers)
-    assert len(answers) + len(asked["omitted_answers"]) == 10
+    _bound(asked)
+    texts = [m.get("text") for m in asked["messages"]]
+    assert "Never use synthetic data." in texts
+    assert all(m.get("clipped") for m in asked["messages"] if len(str(m.get("text"))) > 250)
+
+
+def test_an_answer_in_the_users_words_is_never_pushed_out_by_later_questions(store) -> None:
+    """An answer in the user's own words is a message in effect: forty later questions
+    the user left to the agent are summarised first, and it stays whole."""
+    reviews, _, _ = store
+    questions = Questions(reviews.documents.control)
+    first = questions.ask(context_for(reviews), RUN, "call-0", "op-0", "May I publish?")
+    words = "No. Never publish without asking me first."
+    questions.answer("p", "s", first.question_id, Answer(kind="free", text=words))
+    for n in range(1, 41):
+        asked = questions.ask(
+            context_for(reviews), RUN, f"call-{n}", f"op-{n}", "q" * 4000,
+            [{"label": f"Option {k}", "detail": "d" * 400, "recommended": k == 0}
+             for k in range(4)],
+        )  # fmt: skip
+        questions.answer("p", "s", asked.question_id, Answer(kind="decide"))
+    claim(reviews)
+    asked_item = request(reviews, dispatch(reviews, "checkpoint"))
+    _bound(asked_item)
+    (kept,) = [m for m in asked_item["messages"] if m.get("answer_to") == first.question_id]
+    assert kept["text"] == words
+    assert asked_item["summarised"] == 40
+
+
+def test_the_reviewer_reads_only_the_users_own_entries_whole(store) -> None:
+    """``review_request_read`` reads a message the user wrote or an answer with its
+    question and options; the platform's chat is not the user's and is refused; each read
+    is recorded as one of the request item's."""
+    from sandbox_science.orchestrator.notices import PLATFORM_AUTHORS
+    from sandbox_science.orchestrator.runstate import RunState
+
+    from .test_review_final import _post
+
+    reviews, _, _ = store
+    chat, platform = new_id("msg"), new_id("msg")
+    _post(reviews, chat, "x" * 20_000)
+    (author,) = PLATFORM_AUTHORS
+    RunState(reviews.documents.control).post("p", "s", platform, "Resume.", author=author)
+    question = ask_and_pick(reviews)
+    claim(reviews)
+    review = dispatch(reviews, "checkpoint")
+    first = reviews.read_request("p", "s", review, entry=chat, owner="owner")
+    assert (len(first["text"]), first["next_start"], first["total_characters"]) == (
+        16000,
+        16000,
+        20000,
+    )
+    answer = json.loads(reviews.read_request("p", "s", review, entry=question)["text"])
+    assert answer["options"][0]["detail"] == OPTIONS[0]["detail"]
+    with pytest.raises(DocumentError, match="no message or answer of the user's"):
+        reviews.read_request("p", "s", review, entry=platform)
+    with reviews.documents.control.read() as tx:
+        reads = tx.sql.execute(
+            "SELECT r.locator FROM review_reads r JOIN review_evidence e USING(evidence_id) "
+            "WHERE r.review_id=? AND e.kind='request'",
+            (review,),
+        ).fetchall()
+    assert [json.loads(row[0])["request_entry"] for row in reads] == [chat]
 
 
 def test_a_session_with_only_an_answer_still_has_its_request(store) -> None:
@@ -474,3 +521,65 @@ def test_an_item_the_review_was_given_without_a_position_is_held(store) -> None:
     reviews.finish("p", "s", review, "owner", "findings", "One finding.")
     with pytest.raises(DocumentError, match="was among what the finding's review held"):
         fix(reviews, finding, message.message_id, "fix-held")
+
+
+def test_a_recheck_labels_a_cited_brief_and_a_fix_claiming_the_users_word_needs_it(
+    store,
+) -> None:
+    """A later message a fix cites comes into its re-check labelled by who wrote it; a fix
+    that says it rests on the user's word but cites no message of the user's is refused."""
+    reviews, _, _ = store
+    finding, *_ = _held_finding(reviews)
+    brief = Archive(reviews.documents.control).append(
+        "p", "s", "child-9", Entry("user", "task", "The user approved it."), parent=RUN
+    )
+    with pytest.raises(DocumentError, match="no message it cites is the user's"):
+        Findings(reviews).respond(
+            "p",
+            "s",
+            {
+                "finding": finding["finding_id"],
+                "expected": finding["revision"],
+                "action": "fix",
+                "explanation": "The user approved the exception, as the brief says.",
+                "messages": [brief.message_id],
+                "operation_id": "fix-claims-user",
+            },
+            MAIN,
+        )
+    fix(reviews, finding, brief.message_id, "fix-brief")
+    confirmation = dispatch(reviews, "confirmation")
+    (item,) = [
+        i
+        for i in reviews.manifest("p", "s", confirmation, limit=50)["evidence"]
+        if i["locator"].get("archive", {}).get("id") == brief.message_id
+    ]
+    payload = reviews.evidence("p", "s", confirmation, item["evidence"])["payload"]
+    assert payload["written_by"] == "agent"
+
+
+async def test_a_review_that_cannot_start_is_a_failed_review_the_summary_shows(
+    store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dispatch that raises is recorded as a failed review with why, its work named
+    unreviewed (``dispatch_failed``), and the next attempt waits; never a log line only."""
+    import sqlite3
+
+    reviews, _, _ = store
+    claim(reviews)
+    reviews.request("p", "s")
+
+    def refuse(*args: object, **kwargs: object) -> str:
+        raise sqlite3.IntegrityError("CHECK constraint failed: length(payload) <= 262144")
+
+    monkeypatch.setattr(reviews, "dispatch", refuse)
+    controller = ReviewController(
+        reviews, context_for(reviews), run_id=RUN, model=None, alias="reviewer"
+    )
+    await controller.safe_point([{"role": "user", "content": "go"}])
+    (failed,) = reviews.listing("p", "s")["reviews"]
+    assert failed["state"] == "failed"
+    assert "IntegrityError" in failed["summary"]
+    coverage = reviews.coverage("p", "s")
+    assert coverage["unreviewed_reasons"] == {"dispatch_failed": 1}
+    assert not reviews.due("p", "s")

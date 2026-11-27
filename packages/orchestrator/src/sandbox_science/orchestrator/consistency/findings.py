@@ -10,6 +10,7 @@ the successor link of a finding a later review replaced."""
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from dataclasses import dataclass
 from typing import Any, Final, cast
@@ -178,6 +179,12 @@ def _unique(values: list[Json]) -> list[Json]:
     return kept
 
 
+_USERS_WORD: Final = re.compile(
+    r"\bthe user(?:'s)?\b[^.]{0,80}?\b(?:approv|ask|said|says|chose|picked|answer|instruct|"
+    r"want|told|agreed|decid|request|confirm)",
+    re.IGNORECASE,
+)
+"""A response's claim to rest on what the user said or chose."""
 MAX_PINS: Final = 8
 """The places a refused fix names of those its finding is pinned to; it counts the rest."""
 
@@ -1181,6 +1188,19 @@ class Findings:
             locator = {"document": document, "revision": number, "sha256": revision.info.sha256}
             pinned.append(locator)
         messages = self._messages(project, session, marks, value.messages)
+        if (
+            value.action == "fix"
+            and messages
+            and not (value.revisions or value.artifact_revisions or value.entry_revisions)
+            and _USERS_WORD.search(value.explanation)
+            and not any(m.get("ground") in ("user", "answer") for m in messages)
+        ):
+            raise DocumentError(
+                INVALID_REQUEST,
+                "the fix rests on the user's word, but no message it cites is the user's: "
+                "cite the user's message or answer by the archive ID the request item names "
+                "(archive), or dismiss the finding with your reason",
+            )
         anchors: list[Json] = []
         for a in value.evidence:
             with self.store.documents.control.read() as tx:

@@ -206,6 +206,7 @@ export interface FinalReviewSummary {
     not_read?: number;
     unreviewed: number;
     not_recorded: number;
+    working_files_deleted?: number;
   };
   /** Deleted working files the run's commands made, which had nothing to read. */
   working_files_deleted?: number;

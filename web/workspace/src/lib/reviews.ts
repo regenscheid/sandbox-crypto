@@ -288,6 +288,7 @@ const UNREVIEWED_REASONS: Record<string, string> = {
   backlog: 'a checkpoint skipped it to reach the newest work',
   deadline: 'a review was ended at its time limit',
   final_inconclusive: 'the final review could not decide it',
+  dispatch_failed: 'a review of it could not start',
   final_capped: "the final review's budget ended before it",
   answering_turn: "it is the work of the turn that answered the final review's findings",
   not_reached: 'no review has reached it yet',
