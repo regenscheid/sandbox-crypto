@@ -1536,13 +1536,14 @@ async def test_a_refused_entry_refuses_the_whole_call_and_names_it(fixture):
 async def test_evidence_by_path_pins_the_files_recorded_revision(fixture):
     f = fixture
     inventory, reference = recorded(f)
+    assert reference is not None
     f.adapter.artifacts = inventory
     ref, revision = await active(f)
-    args = dict(
-        operation_id="done", base=ref, expected_status_revision=revision, step_id="step-0",
-        expected_step_cursor=0, status="completed", note="Table",
-        evidence=[{"path": "results/table.csv"}],
-    )  # fmt: skip
+    args = {
+        "operation_id": "done", "base": ref, "expected_status_revision": revision,
+        "step_id": "step-0", "expected_step_cursor": 0, "status": "completed", "note": "Table",
+        "evidence": [{"path": "results/table.csv"}],
+    }  # fmt: skip
     result, _ = await call(f, "plan_progress", **args)
     (resolved,) = result["evidence_resolved"]
     assert (resolved["path"], resolved["artifact_id"], resolved["revision"]) == (
