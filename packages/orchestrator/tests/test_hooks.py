@@ -354,6 +354,39 @@ async def test_the_answer_is_the_first_text_a_closing_lets_stand() -> None:
     assert (plain.answer, plain.final_text) == ("only", "only")
 
 
+class HoldsForOneRound(TurnHook):
+    """Asks for one response round with the answer held, as a final review in ``hold``
+    does (consistency review, CR-48), then accepts."""
+
+    name = "held"
+
+    def __init__(self) -> None:
+        self.closings = 0
+
+    async def closing(self, run: RunView, answer: str | None) -> Closing:
+        self.closings += 1
+        if self.closings > 1:
+            return Closing()
+        notice = Notice(self.name, ("held-1",), "Finding: ", [1])
+        return Closing("respond", (notice,), hold_answer=True)
+
+
+async def test_a_round_that_holds_the_answer_makes_the_reply_after_it_the_answer() -> None:
+    model = ScriptedModel([ModelTurn("held"), ModelTurn("after the round")])
+    transcript = await run_task(model, toolbox(), "go", run_id="r", hooks=[HoldsForOneRound()])
+    assert (transcript.answer, transcript.final_text) == ("after the round", "after the round")
+    assert transcript.response_rounds == 1
+    released = await run_task(
+        ScriptedModel([ModelTurn("given"), ModelTurn("after the round")]),
+        toolbox(),
+        "go",
+        run_id="r",
+        hooks=[Asks("r", "respond")],
+        max_turns=2,
+    )
+    assert (released.answer, released.final_text) == ("given", "after the round")
+
+
 async def test_an_answer_a_response_round_followed_stands_at_the_turn_limit() -> None:
     model = ScriptedModel([ModelTurn("the answer"), call(), ModelTurn("the report")])
     transcript = await run_task(

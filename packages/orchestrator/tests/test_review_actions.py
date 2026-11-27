@@ -793,7 +793,8 @@ async def test_a_split_delegation_keeps_its_outcome_in_every_evidence_window(sto
     seen: list[tuple[str, list[dict[str, Any]]]] = []
     while reviews.progress("p", "s")["remaining"]:
         now[0] += 1000
-        review = dispatch(reviews, "checkpoint")
+        # Window by window: a checkpoint this far behind would skip to the newest (CR-49).
+        review = dispatch(reviews)
         seen.append((review, evidence(reviews, review)))
         reviews.finish("p", "s", review, "owner", "inconclusive", "Checked.")
     assert len(seen) >= 2

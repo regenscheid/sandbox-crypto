@@ -84,9 +84,11 @@ class ModelIntents:
             )
             if captured is not None:
                 capture.save(tx.sql, (owner.project, owner.session, owner.run), identity, captured)
-            if profile is not None:
-                if profile.alias != alias:
-                    raise ValueError("model intent profile alias differs")
+            if profile is not None and profile.alias != alias:
+                raise ValueError("model intent profile alias differs")
+            # A reviewer's calls are its review's, whose records keep the profile once
+            # (consistency review CR-49); the reviewed run's event log is the run's own.
+            if profile is not None and kind != "reviewer":
                 (last,) = tx.sql.execute(
                     "SELECT coalesce(max(seq),0) FROM run_events "
                     "WHERE project_id=? AND session_id=? AND run=?",

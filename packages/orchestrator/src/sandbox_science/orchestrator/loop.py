@@ -355,6 +355,9 @@ class Transcript:
     room: bool = field(default=True, repr=False)
     """False once a model call was refused for the conversation's length."""
     response_rounds: int = 0
+    answer_held: bool = field(default=False, repr=False)
+    """Whether a hook asked for this closing's response round with the answer held: the
+    answer after the round is the run's answer to the user (CR-48)."""
     held: int = field(default=0, repr=False)
     """Closing answers a hook held back for another turn (a ``retry``), which the runaway
     guard counts."""
@@ -456,6 +459,7 @@ async def _closing(hooks: Sequence[TurnHook], transcript: Transcript, answer: st
     """
     vetoes = [hook for hook in hooks if hook.veto]
     respond = False
+    transcript.answer_held = False
     for hook in [*vetoes, *(hook for hook in hooks if not hook.veto)]:
         decision = await _ask(hook, transcript, answer)
         if decision != "accept" and decision != "respond":
@@ -468,7 +472,9 @@ async def _closing(hooks: Sequence[TurnHook], transcript: Transcript, answer: st
         respond = respond or decision == "respond"
     if respond:
         transcript.response_rounds += 1
-        _stands(transcript, answer)
+        if not transcript.answer_held:
+            _stands(transcript, answer)
+        transcript.answer_held = False
         return True
     for hook in hooks:
         await hook.accept(transcript)
@@ -514,6 +520,7 @@ async def _ask(hook: TurnHook, transcript: Transcript, answer: str | None) -> De
             closing.notices and transcript.can_respond and transcript.has_room(closing.notices)
         ):
             decision = "respond"
+            transcript.answer_held = transcript.answer_held or closing.hold_answer
         case "accept":
             decision = "accept"
         case _:

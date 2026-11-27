@@ -80,9 +80,11 @@ failed, a terminal summary says `off`, and the session's review list says so, fr
 is unavailable makes zero reviewer model calls; its required window remains pending
 under a paced retry after repeated failures. Neither becomes a pass.
 
-**Limits (SNOVA follow-up).** A new author-work review takes a contiguous feed prefix of at most 16 new evidence items and approximately 256 KiB by default, with the existing 256-item/8-MiB snapshot ceiling still bounding finding groups and derived context. It also carries up to eight recent evidence items from before the watermark, within 128 KiB; prior ledger claims are carried as non-promotable context and oversized prior evidence is represented by a locator marker, so a claim and observation on opposite sides of a window boundary can be compared. One oversized first new item is admitted so the cursor cannot stall. A clean prefix can pass its own span, but its `coverage_complete` remains false while later feed rows are pending, so ledger promotion cannot use it. A partial delegated batch remains incomplete. Earlier inconclusive or incomplete finding spans, or historically unreviewed spans, prevent a later terminal pass from certifying the whole session.
+**Limits (SNOVA follow-up).** A new author-work review takes a contiguous feed prefix of at most 16 new evidence items and approximately 256 KiB by default, with the existing 256-item/8-MiB snapshot ceiling still bounding finding groups and derived context. It also carries up to eight recent evidence items from before the watermark, within 128 KiB; prior ledger claims are carried as non-promotable context and oversized prior evidence is represented by a locator marker, so a claim and observation on opposite sides of a window boundary can be compared. One oversized first new item is admitted so the cursor cannot stall. A clean prefix can pass its own span, but its `coverage_complete` remains false while later feed rows are pending, so ledger promotion cannot use it. A partial delegated batch remains incomplete. A window read whole is `passed` or `findings` though an item in it was cut short or backlog waits before it (CR-49): its coverage names the items cut short (`partial`), and its `coverage_complete` stays false. The session's coverage is the union of the ranges its reviews covered with a verdict other than `inconclusive` (the coverage record's `from` to `through`; a record from before names no `from` and covers from its window's start): complete when the union leaves no row of the session's feed out (`ReviewStore.coverage`). The session's review list carries it as `coverage`: the position reviewed up to (the watermark), the feed's end, whether it is complete and the first 16 ranges left out.
 
-**Budget and cursor (built 2026-11-03).** The reviewer knows its budget: the rubric (`sandbox-consistency-12`) and the first message (`budget.calls`) state its calls, and before each of its last two calls a user message, the notice `sandbox-review-budget-1`, gives the calls left, this one included, and the limit that sets them (`calls`, `calls_per_hour` or `tokens` as the store counts them, or `context` or `time`, estimated from the largest turn and the slowest call so far); each notice is a `budget` record of the review. The reviewer is then to dig no further: record what it checked and its findings, and give its verdict on what it covered, naming in `unreviewed` each new item it did not examine. The manifest marks the window's new items (`new`), the feed rows after the watermark the snapshot copies; carried evidence, findings, the plan and the actions item are not new. A review whose announced last call makes tool calls runs them and ends `capped`. When a review ends, the store records its `coverage` (on the run record, and the feed position in `review.ended`): the feed position it covered through, the new items covered, those unreviewed and those examined. A verdict covers the window up to the first item it names; a verdict after a notice covers only the new items examined (read, or named by a call that succeeded: a checked claim's evidence, a finding's or decision's anchors, a viewed image, a citation's source), up to the first that was not. A review without a verdict covers nothing, whatever it read. The watermark moves to the end of what was covered, and the next review continues from there. A review with a verdict keeps its `coverage_complete` for the items it covered: the ledger gate credits the entries they hold and leaves out those its coverage names unreviewed, which the next review covers and credits. A review that covered nothing, or ended without a verdict (capped, failed or dropped), has `coverage_complete` false and credits no entry. The findings cap bounds what a review reports, not what its verdict covers. A review without a verdict, or whose verdict covered nothing, keeps its exact window, so its work stays pending until a review with a verdict covers it: the next attempt takes at most one quarter as many new items/bytes; after three failures its watermark stays put and further attempts are admitted at least five minutes after the last failure. A later safe point or terminal boundary must trigger that retry; idle timer dispatch is still planned. This prevents an unavailable reviewer from repeatedly buying calls and silently skipping evidence. Each review still has at most 24 calls, 300 seconds, 300,000 characters of context per call, and 400,000 tokens over all calls; the project reviewer has at most 240 calls per hour. The budget counts provider usage when reported and otherwise a conservative estimate. The run service accepts `--review-token-budget` and `--review-calls-per-hour`, forwarded from `[model]`. A manifest page lists up to 50 items. Of one turn's tool calls, the first 16 run and the rest are answered `not_run`. The GUI shows calls, tokens, cap reason, incomplete coverage and unreviewed spans. When hourly calls are exhausted, work remains pending until the cap permits another dispatch. Contradictions farther apart than the carried evidence still need a later indexed aggregate review.
+**Keeping up (CR-49).** A checkpoint whose window starts with more than three windows (`BACKLOG_WINDOWS`) of new items after the watermark, and has no failed window to retry, is given the newest window: its dispatch moves the watermark past the rest and records that range as `review.unreviewed` with reason `backlog`, so the reviewer spends what it would have on the newest work, and the final review picks the range up if its budget allows.
+
+**Budget and cursor (built 2026-11-03).** The reviewer knows its budget: the rubric (`sandbox-consistency-12`) and the first message (`budget.calls`) state its calls, and before each of its last two calls a user message, the notice `sandbox-review-budget-1`, gives the calls left, this one included, and the limit that sets them (`calls`, `calls_per_hour` or `tokens` as the store counts them, or `context` or `time`, estimated from the largest turn and the slowest call so far); each notice is a `budget` record of the review. The reviewer is then to dig no further: record what it checked and its findings, and give its verdict on what it covered, naming in `unreviewed` each new item it did not examine. The manifest marks the window's new items (`new`), the feed rows after the watermark the snapshot copies; carried evidence, findings, the plan and the actions item are not new. A review whose announced last call makes tool calls runs them and ends `capped`. When a review ends, the store records its `coverage` (on the run record, and the feed position in `review.ended`): the feed position it covered through, the new items covered, those unreviewed and those examined. A verdict covers the window up to the first item it names; a verdict after a notice covers only the new items examined (read, or named by a call that succeeded: a checked claim's evidence, a finding's or decision's anchors, a viewed image, a citation's source), up to the first that was not. A review without a verdict covers nothing, whatever it read. The watermark moves to the end of what was covered, and the next review continues from there. A review with a verdict keeps its `coverage_complete` for the items it covered: the ledger gate credits the entries they hold and leaves out those its coverage names unreviewed, which the next review covers and credits. A review that covered nothing, or ended without a verdict (capped, failed or dropped), has `coverage_complete` false and credits no entry. The findings cap bounds what a review reports, not what its verdict covers. A review without a verdict, or whose verdict covered nothing, keeps its exact window, so its work stays pending until a review with a verdict covers it: the next attempt takes at most one quarter as many new items/bytes; after three failures its watermark stays put and further attempts are admitted at least five minutes after the last failure. A later safe point or terminal boundary must trigger that retry; idle timer dispatch is still planned. This prevents an unavailable reviewer from repeatedly buying calls and silently skipping evidence. Each review still has at most 24 calls, 300 seconds, 300,000 characters of context per call, and 400,000 tokens over all calls; the project reviewer has at most 240 calls per hour, which a run's final review is outside (CR-48). A review records its prompt's provenance once, with its first call (a later call's `call_provenance` reads that one's; a review whose calls hold none is legacy), and the profile its model was asked for once, as a `profile` record; a reviewer call writes no `model_profile` notice into the reviewed run's event log, and its usage counts under the reviewer's role from the model-call journal as before. The budget counts provider usage when reported and otherwise a conservative estimate. The run service accepts `--review-token-budget`, `--review-calls-per-hour` and `--final-review`, forwarded from `[model]`. A manifest page lists up to 50 items. Of one turn's tool calls, the first 16 run and the rest are answered `not_run`. The GUI shows calls, tokens, cap reason, incomplete coverage and unreviewed spans. When hourly calls are exhausted during the run, work remains pending until the cap permits another dispatch. Contradictions farther apart than the carried evidence still need a later indexed aggregate review.
 
 Checkpoints start at live safe points after the configured minimum interval and document,
 artifact, kernel-cell or manual-request thresholds, counted over what the feed gained since
@@ -90,27 +92,55 @@ the session's latest checkpoint or terminal review was dispatched (its `review.d
 event records the feed's `head`): 3 artifact revisions, 2,000 agent-written durable
 characters, one structural block, or 40 kernel cells once 30 minutes have passed, after
 120 seconds. A backlog an earlier review left after the watermark makes none due by itself;
-the next review, when one is due, continues from the watermark, and the terminal boundary
-catches up. A request, and a window whose review covered nothing, still make one due;
+the next review, when one is due, continues from the watermark, or skips a backlog of
+more than three windows to the newest (CR-49), and the run's final review takes up what
+is left as its budget allows. A request, and a window whose review covered nothing, still make one due;
 a re-check moves nothing. The terminal rule classifier records
 its version, completion-claim match, durable run effects, open/claimed-fixed finding
 states and document/ledger/artifact ingestion coverage. Ordinary conversation without those triggers
 skips terminal review; failed/interrupted author loops do not run a terminal reviewer.
 
-Terminal holds process at most 24 bounded windows by default. Each window pins a contiguous
-feed prefix; unseen overflow retains its cursor. Terminal ingestion drains through a
-pinned document-event head, and a ledger-event head, in pages of 200, at most 10,000 events per boundary, and marks
-remaining backlog incomplete. A page's observations and its cursor commit in one change,
-as the artifact pages' do, and the session is checked once per call, not per item. A
-page that fails (an observation the store refuses) stops that ingestion as a whole: no
-later page is read, and the next boundary starts again at the same cursor. Completed
-windows advance the author-work watermark, and a review whose verdict covered part of its
-window advances it to the end of what it covered, after which the hold goes on with the
-next window; failed/dropped windows, and those whose review gave no verdict or covered
-nothing, retain their exact retry end and end the hold. Three failed attempts defer further dispatches for at least five minutes without advancing the watermark. Re-check attempts
-(reviews of kind `confirmation`, [below](#a-findings-lifecycle)) are counted on each
-finding and cannot clear, advance or replace an author-work retry window.
-Exhausted or answered re-check targets do not starve later author-work reviews.
+**The final review (CR-48).** When the main run gives its final answer, terminal
+ingestion drains through a pinned document-event head, and a ledger-event head, in pages
+of 200, at most 10,000 events per boundary, and marks remaining backlog incomplete. A
+page's observations and its cursor commit in one change, as the artifact pages' do, and
+the session is checked once per call, not per item. A page that fails (an observation the
+store refuses) stops that ingestion as a whole: no later page is read, and the next
+boundary starts again at the same cursor. A checkpoint still running is waited for. Then
+the controller makes one final review (`dispatch(..., final=True)`, kind `terminal`, its
+classifier marked `final`), never a walk through the backlog: it is given what no review
+covered with a verdict since the run began, or since the watermark if that is earlier,
+newest first (`snapshot_reads.final_items`), at most 48 items and about 1 MiB
+(`FINAL_FEED_ITEMS`, `FINAL_FEED_BYTES`), with the run's actions item; the files the final
+answer names by path and the ledger entries it names by handle (at most
+`FINAL_CITED_ENTRIES`), at their latest revisions, as `artifact` and `entry` items naming
+`cited_by`, context like an entry's pins; the plan; and the open findings, which take
+their share first. Its settings are the project's with its own budget (`final_config`):
+30 calls, 1,500,000 tokens or the operator's lower cap, and 480 seconds; the hourly calls
+neither defer it nor refuse its calls, which still count toward that hour. Its dispatch
+records each range its budget left out as `review.unreviewed` with reason `final_budget`;
+its coverage runs newest first, back to the first item it did not cover. Re-checks are not
+in it: queued ones wait for the next review that holds them. The reviewer's first message
+says `final: {"order": "newest first"}`.
+
+Its `fail` and `warn` findings, whatever `interrupt_severity`, are offered to the run as one
+response round (`Closing("respond")`); the next closing records the turn's messages for
+later reviews and takes no other round (`Reviews.answering`). The platform's own
+transitions (queueing a re-check, recording an inconclusive one) carry a notice no run was
+given to the finding's new revision (`transition(carry=True)`). `final_review`, a project
+setting with the deployment's default (`--final-review`, `[model].final_review`), says when
+the answer reaches the user: `after`, the default, lets the answer stand when the agent
+gives it, so the record's `answer` is that text and the answering turn's reply follows as
+its `final_text`; `hold` asks for the round with `hold_answer`, so the record's `answer` is
+the reply after the turn, and waits for the review at most 10 minutes
+(`FINAL_HOLD_SECONDS`, the controller's `hold_seconds`), after which the answer goes out as
+given. The chat shows each assistant event as it is written in both settings, the held
+answer included; `hold` decides the record's answer and when the run ends. The hook's
+summary, the run record's `review_summary`, carries `final_review`
+(`ReviewStore.final_summary`): `mode`, the review, its outcome, `finished`, `answered`, the
+open findings by severity (`open`), `fixes_claimed`, `complete`, `reviewed_through`,
+`feed_end` and the first 16 `unreviewed` ranges; the workspace's run section shows it as
+one line.
 
 `ReviewController(persistent=True, messages=asyncio.Queue())` supplies a host boundary
 for immediate new user input while the detached review continues. The host must retain
@@ -313,7 +343,8 @@ re-flag bound are offered (`sandbox-notice-review-findings-2`); a dismissed or s
 one is not, and only open findings delivered to the run start a response round (CR-29 as
 amended). An agent's own fix or dismissal is not delivered back to the session's runs: in
 lab 40 the agent read its rebuttal as a new notice and rebutted again, seven times, until
-its run ran out of turns. When the response rounds end, each open finding delivered and
+its run ran out of turns. A run's final review takes one response round, which its `warn`
+findings take too (CR-48). When the response rounds end, each open finding delivered and
 not settled stays `open` at its bound (CR-32's `unaddressed` as CR-47 reads it). Other severity counts are delivered without their prose or anchors and
 do not cause an extra author response turn. Notices are acknowledged only after a
 successful model call received them and `ProjectStore.save_run` durably saved the run.

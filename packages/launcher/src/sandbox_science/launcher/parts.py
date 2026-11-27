@@ -283,6 +283,8 @@ def harness_argv(config: LauncherConfig, layout: Layout) -> list[str]:
         reviewer += ["--review-token-budget", str(model.review_token_budget)]
     if model.review_calls_per_hour is not None:
         reviewer += ["--review-calls-per-hour", str(model.review_calls_per_hour)]
+    if model.final_review is not None:
+        reviewer += ["--final-review", model.final_review]
     watcher = ["--watcher-model", model.watcher] if model.watcher else []
     if model.watcher_calls_per_hour is not None:
         watcher += ["--watcher-calls-per-hour", str(model.watcher_calls_per_hour)]

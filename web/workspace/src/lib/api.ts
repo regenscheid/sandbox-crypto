@@ -162,6 +162,8 @@ export interface RunRecord {
     outcome?: string;
     counts?: Record<string, number>;
     reviews?: string[];
+    /** The run's final review (CR-48); older records have none. */
+    final_review?: FinalReviewSummary;
   };
   /** Each answered model call's usage, in order; older records have none. */
   usage?: ModelUsage[];
@@ -172,6 +174,26 @@ export interface RunRecord {
   delivered?: Record<string, Json>;
   messages: Message[];
   tools: ToolRecord[];
+}
+
+/** What a run's final review found, as the run's record keeps it (CR-48, CR-49). */
+export interface FinalReviewSummary {
+  /** When the answer reached the user: when given (`after`) or after the review (`hold`). */
+  mode?: 'after' | 'hold';
+  review?: string | null;
+  outcome?: string;
+  finished?: boolean;
+  /** Whether the reviews' covered ranges reach the end of the session's work. */
+  complete?: boolean;
+  /** Whether the run took its one turn to answer the review's findings. */
+  answered?: boolean;
+  /** Open findings by severity. */
+  open?: Record<string, number>;
+  fixes_claimed?: number;
+  reviewed_through?: number;
+  feed_end?: number;
+  unreviewed?: { start: number; end: number }[];
+  unreviewed_ranges?: number;
 }
 
 /** One model call's usage, as the gateway reported it; a count it left out is null. */

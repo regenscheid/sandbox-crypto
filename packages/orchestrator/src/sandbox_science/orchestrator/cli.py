@@ -52,7 +52,7 @@ import sys
 from collections.abc import Callable
 from contextlib import AsyncExitStack
 from pathlib import Path
-from typing import cast
+from typing import cast, get_args
 
 from pydantic import TypeAdapter, ValidationError
 
@@ -67,7 +67,12 @@ from .cli_skills import add_parser as add_skills_parser
 from .cli_skills import embedding_alias, skills
 from .cli_tool_mix import add_parser as add_tool_mix_parser
 from .cli_tool_mix import tool_mix
-from .consistency.models import REVIEWER_MAX_RESPONSE_BYTES, ReviewConfig
+from .consistency.models import (
+    FINAL_HOLD_SECONDS,
+    REVIEWER_MAX_RESPONSE_BYTES,
+    FinalReview,
+    ReviewConfig,
+)
 from .context.history import CEILING
 from .context.history.geometry import Shares
 from .control import ControlError
@@ -465,6 +470,7 @@ def _harness(
             watcher_interval=args.watcher_interval,
             review_token_budget=args.review_token_budget,
             review_calls_per_hour=args.review_calls_per_hour,
+            final_review=getattr(args, "final_review", ReviewConfig().final_review),
             # serve keeps the budget during its runs; run on the command line does not.
             # serve keeps the projects' cost limits during its runs; run does not.
             cost_limits=getattr(args, "command", None) == "serve",
@@ -734,6 +740,15 @@ def _agent_arguments(command: argparse.ArgumentParser) -> None:
         type=int,
         default=review.calls_per_hour,
         help=f"the reviewer calls a project may make in an hour (default {review.calls_per_hour})",
+    )
+    command.add_argument(
+        "--final-review",
+        choices=get_args(FinalReview),
+        default=review.final_review,
+        help="when a run's final answer reaches the user: after, when the agent gives it, "
+        "the final review running after it; or hold, after the final review and the turn "
+        f"that answers its findings, or {FINAL_HOLD_SECONDS // 60} minutes "
+        f"(default {review.final_review})",
     )
 
 

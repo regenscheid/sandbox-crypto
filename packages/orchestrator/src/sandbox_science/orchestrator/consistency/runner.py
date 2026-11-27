@@ -25,6 +25,7 @@ from sandbox_science.orchestrator.model import (
     ToolCall,
     ToolSpec,
 )
+from sandbox_science.orchestrator.model_profiles import ModelProfile
 from sandbox_science.orchestrator.purpose import PurposeError, offered_all, split, without
 from sandbox_science.orchestrator.view_image import ImageViewer, Viewed, framed
 
@@ -42,7 +43,7 @@ from .rubric import (
     RUBRIC,
     RUBRIC_VERSION,
 )
-from .store import MANIFEST_PAGE, Json, ReviewStore, agent_text, clipped, dump
+from .store import MANIFEST_PAGE, Json, ReviewStore, agent_text, clipped, dump, is_final
 
 READ_CHARACTERS: Final = 16000
 """The most characters one ``review_read`` returns, and how many it returns by default."""
@@ -233,7 +234,6 @@ class ReviewerRunner:
         self.record = store.run(project, session, review)
         self.chronological_complete = store.chronological_complete(project, session, review)
         """Whether this snapshot reaches the feed end that existed at dispatch."""
-        self.span_complete = store.span_complete(project, session, review)
         self.config = ReviewConfig.model_validate(self.record["config"])
         self.told: set[int] = set()
         """The calls-left counts the reviewer was given a budget notice of (CR-31 as
@@ -477,6 +477,9 @@ class ReviewerRunner:
             "chronological_coverage": ("complete" if self.chronological_complete else "partial"),
             "budget": {"calls": calls},
         }
+        if is_final(self.record):
+            # The run's final review: its new items are listed newest first (CR-48).
+            opening["final"] = {"order": "newest first"}
         if not self.chronological_complete:
             opening["coverage_instruction"] = (
                 "Later review-feed records are outside this bounded snapshot. Do not infer "
@@ -495,6 +498,7 @@ class ReviewerRunner:
             {"role": "system", "content": bundle.system},
             {"role": "user", "content": dump(opening)},
         ]
+        await self._profile()
         invalid = 0
         size = len(dump(messages))
         for _ in range(self.config.max_turns):
@@ -671,7 +675,9 @@ class ReviewerRunner:
             outcome = finish.outcome
             if count:
                 outcome = "findings"
-            elif outcome == "passed" and (not checked or undecided or not self.span_complete):
+            elif outcome == "passed" and (not checked or undecided):
+                # A window read whole passes even when an item was cut short: the coverage
+                # says which were (CR-49).
                 outcome = "inconclusive"
             await self._finish(
                 outcome, finish.summary, cap=finish.cap_reached, unreviewed=finish.unreviewed
@@ -682,6 +688,25 @@ class ReviewerRunner:
             f"The review's call limit was reached: {self.config.max_turns} calls without an "
             "outcome. Recorded findings are retained.",
             cap=True,
+        )
+
+    async def _profile(self) -> None:
+        """Record, once, the profile the reviewer's calls ask the model for: the
+        reviewer's own stream, not the reviewed run's event log (CR-49)."""
+        try:
+            profile: object = getattr(self.model, "requested_profile", None)
+        except (ModelError, ValueError, LookupError):
+            profile = None
+        if not isinstance(profile, ModelProfile):
+            return
+        await threaded(
+            self.store.record,
+            self.project,
+            self.session,
+            self.review,
+            "profile",
+            {"profile": profile.model_dump(mode="json")},
+            owner=self.owner,
         )
 
     def _estimate(self, messages: Sequence[Message], encoded: str) -> int:

@@ -157,6 +157,7 @@ def run_settings(model: ModelConfig, service: RunServiceConfig, recover: bool) -
         "watcher_interval",
         "review_token_budget",
         "review_calls_per_hour",
+        "final_review",
     ):
         if (value := getattr(model, name)) is not None:
             settings[name] = value

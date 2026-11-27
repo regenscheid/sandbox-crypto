@@ -42,7 +42,17 @@ from .models import (
     FindingResponse,
     ReviewConfig,
 )
-from .store import RECEIPTS, ReviewStore, agent_text, digest, dump, identifier, stored_json, text
+from .store import (
+    RECEIPTS,
+    ReviewStore,
+    agent_text,
+    digest,
+    dump,
+    identifier,
+    is_final,
+    stored_json,
+    text,
+)
 
 # Heterogeneous persisted JSON is validated at the mutation boundary.
 Json = dict[str, Any]
@@ -635,6 +645,7 @@ class Findings:
         *,
         reflag: bool = False,
         notify: bool = True,
+        carry: bool = False,
         answer: str | None = None,
         recheck: Json | None = None,
         columns: Json | None = None,
@@ -647,7 +658,10 @@ class Findings:
         finding at or above the project's interrupt severity, and not at its re-flag
         bound, is offered to its session's runs, unless ``notify`` is false: an agent's
         own response leaves it open, and offering it back to the agent that wrote it made
-        a run answer it again and again until its turns ran out (lab 40)."""
+        a run answer it again and again until its turns ran out (lab 40). ``carry`` keeps
+        a notice of the revision before that no run was given, for the new revision: the
+        platform's own bookkeeping, such as queueing a re-check or recording one that could
+        not decide, does not take a finding from the agent it has not reached (CR-48)."""
         revision = found["revision"] + 1
         flags = found["reflags"] + int(reflag)
         changes = dict(columns or {})
@@ -724,7 +738,21 @@ class Findings:
         threshold = (
             ReviewConfig.model_validate_json(configuration[0]) if configuration else ReviewConfig()
         ).interrupt_severity
+        if review is not None and threshold == "fail":
+            # A final review's warn findings reach the agent too (CR-48).
+            raised = db.execute(
+                "SELECT classifier FROM review_runs WHERE review_id=?", (review,)
+            ).fetchone()
+            if raised is not None and is_final({"classifier": raised[0]}):
+                threshold = "warn"
         bounded = bool(changes.get("at_bound", found.get("at_bound", False)))
+        if carry and not notify and not bounded and status == "open":
+            db.execute(
+                "INSERT OR IGNORE INTO review_notices(finding_id,revision,project,session) "
+                "SELECT finding_id,?,project,session FROM review_notices WHERE finding_id=? "
+                "AND revision=? AND delivered_run IS NULL",
+                (revision, found["finding_id"], found["revision"]),
+            )
         if (
             notify
             and not bounded
@@ -1745,6 +1773,7 @@ class Findings:
             why,
             {"review": review, "decision": "inconclusive", "attempt": attempts},
             notify=False,
+            carry=True,
             answer="inconclusive",
             recheck=record,
             columns={"latest_recheck": record, "recheck": {**recheck, "attempts": attempts}},
@@ -2117,6 +2146,7 @@ class Findings:
                     f"queued for the next review of session {session}.",
                     {"recheck": "queued", "places": recheck["places"], "session": session},
                     notify=False,
+                    carry=True,
                     columns={"recheck": recheck},
                 )
                 queued_now += 1

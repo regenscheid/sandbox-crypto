@@ -341,27 +341,27 @@ async def test_the_context_bound_is_announced_before_it_ends_the_review(store) -
 
 
 @pytest.mark.asyncio
-async def test_terminal_catch_up_continues_a_window_the_budget_cut(store) -> None:
-    """At a run's close, a review whose verdict covered part of its window does not end
-    the catch-up: the next review continues from where it stopped."""
+async def test_a_final_review_its_budget_cut_names_the_oldest_work_unreviewed(store) -> None:
+    """At a run's close, a final review whose budget ran out covers the newest work it
+    read and names the rest unreviewed: no further review walks on (CR-48)."""
     reviews, _, _ = store
-    reviews.defaults = ReviewConfig(max_turns=4, max_feed_items=16, max_terminal_windows=6)
-    claims(reviews, 6)
-
-    class Fresh(Reviewer):
-        async def complete(self, messages: Sequence[Any], tools: Sequence[Any]) -> ModelTurn:
-            if len(messages) == 2:
-                self.calls = 0
-            return await super().complete(messages, tools)
-
+    reviews.defaults = ReviewConfig(token_budget=28000)
+    seqs = claims(reviews, 12)
     controller = ReviewController(
-        reviews, context_for(reviews), run_id="author-1", model=Fresh(), alias="reviewer"
+        reviews, context_for(reviews), run_id="author-1", model=Reviewer(1), alias="reviewer"
     )
     summary = await controller.terminal([], "The task is complete.")
-    assert summary["reviews_total"] == 3
-    assert not reviews.progress("p", "s")["remaining"]
-    assert not summary.get("pending")
-    assert summary["outcome"] == "passed"
+    assert summary["reviews_total"] == 1
+    final = summary["final_review"]
+    assert final["finished"]
+    assert not final["complete"]
+    assert summary["coverage_gap"]
+    (left,) = final["unreviewed"]
+    assert left["start"] == seqs[0]
+    assert seqs[0] <= left["end"] < seqs[-1]
+    assert final["reviewed_through"] == final["feed_end"] == seqs[-1]
+    coverage = reviews.run("p", "s", summary["reviews"][0])["coverage"]
+    assert (coverage["through"], coverage["from"]) == (seqs[-1], left["end"] + 1)
 
 
 @pytest.mark.asyncio
