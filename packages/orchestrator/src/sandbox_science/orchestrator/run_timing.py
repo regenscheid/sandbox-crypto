@@ -7,11 +7,15 @@ when its call entered the toolbox and how long it took (``Toolbox.call``), and a
 connector call held for the user's answer says how long it waited
 (``approval_wait_ms``); a model call's observed usage gives its ``duration_ms``
 (``continuity.models``). ``ask_user`` is time waiting on the user, and an approval wait
-is taken out of its call's tool time. The rest is a run's span, from its start to its
-end, less those: the harness's own work, such as folds' preparation and saving. Calls
+is taken out of its call's tool time. The reviewer's calls, recorded under the run
+they review, run beside it and are counted apart (``reviewer_ms``), not as the run's
+model time. The rest is a run's span, from its start to its end, less its model, tool
+and waiting time: the harness's own work, such as folds' preparation and saving. Calls
 that ran at once (read-class calls of one reply) are each counted whole, so tool time
 can exceed the time that passed, and the rest is then 0. A record from before timing
-existed counts its call as untimed.
+existed counts its call as untimed. Runs that overlap, a parent and its children, each
+count their own span; the wall clock (``wall_ms``) is the time from the first run's
+start to the last one's end.
 """
 
 from __future__ import annotations
@@ -51,6 +55,19 @@ class RunTiming:
     """``ask_user``'s calls: the run waiting for the user's answer."""
     approval_ms: int = 0
     """Connector calls held for the user's approval."""
+    reviewer_ms: int = 0
+    """The reviewer's calls, beside the runs they review."""
+    reviewer_calls: int = 0
+    began: datetime | None = None
+    ended: datetime | None = None
+    """The first run's start and the last run's end."""
+
+    @property
+    def wall_ms(self) -> int:
+        """The time from the first run's start to the last one's end."""
+        if self.began is None or self.ended is None:
+            return 0
+        return max(0, round((self.ended - self.began).total_seconds() * 1000))
 
     @property
     def rest_ms(self) -> int:
@@ -70,6 +87,11 @@ class RunTiming:
         self.approval_ms += held
         self.tool_ms[name] = self.tool_ms.get(name, 0) + duration - held
 
+    def reviewer(self, duration: object) -> None:
+        self.reviewer_calls += 1
+        if isinstance(duration, int):
+            self.reviewer_ms += duration
+
     def model(self, duration: object) -> None:
         self.model_calls += 1
         if isinstance(duration, int):
@@ -88,6 +110,12 @@ class RunTiming:
         self.untimed_tool_calls += other.untimed_tool_calls
         self.user_ms += other.user_ms
         self.approval_ms += other.approval_ms
+        self.reviewer_ms += other.reviewer_ms
+        self.reviewer_calls += other.reviewer_calls
+        if other.began is not None and (self.began is None or other.began < self.began):
+            self.began = other.began
+        if other.ended is not None and (self.ended is None or other.ended > self.ended):
+            self.ended = other.ended
 
     def summary(self) -> dict[str, Any]:
         """The ``--json`` form, in milliseconds."""
@@ -103,28 +131,32 @@ class RunTiming:
             "user_ms": self.user_ms,
             "approval_ms": self.approval_ms,
             "rest_ms": self.rest_ms,
+            "reviewer_ms": self.reviewer_ms,
+            "reviewer_calls": self.reviewer_calls,
+            "wall_ms": self.wall_ms,
         }
 
     def line(self) -> str:
         """One line for people: the four parts, then the tools that took longest."""
         tools = sum(self.tool_ms.values())
         parts = [
-            f"time {_duration(self.span_ms)}",
-            f"model {_duration(self.model_ms)}",
-            f"tools {_duration(tools)}",
-            f"waiting {_duration(self.user_ms + self.approval_ms)}",
-            f"rest {_duration(self.rest_ms)}",
+            f"time {duration_text(self.span_ms)}",
+            f"model {duration_text(self.model_ms)}",
+            f"tools {duration_text(tools)}",
+            f"waiting {duration_text(self.user_ms + self.approval_ms)}",
+            f"rest {duration_text(self.rest_ms)}",
         ]
         top = sorted(self.tool_ms.items(), key=lambda item: (-item[1], item[0]))[:3]
         if top:
-            parts.append(", ".join(f"{name} {_duration(value)}" for name, value in top))
+            parts.append(", ".join(f"{name} {duration_text(value)}" for name, value in top))
         untimed = self.untimed_model_calls + self.untimed_tool_calls
         if untimed:
             parts.append(f"{untimed} calls untimed")
         return " · ".join(parts)
 
 
-def _duration(ms: int) -> str:
+def duration_text(ms: int) -> str:
+    """A duration for people: ``40.0s``, ``3m05s``, ``2h13m``."""
     seconds = ms // 1000
     if seconds < 60:
         return f"{ms / 1000:.1f}s"
@@ -132,26 +164,32 @@ def _duration(ms: int) -> str:
     return f"{hours}h{minutes:02d}m" if hours else f"{minutes}m{seconds % 60:02d}s"
 
 
-def _span(started: object, ended: object) -> int:
+def _span(timing: RunTiming, started: object, ended: object) -> None:
+    """Set a run's span, start and end from its recorded times."""
     if not isinstance(started, str) or not isinstance(ended, str):
-        return 0
+        return
     try:
         begun, done = datetime.fromisoformat(started), datetime.fromisoformat(ended)
     except ValueError:
-        return 0
-    return max(0, round((done - begun).total_seconds() * 1000))
+        return
+    timing.span_ms = max(0, round((done - begun).total_seconds() * 1000))
+    timing.began, timing.ended = begun, done
 
 
 def _models(control: ControlStore, project: str, session: str, run: str, timing: RunTiming) -> bool:
-    """The run's model calls from their intents' observed usage; whether it had any."""
+    """The run's model calls from their intents' observed usage, the reviewer's apart;
+    whether it had any."""
     with control.read() as tx:
         rows = tx.sql.execute(
-            "SELECT json_extract(usage,'$.duration_ms') FROM research_model_calls "
+            "SELECT kind,json_extract(usage,'$.duration_ms') FROM research_model_calls "
             "WHERE project=? AND session=? AND run=? AND usage IS NOT NULL",
             (project, session, run),
         ).fetchall()
-    for (duration,) in rows:
-        timing.model(duration)
+    for kind, duration in rows:
+        if kind == "reviewer":
+            timing.reviewer(duration)
+        else:
+            timing.model(duration)
     return bool(rows)
 
 
@@ -190,7 +228,7 @@ def scan(control: ControlStore, project: str, session: str, run: str) -> RunTimi
                     name, duration, waited, _ = full
             timing.tool(str(name), duration, waited)
     if found is not None:
-        timing.span_ms = _span(found[0], found[1])
+        _span(timing, found[0], found[1])
     if not _models(control, project, session, run, timing) and found is not None and found[2]:
         for usage in cast(list[object], json.loads(found[2])):
             entry: Mapping[str, object] = (
@@ -216,9 +254,21 @@ def scan_events(control: ControlStore, project: str, session: str, run: str) -> 
             "AND session_id=? AND run=? AND kind='tool' ORDER BY seq",
             (project, session, run),
         ).fetchall()
-    timing.span_ms = _span(first, last)
+    _span(timing, first, last)
     for name, duration, waited in rows:
         # An older event may not name its tool; only a timed call needs the name.
         timing.tool(name if isinstance(name, str) else "unnamed", duration, waited)
     _models(control, project, session, run, timing)
     return timing
+
+
+def unkept_role(control: ControlStore, project: str, session: str, run: str) -> str:
+    """A run with no kept record's role, as its ``started`` event names it: ``main`` by
+    default."""
+    with control.read() as tx:
+        row = tx.sql.execute(
+            "SELECT json_extract(data,'$.role') FROM run_events WHERE project_id=? "
+            "AND session_id=? AND run=? AND kind='started' ORDER BY seq LIMIT 1",
+            (project, session, run),
+        ).fetchone()
+    return "delegated" if row is not None and row[0] == "delegated" else "main"

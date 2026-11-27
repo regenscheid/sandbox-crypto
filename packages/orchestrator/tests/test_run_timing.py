@@ -205,11 +205,65 @@ def test_the_command_prints_where_the_time_went(
     projects.close()
     assert cli.main(["tool-mix", "--state-dir", str(tmp_path)]) == 0
     lines = capsys.readouterr().out.splitlines()
-    assert lines[1].startswith("  time 1m40s · model ")
-    assert "tools 23.0s · waiting 20.0s" in lines[1]
-    assert "shell 20.0s, e-print-mcp_search 3.0s" in lines[1]
-    assert "calls untimed" in lines[1]
+    assert lines[1] == "  wall clock 1m40s"
+    assert lines[2].startswith("  main (1 run): time 1m40s · model ")
+    assert "tools 23.0s · waiting 20.0s" in lines[2]
+    assert "shell 20.0s, e-print-mcp_search 3.0s" in lines[2]
+    assert "calls untimed" in lines[2]
     assert cli.main(["tool-mix", "--state-dir", str(tmp_path), "--json"]) == 0
     found = json.loads(capsys.readouterr().out)
-    assert found["total"]["time"]["user_ms"] == 8000
-    assert found["sessions"][0]["time"]["approval_ms"] == 12000
+    assert found["total"]["time"]["main"]["user_ms"] == 8000
+    assert found["sessions"][0]["time"]["main"]["approval_ms"] == 12000
+    assert found["sessions"][0]["time"]["delegated"]["runs"] == 0
+
+
+def test_the_reviewer_and_delegated_runs_are_counted_apart(
+    projects: ProjectStore, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """R13: the reviewer's calls under the run they review are not its model time, a
+    delegated run that ran beside its parent is on a line of its own, and the session's
+    wall clock is from the first start to the last end, not the runs' spans summed."""
+    started = recorded(projects)
+    owner = WorkRecords(projects.control).owner("p", "s", RUN)
+    assert owner is not None
+    intents = ModelIntents(projects.control)
+    for ms in (50000, 45000):
+        identity = intents.begin(owner, kind="reviewer", alias="r")
+        intents.observe(owner, identity, ModelUsage(model="r", duration_ms=ms))
+    child = "20261016T030020000000Z-run-2"
+    owner = WorkRecords(projects.control).admit("p", "s", child)
+    identity = intents.begin(owner, kind="delegated", alias="d")
+    intents.observe(owner, identity, ModelUsage(model="d", duration_ms=30000))
+    projects.save_run(
+        RunRecord.model_validate(
+            {
+                "run_id": "run-2",
+                "context": CONTEXT.model_dump(mode="json"),
+                "task": "Check.",
+                "started_at": started + timedelta(seconds=20),
+                "ended_at": started + timedelta(seconds=110),
+                "stopped": "answered",
+                "final_text": "Done.",
+                "messages": [],
+                "role": "delegated",
+                "parent": RUN,
+                "delegation": "dlg-" + "1" * 24,
+                "tools": [],
+            }
+        )
+    )
+    main = scan(projects.control, "p", "s", RUN)
+    assert (main.model_ms, main.reviewer_ms, main.reviewer_calls) == (40000, 95000, 2)
+    assert main.rest_ms == 100000 - 40000 - 23000 - 8000 - 12000
+    projects.close()
+    assert cli.main(["tool-mix", "--state-dir", str(tmp_path), "--json"]) == 0
+    time = json.loads(capsys.readouterr().out)["sessions"][0]["time"]
+    assert time["wall_ms"] == 110000
+    assert (time["reviewer_ms"], time["reviewer_calls"]) == (95000, 2)
+    assert (time["main"]["runs"], time["main"]["model_ms"]) == (1, 40000)
+    assert (time["delegated"]["runs"], time["delegated"]["span_ms"]) == (1, 90000)
+    assert time["delegated"]["model_ms"] == 30000
+    assert cli.main(["tool-mix", "--state-dir", str(tmp_path)]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[1] == "  wall clock 1m50s · reviewer 1m35s in 2 calls, beside the runs"
+    assert lines[3].startswith("  delegated (1 run): time 1m30s · model 30.0s")
