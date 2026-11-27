@@ -229,7 +229,8 @@ class Prepared:
         it; the runtime's loop state must carry it."""
         self.answers = 0
         """The model answers this attempt committed: what its model calls are counted by,
-        whatever turns the runtime's loop state says, which the host keeps for display."""
+        and its tool calls' turns, whatever turns the runtime's loop state says, which the
+        host keeps for display."""
         self.reported = False
         """Whether it committed an answer at its turn limit, its report round's: after it,
         no main or delegated model call is admitted (``spent``)."""
@@ -359,9 +360,9 @@ class Prepared:
                 request = typed(LogTool, value)
                 if self.shadow is None or self.pending_calls.get(request.call.id) != request.call:
                     raise TransportError("conflict", "tool intent has no committed model call")
-                expected = operation_id(
-                    f"{self.given.run_id}-t{self.shadow.turns - 1}", request.call
-                )
+                # The call's turn is the answer that asked for it, the last one committed
+                # here: never loop state, which only some hooks' requests carry.
+                expected = operation_id(f"{self.given.run_id}-t{self.answers - 1}", request.call)
                 if request.operation != expected or self.intent is not None:
                     raise TransportError("conflict", "tool intent identity differs or is pending")
                 await self.log.start_tool(request.call, request.operation)

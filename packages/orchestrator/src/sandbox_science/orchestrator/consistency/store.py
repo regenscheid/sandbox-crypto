@@ -35,7 +35,7 @@ from sandbox_science.orchestrator.documents.errors import (
 )
 from sandbox_science.orchestrator.documents.project_macros import response_view
 from sandbox_science.orchestrator.pricing import CostSource, source_of
-from sandbox_science.orchestrator.projects import ProjectError, recorded
+from sandbox_science.orchestrator.projects import ProjectError, recorded, stored_project
 from sandbox_science.orchestrator.session_plans import SessionPlans
 
 from . import snapshot_reads
@@ -228,17 +228,18 @@ def _archived(items: Sequence[EvidenceItem]) -> Json:
 
 def scoped(db: sqlite3.Connection, project: str, session: str) -> None:
     """``ReviewStore.scope``'s check in an open transaction of the control store: the
-    project and its session are recorded."""
+    project's record is whole and holds the session."""
     try:
         Scope(project_id=project, session_id=session)
     except ValidationError:
         raise DocumentError(INVALID_REQUEST, "invalid review scope") from None
-    if db.execute("SELECT 1 FROM projects WHERE project_id=?", (project,)).fetchone() is None:
-        raise DocumentError(NOT_FOUND, "no such review project")
-    found = db.execute(
-        "SELECT 1 FROM sessions WHERE project_id=? AND session_id=?", (project, session)
-    ).fetchone()
+    try:
+        found = stored_project(db, project)
+    except ProjectError:
+        found = None  # a damaged record is no project here either, as ``scope`` says
     if found is None:
+        raise DocumentError(NOT_FOUND, "no such review project")
+    if session not in found.sessions:
         raise DocumentError(NOT_FOUND, "no such review session")
 
 

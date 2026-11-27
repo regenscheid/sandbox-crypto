@@ -5,7 +5,7 @@ keeps (docs/specs/context-management.md, CM-28; confinement)."""
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Any, cast
 
@@ -28,7 +28,7 @@ from sandbox_science.orchestrator.model import (
     ToolSpec,
     timed,
 )
-from sandbox_science.orchestrator.projects import ProjectStore
+from sandbox_science.orchestrator.projects import ProjectError, ProjectStore
 from sandbox_science.orchestrator.worker_client import dump
 
 from .scripted import ScriptedModel, ToolCall
@@ -117,19 +117,28 @@ class Recorder:
         return None
 
 
-async def _every_point(hook: RemoteHook, run: Transcript) -> None:
-    await hook.notices("turn", run)
-    await hook.halt(run)
-    await hook.last_call(run)
-    await hook.report_notices(run, "turn_limit")
-    await hook.consumption()
-    await hook.model_returned(run)
-    await hook.observe_tool(run, {"tool": "x"})
-    await hook.accept(run)
-    await hook.finishing(run, "answered")
+type Ask = Callable[[RemoteHook, Transcript], Awaitable[object]]
+POINTS: dict[str, Ask] = {
+    "notices": lambda hook, run: hook.notices("turn", run),
+    "halt": lambda hook, run: hook.halt(run),
+    "last_call": lambda hook, run: hook.last_call(run),
+    "report_notices": lambda hook, run: hook.report_notices(run, "turn_limit"),
+    "consumption": lambda hook, run: hook.consumption(),
+    "model_returned": lambda hook, run: hook.model_returned(run),
+    "observe_tool": lambda hook, run: hook.observe_tool(run, {"tool": "x"}),
+    "closing": lambda hook, run: hook.closing(run, "answer"),
+    "accept": lambda hook, run: hook.accept(run),
+    "finishing": lambda hook, run: hook.finishing(run, "answered"),
+}
+"""How the loop asks a hook for each of ``HOOK_ASKS``: a method added there is added
+here (``test_every_ask_has_its_point``)."""
 
 
-@pytest.mark.parametrize("asks", [(), ("halt", "observe_tool"), HOOK_ASKS])
+def test_every_ask_has_its_point() -> None:
+    assert set(POINTS) == set(HOOK_ASKS)
+
+
+@pytest.mark.parametrize("asks", [(), ("halt", "observe_tool", "closing"), HOOK_ASKS])
 async def test_a_runtime_asks_the_host_only_for_what_its_hook_does(
     asks: tuple[Any, ...],
 ) -> None:
@@ -139,9 +148,9 @@ async def test_a_runtime_asks_the_host_only_for_what_its_hook_does(
     given = HookGiven(name="h", asks=asks)
     hook = RemoteHook(cast(Channel, channel), "cap-" + "0" * 48, 0, given)
     run = Transcript(context=AgentContext(messages=[{"role": "system", "content": "s"}]))
-    await _every_point(hook, run)
-    asked = {kind.value for kind in channel.asked}
-    assert asked == set(asks) - {"closing"}
+    for point in POINTS.values():
+        await point(hook, run)
+    assert {kind.value for kind in channel.asked} == set(asks)
     assert hook.asks == frozenset(asks)
 
 
@@ -163,6 +172,16 @@ def test_an_observations_scope_is_checked_in_its_own_change(tmp_path: Path) -> N
                 scoped(tx.sql, "q", "s")
             with pytest.raises(DocumentError, match="invalid review scope"):
                 scoped(tx.sql, "p", "../s")
+        # A damaged project record is no project to review, as a fresh read finds too.
+        with store.control.write() as tx:
+            tx.sql.execute("UPDATE projects SET policy='damaged' WHERE project_id='p'")
+        with pytest.raises(ProjectError, match="damaged"):
+            store.get("p")
+        with (
+            store.control.write() as tx,
+            pytest.raises(DocumentError, match="no such review project"),
+        ):
+            scoped(tx.sql, "p", "s")
     finally:
         store.close()
 
@@ -187,3 +206,12 @@ async def test_each_call_records_the_loops_own_time_around_it() -> None:
     assert first.recorded_ms is None
     assert isinstance(second.prepared_ms, int)
     assert isinstance(second.recorded_ms, int)
+
+
+async def test_a_report_round_at_a_limit_is_timed_from_its_turns_start() -> None:
+    model = Timed([ModelTurn(None, (ToolCall("c1", "no_such_tool", "{}"),)), ModelTurn("So far.")])
+    transcript = await run_task(model, toolbox(), "go", run_id="r", max_turns=1)
+    assert transcript.stopped == "turn_limit"
+    _, report = transcript.context.usage
+    assert isinstance(report.prepared_ms, int)
+    assert isinstance(report.recorded_ms, int)
