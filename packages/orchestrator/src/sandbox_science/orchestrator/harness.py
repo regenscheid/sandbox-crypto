@@ -72,7 +72,7 @@ from .continuity.kernels import KernelJournal, LostKernels
 from .continuity.models import IntentModel, ModelIntents
 from .continuity.records import Ownership, WorkRecords, authority
 from .continuity.resources import ResourceRequests
-from .control import ControlError
+from .control import ControlError, ControlStore
 from .control.errors import NOT_FOUND
 from .delegation import prompt as delegated_prompt
 from .delegation.child_inputs import InventoryContent
@@ -1477,14 +1477,15 @@ class Harness:
         ``outcome`` is the one its ``submit_result`` records into (``_outcome``)."""
         request = admitted.request
         if request.parent is not None and self.stores is not None:
+            track = await threaded(_granted_track, self.stores.projects.control, admitted)
             fence = await threaded(
                 ChildFence,
                 SessionPlans(self.stores.documents),
                 self.stores.projects,
                 admitted.context,
                 run_id=admitted.run_id,
-                granted=request.track[0] if request.track is not None else None,
-                track=request.track[1] if request.track is not None else None,
+                granted=track[0] if track is not None else None,
+                track=track[1] if track is not None else None,
                 # It reads each connector tool's class as the host takes it at each call
                 # (D99, DA-7).
                 connectors=connectors.classed if connectors is not None else None,
@@ -2353,7 +2354,7 @@ class Harness:
         # executor.
         # A task on a track records its progress on that track's steps only (PD-9).
         tracks = None
-        if (track := admitted.request.track) is not None:
+        if (track := await threaded(_granted_track, stores.projects.control, admitted)) is not None:
             tracks = await threaded(
                 TrackTools,
                 SessionPlans(stores.documents),
@@ -2571,6 +2572,22 @@ async def _entry_made(ledger: Ledger, project: str, reference: str, work: frozen
         return any(record.record_id in work for record in page.records)
 
     return await threaded(look)
+
+
+def _granted_track(control: ControlStore, admitted: Admitted) -> tuple[PlanRef, str] | None:
+    """A task's plan version and track: the latest its track was granted again at when
+    its parent reopened it (``delegation_track_grants``), so that a resumed run keeps it,
+    or else its brief's. Call it in a thread."""
+    request = admitted.request
+    if request.track is None or request.delegation is None:
+        return request.track
+    context = admitted.context
+    stored = DelegationRecords(control).track_grant(
+        context.project_id, context.session_id, request.delegation
+    )
+    if stored is None or stored[2] != request.track[1]:
+        return request.track
+    return PlanRef(plan_id=stored[0], version=stored[1]), stored[2]
 
 
 def _cached_as(request: RunRequest) -> str | None:

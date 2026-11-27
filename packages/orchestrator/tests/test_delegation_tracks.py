@@ -420,3 +420,38 @@ async def test_a_reopened_task_is_told_its_track_is_gone(delegating: Harness) ->
     assert refused.startswith(f"plan_changed: {gone}")
     seen = json.dumps(own(reopened))
     assert f"Your track tables takes no progress any more: {gone}." in seen
+
+
+async def test_a_reopened_tasks_new_grant_is_written_back_and_names_its_steps(
+    delegating: Harness,
+) -> None:
+    """The review of R8's fix: a revision that moves a step onto the track; the reopened
+    run is told the track's steps as they now are, the moved one marked new, and the
+    grant is written back, so a later run of the task, resumed or reopened, keeps it."""
+    from sandbox_science.orchestrator.delegation.records import DelegationRecords
+    from sandbox_science.orchestrator.projects import ProjectStore
+
+    ref = active_plan(delegating)
+    moved = json.loads(json.dumps(TRACKED))
+    moved["phases"][0]["steps"][1]["track_id"] = "tables"
+    root = await delegating.run(
+        "root",
+        _reopening(delegating, _revising(delegating, ref, moved)),
+        delegated=[
+            *submitted(DONE, "Done."),
+            Reply(calls=[call("track_read")]),
+            *submitted(DONE, "Done."),
+        ],
+    )
+    reopened = _reopened_run(delegating, root)
+    seen = json.dumps(own(reopened))
+    assert "Its steps now: table: Tabulate; write: Write up (new to your track)." in seen
+    (read,) = (json.loads(r) for r in results(reopened)[:1])
+    assert [s["step_id"] for s in read["steps"]] == ["table", "write"]
+    (delegation_id,) = started(root)
+    store = ProjectStore(delegating.state)
+    try:
+        found = DelegationRecords(store.control).track_grant(PROJECT, "s", delegation_id)
+    finally:
+        store.close()
+    assert found == (ref.plan_id, 2, "tables")

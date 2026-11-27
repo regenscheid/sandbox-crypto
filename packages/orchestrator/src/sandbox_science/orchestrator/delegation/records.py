@@ -1073,6 +1073,47 @@ class DelegationRecords:
         with self.control.read() as tx:
             return write_area(_area_delegation(tx.sql, project, session, delegation_id))
 
+    def grant_track(
+        self, project: str, session: str, delegation_id: str, plan: tuple[str, int], track: str
+    ) -> None:
+        """Record that ``delegation_id``'s track is granted again at ``plan`` (its ID and
+        version), which every later run of the task works under (PD-9)."""
+        with self.control.write() as tx:
+            db = tx.sql
+            if (
+                db.execute(
+                    "SELECT 1 FROM delegations WHERE delegation_id=? AND project_id=? "
+                    "AND session_id=?",
+                    (delegation_id, project, session),
+                ).fetchone()
+                is None
+            ):
+                raise ControlError(NOT_FOUND, f"no delegation {delegation_id!r} in this session")
+            (number,) = db.execute(
+                "SELECT coalesce(max(number),0)+1 FROM delegation_track_grants "
+                "WHERE delegation_id=?",
+                (delegation_id,),
+            ).fetchone()
+            db.execute(
+                "INSERT INTO delegation_track_grants VALUES (?,?,?,?,?,?)",
+                (delegation_id, number, plan[0], plan[1], track, self._now()),
+            )
+
+    def track_grant(
+        self, project: str, session: str, delegation_id: str
+    ) -> tuple[str, int, str] | None:
+        """The latest plan version (its ID and version) and track ``delegation_id``'s
+        track was granted again at, if it ever was."""
+        with self.control.read() as tx:
+            row = tx.sql.execute(
+                "SELECT g.plan_id,g.version,g.track_id FROM delegation_track_grants g "
+                "JOIN delegations d ON d.delegation_id=g.delegation_id "
+                "WHERE g.delegation_id=? AND d.project_id=? AND d.session_id=? "
+                "ORDER BY g.number DESC LIMIT 1",
+                (delegation_id, project, session),
+            ).fetchone()
+        return None if row is None else (str(row[0]), int(row[1]), str(row[2]))
+
     def held_write_area(self, project: str, session: str, run: str, delegation_id: str) -> str:
         """The write area ``run``, an attempt of ``delegation_id``'s research work, writes
         in, once it is sure that no other attempt can hold it: the work's one current

@@ -4055,8 +4055,10 @@ def _model_profile_events(schema: Schema) -> None:
     """Version 93: the per-call record of the model profile a call ran under is a run
     event of its own kind, ``model_profile``, apart from the notices a run was given,
     which it is not. The table is made again with the wider CHECK, its rows, indexes and
-    triggers as they were; rows written before keep the kind ``notice``, with the
-    source ``model_profile``."""
+    triggers as they were, and the rows written before as ``notice`` events with the
+    source ``model_profile`` take the new kind, so no reader knows both forms. The step
+    copies ``run_events`` whole: the store needs that much free disk, and the first start
+    of this version takes longer on a store with many events."""
     (create,) = schema.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='run_events'"
     ).fetchone()
@@ -4070,6 +4072,38 @@ def _model_profile_events(schema: Schema) -> None:
         "run_events",
         create.replace(old, "'waiting', 'stopped', 'fold', 'model_profile'))", 1),
     )
+    (guard,) = schema.execute(
+        "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='run_events_no_update'"
+    ).fetchone()
+    schema.execute("DROP TRIGGER run_events_no_update")
+    schema.execute(
+        "UPDATE run_events SET kind='model_profile' "
+        "WHERE kind='notice' AND json_extract(data,'$.source')='model_profile'"
+    )
+    schema.execute(guard)
+
+
+def _track_grants(schema: Schema) -> None:
+    """Version 94: the plan version a task's track is granted again at when its parent
+    reopens it after a revision (plans-and-delegation spec, PD-9, PD-46), one row a grant,
+    never changed, so that every later run of the task, reopened or resumed, works under
+    the latest."""
+    for statement in (
+        """CREATE TABLE delegation_track_grants (
+    delegation_id TEXT NOT NULL REFERENCES delegations(delegation_id),
+    number INTEGER NOT NULL CHECK (number BETWEEN 1 AND 999999),
+    plan_id TEXT NOT NULL CHECK (length(CAST(plan_id AS BLOB)) BETWEEN 1 AND 128),
+    version INTEGER NOT NULL CHECK (version >= 1),
+    track_id TEXT NOT NULL CHECK (length(CAST(track_id AS BLOB)) BETWEEN 1 AND 128),
+    granted_at TEXT NOT NULL,
+    PRIMARY KEY (delegation_id, number)
+) STRICT""",
+        """CREATE TRIGGER delegation_track_grants_no_update BEFORE UPDATE
+ON delegation_track_grants BEGIN SELECT RAISE(ABORT, 'a track grant is written once'); END""",
+        """CREATE TRIGGER delegation_track_grants_no_delete BEFORE DELETE
+ON delegation_track_grants BEGIN SELECT RAISE(ABORT, 'a track grant is written once'); END""",
+    ):
+        schema.execute(statement)
 
 
 MIGRATIONS: Final[tuple[Migration, ...]] = (
@@ -4165,6 +4199,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _job_end_reasons,
     _acceptance_reads,
     _model_profile_events,
+    _track_grants,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

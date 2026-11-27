@@ -16,6 +16,7 @@ this delegation records on its track while it runs.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from typing import Any, Final, Literal
 
 from pydantic import Field, ValidationError
@@ -37,6 +38,7 @@ from sandbox_science.orchestrator.session_plans import (
     PlanRef,
     PlanScope,
     SessionPlans,
+    step_changes,
 )
 from sandbox_science.orchestrator.worker_client import WorkerAPIError
 
@@ -145,12 +147,41 @@ def track_standing(
     return head.ref
 
 
+@dataclass(frozen=True)
+class Regranted:
+    """A reopened task's track at the plan's current version: the version, and the
+    track's steps as they now are, each marked when it changed since ``granted`` or is
+    new to the track."""
+
+    ref: PlanRef
+    steps: tuple[str, ...]
+
+
 def regrant(
     plans: SessionPlans, context: ExecutionContext, granted: PlanRef, track: str
-) -> PlanRef | str:
-    """The plan version a reopened task on ``track`` works under, or why its track takes
-    no progress any more (``track_standing``). Call it in a thread."""
-    return track_standing(plans, _reader(context, "track-grant"), granted, track)
+) -> Regranted | str:
+    """The plan version a reopened task on ``track`` works under, with its steps as they
+    now are, or why its track takes no progress any more (``track_standing``). Call it in
+    a thread."""
+    reader = _reader(context, "track-grant")
+    found = track_standing(plans, reader, granted, track)
+    if isinstance(found, str):
+        return found
+    before = plans.version(reader, granted).body
+    after = plans.version(reader, found).body
+    earlier = {s["step_id"] for s in steps_of(before, track)}
+    changed = set(step_changes(before, after).changed)
+    lines: list[str] = []
+    for step in steps_of(after, track):
+        mark = (
+            " (new to your track)"
+            if step["step_id"] not in earlier
+            else " (changed since your last run)"
+            if step["step_id"] in changed
+            else ""
+        )
+        lines.append(f"{step['step_id']}: {step['title']}{mark}")
+    return Regranted(found, tuple(lines))
 
 
 def stated_outputs(plans: SessionPlans, context: ExecutionContext) -> tuple[str, ...]:
