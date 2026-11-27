@@ -1973,6 +1973,8 @@ export interface ModelUsage {
   thinking_replay: string | null;
   retried: string[];
   refusals: Refusal[];
+  started_at: string | null;
+  duration_ms: number | null;
 }
 
 /** What the event store's records say for the window. */

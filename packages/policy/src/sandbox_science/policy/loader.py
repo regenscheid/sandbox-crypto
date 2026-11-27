@@ -358,6 +358,27 @@ def parse_policy(
     return LoadedPolicy(policy=policy, digest=digest, source=source)
 
 
+def retired_settings(data: bytes) -> tuple[str, ...]:
+    """The retired settings a policy file sets to other than their defaults, by their
+    keys: what a revision stored before the MCP proxy retired (D98) must lose before a
+    fresh ``parse_policy`` takes it. Empty for a file that sets none or cannot be read."""
+    try:
+        document = read_yaml_mapping(data, None, "policy")
+    except PolicyLoadError:
+        return ()
+    mcp = document.get("mcp")
+    proxy = cast("dict[str, object]", mcp).get("proxy") if isinstance(mcp, dict) else None
+    if not isinstance(proxy, dict):
+        return ()
+    fields = cast("dict[str, object]", proxy)
+    found: list[str] = []
+    if fields.get("worker_access", False) is not False:
+        found.append("mcp.proxy.worker_access")
+    if fields.get("worker_tools", "inherit") != "inherit":
+        found.append("mcp.proxy.worker_tools")
+    return tuple(found)
+
+
 def load_policy(path: str | PathLike[str]) -> LoadedPolicy:
     """Read, parse and validate a policy file. Raises PolicyLoadError."""
     return parse_policy(read_limited(path), source=str(path))

@@ -48,6 +48,7 @@ from .hooks import Closing, Effect, Notice, Point, Refusal, RunView, TurnHook
 from .notices import PLATFORM_INPUT, REDELIVERED
 from .projects import ModelUsage, RunRecord
 from .purpose import purpose_of, without
+from .run_timing import TIMING_KEYS
 from .runstate import (
     MAX_EVENT_BYTES,
     PAGE,
@@ -452,6 +453,8 @@ class EventLog(TurnHook):
                         # both without pairing the result with its call.
                         "gloss": tool_gloss(record, result),
                         **({"purpose": purpose} if purpose is not None else {}),
+                        # When the call started and how long it took (run_timing).
+                        **{key: record[key] for key in TIMING_KEYS if key in record},
                     },
                 )
         self.seen = len(messages)

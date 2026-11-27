@@ -796,6 +796,14 @@ class EnvironmentRecords:
             ).fetchone()
         return cast(str, row[0]) if row is not None else None
 
+    def latest_grants(self) -> dict[str, str]:
+        """Each project with a grant, and the revision granted to it last."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT project_id, revision FROM policy_grants ORDER BY rowid"
+            ).fetchall()
+        return {str(project): str(revision) for project, revision in rows}
+
     def granted(self, project_id: str, revision: str) -> bool:
         with self._lock:
             row = self._db.execute(

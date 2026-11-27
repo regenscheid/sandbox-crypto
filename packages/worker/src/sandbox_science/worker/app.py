@@ -629,6 +629,10 @@ def _audit(request: web.Request, client: Client, status: int) -> None:
     )
 
 
+PROJECT_GUIDE = "docs/KUBERNETES-BUNDLE.md#adding-a-project"
+"""Where an operator reads how a deployment comes to act for another project."""
+
+
 def _client(request: web.Request) -> Client:
     return cast(Client, request[_CLIENT])
 
@@ -658,7 +662,11 @@ def _visible(request: web.Request, project_id: str, what: str) -> None:
 def _allowed(request: web.Request, project_id: str) -> None:
     if not _client(request).allows(project_id):
         raise WorkerError(
-            ErrorKind.POLICY_DENIED, f"this client may not act for project {project_id!r}"
+            ErrorKind.POLICY_DENIED,
+            f"this client may not act for project {project_id!r}: the worker settings' "
+            "clients list the projects each may act for; add the project to the site "
+            "configuration's [[projects]], then generate and deploy the site again "
+            f"({PROJECT_GUIDE})",
         )
 
 

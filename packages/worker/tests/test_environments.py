@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import fcntl
+import hashlib
 import ipaddress
 import json
 import logging
@@ -1159,6 +1160,66 @@ async def test_policy_add_stores_revisions_for_environments(
     assert "  info: resources.cpu: applied by the pool's Kubernetes placement" in output
     assert "  info: resources.memory: applied by the pool's Kubernetes placement" in output
     assert "  warning: resources.workspace_disk: not applied" in output
+
+
+async def test_policy_check_reports_a_stored_revision_a_fresh_add_refuses(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "pool-ceiling.yaml").write_text(
+        "apiVersion: sandbox-science/v0alpha1\nkind: PoolCeiling\n"
+    )
+    settings = tmp_path / "worker.toml"
+    settings.write_text(
+        'token_file = "worker.token"\nstate_dir = "state"\n\n[openshell]\nisolation_tier = 3\n\n'
+        "[openshell.environments]\n"
+        f'policy_store = "middleware"\ntargets = "{TARGETS}"\nceiling = "pool-ceiling.yaml"\n'
+        f'profiles = {{minimal = "{IMAGE}"}}\n'
+    )
+    command = ["policy", "check", "--settings", str(settings)]
+    assert (
+        main(["policy", "add", "--settings", str(settings), "--project", "p1", str(EXAMPLE)]) == 0
+    )
+    current = re.search(r"as (sha256:[0-9a-f]{64})", capsys.readouterr().out)
+    assert current is not None
+    # A revision stored before the MCP proxy retired: written as the store wrote it then.
+    legacy = EXAMPLE.read_bytes().replace(
+        b"  limits:\n    max_argument_bytes: 64Ki",
+        b"  proxy:\n    max_argument_bytes: 64Ki\n    worker_access: true\n"
+        b"    worker_tools: [search]",
+    )
+    assert legacy != EXAMPLE.read_bytes()
+    old = "sha256:" + hashlib.sha256(legacy).hexdigest()
+    (tmp_path / "middleware" / "policies" / f"{old[7:]}.yaml").write_bytes(legacy)
+    records = EnvironmentRecords(tmp_path / "state" / "environments.sqlite3")
+    try:
+        records.grant("crypto", old)
+    finally:
+        records.close()
+    staged = tmp_path / "legacy.yaml"
+    staged.write_bytes(legacy)
+    assert main(["policy", "add", "--settings", str(settings), str(staged)]) == 1
+    assert "retired with the MCP proxy" in capsys.readouterr().err
+
+    assert main(command) == 0
+    output = capsys.readouterr().out
+    assert f"project p1: {current[1]} (the latest grant): a fresh policy add takes it" in output
+    assert (
+        f"warning: project crypto: {old} (the latest grant): a fresh policy add refuses it:"
+        in output
+    )
+    assert "retired with the MCP proxy" in output
+    assert "  remove from its file: mcp.proxy.worker_access, mcp.proxy.worker_tools" in output
+    assert "the stored revision still loads as it is; nothing was changed" in output
+    assert "checked 2 revisions in force; a fresh policy add refuses 1" in output
+    # Nothing was rewritten: the stored bytes are as they were.
+    assert (tmp_path / "middleware" / "policies" / f"{old[7:]}.yaml").read_bytes() == legacy
+
+    # A revision in force that does not load at all fails the check.
+    (tmp_path / "middleware" / "policies" / f"{old[7:]}.yaml").write_bytes(b"kind: nothing\n")
+    assert main(command) == 1
+    assert f"error: project crypto: {old} (the latest grant): it does not load" in (
+        capsys.readouterr().err
+    )
 
 
 MISSING = "status: 'Some requested entity was not found', self: \"sandbox not found\""
@@ -2555,6 +2616,12 @@ async def test_a_client_acts_for_its_own_projects_only(api: Api) -> None:
     env_b = api.environment("env-b", "p2")
     assert (await api.call("POST", "/v1/environments", B_TOKEN, env_b))[0] == 201
     assert await api.refused("POST", "/v1/environments", A_TOKEN, env_b) == (403, "policy_denied")
+    # The refusal tells an operator how the deployment comes to act for the project.
+    _, refusal = await api.call("POST", "/v1/environments", A_TOKEN, env_b)
+    message = refusal["error"]["message"]
+    assert "'p2'" in message
+    assert "[[projects]]" in message
+    assert "KUBERNETES-BUNDLE.md#adding-a-project" in message
     status, taken = await api.call(
         "POST", "/v1/environments", B_TOKEN, api.environment("env-a", "p2")
     )

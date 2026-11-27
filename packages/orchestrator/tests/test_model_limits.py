@@ -595,7 +595,10 @@ async def test_a_run_rides_out_a_rate_limit_and_records_its_usage(harness: Harne
     assert (record.stopped, record.final_text) == ("answered", "The answer.")
     # One entry per answered call; the scripted gateway counts messages as input tokens.
     first, _, last = (len(messages) for messages in harness.gateway.main)
-    assert [usage.model_dump(exclude={"characters"}) for usage in record.usage] == [
+    # Each call's time is its own (test_run_timing): present, not compared.
+    assert all(usage.duration_ms is not None and usage.started_at for usage in record.usage)
+    timing = {"characters", "started_at", "duration_ms"}
+    assert [usage.model_dump(exclude=timing) for usage in record.usage] == [
         {
             "intent_id": None,  # the main response intent is journaled separately
             "model": "scripted-main",

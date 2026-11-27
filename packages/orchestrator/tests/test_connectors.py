@@ -1311,6 +1311,9 @@ async def test_a_call_that_needs_approval_waits_in_place_until_the_user_approves
         text, record = await asyncio.wait_for(call, 5)
         assert text.startswith(CONNECTOR_RESULT.text + "crawl")
         assert record["permission_request"] == request
+        # How long it waited for the answer, which tool-mix counts as waiting, not tool time.
+        assert isinstance(record["approval_wait_ms"], int)
+        assert record["approval_wait_ms"] >= 0
         assert heard[-1] is None  # the wait's end is heard too
         assert gated.fake.tool_calls() == ["crawl"]
     finally:

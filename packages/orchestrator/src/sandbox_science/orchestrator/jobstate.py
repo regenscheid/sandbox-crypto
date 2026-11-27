@@ -35,6 +35,9 @@ class JobState:
 
     A run's delivery lease lasts ``lease_seconds`` after its last heartbeat. Times
     are wall-clock seconds from ``clock``, since several processes compare them.
+    ``job_runs`` holds that lease: one row per run while it is active, removed when it
+    ends (``end_run``), so it is empty once no run is active and never lists jobs, whose
+    records are the worker's (with ``job_origins`` naming the run that started each).
     ``control`` shares a control store the process has open already, such as the
     run's documents' (``DocumentStore.control``), which its owner closes; without it,
     this object opens its own and closes it in ``close``.

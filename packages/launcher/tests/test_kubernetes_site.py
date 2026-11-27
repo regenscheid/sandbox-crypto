@@ -563,6 +563,44 @@ def test_a_direct_path_for_another_project_is_refused(tmp_path):
         plan(*load(site_file(tmp_path, values)))
 
 
+def test_check_and_site_say_which_projects_get_no_connectors(tmp_path, capsys):
+    config = site_file(tmp_path, direct=True)
+    bundle = str(tmp_path / "inputs/bundle.toml")
+    assert main(["check", "--config", bundle, "--site", str(config)]) == 0
+    err = capsys.readouterr().err
+    assert "notice: [mcp_direct] gives the MCP servers' tools to project crypto only" in err
+    assert "the runs of notes have no connector tools" in err
+    assert main(["site", "--config", str(config), "--output", str(tmp_path / "out")]) == 0
+    assert "the runs of notes have no connector tools" in capsys.readouterr().err
+    # Without --site, check reads the bundle only, which does not list the projects.
+    assert main(["check", "--config", bundle]) == 0
+    assert "notice:" not in capsys.readouterr().err
+
+
+def test_no_connector_notice_for_one_project_or_none_on_the_direct_path(tmp_path, capsys):
+    values = site_values(tmp_path, direct=True)
+    values["projects"] = values["projects"][:1]
+    bundle = str(tmp_path / "inputs/bundle.toml")
+    assert main(["check", "--config", bundle, "--site", str(site_file(tmp_path, values))]) == 0
+    assert "notice:" not in capsys.readouterr().err
+    other = tmp_path / "plain"
+    other.mkdir()
+    plain = site_file(other)
+    assert main(["check", "--config", str(other / "inputs/bundle.toml"), "--site", str(plain)]) == 0
+    assert "notice:" not in capsys.readouterr().err
+
+
+def test_check_refuses_a_site_of_another_bundle(tmp_path, capsys):
+    config = site_file(tmp_path, direct=True)
+    other = tmp_path / "other"
+    other.mkdir()
+    site_file(other)
+    assert (
+        main(["check", "--config", str(other / "inputs/bundle.toml"), "--site", str(config)]) == 1
+    )
+    assert "names another bundle" in capsys.readouterr().err
+
+
 def test_secrets_hold_exactly_the_projected_keys_and_everything_is_private(tmp_path):
     output = generate(tmp_path, cache=True)
     bundle = load_bundle(tmp_path / "inputs/bundle.toml")

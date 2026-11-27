@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: MIT
 """``sandbox-science-harness tool-mix``: how the recorded runs of a state directory
-computed, per session and in total (docs/specs/tools.md, Kernels 13).
+computed, per session and in total (docs/specs/tools.md, Kernels 13), and where their
+time went: model calls, tools by tool, waiting on the user or on approvals, and the
+rest (``run_timing``).
 
 It reads the control store's recorded runs through a read-only connection, with no
 service running, and counts their tool calls with the classifier the live summary uses
@@ -20,7 +22,9 @@ from typing import Any
 
 from sandbox_science.contracts import ErrorKind
 
+from . import run_timing
 from .projects import ProjectError, ProjectStore
+from .run_timing import RunTiming
 from .tool_mix import CLASSIFIER, ToolMix, scan, scan_events, unkept_runs
 
 
@@ -48,7 +52,9 @@ def tool_mix(args: argparse.Namespace) -> int:
         return 0
     for row in found["sessions"]:
         print(f"{row['project']}/{row['session']}: {_counted(row)} · {_line(row)}")
+        print(f"  {_timed(row)}")
     print(f"total: {_counted(found['total'])} · {_line(found['total'])}")
+    print(f"  {_timed(found['total'])}")
     return 0
 
 
@@ -59,6 +65,7 @@ def measure(store: ProjectStore, project: str | None, session: str | None) -> di
     projects = [project] if project is not None else store.project_ids()
     sessions: list[dict[str, Any]] = []
     total, total_runs, total_events = ToolMix(), 0, 0
+    total_time = RunTiming()
     for project_id in projects:
         names = sorted(store.get(project_id).sessions)
         if session is not None:
@@ -66,14 +73,17 @@ def measure(store: ProjectStore, project: str | None, session: str | None) -> di
                 raise _absent(project_id, session)
             names = [name for name in names if name == session]
         for session_id in names:
-            mix, runs = ToolMix(), 0
+            mix, runs, timing = ToolMix(), 0, RunTiming()
             for entry in store.iter_runs(project_id, session_id):
                 mix.add(scan(store.control, project_id, session_id, entry.name))
+                timing.add(run_timing.scan(store.control, project_id, session_id, entry.name))
                 runs += 1
             unkept = unkept_runs(store.control, project_id, session_id)
             for name in unkept:
                 mix.add(scan_events(store.control, project_id, session_id, name))
+                timing.add(run_timing.scan_events(store.control, project_id, session_id, name))
             total.add(mix)
+            total_time.add(timing)
             total_runs += runs + len(unkept)
             total_events += len(unkept)
             sessions.append(
@@ -83,12 +93,18 @@ def measure(store: ProjectStore, project: str | None, session: str | None) -> di
                     "runs": runs + len(unkept),
                     "runs_from_events": len(unkept),
                     **mix.summary(),
+                    "time": timing.summary(),
                 }
             )
     return {
         "classifier": CLASSIFIER,
         "sessions": sessions,
-        "total": {"runs": total_runs, "runs_from_events": total_events, **total.summary()},
+        "total": {
+            "runs": total_runs,
+            "runs_from_events": total_events,
+            **total.summary(),
+            "time": total_time.summary(),
+        },
     }
 
 
@@ -111,3 +127,19 @@ def _counted(counts: dict[str, Any]) -> str:
 def _line(counts: dict[str, Any]) -> str:
     mix = ToolMix(**{key: counts[key] for key in ToolMix().summary() if key != "classifier"})
     return mix.line()
+
+
+def _timed(counts: dict[str, Any]) -> str:
+    time = counts["time"]
+    timing = RunTiming(
+        span_ms=time["span_ms"],
+        model_ms=time["model_ms"],
+        model_calls=time["model_calls"],
+        untimed_model_calls=time["untimed_model_calls"],
+        tool_ms=dict(time["tool_ms"]),
+        tool_calls=time["tool_calls"],
+        untimed_tool_calls=time["untimed_tool_calls"],
+        user_ms=time["user_ms"],
+        approval_ms=time["approval_ms"],
+    )
+    return timing.line()
