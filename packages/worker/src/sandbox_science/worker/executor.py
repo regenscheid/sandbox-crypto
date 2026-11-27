@@ -1637,6 +1637,8 @@ class Executor:
                 sandbox_processes.spawned.add(process.pid)
             info = sandbox_processes.process_info(process.pid)
             running.leader = (process.pid, info.start) if info is not None else None
+            if running.kind == "job" and running.leader is not None:
+                sandbox_processes.note_job_session(self.root / ".executor", running.leader)
             running.process = process
             running.started = True
             await self.event(execution, "state", **_running(start), **survived)

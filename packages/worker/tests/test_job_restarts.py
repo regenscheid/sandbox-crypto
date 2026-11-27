@@ -8,6 +8,7 @@ import os
 import signal
 from collections.abc import AsyncIterator
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -16,18 +17,25 @@ import pytest_asyncio
 from pydantic import ValidationError
 
 from sandbox_science.contracts import (
+    ErrorKind,
     Execution,
     ExecutionContext,
     ExecutionState,
+    JobAttempt,
+    JobDetails,
     JobRequest,
     SessionCloseRequest,
 )
 from sandbox_science.contracts.recovery import RecoveryFence
 from sandbox_science.contracts.worker import MAX_JOB_RESTARTS
 from sandbox_science.testing import eventually
+from sandbox_science.worker import sandbox_processes
+from sandbox_science.worker.errors import WorkerError
+from sandbox_science.worker.job_restarts import attempt_began, started_attempts
 from sandbox_science.worker.manager import ExecutionManager
+from sandbox_science.worker.recovery_fence import operator_scope
 
-from .harness import TEST_TIMEOUTS, Harness, running, view
+from .harness import TEST_TIMEOUTS, Harness, running
 
 pytestmark = pytest.mark.slow
 
@@ -263,31 +271,19 @@ async def test_a_restart_waiting_across_a_worker_restart_waits_on_without_a_new_
 
 
 @pytest.mark.asyncio
-async def test_a_worker_restart_without_a_daemon_restarts_the_job(stdio: Harness) -> None:
-    manager = stdio.manager
-    job, _ = await manager.submit(request("stdio", RESUMING, restart=True))
-    await running(manager, job.execution_id)
-    await eventually(lambda: (stdio.workspace / "checkpoint").exists(), timeout=10)
-    await manager.close()  # the executor stops with the worker
-    view(manager).reopen()  # as a fresh worker process starts
-    await manager.start()
-    result = await asyncio.wait_for(manager.wait(job.execution_id), 30)
-    assert result.state is ExecutionState.SUCCEEDED
-    assert result.job is not None
-    assert result.job.attempt == 2
-    [lost] = result.job.attempts
-    assert "restarted without a recoverable daemon dispatch" in lost.reason
+async def test_restart_is_refused_on_the_stdio_transport(stdio: Harness) -> None:
+    with pytest.raises(WorkerError, match="sandbox daemon transport") as refused:
+        await stdio.manager.submit(request("stdio", RESUMING, restart=True))
+    assert refused.value.kind is ErrorKind.UNSUPPORTED
 
 
 @pytest.mark.asyncio
-async def test_a_failure_or_time_limit_of_its_own_is_never_restarted(stdio: Harness) -> None:
-    manager = stdio.manager
+async def test_a_failure_or_time_limit_of_its_own_is_never_restarted(worker: Harness) -> None:
+    manager = worker.manager
     failed, _ = await manager.submit(request("fails", "exit 3", restart=True))
+    assert (await ended(worker, failed.execution_id)).state is ExecutionState.FAILED
     timed, _ = await manager.submit(request("slow", "sleep 30", restart=True, timeout_seconds=1))
-    assert (await asyncio.wait_for(manager.wait(failed.execution_id), 30)).state is (
-        ExecutionState.FAILED
-    )
-    ended_timed = await asyncio.wait_for(manager.wait(timed.execution_id), 30)
+    ended_timed = await ended(worker, timed.execution_id)
     assert ended_timed.state is ExecutionState.TIMED_OUT
     for execution in (manager.get(failed.execution_id), ended_timed):
         assert execution.job is not None
@@ -316,3 +312,229 @@ async def test_a_newer_recovery_epoch_of_the_session_refuses_the_restart(
     assert result.result.error is not None
     assert "authority changed" in result.result.error.message
     assert attempts_file(worker) == "attempt 1\n"
+
+
+@pytest.mark.asyncio
+async def test_a_restart_never_takes_the_operator_grant_of_the_request_that_opened_the_channel(
+    worker: Harness,
+) -> None:
+    # An operator's request opens the executor: the channel's tasks copy its context, the
+    # loss is noticed in them, and the restart is spawned from them.
+    with operator_scope(True):
+        await worker.manager.capabilities("env1")
+    job = await lost_and_waiting(worker, "operator-opened")
+    worker.store.recovery_fences.install(RecoveryFence(project_id="p1", session_id="s1", epoch=1))
+    worker.view.release_quarantine("env1")
+    result = await ended(worker, job.execution_id)
+    assert result.state is ExecutionState.LOST
+    assert result.result is not None
+    assert result.result.error is not None
+    assert "authority changed" in result.result.error.message
+    assert attempts_file(worker) == "attempt 1\n"
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_stored_before_a_crash_holds_for_a_waiting_restart(worker: Harness) -> None:
+    job = await lost_and_waiting(worker, "cancelled-then-crash")
+    worker.store.cancel_intent(job.execution_id)  # recorded, then the worker crashed
+    await worker.restart()
+    result = await ended(worker, job.execution_id)
+    assert result.state is ExecutionState.CANCELLED
+    await asyncio.sleep(0.5)
+    assert attempts_file(worker) == "attempt 1\n"
+
+
+def test_a_later_attempt_counts_its_time_limit_from_its_own_dispatch() -> None:
+    base = restarted_record()
+    assert base.job is not None
+    dispatched = base.job.attempts[-1].lost_at + timedelta(hours=2)
+    assert attempt_began(base, dispatched) == dispatched
+    assert attempt_began(base, None) == base.job.attempts[-1].lost_at
+    first = base.model_copy(update={"job": base.job.model_copy(update={"attempts": ()})})
+    assert attempt_began(first, None) == base.submitted_at
+
+
+def test_only_attempts_whose_command_started_use_up_restarts() -> None:
+    base = restarted_record()
+    assert base.job is not None
+    never = base.job.attempts[0].model_copy(update={"started_at": None})
+    job = base.job.model_copy(update={"attempts": (never, never, never)})
+    assert started_attempts(base.model_copy(update={"job": job})) == 0
+    assert started_attempts(base) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_loss_the_same_daemon_may_still_run_is_never_restarted(worker: Harness) -> None:
+    job, _ = await worker.manager.submit(request("same-daemon", restart=True))
+    await running(worker.manager, job.execution_id)
+    worker.view.lose(job.execution_id, "the executor with an invalid replay range")
+    result = await ended(worker, job.execution_id)
+    assert result.state is ExecutionState.LOST
+    assert result.job is not None
+    assert result.job.attempts == ()
+    assert result.result is not None
+    assert result.result.error is not None
+    assert "not restarted: the daemon that ran it may still be running it" in (
+        result.result.error.message
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_new_daemon_ends_what_a_lost_attempt_left_without_its_mark(
+    worker: Harness,
+) -> None:
+    script = (
+        'if [ "$SANDBOX_JOB_ATTEMPT" = 1 ]; then '
+        "env -i /bin/sh -c 'echo $$ > orphan; exec sleep 300' & sleep 60; "
+        "else printf second; fi"
+    )
+    job, _ = await worker.manager.submit(request("unmarked", script, restart=True))
+    await running(worker.manager, job.execution_id)
+
+    def orphan() -> int | None:
+        path = worker.workspace / "orphan"
+        text = path.read_text() if path.exists() else ""
+        return int(text) if text.endswith("\n") else None
+
+    pid = await eventually(orphan, timeout=10)
+    kill_daemon(worker, job.execution_id)
+    result = await ended(worker, job.execution_id)
+    assert result.state is ExecutionState.SUCCEEDED
+    info = sandbox_processes.process_info(pid)
+    assert info is None or info.zombie
+
+
+@pytest.mark.asyncio
+async def test_a_waiting_restart_never_runs_in_another_sandbox(worker: Harness) -> None:
+    job = await lost_and_waiting(worker, "recreated")
+    worker.view.set_lifecycle(daemon_identity=lambda _environment: ("other", "other-id"))
+    worker.view.release_quarantine("env1")
+    result = await ended(worker, job.execution_id)
+    assert result.state is ExecutionState.LOST
+    assert result.result is not None
+    assert result.result.error is not None
+    assert "no longer the one the lost attempt ran in" in result.result.error.message
+    assert attempts_file(worker) == "attempt 1\n"
+
+
+@pytest.mark.asyncio
+async def test_a_stopped_environment_holds_a_waiting_restart(worker: Harness) -> None:
+    stopped = {"env1": True}
+    worker.view.set_lifecycle(environment_stopped=lambda environment: stopped[environment])
+    job = await lost_and_waiting(worker, "held")
+    worker.view.release_quarantine("env1")
+    await asyncio.sleep(1.0)
+    assert worker.manager.get(job.execution_id).state is ExecutionState.QUEUED
+    stopped["env1"] = False  # another use started the environment
+    await attempt_running(worker.manager, job.execution_id, 2)
+
+
+@pytest.mark.asyncio
+async def test_turning_restarts_off_refuses_new_ones_and_ends_waiting_ones(
+    worker: Harness,
+) -> None:
+    job = await lost_and_waiting(worker, "turned-off")
+    worker.reconfigure(job_restarts=False)
+    await worker.restart()
+    result = await ended(worker, job.execution_id)
+    assert result.state is ExecutionState.LOST
+    assert result.result is not None
+    assert result.result.error is not None
+    assert "job restarts are turned off" in result.result.error.message
+    with pytest.raises(WorkerError, match="turned off"):
+        await worker.manager.submit(request("refused", restart=True))
+    plain, _ = await worker.manager.submit(request("plain", "true"))
+    assert (await ended(worker, plain.execution_id)).state is ExecutionState.SUCCEEDED
+
+
+@pytest.mark.asyncio
+async def test_releasing_the_environment_cancels_a_waiting_restart(worker: Harness) -> None:
+    job = await lost_and_waiting(worker, "released")
+    await worker.manager.release("env1")
+    result = await ended(worker, job.execution_id)
+    assert result.state is ExecutionState.CANCELLED
+    assert attempts_file(worker) == "attempt 1\n"
+
+
+@pytest.mark.asyncio
+async def test_the_bound_holds_across_worker_restarts(worker: Harness) -> None:
+    job, _ = await worker.manager.submit(request("bounded-restarts", restart=True))
+    for started in range(1, MAX_JOB_RESTARTS + 2):
+
+        def runs(count: int = started) -> bool:
+            execution = worker.manager.get(job.execution_id)
+            return (
+                attempts_file(worker).count("attempt") == count
+                and execution.state is ExecutionState.RUNNING
+            )
+
+        await eventually(runs, timeout=20)
+        kill_daemon(worker, job.execution_id)
+        if started <= MAX_JOB_RESTARTS:
+            await worker.restart()  # wherever the next attempt is: waiting or sent
+    result = await ended(worker, job.execution_id)
+    assert result.state is ExecutionState.LOST
+    assert started_attempts(result) == MAX_JOB_RESTARTS
+    assert attempts_file(worker).count("attempt") == MAX_JOB_RESTARTS + 1
+
+
+@pytest.mark.asyncio
+async def test_each_attempt_has_its_own_output_budget(worker: Harness) -> None:
+    # Each attempt streams up to its output limit; the second's output is kept beside the
+    # first's in the one execution's events.
+    script = (
+        "head -c 60000 /dev/zero | tr '\\0' x; "
+        'if [ "$SANDBOX_JOB_ATTEMPT" = 1 ]; then touch started-1; sleep 60; fi'
+    )
+    job, _ = await worker.manager.submit(
+        request("budget", script, restart=True, output_limit_bytes=1024)
+    )
+    await running(worker.manager, job.execution_id)
+    await eventually((worker.workspace / "started-1").exists, timeout=10)
+    kill_daemon(worker, job.execution_id)
+    result = await ended(worker, job.execution_id)
+    assert result.state is ExecutionState.SUCCEEDED
+    events = worker.store.events_after(job.execution_id, 0)
+    queued = [
+        e.seq
+        for e in events
+        if e.type == "state" and getattr(e, "state", None) is (ExecutionState.QUEUED)
+    ]
+    assert len(queued) == 2
+    first = sum(len(e.text) for e in events if e.type == "stream" and e.seq < queued[1])
+    second = sum(len(e.text) for e in events if e.type == "stream" and e.seq > queued[1])
+    assert first > 0
+    assert second == first  # not dropped as past the first attempt's budget
+
+
+def restarted_record() -> Execution:
+    """A job's record with its first attempt lost and its second queued."""
+    submitted = datetime(2026, 11, 27, 8, tzinfo=UTC)
+    lost = JobAttempt(
+        attempt=1,
+        attempt_id="att-1",
+        started_at=submitted + timedelta(minutes=1),
+        lost_at=submitted + timedelta(hours=5),
+        reason="the sandbox executor incarnation stopped during this attempt",
+        stdout_path=".jobs/exe-1/stdout.log",
+        stderr_path=".jobs/exe-1/stderr.log",
+    )
+    return Execution(
+        execution_id="exe-1",
+        attempt_id="att-2",
+        operation_id="op",
+        kind="job",
+        context=CONTEXT,
+        state=ExecutionState.QUEUED,
+        submitted_at=submitted,
+        job=JobDetails(
+            purpose="sweep",
+            expected_progress="cells",
+            timeout_seconds=3600,
+            stdout_path=".jobs/exe-1/attempt-2/stdout.log",
+            stderr_path=".jobs/exe-1/attempt-2/stderr.log",
+            restart=True,
+            attempt=2,
+            attempts=(lost,),
+        ),
+    )

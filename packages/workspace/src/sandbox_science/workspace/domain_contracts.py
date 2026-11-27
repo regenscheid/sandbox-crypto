@@ -498,6 +498,8 @@ class BackgroundJob(TypedDict):
     purpose: str
     expected_progress: str
     elapsed_seconds: float
+    elapsed_total_seconds: float
+    """With a restarted job's lost attempts: each attempt has its own time limit."""
     exit_code: int | None
     error: str | None
     stdout: str

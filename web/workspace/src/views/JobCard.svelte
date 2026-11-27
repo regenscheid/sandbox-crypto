@@ -36,7 +36,11 @@
     {#if tag}<span class="job-tag" title="Job sandbox: profile and phase">{tag}</span>{/if}
     <strong>{job.purpose}</strong>
     <span class="job-state">{job.state}</span>
-    <span class="muted">{jobElapsed(job.elapsed_seconds)}</span>
+    <span class="muted"
+      >{jobElapsed(job.elapsed_seconds)}{#if job.attempts.length}, {jobElapsed(
+          job.elapsed_total_seconds,
+        )} in all attempts{/if}</span
+    >
     {#if !finishedStates.has(job.state) && oncancel}
       <button disabled={cancelling} onclick={oncancel}>
         {cancelling ? 'Cancelling…' : 'Cancel job'}

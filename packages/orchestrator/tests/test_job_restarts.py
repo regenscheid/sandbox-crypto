@@ -214,3 +214,15 @@ def test_the_review_sees_one_execution_with_its_lost_attempts() -> None:
     assert lost["attempt_id"] == "att-1"
     plain, _ = execution_projection(execution().model_dump(mode="json"))
     assert "lost_attempts" not in plain
+
+
+def test_the_job_view_adds_the_lost_attempts_time() -> None:
+    record = restarted()
+    assert record.job is not None
+    [lost] = record.job.attempts
+    assert lost.started_at is not None
+    ran = (lost.lost_at - lost.started_at).total_seconds()
+    value = summary(JobStatus(execution=record), datetime.now(UTC))
+    total = cast(float, value["elapsed_total_seconds"])
+    assert total == pytest.approx(cast(float, value["elapsed_seconds"]) + ran)
+    assert "The time limit applies to each attempt" in RESTART

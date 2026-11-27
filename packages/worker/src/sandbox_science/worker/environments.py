@@ -984,6 +984,11 @@ class Environments:
             raise WorkerError(ErrorKind.NOT_FOUND, f"no environment {environment_id!r}")
         return info
 
+    def stopped(self, environment_id: str) -> bool:
+        """Whether the worker manages the environment and its sandbox is stopped now."""
+        info = self.records.get(environment_id)
+        return info is not None and info.state is EnvironmentState.STOPPED
+
     def daemon_identity(self, environment_id: str) -> tuple[str, str] | None:
         """The sandbox a managed environment is bound to, by name and ID; None for an
         environment the worker did not create, or one without a sandbox ID yet."""

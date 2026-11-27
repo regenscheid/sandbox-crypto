@@ -51,6 +51,9 @@ class EnvironmentLifecycle:
     call_resources: JobResources | None = None
     """The limits of the environment's policy for a shell call or cell, its ``wall_time``
     above all; without it, calls keep their own time limits."""
+    environment_stopped: Callable[[str], bool] | None = None
+    """Whether a managed environment is stopped (suspended): a lost job's next attempt
+    waits for another use to start it rather than starting it itself."""
 
 
 UNMANAGED: Final = EnvironmentLifecycle()

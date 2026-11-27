@@ -129,8 +129,12 @@ MAX_JOB_INPUTS: Final = 64
 JobProfileName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")]
 """A job profile the worker's settings define, such as ``large`` (D93, JS-8)."""
 MAX_JOB_RESTARTS: Final = 3
-"""Times the worker starts a job that asked for ``restart`` again after losing it, so a
-job has at most this many attempts beyond its first."""
+"""Times the worker starts a job that asked for ``restart`` again after losing an attempt
+whose command had started, so a job runs its command at most this many times beyond its
+first."""
+MAX_JOB_ATTEMPTS: Final = 8
+"""Attempts a job's record keeps at most, those lost before their command started among
+them; the worker restarts a job no further once its record is full."""
 MAX_SURVIVED_FILES: Final = 100
 """Paths a lost attempt's record names as still there when the next attempt starts."""
 
@@ -605,7 +609,7 @@ class JobAttempt(Contract):
     """An earlier attempt of a job that asked for ``restart``: the worker lost it, and
     started the job again."""
 
-    attempt: Annotated[int, Field(ge=1, le=MAX_JOB_RESTARTS)]
+    attempt: Annotated[int, Field(ge=1, le=MAX_JOB_ATTEMPTS)]
     attempt_id: Identifier
     started_at: datetime | None = None
     """When its command started, by the worker's clock; ``None`` if it never did."""
@@ -641,10 +645,11 @@ class JobDetails(Contract):
     sandbox: JobSandbox | None = None
     restart: bool = False
     """The request's ``restart``: the worker starts it again when it loses it."""
-    attempt: Annotated[int, Field(ge=1, le=MAX_JOB_RESTARTS + 1)] = 1
+    attempt: Annotated[int, Field(ge=1, le=MAX_JOB_ATTEMPTS + 1)] = 1
     """The current attempt: 1, then one more for each restart."""
-    attempts: tuple[JobAttempt, ...] = Field(default=(), max_length=MAX_JOB_RESTARTS)
-    """The earlier attempts, each lost, oldest first."""
+    attempts: tuple[JobAttempt, ...] = Field(default=(), max_length=MAX_JOB_ATTEMPTS)
+    """The earlier attempts, each lost, oldest first. ``timeout_seconds`` applies to each
+    attempt on its own, so a restarted job can run for several time limits in all."""
 
 
 class ManifestFile(Contract):

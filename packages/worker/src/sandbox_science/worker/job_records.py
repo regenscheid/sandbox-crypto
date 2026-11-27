@@ -87,6 +87,23 @@ def create_progress_schema(db: sqlite3.Connection) -> None:
     )
 
 
+def create_attempt_schema(db: sqlite3.Connection) -> None:
+    """Append-only worker migration (version 13): each dispatch of a restartable job's
+    attempt, with the sandbox it went to, so that a restarted worker counts an attempt's
+    time from its dispatch and a later attempt never runs in another sandbox than the one
+    whose workspace it resumes from (job restarts)."""
+    db.execute(
+        """CREATE TABLE job_attempt_dispatches (
+    execution_id TEXT NOT NULL CHECK (length(execution_id) BETWEEN 1 AND 128),
+    attempt INTEGER NOT NULL CHECK (attempt BETWEEN 1 AND 64),
+    sandbox TEXT CHECK (sandbox IS NULL OR length(sandbox) BETWEEN 1 AND 2048),
+    sandbox_id TEXT CHECK (sandbox_id IS NULL OR length(sandbox_id) BETWEEN 1 AND 2048),
+    dispatched_at TEXT NOT NULL,
+    PRIMARY KEY (execution_id, attempt)
+) STRICT"""
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class JobSandboxRecord:
     """A job sandbox's row."""

@@ -158,6 +158,7 @@ export interface BackgroundJob {
   purpose: string;
   expected_progress: string;
   elapsed_seconds: number;
+  elapsed_total_seconds: number;
   exit_code: number | null;
   error: string | null;
   stdout: string;

@@ -20,6 +20,8 @@ import socket
 import time
 from collections.abc import Generator, Iterable
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Final
 
 KILL_ROUNDS = 5
 OWNER = "SANDBOX_SCIENCE_OWNER"
@@ -365,3 +367,43 @@ def job_usage(owner: str, leader: Leader | None) -> tuple[float, int]:
         except (OSError, ValueError, IndexError):
             continue
     return ticks / os.sysconf("SC_CLK_TCK"), pages * os.sysconf("SC_PAGE_SIZE")
+
+
+JOB_SESSIONS: Final = "job-sessions"
+"""The file in the executor's state directory where it notes each job's session, by its
+leader's pid and start time, so that a new daemon can end what an old one's jobs left."""
+
+
+def note_job_session(state: Path, leader: Leader) -> None:
+    """Note a job's session, so that a later daemon ends it even if its processes dropped
+    their owner mark (job restarts: never two attempts at once)."""
+    with contextlib.suppress(OSError):
+        state.mkdir(parents=True, exist_ok=True)
+        with open(state / JOB_SESSIONS, "a", encoding="ascii") as handle:
+            handle.write(f"{leader[0]} {leader[1]}\n")
+
+
+def noted_job_sessions(state: Path) -> list[Process]:
+    """The live processes in the job sessions an earlier daemon noted: in a session a
+    noted leader began, while no other process has taken that leader's pid."""
+    try:
+        lines = (state / JOB_SESSIONS).read_text(encoding="ascii", errors="replace").split()
+    except OSError:
+        return []
+    leaders: dict[int, int] = {}
+    for pid, start in zip(lines[0::2], lines[1::2], strict=False):
+        if pid.isdigit() and start.isdigit():
+            leaders[int(pid)] = int(start)
+    table = process_table()
+    me = os.getpid()
+    sessions = {
+        pid
+        for pid, start in leaders.items()
+        if (head := table.get(pid)) is None or head.start == start  # pid not reused
+    }
+    return [info for info in table.values() if info.session in sessions and info.pid != me]
+
+
+def forget_job_sessions(state: Path) -> None:
+    with contextlib.suppress(OSError):
+        (state / JOB_SESSIONS).unlink()

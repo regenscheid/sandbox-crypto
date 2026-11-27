@@ -101,6 +101,7 @@ RESTART: Final = (
     "command again, with the same working directory, environment and time limit, in this "
     "session's environment once that can be used again, up to "
     f"{MAX_JOB_RESTARTS} times; never after the command fails, times out or is cancelled. "
+    "The time limit applies to each attempt, so a restarted job can run for several in all. "
     "Each attempt has SANDBOX_JOB_ATTEMPT (1, then 2, ...) in its environment and logs of "
     "its own; job_status lists the attempts. A command without checkpoints starts again "
     "from the beginning."
@@ -244,6 +245,8 @@ def summary(status: JobStatus, now: datetime) -> dict[str, object]:
         if execution.job is not None
         else "",
         "elapsed_seconds": max(0, (now - started).total_seconds()),
+        "elapsed_total_seconds": max(0, (now - started).total_seconds())
+        + _attempts_seconds(execution),
         "exit_code": result.exit_code if result is not None else None,
         "error": clipped(result.error.message, 512)
         if result is not None and result.error
@@ -280,6 +283,18 @@ LOSS: Final = (
 UNKNOWN_SURVIVORS: Final = (
     "not known yet: the next attempt lists the files changed since this one was queued"
 )
+
+
+def _attempts_seconds(execution: Execution) -> float:
+    """The seconds a restarted job's lost attempts ran, from each start to its loss."""
+    job = execution.job
+    if job is None:
+        return 0.0
+    return sum(
+        max(0.0, (attempt.lost_at - attempt.started_at).total_seconds())
+        for attempt in job.attempts
+        if attempt.started_at is not None
+    )
 
 
 def _attempt(attempt: JobAttempt) -> dict[str, object]:

@@ -486,6 +486,7 @@ class Harness(WorkerApi):
         token: str = TOKEN,
         pool_id: str = "test-pool",
         store_name: str = "worker.sqlite3",
+        job_restarts: bool = True,
     ) -> None:
         self.root = root
         self.daemon = daemon
@@ -504,6 +505,7 @@ class Harness(WorkerApi):
             "capture_ack_timeout": capture_ack_timeout,
             "timeouts": timeouts,
             "clock": clock,
+            "job_restarts": job_restarts,
         }
         self.clock = clock
         self.heartbeat = heartbeat
@@ -602,6 +604,11 @@ class Harness(WorkerApi):
         self.shared = self._new_shared()
         self.manager = self.new_manager()
         await self.open()
+
+    def reconfigure(self, **options: Any) -> None:
+        """Change the manager's options for the next ``restart()``, as a changed settings
+        file does for a worker process started again."""
+        self._options.update(options)
 
     async def __aenter__(self) -> Self:
         if self._client is None:

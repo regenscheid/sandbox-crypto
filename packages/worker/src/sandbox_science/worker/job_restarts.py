@@ -11,15 +11,26 @@ the environment can be used again: the request the worker stored when the job wa
 so the same command, working directory, bindings, write area and time limit, under the
 session's context. It is the worker's own act, as recovery is, and needs no client: it runs
 whether or not a run of the session is active. Nothing secret is stored for it: the
-attempt is admitted under the stored context's authority, which a newer recovery epoch of
-the session refuses as it refuses any command of the old one.
+attempt is admitted under the stored context's authority, never an operator's and never
+that of the request whose task noticed the loss, so a newer recovery epoch of the session
+refuses it as it refuses any command of the old one.
+
+Never two attempts at once: a job restarts only when its attempt is known to have stopped,
+its sandbox gone or replaced or its daemon a new incarnation (which reaps the processes of
+the old one) or no longer holding the attempt; never when the same daemon may still run it.
+So restarts need the sandbox daemon transport: on the stdio transport an executor that
+exits can leave its commands running, and ``start_job`` with ``restart`` is refused there.
 
 A restart never follows a cancellation, the command's own end (a non-zero exit, a time
-limit) or a job sandbox's job, and stops at ``MAX_JOB_RESTARTS``. A session close or an
-environment release cancels a waiting attempt as any queued job. An environment the worker
-gives up, because its sandbox is gone, ends its waiting attempts ``lost``: the workspace they
-would resume from went with the sandbox. An environment that does not come back within
-``ManagerTimeouts.restart_wait`` ends them too.
+limit) or a job sandbox's job. It stops at ``MAX_JOB_RESTARTS`` attempts whose command
+started (an attempt lost before it started does not count) and at ``MAX_JOB_ATTEMPTS`` in
+the record. A session close or an environment release cancels a waiting attempt as any
+queued job. A waiting attempt runs only in the sandbox the lost one ran in: an environment
+the worker gives up, or creates again with another sandbox, ends it ``lost``, since the
+workspace it would resume from went with the sandbox. A stopped (suspended) environment
+holds it until something else starts the environment. An environment that does not come
+back within ``ManagerTimeouts.restart_wait`` ends it ``lost``, and so does the worker
+setting ``job_restarts = false``.
 """
 
 from __future__ import annotations
@@ -27,7 +38,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Coroutine
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from sandbox_science.contracts import (
@@ -35,6 +46,7 @@ from sandbox_science.contracts import (
     Clock,
     ErrorInfo,
     ErrorKind,
+    Execution,
     ExecutionRequest,
     ExecutionState,
     JobAttempt,
@@ -42,18 +54,32 @@ from sandbox_science.contracts import (
     Result,
     new_id,
 )
-from sandbox_science.contracts.worker import MAX_JOB_RESTARTS
+from sandbox_science.contracts.worker import MAX_JOB_ATTEMPTS, MAX_JOB_RESTARTS
 
 from .connections import Connection, EnvironmentConnections
 from .errors import WorkerError
-from .journal import ExecutionJournal
+from .journal import SOURCE_EVENT, ExecutionJournal
+from .lifecycle import EnvironmentLifecycle
 from .live import REQUEST, Live
-from .recovery_fence import current_admission
+from .recovery_fence import admitted, current_admission, operator_scope
 from .store import Store
 from .timeouts import ManagerTimeouts
 from .usability import Usability
 
 _log = logging.getLogger(__name__)
+
+STDIO_REFUSAL = (
+    "restart needs the sandbox daemon transport, which makes sure a lost attempt's "
+    "processes are gone before the next starts; this worker runs its executors over stdio"
+)
+"""Why ``start_job`` with ``restart`` is refused on the stdio transport."""
+DISABLED = "job restarts are turned off on this worker (job_restarts = false)"
+"""Why a restart is refused, or a waiting one ends, when the operator turned them off."""
+OLD_EXECUTOR = (
+    "this environment's executor predates job restarts; start the job without restart, "
+    "or recycle the environment"
+)
+"""Why a restartable job is refused, or fails before its command, on an older executor."""
 
 
 def attempt_logs(execution_id: str, attempt: int) -> tuple[str, str]:
@@ -63,6 +89,24 @@ def attempt_logs(execution_id: str, attempt: int) -> tuple[str, str]:
         f".jobs/{execution_id}" if attempt == 1 else f".jobs/{execution_id}/attempt-{attempt}"
     )
     return f"{directory}/stdout.log", f"{directory}/stderr.log"
+
+
+def started_attempts(execution: Execution) -> int:
+    """How many of a job's lost attempts had started their command: what restarts use."""
+    job = execution.job
+    return sum(attempt.started_at is not None for attempt in job.attempts) if job else 0
+
+
+def attempt_began(execution: Execution, dispatched: datetime | None) -> datetime:
+    """When an attempt's time limit began, as far as the worker recorded it: its start, or
+    for a later attempt that has not reported one its dispatch (``dispatched``), or failing
+    that the loss before it; the job's submission for its first."""
+    if execution.started_at is not None:
+        return execution.started_at
+    job = execution.job
+    if job is not None and job.attempts:
+        return dispatched or job.attempts[-1].lost_at
+    return execution.submitted_at
 
 
 class JobRestarts:
@@ -76,10 +120,13 @@ class JobRestarts:
         usability: Usability,
         *,
         clock: Clock,
-        timeouts: ManagerTimeouts,
+        timeouts: Callable[[], ManagerTimeouts],
+        lifecycle: Callable[[], EnvironmentLifecycle],
         connect: Callable[[str], Awaitable[Connection]],
         spawn: Callable[[Coroutine[Any, Any, Any]], asyncio.Task[Any]],
         dispatch: Callable[[Live, ExecutionRequest], Coroutine[Any, Any, None]],
+        daemon: bool,
+        enabled: bool,
     ) -> None:
         self.store = store
         self.journal = journal
@@ -87,28 +134,59 @@ class JobRestarts:
         self.usability = usability
         self.clock = clock
         self.timeouts = timeouts
+        self.lifecycle = lifecycle
         self.connect = connect
         self.spawn = spawn
         self.dispatch = dispatch
         """Sends an attempt to its executor: the dispatcher's way, which ends it whatever
         goes wrong."""
+        self.daemon = daemon
+        """Whether executors run under the sandbox daemon, which restarts need."""
+        self.enabled = enabled
+        """The worker setting ``job_restarts``."""
 
-    def refusal(self, live: Live) -> str | None:
+    def admission_refusal(self, request: JobRequest, hello: dict[str, Any] | None) -> str | None:
+        """Why ``start_job`` with ``restart`` is refused at once; ``None`` to accept it.
+        ``hello`` is the environment's open executor's, if one is open."""
+        if not request.restart:
+            return None
+        if not self.enabled:
+            return DISABLED
+        if not self.daemon:
+            return STDIO_REFUSAL
+        if hello is not None and hello.get("job_attempts") != 1:
+            return OLD_EXECUTOR
+        return None
+
+    def refusal(self, live: Live, *, gone: bool) -> str | None:
         """Why the worker does not start a job that asked for ``restart`` again now that it
-        lost it; ``None`` when it does. Not asked for a job that did not ask."""
-        job = live.execution.job
+        lost it; ``None`` when it does. ``gone``: the attempt is known to have stopped."""
+        execution = live.execution
+        job = execution.job
         if job is None or not job.restart:
             return "it did not ask for restart"
+        if not self.enabled:
+            return DISABLED
+        if not self.daemon:
+            return STDIO_REFUSAL
         if live.cancel_requested:
             return "it was being cancelled"
-        if len(job.attempts) >= MAX_JOB_RESTARTS:
+        if not gone:
+            return (
+                "the daemon that ran it may still be running it, and a second attempt "
+                "never runs beside the first"
+            )
+        started = started_attempts(execution) + (execution.started_at is not None)
+        if started > MAX_JOB_RESTARTS:
             return f"its {MAX_JOB_RESTARTS} restarts are used up"
-        if self.usability.winding_down(live.execution.context):
+        if len(job.attempts) >= MAX_JOB_ATTEMPTS:
+            return f"its record holds {MAX_JOB_ATTEMPTS} lost attempts already"
+        if self.usability.winding_down(execution.context):
             return "its session or its environment's executor is closing"
         return None
 
-    def take(self, live: Live, what: str) -> bool:
-        """Start a lost job again, if it asked for it: whether the worker took it.
+    def take(self, live: Live, what: str, *, gone: bool) -> bool:
+        """Start a lost job again, if it asked for it and may: whether the worker took it.
 
         ``what`` stopped during the attempt. A worker that is closing leaves the job
         unfinished: the next worker's startup finds it lost and restarts it then.
@@ -121,12 +199,16 @@ class JobRestarts:
             or job.sandbox is not None
             or live.final is not None  # its outcome is known; only its sync was cut short
             or execution.state in TERMINAL_STATES
-            or self.refusal(live) is not None
+            or self.refusal(live, gone=gone) is not None
         ):
             return False
         if self.usability.closing:
             return True
-        self._next_attempt(live, what)
+        token = SOURCE_EVENT.set(None)  # the queued state is no executor event's
+        try:
+            self._next_attempt(live, what)
+        finally:
+            SOURCE_EVENT.reset(token)
         self.spawn(self.start(live))
         return True
 
@@ -197,7 +279,19 @@ class JobRestarts:
             number,
         )
 
-    def pending(self, live: Live, saved: tuple[str, str, int, bool] | None) -> bool:
+    def held(self, live: Live) -> bool:
+        """Whether ``live`` is a restarted job's attempt that waits for its environment and
+        was never dispatched: a closing worker leaves it for the next one."""
+        job = live.execution.job
+        return (
+            job is not None
+            and job.restart
+            and bool(job.attempts)
+            and not live.dispatched
+            and live.execution.state not in TERMINAL_STATES
+        )
+
+    def waiting(self, live: Live, saved: tuple[str, str, int, bool] | None) -> bool:
         """Whether a job a restarted worker found unfinished is an attempt that waited for
         its environment and was never sent to a daemon, which ``start`` takes up again."""
         job = live.execution.job
@@ -208,23 +302,56 @@ class JobRestarts:
             and live.execution.state is ExecutionState.QUEUED
             and saved is not None
             and not saved[1]  # no daemon incarnation: never dispatched
-            and not saved[3]
         )
 
     async def start(self, live: Live) -> None:
-        """Dispatch the job's next attempt once its environment can be used, waiting with a
-        capped backoff; end it ``lost`` if the environment does not come back in time."""
+        """Dispatch the job's next attempt once its environment can be used.
+
+        The task may have been made by a request's task, an operator's among them, whose
+        context it copied: it drops that request's operator grant, admission and executor
+        event, so that only the job's own stored authority admits the attempt.
+        """
+        token = SOURCE_EVENT.set(None)
+        try:
+            with operator_scope(False), admitted(None):
+                await self._start(live)
+        finally:
+            SOURCE_EVENT.reset(token)
+
+    async def _start(self, live: Live) -> None:
+        """Wait with a capped backoff for the environment, in the lost attempt's sandbox;
+        end the job ``lost`` if it cannot run there in time."""
         job = live.execution.job
         if job is None or not job.attempts:
             return
-        deadline = job.attempts[-1].lost_at + timedelta(seconds=self.timeouts.restart_wait)
-        delay = self.timeouts.restart_retry
+        execution_id = live.execution.execution_id
+        timeouts = self.timeouts()
+        deadline = job.attempts[-1].lost_at + timedelta(seconds=timeouts.restart_wait)
+        delay = timeouts.restart_retry
         context = live.execution.context
+        recorded = self.store.attempt_dispatch(execution_id, job.attempts[-1].attempt)
+        sandbox = recorded[0] if recorded is not None else None
         while True:
             if live.execution.state in TERMINAL_STATES or live.dispatched or self.usability.closing:
                 return
+            if not self.enabled or not self.daemon:
+                self.end(live, DISABLED if not self.enabled else STDIO_REFUSAL)
+                return
+            lifecycle = self.lifecycle()
+            identity = lifecycle.daemon_identity
+            now_bound = identity(live.environment_id) if identity is not None else None
+            if sandbox is not None and now_bound is not None and now_bound != sandbox:
+                self.end(
+                    live,
+                    "its environment's sandbox is no longer the one the lost attempt ran "
+                    "in, so the workspace it would resume from is gone",
+                )
+                return
             reason = None
-            if self.usability.usable(context):
+            stopped = lifecycle.environment_stopped
+            if stopped is not None and stopped(live.environment_id):
+                reason = "its environment is stopped; the next use of it starts it"
+            elif self.usability.usable(context):
                 try:
                     await self.connect(live.environment_id)
                     break
@@ -239,15 +366,15 @@ class JobRestarts:
                 why = f" ({reason[:300]})" if reason else ""
                 self.end(
                     live,
-                    "its environment could not be used again within "
-                    f"{self.timeouts.restart_wait:g} s{why}",
+                    f"its environment could not be used again within {timeouts.restart_wait:g} s"
+                    + why,
                 )
                 return
             await self.clock.sleep(delay)
-            delay = min(2 * delay, self.timeouts.restart_retry_max)
+            delay = min(2 * delay, timeouts.restart_retry_max)
         if live.execution.state in TERMINAL_STATES or live.dispatched:
             return
-        saved = self.store.recovery(live.execution.execution_id)
+        saved = self.store.recovery(execution_id)
         try:
             request = REQUEST.validate_json(saved[0]) if saved is not None else None
         except ValueError:

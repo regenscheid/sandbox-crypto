@@ -31,6 +31,7 @@ const job: BackgroundJob = {
   purpose: '<script>attack</script>',
   expected_progress: 'progress once a minute',
   elapsed_seconds: 3601,
+  elapsed_total_seconds: 3601,
   exit_code: null,
   stdout: '<img src=x onerror=attack()>',
   stderr: 'ordinary error',
@@ -81,6 +82,7 @@ describe('job card', () => {
     };
     const html = render(JobCard, { props: { job: restarted } }).body;
     expect(html).toContain('Lost 1 time, restarted; attempt 2');
+    expect(html).toContain('in all attempts');
     expect(html).toContain('checkpoint.json');
     expect(html).not.toContain('did not restart it again');
     const ended = render(JobCard, {

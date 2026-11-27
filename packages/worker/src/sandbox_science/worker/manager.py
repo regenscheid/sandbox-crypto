@@ -118,7 +118,10 @@ class ExecutionManager:
         timeouts: ManagerTimeouts = MANAGER_TIMEOUTS,
         lifecycle: EnvironmentLifecycle = UNMANAGED,
         clock: Clock = SYSTEM_CLOCK,
+        job_restarts: bool = True,
     ) -> None:
+        """``job_restarts`` is the worker setting: whether a lost job that asked for
+        ``restart`` is started again (``job_restarts``)."""
         for name, value in (
             ("capture_timeout", capture_timeout),
             ("capture_ack_timeout", capture_ack_timeout),
@@ -223,7 +226,7 @@ class ExecutionManager:
             self._publication,
             RecoveryHooks(
                 lives=self._journal.live.values,
-                lose=lambda live, what: self._dispatcher.lose(live, what),
+                lose=lambda live, what, gone=False: self._dispatcher.lose(live, what, gone=gone),
                 spawn=self._spawn,
                 watch=lambda live, timeout: self._dispatcher.watch(live, timeout),
                 watch_cancel=lambda live: self._dispatcher.watch_cancel(live),
@@ -251,6 +254,8 @@ class ExecutionManager:
             shared=shared,
             lifecycle=lifecycle,
             sandboxes=lambda: self.job_sandboxes,
+            daemon=backend.daemon,
+            job_restarts=job_restarts,
         )
         self.job_sandboxes: JobSandboxes | None = None
         """Job sandboxes (D93), set when the worker is built with job profiles."""
