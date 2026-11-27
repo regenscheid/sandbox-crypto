@@ -7,11 +7,12 @@ row says so) runs the job; the test brings about the cause through the worker's 
 seams (the daemon killed or stopped, its identity changed, the worker restarted) and
 asserts, at the far end:
 
-- the job's final state and lost attempts, against what the agent's own tool texts
-  promise (``start_job``'s description and its ``restart`` parameter, O/jobs.py): a job
-  started with ``restart`` whose sandbox, executor or worker stops while it runs is
-  started again; one started without it ends lost and is not run again (the claims are
-  read from the texts, ``claimed``);
+- the job's final state and lost attempts, against the restart rules
+  (``RESTART_POLICY``, contracts/restarts.py) and what the agent's own tool texts say of
+  them (``start_job``'s description and its ``restart`` parameter, O/jobs.py): a job
+  started with ``restart`` is started again for a loss the rules restart for and no
+  refusal applies to; otherwise it ends lost, or is refused at the call, with the rule's
+  reason, and is not run again (``claimed``, which also checks the texts say the rule);
 - that a restarted job's written files include every attempt's (V3);
 - that every loss ends through the same ending, whose error names the logs left and,
   for a job that asked for restart, why it was not restarted (V9);
@@ -28,7 +29,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import re
 import signal
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, replace
@@ -40,6 +40,7 @@ import pytest_asyncio
 from pydantic import ValidationError
 
 from sandbox_science.contracts import Execution, ExecutionContext, ExecutionState, JobRequest
+from sandbox_science.contracts.restarts import RESTART_POLICY, LossCause, Refusal
 from sandbox_science.orchestrator.jobs import JOB_SPECS, RESTART
 from sandbox_science.orchestrator.jobs import _not_restarted as not_restarted
 from sandbox_science.testing import eventually
@@ -71,25 +72,6 @@ SCRIPT: Final = (
 """Each attempt notes itself and writes a file of its own; the first leaves a checkpoint
 and runs until the test writes ``stop``, and an attempt that finds the checkpoint
 resumes from it and ends."""
-
-# --- The claims, read from the agent's tool texts --------------------------------------
-
-Part = Literal["sandbox", "executor", "worker"]
-
-
-def claimed(part: Part, restart: bool) -> Literal["restarted", "lost"]:
-    """What the agent is told becomes of a job when ``part`` stops while it runs: from
-    ``start_job``'s description and its ``restart`` parameter's."""
-    (start,) = [spec for spec in JOB_SPECS if spec.name == "start_job"]
-    promised = re.search(r"its (sandbox), (executor) or (worker) stops while it runs", RESTART)
-    assert promised is not None, RESTART
-    if restart and part in promised.groups():
-        return "restarted"
-    assert f"If the sandbox, its executor or the {part}" in start.description or (
-        "the sandbox, its executor or the worker is lost" in start.description
-    )
-    return "lost"
-
 
 # --- The table ------------------------------------------------------------------------
 
@@ -129,9 +111,11 @@ class Known:
 @dataclass(frozen=True)
 class Ending:
     cause: Cause
-    part: Part | None
-    """What stopped, in the texts' words; ``None`` when nothing the texts name did."""
+    loss: LossCause | None
+    """Why the attempt was lost, as the rules name it; ``None`` when it is not lost."""
     restart: bool
+    refusal: Refusal | None = None
+    """A rule that refuses the restart whatever the loss: after it, or at the call."""
     known: Known | None = None
 
 
@@ -140,46 +124,20 @@ SILENT: Final = Known(
     NotOneEnding,
     "the watchdog finishes the job lost itself, without the log paths or a restart",
 )
+NEW, OTHER = LossCause.NEW_DAEMON, Refusal.OTHER_SANDBOX
+UNCONFIRMED, EXITED = LossCause.CANCEL_UNCONFIRMED, LossCause.EXECUTOR_EXITED
 ENDINGS: Final = (
-    Ending("executor_incarnation", "executor", False),
-    Ending(
-        "executor_incarnation",
-        "executor",
-        True,
-        Known("V3", FilesMissed, "a restarted job's written files are its last attempt's"),
-    ),
-    Ending("sandbox_replaced", "sandbox", False),
-    Ending(
-        "sandbox_replaced",
-        "sandbox",
-        True,
-        Known(
-            "V4",
-            NotAsClaimed,
-            "restart is promised for a lost sandbox; a replaced one ends the job lost",
-        ),
-    ),
-    Ending("executor_silent", "executor", False, SILENT),
-    Ending(
-        "executor_silent",
-        "executor",
-        True,
-        Known("V9", NotAsClaimed, "an executor that stops answering is never restarted"),
-    ),
-    Ending("worker_stdio", "worker", False),
-    Ending(
-        "worker_stdio",
-        "worker",
-        True,
-        Known(
-            "V12",
-            NotAsClaimed,
-            "restart is offered whatever the transport, and refused at the call on stdio",
-        ),
-    ),
+    Ending("executor_incarnation", NEW, False),
+    Ending("executor_incarnation", NEW, True),
+    Ending("sandbox_replaced", NEW, False, OTHER),
+    Ending("sandbox_replaced", NEW, True, OTHER),
+    Ending("executor_silent", UNCONFIRMED, False, known=SILENT),
+    Ending("executor_silent", UNCONFIRMED, True, known=SILENT),
+    Ending("worker_stdio", EXITED, False),
+    Ending("worker_stdio", EXITED, True, Refusal.STDIO),
     Ending("worker_daemon", None, False),
     Ending("worker_daemon", None, True),
-    Ending("may_still_run", None, True),
+    Ending("may_still_run", LossCause.SAME_DAEMON, True),
 )
 """``executor_incarnation``: the sandbox daemon dies and a new one starts (W/recovery.py
 loses the attempt, gone). ``sandbox_replaced``: it dies and the environment's sandbox is
@@ -188,6 +146,43 @@ stops answering past the job's limit (a gateway outage; the watchdog). ``worker_
 the worker restarts and its stdio executor goes with it. ``worker_daemon``: the worker
 restarts while the daemon keeps the job (the texts: jobs outlive it). ``may_still_run``:
 the worker loses its record of an attempt the same daemon may still run."""
+
+AT_THE_CALL: Final = frozenset({Refusal.STDIO, Refusal.LOCAL_BACKEND, Refusal.TURNED_OFF})
+"""Rules the worker applies when the job is submitted: a job that asks for restart is
+refused there rather than started without it."""
+
+# --- The claims: the rules, and what the agent's tool texts say of them ----------------
+
+Claim = Literal["restarted", "lost", "refused", "survived"]
+
+
+def claimed(ending: Ending) -> tuple[Claim, str | None]:
+    """What the rules make of the row's job, with the reason a job that is not started
+    again is given; and that ``start_job``'s texts say the same of its loss."""
+    if ending.loss is None:
+        return "survived", None
+    (start,) = [spec for spec in JOB_SPECS if spec.name == "start_job"]
+    loss = RESTART_POLICY.loss(ending.loss)
+    restarted, _, kept = RESTART.partition("It is not started again when")
+    assert loss.happened in (restarted if loss.restarts else kept), RESTART
+    if not ending.restart:
+        assert "is lost while the job runs, the job ends lost and its command is not run again" in (
+            start.description
+        )
+        return "lost", RESTART_POLICY.refusals[Refusal.NOT_ASKED]
+    if ending.refusal is not None:
+        why = RESTART_POLICY.refusals[ending.refusal]
+        if ending.refusal in AT_THE_CALL:
+            return "refused", why
+        assert why in kept, RESTART
+        if ending.refusal in (Refusal.OTHER_SANDBOX, Refusal.SANDBOX_GONE):
+            assert "a sandbox that was deleted or replaced never is" in start.description
+        return "lost", why
+    if loss.restarts:
+        return "restarted", None
+    assert f"{loss.happened} ({loss.why})" in kept, RESTART
+    return "lost", loss.why
+
 
 PROFILE_ROWS: Final = {
     ("any", True): "refused by the request's contract (test_a_profile_job_cannot_restart)",
@@ -285,7 +280,10 @@ async def bring_about(worker: Harness, ending: Ending, execution_id: str) -> Exe
             if ending.cause == "worker_daemon":
                 stop(worker)
         case "may_still_run":
-            worker.view.lose(execution_id, "the executor with an invalid replay range")
+            # As the dispatcher ends it (W/dispatcher.py, an invalid replay range).
+            worker.view.lose(
+                execution_id, "the executor with an invalid replay range", LossCause.SAME_DAEMON
+            )
     try:
         return await ended(worker, execution_id)
     finally:
@@ -298,14 +296,19 @@ async def test_a_lost_job_ends_as_its_tool_texts_say(
 ) -> None:
     worker = stdio if ending.cause == "worker_stdio" else daemon
     limit = 2.0 if ending.cause == "executor_silent" else None
+    expected, why = claimed(ending)
+    if ending.cause == "may_still_run":
+        assert expected == "lost"  # nothing the texts name stopped: the daemon may still run it
     try:
         job, _ = await worker.manager.submit(
             request(ending.cause, restart=ending.restart, timeout=limit)
         )
     except WorkerError as refused:
-        if ending.part is not None and claimed(ending.part, ending.restart) == "restarted":
+        if expected != "refused" or why is None or why not in refused.message:
             raise NotAsClaimed(f"refused at the call: {refused.message}") from refused
-        raise
+        return
+    if expected == "refused":
+        raise NotAsClaimed(f"accepted, though the rules refuse it at the call: {why}")
     await running(worker.manager, job.execution_id)
     await eventually((worker.workspace / "checkpoint").exists, timeout=10)
     result = await bring_about(worker, ending, job.execution_id)
@@ -314,10 +317,7 @@ async def test_a_lost_job_ends_as_its_tool_texts_say(
     assert result.result is not None
     error = result.result.error.message if result.result.error is not None else ""
 
-    # The ending against what the texts promise.
-    expected = "survived" if ending.part is None else claimed(ending.part, ending.restart)
-    if ending.cause == "may_still_run":
-        expected = "lost"  # nothing the texts name stopped: the daemon may still run it
+    # The ending against what the rules and the texts say.
     if expected == "restarted":
         if result.state is not ExecutionState.SUCCEEDED or not details.attempts:
             raise NotAsClaimed(f"{result.state}, {len(details.attempts)} lost: {error}")
@@ -326,18 +326,26 @@ async def test_a_lost_job_ends_as_its_tool_texts_say(
     elif expected == "lost":
         if result.state is not ExecutionState.LOST:
             raise NotAsClaimed(f"{result.state}: {error}")
-        assert details.attempts == ()
-        assert (worker.workspace / "attempts").read_text() == "attempt 1\n"  # not run again
+        # Not run again. A rule that refuses the restart once the next attempt waits (its
+        # sandbox replaced) leaves the lost attempt in the record, and no other.
+        assert details.attempts == () or (
+            ending.refusal is not None and [a.attempt for a in details.attempts] == [1]
+        ), details.attempts
+        assert (worker.workspace / "attempts").read_text() == "attempt 1\n"
     else:
         assert result.state is ExecutionState.SUCCEEDED, (result.state, error)
         assert details.attempts == ()
 
     # One ending for every loss: its logs, and why a job that asked was not restarted.
     if result.state is ExecutionState.LOST:
-        if "partial whole logs remain at" not in error:
+        # The logs left: the attempt's (the dispatcher's ending) or every attempt's (the
+        # ending of a job whose next attempt waited, W/job_restarts.py).
+        if f".jobs/{result.execution_id}/" not in error or "logs" not in error:
             raise NotOneEnding(error)
         if details.restart and "not restarted" not in error:
             raise NotOneEnding(error)
+        if details.restart and why is not None and why not in error:
+            raise NotAsClaimed(f"not restarted for another reason than {why!r}: {error}")
         # What the agent's notice says of it (O/jobs.py, _not_restarted).
         told = str(not_restarted(result)["restart"])
         if details.restart:
@@ -345,11 +353,15 @@ async def test_a_lost_job_ends_as_its_tool_texts_say(
         else:
             assert "not started with restart" in told, told
 
-    # A restarted job's written files are every attempt's.
-    if details.attempts:
-        written = set(result.result.written_files)
-        if not {"checkpoint", "wrote-1"} <= written:
-            raise FilesMissed(f"written: {sorted(written)}")
+    # A restarted job's written files are every attempt's: the last one's result, and
+    # each lost attempt's as the next found them, credited to the attempt that wrote them.
+    if result.state is ExecutionState.SUCCEEDED and details.attempts:
+        first = {f.path for f in details.attempts[0].survived or ()}
+        written = set(result.result.written_files).union(
+            *({f.path for f in a.survived or ()} for a in details.attempts)
+        )
+        if not {"checkpoint", "wrote-1"} <= first or "wrote-2" not in written:
+            raise FilesMissed(f"first attempt's: {sorted(first)}; all: {sorted(written)}")
 
 
 def test_a_profile_job_cannot_restart() -> None:

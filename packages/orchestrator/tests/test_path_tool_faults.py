@@ -72,6 +72,7 @@ from sandbox_science.contracts import (
     WriteFileRequest,
 )
 from sandbox_science.contracts.environment_claims import CLAIM_SECONDS
+from sandbox_science.contracts.restarts import LossCause
 from sandbox_science.contracts.worker import MAX_JOB_RESTARTS, TERMINAL_STATES
 from sandbox_science.orchestrator.confinement.transport import TransportError
 from sandbox_science.orchestrator.context.history import body
@@ -496,7 +497,7 @@ async def worker(tmp_path: Path) -> AsyncIterator[FaultyWorker]:
         # passes this ``what``), reached as ManagerView.lose does in the worker's tests.
         live = manager._journal.live.get(execution)
         if live is not None:
-            manager._dispatcher.lose(live, "the sandbox executor incarnation", gone=True)
+            manager._dispatcher.lose(live, "the sandbox executor incarnation", LossCause.NEW_DAEMON)
             faults.lost.append(execution)
 
     @web.middleware
@@ -1181,15 +1182,11 @@ class WrongCount(Violation):
     """The restart notice's count contradicts the worker's own bound."""
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=WrongCount,
-    reason="V13: `attempt n of at most 4` counts attempts lost before they started",
-)
 async def test_a_restart_notice_counts_attempts_as_the_worker_does(jobs: Jobs) -> None:
     """A job whose second and third attempts were lost before their commands started:
-    the worker has used two of its three restarts (only started attempts count,
-    W/job_restarts.py:94-97), and starts a fifth attempt."""
+    the worker has used two of its three restarts (only attempts whose command was sent
+    count, ``JobAttempt.sent``), and starts a fifth attempt, whose notice says the command
+    was sent to run twice of at most four times."""
     tools = jobs.tools("run-1")
     job = await jobs.start(tools, "true", "op-counted")
     execution = await jobs.ended(job)
@@ -1202,6 +1199,7 @@ async def test_a_restart_notice_counts_attempts_as_the_worker_does(jobs: Jobs) -
             attempt_id=f"att-{number:024x}",
             started_at=now if started else None,
             lost_at=now,
+            sent=started,
             reason="the sandbox executor incarnation stopped during this attempt",
             stdout_path=f".jobs/{job}/stdout.log",
             stderr_path=f".jobs/{job}/stderr.log",
@@ -1218,9 +1216,10 @@ async def test_a_restart_notice_counts_attempts_as_the_worker_does(jobs: Jobs) -
     )
     assert sum(a.started_at is not None for a in attempts) - 1 < MAX_JOB_RESTARTS
     said = str(lost_notice(restarting, attempts[-1])["restart"])
-    counted = re.search(r"attempt (\d+) of at most (\d+)", said)
+    counted = re.search(r"sent to run (\d+) of at most (\d+) times", said)
     assert counted is not None, said
-    if int(counted[1]) > int(counted[2]):
+    runs = sum(a.started_at is not None for a in attempts)
+    if int(counted[1]) != runs or int(counted[2]) != MAX_JOB_RESTARTS + 1:
         raise WrongCount(said)
 
 
