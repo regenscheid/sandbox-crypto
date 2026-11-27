@@ -88,6 +88,7 @@ const delegation = (id: string, fields: Partial<Delegation> = {}): Delegation =>
   review: null,
   reviewed_at: null,
   reviewed_by: null,
+  review_reads: null,
   review_reason: null,
   review_note: null,
   ...fields,

@@ -772,6 +772,7 @@ export interface Delegation {
   reviewed_by: string | null;
   review_reason: "parent" | "parent_ended" | "session_closed" | "review_max" | null;
   review_note: string | null;
+  review_reads: Record<string, JsonValue> | null;
 }
 
 /** One of a delegation's outcomes, as its run ended, numbered from 1 (PD-46). */
