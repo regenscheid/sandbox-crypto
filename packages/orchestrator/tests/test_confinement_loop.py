@@ -423,7 +423,12 @@ async def test_the_host_takes_only_the_loops_own_summaries_from_the_runtime(
         reply = await runtime(kind, value)
         if kind is Capability.RUN and isinstance(reply, dict):
             summaries = cast(dict[str, JsonValue], reply["summaries"])
-            summaries |= {"tool_mix": {"forged": 1}, "messages": "forged", "planted": 1}
+            summaries |= {
+                "tool_mix": {"forged": 1},
+                "messages": "forged",
+                "planted": 1,
+                "connectors": {"offered": True, "forged": 1},
+            }
         return reply
 
     script = (Reply("Part one, ", finish="length"), Reply("part two."))
@@ -435,6 +440,8 @@ async def test_the_host_takes_only_the_loops_own_summaries_from_the_runtime(
     assert "planted" not in record.summaries
     assert record.summaries["tool_mix"] != {"forged": 1}
     assert record.summaries.get("messages") != "forged"
+    # The host's word on connectors stands: this run had none (R13).
+    assert record.summaries["connectors"] == {"offered": False, "reason": "none"}
 
 
 def test_the_runtimes_summaries_are_bounded_before_the_record_is_saved() -> None:

@@ -439,6 +439,11 @@ WITHHELD: Final = {"offered": False, "reason": "other_project"}
 deployment's connectors serve another project, which neither names."""
 
 
+NOT_OFFERED_CONNECTORS: Final = {"offered": False, "reason": "none"}
+"""What a run's record's ``summaries.connectors`` says when the run had no connector
+tools: the deployment has none, or none could be listed."""
+
+
 def withheld(mcp: McpAccess | None, project: str) -> bool:
     """Whether a run of ``project`` gets no connectors although the deployment has them:
     they serve another project. Its model is told so, and its records say why; a
@@ -1250,6 +1255,8 @@ class Harness:
                 transcript.fail("cleanup")
         if withheld(self.mcp, admitted.context.project_id):
             transcript.summaries["connectors"] = dict(WITHHELD)
+        else:
+            transcript.summaries.setdefault("connectors", dict(NOT_OFFERED_CONNECTORS))
         return Finished(
             admitted.run_id,
             admitted.context,
