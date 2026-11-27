@@ -309,8 +309,15 @@ and publishes none of them again. A file that fails leaves the others published.
 
 The model reads one compact entry per file, in the order given: `path`, `artifact`
 (the inventory's `artifact-…` ID), `revision`, `sha256` and `size`, or `path` and
-`error` with its `kind` and `message`. A `held` receipt is the file's error
-(`unavailable`; `internal` for a `failed` one), with the receipt's message. For
+`error` with its `kind` and a `message` that starts with the path. A file the
+inventory kept no revision of is the file's error: the kind of the worker's definite
+refusal, which the publisher keeps beside the held receipt
+(`ArtifactPublicationOutcome.refused`), so a path with no file is `not_found` and a
+directory `invalid_request`, as a path outside the workspace is; `internal` for a
+`failed` receipt; otherwise `unavailable`, for a worker or store that could not finish
+it, whose message says the call may be made again. A replay of the same operation
+after a refusal finds the held intent, which is never published again under that
+operation, and answers `unavailable`. For
 `path` the entry is the result's `published`, or the call's `error`; for `paths`,
 `published` is the list, and the call is an error only when every file failed.
 Without an inventory the entry names the worker's `art-…` snapshot ID and has no

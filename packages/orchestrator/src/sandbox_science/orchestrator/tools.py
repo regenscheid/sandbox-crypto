@@ -57,7 +57,7 @@ from sandbox_science.contracts.worker import (
 
 from . import capabilities as caps
 from .agent_messages import AgentMailbox
-from .artifact_publisher import ArtifactPublisher
+from .artifact_publisher import ArtifactPublicationOutcome, ArtifactPublisher
 from .connectors import (
     MAX_LOAD,
     MAX_LOADED_CHARS,
@@ -1906,7 +1906,13 @@ class Toolbox:
         inventory's ``artifact-…`` ID; ``revision``; ``sha256``; ``path``; ``size``) or its
         error, and what the record keeps of it: the worker's snapshot and the receipt."""
         if self.artifacts is None:
-            artifact = await self.client.publish(request)
+            try:
+                artifact = await self.client.publish(request)
+            except WorkerAPIError as exc:
+                if exc.uncertain:
+                    raise
+                error = {"kind": exc.kind.value, "message": f"{request.path}: {exc.message}"}
+                return {"path": request.path, "error": error}, {}
             shown = {
                 "path": request.path,
                 "artifact": artifact.artifact_id,
@@ -1922,10 +1928,7 @@ class Toolbox:
         record = {"artifact": worker, "artifact_inventory": receipt.model_dump(mode="json")}
         revision = receipt.revision
         if receipt.state != "recorded" or revision is None:
-            # Held: the worker may have its snapshot, but the inventory kept no revision.
-            kind = ErrorKind.UNAVAILABLE if receipt.state == "held" else ErrorKind.INTERNAL
-            message = receipt.message or f"the publication was {receipt.state}"
-            return {"path": request.path, "error": {"kind": kind.value, "message": message}}, record
+            return {"path": request.path, "error": _held(request.path, result)}, record
         shown = {
             "path": request.path,
             "artifact": revision.artifact_id,
@@ -2283,6 +2286,22 @@ def _part(operation: str, index: int) -> str:
     call's operation and the index, with a digest of both, within 128 characters."""
     digest = hashlib.sha256(f"{operation}\0{index}".encode()).hexdigest()[:16]
     return f"{operation[:105].rstrip('-._')}-{index}-{digest}"
+
+
+def _held(path: str, outcome: ArtifactPublicationOutcome) -> dict[str, str]:
+    """A publication the inventory kept no revision of, as the model reads its error,
+    naming the path: the worker's refusal as it gave it (``not_found`` for no file,
+    ``invalid_request`` for a directory); ``internal`` for a ``failed`` receipt; else
+    ``unavailable``, which says the call may be made again."""
+    receipt = outcome.receipt
+    message = f"{path}: {receipt.message or f'the publication was {receipt.state}'}"
+    if outcome.refused is not None:
+        kind = outcome.refused
+    else:
+        kind = ErrorKind.UNAVAILABLE if receipt.state == "held" else ErrorKind.INTERNAL
+    if kind == ErrorKind.UNAVAILABLE:
+        message += "; the worker or the store could not finish it, and the call may be made again"
+    return {"kind": kind.value, "message": message}
 
 
 def _invalid(error: ValidationError) -> dict[str, str]:
