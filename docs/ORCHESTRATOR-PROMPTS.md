@@ -259,11 +259,14 @@ goal, and each current step's title, track, status and CAS cursor (`step_cursor`
 `changed_since_record` when a revision changed it after its latest record); `detail: full`
 returns the full bounded body and, for every current step, a compact status, fingerprint,
 attribution and CAS projection; long notes, evidence and history are explicit pages. When
-another actor changed the plan since the run last saw it, either form adds
-`changed_by_others`: who changed what, a line each, and each step they touched in full (its
-fields, and its latest record with its note, evidence and author), every step when more
-changed than the run's event scan holds; a read too large to carry them says so and counts
-as no read, so the plans notice before the next turn shows the plan. Either satisfies the fence only after a successful
+another actor changed the plan since the run last saw it, either form, and the plans
+notice, add `changed_by_others`: who changed what, a line each; the plan's own fields a
+revision changed (`plan_fields`: goal, feasibility, outputs, tracks), as they now are; and
+each step they touched in full (its fields, and its latest record with its note, evidence
+and author), every step when more changed than the run's event scan holds. A read shows
+at most 96 KiB of steps and a notice 32 KiB; the rest (`more`) comes in the next notice or
+read, and the plan counts as read only once a delivered read or notice showed the last of
+them. A later change by another actor shows everything again. Either satisfies the fence only after a successful
 model call includes it and its plan state (ref, status, progress and event pins) is
 still current; otherwise the next safe point shows the plan again. Historical reads,
 mutation or replay receipts, a failed model call, or a read and an effect in the same

@@ -2641,3 +2641,68 @@ async def test_only_the_platform_says_who_recorded_an_outcomes_evidence(fixture)
     await call(f, "plan_finish", **finishing("theirs", [other], cursor=1))
     (kept,) = f.core.current(f.user).head.outcome.evidence
     assert (kept.written_by.session_id, kept.reference_id) == ("other", theirs.artifact_id)
+
+
+@pytest.mark.asyncio
+async def test_a_revision_of_the_plans_own_fields_is_shown_in_full(fixture):
+    """Round 3, D: another actor's revision that changes only the plan's outputs and
+    feasibility shows those fields as they now are, not only its reason."""
+    f = fixture
+    ref, _ = await active(f)
+    await read_and_deliver(f)
+    edited = body()
+    edited["feasibility"] = "Only seed 42 is feasible"
+    edited["outputs"] = (
+        {"title": "Table", "description": "Ranks by degree", "evidence_standard": "Exact"},
+    )
+    f.core.revise(
+        f.user, "fields", PlanRef.model_validate(ref), PlanBody.model_validate(edited), "Scope"
+    )
+    read, _ = await call(f, "plan_read")
+    changed = read["changed_by_others"]
+    assert changed["steps"] == []
+    assert changed["plan_fields"]["feasibility"] == "Only seed 42 is feasible"
+    assert changed["plan_fields"]["outputs"][0]["title"] == "Table"
+    assert "goal" not in changed["plan_fields"]
+
+
+@pytest.mark.asyncio
+async def test_changes_too_many_for_one_read_are_shown_in_parts_before_the_plan_is_read(
+    fixture,
+):
+    """Round 3, D: when others changed more steps than one read or notice can show, each
+    shows the next part in full, and the plan counts as read only once all were shown,
+    by reads and notices alike."""
+    f = fixture
+    created, _ = await call(
+        f, "plan_create", operation_id="create", body=body(count=60), reason="Initial"
+    )
+    ref = created["receipt"]["ref"]
+    await call(
+        f, "plan_activate", operation_id="activate", base=ref, reason="Begin",
+        expected_status_revision=1, expected_progress_cursor=0,
+    )  # fmt: skip
+    await read_and_deliver(f)
+    plan = PlanRef.model_validate(ref)
+    for i in range(60):
+        f.core.progress(f.user, f"pause-{i}", plan, f"step-{i}", 0, "blocked", f"{i} " + "n" * 3000)
+    seen: list[str] = []
+    notice = await f.adapter.safe_point()
+    part = notice.payload["changed_by_others"]
+    assert part["more"] > 0
+    assert part["steps"][0]["latest"]["note"].startswith("0 ")
+    assert notice.pin is None  # shown in part: its delivery reads nothing yet
+    seen += [s["step_id"] for s in part["steps"]]
+    await f.adapter.model_delivered()
+    while True:
+        read, _ = await call(f, "plan_read")
+        part = read["changed_by_others"]
+        seen += [s["step_id"] for s in part["steps"]]
+        await f.adapter.model_delivered()
+        if "more" not in part:
+            break
+        with pytest.raises(DocumentError, match="reread_required"):
+            await f.adapter.check_dispatch("effect")
+    assert sorted(seen) == sorted(f"step-{i}" for i in range(60))
+    assert len(seen) == len(set(seen))
+    await f.adapter.check_dispatch("effect")
