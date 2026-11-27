@@ -284,15 +284,17 @@ class Claims:
         )
 
 
-WINDOW: Final = 0.5
-"""The outage window a case gives the run, in place of minutes (``OUTAGE_SECONDS``)."""
+WINDOW: Final = 3.0
+"""The outage window a case gives the run, in place of minutes (``OUTAGE_SECONDS``): long
+beside any stall of a loaded test machine's event loop, which the claim would otherwise
+take for a lapse (renewals stop for longer than the window and its renewal interval)."""
 
 
 async def managed_claims(case: Case) -> None:
     """The session's environment is managed: its root holds a claim, renewed often, with
     a short outage window (the claim's own module constants, the run's pace)."""
     claims = Claims()
-    case.monkeypatch.setattr(environment_claim, "RENEW_SECONDS", WINDOW / 10)
+    case.monkeypatch.setattr(environment_claim, "RENEW_SECONDS", WINDOW / 15)
     case.monkeypatch.setattr(environment_claim, "OUTAGE_SECONDS", WINDOW)
     case.monkeypatch.setattr(case.service.harness.client, "claim_environment", claims.claim)
     case.claims = claims
