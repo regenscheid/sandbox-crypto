@@ -239,3 +239,32 @@ def test_the_skills_answer_the_second_baseline_runs_sources_and_measurements() -
     delegating = " ".join(body("delegating-work").split())
     assert "Start a task as soon as what it needs is in hand" in delegating
     assert "wait for it only when nothing else is left" in delegating
+
+
+def test_the_skills_answer_the_second_baseline_runs_checks_and_long_computations() -> None:
+    """Lane G4b: a long computation checkpoints as it goes and resumes from its files, its
+    timeout comes from a pilot, a restartable job is one safe to run again, and a lost job
+    is waited for again; a cross-check rebuilds the numbers from the raw outputs and
+    reports a disagreement with the source as data; a claim about every instance rests
+    on more than one; a parent reproduces a value of an independent check itself."""
+    computation = " ".join(body("computation").split())
+    for said in (
+        "A long computation writes its progress to files as it goes",
+        "On start it reads them and skips what is done",
+        "keep a checkpoint of its own where the method allows, or choose a method that has one",
+        "with a margin of one and a half to two times, since a job that times out is not "
+        "started again",
+        "only when its command is safe to run again and resumes from its checkpoints",
+        "read the job's attempts and wait again rather than start the job anew",
+        "A cross-check rebuilds every reported number from the raw outputs",
+        "It hard-codes no value it expects and asserts no outcome the source predicts",
+        "a genuine disagreement with the source is a result, not a failed check",
+        "measure more than one and say how many; where one must do, say so beside the result",
+    ):
+        assert said in computation, said
+    delegating = " ".join(body("delegating-work").split())
+    assert (
+        "Before accepting a task that checks your work independently, reproduce at least one "
+        "of its values yourself from its code or outputs, and say which: reading its files "
+        "is not a check."
+    ) in delegating

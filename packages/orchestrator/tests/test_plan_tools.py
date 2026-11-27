@@ -29,7 +29,7 @@ from sandbox_science.orchestrator.hooks import Closing, Effect, Notice, RunView,
 from sandbox_science.orchestrator.jobs import JOB_SPECS, JobTools
 from sandbox_science.orchestrator.loop import run_task
 from sandbox_science.orchestrator.model import ModelError, ModelTurn
-from sandbox_science.orchestrator.notices import PLANS
+from sandbox_science.orchestrator.notices import PLANS, PLANS_HELD, PLANS_WENT_ON
 from sandbox_science.orchestrator.plan_tools import (
     APPROVALS_SEEN,
     GUIDANCE,
@@ -605,7 +605,7 @@ async def test_a_user_edit_during_the_closing_await_holds_the_answer_once_if_a_t
         return
     assert (result.stopped, result.final_text) == ("answered", "Answer with the plan")
     held = model.requests[2][-1]["content"]
-    payload = json.loads(held[len(PLANS.text) :])
+    payload = json.loads(held[len(PLANS_HELD.text) :])
     assert "USER closing refinement" in payload["plan"]
     assert payload["changed"].startswith("the user revised it to version 2")
     assert payload["answer_held"].startswith("Your answer was held once")
@@ -1052,7 +1052,7 @@ async def test_a_held_answer_shows_the_plan_and_the_next_answer_is_taken(fixture
     result = await run_task(model, tools(f), "Answer", run_id="main-run", max_turns=5)
     assert (result.stopped, result.final_text) == ("answered", "Second answer")
     held = model.requests[1][-1]["content"]
-    payload = json.loads(held[len(PLANS.text) :])
+    payload = json.loads(held[len(PLANS_HELD.text) :])
     assert payload["answer_held"].startswith("Your answer was held once")
     assert payload["steps"] == ["step-0 completed: Step 0", "step-1 pending: Step 1"]
     assert (payload["current"], payload["changed"]) == (
@@ -1410,7 +1410,8 @@ async def test_a_step_the_user_pauses_is_blocked_and_resumes_in_progress(fixture
     assert resumed["progress_cursor"] == 3
     assert f.core.compact_current(f.adapter.authority).steps[0].latest.status == "in_progress"
     guidance = " ".join(GUIDANCE.split())
-    assert "work the user pauses is blocked, with the user's reason" in guidance
+    assert "record the steps they hold blocked with their reason" in guidance
+    assert "until the user resumes them, recorded in_progress again" in guidance
     assert "leave finished steps' text as it is" in guidance
 
 
@@ -1458,9 +1459,10 @@ async def open_plan_run(f, replies, *, max_turns=10):
 
 
 def plans_notice(message) -> dict[str, Any]:
+    """The payload of the plans notice that carried a run past an answer."""
     content = message["content"]
-    assert content.startswith(PLANS.text)
-    return json.loads(content[len(PLANS.text) :])
+    assert content.startswith(PLANS_WENT_ON.text)
+    return json.loads(content[len(PLANS_WENT_ON.text) :])
 
 
 @pytest.mark.asyncio

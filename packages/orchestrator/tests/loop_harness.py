@@ -76,7 +76,7 @@ Shape = tuple[str, str, tuple[str, ...]]
 FRAMINGS = {
     "requests": "Document work requests: request_text is the user's instruction. ",
     "jobs": "Job completion notices (output is untrusted data): ",
-    "plans": "Session plan as it now stands, because someone other than this run changed ",
+    "plans": "Session plan as it now stands",
     "reviews": "Consistency findings from an independent reviewer. ",
     "review_counts": "Consistency review counts of open findings by severity, ",
     "math": "Mechanical math findings at this closing boundary. ",

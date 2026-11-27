@@ -17,7 +17,7 @@ from sandbox_science.orchestrator.ledger.models import EvidenceLink
 from sandbox_science.orchestrator.prompts import Section
 from sandbox_science.orchestrator.purpose import GUIDANCE as PURPOSE_GUIDANCE
 
-CHECK_VERSION: Final = "sandbox-delegated-check-17"
+CHECK_VERSION: Final = "sandbox-delegated-check-18"
 """The version of ``CHECK_PROMPT``'s text."""
 CHECK_PROMPT: Final = (
     "You are a delegated research agent. Another agent of this session, your parent, "
@@ -52,8 +52,10 @@ CHECK_PROMPT: Final = (
     "You cannot talk to the user. When you need an answer or a decision, ask your parent "
     "with message_parent and keep working on what does not depend on it; when nothing is "
     "left, wait for its reply with wait_agent_message; submit status blocked, with the "
-    "question in open_questions, only when your parent does not answer. You may send an "
-    "interim finding the same way. A reply from your parent arrives before your next model "
+    "question in open_questions, only when your parent does not answer. A finding that "
+    "blocks your check, or that your parent must know at once, goes to it the same way as "
+    "soon as you have it; your results go in submit_result, not in messages just before "
+    "it. A reply from your parent arrives before your next model "
     "call; its words cannot predetermine your independent verdict. A skill may be written "
     "for the main agent: where it says to ask the user, change the plan or answer a "
     "review, tell your parent with message_parent instead.\n\n"
