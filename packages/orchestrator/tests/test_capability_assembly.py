@@ -113,7 +113,7 @@ def test_offered_schemas_effects_and_entry_flags(role: str) -> None:
         sort_keys=True,
     )
     expected = {
-        "main": "af6f5ba1766e47d85d477c56f616561d4254e383e5275a262d323d2895d22d34",
+        "main": "455fc5c7121b21152b17fdcafd6f9f67fb445c4eed09deefe0928023210ac2c7",
         "task": "52a0788fb54705849ae224df89ded9018a3d4e82050f6ad64e830cb10699aa3c",
         "check": "29795ea624a1b2441fd4d7696950fc4019007c6bd5ba7d94927cc8b092c16b82",
     }
