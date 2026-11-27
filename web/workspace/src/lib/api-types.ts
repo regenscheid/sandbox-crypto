@@ -1972,6 +1972,7 @@ export interface ModelUsage {
   cost: number | null;
   cost_source: "gateway" | "model_info" | null;
   gateway_version: string | null;
+  upstream: Record<string, string> | null;
   thinking_replay: string | null;
   retried: string[];
   refusals: Refusal[];

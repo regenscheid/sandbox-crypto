@@ -609,6 +609,7 @@ async def test_a_run_rides_out_a_rate_limit_and_records_its_usage(harness: Harne
             "cost": None,
             "cost_source": None,  # the scripted gateway gives no prices either
             "gateway_version": GATEWAY_VERSION,  # each call's, as the run record keeps it
+            "upstream": None,  # the scripted gateway names no deployment
             "thinking_replay": None,  # chat completions sends no thinking back
             "retried": retried,
             "refusals": [],  # no call was declined (CM-42a)

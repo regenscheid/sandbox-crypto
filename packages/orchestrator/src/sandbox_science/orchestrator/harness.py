@@ -888,7 +888,10 @@ class Harness:
         context = admitted.context
         role = self.role(admitted.request)
         model = self._reserved(
-            cached_for(role.model, context.project_id, context.session_id), role.alias
+            cached_for(
+                role.model, context.project_id, context.session_id, _cached_as(admitted.request)
+            ),
+            role.alias,
         )
         if self.stores is None or self.loop_runner is not run_task:
             return model
@@ -1297,7 +1300,12 @@ class Harness:
         def former(alias: str) -> ChatModel | None:
             if self.gateway is None or self.settings.skeleton_only:
                 return None
-            return cached_for(self.gateway.model(alias, role="fold").for_former(), project, session)
+            return cached_for(
+                self.gateway.model(alias, role="fold").for_former(),
+                project,
+                session,
+                _cached_as(request),
+            )
 
         name = run_name(admitted.started_at, admitted.run_id)
         return await prepare_context(
@@ -1392,9 +1400,13 @@ class Harness:
             role = self.role(request)
             if not isinstance(role.model, GatewayModel):
                 return None
-            own = cached_for(role.model, context.project_id, context.session_id)
+            own = cached_for(
+                role.model, context.project_id, context.session_id, _cached_as(request)
+            )
             return cast(GatewayModel, self._reserved(own, role.alias)).for_role("fold")
-        return self._reserved(cached_for(model, context.project_id, context.session_id), alias)
+        return self._reserved(
+            cached_for(model, context.project_id, context.session_id, _cached_as(request)), alias
+        )
 
     def _narrator(self, project: str, session: str, request: RunRequest) -> ChatModel | None:
         """The model that writes MAIN's folds' narratives: the setting's alias through
@@ -2552,6 +2564,12 @@ async def _entry_made(ledger: Ledger, project: str, reference: str, work: frozen
         return any(record.record_id in work for record in page.records)
 
     return await threaded(look)
+
+
+def _cached_as(request: RunRequest) -> str | None:
+    """The delegation a run's calls share the prompt cache as, for a delegated run; a main
+    run's calls share the session's (CM-32)."""
+    return request.delegation if request.parent is not None else None
 
 
 async def _track_grant(plans: SessionPlans, context: ExecutionContext, track: str) -> PlanRef:

@@ -167,6 +167,7 @@ class WireTurn(Contract):
     retried: tuple[str, ...] = ()
     native_format: str | None = None
     gateway_version: str | None = None
+    upstream: dict[str, str] | None = Field(default=None, max_length=8)
     alias: str | None = None
     prefix: str | None = None
     adapter_state: dict[str, JsonValue] | None = None
