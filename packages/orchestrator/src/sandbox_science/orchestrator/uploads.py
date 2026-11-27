@@ -19,6 +19,7 @@ from typing import BinaryIO, Final
 from pydantic import Field, TypeAdapter
 
 from sandbox_science.contracts import Identifier, new_id
+from sandbox_science.contracts.context import upload_area
 from sandbox_science.contracts.model import Contract
 from sandbox_science.contracts.worker import MAX_FILE_WRITE_BYTES
 
@@ -321,7 +322,7 @@ class UserUploads:
                 (number,) = tx.sql.execute(
                     "SELECT coalesce(max(seq),0)+1 FROM user_upload_records"
                 ).fetchone()
-                path = f"shared/uploads/{admission.session}/{admission.upload_id}/source"
+                path = f"{upload_area(admission.session)}/{admission.upload_id}/source"
                 extension = re.search(r"\.[a-zA-Z0-9]{1,10}$", filename)
                 if extension:
                     path += extension[0].lower()

@@ -64,6 +64,9 @@ class Live:
     admission: Admission | LegacyAdmission | None = None
     """What its submission was admitted under, which the sync after it is checked
     against; None for an execution reattached after a restart."""
+    restored: bool = False
+    """Loaded from the store by a worker that started while it ran: what happened in its
+    environment before then is not known (``attribution``)."""
     reattached: bool = False
     """An unseen kernel birth replayed after detach cannot establish a new start pin."""
     watchdog: asyncio.Task[None] | None = None

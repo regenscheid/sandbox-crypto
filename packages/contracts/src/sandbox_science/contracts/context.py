@@ -14,6 +14,9 @@ WRITE_AREA_DIRECTORY: Final = "work"
 WriteArea = Annotated[str, StringConstraints(pattern=r"^work/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")]
 """A delegated run's write area, ``work/<delegation_id>/``, without its final slash."""
 
+UPLOADS_DIRECTORY: Final = "shared/uploads"
+"""Where the platform delivers each session's uploads, ``shared/uploads/<session_id>/``."""
+
 OwnershipName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,150}$")]
 """A timestamped work/attempt name, including the longest 128-character run ID."""
 
@@ -53,6 +56,21 @@ class ExecutionContext(Contract):
 def write_area(delegation_id: str) -> str:
     """A delegation's write area in the session workspace (DA-19): ``work/<delegation_id>``."""
     return f"{WRITE_AREA_DIRECTORY}/{delegation_id}"
+
+
+def upload_area(session_id: str) -> str:
+    """A session's upload area in the shared area: ``shared/uploads/<session_id>``."""
+    return f"{UPLOADS_DIRECTORY}/{session_id}"
+
+
+def other_sessions_upload(session_id: str, path: str) -> bool:
+    """Whether a workspace path is in the upload area of a session other than
+    ``session_id``: a file the platform delivered to that session, which never becomes
+    a file another session's call wrote, whatever a worker reports."""
+    if not path.startswith(UPLOADS_DIRECTORY + "/"):
+        return False
+    owner = path[len(UPLOADS_DIRECTORY) + 1 :].split("/", 1)[0]
+    return owner != session_id
 
 
 def in_write_area(area: str, path: str) -> bool:
