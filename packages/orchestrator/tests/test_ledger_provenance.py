@@ -167,6 +167,14 @@ SMUGGLED: Final = (
     ("Measured 2637-11-27.", "2637"),
     ("See ePrint 2637/637.", "637"),
     ("Beullens Table 1 prints 673.", "673"),
+    # Round 3: a verb is no month, and a unit or count word after a standard's or a
+    # report's number makes it a value; a report's year and number are bounded.
+    ("An attacker may 2048 times retry.", "2048"),
+    ("RFC 4096 rows were filled.", "4096"),
+    ("ISO 4096 entries were filled.", "4096"),
+    ("IEEE 1024 bits were filled.", "1024"),
+    ("ePrint 2024/637 queries were made.", "637"),
+    ("See ePrint 2100/99999.", "99999"),
 )
 """Measured values written inside a name or a place: each still needs backing."""
 
@@ -186,6 +194,8 @@ def test_a_name_or_place_launders_no_measured_value(ledger: Ledger) -> None:
         assert number in named.replace(" are", "").replace(" is", "").split(", "), statement
     change(ledger, {**observed, "statement": "Over GF(16), and so over F_16, it holds."},
            op="field")  # fmt: skip
+    change(ledger, {**observed, "statement": "In May 2026, RFC 8446 and FIPS 203 held."},
+           op="names")  # fmt: skip
 
 
 def test_a_claim_copied_from_its_observation_is_backed(ledger: Ledger) -> None:
