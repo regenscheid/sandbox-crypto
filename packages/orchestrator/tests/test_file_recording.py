@@ -5,6 +5,7 @@ artifacts, RA-27 to RA-35), through a real worker's HTTP API."""
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
@@ -14,7 +15,16 @@ from typing import Any, cast
 import pytest
 import pytest_asyncio
 
-from sandbox_science.contracts import ErrorKind, PublishRequest, ReadFileRequest, WriteFileRequest
+from sandbox_science.contracts import (
+    AttemptFile,
+    ErrorKind,
+    Execution,
+    JobAttempt,
+    JobDetails,
+    PublishRequest,
+    ReadFileRequest,
+    WriteFileRequest,
+)
 from sandbox_science.contracts.artifact_inventory import ArtifactRevision
 from sandbox_science.contracts.worker import TERMINAL_STATES
 from sandbox_science.orchestrator import recording as recording_module
@@ -824,3 +834,75 @@ async def test_an_import_is_anchored_on_its_files_revision(
     put = recording.heads()["sessions/s1/put.jsonl"]
     assert put.publication.execution_id is None
     assert (basis, anchors[0]["artifact"]) == ("interpreted", put.reference.artifact_id)
+
+
+async def test_a_restarted_jobs_files_are_every_attempts_still_there(
+    recording: Recording,
+) -> None:
+    """Attempt 1 wrote result.txt, both.txt, removed.txt, changed.txt and gone.txt, and was
+    lost; attempt 2 resumed, skipped result.txt, rewrote both.txt and deleted removed.txt;
+    meanwhile another writer changed changed.txt and removed gone.txt."""
+    first = {"result.txt": b"r1\n", "both.txt": b"b1\n", "removed.txt": b"x\n"}
+    first |= {"changed.txt": b"c1\n", "gone.txt": b"g\n"}
+    client = recording.toolbox.client
+    for name, body in first.items():  # the platform's writes, not a call's: nothing recorded
+        await client.write_file(
+            WriteFileRequest(
+                context=CONTEXT, path=name, content_b64=base64.b64encode(body).decode()
+            )
+        )
+    outcome = await recording.shell("true")  # the job's execution: it recorded nothing
+    files = tuple(
+        AttemptFile(path=name, size=len(body), sha256=hashlib.sha256(body).hexdigest())
+        for name, body in first.items()
+    )
+    await recording.shell(
+        "printf 'b2\\n' > both.txt && rm removed.txt gone.txt && printf 'c2\\n' > changed.txt"
+    )
+    base = Execution.model_validate(outcome.record["execution"])
+    lost = JobAttempt(
+        attempt=1,
+        attempt_id="att-1",
+        sent=True,
+        started_at=base.submitted_at,
+        lost_at=base.submitted_at,
+        reason="the sandbox executor incarnation stopped during this attempt",
+        stdout_path=f".jobs/{base.execution_id}/stdout.log",
+        stderr_path=f".jobs/{base.execution_id}/stderr.log",
+        survived=files,
+    )
+    job = JobDetails(
+        purpose="sweep",
+        expected_progress="cells",
+        timeout_seconds=3600,
+        stdout_path=f".jobs/{base.execution_id}/attempt-2/stdout.log",
+        stderr_path=f".jobs/{base.execution_id}/attempt-2/stderr.log",
+        restart=True,
+        attempt=2,
+        attempts=(lost,),
+    )
+    assert base.result is not None
+    execution = base.model_copy(
+        update={
+            "kind": "job",
+            "job": job,
+            "result": base.result.model_copy(
+                update={"written_files": ("both.txt",), "deleted_files": ("removed.txt",)}
+            ),
+        }
+    )
+    written = Written.of(execution)
+    assert written.earlier == {
+        name: (1, file.sha256)
+        for name, file in zip(first, files, strict=True)
+        if name != "both.txt"
+    }
+    recorded = await recording.recorder.record(written, tool_call="op-job", model=None)
+    by_path = {entry["path"]: entry for entry in recorded.files}
+    assert by_path["result.txt"]["attempt"] == 1  # attempt 1's, never rewritten
+    assert by_path["result.txt"]["sha256"] == files[0].sha256
+    assert by_path["both.txt"]["attempt"] == 2  # rewritten by the later attempt
+    assert "changed.txt" not in by_path
+    assert "gone.txt" not in by_path
+    assert recorded.left_out["written by attempt 1, gone by the job's end"] == 2
+    assert recorded.left_out["written by attempt 1, changed since by a writer not the job's"] == 1

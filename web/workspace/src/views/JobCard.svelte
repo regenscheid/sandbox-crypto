@@ -125,8 +125,8 @@
             {#if typeof attempt.survived === 'string'}
               <span class="muted">{attempt.survived}</span>
             {:else if attempt.survived.length}
-              Found by the next attempt: {#each attempt.survived as path, i}{#if i > 0},
-                {/if}<code>{path}</code>{/each}{attempt.survived_truncated ? ', …' : ''}
+              Found by the next attempt: {#each attempt.survived as file, i}{#if i > 0},
+                {/if}<code>{file.path}</code>{/each}{attempt.survived_truncated ? ', …' : ''}
             {:else}
               <span class="muted"
                 >The next attempt found no file changed since this one was queued.</span

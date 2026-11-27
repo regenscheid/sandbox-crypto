@@ -476,6 +476,13 @@ class JobManifestView(TypedDict):
 
 
 @with_config(ConfigDict(extra="forbid"))
+class JobAttemptFile(TypedDict):
+    path: str
+    size: int
+    sha256: str | None
+
+
+@with_config(ConfigDict(extra="forbid"))
 class JobAttemptView(TypedDict):
     """An earlier attempt of a restarted job, which the worker lost (job restarts)."""
 
@@ -485,10 +492,13 @@ class JobAttemptView(TypedDict):
     started_at: str | None
     lost_at: str
     logs: JobLogs
-    survived: list[str] | str
-    """The files the next attempt found changed since this one was queued; a sentence
-    until the next attempt starts."""
+    sent: bool
+    """Its command was sent to an executor that took it: it counts against the restarts."""
+    survived: list[JobAttemptFile] | str
+    """The files the next attempt found changed since this one was queued, with their
+    digests then; a sentence until the next attempt starts."""
     survived_truncated: bool
+    survived_unattributed: list[str]
 
 
 @with_config(ConfigDict(extra="forbid"))
@@ -499,7 +509,9 @@ class BackgroundJob(TypedDict):
     expected_progress: str
     elapsed_seconds: float
     elapsed_total_seconds: float
-    """With a restarted job's lost attempts: each attempt has its own time limit."""
+    """How long its attempts ran in all: each attempt has its own time limit."""
+    waiting_seconds: float
+    """How long a restarted job waited between its attempts."""
     exit_code: int | None
     error: str | None
     stdout: str

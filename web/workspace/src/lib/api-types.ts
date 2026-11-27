@@ -159,6 +159,7 @@ export interface BackgroundJob {
   expected_progress: string;
   elapsed_seconds: number;
   elapsed_total_seconds: number;
+  waiting_seconds: number;
   exit_code: number | null;
   error: string | null;
   stdout: string;
@@ -1581,6 +1582,12 @@ export interface InspectionRow {
   uninspected: number;
 }
 
+export interface JobAttemptFile {
+  path: string;
+  size: number;
+  sha256: string | null;
+}
+
 /** An earlier attempt of a restarted job, which the worker lost (job restarts). */
 export interface JobAttemptView {
   attempt: number;
@@ -1589,8 +1596,10 @@ export interface JobAttemptView {
   started_at: string | null;
   lost_at: string;
   logs: JobLogs;
-  survived: string[] | string;
+  sent: boolean;
+  survived: JobAttemptFile[] | string;
   survived_truncated: boolean;
+  survived_unattributed: string[];
 }
 
 export interface JobCancellation {

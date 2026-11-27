@@ -79,19 +79,52 @@ class Written:
     execution: Execution | None = None
     unattributed: int = 0
     """Files that changed while the call ran that the worker did not attribute to it."""
+    earlier: dict[str, tuple[int, str | None]] = field(
+        default_factory=dict[str, tuple[int, str | None]]
+    )
+    """A restarted job's files that a lost attempt wrote and no later attempt wrote, each
+    with that attempt and the digest the next attempt found."""
+    attempt: int | None = None
+    """A restarted job's last attempt, which wrote ``paths`` but those in ``earlier``."""
 
     @classmethod
     def of(cls, execution: Execution) -> Written:
         result = execution.result
         if result is None:
             return cls(execution=execution)
+        paths = attributed(execution, result.written_files)
+        deleted = attributed(execution, result.deleted_files)
+        earlier = earlier_files(execution, paths)
+        job = execution.job
         return cls(
-            attributed(execution, result.written_files),
-            attributed(execution, result.deleted_files),
-            result.written_files_truncated or result.deleted_files_truncated,
+            (*paths, *(path for path in earlier if path not in paths)),
+            deleted,
+            result.written_files_truncated
+            or result.deleted_files_truncated
+            or any(
+                attempt.survived is None or attempt.survived_truncated
+                for attempt in (job.attempts if job is not None else ())
+            ),
             execution,
-            len(attributed(execution, result.unattributed_files)),
+            len(attributed(execution, result.unattributed_files))
+            + sum(len(a.survived_unattributed) for a in (job.attempts if job else ())),
+            earlier,
+            job.attempt if job is not None and job.attempts else None,
         )
+
+
+def earlier_files(execution: Execution, later: Sequence[str]) -> dict[str, tuple[int, str | None]]:
+    """The files a restarted job's lost attempts wrote that no later attempt wrote
+    (``later``, the last attempt's): each by the latest attempt that wrote it, with the
+    digest the next attempt found. One a later attempt deleted is among them: it is
+    reported as written and gone."""
+    job = execution.job
+    found: dict[str, tuple[int, str | None]] = {}
+    for attempt in job.attempts if job is not None else ():
+        for file in attempt.survived or ():
+            if file.path not in later and attributed(execution, (file.path,)):
+                found[file.path] = (attempt.attempt, file.sha256)
+    return found
 
 
 def attributed(execution: Execution, paths: Sequence[str]) -> tuple[str, ...]:
@@ -181,6 +214,11 @@ class FileRecorder:
             _log.exception("recording the files of call %s stopped", tool_call)
             recorded.failed = f"recording stopped part way ({type(error).__name__})"
         finally:
+            if written.attempt is not None:
+                # A restarted job's files, each by the attempt that wrote it.
+                for entry in recorded.files:
+                    writer = written.earlier.get(str(entry["path"]))
+                    entry["attempt"] = writer[0] if writer is not None else written.attempt
             self.total += len(recorded.files)
             self.files.extend(recorded.files[: max(0, MAX_LISTED - len(self.files))])
             self.gaps.update(recorded.left_out)
@@ -240,6 +278,11 @@ class FileRecorder:
                     )
                 if receipt is not None:
                     prior[path] = receipt
+        for path in [p for p in paths if p in written.earlier and p not in prior]:
+            refusal = await self._unchanged(path, written.earlier[path])
+            if refusal is not None:
+                recorded.left_out[refusal] += 1
+                paths.remove(path)
         sizes, unlisted = await self._sizes([path for path in paths if path not in prior])
         budget = MAX_BYTES
         limit = self.publisher.inventory.limits.artifact_bytes
@@ -326,6 +369,22 @@ class FileRecorder:
                 continue
             if entry is not None:
                 recorded.files.append(entry)
+
+    async def _unchanged(self, path: str, written: tuple[int, str | None]) -> str | None:
+        """Why a lost attempt's file is not recorded as its revision: it is gone, or no
+        longer the bytes the worker hashed when the next attempt found it; None to record."""
+        attempt, digest = written
+        if digest is None:
+            return f"written by attempt {attempt}, too large to hash when the next started"
+        try:
+            content = await self.client.read_file(
+                ReadFileRequest(context=self.context, path=path, length=0)
+            )
+        except WorkerAPIError:
+            return f"written by attempt {attempt}, gone by the job's end"
+        if content.sha256 != digest:
+            return f"written by attempt {attempt}, changed since by a writer not the job's"
+        return None
 
     async def _sizes(self, paths: Sequence[str]) -> tuple[dict[str, int], dict[str, str]]:
         """Each regular file's size, from one listing of each directory, and why the

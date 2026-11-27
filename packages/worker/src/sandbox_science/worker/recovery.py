@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
 from sandbox_science.contracts import TERMINAL_STATES, Clock, ErrorKind
+from sandbox_science.contracts.restarts import LossCause
 
 from .channel import ExecutorChannel
 from .connections import Connection, EnvironmentConnections
@@ -51,10 +52,10 @@ class _UnreachedError(Exception):
 
 
 class Lose(Protocol):
-    """``Dispatcher.lose``: ``gone`` when the attempt is known to have stopped, so that a
-    job that asked for ``restart`` may run again (``job_restarts``)."""
+    """``Dispatcher.lose``, with why the attempt was lost, which decides whether a job
+    that asked for ``restart`` runs again (``RESTART_POLICY``)."""
 
-    def __call__(self, live: Live, what: str, gone: bool = False) -> None: ...
+    def __call__(self, live: Live, what: str, cause: LossCause | None = None) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -209,7 +210,11 @@ class DaemonRecovery:
         if confirmed_loss is not None and await confirmed_loss(environment_id):
             self.usability.sandbox_stopped(environment_id)
             for live in self.unattached(environment_id):
-                self.hooks.lose(live, "the sandbox that was deleted, stopped or replaced", True)
+                self.hooks.lose(
+                    live,
+                    "the sandbox that was deleted, stopped or replaced",
+                    LossCause.SANDBOX_STOPPED,
+                )
             return True
         try:
             channel = (await self.hooks.connect(environment_id)).channel
@@ -227,7 +232,7 @@ class DaemonRecovery:
                     "cannot quiesce unknown daemon tasks; startup refused",
                 ) from exc
             for live in self.unattached(environment_id):
-                self.hooks.lose(live, "the sandbox executor incarnation")
+                self.hooks.lose(live, "the sandbox executor incarnation", LossCause.SAME_DAEMON)
             return True
         for live in self.unattached(environment_id):
             if live.execution.state in TERMINAL_STATES:
@@ -236,7 +241,11 @@ class DaemonRecovery:
             saved = self.store.recovery(live.execution.execution_id)
             if saved is None or channel.incarnation != saved[1]:
                 # A new incarnation reaped the old one's processes as it started.
-                self.hooks.lose(live, "the sandbox executor incarnation", saved is not None)
+                self.hooks.lose(
+                    live,
+                    "the sandbox executor incarnation",
+                    LossCause.NEW_DAEMON if saved is not None else None,
+                )
                 continue
             live.channel = channel
             live.dispatched = True
@@ -259,7 +268,11 @@ class DaemonRecovery:
                                     await asyncio.sleep(0.05)
                 except (WorkerError, TimeoutError):
                     await channel.shutdown()
-                    self.hooks.lose(live, "the executor that did not confirm recovery cancellation")
+                    self.hooks.lose(
+                        live,
+                        "the executor that did not confirm recovery cancellation",
+                        LossCause.CANCEL_UNCONFIRMED,
+                    )
                     continue
             try:
                 await self._replay(live, channel)
@@ -361,7 +374,11 @@ class DaemonRecovery:
             )
             if reply.get("found") is not True:
                 if live.execution.state not in TERMINAL_STATES:
-                    self.hooks.lose(live, "the executor with no retained execution record", True)
+                    self.hooks.lose(
+                        live,
+                        "the executor with no retained execution record",
+                        LossCause.RECORD_GONE,
+                    )
                 return
             if reply.get("more") is not True or live.execution.state in TERMINAL_STATES:
                 return
@@ -452,4 +469,4 @@ class DaemonRecovery:
                 and saved[1] == previous
                 and live.execution.state not in TERMINAL_STATES
             ):
-                self.hooks.lose(live, "the sandbox executor incarnation", True)
+                self.hooks.lose(live, "the sandbox executor incarnation", LossCause.NEW_DAEMON)

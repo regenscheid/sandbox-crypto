@@ -17,7 +17,7 @@ from pydantic import AfterValidator, AwareDatetime, Field, StringConstraints, mo
 from .context import ExecutionContext
 from .model import Contract, Counter, Identifier, Sha256
 
-PROTOCOL_VERSION: Final = 25
+PROTOCOL_VERSION: Final = 26
 """The worker API's version. Releases are lockstep (docs/COMPATIBILITY.md): it changes with
 any change to what the worker or its clients send, and each side refuses another version."""
 PROTOCOL_HEADER: Final = "X-Worker-Protocol"
@@ -130,8 +130,8 @@ JobProfileName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0
 """A job profile the worker's settings define, such as ``large`` (D93, JS-8)."""
 MAX_JOB_RESTARTS: Final = 3
 """Times the worker starts a job that asked for ``restart`` again after losing an attempt
-whose command had started, so a job runs its command at most this many times beyond its
-first."""
+whose command an executor took, so a job's command is sent to run at most this many
+times beyond its first."""
 MAX_JOB_ATTEMPTS: Final = 8
 """Attempts a job's record keeps at most, those lost before their command started among
 them; the worker restarts a job no further once its record is full."""
@@ -605,6 +605,15 @@ class JobSandboxReleased(Contract):
     phase: Literal["released"] = "released"
 
 
+class AttemptFile(Contract):
+    """A file a lost attempt wrote, as the next attempt's executor found it as it started."""
+
+    path: Annotated[str, StringConstraints(max_length=MAX_PATH_BYTES)]
+    size: Annotated[int, Field(ge=0)]
+    sha256: Sha256 | None = None
+    """Its digest then; ``None`` when it was too large to hash at the attempt's start."""
+
+
 class JobAttempt(Contract):
     """An earlier attempt of a job that asked for ``restart``: the worker lost it, and
     started the job again."""
@@ -619,13 +628,18 @@ class JobAttempt(Contract):
     stdout_path: RelativePath
     stderr_path: RelativePath
     """Its whole logs, which stay where it wrote them."""
-    survived: tuple[Annotated[str, StringConstraints(max_length=MAX_PATH_BYTES)], ...] | None = (
-        Field(default=None, max_length=MAX_SURVIVED_FILES)
-    )
+    sent: bool = False
+    """Its command was sent to an executor that took it, or may have: it counts against
+    ``MAX_JOB_RESTARTS``. An attempt lost before that does not."""
+    survived: tuple[AttemptFile, ...] | None = Field(default=None, max_length=MAX_SURVIVED_FILES)
     """The files of the session workspace and ``shared/`` modified since it was queued (the
-    job's submission, or the loss before it) that the next attempt found as it started:
-    what it wrote that is still there, and anything else written meanwhile. ``None`` until
-    the next attempt starts."""
+    job's submission, or the loss before it) that the next attempt found as it started,
+    with their digests then, and that the worker attributes to this attempt as it does a
+    result's ``written_files``. ``None`` until the next attempt starts."""
+    survived_unattributed: tuple[
+        Annotated[str, StringConstraints(max_length=MAX_PATH_BYTES)], ...
+    ] = Field(default=(), max_length=MAX_SURVIVED_FILES)
+    """Files modified meanwhile that the worker does not attribute to this attempt."""
     survived_truncated: bool = False
 
 

@@ -152,10 +152,16 @@ class Activity:
         self, live: Live, written: Iterable[str], deleted: Iterable[str]
     ) -> tuple[Attributed, Attributed]:
         """Sort the files ``live``'s attempt wrote and deleted, as the module says."""
+        window = self.window(live)
+        return window.sort(written), window.sort(deleted)
+
+    def window(self, live: Live) -> Window:
+        """What else could have changed files while ``live``'s attempt ran: what sorting its
+        files needs, kept so that a lost attempt's files can be sorted once a later attempt
+        finds them (job restarts)."""
         execution = live.execution
         session, area = execution.context.session_id, execution.context.write_area
         held = area if execution.kind in _CONFINED else None
-        logs = f".jobs/{execution.execution_id}/"
         since, until = live.dispatched_at, live.ended_at or self.clock.monotonic()
         account = self._accounts.get(live.environment_id) or _Account()
         requested = {path for began, end, path in account.writes if began <= until and end >= since}
@@ -176,33 +182,62 @@ class Activity:
             for began, end, owner, written, other in account.attempts
             if began <= until and end >= since
         ]
-        others = any(owner != session for owner, _, _ in beside)
         areas = {
             written
             for owner, written, _ in beside
             if owner == session and written is not None and written != area
         } | {f".jobs/{other}" for _, _, other in beside if other != execution.execution_id}
-        gap = live.restored or account.forgotten >= since
+        return Window(
+            session=session,
+            held=held,
+            logs=f".jobs/{execution.execution_id}/",
+            requested=frozenset(requested),
+            others=any(owner != session for owner, _, _ in beside),
+            areas=frozenset(areas),
+            gap=live.restored or account.forgotten >= since,
+        )
 
-        def sort(paths: Iterable[str]) -> Attributed:
-            own: list[str] = []
-            unattributed: list[str] = []
-            for path in paths:
-                if other_sessions_upload(session, path):
-                    continue
-                if (
-                    path in requested
-                    or (
-                        held is not None
-                        and not in_write_area(held, path)
-                        and not path.startswith(logs)
-                    )
-                    or (_shared(path) and (others or gap))
-                    or any(in_write_area(written, path) for written in areas)
-                ):
-                    unattributed.append(path)
-                else:
-                    own.append(path)
-            return Attributed(tuple(own), tuple(unattributed))
 
-        return sort(written), sort(deleted)
+@dataclass(frozen=True)
+class Window:
+    """What else could have changed an environment's files while an attempt ran."""
+
+    session: str
+    held: str | None
+    """The write area the attempt's processes were held to, if any (DA-20)."""
+    logs: str
+    requested: frozenset[str]
+    """Files a file request wrote meanwhile."""
+    others: bool
+    """Another session's attempt ran in the environment meanwhile."""
+    areas: frozenset[str]
+    """Other attempts' write areas and job logs."""
+    gap: bool
+    """The worker's account of that time is incomplete."""
+
+    @classmethod
+    def unknown(cls, session: str, held: str | None, execution_id: str) -> Window:
+        """An attempt whose time the worker did not see whole, as after its restart: its
+        ``shared/`` files are not its own."""
+        return cls(session, held, f".jobs/{execution_id}/", frozenset(), True, frozenset(), True)
+
+    def sort(self, paths: Iterable[str]) -> Attributed:
+        own: list[str] = []
+        unattributed: list[str] = []
+        for path in paths:
+            if other_sessions_upload(self.session, path):
+                continue
+            if (
+                path in self.requested
+                or (
+                    self.held is not None
+                    and not in_write_area(self.held, path)
+                    and not path.startswith(self.logs)
+                )
+                or (_shared(path) and (self.others or self.gap))
+                or any(in_write_area(written, path) for written in self.areas)
+            ):
+                unattributed.append(path)
+            else:
+                own.append(path)
+        return Attributed(tuple(own), tuple(unattributed))

@@ -6,7 +6,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from pydantic import TypeAdapter
 
@@ -23,6 +23,9 @@ from sandbox_science.contracts.worker import DEFAULT_OUTPUT_LIMIT
 from .channel import ExecutorChannel
 from .errors import WorkerError
 from .recovery_fence import Admission, LegacyAdmission
+
+if TYPE_CHECKING:
+    from .attribution import Window
 
 REQUEST: Final = TypeAdapter[ExecutionRequest](ExecutionRequest)
 """Reads a request saved for recovery."""
@@ -77,6 +80,10 @@ class Live:
     overflowed: bool = False
     channel: ExecutorChannel | None = None
     """The executor the execution was sent to: only it may cancel or lose it."""
+    lost_window: Window | None = None
+    """For a restarted job, what else changed files while its lost attempt ran, so that
+    the files the next attempt finds of it are sorted as a result's are; None after a
+    worker restart (job restarts)."""
     notices: list[str] = field(default_factory=list[str])
     """What syncing the project's shared files told before the execution ran (D79)."""
     dispatched_at: float = 0.0

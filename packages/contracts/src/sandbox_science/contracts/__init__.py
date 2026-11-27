@@ -89,6 +89,7 @@ from .revisions import (
 )
 from .worker import (
     TERMINAL_STATES,
+    AttemptFile,
     Capabilities,
     CellRequest,
     EditFileRequest,
@@ -159,6 +160,7 @@ __all__ = [
     "AdmissionResult",
     "AdmissionSummary",
     "ArtifactRef",
+    "AttemptFile",
     "Capabilities",
     "CatalogChange",
     "CatalogContentChunk",

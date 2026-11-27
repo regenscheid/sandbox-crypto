@@ -383,25 +383,43 @@ def note_job_session(state: Path, leader: Leader) -> None:
             handle.write(f"{leader[0]} {leader[1]}\n")
 
 
-def noted_job_sessions(state: Path) -> list[Process]:
-    """The live processes in the job sessions an earlier daemon noted: in a session a
-    noted leader began, while no other process has taken that leader's pid."""
+def _noted(state: Path) -> list[Leader]:
     try:
-        lines = (state / JOB_SESSIONS).read_text(encoding="ascii", errors="replace").split()
+        words = (state / JOB_SESSIONS).read_text(encoding="ascii", errors="replace").split()
     except OSError:
         return []
-    leaders: dict[int, int] = {}
-    for pid, start in zip(lines[0::2], lines[1::2], strict=False):
-        if pid.isdigit() and start.isdigit():
-            leaders[int(pid)] = int(start)
+    return [
+        (int(pid), int(start))
+        for pid, start in zip(words[0::2], words[1::2], strict=False)
+        if pid.isdigit() and start.isdigit()
+    ]
+
+
+def noted_job_sessions(state: Path) -> list[Process]:
+    """The live processes in the job sessions an earlier daemon noted: in the session of a
+    noted leader that still runs as the process noted, by its pid and start time. A
+    leader that has gone leaves its session's number to whatever takes the pid next, so
+    its session is not taken for the job's."""
     table = process_table()
     me = os.getpid()
     sessions = {
         pid
-        for pid, start in leaders.items()
-        if (head := table.get(pid)) is None or head.start == start  # pid not reused
+        for pid, start in _noted(state)
+        if (head := table.get(pid)) is not None and head.start == start
     }
     return [info for info in table.values() if info.session in sessions and info.pid != me]
+
+
+def forget_job_session(state: Path, leader: Leader) -> None:
+    """Forget one job's noted session once its processes have been ended with it."""
+    kept = [noted for noted in _noted(state) if noted != leader]
+    with contextlib.suppress(OSError):
+        if not kept:
+            (state / JOB_SESSIONS).unlink(missing_ok=True)
+            return
+        temporary = state / (JOB_SESSIONS + ".new")
+        temporary.write_text("".join(f"{pid} {start}\n" for pid, start in kept), "ascii")
+        os.replace(temporary, state / JOB_SESSIONS)
 
 
 def forget_job_sessions(state: Path) -> None:

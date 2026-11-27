@@ -25,6 +25,7 @@ from pydantic import ValidationError
 
 from sandbox_science.contracts import (
     TERMINAL_STATES,
+    AttemptFile,
     CellRequest,
     Clock,
     ErrorInfo,
@@ -43,6 +44,7 @@ from sandbox_science.contracts import (
     StreamEvent,
     new_id,
 )
+from sandbox_science.contracts.restarts import LossCause
 from sandbox_science.contracts.worker import (
     DEFAULT_OUTPUT_LIMIT,
     MAX_PATH_BYTES,
@@ -50,6 +52,7 @@ from sandbox_science.contracts.worker import (
 )
 from sandbox_science.policy.model import Resources
 
+from .attribution import Window
 from .channel import ExecutorChannel, Message
 from .connections import Connection, EnvironmentConnections
 from .errors import ExecutorRefusalError, WorkerError
@@ -134,6 +137,7 @@ class Dispatcher:
         sandboxes: Callable[[], JobSandboxes | None] = lambda: None,
         daemon: bool = False,
         job_restarts: bool = True,
+        contained: bool = True,
     ) -> None:
         self.store = store
         self.sandboxes = sandboxes
@@ -171,6 +175,7 @@ class Dispatcher:
             dispatch=self._dispatch,
             daemon=daemon,
             enabled=job_restarts,
+            contained=contained,
         )
         """Lost jobs that asked for ``restart``, started again (``job_restarts``)."""
 
@@ -517,7 +522,15 @@ class Dispatcher:
             )
         live.time_limit = time_limit(request)
         live.watchdog = self.spawn(self.watch(live, live.time_limit))
-        await channel.request(request.kind, **fields)
+        try:
+            await channel.request(request.kind, **fields)
+        except ExecutorRefusalError:
+            if job is not None and job.restart:
+                # A definite refusal: its command never ran, and it uses no restart.
+                self.store.attempt_accepted(execution_id, job.attempt, False)
+            raise
+        if job is not None and job.restart:
+            self.store.attempt_accepted(execution_id, job.attempt, True)
         if channel.daemon_token is not None:
             self.recovery.poll(request.context.environment_id, channel)
 
@@ -593,7 +606,7 @@ class Dispatcher:
                     # An event before it failed here: a replay brings both again.
                     self.recovery.replay_now(live.channel)
                     return
-                self.lose(live, "the executor with an invalid replay range")
+                self.lose(live, "the executor with an invalid replay range", LossCause.SAME_DAEMON)
                 return
         token = SOURCE_EVENT.set(
             (live.execution.execution_id, source)
@@ -670,7 +683,7 @@ class Dispatcher:
                             kernel=kernel,
                             kernel_state_lost=live.execution.kernel_state_lost or kernel_state_lost,
                         )
-                    job = _survived(live.execution.job, message)
+                    job = _survived(live, message)
                     if job is not None:
                         update["job"] = job
                     return live.execution.model_copy(update={**update, "last_seq": event.seq})
@@ -995,7 +1008,9 @@ class Dispatcher:
             return
         channel = live.channel
         check_dispatch()  # stale cancellation must not tear down a newer owner's channel
-        self.lose(live, "the executor that did not confirm job cancellation")
+        self.lose(
+            live, "the executor that did not confirm job cancellation", LossCause.CANCEL_UNCONFIRMED
+        )
         if channel is not None:
             await channel.shutdown()
 
@@ -1028,14 +1043,17 @@ class Dispatcher:
                 if live is not None and live.execution.state not in TERMINAL_STATES:
                     if live.channel is not None:
                         channels.add(live.channel)
-                    self.lose(live, "the executor that did not confirm job cancellation")
+                    self.lose(
+                        live,
+                        "the executor that did not confirm job cancellation",
+                        LossCause.CANCEL_UNCONFIRMED,
+                    )
             await asyncio.gather(*(channel.shutdown() for channel in channels))
 
-    def lose(self, live: Live, what: str, *, gone: bool = False) -> None:
+    def lose(self, live: Live, what: str, cause: LossCause | None = None) -> None:
         """End an attempt whose outcome is unknown, because ``what`` stopped during it; a
-        job that asked for ``restart`` is started again instead, while it may be. ``gone``:
-        the attempt is known to have stopped, its sandbox gone or replaced or its daemon a
-        new incarnation or without it; otherwise it may still run, and is never restarted."""
+        job that asked for ``restart`` is started again instead, when ``cause`` is one the
+        restart policy restarts for (``RESTART_POLICY``) and the job may be."""
         if self.usability.closing and self.restarts.held(live):
             return  # an attempt that waits for its environment waits for the next worker
         message = f"{what} stopped during this attempt; its outcome is unknown"
@@ -1045,7 +1063,7 @@ class Dispatcher:
                 "; partial whole logs remain at " + job.stdout_path + " and " + job.stderr_path
             )
             if job.restart and live.final is None:
-                refusal = self.restarts.refusal(live, gone=gone)
+                refusal = self.restarts.refusal(live, cause)
                 if refusal is not None:
                     message += f"; not restarted: {refusal}"
         try:
@@ -1053,7 +1071,7 @@ class Dispatcher:
                 # The outcome is known; only the shared files' sync after it was cut short.
                 self._complete(live, [*live.notices, UNSYNCED])
                 return
-            if self.restarts.take(live, what, gone=gone):
+            if self.restarts.take(live, what, cause):
                 return
             self.journal.finish(
                 live,
@@ -1133,7 +1151,7 @@ class Dispatcher:
                 self.lose(
                     live,
                     "the worker that restarted without a recoverable daemon dispatch",
-                    gone=daemon_enabled and saved is not None,
+                    LossCause.NEVER_SENT if daemon_enabled and saved is not None else None,
                 )
         for environment_id in recovery:
             await self.recovery.recover(environment_id, startup=True)
@@ -1151,19 +1169,36 @@ def channel_hello(environment: Connection) -> dict[str, Any]:
     return channel.hello if channel is not None else {}
 
 
-def _survived(job: JobDetails | None, message: Message) -> JobDetails | None:
+def _survived(live: Live, message: Message) -> JobDetails | None:
     """A restarted job's details with what its new attempt's executor found of the lost
-    one's files as it started; ``None`` when there is nothing to record."""
-    if job is None or not job.attempts or "survived" not in message:
+    one's files as it started, sorted as a result's files are against what else wrote
+    meanwhile; ``None`` when there is nothing to record."""
+    job = live.execution.job
+    raw = message.get("survived")
+    if job is None or not job.attempts or not isinstance(raw, list):
         return None
-    paths = _paths(message.get("survived"))
+    files: list[AttemptFile] = []
+    for item in cast(list[object], raw)[:MAX_SURVIVED_FILES]:
+        try:
+            files.append(AttemptFile.model_validate(item))
+        except ValidationError:
+            continue
+    window = live.lost_window or Window.unknown(
+        live.execution.context.session_id,
+        live.execution.context.write_area if live.execution.kind == "job" else None,
+        live.execution.execution_id,
+    )
+    sorted_ = window.sort(file.path for file in files)
+    own = set(sorted_.own)
     previous = job.attempts[-1].model_copy(
         update={
-            "survived": tuple(paths[:MAX_SURVIVED_FILES]),
+            "survived": tuple(file for file in files if file.path in own),
+            "survived_unattributed": sorted_.unattributed,
             "survived_truncated": message.get("survived_truncated") is True
-            or len(paths) > MAX_SURVIVED_FILES,
+            or len(cast(list[object], raw)) > MAX_SURVIVED_FILES,
         }
     )
+    live.lost_window = None
     return job.model_copy(update={"attempts": (*job.attempts[:-1], previous)})
 
 
