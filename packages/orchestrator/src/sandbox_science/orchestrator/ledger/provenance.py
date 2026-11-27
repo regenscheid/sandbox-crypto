@@ -176,11 +176,14 @@ def _scientific(mantissa: str, exponent: str) -> str:
     return f"10^{power}" if float(mantissa) == 1 else f"{mantissa}e{power}"
 
 
-def numbers(text: str) -> set[str]:
+def numbers(text: str, *, named: bool = False) -> set[str]:
     """The numbers ``text`` holds, normalized, leaving out ledger handles, IDs and the
     numbers of names and standard notations (``_NOTATIONS``: ``GF(16)``, ``AES-128``,
-    ``Table 1``, a date); digits before letters count (``80bit``, ``128-bit``)."""
-    return {n.lower() for n in _NUMBER.findall(_unnamed(text))}
+    ``Table 1``, a date); digits before letters count (``80bit``, ``128-bit``). With
+    ``named``, for what an observation shows, a name's numbers count too: a result
+    that says ``BKZ-60`` backs a block size of 60."""
+    read = normal(_NAMES.sub(" ", text)) if named else _unnamed(text)
+    return {n.lower() for n in _NUMBER.findall(read)}
 
 
 def unread(text: str) -> str | None:
@@ -399,7 +402,7 @@ def check(
                 f"{left!r}: write numbers in digits (2^80, 1.2e-5, 1000000), or record it "
                 "as interpreted"
             )
-    found = set[str]().union(*(numbers(text) for text in seen))
+    found = set[str]().union(*(numbers(text, named=True) for text in seen))
     missing = sorted(set[str]().union(*(numbers(text) for text in texts)) - found)
     if missing:
         named = ", ".join(missing[:5])

@@ -140,6 +140,8 @@ def test_numbers_in_names_and_standard_notations_are_not_measured_values() -> No
     assert numbers("rank 16 over GF(16), Table 1 row 637") == {"16", "637"}
     assert numbers("Table 1, 673 rows") == {"673"}
     assert numbers("a 128-bit key for AES-128") == {"128"}
+    # What an observation shows counts whole: BKZ-60 backs a block size of 60.
+    assert numbers("BKZ-60 ran out of time", named=True) == {"60"}
     # The run's memory proposal holds no measured number; its two ledger refusals keep
     # the numbers they were refused for.
     assert (

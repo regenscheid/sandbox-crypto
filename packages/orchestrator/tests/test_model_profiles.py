@@ -208,7 +208,7 @@ def test_paid_intent_profile_is_atomic_and_remains_when_usage_unknown(
     with projects.control.read() as tx:
         row = tx.sql.execute(
             "SELECT json_extract(data,'$.profile.reasoning_effort'),"
-            "json_extract(data,'$.identity') FROM run_events WHERE kind='notice'"
+            "json_extract(data,'$.identity') FROM run_events WHERE kind='model_profile'"
         ).fetchone()
     assert row == ("max", identity)
     with pytest.raises(ValueError, match="alias differs"):
