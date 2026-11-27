@@ -186,9 +186,14 @@ several steps in order as one change against one plan version and status revisio
 call can finish one step and start the next; a refused entry refuses the whole call, and
 the refusal names it (`steps[1] (step-id): …`). Evidence is an artifact, execution or
 ledger claim, or a workspace path (`{"path": …}`), which the tool pins to the file's latest
-recorded revision in the artifact inventory when the call runs, and the result says what
-each path resolved to (`evidence_resolved`); a path with no recorded revision, or a
-deleted file, is refused with the advice to `publish` it. Every plan change's result
+recorded revision in the artifact inventory when the call runs, with who recorded it
+(`written_by`: session, run, time, set by the platform only), and the result says what
+each path resolved to (`evidence_resolved`). Only a revision this session recorded, whose
+bytes are kept, is pinned by path: a path with no recorded revision, a deleted file or a
+revision without its bytes is refused with the advice to `publish` it, and a file in
+another session's area, or a shared file another session last recorded, is refused with
+the advice to claim it by its artifact ID. A call with evidence by path is digested as
+given, so an exact retry returns its first receipt and what its paths first resolved to. Every plan change's result
 carries `plan`: the current reference, status, status revision and progress cursor, the
 number of steps in each state, and, for an open plan, the open steps (at most 16, the rest
 counted) with their cursors, which the next change names, so no read is needed for

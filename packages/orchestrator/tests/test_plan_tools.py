@@ -1402,16 +1402,19 @@ async def test_a_step_the_user_pauses_is_blocked_and_resumes_in_progress(fixture
     assert "leave finished steps' text as it is" in guidance
 
 
-def recorded(f, path="results/table.csv", data=b"n,t\n1,2\n"):
-    """A file the platform recorded at ``path`` in the fixture's session."""
+def recorded(f, path="results/table.csv", data=b"n,t\n1,2\n", *, session="s", op="op-1", kept=True):
+    """A file the platform recorded at ``path``, by a run of ``session``: with its bytes,
+    or only its hash and size."""
     from sandbox_science.orchestrator.artifacts import ArtifactInventory
 
-    from .test_artifact_inventory import CONTEXT, SOURCE
+    from .test_artifact_inventory import CONTEXT, SOURCE, record
 
     inventory = ArtifactInventory(f.documents)
     source = SOURCE.model_copy(
-        update={"context": CONTEXT.model_copy(update={"project_id": "p", "session_id": "s"})}
+        update={"context": CONTEXT.model_copy(update={"project_id": "p", "session_id": session})}
     )
+    if kept:
+        return inventory, record(inventory, op, data, source=source, path=path).revision
     reference, _ = inventory.record_metadata(
         source, path, sha256=hashlib.sha256(data).hexdigest(), size=len(data),
         media_type="text/csv", note="quota",
@@ -1535,24 +1538,30 @@ async def test_evidence_by_path_pins_the_files_recorded_revision(fixture):
     inventory, reference = recorded(f)
     f.adapter.artifacts = inventory
     ref, revision = await active(f)
-    result, _ = await call(
-        f, "plan_progress", operation_id="done", base=ref, expected_status_revision=revision,
-        step_id="step-0", expected_step_cursor=0, status="completed", note="Table",
+    args = dict(
+        operation_id="done", base=ref, expected_status_revision=revision, step_id="step-0",
+        expected_step_cursor=0, status="completed", note="Table",
         evidence=[{"path": "results/table.csv"}],
     )  # fmt: skip
-    assert result["evidence_resolved"] == [
-        {
-            "path": "results/table.csv",
-            "artifact_id": reference.artifact_id,
-            "revision": reference.revision,
-            "sha256": reference.sha256,
-        }
-    ]
+    result, _ = await call(f, "plan_progress", **args)
+    (resolved,) = result["evidence_resolved"]
+    assert (resolved["path"], resolved["artifact_id"], resolved["revision"]) == (
+        "results/table.csv", reference.artifact_id, reference.revision,
+    )  # fmt: skip
+    assert resolved["sha256"] == reference.sha256
+    assert (resolved["written_by"]["session_id"], resolved["written_by"]["run_id"]) == ("s", "run1")
     (step,) = f.core.current(f.user).steps
     (claim,) = step.latest.evidence
     assert (claim.kind, claim.reference_id, claim.revision, claim.sha256) == (
         "artifact", reference.artifact_id, reference.revision, reference.sha256,
     )  # fmt: skip
+    assert claim.written_by.session_id == "s"
+    # The review of R7's fix: an exact retry after the file changed is its first receipt,
+    # and says what the first call resolved.
+    recorded(f, data=b"n,t\n1,3\n", op="op-2")
+    again, _ = await call(f, "plan_progress", **args)
+    assert again["receipt"] == result["receipt"]
+    assert again["evidence_resolved"] == result["evidence_resolved"]
     with pytest.raises(DocumentError) as refused:
         await call(
             f, "plan_progress", operation_id="missing", base=ref,
@@ -1570,6 +1579,46 @@ async def test_evidence_by_path_pins_the_files_recorded_revision(fixture):
             expected_status_revision=revision, step_id="step-0", expected_step_cursor=1,
             status="completed", note="Again", evidence=[{"path": "results/table.csv"}],
         )  # fmt: skip
+
+
+@pytest.mark.asyncio
+async def test_evidence_by_path_pins_only_this_sessions_kept_revisions(fixture):
+    """The review of R7's fix: a revision without its bytes, a file of another session's
+    area, and a shared file another session last recorded are not pinned by path; an
+    agent cannot claim who recorded a revision."""
+    f = fixture
+    inventory, _ = recorded(f, "results/meta.csv", kept=False)
+    recorded(f, "notes.csv", session="other", op="op-o")
+    recorded(f, "shared/common.csv", session="other", op="op-sh")
+    f.adapter.artifacts = inventory
+    ref, revision = await active(f)
+
+    async def progress(evidence, op):
+        with pytest.raises(DocumentError) as refused:
+            await call(
+                f, "plan_progress", operation_id=op, base=ref, expected_status_revision=revision,
+                step_id="step-0", expected_step_cursor=0, status="completed", note="N",
+                evidence=[evidence],
+            )  # fmt: skip
+        return refused.value
+
+    kept = await progress({"path": "results/meta.csv"}, "meta")
+    assert "keeps no bytes" in kept.message
+    assert "publish" in kept.message
+    other = await progress({"path": "sessions/other/notes.csv"}, "other")
+    assert "another session's area" in other.message
+    shared = await progress({"path": "shared/common.csv"}, "shared")
+    assert "recorded by session other's run run1" in shared.message
+    assert "reference_id" in shared.message
+    forged = await progress(
+        {"project_id": "p", "kind": "artifact", "reference_id": "artifact-1", "revision": 1,
+         "sha256": "0" * 64,
+         "written_by": {"session_id": "s", "run_id": "run1",
+                        "recorded_at": "2026-11-27T00:00:00+00:00"}},
+        "forged",
+    )  # fmt: skip
+    assert "written_by is the platform's" in forged.message
+    assert f.core.current(f.user).steps[0].latest is None
 
 
 @pytest.mark.asyncio

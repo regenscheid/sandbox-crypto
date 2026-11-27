@@ -42,9 +42,12 @@ from .session_plans import (
     PlanEvent,
     PlanEvidence,
     PlanModel,
+    PlanProgress,
+    PlanReceipt,
     PlanRef,
     PlanScope,
     PlanSummary,
+    PlanWriter,
     SessionPlans,
     StepAssertion,
     StepStatus,
@@ -309,6 +312,21 @@ def _invalid(name: str, error: ValidationError) -> str:
         message += f" (given {len(given):,})"
     more = f"; and {len(problems) - 1} more problems" if len(problems) > 1 else ""
     return f"invalid {name} request: {where}: {message}{more}"
+
+
+def _resolved(claim: PlanEvidence) -> dict[str, object]:
+    """What a path resolved to, as a result says it: the artifact revision and who
+    recorded it, when."""
+    return {
+        "artifact_id": claim.reference_id,
+        "revision": claim.revision,
+        "sha256": claim.sha256,
+        **(
+            {"written_by": claim.written_by.model_dump(mode="json")}
+            if claim.written_by is not None
+            else {}
+        ),
+    }
 
 
 def _counters(plan: CompactPlan) -> dict[str, object]:
@@ -714,6 +732,8 @@ class PlanTools:
                 if request.expected_status_revision != summary.status_revision:
                     raise DocumentError(CONFLICT, "plan status changed; reread it")
                 entries, resolved = self._assertions(request)
+                # Evidence by path is digested as given: an exact retry is its receipt.
+                given = request.model_dump(mode="json") if resolved else None
                 if request.steps is None:
                     entry = entries[0]
                     receipt = self.plans.progress(
@@ -726,6 +746,7 @@ class PlanTools:
                         entry.note,
                         evidence=entry.evidence,
                         expected_status_revision=request.expected_status_revision,
+                        given=given,
                     )
                 else:
                     receipt = self.plans.progress_steps(
@@ -734,6 +755,7 @@ class PlanTools:
                         request.base,
                         entries,
                         expected_status_revision=request.expected_status_revision,
+                        given=given,
                     )
             else:
                 if not isinstance(request, Activate):
@@ -764,6 +786,9 @@ class PlanTools:
                 and receipt.event_sequence <= summary.event_cursor,
             }
             if isinstance(request, Progress) and resolved:
+                if result["historical_receipt"]:
+                    # A retry: what the first call resolved, as its records keep it.
+                    resolved = self._first_resolved(request, receipt)
                 result["evidence_resolved"] = resolved
             if isinstance(request, Revise):
                 reopened = self._reopened(receipt.ref)
@@ -816,19 +841,18 @@ class PlanTools:
             claims: list[PlanEvidence] = []
             for number, item in enumerate(step.evidence):
                 if isinstance(item, PlanEvidence):
+                    if item.written_by is not None:
+                        raise DocumentError(
+                            INVALID_REQUEST,
+                            f"evidence[{number}]: written_by is the platform's, for evidence "
+                            "given by path; leave it out",
+                        )
                     claims.append(item)
                     continue
                 where = f"steps[{index}].evidence[{number}]" if several else f"evidence[{number}]"
                 claim = self._pinned(item.path, where)
                 claims.append(claim)
-                resolved.append(
-                    {
-                        "path": item.path,
-                        "artifact_id": claim.reference_id,
-                        "revision": claim.revision,
-                        "sha256": claim.sha256,
-                    }
-                )
+                resolved.append({"path": item.path, **_resolved(claim)})
             entries.append(
                 StepAssertion(
                     step.step_id,
@@ -840,20 +864,45 @@ class PlanTools:
             )
         return tuple(entries), resolved
 
+    def _first_resolved(self, request: Progress, receipt: PlanReceipt) -> list[dict[str, object]]:
+        """What the paths of the call ``receipt`` acknowledges resolved to when it was
+        first made: its progress records, the last of which the receipt names."""
+        entries = request.entries()
+        after = receipt.progress_cursor - len(entries)
+        page = self.plans.history(
+            self.authority,
+            receipt.ref.plan_id,
+            "progress",
+            after=after,
+            target=receipt.progress_cursor,
+            limit=len(entries),
+        )
+        stored = cast(tuple[PlanProgress, ...], page.items)
+        resolved: list[dict[str, object]] = []
+        for step, kept in zip(entries, stored, strict=False):
+            for item, claim in zip(step.evidence, kept.evidence, strict=False):
+                if isinstance(item, PathEvidence):
+                    resolved.append({"path": item.path, **_resolved(claim)})
+        return resolved
+
     def _pinned(self, path: str, where: str) -> PlanEvidence:
         """The evidence claim for the file at ``path``: its artifact at the latest
-        revision the platform recorded, published or from the file tools."""
+        revision the platform recorded, published or from the file tools, with who
+        recorded it. Only a revision this session recorded, whose bytes are kept, is
+        pinned by path; another session's file is claimed by its artifact ID."""
         if self.artifacts is None:
             raise DocumentError(
                 INVALID_REQUEST,
                 f"{where}: evidence by path is not available in this run; give the artifact's "
                 "kind, reference_id, revision and sha256",
             )
-        project = self.context.project_id
+        project, session = self.context.project_id, self.context.session_id
+        by_id = "give its artifact's kind, reference_id, revision and sha256 to claim it"
         try:
-            found, _ = self.artifacts.recent(
-                project, at_path=scoped_path(path, self.context.session_id)
-            )
+            scoped = scoped_path(path, session)
+            if scoped.startswith("sessions/") and not scoped.startswith(f"sessions/{session}/"):
+                raise DocumentError(POLICY_DENIED, f"it is in another session's area: {by_id}")
+            found, _ = self.artifacts.recent(project, at_path=scoped)
         except DocumentError as error:
             raise DocumentError(error.kind, f"{where}: {path}: {error.message}") from None
         latest = found[0] if found else None
@@ -864,12 +913,31 @@ class PlanTools:
                 f"{where}: {path} {state}, so there is nothing to pin; publish the file "
                 "(publish with its path) and give the path again",
             )
+        if not latest.content_retained:
+            raise DocumentError(
+                CONFLICT,
+                f"{where}: {path}'s latest revision keeps no bytes, so its hash cannot be "
+                "checked; publish the file (publish with its path) and give the path again",
+            )
+        source = latest.publication
+        if source.context.session_id != session:
+            raise DocumentError(
+                POLICY_DENIED,
+                f"{where}: {path}'s latest revision {latest.reference.revision} was recorded "
+                f"by session {source.context.session_id}'s run {source.run_id} at "
+                f"{latest.created_at.isoformat()}, not by this session: {by_id}",
+            )
         return PlanEvidence(
             project_id=project,
             kind="artifact",
             reference_id=latest.reference.artifact_id,
             revision=latest.reference.revision,
             sha256=latest.reference.sha256,
+            written_by=PlanWriter(
+                session_id=source.context.session_id,
+                run_id=source.run_id,
+                recorded_at=latest.created_at,
+            ),
         )
 
     def _reopened(self, ref: PlanRef) -> list[str]:

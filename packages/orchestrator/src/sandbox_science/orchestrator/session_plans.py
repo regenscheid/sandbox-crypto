@@ -152,6 +152,15 @@ class PlanAuthority(PlanModel):
         return self.role, self.user_id or self.run_id or ""
 
 
+class PlanWriter(PlanModel):
+    """Who recorded the artifact revision evidence given by a workspace path names, as
+    the inventory attributes it, set by the platform when it resolves the path."""
+
+    session_id: Identifier
+    run_id: Identifier
+    recorded_at: AwareDatetime
+
+
 class PlanEvidence(PlanModel):
     """A same-project claimed reference, never lookup authority or verified evidence."""
 
@@ -161,9 +170,13 @@ class PlanEvidence(PlanModel):
     revision: Positive | None = None
     sha256: Digest | None = None
     attempt_id: Identifier | None = None
+    written_by: PlanWriter | None = None
+    """For an artifact claim the platform resolved from a path: who recorded it."""
 
     @model_validator(mode="after")
     def _pin(self) -> Self:
+        if self.written_by is not None and self.kind != "artifact":
+            raise ValueError("only an artifact claim names who recorded it")
         if self.kind == "artifact":
             if self.revision is None or self.sha256 is None or self.attempt_id is not None:
                 raise ValueError("artifact claim needs an immutable revision/digest")
@@ -1168,8 +1181,12 @@ class SessionPlans:
         *,
         evidence: tuple[PlanEvidence, ...] = (),
         expected_status_revision: int | None = None,
+        given: object = None,
     ) -> PlanReceipt:
-        """Append a current-version step assertion with a per-step optimistic cursor."""
+        """Append a current-version step assertion with a per-step optimistic cursor.
+        ``given`` is the request as its caller was given it, when that differs from what
+        it resolved (evidence by path): its digest names the operation, so an exact
+        retry is its first receipt however the paths resolve now."""
         authority = _checked(PlanAuthority, authority)
         base = _checked(PlanRef, base)
         if expected_status_revision is not None:
@@ -1184,6 +1201,8 @@ class SessionPlans:
             **payload,
             "expected_status_revision": expected_status_revision,
         }
+        if given is not None:
+            payload = {"given": given}
         return self._progress(
             authority,
             operation,
@@ -1201,6 +1220,7 @@ class SessionPlans:
         steps: tuple[StepAssertion, ...],
         *,
         expected_status_revision: int,
+        given: object = None,
     ) -> PlanReceipt:
         """Append several steps' assertions, in order, as one change against one plan
         version and status revision: each step's assertion and event is recorded as
@@ -1231,6 +1251,8 @@ class SessionPlans:
             "steps": payloads,
             "expected_status_revision": expected_status_revision,
         }
+        if given is not None:
+            payload = {"given": given}  # as ``progress`` digests it
         return self._progress(
             authority,
             operation,
