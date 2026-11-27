@@ -491,11 +491,20 @@ async def test_each_attempt_has_its_own_output_budget(worker: Harness) -> None:
         "head -c 60000 /dev/zero | tr '\\0' x; "
         'if [ "$SANDBOX_JOB_ATTEMPT" = 1 ]; then touch started-1; sleep 60; fi'
     )
+    limit = 1024
     job, _ = await worker.manager.submit(
-        request("budget", script, restart=True, output_limit_bytes=1024)
+        request("budget", script, restart=True, output_limit_bytes=limit)
     )
+
+    def streamed() -> int:
+        events = worker.store.events_after(job.execution_id, 0)
+        return sum(len(e.text) for e in events if e.type == "stream")
+
     await running(worker.manager, job.execution_id)
     await eventually((worker.workspace / "started-1").exists, timeout=10)
+    # The daemon streams the head of the limit live; what it has not sent yet is lost with
+    # it, so the first attempt's whole head is stored before the daemon goes.
+    await eventually(lambda: streamed() == limit // 2, timeout=10, describe="the head stored")
     kill_daemon(worker, job.execution_id)
     result = await ended(worker, job.execution_id)
     assert result.state is ExecutionState.SUCCEEDED
