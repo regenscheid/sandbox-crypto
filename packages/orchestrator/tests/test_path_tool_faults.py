@@ -770,6 +770,8 @@ async def walk(harness: Harness, model: Model, faults: Faults) -> Walk:
 def judge(case: Case, walked: Walk, faults: Faults) -> None:
     """Assert one of the two acceptable outcomes (the module's docstring)."""
     detail = f"{walked}; faults met: {faults.met()}; lost: {faults.lost}"
+    if walked.result is not None and f"there is no tool named '{case.tool.name}'" in walked.result:
+        pytest.skip(f"{case.tool.name} is not offered here (its program is not installed)")
     match walked.outcome:
         case "declined":
             raise RecoveryDeclined(detail)
