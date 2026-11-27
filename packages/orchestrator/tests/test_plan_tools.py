@@ -1660,3 +1660,47 @@ async def test_an_invalid_request_names_its_field_limit_and_size(fixture):
         step["description"] = "d" * 4000
     with pytest.raises(DocumentError, match=r"body is 8\d,\d{3} bytes .* over its limit of 65,536"):
         await call(f, "plan_create", operation_id="wide", body=wide, reason="Initial")
+
+
+@pytest.mark.asyncio
+async def test_a_current_read_shows_what_others_changed_before_it_reads_the_plan(fixture):
+    """The review of R7's fix: a compact read that clears the reread fence shows each
+    step another actor changed in full, its description and its latest note with who
+    wrote it, and who changed what; steps nobody else changed stay compact."""
+    f = fixture
+    created, _ = await call(
+        f, "plan_create", operation_id="create", body=body(count=3), reason="Initial"
+    )
+    ref = created["receipt"]["ref"]
+    await call(
+        f, "plan_activate", operation_id="activate", base=ref, reason="Begin",
+        expected_status_revision=1, expected_progress_cursor=0,
+    )  # fmt: skip
+    plain, _ = await call(f, "plan_read")
+    assert "changed_by_others" not in plain
+    await f.adapter.model_delivered()
+    edited = body(count=3)
+    edited["phases"][0]["steps"][0]["description"] = "Use ONLY seed 42; never seed 7"
+    revised = f.core.revise(
+        f.user, "user-edit", PlanRef.model_validate(ref), PlanBody.model_validate(edited),
+        "Seed policy",
+    )  # fmt: skip
+    f.core.progress(
+        f.user, "user-pause", revised.ref, "step-1", 0, "blocked",
+        "Paused: budget exhausted, wait for me",
+    )  # fmt: skip
+    with pytest.raises(DocumentError, match="reread_required"):
+        await f.adapter.check_dispatch("effect")
+    read, _ = await call(f, "plan_read")
+    changed = read["changed_by_others"]
+    assert [s["step_id"] for s in changed["steps"]] == ["step-0", "step-1"]
+    first, second = changed["steps"]
+    assert first["description"] == "Use ONLY seed 42; never seed 7"
+    assert second["latest"]["note"] == "Paused: budget exhausted, wait for me"
+    assert second["latest"]["by"] == "the user"
+    assert any("Seed policy" in line for line in changed["changes"])
+    # Its delivery is the read the fence needs; the next read shows the plan plainly.
+    await f.adapter.model_delivered()
+    await f.adapter.check_dispatch("effect")
+    again, _ = await call(f, "plan_read")
+    assert "changed_by_others" not in again

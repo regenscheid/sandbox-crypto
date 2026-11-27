@@ -89,6 +89,14 @@ MAX_REASON: Final = 160
 """The characters of a version's reason a plans notice shows."""
 MAX_STEP_IDS: Final = 8
 """The step IDs a plans notice names for each kind of change in a revision."""
+UNREAD = (
+    "Others changed the plan since you last saw it: these are their changes, and each step "
+    "they touched in full, with its latest record's note. Read them before you go on."
+)
+TOO_MUCH = (
+    "Others changed more of the plan since you last saw it than this read can show: the "
+    "plans notice before your next turn shows it, and until then this read counts as none."
+)
 MAX_OPEN_STEPS: Final = 16
 """The open steps, with their cursors, a plan change's result lists; it counts the rest."""
 COMPACT = (
@@ -704,7 +712,15 @@ class PlanTools:
             resolved: list[dict[str, object]] = []
             if isinstance(request, Read):
                 result, pin = self._read(request)
-                text = _json(result)
+                try:
+                    text = _json(result)
+                except DocumentError:
+                    if "changed_by_others" not in result:
+                        raise
+                    # Too much changed to show here: the read reads nothing, and the
+                    # plans notice before the next turn shows the plan.
+                    result = {**result, "changed_by_others": {"about": TOO_MUCH}}
+                    text, pin = _json(result), None
                 if pin is not None:
                     self.pending_read = pin
                 return text, {"plan_read": result, "plan_call_id": call_id, "resolved_model": model}
@@ -864,6 +880,88 @@ class PlanTools:
             )
         return tuple(entries), resolved
 
+    def _unread(self, plan: CompactPlan) -> dict[str, object]:
+        """What a current read shows of the changes others made since this run last saw
+        the plan, which its delivery reads as a plans notice's does: who changed what, in
+        a line each, and each step they touched in full, its fields and its latest record
+        with its note and author; every step when more changed than the run's scan holds.
+        Nothing when no other actor changed it."""
+        if not (self.changes or self.unlisted or self.held):
+            return {}
+        touched: set[str] = set()
+        whole = bool(self.unlisted or self.held)
+        for event in self.changes:
+            if event.action == "publish":
+                whole = True
+            elif event.action == "revise" and event.ref.version > 1:
+                before = self.plans.version(
+                    self.authority,
+                    PlanRef(plan_id=event.ref.plan_id, version=event.ref.version - 1),
+                )
+                after = self.plans.version(self.authority, event.ref)
+                diff = step_changes(before.body, after.body)
+                touched.update(diff.added + diff.changed)
+            elif event.action == "progress":
+                page = self.plans.history(
+                    self.authority,
+                    event.ref.plan_id,
+                    "progress",
+                    after=event.number - 1,
+                    target=event.number,
+                    limit=1,
+                )
+                touched.update(cast(PlanProgress, item).step_id for item in page.items)
+        body = {
+            step.step_id: (phase, step)
+            for phase in plan.version.body.phases
+            for step in phase.steps
+        }
+        steps: list[dict[str, object]] = []
+        for projection in plan.steps:
+            if not whole and projection.step_id not in touched:
+                continue
+            phase, step = body[projection.step_id]
+            shown: dict[str, object] = {
+                "step_id": step.step_id,
+                "phase_id": phase.phase_id,
+                "title": step.title,
+                "description": step.description,
+                "evidence_standard": step.evidence_standard,
+                **({"track_id": step.track_id} if step.track_id else {}),
+                **_step_state(projection),
+            }
+            if projection.latest is not None:
+                page = self.plans.history(
+                    self.authority,
+                    plan.head.ref.plan_id,
+                    "progress",
+                    after=projection.latest.sequence - 1,
+                    target=projection.latest.sequence,
+                    limit=1,
+                )
+                for item in page.items:
+                    record = cast(PlanProgress, item)
+                    shown["latest"] = {
+                        "status": record.status,
+                        "note": record.note,
+                        "by": self._who(record.author),
+                        "recorded_at": record.recorded_at.isoformat(),
+                        "evidence": [e.model_dump(mode="json") for e in record.evidence],
+                    }
+            steps.append(shown)
+        changed = [
+            f"{self._who(event.author)} {self._change(event, plan)}" for event in self.changes
+        ]
+        if self.unlisted:
+            changed.insert(0, f"{self.unlisted} earlier changes")
+        return {
+            "changed_by_others": {
+                "changes": changed,
+                "steps": steps,
+                "about": UNREAD,
+            }
+        }
+
     def _first_resolved(self, request: Progress, receipt: PlanReceipt) -> list[dict[str, object]]:
         """What the paths of the call ``receipt`` acknowledges resolved to when it was
         first made: its progress records, the last of which the receipt names."""
@@ -999,6 +1097,7 @@ class PlanTools:
                         for step in snapshot.steps
                     ],
                     "detail": COMPACT,
+                    **self._unread(snapshot),
                 }, _pin(summary)
             return {
                 "head": snapshot.head.model_dump(mode="json"),
@@ -1016,6 +1115,7 @@ class PlanTools:
                 ],
                 "event_cursor": summary.event_cursor,
                 "progress_details": "Use the progress view for complete attributed notes/evidence.",
+                **self._unread(snapshot),
             }, _pin(summary)
         if request.ref is None:
             raise DocumentError(INVALID_REQUEST, "historical plan read needs an exact ref")
