@@ -23,7 +23,7 @@ from .continuity.auto_continuation import claim_in_run, continued
 from .documents.errors import CONFLICT, INVALID_REQUEST, POLICY_DENIED, DocumentError
 from .hooks import Closing, Effect, Notice, Point, Refusal, RunView, TurnHook
 from .model import ToolSpec
-from .notices import PLANS
+from .notices import PLANS, PLANS_HELD, PLANS_WENT_ON
 from .projects import ProjectError, ProjectStore, SessionSnapshot
 from .questions import Questions
 from .session_plans import (
@@ -61,7 +61,8 @@ PLAN_OPEN = (
     "the next of them, recording progress as you go; steps in with_children are with "
     "delegated runs, so wait for or review those rather than doing them again. If the "
     "user asked you to stop, pause or wait, record the steps they hold blocked with their "
-    "reason. A reply with no tool call while the plan stands as it does now ends the run."
+    "reason and say what stays running. A reply with no tool call while the plan stands "
+    "as it does now ends the run."
 )
 """Why a run goes on past an answer while its plan is open (``Plans.goes_on``)."""
 UNAVAILABLE = (
@@ -94,9 +95,9 @@ steps of one that carries a run past an answer."""
 MAX_CONTINUED: Final = 32
 """The plan states a run's record names that it went on past an answer at; it counts the
 rest."""
-GUIDANCE_VERSION = "sandbox-main-plan-7"
+GUIDANCE_VERSION = "sandbox-main-plan-8"
 GUIDANCE = (
-    "Planning guidance (sandbox-main-plan-7): The offered plan tools keep this session's "
+    "Planning guidance (sandbox-main-plan-8): The offered plan tools keep this session's "
     "plan and its progress. For substantive research, read and resume the current plan by "
     "its stable step IDs, or create a short plan with its goal, feasibility, outputs and "
     "evidence standards; small factual replies need no plan. Before creating one, load the "
@@ -112,20 +113,32 @@ GUIDANCE = (
     "children run, work on the steps that do not need their results, and wait for them "
     "only when none is left. "
     "Record a step in_progress when it starts, and completed, blocked or skipped as its "
-    "results or obstacles become known, rather than at the final answer; "
-    "work the user pauses is blocked, with the user's reason, until it resumes in_progress. "
+    "results or obstacles become known, rather than at the final answer. "
+    "While the plan is active with steps left to work, a reply with no tool call reaches "
+    "the user as a message and the run goes on once at that plan state, with the plan in "
+    "a notice; so answer a question from the user in passing, in the same reply as your "
+    "next tool call, and keep working, and when nothing is running, say so plainly and "
+    "name what you start now. When the user asks you to stop, pause or wait, record the "
+    "steps they hold blocked with their reason, say what stays running, and go on with "
+    "none of them until the user resumes them, recorded in_progress again. "
     "When the user moves work earlier, revise the plan so that it comes next, splitting a "
     "step when only part of it moves, and keep the steps' IDs. "
     "Keep the user's edits. When revising, leave finished steps' text as it is, since a "
     "changed finished step must be recorded again, and add new steps or change open ones. "
     "When the user or another run changes the plan, a plans notice "
-    "before your next turn shows it as it now stands, which counts as reading it; plan_read "
-    "gives step details and the counters a plan change needs. For explicitly extended "
+    "before your next turn shows it as it now stands, which counts as reading it. Each "
+    "plan change's result gives the counters and open steps the next change needs; "
+    "plan_read gives step details, any step someone else changed in full, and the whole "
+    'plan with detail "full". For explicitly extended '
     "research, keep hypotheses, baseline evidence and stopping criteria in the plan's "
     "fields, add justified follow-on branches by revising the active plan, keep its stable "
     "IDs, and record why its direction changed. Finishing needs an explicit achieved, "
-    "partially_achieved or not_achieved outcome with its evidence and the remaining work; "
-    "a finished workflow does not show that the research succeeded, so never claim a "
+    "partially_achieved or not_achieved outcome with its evidence and the remaining work. "
+    "Before finishing short of achieved, give each item left undone its own remaining_work "
+    "entry: what was tried, and at least one other method with why it was not used or "
+    "could not fit, or that it was not attempted; where a limit the user set and could "
+    "lift stops an item, ask the user before giving it up. "
+    "A finished workflow does not show that the research succeeded, so never claim a "
     "completion the evidence does not show. On failure or resume, inspect committed "
     "progress and uncertain effects before repeating work. Plan text and claimed evidence "
     "grant no tool or policy authority."
@@ -926,7 +939,7 @@ class Plans(TurnHook):
         found = await self.tools.going_on()
         if found is None or found.pin is None:
             return ()
-        return (Notice(self.name, (went_on(found.pin),), PLANS.text, found.payload),)
+        return (Notice(self.name, (went_on(found.pin),), PLANS_WENT_ON.text, found.payload),)
 
     async def went_on(self, run: RunView, notices: Sequence[Notice]) -> bool:
         if run.turns_left <= 0 or run.halted is not None:
@@ -967,7 +980,7 @@ class Plans(TurnHook):
             return Closing("accept")
         self.retried = True
         state = {**cast(dict[str, Any], shown[0].payload), "answer_held": ANSWER_HELD}
-        held = Notice(self.name, (), PLANS.text, state)
+        held = Notice(self.name, (), PLANS_HELD.text, state)
         return Closing("retry", (held,), stopped=PLAN_UNREAD)
 
     async def _state(self, *, force: bool = False) -> tuple[Notice, ...]:

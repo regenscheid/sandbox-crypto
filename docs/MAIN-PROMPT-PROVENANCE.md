@@ -15,7 +15,7 @@ The system message is its sections' texts joined by a blank line, in order
 ([`loop.py`](../packages/orchestrator/src/sandbox_science/orchestrator/loop.py)
 `_sections`):
 
-1. `main`, version `sandbox-main-24`: `SYSTEM_PROMPT`. A caller's other system text is
+1. `main`, version `sandbox-main-25`: `SYSTEM_PROMPT`. A caller's other system text is
    a `custom` section with no version; supplying the exact built-in text counts as
    `main`, which says what the text is, not who supplied it. Its first paragraph says
    who the agent is; Markdown headings follow, each once: *How you work* (with *Tools
@@ -42,7 +42,7 @@ The system message is its sections' texts joined by a blank line, in order
 5. `skills`, with no version, when the project pins skills: the framing
    `sandbox-skills-index-4`, the index of the run's skills and the skills loaded at its
    start ([skills](SKILLS.md)); the `skills` pin below names the framing's version.
-6. `planning`, version `sandbox-main-plan-7`, when the plan tools are offered. Plan
+6. `planning`, version `sandbox-main-plan-8`, when the plan tools are offered. Plan
    tools offered without their hook, or the hook without the tools, refuse before any
    model call.
 
@@ -58,7 +58,11 @@ version 5 adds that work the user pauses is recorded `blocked` and resumes `in_p
 and that a revision leaves finished steps' text as it is. Planning version 7 adds that
 steps are ordered by what each needs, that a step whose inputs are in hand starts at once,
 that while children run the agent works on what does not need their results, and that
-work the user moves earlier is revised into the plan.
+work the user moves earlier is revised into the plan. Planning version 8 adds that a plan
+change's result gives the counters and open steps the next change needs, that a reply with
+no tool call during an active plan reaches the user and the run goes on once, beside what
+a request to stop, pause or wait records, and that a finish short of achieved accounts
+for each item left undone with what was tried and another method.
 
 ## Pins
 
