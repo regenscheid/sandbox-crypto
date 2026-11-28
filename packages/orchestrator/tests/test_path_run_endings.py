@@ -46,6 +46,7 @@ from sandbox_science.contracts import ErrorKind, new_id
 from sandbox_science.contracts.environment_claims import EnvironmentClaim, EnvironmentClaimResult
 from sandbox_science.contracts.restarts import RESTART_POLICY
 from sandbox_science.orchestrator import environment_claim
+from sandbox_science.orchestrator.chat import salvage_of
 from sandbox_science.orchestrator.confinement.host import HostLoops
 from sandbox_science.orchestrator.confinement.models import (
     CallbackGateway,
@@ -60,16 +61,22 @@ from sandbox_science.orchestrator.context.history import body
 from sandbox_science.orchestrator.continuity.auto_recovery import interruption
 from sandbox_science.orchestrator.continuity.records import Work, WorkRecords
 from sandbox_science.orchestrator.continuity.resources import ResourceRequests
-from sandbox_science.orchestrator.finalization import SALVAGED, record_and_acknowledge
+from sandbox_science.orchestrator.finalization import PLACEHOLDER, record_and_acknowledge
 from sandbox_science.orchestrator.harness import Role
-from sandbox_science.orchestrator.hooks import REFUSED, Notice, contribute
+from sandbox_science.orchestrator.hooks import REFUSED, SALVAGED, Notice, contribute
 from sandbox_science.orchestrator.jobstate import lost_notice_id, notice_job
 from sandbox_science.orchestrator.loop import MAX_TURNS, RUNAWAY, Transcript
 from sandbox_science.orchestrator.model import ChatModel, ModelGateway
-from sandbox_science.orchestrator.notices import FRAMINGS, REPORT, SUPERVISOR
+from sandbox_science.orchestrator.notices import (
+    FRAMINGS,
+    NOTICES_MAY_REPEAT,
+    REPORT,
+    SUPERVISOR,
+)
 from sandbox_science.orchestrator.plan_tools import went_on
 from sandbox_science.orchestrator.projects import ProjectError, ProjectStore, RunRecord
 from sandbox_science.orchestrator.questions import Questions
+from sandbox_science.orchestrator.repeated_notices import NoticesMayRepeat, repeated_after
 from sandbox_science.orchestrator.runstate import RunEvent
 from sandbox_science.orchestrator.service import RunService
 from sandbox_science.orchestrator.session_plans import SessionPlans
@@ -268,6 +275,8 @@ class Claims:
     away: bool = False
     replaced: bool = False
     """Whether the environment has another sandbox now, which ends the claim."""
+    replace_at: int | None = None
+    """The call from which the environment has another sandbox."""
     calls: int = 0
     failed: int = 0
 
@@ -283,7 +292,9 @@ class Claims:
         return EnvironmentClaimResult(
             environment_id=request.context.environment_id,
             state="held",
-            sandbox_id="ss-other" if self.replaced else "ss-synthetic",
+            sandbox_id="ss-other"
+            if self.replaced or (self.replace_at is not None and self.calls >= self.replace_at)
+            else "ss-synthetic",
             expires_at=datetime.now(UTC) + timedelta(seconds=request.seconds),
         )
 
@@ -810,14 +821,16 @@ def shown(message: Json) -> str:
     return next((name for prefix, name in FRAMED.items() if text.startswith(prefix)), text[:40])
 
 
-async def run_next(case: Case, starts: Next, text: str = NEXT) -> tuple[str, ...]:
+async def run_next(
+    case: Case, starts: Next, text: str = NEXT, script: Sequence[Reply] | None = None
+) -> tuple[str, ...]:
     """The session's next run, as the user or the service starts it: the queued Resume
     for automatic recovery, the supervisor's message for continuation, else the user's
     next message; what its first model call is given."""
     harness, service = case.harness, case.service
     await service.maintenance_tick()  # the ended run's bookkeeping is let go
     harness.gateway.requests.clear()
-    harness.gateway.script = [Reply("Next answer.")]
+    harness.gateway.script = list(script) if script is not None else [Reply("Next answer.")]
     service.waiting_until.clear()  # the time a failed or budget-stopped session waits passes
     branches: list[asyncio.Task[bool]] = []
     request: str | None = None
@@ -1375,6 +1388,8 @@ class Salvage:
     """Fields of the saved record, as their values."""
     left_out: frozenset[str]
     minimal: bool = False
+    repeat: bool = False
+    """Whether the next run is told its notices may come again."""
 
 
 SALVAGES: Final = (
@@ -1383,6 +1398,7 @@ SALVAGES: Final = (
         {"delivered": {"jobs": ["a", "b#1", "c", "d#2", "e"], "bad source": ["x"]}},
         {"delivered": {"jobs": ["a", "c", "e"]}},
         frozenset({"delivered.jobs.1", "delivered.jobs.3", "delivered.bad source"}),
+        repeat=True,
     ),
     Salvage(
         "one_bad_usage",
@@ -1398,10 +1414,43 @@ SALVAGES: Final = (
     ),
     Salvage(
         "bad_messages",
-        {"messages": "not a list", "delivered": {"chat": ["m-1"]}},
-        {"messages": [], "delivered": {}},
-        frozenset({"messages"}),
+        {"messages": "not a list", "delivered": {"chat": ["m-1", "m#2"]}, "usage": [USAGE]},
+        {"messages": [], "delivered": {"chat": ["m-1"]}, "usage": 1},
+        frozenset({"messages", "delivered.chat.1"}),
         minimal=True,
+        repeat=True,
+    ),
+    Salvage(
+        "bad_messages_and_deliveries",
+        {"messages": "not a list", "delivered": "not a mapping"},
+        {"messages": [], "delivered": {}},
+        frozenset({"messages", "delivered"}),
+        minimal=True,
+        repeat=True,
+    ),
+    Salvage(
+        "a_key_named_like_a_union_tag",
+        {"summaries": {"reviews": {"dict": 5, "x": [object()]}}},
+        {"reviews": {"dict": 5, "x": []}},
+        frozenset({"summaries.reviews.x.0"}),
+    ),
+    Salvage(
+        "a_bad_tool_call_in_a_message",
+        {
+            "messages": [
+                {"role": "assistant", "tool_calls": [{"id": "c1", "when": object()}]},
+                {"role": "tool", "tool_call_id": "c1", "content": "result"},
+            ],
+            "tools": [{"tool": "a"}, {"tool": "b", "bad": object()}, {"tool": "c"}],
+        },
+        {
+            "messages": [
+                {"role": "assistant", "tool_calls": [{"id": "c1", "when": PLACEHOLDER}]},
+                {"role": "tool", "tool_call_id": "c1", "content": "result"},
+            ],
+            "tools": [{"tool": "a"}, {"tool": "b", "bad": PLACEHOLDER}, {"tool": "c"}],
+        },
+        frozenset({"messages.0.tool_calls.0.when (replaced)", "tools.1.bad (replaced)"}),
     ),
 )
 
@@ -1450,15 +1499,31 @@ async def test_a_record_that_does_not_validate_is_kept_without_what_failed(
     for name, value in case.kept.items():
         if name == "usage":
             assert len(record.usage) == value, record.usage
-        elif name in ("delivered", "messages"):
+        elif name in ("delivered", "messages", "tools"):
             assert getattr(record, name) == value
         else:
             assert record.summaries[name] == value
     salvaged = cast(dict[str, Any], record.summaries[SALVAGED])
     assert set(salvaged["left_out"]) == case.left_out, salvaged
     assert salvaged.get("minimal", False) is case.minimal
+    assert salvaged.get("notices_may_repeat", False) is case.repeat
+    # Every reader sees it: the completion, the stopped event's fields, and the next run.
+    assert completion.salvaged == salvaged
+    assert salvage_of(record) == {SALVAGED: salvaged}
     assert errors
     assert "kept without" in errors[0]
+    store = ProjectStore(tmp_path / "state")
+    try:
+        previous = repeated_after(store.control, PROJECT, SESSION)
+    finally:
+        store.close()
+    assert previous == (entry.name if case.repeat else None)
+    if previous is not None:
+        hook = NoticesMayRepeat(previous)
+        run = Transcript(context=agent.AgentContext(messages=[]))
+        (told,) = await hook.notices("start", run)
+        assert told.framing == NOTICES_MAY_REPEAT.text
+        assert await hook.notices("start", run) == ()
 
 
 def test_a_summary_that_is_not_json_is_kept_without_what_is_not() -> None:
@@ -1474,3 +1539,46 @@ def test_a_summary_that_is_not_json_is_kept_without_what_is_not() -> None:
     assert set(summaries[REFUSED]["mixed"]) == {"items.1", "when"}
     assert "bad name" in summaries[REFUSED]
     assert "bad name" not in summaries
+
+
+@pytest.mark.parametrize("way", WAYS)
+async def test_a_resumed_tree_whose_sandbox_is_replaced_is_not_retried(
+    harness: Harness, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, way: Way
+) -> None:
+    """A root interrupted by a worker away past the window is resumed by automatic
+    recovery; the Resume's own claim then finds the environment's sandbox replaced. That
+    ends the Resume with its reason recorded, and is not a transient loss, so nothing
+    retries the tree: the user's Resume decides."""
+    async with arrangement(harness, tmp_path, way) as service:
+        case = Case(harness, service, monkeypatch)
+        await managed_claims(case)
+        run = await run_one(case, [Reply("Never.", before=lambda: worker_away(case))])
+        claims = case.claims
+        assert claims is not None
+        claims.away = False
+        assert await what_starts_next(service) == "recovery"
+        control = service.stores.projects.control
+
+        def ended() -> list[dict[str, str]]:
+            with control.read() as tx:
+                rows = tx.sql.execute(
+                    "SELECT detail FROM research_observations WHERE project=? AND session=? "
+                    "AND kind='interruption'",
+                    (PROJECT, SESSION),
+                ).fetchall()
+            return [cast(dict[str, str], json.loads(row[0])) for row in rows]
+
+        async def replaced() -> None:
+            await eventually(ended, timeout=20)
+
+        claims.replace_at = claims.calls + 2  # its first renewal finds another sandbox
+        with contextlib.suppress(Exception):
+            await run_next(case, "recovery", script=[Reply("Never.", before=replaced)])
+        ((found,),) = [ended()]
+        transient = interruption(control, PROJECT, SESSION, found["run"])
+        starts = await what_starts_next(service)
+    assert found["reason"] == "environment_claim_ended", found
+    assert transient is not None
+    assert "kind" not in transient, transient
+    assert run != found["run"]
+    assert starts != "recovery"

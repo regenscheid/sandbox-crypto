@@ -55,6 +55,15 @@ async def held[T](work: Awaitable[T]) -> tuple[T, bool]:
                 return task.result(), cancelled
 
 
+def stop_requested() -> None:
+    """Raise ``CancelledError`` when the current task is being cancelled: a retry loop
+    calls it before it waits again, since a call that absorbed the cancellation (``held``)
+    and then failed would otherwise retry past a stop."""
+    current = asyncio.current_task()
+    if current is not None and current.cancelling():
+        raise asyncio.CancelledError
+
+
 async def owned[T](work: Awaitable[T]) -> T:
     """Retain actual work ownership through repeated caller cancellation."""
     result, cancelled = await held(work)

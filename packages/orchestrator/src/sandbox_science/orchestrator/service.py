@@ -34,7 +34,7 @@ from pydantic import JsonValue
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock
 
 from .aio import owned, threaded
-from .chat import SOURCE, session_lease
+from .chat import SOURCE, salvage_of, session_lease
 from .context.folding import FoldLifecycle
 from .context.history import Archive, Folder
 from .context.history.markers import Decided, current_decisions
@@ -447,6 +447,7 @@ class RunService:
                 "failure": record.failure,
                 "final_text": head_and_tail(record.final_text),
                 "record": run,
+                **salvage_of(record),
             }
         else:
             stopped = {

@@ -104,6 +104,9 @@ GAPS: Final = "hook_gaps"
 """The notice source, and the run record's summary, of the points a hook could not read."""
 MAX_GAPS: Final = 50
 """The most gaps a run's record names; the count goes on past it."""
+SALVAGED: Final = "record_salvaged"
+"""Where a record kept without what did not validate names what it left out; its
+``stopped`` event carries it too."""
 REFUSED: Final = "refused_contributions"
 """Where a run's record names the summaries it refused (``contribute``)."""
 _IDENTIFIER: Final = TypeAdapter(Identifier)
@@ -131,41 +134,80 @@ _GONE: Final = object()
 """Marks what ``prune`` leaves out until it sweeps the value."""
 
 
-def mark_invalid(value: object, loc: Sequence[str | int], *, outermost: bool = False) -> str | None:
-    """Mark for removal the innermost list element on ``loc``, a validation error's place
-    in ``value``, or, on a path with no list, its last dictionary entry: the path marked,
-    or ``None`` where the error has no element to remove. A union's type tags in ``loc``
-    (``dict``, ``list``) are passed over. With ``outermost``, as for a value nested past
-    what validation follows, the outermost list element on the path is marked instead."""
+_TAGS: Final[dict[type, str]] = {dict: "dict", list: "list"}
+"""The union tags pydantic puts in an error's place before it goes into a JSON value's
+dictionary or list."""
+
+
+def _walk(value: object, loc: Sequence[str | int]) -> list[tuple[object, str | int]]:
+    """The containers and keys ``loc`` goes through in ``value``, against the value's own
+    types: a union's tag (``dict``, ``list``) is passed over only where it names the type
+    of the value it stands before and the step after it is that value's own, so that a key
+    named like a tag is still a key."""
     steps = list(loc[:-1] if loc and loc[-1] == "[key]" else loc)
     current: object = value
-    path: list[str | int] = []
-    entry: tuple[dict[str | int, object], str | int, list[str | int]] | None = None
-    element: tuple[list[object], int, list[str | int]] | None = None
-    for step in steps:
-        if isinstance(current, dict) and step in current:
-            container = cast(dict[str | int, object], current)
-            entry = (container, step, [*path, step])
-            current = container[step]
-        elif isinstance(current, list) and isinstance(step, int):
-            items = cast(list[object], current)
-            if not 0 <= step < len(items):
-                break
-            if element is None or not outermost:
-                element = (items, step, [*path, step])
-            current = items[step]
-        else:
+    walked: list[tuple[object, str | int]] = []
+    i = 0
+    while i < len(steps):
+        step = steps[i]
+        following = steps[i + 1] if i + 1 < len(steps) else None
+        tag = _TAGS.get(type(current))
+        if step == tag and following is not None and _has(current, following):
+            i += 1  # the tag of the union this value is: the next step is the value's own
             continue
-        path.append(step)
-    if element is not None:
-        items, index, path = element
-        items[index] = _GONE
-    elif entry is not None:
-        container, key, path = entry
-        container[key] = _GONE
-    else:
+        if not _has(current, step):
+            break
+        walked.append((current, step))
+        current = (
+            cast(dict[str | int, object], current)[step]
+            if isinstance(current, dict)
+            else (cast(list[object], current)[cast(int, step)])
+        )
+        i += 1
+    return walked
+
+
+def _has(container: object, step: str | int) -> bool:
+    if isinstance(container, dict):
+        return step in container
+    if isinstance(container, list):
+        return isinstance(step, int) and 0 <= step < len(cast(list[object], container))
+    return False
+
+
+def mark_invalid(
+    value: object,
+    loc: Sequence[str | int],
+    *,
+    outermost: bool = False,
+    placeholder: object = None,
+) -> str | None:
+    """Mark for removal the innermost list element on ``loc``, a validation error's place
+    in ``value``, or, on a path with no list, its last dictionary entry: the path marked,
+    or ``None`` where the error has no element to remove. With ``outermost``, as for a
+    value nested past what validation follows, the outermost list element on the path is
+    marked instead. With ``placeholder``, nothing is removed: the invalid value itself, or
+    for a value nested too deep the entry of the outermost element that holds it, is
+    replaced by ``placeholder``, so that positions, and what pairs by them, stay."""
+    walked = _walk(value, loc)
+    if not walked:
         return None
-    return ".".join(str(step) for step in path)
+    if placeholder is not None:
+        at = len(walked) - 1
+        if outermost:
+            lists = [n for n, (c, _) in enumerate(walked) if isinstance(c, list)]
+            at = min(lists[0] + 1, len(walked) - 1) if lists else at
+        chosen, fill = walked[: at + 1], placeholder
+    else:
+        lists = [n for n, (c, _) in enumerate(walked) if isinstance(c, list)]
+        at = (lists[0] if outermost else lists[-1]) if lists else len(walked) - 1
+        chosen, fill = walked[: at + 1], _GONE
+    container, key = chosen[-1]
+    if isinstance(container, list):
+        cast(list[object], container)[cast(int, key)] = fill
+    else:
+        cast(dict[str | int, object], container)[key] = fill
+    return ".".join(str(k) for _, k in chosen)
 
 
 def sweep_marked(value: object) -> object:
@@ -383,6 +425,9 @@ class TurnHook:
     name: str = "hook"
     veto: bool = False
     """Asked about a closing answer before the others, and again once they accept it."""
+    environment_id: str | None = None
+    """The run's environment, which the hook reads: the worker's answer that it no longer
+    has it is outside the agent's control (``unavailable``)."""
     unread: str = "its notices could not be read now; they come at a later point"
     """What a run is told of this hook's failure at a point (``guarded``): what it means
     for the run's work."""
@@ -501,12 +546,14 @@ class TurnHook:
         """After the record is saved: settle what it names as delivered."""
 
 
-ENVIRONMENT_GONE: Final = re.compile(r"no environment '[^']+'")
-"""The worker's answer for an environment it no longer has (W/app.py), as its sandbox
-was deleted under the run."""
+ENVIRONMENT_GONE: Final = re.compile(r"^no environment '([^']+)'$")
+"""The worker's answer for an environment it does not have for the caller (W/app.py): for
+the run's own environment, one given up as its sandbox was deleted under the run. The
+worker gives the same text for another project's, a job sandbox's or another session's
+environment, so it counts only for the run's own (``unavailable``)."""
 
 
-def unavailable(error: BaseException) -> bool:
+def unavailable(error: BaseException, environment: str | None = None) -> bool:
     """Whether a hook's failure is outside the agent's control, and so one the run goes on
     past (``guarded``). Only these shapes are:
 
@@ -514,21 +561,26 @@ def unavailable(error: BaseException) -> bool:
     - a ``WorkerAPIError`` of kind ``unavailable``: the worker unreachable, or answering
       that it cannot serve now (a proxy's 502/503/504 before it among them);
     - a ``WorkerAPIError`` of kind ``not_found`` that the worker answered over HTTP (it has
-      a status) naming an environment it no longer has (``ENVIRONMENT_GONE``).
+      a status) naming ``environment``, the run's own, as one it no longer has
+      (``ENVIRONMENT_GONE``).
 
     Any other error is the hook's own or the platform's integrity failing, which still
     ends the run: a worker of another protocol version (releases are lockstep), an owner
-    or identity check the harness makes itself, a control-store read."""
+    or identity check the harness makes itself, a control-store read, a scope refusal
+    naming another environment."""
     if isinstance(error, TimeoutError):
         return True
     if not isinstance(error, WorkerAPIError) or isinstance(error, WorkerProtocolError):
         return False
     if error.kind is ErrorKind.UNAVAILABLE:
         return True
+    gone = ENVIRONMENT_GONE.match(error.message)
     return (
         error.kind is ErrorKind.NOT_FOUND
         and error.status is not None
-        and ENVIRONMENT_GONE.search(error.message) is not None
+        and environment is not None
+        and gone is not None
+        and gone[1] == environment
     )
 
 
@@ -555,7 +607,7 @@ async def guarded[T](hook: TurnHook, point: str, run: RunView, call: Awaitable[T
     try:
         return await call
     except Exception as error:
-        if not unavailable(error):
+        if not unavailable(error, hook.environment_id):
             raise
         gap(hook, point, run, error)
         return default
@@ -567,7 +619,7 @@ async def offered(hook: TurnHook, point: Point, run: RunView) -> tuple[Notice, .
     try:
         return tuple(await hook.notices(point, run))
     except Exception as error:
-        if not unavailable(error):
+        if not unavailable(error, hook.environment_id):
             raise
         return (gap(hook, point, run, error),)
 

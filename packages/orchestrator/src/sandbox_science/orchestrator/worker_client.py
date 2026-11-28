@@ -148,6 +148,7 @@ from sandbox_science.contracts.worker import (
     Language,
 )
 
+from .aio import stop_requested
 from .transport_tls import client_tls
 
 _log = logging.getLogger(__name__)
@@ -782,6 +783,7 @@ class WorkerClient:
 
         async def again(exc: Exception | None) -> None:
             nonlocal failures, away
+            stop_requested()  # a cancel the failed request absorbed still stops
             failures += 1
             away = self.clock.monotonic() if away is None else away
             if self.clock.monotonic() - away >= self.outage_seconds:

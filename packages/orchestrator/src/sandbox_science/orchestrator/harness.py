@@ -148,6 +148,7 @@ from .projects import (
 from .question_tool import QuestionTool
 from .questions import Questions
 from .recording import FileRecorder, RecordedFiles
+from .repeated_notices import NoticesMayRepeat, repeated_after
 from .resource_hooks import Resources
 from .run_inputs import RecordInputs, RunInputs
 from .runstate import RunState
@@ -586,14 +587,39 @@ class ClaimWatch:
     a run being stopped is marked neither way."""
 
     def __init__(
-        self, stores: Stores | None, admitted: Admitted, stop: asyncio.Event | None
+        self,
+        stores: Stores | None,
+        context: ExecutionContext,
+        name: str,
+        stop: asyncio.Event | None,
+        note: Callable[[str], None] | None = None,
     ) -> None:
-        self.stores, self.admitted, self.stop = stores, admitted, stop
+        """``name`` is the run's, or a Resume's, which the interruption is recorded for;
+        ``note`` tells of an outage where there are no run events (a tree's Resume)."""
+        self.stores, self.context, self.name, self.stop = stores, context, name, stop
+        self.note = note
         self.chat: RunChat | None = None
+        self.away: tuple[datetime, datetime | None] | None = None
+        """The outage the claim told of last, while it lasts."""
         self._writes: set[asyncio.Task[None]] = set()
 
+    def attach(self, chat: RunChat | None) -> None:
+        """The run's events, once they can be written: an outage still on, and not told
+        yet, is told now."""
+        told, self.chat = self.chat is not None, chat
+        if self.away is not None and not told:
+            self.outage(*self.away)
+
     def outage(self, since: datetime | None, until: datetime | None) -> None:
+        self.away = (since, until) if since is not None else None
         if self.chat is None:
+            if self.note is not None:
+                self.note(
+                    f"the worker does not answer since {since.isoformat()}; waiting for it until "
+                    f"{until.isoformat() if until is not None else 'the window ends'}"
+                    if since is not None
+                    else "the worker answers again"
+                )
             return
         task = asyncio.get_running_loop().create_task(self.chat.worker_away(since, until))
         self._writes.add(task)
@@ -607,8 +633,7 @@ class ClaimWatch:
     def lost(self, reason: str, why: str, error: Exception) -> None:
         if self.stores is None or (self.stop is not None and self.stop.is_set()):
             return
-        context, admitted = self.admitted.context, self.admitted
-        name = run_name(admitted.started_at, admitted.run_id)
+        context, name = self.context, self.name
         control = self.stores.projects.control
         kind = "worker_loss" if reason == UNREACHABLE else classify(error)
         try:
@@ -622,9 +647,7 @@ class ClaimWatch:
                     control, context.project_id, context.session_id, name, reason, why=why
                 )
         except Exception:
-            _log.exception(
-                "the loss of run %s's environment claim was not recorded", admitted.run_id
-            )
+            _log.exception("the loss of run %s's environment claim was not recorded", name)
 
 
 @dataclass
@@ -1095,7 +1118,15 @@ class Harness:
             async with AsyncExitStack() as stack:
                 stack.enter_context(profiles(admitted.request.model_profiles or {}))
                 with interruption.protect():
-                    watch = ClaimWatch(self.stores, admitted, stop)
+                    watch = ClaimWatch(
+                        self.stores,
+                        admitted.context,
+                        run_name(admitted.started_at, admitted.run_id),
+                        stop,
+                    )
+                    # Its events tell of a worker away from the claim's first grant on: the
+                    # run's chat as admitted writes them until its view's is made.
+                    watch.attach(self.chat(admitted))
                     # Its events are written before the run ends, after the claim's release.
                     stack.push_async_callback(watch.join)
                     if (
@@ -1129,7 +1160,8 @@ class Harness:
                         # The session's view is the earlier conversation (CM-29).
                         request = dataclasses.replace(admitted.request, history=view.messages)
                         admitted = dataclasses.replace(admitted, request=request)
-                    chat = watch.chat = self.chat(admitted)
+                    chat = self.chat(admitted)
+                    watch.attach(chat)
                     if chat is not None and view is not None:
                         chat.shown = view.shown
                     delegations = await self._delegations(
@@ -1162,6 +1194,20 @@ class Harness:
                         if work is not None:
                             work.wake = child_wake
                     hooks = toolbox.turn_hooks()
+                    if (
+                        self.stores is not None
+                        and admitted.request.parent is None
+                        and (
+                            previous := await threaded(
+                                repeated_after,
+                                self.stores.projects.control,
+                                admitted.context.project_id,
+                                admitted.context.session_id,
+                            )
+                        )
+                    ):
+                        # Its first notice: the last run's notices may come again.
+                        hooks = (NoticesMayRepeat(previous), *hooks)
                     if work is not None:
                         owner = work.owner
                         for hook in hooks:

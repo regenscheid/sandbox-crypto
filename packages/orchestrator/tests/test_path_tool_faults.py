@@ -979,6 +979,10 @@ async def test_a_blip_at_a_hook_outside_a_call_does_not_end_the_run(
     )
 
 
+JOB_CONTEXT: Final = ExecutionContext(project_id="p1", session_id="s1", environment_id="env1")
+"""The session of the rows that drive the job tools and hooks directly."""
+
+
 @dataclass(frozen=True)
 class Shape:
     """A failure a hook may meet, and whether the run goes on past it (``hooks.guarded``):
@@ -995,8 +999,15 @@ SHAPES: Final = (
     Shape("proxy_503", WorkerAPIError(ErrorKind.UNAVAILABLE, "worker returned 503: x", 503), True),
     Shape(
         "environment_gone",
-        WorkerAPIError(ErrorKind.NOT_FOUND, "no environment 'p-child-0123'", 404),
+        WorkerAPIError(ErrorKind.NOT_FOUND, f"no environment '{JOB_CONTEXT.environment_id}'", 404),
         True,
+    ),
+    # The worker's same text for a scope refusal: another project's environment, a job
+    # sandbox's, another session's child environment (W/app.py).
+    Shape(
+        "another_environment",
+        WorkerAPIError(ErrorKind.NOT_FOUND, "no environment 'p2-default-0123'", 404),
+        False,
     ),
     # A control-store read the delegation hook gives as not found (O/delegation/hook.py,
     # ``Delegations._read``): no worker answered it.
@@ -1022,6 +1033,7 @@ class ClosingFails(TurnHook):
 
     def __init__(self, error: BaseException) -> None:
         self.error = error
+        self.environment_id = JOB_CONTEXT.environment_id
 
     async def closing(self, run: RunView, answer: str | None) -> Closing:
         raise self.error
@@ -1034,7 +1046,7 @@ async def test_a_hook_failure_ends_the_run_unless_it_is_outside_the_agents_contr
     """Each shape at a closing: the run goes on to its answer, the gap recorded, or it
     fails as before, so that a gate such as ``child_outcome_unavailable`` or an integrity
     check is never passed by default."""
-    assert hooks_unavailable(shape.error) is shape.goes_on
+    assert hooks_unavailable(shape.error, JOB_CONTEXT.environment_id) is shape.goes_on
     model = ScriptedModel.from_json([{"text": "Done."}])
     toolbox = Toolbox(cast(WorkerClient, object()), JOB_CONTEXT)
     run = await run_task(model, toolbox, "Go.", run_id="run-1", hooks=(ClosingFails(shape.error),))
@@ -1145,8 +1157,6 @@ async def test_a_job_whose_status_read_fails_after_submission_is_recovered(
 # The worker's side of each ending (final state, attempts, written files, the watchdog)
 # is walked in packages/worker/tests/test_path_job_endings.py; these rows walk what the
 # orchestrator tells the agent of it, against a real worker and real job stores.
-
-JOB_CONTEXT: Final = ExecutionContext(project_id="p1", session_id="s1", environment_id="env1")
 
 
 @dataclass
@@ -1310,6 +1320,29 @@ async def test_a_message_ends_a_wait_while_the_worker_is_away(
     if wake != "user_message":
         assert "jobs" not in said, said
         assert "keep running" in said["jobs_unread"], said
+
+
+async def test_a_stop_ends_a_wait_while_the_worker_is_away(harness: Harness) -> None:
+    """A wait whose worker does not answer is waited for, and a stop meanwhile, as the
+    user's cancel of the run, ends it at once."""
+    site = cast(FaultyWorker, harness.worker)
+    async with WorkerClient(site.url, TOKEN) as client:
+        tools = JobTools(client, harness.context(), run_id="run-1", poll_seconds=0.02)
+        text, _ = await tools.start(
+            {"script": "sleep 30", "purpose": "a job the row waits on", "expected_progress": "-"},
+            "op-stop",
+        )
+        job = str(json.loads(text)["job_id"])
+        away = Rule("reset", ("GET /v1/jobs/",), times=OUTAGE)
+        site.faults.arm(away)
+        waiting = asyncio.create_task(tools.wait({"job_ids": [job]}, "op-wait"))
+        await eventually(lambda: len(away.met) >= 4)
+        waiting.cancel()
+        done, _ = await asyncio.wait({waiting}, timeout=3)
+        site.faults.lift()
+        await client.cancel(job, project_id=PROJECT)
+    assert done, "the stop was swallowed"
+    assert waiting.cancelled()
 
 
 class NotToldWhoCancelled(Violation):

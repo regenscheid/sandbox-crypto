@@ -36,7 +36,7 @@ from sandbox_science.contracts.model import Contract
 from sandbox_science.contracts.restarts import RESTART_POLICY, Refusal
 from sandbox_science.contracts.worker import TERMINAL_STATES
 
-from .aio import lease, threaded
+from .aio import lease, stop_requested, threaded
 from .control import ControlStore
 from .effects import UnknownEffectError
 from .hooks import Closing, Effect, Notice, Point, RunView, TurnHook
@@ -942,6 +942,7 @@ class JobTools:
             except WorkerAPIError as error:
                 if error.kind is not ErrorKind.UNAVAILABLE:
                     raise
+                stop_requested()  # a cancel the failed read absorbed still stops
                 away = self.clock.monotonic() if away is None else away
                 if self.clock.monotonic() - away >= window:
                     raise
@@ -1114,6 +1115,7 @@ class JobNotices(TurnHook):
 
     def __init__(self, jobs: JobTools, *, max_chars: int) -> None:
         self.jobs = jobs
+        self.environment_id = jobs.context.environment_id
         self.max_chars = max_chars
         """The bound for the notices that ride on one tool result."""
 

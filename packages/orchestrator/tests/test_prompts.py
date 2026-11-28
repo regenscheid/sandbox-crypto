@@ -297,6 +297,9 @@ GOLDEN = {
     "sandbox-notice-hook-gap-1": (
         "4c0318f01c69be2ff9f3ae741f50176876ef87ee5acb0ecaf6aad8cba32effbd"
     ),
+    "sandbox-notice-notices-may-repeat-1": (
+        "4e9e75905c4b47d2d83d20baf9be827dd6f7a375699c17193396820f42521d83"
+    ),
     "sandbox-notice-hook-gap-attached-1": (
         "d508c496ed05c2515e1b69a7694270f133f1a9190767c71587d3b02919c96d25"
     ),

@@ -374,6 +374,28 @@ describe("a session's chat, polled", () => {
 });
 
 describe('the transcript of a run', () => {
+  it('says when a run was interrupted for a reason, and when its record was salvaged', () => {
+    expect(
+      stoppedText({
+        stopped: 'interrupted',
+        reason: 'environment_claim_ended',
+        detail: 'its sandbox was replaced',
+      }),
+    ).toContain('Reason: environment claim ended: its sandbox was replaced.');
+    expect(
+      stoppedText({
+        stopped: 'answered',
+        record_salvaged: { left_out: ['delivered.jobs.1'] },
+      }),
+    ).toContain('kept without what did not validate (1 item)');
+    const minimal = stoppedText({
+      stopped: 'answered',
+      record_salvaged: { left_out: ['messages'], minimal: true, notices_may_repeat: true },
+    });
+    expect(minimal).toContain('Only a minimal record of the run could be kept');
+    expect(minimal).toContain('may come again');
+  });
+
   it('says when the worker does not answer and when it answers again', () => {
     expect(
       chatEntries([
