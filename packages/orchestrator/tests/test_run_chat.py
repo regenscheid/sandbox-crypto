@@ -9,6 +9,7 @@ record, the events and the messages.
 from __future__ import annotations
 
 import asyncio
+import threading
 from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
@@ -296,6 +297,45 @@ async def test_a_lease_renewed_on_the_injected_clock_outlives_its_first_minute(
             await asyncio.sleep(0.05)
         assert state.lease("p", "s") is not None
     assert state.lease("p", "s") is None
+    projects.close()
+
+
+async def test_a_holder_cancelled_as_it_leaves_still_releases_the_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RS-5: a run cancelled while it leaves its lease, as a service that stops cancels a
+    run that is just ending, still releases it, so the session's next run does not wait
+    for the lease to expire. The cancel lands while a renewal is in progress, which
+    leaving waits for."""
+    clock = FakeClock(datetime.now(UTC))
+    projects, state = store(tmp_path, clock)
+    renewing, renewed = threading.Event(), threading.Event()
+    renew = RunState.renew
+
+    def slow(self: RunState, *args: str) -> None:
+        renewing.set()
+        renewed.wait(10)
+        renew(self, *args)
+
+    monkeypatch.setattr(RunState, "renew", slow)
+    leaving = asyncio.Event()
+
+    async def hold() -> None:
+        async with session_lease(state, CONTEXT, "run-a", clock=clock):
+            await eventually(lambda: clock.sleepers > 0)
+            clock.advance(state.lease_seconds / 4)
+            await eventually(renewing.is_set)
+            leaving.set()
+        # Leaving waits for the renewal; nothing above suspends before it does.
+
+    task = asyncio.create_task(hold())
+    await leaving.wait()
+    task.cancel()
+    renewed.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert state.lease("p", "s") is None
+    assert not state.leased("p", "s")
     projects.close()
 
 
