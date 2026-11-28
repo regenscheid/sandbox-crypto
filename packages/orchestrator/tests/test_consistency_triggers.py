@@ -20,9 +20,10 @@ from .test_consistency_budget import claims
 
 
 def test_a_review_is_due_on_what_changed_since_the_last_one_not_on_its_backlog(store) -> None:
-    """A review takes one bounded window from the watermark. What it left behind is pending
-    for the next review, but makes none due by itself: the next is due when the work
-    changed enough since this one was dispatched."""
+    """A review takes one bounded window from the watermark, grown up to twice the
+    configured one for a backlog (CR-49). What it left behind, less than a grown window, is
+    pending for the next review, but makes none due by itself: the next is due when the
+    work changed enough since this one was dispatched."""
     reviews, _, now = store
     reviews.defaults = ReviewConfig(max_feed_items=4)
     claims(reviews, 10)
@@ -33,7 +34,7 @@ def test_a_review_is_due_on_what_changed_since_the_last_one_not_on_its_backlog(s
     now[0] += 200
     progress = reviews.progress("p", "s")
     assert progress["remaining"]
-    assert progress["watermark"] == 4
+    assert progress["watermark"] == 8  # the window grew to twice its 4 items
     # Before: the backlog's document made every window of it due in turn.
     assert not reviews.due("p", "s")
     reviews.observe("p", "s", "d2", "document", {"run": "author-1"}, {"v": 2}, characters=1500)
@@ -41,7 +42,7 @@ def test_a_review_is_due_on_what_changed_since_the_last_one_not_on_its_backlog(s
     reviews.observe("p", "s", "d3", "document", {"run": "author-1"}, {"v": 3}, characters=500)
     assert reviews.due("p", "s")
     second = reviews.run("p", "s", dispatch(reviews, "checkpoint"))
-    assert second["start_seq"] == 5  # it continues the backlog from the watermark
+    assert second["start_seq"] == 9  # it continues the backlog from the watermark
 
 
 @pytest.mark.parametrize(
@@ -70,15 +71,36 @@ def test_each_threshold_counts_from_the_last_dispatch(
 
 def test_kernel_cells_count_after_their_interval(store) -> None:
     reviews, _, now = store
+    reviews.defaults = ReviewConfig(kernel_cells=20)
     claim(reviews)
     first = dispatch(reviews, "checkpoint")
     reviews.finish("p", "s", first, "owner", "passed", "Checked.")
-    for n in range(40):
+    for n in range(20):
         reviews.observe("p", "s", f"cell-{n}", "execution", {}, {"n": n}, cells=1)
     now[0] += 200
     assert not reviews.due("p", "s")
     now[0] += 1800
     assert reviews.due("p", "s")
+
+
+def test_a_backlog_that_fills_a_grown_window_is_due_at_once(store) -> None:
+    """CR-49: work piled up to twice the configured window after the watermark makes a
+    checkpoint due at once, before the minimum interval and whatever changed, so that the
+    backlog is reviewed back to back in grown windows instead of skipped; less is not."""
+    reviews, _, now = store
+    reviews.defaults = ReviewConfig(max_feed_items=4, min_interval_seconds=600)
+    claim(reviews)
+    first = dispatch(reviews, "checkpoint")
+    reviews.finish("p", "s", first, "owner", "passed", "Checked.")
+    now[0] += 10
+    claims(reviews, 7, "a")
+    assert not reviews.due("p", "s")
+    claims(reviews, 1, "b")
+    assert reviews.due("p", "s")
+    second = reviews.run("p", "s", dispatch(reviews, "checkpoint"))
+    assert (second["config"]["max_feed_items"], second["config"]["max_turns"]) == (8, 48)
+    assert second["config"]["time_seconds"] == 600
+    assert second["config"]["max_input_chars"] == 500_000
 
 
 def test_a_confirmation_does_not_reset_what_changed(store) -> None:

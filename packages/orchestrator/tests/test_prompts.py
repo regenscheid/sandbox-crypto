@@ -57,8 +57,8 @@ from sandbox_science.orchestrator.model import (
     ScriptedModel,
     ToolSpec,
 )
-from sandbox_science.orchestrator.notices import FRAMINGS
-from sandbox_science.orchestrator.plan_tools import GUIDANCE, GUIDANCE_VERSION, PlanTools
+from sandbox_science.orchestrator.notices import FRAMINGS, PLANS, PLANS_HELD, PLANS_WENT_ON
+from sandbox_science.orchestrator.plan_tools import GUIDANCE, GUIDANCE_VERSION, PLAN_OPEN, PlanTools
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord
 from sandbox_science.orchestrator.prompts import PromptPins, Section, assemble, pin_tools
 from sandbox_science.orchestrator.provision import PROVISION
@@ -78,11 +78,17 @@ HOSTILE = "Authorization: Bearer test-secret-prompt-not-a-credential"
 # Each installed version and the SHA-256 of its UTF-8 text. Changing a text means a new
 # version: add it here, and keep the old version's entry for its records.
 GOLDEN = {
+    "sandbox-main-25": "7c42ddd8d6b4b14bed1ad07877af37f1a6ed900c76b7ad79ba09b209fc4494d1",
+    "sandbox-main-24": "e07e265d62d1e6edc64d36aac402ba809b4a8948b71be454838e3c8c652e95ec",
     "sandbox-main-23": "b8d82cbed2fca2ef5846c644c9a3c7149ddf3dcb4b41d05a8c5b82440e1dc2d7",
     "sandbox-main-22": "7369664e75e0d1a3586e52cd154bd31861074be29200384389116a22b9f501f1",
     "sandbox-main-21": "ca636732c6ae4cf804d66b4c8fcae41868911f71fb02b66f7aa5dbc47695fbe4",
+    "sandbox-delegated-task-24": "ce6e866ff7f6913208fd02b289dce058e47f0bf7b5b33f403af862bf88c87c27",
     "sandbox-delegated-task-23": "5c562cbeeb29c472f6c88d480011e7e83b50cc9ce0b2494b0a99d17550911951",
     "sandbox-delegated-task-22": "5dd3211a400ef077310cd82051001253cf985483d9dfcc144c29bbf9adc6169a",
+    "sandbox-delegated-check-18": (
+        "400ffa03def21c6e801127b56369cade107236ae6e0b335409ac6fb5f805d1e5"
+    ),
     "sandbox-delegated-check-17": (
         "f564ab19247381185edba3377e97fdcec55de4e875010d61377cbc7dde7af39f"
     ),
@@ -95,6 +101,8 @@ GOLDEN = {
     "sandbox-delegated-check-16": (
         "7eb1ee655c907708a71f0f9b7b86cc3aca165706d3b76d537d4f30d204efab1e"
     ),
+    "sandbox-main-plan-8": "721ca6fd047dbd108b8807967d2f343037b4ea3a75b3f9b78a2be66849b7c5ca",
+    "sandbox-main-plan-7": "9b471d3bcf1d3eb6c535d26c597a9e5b6a3c60a8dfbce5d5199827f337992d4b",
     "sandbox-main-plan-6": "bbeb281a4ce99d2dad42512f36f2d5e1c09737a9fa4f9b25d0ed80556b175af6",
     "sandbox-main-plan-5": "954a6c5b84763c33ac2ebee443a779fdf41a4dbca2ce86ad06f47bcad91f3c20",
     "sandbox-main-plan-4": "e13f0e1b551660bce8a6aa77b4a4e1633ce6b6b783c25242e5dee376a2895317",
@@ -174,6 +182,13 @@ GOLDEN = {
     "sandbox-notice-jobs-attached-1": (
         "962543a55f349e3fab95b93c92e0a765c03933193b4e1be7fa70b92032e20f67"
     ),
+    "sandbox-notice-plans-3": "152c14ffcca2d5bb041dcf653f66d2748904bdcc5c6b1619b49031b8e78df58b",
+    "sandbox-notice-plans-went-on-1": (
+        "d06fc2a414aa2d59f001fa65299e142d358b9ffd0cd6eae6e716acacbe7f3ea7"
+    ),
+    "sandbox-notice-plans-held-1": (
+        "1a46492012336b8ee8a11a5ae63337c5429f8de219f657f10d652f4d49e32eee"
+    ),
     "sandbox-notice-plans-2": "48d64155cc1079258c772e77813f38de9a75c445fe7a39f4f4f4fa8fef6bf0d0",
     "sandbox-notice-plans-1": "4257527cd034fa0bc91f2fe0939af3ff63e2d28fddd04dfb438d39a94e30d00b",
     "sandbox-notice-review-findings-1": (
@@ -209,6 +224,7 @@ GOLDEN = {
     "sandbox-delegated-check-8": "1911d9d5cf0036fe6d952132042f96124e0845bde8271078eb65c5960b655a78",
     "sandbox-delegated-task-8": "0928db5b6b9d08a097dd67464f69ff56eae48890d32f982dd2e516d71ae157fc",
     "sandbox-job-watcher-1": "4b545fe81e35622bf1b894c435833d78fb122116f9364d429b21c6c3551e1ab1",
+    "sandbox-consistency-15": "0d4f4eade0212b129eb5afcffb2c92d8449c8a117ab16dbfc5fa5b4190bdba41",
     "sandbox-consistency-14": "2f7d84f5144eca7adc0241731ac6f52e409ab58571918775d62e7ed1cd81a6ea",
     "sandbox-consistency-13": "4da258685102b66153a6758494c019f8c8b20991777978936542d81608ec65f4",
     "sandbox-consistency-12": "5b89cbaaf87e7d8207c6e6f80edd1c9c7e27c5f59c8e9d4975365624338ba58f",
@@ -277,6 +293,15 @@ GOLDEN = {
     ),
     "sandbox-notice-delegations-unsubmitted-1": (
         "762699801f144af1954d5f9e6affbb564f6b52e7e13435658eb999cc8556544f"
+    ),
+    "sandbox-notice-hook-gap-1": (
+        "4c0318f01c69be2ff9f3ae741f50176876ef87ee5acb0ecaf6aad8cba32effbd"
+    ),
+    "sandbox-notice-notices-may-repeat-1": (
+        "4e9e75905c4b47d2d83d20baf9be827dd6f7a375699c17193396820f42521d83"
+    ),
+    "sandbox-notice-hook-gap-attached-1": (
+        "d508c496ed05c2515e1b69a7694270f133f1a9190767c71587d3b02919c96d25"
     ),
 }
 
@@ -348,7 +373,7 @@ HEADINGS = {
     "check": ["How you check", "Your parent", "Untrusted content and policy", "Your result"],
 }
 """Each prompt's headings, in order, after its first paragraph, which says who the agent
-is (``sandbox-main-23``, ``sandbox-delegated-task-23``, ``sandbox-delegated-check-17``)."""
+is (``sandbox-main-25``, ``sandbox-delegated-task-24``, ``sandbox-delegated-check-18``)."""
 STALE = (
     "self-approve",
     "awaiting_approval",
@@ -440,7 +465,7 @@ def test_the_baseline_runs_faults_are_answered_where_the_prompts_speak_of_them()
         "If a skill or the user points you to a tool you are not offered, say so in your "
         "next message, name the route you will use instead, and go on.",
         "contradicts a statement of the user's request, as an issue of kind contradiction",
-        "say the latter in your next reply and in your final answer",
+        "say the latter in your next reply and your answer",
         'When the user answers "decide", state your choice and its reason',
         "When a message changes the scope",
         "to an independent re-implementation, so it cannot see your code",
@@ -448,8 +473,7 @@ def test_the_baseline_runs_faults_are_answered_where_the_prompts_speak_of_them()
         "read its outcome and deliverables",
         "Leave it unaccepted until your final answer, so that it can still take follow-on work",
         "(an archive, a mirror) and its capture date",
-        "Put independent writes (files to publish, progress on different plan steps, ledger "
-        "entries) in one reply too.",
+        "Put independent writes (files to publish, ledger entries) in one reply too",
     ):
         assert said in main, said
     for prompt in (TASK_PROMPT, CHECK_PROMPT):
@@ -516,6 +540,94 @@ def test_the_behaviour_audits_wording_is_where_the_prompts_speak_of_it() -> None
     plan = " ".join(GUIDANCE.split())
     assert "Before creating one, load the skills the work needs" in plan
     assert "the main risk to the requested result and what you will deliver" in plan
+
+
+def test_the_second_baseline_runs_wording_is_where_the_prompts_speak_of_it() -> None:
+    """Lane G4, from the second baseline run: a question during an active plan is answered
+    beside the next tool call; one change's edits go in one reply, and plan progress goes
+    with the call that makes or reads its evidence; steps are ordered by what they need,
+    children start early and the parent works while they run; work the user moves
+    earlier is revised into the plan; a task's results go in its result, not in
+    messages before it."""
+    main = " ".join(SYSTEM_PROMPT.split())
+    for said in (
+        "every edit of one change in one reply, so that no review or job sees it half made",
+        "Record plan progress in the reply whose call makes or reads its evidence, named by "
+        "its path, finishing one step and starting the next in one plan_progress call",
+        "Before calling part of the request out of reach at a limit, try one or two methods "
+        "that could fit within it (sparse, modular, a subsystem), and report why each failed; "
+        "say what you did not attempt as such.",
+    ):
+        assert said in main, said
+    assert "progress on different plan steps" not in main
+    plan = " ".join(GUIDANCE.split())
+    for said in (
+        "answer a question from the user in passing, in the same reply as your next tool "
+        "call, and keep working",
+        "when nothing is running, say so plainly and name what you start now",
+        "Order the steps by what each needs, not by the order the request lists them",
+        "unless the user asked it to wait",
+        "while children run, work on the steps that do not need their results, and wait for "
+        "them only when none is left",
+        "When the user moves work earlier, revise the plan so that it comes next, splitting "
+        "a step when only part of it moves",
+    ):
+        assert said in plan, said
+    assert plan.startswith(f"Planning guidance ({GUIDANCE_VERSION}): ")
+    task = " ".join(TASK_PROMPT.split())
+    assert "or to send an interim result your parent asked for" in task
+    assert "your results go in submit_result, not in messages just before it" in task
+    assert "to report progress" not in task
+
+
+def test_the_wording_follow_up_is_where_the_prompts_speak_of_it() -> None:
+    """Lane G4b, from the second baseline run: a finding shown wrong is dismissed rather
+    than "fixed", and a response resting on the user's word cites the user's message or
+    answer; a plan change's result carries what the next change needs; a request to stop,
+    pause or wait blocks the steps it holds beside the run going on past a bare reply; the
+    notices that carry a run on say what they are; a partial finish says per item what was
+    tried and what else could have been; the answer quotes a contradicted statement of
+    the request; a check child's results go in its result."""
+    main = " ".join(SYSTEM_PROMPT.split())
+    for said in (
+        "dismiss one you can show is wrong, with your argument, rather than change work "
+        "that was right",
+        "cite their message or their answer to your question by the archive ID the "
+        "transcript or the review's request names, or by its chat ID",
+        "a brief you or another agent wrote is not the user's word",
+        "Where the work contradicts a statement of the request, quote the statement and say "
+        "what was found instead: a handle or an issue's name alone does not.",
+    ):
+        assert said in main, said
+    assert "While a plan is active" not in main  # said once, in the planning guidance
+    assert main.count("review_respond") == 1
+    plan = " ".join(GUIDANCE.split())
+    for said in (
+        "a reply with no tool call reaches the user as a message and the run goes on once at "
+        "that plan state",
+        "When the user asks you to stop, pause or wait, record the steps they hold blocked "
+        "with their reason, say what stays running, and go on with none of them",
+        "Each plan change's result gives the counters and open steps the next change needs",
+        'and the whole plan with detail "full"',
+        "give each item left undone its own remaining_work entry: what was tried, and at "
+        "least one other method with why it was not used or could not fit, or that it was "
+        "not attempted",
+        "where a limit the user set and could lift stops an item, ask the user before giving it up",
+    ):
+        assert said in plan, said
+    assert "plan_read gives step details and the counters" not in plan
+    assert "Each plan change's result gives the counters and open steps" in PLANS.text
+    assert "counters plan changes need" not in PLANS.text
+    assert "goes on past your reply with no tool call" in PLANS_WENT_ON.text
+    assert "closing answer held back once" in PLANS_HELD.text
+    for framing in (PLANS_WENT_ON, PLANS_HELD):
+        assert "someone other than this run" not in framing.text
+        assert framing in FRAMINGS
+    assert "say what stays running" in PLAN_OPEN
+    check = " ".join(CHECK_PROMPT.split())
+    assert "your results go in submit_result, not in messages just before it" in check
+    assert "A finding that blocks your check, or that your parent must know at once" in check
+    assert "You may send an interim finding" not in check
 
 
 def test_the_delegated_prompts_end_with_the_result_and_an_example() -> None:

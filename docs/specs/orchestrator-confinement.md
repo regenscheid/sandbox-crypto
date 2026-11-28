@@ -311,13 +311,28 @@ host's run events honour, and the answer a hook held for its round (`held_answer
 Private control protocol 9 carries whether that answer is still kept from the user
 (`holding`), until the round's own answer stands, and asks a hook that may hold answers
 whether it does before each turn while one is kept, as `hold`'s limit can pass between
-closings. Older control/runtime peers are refused.
+closings. Private control protocol 11 names, for each hook, the methods its class has of
+its own (`asks`): the runtime asks the host only for those, and takes the default of
+the others, which does nothing (no notices, no halt, no offer to go on, an accepted
+closing), without a round trip; a hook given without `asks` is asked for all of them,
+and a runtime that asks for one all the same is answered as any other, so the list
+changes no check the host makes on what it is asked. The protocol also carries an answer
+the session plan carries the run past (plans and delegation, PD-4): before the closing
+of an answer with no tool call, the runtime asks a hook whose `asks` names `goes_on`
+for its offer of the notices that take the run on to its next turn instead (`goes_on`),
+which the host keeps without admitting; once the runtime's loop finds room and no limit
+due, it asks the host to commit (`went_on`, named in `asks` with `goes_on`), and the
+host's hook decides, recording the plan state's continuation, and only then are the kept
+notices admitted. Both refuse unless the last committed message is an answer with no
+tool call. The loop's state carries that answer (`carried`), which is the run's answer
+if the run ends before another stands. The plan's state, and the record that its state
+had its continuation, stay in control. Older control/runtime peers are refused.
 
 How long each request may wait:
 
 | Request | Direction | Limit |
 | --- | --- | --- |
-| A hook's calls (`hook_enter`, `hook_exit`, `notices`, `turn_limit`, `last_call`, `report_notices`, `consumption`, `model_returned`, `holds_answers`, `gate`, `observe_tool`, `closing`, `accept`, `finishing`), `tool`, `fold_before`, `fold_overflow` | runtime to host | patience: a parent's `finishing` and lease exit wait for its children, a tool may run or wait for hours, a gate or call may be held for the user |
+| A hook's calls (`hook_enter`, `hook_exit`, `notices`, `turn_limit`, `last_call`, `report_notices`, `consumption`, `model_returned`, `holds_answers`, `gate`, `observe_tool`, `goes_on`, `went_on`, `closing`, `accept`, `finishing`), `tool`, `fold_before`, `fold_overflow` | runtime to host | patience: a parent's `finishing` and lease exit wait for its children, a tool may run or wait for hours, a gate or call may be held for the user |
 | `halt` | runtime to host | 2,400 s: a check-in's 1,800 s wait for its parent, then the automatic decision ([adaptive resources](adaptive-research-resources.md#check-ins)) |
 | `model` | host to runtime | patience: the runtime's client retries a slow gateway, 600 s a try |
 | `cancel` | host to runtime | patience: the cancelled loop exits its hooks' leases |

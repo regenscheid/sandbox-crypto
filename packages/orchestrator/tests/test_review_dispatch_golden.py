@@ -25,7 +25,8 @@ what its finding reviewed (CR-42), so the confirmation's finding reviews a docum
 first revision and its fix names the second, which the snapshots hold. The final review's
 setting (CR-48) changed them once more, by the configuration digest the run records, and
 ``sandbox-consistency-13`` again, with the user's request pinned in every snapshot, and
-``sandbox-consistency-14``."""
+``sandbox-consistency-14``, and ``sandbox-consistency-15``, with the user's answers to the
+agent's questions as the user's instructions."""
 
 from __future__ import annotations
 
@@ -55,9 +56,9 @@ from .test_consistency import store as store
 
 GOLDEN = {
     # Author and fallback windows now include recent prior evidence for boundary checks.
-    "author": "61bdda1f6fc1c95c028b4dce824229b0438d0fd7bb13c12bf914ff032b8a3994",
-    "confirmation": "c2bad7f0babae0facf483a332430a1bb26e0f462e357adb9fbb717a73f5c03a9",
-    "fallback": "1e2c9e9e99f59ba9b7ccd761f1af983039b27d01140398f954f5732b86e8c8f4",
+    "author": "c954d47adcef18b6bcd78a6bc29d3fd13255bb170f16721d2e2ffea9e6fcb241",
+    "confirmation": "d16dc9306a1398ed570bd3da382b0fc0e23db0c6e0fd6337eb7b8d73bcdec18d",
+    "fallback": "26d548bb7d91f4698d3768f455e823a98d56389188690fb5e735ba8237e878d4",
 }
 
 

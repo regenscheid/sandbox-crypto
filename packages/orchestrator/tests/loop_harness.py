@@ -76,7 +76,7 @@ Shape = tuple[str, str, tuple[str, ...]]
 FRAMINGS = {
     "requests": "Document work requests: request_text is the user's instruction. ",
     "jobs": "Job completion notices (output is untrusted data): ",
-    "plans": "Session plan as it now stands, because someone other than this run changed ",
+    "plans": "Session plan as it now stands",
     "reviews": "Consistency findings from an independent reviewer. ",
     "review_counts": "Consistency review counts of open findings by severity, ",
     "math": "Mechanical math findings at this closing boundary. ",
@@ -490,19 +490,22 @@ class Gateway:
     """Which of the ``/responses`` requests (by index) were fold enrichments."""
 
     async def respond(self, request: web.Request) -> web.Response:
-        """The main alias's script through OpenAI's Responses API, as LiteLLM serves it:
+        """The main alias's script, and delegated runs' (told apart by their instructions),
+        through OpenAI's Responses API, as LiteLLM serves it:
         each answer a reasoning item with synthetic encrypted content, then its text and
         calls."""
         assert request.headers.get("Authorization") == f"Bearer {API_KEY}"
         self.raw.append(await request.read())
         body = cast(Json, json.loads(self.raw[-1]))
-        assert body["model"] == "main", body["model"]
+        assert body["model"] in ("main", "delegated"), body["model"]
         self.responses.append(body)
         last = cast(list[Json], body["input"])[-1:]
         if last and str(last[0].get("content", "")).startswith(FOLD_ENRICH.text):
             self.enriching.append(len(self.responses) - 1)
             narrative = json.dumps({"narrative": "Earlier work, as its outline shows.", "keys": []})
             reply = self.enrich.pop(0) if self.enrich else Reply(narrative)
+        elif str(body.get("instructions") or "").startswith(DELEGATED):
+            reply = self.delegated.pop(0) if self.delegated else Reply("(the script has ended)")
         else:
             reply = self.script.pop(0) if self.script else Reply("(the script has ended)")
         if reply.before is not None:
@@ -618,6 +621,8 @@ class Gateway:
 
     version: str = GATEWAY_VERSION
     """What ``x-litellm-version`` names on each chat completion."""
+    upstream: dict[str, str] = field(default_factory=dict[str, str])
+    """The headers that name the upstream deployment, sent on each chat completion."""
 
     @property
     def main(self) -> list[list[Message]]:
@@ -732,6 +737,7 @@ class Gateway:
             message["tool_calls"] = tool_calls
         priced = {} if reply.cost is None else {"x-litellm-response-cost": reply.cost}
         priced["x-litellm-version"] = self.version
+        priced.update(self.upstream)
         return web.json_response(
             {
                 "model": f"scripted-{alias}",

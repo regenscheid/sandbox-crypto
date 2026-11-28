@@ -351,10 +351,12 @@ async def confined(
     to_host: Callable[[Capability, JsonValue, Relay], Awaitable[JsonValue]] | None = None,
     to_runtime: Callable[[Capability, JsonValue, Relay], Awaitable[JsonValue]] | None = None,
     max_turns: int = MAX_TURNS,
+    prepare: Callable[[Any], object] | None = None,
 ) -> list[RunRecord]:
     """One root run of ``script`` whose loop runs in the runtime, the session's records
     after it; ``to_host`` and ``to_runtime``, given a request and the side's own handler,
-    answer it as a compromised runtime would, or a fixture that watches."""
+    answer it as a compromised runtime would, or a fixture that watches; ``prepare``,
+    given the run service, sets up the session before the run, as an active plan."""
     async with serving(harness, *script, serve=False, max_turns=max_turns) as service:
         gateway_models = ModelGateway(harness.gateway.url, API_KEY)
 
@@ -398,6 +400,8 @@ async def confined(
 
         service.harness.loop_runner = runner
         service.harness.prepare_attempt = lambda admitted: host.model_scope()
+        if prepare is not None:
+            prepare(service)
         try:
             service.runs.post(PROJECT, SESSION, "msg-runtime", "Go on", author="user")
             assert await service.start_selected(PROJECT, SESSION)
@@ -423,7 +427,12 @@ async def test_the_host_takes_only_the_loops_own_summaries_from_the_runtime(
         reply = await runtime(kind, value)
         if kind is Capability.RUN and isinstance(reply, dict):
             summaries = cast(dict[str, JsonValue], reply["summaries"])
-            summaries |= {"tool_mix": {"forged": 1}, "messages": "forged", "planted": 1}
+            summaries |= {
+                "tool_mix": {"forged": 1},
+                "messages": "forged",
+                "planted": 1,
+                "connectors": {"offered": True, "forged": 1},
+            }
         return reply
 
     script = (Reply("Part one, ", finish="length"), Reply("part two."))
@@ -435,6 +444,8 @@ async def test_the_host_takes_only_the_loops_own_summaries_from_the_runtime(
     assert "planted" not in record.summaries
     assert record.summaries["tool_mix"] != {"forged": 1}
     assert record.summaries.get("messages") != "forged"
+    # The host's word on connectors stands: this run had none (R13).
+    assert record.summaries["connectors"] == {"offered": False, "reason": "none"}
 
 
 def test_the_runtimes_summaries_are_bounded_before_the_record_is_saved() -> None:

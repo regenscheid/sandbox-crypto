@@ -71,6 +71,7 @@ def usage(turn: ModelTurn) -> ModelUsage:
         cost=turn.cost,
         cost_source=turn.cost_source,
         gateway_version=turn.gateway_version,
+        upstream=dict(turn.upstream) if turn.upstream else None,
         thinking_replay=(turn.thinking_replay or "")[:300] or None,
         retried=list(turn.retried[:16]),
         refusals=[turn.refused] if turn.refused is not None else [],

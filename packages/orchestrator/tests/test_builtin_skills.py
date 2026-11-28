@@ -200,3 +200,71 @@ def test_the_computation_skill_leads_with_the_kernels() -> None:
     front = (PACK / "computation" / "SKILL.md").read_text(encoding="utf-8").partition("\n---\n")[0]
     (description,) = [line for line in front.splitlines() if line.startswith("description:")]
     assert description.index("kernels") < description.index("shell")
+
+
+def test_the_skills_answer_the_second_baseline_runs_sources_and_measurements() -> None:
+    """Lane G4: a held paper is read through the library, its PDF downloaded only for
+    what a page read cannot show; ``search_in_paper``'s context is a count of lines; a
+    measurement carries its code's hash; independent cells run side by side; the
+    assumption a source's count rests on is tested; a cell past a limit gets one or two
+    other methods before it is called out of reach; a parent works while a task runs.
+    The single-page quoting rules stay."""
+    literature = " ".join(body("literature-search").split())
+    for said in (
+        "whose context is the number of lines around each passage, 0 to 20",
+        "Read a paper the library holds this way first, rather than downloading its PDF.",
+        "only for a paper neither the library nor the e-print server gives you, or to look "
+        "at a table, a matrix or an equation as an image after you have read its page",
+        "quote from one page or passage, never from a header",
+        "The check finds the quote only in a read of that page at that revision.",
+    ):
+        assert said in literature, said
+    assert "when a quote must name its lines" not in literature
+    computation = " ".join(body("computation").split())
+    for said in (
+        "Record the SHA-256 of the code with each measurement, at the moment it runs",
+        "keeps the old hash on the results it reuses, or runs them again",
+        "Run independent cells (parameter sets, seeds, rows of a table) side by side",
+        "within the limit the user stated, or the sandbox's where they stated none",
+        "A cell past that limit is not yet out of reach",
+        "try one or two other methods that could fit within the limit",
+        "rather than estimate the failure from a bound on one construction",
+        "report a cell you did not try as not attempted, which is different from attempted "
+        "and failed",
+        "Never exceed a limit the user set to do so, and after one or two serious "
+        "alternatives, report rather than keep trying.",
+        "test it on each instance you measure and record the test beside the result",
+    ):
+        assert said in computation, said
+    delegating = " ".join(body("delegating-work").split())
+    assert "Start a task as soon as what it needs is in hand" in delegating
+    assert "wait for it only when nothing else is left" in delegating
+
+
+def test_the_skills_answer_the_second_baseline_runs_checks_and_long_computations() -> None:
+    """Lane G4b: a long computation checkpoints as it goes and resumes from its files, its
+    timeout comes from a pilot, a restartable job is one safe to run again, and a lost job
+    is waited for again; a cross-check rebuilds the numbers from the raw outputs and
+    reports a disagreement with the source as data; a claim about every instance rests
+    on more than one; a parent reproduces a value of an independent check itself."""
+    computation = " ".join(body("computation").split())
+    for said in (
+        "A long computation writes its progress to files as it goes",
+        "On start it reads them and skips what is done",
+        "keep a checkpoint of its own where the method allows, or choose a method that has one",
+        "with a margin of one and a half to two times, since a job that times out is not "
+        "started again",
+        "only when its command is safe to run again and resumes from its checkpoints",
+        "read the job's attempts and wait again rather than start the job anew",
+        "A cross-check rebuilds every reported number from the raw outputs",
+        "It hard-codes no value it expects and asserts no outcome the source predicts",
+        "a genuine disagreement with the source is a result, not a failed check",
+        "measure more than one and say how many; where one must do, say so beside the result",
+    ):
+        assert said in computation, said
+    delegating = " ".join(body("delegating-work").split())
+    assert (
+        "Before accepting a task that checks your work independently, reproduce at least one "
+        "of its values yourself from its code or outputs, and say which: reading its files "
+        "is not a check."
+    ) in delegating

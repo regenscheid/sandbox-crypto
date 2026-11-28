@@ -325,14 +325,50 @@ def mark_transient(
     kind: str,
     *,
     clock: Clock = SYSTEM_CLOCK,
+    why: str | None = None,
+    reason: str | None = None,
 ) -> None:
-    """Record that ``run``'s work was interrupted by a transient loss (bridge, worker).
+    """Record that ``run``'s work was interrupted by a transient loss (bridge, worker),
+    with the ``reason`` and ``why`` its ``stopped`` event gives (``interruption``).
 
     Automatic recovery then retries the interrupted tree; a process restart without such
     a record still waits for the user's Resume unless infrastructure recovery is on.
     """
     if kind not in TRANSIENT:
         raise ValueError(f"not a transient failure kind: {kind}")
+    _observe(control, project, session, run, "transient_failure", clock, kind=kind, why=why,
+             reason=reason)  # fmt: skip
+
+
+def mark_interrupted(
+    control: ControlStore,
+    project: str,
+    session: str,
+    run: str,
+    reason: str,
+    *,
+    clock: Clock = SYSTEM_CLOCK,
+    why: str | None = None,
+) -> None:
+    """Record why ``run`` was interrupted when the cause is not a transient one, such as an
+    environment claim the worker ended: its ``stopped`` event gives the ``reason``, and its
+    tree waits for the user's Resume."""
+    _observe(control, project, session, run, INTERRUPTED, clock, why=why, reason=reason)
+
+
+INTERRUPTED: Final = "interruption"
+"""The observation of why a run was interrupted, when that is not a transient loss."""
+
+
+def _observe(
+    control: ControlStore,
+    project: str,
+    session: str,
+    run: str,
+    observation: str,
+    clock: Clock,
+    **detail: str | None,
+) -> None:
     with control.write() as tx:
         row = tx.sql.execute(
             "SELECT w.root FROM research_attempts a JOIN research_work w "
@@ -344,15 +380,35 @@ def mark_transient(
         ).fetchone()
         if row is None:
             return
+        kept = {key: value[:500] for key, value in detail.items() if value}
         tx.sql.execute(
-            "INSERT INTO research_observations VALUES (?,?,?,'transient_failure',?,?,?) "
+            "INSERT INTO research_observations VALUES (?,?,?,?,?,?,?) "
             "ON CONFLICT(project,session,work,kind,identity) DO NOTHING",
             (
                 project,
                 session,
                 row[0],
+                observation,
                 run,
                 clock.now().timestamp(),
-                json.dumps({"kind": kind, "run": run}, separators=(",", ":")),
+                json.dumps({**kept, "run": run}, separators=(",", ":")),
             ),
         )
+
+
+def interruption(
+    control: ControlStore, project: str, session: str, run: str
+) -> dict[str, str] | None:
+    """Why ``run`` was interrupted, as ``mark_transient`` or ``mark_interrupted`` recorded
+    it: its transient ``kind`` (none for another cause), ``reason`` and ``why``; ``None``
+    for nothing recorded."""
+    with control.read() as tx:
+        row = tx.sql.execute(
+            "SELECT detail FROM research_observations WHERE project=? AND session=? "
+            "AND kind IN ('transient_failure', ?) AND identity=? ORDER BY observed DESC LIMIT 1",
+            (project, session, INTERRUPTED, run),
+        ).fetchone()
+    if row is None:
+        return None
+    detail = json.loads(row[0])
+    return {key: str(detail[key]) for key in ("kind", "reason", "why") if key in detail}

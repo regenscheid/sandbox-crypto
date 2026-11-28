@@ -330,3 +330,22 @@ def test_completed_child_outcome_must_be_consumed_before_parent_completion(proje
     assert not works.unfinished("p", "s", RUN)
     works.finish(record(RUN))
     assert works.get("p", "s", RUN).state == "completed"
+
+
+async def test_a_superseded_attempts_salvaged_record_is_fenced(projects: ProjectStore):
+    """An attempt that recovery superseded saves a record that must be salvaged (an ID
+    that is not an identifier): it is fenced by the run's identity, as a whole record is,
+    and keeps nothing."""
+    works = WorkRecords(projects.control)
+    works.admit("p", "s", RUN)
+    works.interrupt("p", "s", RUN)
+    request = works.request("p", "s")
+    assert request is not None
+    RunState(projects.control).acquire("p", "s", CONTINUATION, "fixture")
+    works.claim("p", "s", request, lease_run=CONTINUATION)
+    fields = record(RUN).model_dump(mode="json")
+    fields["delivered"] = {"jobs": ["exe-1", "exe-1#1"]}
+    errors: list[str] = []
+    assert await save(fields, 0, (), projects=projects, error=errors.append) == 1
+    assert any("ownership" in error for error in errors), errors
+    assert not [entry for entry in projects.runs("p", "s") if entry.name == RUN]

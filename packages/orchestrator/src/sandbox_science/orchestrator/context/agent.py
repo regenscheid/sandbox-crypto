@@ -38,6 +38,27 @@ MAX_INPUT_CHARS: Final = 400_000
 """Default character budget including tool schemas, about 100,000 English tokens."""
 
 
+class _Counted:
+    """A stored history's characters as ``AgentContext.size`` counts them: each message's
+    once, kept as running totals, and its rebuilt view's at the last rebuild."""
+
+    def __init__(self, messages: Collection[Message]) -> None:
+        self.messages = messages
+        self.totals = [0]
+        """The characters of the first ``i`` messages, at ``totals[i]``."""
+        self.rebuilt: list[Message] | None = None
+        self.rebuilt_chars = 0
+
+    def since(self, start: int) -> int:
+        """The characters of the messages from ``start`` on, counting those added since
+        the last count."""
+        totals = self.totals
+        for index in range(len(totals) - 1, len(self.messages)):
+            totals.append(totals[-1] + len(dump(self.messages[index])) + 2)
+        start = min(max(start, 0), len(self.messages))
+        return totals[len(self.messages)] - totals[start]
+
+
 @dataclass
 class AgentContext:
     messages: MutableSequence[Message]
@@ -51,6 +72,7 @@ class AgentContext:
     base: int = field(default=0, repr=False)
     since: int = 0
     memory: RunMemory | None = field(default=None, repr=False)
+    _counted: _Counted | None = field(default=None, init=False, repr=False, compare=False)
 
     @classmethod
     def start(
@@ -122,13 +144,30 @@ class AgentContext:
 
     @property
     def size(self) -> int:
-        """What the next model call would send, in characters."""
-        return 2 + sum(len(dump(message)) + 2 for message in self.working()) + self.tools_chars
+        """What the next model call would send, in characters.
+
+        A stored history (``Collection``) only grows, and its messages never change, so
+        each message's characters are counted once, as it is first read, and the sum of
+        those since the view's ``base`` is kept; a fold's rebuilt view is counted once
+        per rebuild. A plain list is counted afresh each time."""
+        if not isinstance(self.messages, Collection):
+            return 2 + sum(len(dump(message)) + 2 for message in self.working()) + self.tools_chars
+        counted = self._counted
+        if counted is None or counted.messages is not self.messages:
+            counted = self._counted = _Counted(self.messages)
+        if self.rebuilt is None:
+            return 2 + counted.since(0) + self.tools_chars
+        if counted.rebuilt is not self.rebuilt:
+            counted.rebuilt = self.rebuilt
+            counted.rebuilt_chars = sum(len(dump(message)) + 2 for message in self.rebuilt)
+        first = counted.since(0) - counted.since(1)
+        return 2 + first + counted.rebuilt_chars + counted.since(self.base) + self.tools_chars
 
     def restore(self, view: Sequence[Message] | None, *, base: int, since: int) -> None:
         """Apply a trusted fold result atomically without changing archive scope."""
         self.rebuilt, self.base, self.since = (
-            (list(view) if view is not None else None),
+            # The view already in place stays as it is, counted (``size``).
+            (self.rebuilt if view is self.rebuilt else list(view) if view is not None else None),
             base,
             since,
         )
@@ -150,8 +189,16 @@ class AgentContext:
         with prompt_pins(self.prompt_provenance):
             return await model.complete(self.sent, specs)
 
-    def record_reply(self, reply: ModelTurn, *, input_size: int) -> None:
-        """Retain usage and bounded replay diagnostics for an answered response."""
+    def record_reply(
+        self,
+        reply: ModelTurn,
+        *,
+        input_size: int,
+        prepared_ms: int | None = None,
+        recorded_ms: int | None = None,
+    ) -> None:
+        """Retain usage and bounded replay diagnostics for an answered response, with the
+        loop's own time around it (``ModelUsage.prepared_ms``, ``recorded_ms``)."""
         answered = len(reply.text or "") + sum(len(call.arguments) for call in reply.tool_calls)
         self.usage.append(
             ModelUsage(
@@ -164,11 +211,14 @@ class AgentContext:
                 cost=reply.cost,
                 cost_source=reply.cost_source,
                 gateway_version=reply.gateway_version,
+                upstream=dict(reply.upstream) if reply.upstream else None,
                 thinking_replay=(reply.thinking_replay or "")[:300] or None,
                 retried=list(reply.retried[:16]),
                 refusals=[reply.refused] if reply.refused is not None else [],
                 started_at=reply.started_at,
                 duration_ms=reply.duration_ms,
+                prepared_ms=prepared_ms,
+                recorded_ms=recorded_ms,
             )
         )
 

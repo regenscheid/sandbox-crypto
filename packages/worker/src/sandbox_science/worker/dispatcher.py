@@ -25,6 +25,7 @@ from pydantic import ValidationError
 
 from sandbox_science.contracts import (
     TERMINAL_STATES,
+    AttemptFile,
     CellRequest,
     Clock,
     ErrorInfo,
@@ -43,14 +44,21 @@ from sandbox_science.contracts import (
     StreamEvent,
     new_id,
 )
-from sandbox_science.contracts.worker import DEFAULT_OUTPUT_LIMIT, MAX_PATH_BYTES
+from sandbox_science.contracts.restarts import LossCause
+from sandbox_science.contracts.worker import (
+    DEFAULT_OUTPUT_LIMIT,
+    MAX_PATH_BYTES,
+    MAX_SURVIVED_FILES,
+)
 from sandbox_science.policy.model import Resources
 
+from .attribution import Window
 from .channel import ExecutorChannel, Message
 from .connections import Connection, EnvironmentConnections
 from .errors import ExecutorRefusalError, WorkerError
 from .files import UNSYNCED, Files
 from .identity import execution_digest, same_execution
+from .job_restarts import OLD_EXECUTOR, JobRestarts
 from .journal import SOURCE_EVENT, ExecutionJournal
 from .kernels import (
     KernelRegistry,
@@ -127,6 +135,9 @@ class Dispatcher:
         shared: SharedSync | None,
         lifecycle: EnvironmentLifecycle,
         sandboxes: Callable[[], JobSandboxes | None] = lambda: None,
+        daemon: bool = False,
+        job_restarts: bool = True,
+        contained: bool = True,
     ) -> None:
         self.store = store
         self.sandboxes = sandboxes
@@ -151,6 +162,22 @@ class Dispatcher:
         """Admission notices, job limits and bindings, where the worker manages sandboxes."""
         self._noticed: dict[tuple[str, str], datetime] = {}
         """The time of the last admission notice each session got, by environment."""
+        self.restarts = JobRestarts(
+            store,
+            journal,
+            connections,
+            usability,
+            clock=clock,
+            timeouts=lambda: self.timeouts,
+            lifecycle=lambda: self.lifecycle,
+            connect=connect,
+            spawn=spawn,
+            dispatch=self._dispatch,
+            daemon=daemon,
+            enabled=job_restarts,
+            contained=contained,
+        )
+        """Lost jobs that asked for ``restart``, started again (``job_restarts``)."""
 
     async def submit(
         self, request: ExecutionRequest, *, origin: str | None = None
@@ -189,6 +216,16 @@ class Dispatcher:
                 raise WorkerError(
                     ErrorKind.UNAVAILABLE, "the job's session or environment is closing"
                 )
+            open_environment = self.connections.get(context.environment_id)
+            open_channel = open_environment.channel if open_environment is not None else None
+            refused = self.restarts.admission_refusal(
+                request,
+                open_channel.hello
+                if open_channel is not None and not open_channel.closed
+                else None,
+            )
+            if refused is not None:
+                raise WorkerError(ErrorKind.UNSUPPORTED, refused)
             resources = (
                 job_resources(context.environment_id)
                 if (job_resources := self.lifecycle.job_resources)
@@ -254,6 +291,7 @@ class Dispatcher:
                 stderr_path=f".jobs/{execution_id}/stderr.log",
                 profile=plan.profile if plan is not None else None,
                 sandbox=plan.sandbox if plan is not None else None,
+                restart=request.restart,
             )
         execution = Execution(
             execution_id=execution_id,
@@ -372,6 +410,18 @@ class Dispatcher:
             "timeout": time_limit(request),
             "limit": request.output_limit_bytes,
         }
+        job = live.execution.job
+        if job is not None and job.restart and channel_hello(environment).get("job_attempts") != 1:
+            # Refused before its command: its attempts could not keep their logs apart.
+            raise WorkerError(ErrorKind.UNSUPPORTED, OLD_EXECUTOR)
+        if job is not None and job.attempt > 1:
+            # Its logs go to a directory of its own; the files changed since the lost
+            # attempt was queued (the job's submission, or the loss before it) are what
+            # it finds of that attempt's work, whatever the two clocks' grain.
+            queued = (
+                job.attempts[-2].lost_at if len(job.attempts) > 1 else live.execution.submitted_at
+            )
+            fields.update(attempt=job.attempt, since=queued.timestamp())
         if isinstance(request, ShellRequest | JobRequest):
             fields.update(cwd=request.cwd)
             if request.argv is not None:
@@ -462,9 +512,25 @@ class Dispatcher:
         self.store.observation_dispatch(
             live.execution, channel.incarnation, identity, daemon=channel.daemon_token is not None
         )
+        if job is not None and job.restart:
+            # The sandbox a later attempt must find again, and when this one's limit began.
+            self.store.attempt_dispatched(
+                execution_id,
+                job.attempt,
+                daemon_identity_of(self, live),
+                self.clock.now(),
+            )
         live.time_limit = time_limit(request)
         live.watchdog = self.spawn(self.watch(live, live.time_limit))
-        await channel.request(request.kind, **fields)
+        try:
+            await channel.request(request.kind, **fields)
+        except ExecutorRefusalError:
+            if job is not None and job.restart:
+                # A definite refusal: its command never ran, and it uses no restart.
+                self.store.attempt_accepted(execution_id, job.attempt, False)
+            raise
+        if job is not None and job.restart:
+            self.store.attempt_accepted(execution_id, job.attempt, True)
         if channel.daemon_token is not None:
             self.recovery.poll(request.context.environment_id, channel)
 
@@ -540,7 +606,7 @@ class Dispatcher:
                     # An event before it failed here: a replay brings both again.
                     self.recovery.replay_now(live.channel)
                     return
-                self.lose(live, "the executor with an invalid replay range")
+                self.lose(live, "the executor with an invalid replay range", LossCause.SAME_DAEMON)
                 return
         token = SOURCE_EVENT.set(
             (live.execution.execution_id, source)
@@ -617,6 +683,9 @@ class Dispatcher:
                             kernel=kernel,
                             kernel_state_lost=live.execution.kernel_state_lost or kernel_state_lost,
                         )
+                    job = _survived(live, message)
+                    if job is not None:
+                        update["job"] = job
                     return live.execution.model_copy(update={**update, "last_seq": event.seq})
 
                 source = SOURCE_EVENT.get()
@@ -785,7 +854,9 @@ class Dispatcher:
         """
         live.events += 1
         live.stored += size
-        if live.stored > OUTPUT_BUDGET * live.limit + 65536:
+        # A restarted job's attempts share the execution's events, each with its budget.
+        attempts = live.execution.job.attempt if live.execution.job is not None else 1
+        if live.stored > attempts * (OUTPUT_BUDGET * live.limit + 65536):
             if not live.overflowed:
                 live.overflowed = True
                 _log.warning(
@@ -794,13 +865,13 @@ class Dispatcher:
                 )
                 self.spawn(self._cancel_quietly(live))
             return False
-        if live.events == MAX_EVENTS + 1:
+        if live.events == attempts * MAX_EVENTS + 1:
             _log.warning(
                 "execution %s: over %d events; dropping the rest",
                 live.execution.execution_id,
-                MAX_EVENTS,
+                attempts * MAX_EVENTS,
             )
-        return live.events <= MAX_EVENTS
+        return live.events <= attempts * MAX_EVENTS
 
     async def _cancel_quietly(self, live: Live) -> None:
         with contextlib.suppress(WorkerError):
@@ -937,7 +1008,9 @@ class Dispatcher:
             return
         channel = live.channel
         check_dispatch()  # stale cancellation must not tear down a newer owner's channel
-        self.lose(live, "the executor that did not confirm job cancellation")
+        self.lose(
+            live, "the executor that did not confirm job cancellation", LossCause.CANCEL_UNCONFIRMED
+        )
         if channel is not None:
             await channel.shutdown()
 
@@ -970,23 +1043,35 @@ class Dispatcher:
                 if live is not None and live.execution.state not in TERMINAL_STATES:
                     if live.channel is not None:
                         channels.add(live.channel)
-                    self.lose(live, "the executor that did not confirm job cancellation")
+                    self.lose(
+                        live,
+                        "the executor that did not confirm job cancellation",
+                        LossCause.CANCEL_UNCONFIRMED,
+                    )
             await asyncio.gather(*(channel.shutdown() for channel in channels))
 
-    def lose(self, live: Live, what: str) -> None:
-        """End an attempt whose outcome is unknown, because ``what`` stopped during it."""
+    def lose(self, live: Live, what: str, cause: LossCause | None = None) -> None:
+        """End an attempt whose outcome is unknown, because ``what`` stopped during it; a
+        job that asked for ``restart`` is started again instead, when ``cause`` is one the
+        restart policy restarts for (``RESTART_POLICY``) and the job may be."""
+        if self.usability.closing and self.restarts.held(live):
+            return  # an attempt that waits for its environment waits for the next worker
         message = f"{what} stopped during this attempt; its outcome is unknown"
-        if live.execution.job is not None:
+        job = live.execution.job
+        if job is not None:
             message += (
-                "; partial whole logs remain at "
-                + live.execution.job.stdout_path
-                + " and "
-                + live.execution.job.stderr_path
+                "; partial whole logs remain at " + job.stdout_path + " and " + job.stderr_path
             )
+            if job.restart and live.final is None:
+                refusal = self.restarts.refusal(live, cause)
+                if refusal is not None:
+                    message += f"; not restarted: {refusal}"
         try:
             if live.final is not None:
                 # The outcome is known; only the shared files' sync after it was cut short.
                 self._complete(live, [*live.notices, UNSYNCED])
+                return
+            if self.restarts.take(live, what, cause):
                 return
             self.journal.finish(
                 live,
@@ -1009,7 +1094,8 @@ class Dispatcher:
     async def restore(self, *, daemon_enabled: bool) -> None:
         """Load the executions a previous worker left unfinished, and reattach those its
         daemons still run; the others are lost, except job sandboxes' jobs, which
-        ``JobSandboxes.start`` resumes. Nothing is ever resubmitted."""
+        ``JobSandboxes.start`` resumes. Nothing is resubmitted but a job that asked for
+        ``restart``, as its next attempt (``job_restarts``)."""
         endpoints = tuple(set(self.store.endpoints()) | set(self.store.pending_recycles()))
         if endpoints and not daemon_enabled:
             raise WorkerError(
@@ -1035,6 +1121,8 @@ class Dispatcher:
             )
             live.events, live.stored = self.store.event_usage(execution_id)
             live.restored = True
+            # A cancellation asked for before the restart stands, whatever recovers it.
+            live.cancel_requested = saved is not None and saved[3]
             if saved is not None and saved[1] and daemon_enabled:
                 live.dispatched = True
                 live.cancel_requested = saved[3] or execution.origin is not None
@@ -1042,11 +1130,76 @@ class Dispatcher:
             elif self.sandboxed(execution):
                 # A job sandbox's job is never dispatched itself: its run resumes it
                 # once its own execution in the sandbox is recovered (JS-19).
-                live.cancel_requested = saved is not None and saved[3]
+                pass
+            elif self.restarts.waiting(live, saved):
+                # A restarted job's attempt that waited for its environment, never sent.
+                if live.cancel_requested:
+                    self.journal.finish(
+                        live,
+                        ExecutionState.CANCELLED,
+                        Result(
+                            error=ErrorInfo(
+                                kind=ErrorKind.CANCELLED, message="cancelled before it started"
+                            )
+                        ),
+                    )
+                else:
+                    self.spawn(self.restarts.start(live))
             else:
-                self.lose(live, "the worker that restarted without a recoverable daemon dispatch")
+                # Never sent to a daemon (its record says no incarnation), so it is not
+                # running: a restart cannot run beside it. An unreadable record is not known.
+                self.lose(
+                    live,
+                    "the worker that restarted without a recoverable daemon dispatch",
+                    LossCause.NEVER_SENT if daemon_enabled and saved is not None else None,
+                )
         for environment_id in recovery:
             await self.recovery.recover(environment_id, startup=True)
+
+
+def daemon_identity_of(dispatcher: Dispatcher, live: Live) -> tuple[str, str] | None:
+    """The environment's sandbox binding now, as the lifecycle knows it."""
+    identity = dispatcher.lifecycle.daemon_identity
+    return identity(live.environment_id) if identity is not None else None
+
+
+def channel_hello(environment: Connection) -> dict[str, Any]:
+    """The ``hello`` of the environment's open executor; empty without one."""
+    channel = environment.channel
+    return channel.hello if channel is not None else {}
+
+
+def _survived(live: Live, message: Message) -> JobDetails | None:
+    """A restarted job's details with what its new attempt's executor found of the lost
+    one's files as it started, sorted as a result's files are against what else wrote
+    meanwhile; ``None`` when there is nothing to record."""
+    job = live.execution.job
+    raw = message.get("survived")
+    if job is None or not job.attempts or not isinstance(raw, list):
+        return None
+    files: list[AttemptFile] = []
+    for item in cast(list[object], raw)[:MAX_SURVIVED_FILES]:
+        try:
+            files.append(AttemptFile.model_validate(item))
+        except ValidationError:
+            continue
+    window = live.lost_window or Window.unknown(
+        live.execution.context.session_id,
+        live.execution.context.write_area if live.execution.kind == "job" else None,
+        live.execution.execution_id,
+    )
+    sorted_ = window.sort(file.path for file in files)
+    own = set(sorted_.own)
+    previous = job.attempts[-1].model_copy(
+        update={
+            "survived": tuple(file for file in files if file.path in own),
+            "survived_unattributed": sorted_.unattributed,
+            "survived_truncated": message.get("survived_truncated") is True
+            or len(cast(list[object], raw)) > MAX_SURVIVED_FILES,
+        }
+    )
+    live.lost_window = None
+    return job.model_copy(update={"attempts": (*job.attempts[:-1], previous)})
 
 
 def _paths(raw: object) -> list[str]:

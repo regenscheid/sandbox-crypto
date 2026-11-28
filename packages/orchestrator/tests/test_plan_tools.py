@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import re
 import threading
+from collections.abc import Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -19,28 +21,35 @@ from sandbox_science.contracts import ErrorKind, ExecutionContext
 from sandbox_science.orchestrator import cli, harness
 from sandbox_science.orchestrator.consistency.controller import ReviewController
 from sandbox_science.orchestrator.consistency.store import ReviewStore
+from sandbox_science.orchestrator.continuity.auto_continuation import continued, identity
+from sandbox_science.orchestrator.continuity.records import WorkRecords
 from sandbox_science.orchestrator.documents import DocumentStore, DocumentTool
 from sandbox_science.orchestrator.documents.errors import DocumentError
 from sandbox_science.orchestrator.harness import save
-from sandbox_science.orchestrator.hooks import Effect, Notice, RunView
+from sandbox_science.orchestrator.hooks import Closing, Effect, Notice, RunView, TurnHook
 from sandbox_science.orchestrator.jobs import JOB_SPECS, JobTools
 from sandbox_science.orchestrator.loop import run_task
 from sandbox_science.orchestrator.model import ModelError, ModelTurn
-from sandbox_science.orchestrator.notices import PLANS
+from sandbox_science.orchestrator.notices import PLANS, PLANS_HELD, PLANS_WENT_ON
 from sandbox_science.orchestrator.plan_tools import (
+    APPROVALS_SEEN,
     GUIDANCE,
     GUIDANCE_VERSION,
     MAX_CHANGES,
     MAX_REQUEST_BYTES,
     MAX_RESPONSE_BYTES,
     NAMES,
+    PLAN_OPEN,
     REREAD,
     UNAVAILABLE,
     PlanNotice,
     Plans,
     PlanTools,
+    approval_open,
 )
+from sandbox_science.orchestrator.plan_tools import went_on as went_on_id
 from sandbox_science.orchestrator.projects import ProjectStore
+from sandbox_science.orchestrator.questions import Questions
 from sandbox_science.orchestrator.session_plans import (
     GoalOutcome,
     PlanAuthority,
@@ -53,6 +62,7 @@ from sandbox_science.orchestrator.tools import Toolbox, ToolEntry, ToolOutcome
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 
 from .scripted import ScriptedModel, ToolCall
+from .test_tool_journal import RUN
 
 
 def body(goal="Check the claim", *, count=1):
@@ -530,7 +540,7 @@ async def test_long_progress_notes_do_not_prevent_complete_compact_current_rerea
     with pytest.raises(DocumentError, match="current plan read limit"):
         f.core.current(f.adapter.authority)
     await f.adapter.safe_point()
-    result, _ = await call(f, "plan_read")
+    result, _ = await call(f, "plan_read", detail="full")
     assert len(result["steps"]) == 44
     assert all(
         s["status"] == "blocked" and s["latest"]["author"]["run_id"] == "main-run"
@@ -550,7 +560,9 @@ async def test_a_user_edit_during_the_closing_await_holds_the_answer_once_if_a_t
     fixture, monkeypatch, max_turns
 ):
     """The answer of a run with no turn left stands: it was lost as ``plan_unread``. With a
-    turn left, the plan comes with the held answer and the next answer is taken."""
+    turn left, the plan comes with the held answer and the next answer is taken. The run's
+    first answer at the open plan's state went on in the run (``Plans.goes_on``); the
+    second has its closing."""
     f = fixture
     await active(f)
 
@@ -582,7 +594,9 @@ async def test_a_user_edit_during_the_closing_await_holds_the_answer_once_if_a_t
 
     toolbox = tools(f)
     monkeypatch.setattr(toolbox, "math_checks", Math())
-    model = ScriptedModel([ModelTurn("First answer"), ModelTurn("Answer with the plan")])
+    model = ScriptedModel(
+        [ModelTurn("Status"), ModelTurn("First answer"), ModelTurn("Answer with the plan")]
+    )
     if max_turns == 1:
         model = ScriptedModel([ModelTurn("First answer")])
     result = await run_task(model, toolbox, "Continue", run_id="main-run", max_turns=max_turns)
@@ -591,8 +605,8 @@ async def test_a_user_edit_during_the_closing_await_holds_the_answer_once_if_a_t
         assert (result.stopped, result.final_text) == ("answered", "First answer")
         return
     assert (result.stopped, result.final_text) == ("answered", "Answer with the plan")
-    held = model.requests[1][-1]["content"]
-    payload = json.loads(held[len(PLANS.text) :])
+    held = model.requests[2][-1]["content"]
+    payload = json.loads(held[len(PLANS_HELD.text) :])
     assert "USER closing refinement" in payload["plan"]
     assert payload["changed"].startswith("the user revised it to version 2")
     assert payload["answer_held"].startswith("Your answer was held once")
@@ -879,7 +893,7 @@ async def test_scoped_event_scan_has_a_finite_hold_and_complete_read_can_clear_i
     with pytest.raises(DocumentError, match="reread_required"):
         await f.adapter.check_dispatch("effect")
     page, _ = await call(f, "plan_read")
-    assert page["head"]["ref"] == ref
+    assert page["plan"]["ref"] == ref
     assert page["steps"][0]["step_cursor"] == 70
     await f.adapter.model_delivered()
     assert not f.adapter.held
@@ -970,7 +984,7 @@ async def test_complete_large_plan_bypasses_generic_notice_clipping_without_mark
         documents=cast(DocumentTool, documents),
         jobs=cast(JobTools, jobs),
     )
-    outcome = await toolbox.call(ToolCall("read", "plan_read", "{}"), "read")
+    outcome = await toolbox.call(ToolCall("read", "plan_read", '{"detail":"full"}'), "read")
     assert len(outcome.text) > toolbox.output_chars
     assert len(json.loads(outcome.text)["steps"]) == 128
     assert "platform_notices" not in json.loads(outcome.text)
@@ -1039,7 +1053,7 @@ async def test_a_held_answer_shows_the_plan_and_the_next_answer_is_taken(fixture
     result = await run_task(model, tools(f), "Answer", run_id="main-run", max_turns=5)
     assert (result.stopped, result.final_text) == ("answered", "Second answer")
     held = model.requests[1][-1]["content"]
-    payload = json.loads(held[len(PLANS.text) :])
+    payload = json.loads(held[len(PLANS_HELD.text) :])
     assert payload["answer_held"].startswith("Your answer was held once")
     assert payload["steps"] == ["step-0 completed: Step 0", "step-1 pending: Step 1"]
     assert (payload["current"], payload["changed"]) == (
@@ -1397,5 +1411,1298 @@ async def test_a_step_the_user_pauses_is_blocked_and_resumes_in_progress(fixture
     assert resumed["progress_cursor"] == 3
     assert f.core.compact_current(f.adapter.authority).steps[0].latest.status == "in_progress"
     guidance = " ".join(GUIDANCE.split())
-    assert "work the user pauses is blocked, with the user's reason" in guidance
+    assert "record the steps they hold blocked with their reason" in guidance
+    assert "until the user resumes them, recorded in_progress again" in guidance
     assert "leave finished steps' text as it is" in guidance
+
+
+class Closings(TurnHook):
+    """Stands in for the final review: counts the closings it is asked, and keeps every
+    closing answer from the user while it decides, as ``hold`` does, noting whether each
+    reply without calls was kept back when the hooks heard its call returned."""
+
+    name = "closings_fixture"
+
+    def __init__(self) -> None:
+        self.closings: list[str | None] = []
+        self.withheld: list[bool] = []
+
+    @property
+    def holds_answers(self) -> bool:
+        return True
+
+    async def model_returned(self, run: RunView) -> None:
+        last = run.context.messages[-1]
+        if last.get("role") == "assistant" and not last.get("tool_calls"):
+            self.withheld.append(run.withheld)
+
+    async def closing(self, run: RunView, answer: str | None) -> Closing:
+        self.closings.append(answer)
+        return Closing()
+
+
+async def open_plan_run(f, replies, *, max_turns=10):
+    """A run of an active two-step plan, the run's own (read, created and activated by it),
+    whose model gives ``replies``: the result, the model, and the closings it was asked."""
+    await active(f)
+    toolbox = tools(f)
+    closings = Closings()
+    model = ScriptedModel(replies)
+    result = await run_task(
+        model,
+        toolbox,
+        "Work the plan",
+        run_id="main-run",
+        max_turns=max_turns,
+        hooks=(*toolbox.turn_hooks(), closings),
+    )
+    return result, model, closings
+
+
+def plans_notice(message) -> dict[str, Any]:
+    """The payload of the plans notice that carried a run past an answer."""
+    content = message["content"]
+    assert content.startswith(PLANS_WENT_ON.text)
+    return json.loads(content[len(PLANS_WENT_ON.text) :])
+
+
+@pytest.mark.asyncio
+async def test_a_status_reply_while_the_plan_is_open_goes_on_in_the_same_run(fixture):
+    """Baseline run 2, R1: the owner's status question, answered without a tool call while
+    the plan had pending steps, ended the run, whose final review ran on the status
+    reply, and a new run started with nothing cached. The reply is a message, and the run
+    takes its next turn with the plan's notice; no closing is asked, nothing holds it."""
+    f = fixture
+    result, model, closings = await open_plan_run(
+        f, [ModelTurn("Status: step-0 is next."), turn("plan_read"), ModelTurn("Done for now.")]
+    )
+    assert (result.stopped, result.final_text) == ("answered", "Done for now.")
+    assert result.answer == "Done for now."
+    # Only the run's real end had a closing, and only its answer was kept back meanwhile.
+    assert closings.closings == ["Done for now."]
+    assert closings.withheld == [False, True]
+    went_on = plans_notice(model.requests[1][-1])
+    assert went_on["plan_open"] == PLAN_OPEN
+    assert went_on["next_steps"] == ["step-0"]
+    assert went_on["steps"] == ["step-0 pending: Step 0"]
+    assert [m["content"] for m in model.requests[1] if m["role"] == "assistant"][-1] == (
+        "Status: step-0 is next."
+    )
+    summary = result.summaries["plans"]
+    assert summary["went_on"] == 1
+    assert len(summary["states"]) == 1
+    assert result.delivered["plans"] == {went_on_id(tuple(summary["states"][0]))}
+
+
+@pytest.mark.asyncio
+async def test_a_second_bare_reply_at_the_same_plan_state_ends_the_run(fixture):
+    """Once per plan state: the run goes on once, and an answer before the plan changes
+    has its closing, the final review among it, and ends the run."""
+    f = fixture
+    result, model, closings = await open_plan_run(
+        f, [ModelTurn("Status: step-0 is next."), ModelTurn("Still waiting.")]
+    )
+    assert (result.stopped, result.final_text) == ("answered", "Still waiting.")
+    assert closings.closings == ["Still waiting."]
+    assert len(model.requests) == 2
+    assert result.summaries["plans"]["went_on"] == 1
+
+
+@pytest.mark.asyncio
+async def test_progress_gives_the_plan_another_continuation(fixture):
+    f = fixture
+    ref, revision = await active(f)
+    toolbox = tools(f)
+    closings = Closings()
+    progress = turn(
+        "plan_progress",
+        operation_id="start",
+        base=ref,
+        step_id="step-0",
+        expected_step_cursor=0,
+        expected_status_revision=revision,
+        status="in_progress",
+        note="Started",
+    )
+    model = ScriptedModel(
+        [ModelTurn("First status."), progress, ModelTurn("Second status."), ModelTurn("End.")]
+    )
+    result = await run_task(
+        model,
+        toolbox,
+        "Work the plan",
+        run_id="main-run",
+        hooks=(*toolbox.turn_hooks(), closings),
+    )
+    assert (result.stopped, result.final_text) == ("answered", "End.")
+    assert closings.closings == ["End."]
+    assert result.summaries["plans"]["went_on"] == 2
+    assert plans_notice(model.requests[3][-1])["next_steps"] == ["step-0"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("finished", ["completed", "abandoned", "blocked", "draft"])
+async def test_a_plan_with_nothing_to_work_lets_the_answer_end_the_run(fixture, finished):
+    """A finished plan, a draft, or one whose every open step is blocked: the answer has
+    its closing, with the final review, and the run ends."""
+    f = fixture
+    toolbox = tools(f)
+    if finished == "draft":
+        await made(f)
+    else:
+        ref, revision = await active(f)
+        if finished == "abandoned":
+            await call(
+                f,
+                "plan_finish",
+                operation_id="abandon",
+                base=ref,
+                expected_status_revision=revision,
+                expected_progress_cursor=0,
+                status="abandoned",
+                reason="The user changed course",
+            )
+        else:
+            done = "blocked" if finished == "blocked" else "completed"
+            await record(f, ref, revision, "step-0", 0, done, "finish-step")
+            if finished == "completed":
+                await call(
+                    f,
+                    "plan_finish",
+                    operation_id="finish",
+                    base=ref,
+                    expected_status_revision=revision,
+                    expected_progress_cursor=1,
+                    status="completed",
+                    reason="Done",
+                    outcome=GoalOutcome(
+                        status="achieved", summary="Shown", evidence=(), remaining_work=()
+                    ).model_dump(mode="json"),
+                )
+    assert f.core.summary(f.user).status == ("active" if finished == "blocked" else finished)
+    closings = Closings()
+    model = ScriptedModel([ModelTurn("The answer.")])
+    result = await run_task(
+        model, toolbox, "Answer", run_id="main-run", hooks=(*toolbox.turn_hooks(), closings)
+    )
+    assert (result.stopped, result.final_text) == ("answered", "The answer.")
+    assert closings.closings == ["The answer."]
+    assert "plans" not in result.summaries
+
+
+@pytest.mark.asyncio
+async def test_an_open_question_lets_the_answer_end_the_run(fixture):
+    f = fixture
+    Questions(f.documents).ask(f.context, "an-earlier-run", "call-q", "op-q", "Which branch?")
+    result, _, closings = await open_plan_run(f, [ModelTurn("Waiting for your answer.")])
+    assert (result.stopped, result.final_text) == ("answered", "Waiting for your answer.")
+    assert closings.closings == ["Waiting for your answer."]
+
+
+@pytest.mark.asyncio
+async def test_a_run_with_no_turn_left_lets_the_answer_end_the_run(fixture):
+    result, _, closings = await open_plan_run(fixture, [ModelTurn("Status.")], max_turns=1)
+    assert (result.stopped, result.final_text) == ("answered", "Status.")
+    assert closings.closings == ["Status."]
+
+
+def test_a_permission_request_waits_until_the_same_call_gets_past_it():
+    refused = {
+        "tool": "shell",
+        "arguments": '{"script":"pip install x"}',
+        "error": "approval_required",
+    }
+    other = {"tool": "shell", "arguments": '{"script":"ls"}'}
+    passed = {"tool": "shell", "arguments": '{"script":"pip install x"}'}
+    assert approval_open([refused])
+    assert approval_open([refused, other])
+    assert not approval_open([refused, passed])
+    assert approval_open([passed, refused])
+    assert not approval_open([other])
+    # Only the latest records are looked through.
+    assert not approval_open([refused, *[other] * APPROVALS_SEEN])
+
+
+@pytest.mark.asyncio
+async def test_a_waiting_permission_request_lets_the_answer_end_the_run(fixture):
+    f = fixture
+    await active(f)
+
+    async def held(request):
+        # As a connector call that gave up waiting for the user's answer records it.
+        message = {"error": {"kind": "approval_required", "message": "held for approval"}}
+        return ToolOutcome(json.dumps(message), {"error": "approval_required"})
+
+    toolbox = tools(f)
+    toolbox.entries["shell"] = ToolEntry(toolbox.entries["shell"].spec, "effect", held)
+    closings = Closings()
+    model = ScriptedModel([turn("shell", script="fetch"), ModelTurn("Waiting for your approval.")])
+    result = await run_task(
+        model, toolbox, "Fetch", run_id="main-run", hooks=(*toolbox.turn_hooks(), closings)
+    )
+    assert result.tool_records[0]["error"] == "approval_required"
+    assert (result.stopped, result.final_text) == ("answered", "Waiting for your approval.")
+    assert closings.closings == ["Waiting for your approval."]
+
+
+@pytest.mark.asyncio
+async def test_a_response_rounds_answer_has_its_closing_though_the_plan_changed(fixture):
+    """Once a closing's findings took a response round, the run is ending: the round's
+    answer has its closing, even at a plan state that has had no continuation."""
+    f = fixture
+    ref, revision = await active(f)
+    toolbox = tools(f)
+
+    class Findings(Closings):
+        async def closing(self, run: RunView, answer: str | None) -> Closing:
+            self.closings.append(answer)
+            if len(self.closings) == 1:
+                notice = Notice("findings_fixture", ("f1",), "Findings: ", {"finding": "f1"})
+                return Closing("respond", (notice,))
+            return Closing()
+
+    closings = Findings()
+    progress = turn(
+        "plan_progress",
+        operation_id="fix",
+        base=ref,
+        step_id="step-0",
+        expected_step_cursor=0,
+        expected_status_revision=revision,
+        status="in_progress",
+        note="Answering the finding",
+    )
+    model = ScriptedModel(
+        [ModelTurn("Status."), ModelTurn("Final."), progress, ModelTurn("Answered.")]
+    )
+    result = await run_task(
+        model, toolbox, "Work", run_id="main-run", hooks=(*toolbox.turn_hooks(), closings)
+    )
+    assert closings.closings == ["Final.", "Answered."]
+    assert (result.stopped, result.final_text) == ("answered", "Answered.")
+    assert result.summaries["plans"]["went_on"] == 1
+
+
+def with_root(f) -> None:
+    """The session's root work, as the run service records it: a plan state's
+    continuation is recorded against it, where the automatic continuation looks."""
+    WorkRecords(f.projects.control).admit("p", "s", RUN)
+
+
+def state_continued(f) -> bool:
+    summary = f.core.summary(f.user)
+    assert summary is not None
+    with f.projects.control.read() as tx:
+        return continued(tx.sql, "p", "s", summary)
+
+
+class Ceiling(TurnHook):
+    """A turn allowance lowered to the calls made once the first returned."""
+
+    name = "ceiling_fixture"
+
+    async def turn_limit(self, run: RunView) -> int | None:
+        return run.turns if run.turns else None
+
+
+class LastCall(TurnHook):
+    """A limit that makes the next model call the run's last, from its ``at``-th ask."""
+
+    name = "last_call_fixture"
+
+    def __init__(self, at: int = 1) -> None:
+        self.asked, self.at = 0, at
+
+    async def last_call(self, run: RunView) -> str | None:
+        self.asked += 1
+        return "run_budget" if self.asked >= self.at else None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit", [Ceiling, LastCall])
+async def test_an_answer_the_run_cannot_go_on_from_spends_no_continuation(fixture, limit):
+    """Review of de930eca: the state's continuation was claimed before the loop knew the
+    run could take its next turn; the run then ended on the answer, which no hold kept
+    back, and the automatic continuation found the state spent. Now nothing is claimed,
+    the answer has its closing, held as any closing answer, and the state keeps its
+    continuation for a new root."""
+    f = fixture
+    with_root(f)
+    await active(f)
+    toolbox = tools(f)
+    closings = Closings()
+    model = ScriptedModel([ModelTurn("Status."), ModelTurn("unused")])
+    result = await run_task(
+        model,
+        toolbox,
+        "Work",
+        run_id="main-run",
+        hooks=(*toolbox.turn_hooks(), limit(), closings),
+    )
+    assert (result.stopped, result.final_text) == ("answered", "Status.")
+    assert closings.closings == ["Status."]
+    assert closings.withheld == [True]
+    assert "plans" not in result.summaries
+    assert not state_continued(f)
+
+
+@pytest.mark.asyncio
+async def test_two_runs_at_one_plan_state_go_on_once(fixture):
+    """The bound is the session's, kept in its records, not the run's."""
+    f = fixture
+    with_root(f)
+    await active(f)
+    first, _, _ = await _run_bare(f, "main-run")
+    assert first.summaries["plans"]["went_on"] == 1
+    assert state_continued(f)
+    second, model, closings = await _run_bare(f, "main-run-2")
+    assert closings.closings == ["Status."]
+    assert len(model.requests) == 1
+    assert "plans" not in second.summaries
+
+
+async def _run_bare(f, run_id):
+    adapter = PlanTools(f.core, f.projects, f.context, run_id=run_id, alias="main")
+    toolbox = Toolbox(worker(), f.context, plans=adapter)
+    closings = Closings()
+    model = ScriptedModel([ModelTurn("Status."), ModelTurn("Ended.")])
+    result = await run_task(
+        model, toolbox, "Work", run_id=run_id, hooks=(*toolbox.turn_hooks(), closings)
+    )
+    return result, model, closings
+
+
+class Fails(ScriptedModel):
+    """The model call after the first answer fails, or is the user's cancel."""
+
+    def __init__(self, turns, error: BaseException) -> None:
+        super().__init__(turns)
+        self.error = error
+
+    async def complete(self, messages, tools):
+        if self.requests:
+            self.requests.append(list(messages))
+            raise self.error
+        return await super().complete(messages, tools)
+
+
+class Halts(TurnHook):
+    name = "halts_fixture"
+
+    async def halt(self, run: RunView) -> str | None:
+        return "budget" if run.turns else None
+
+
+class Floods(TurnHook):
+    """A notice past the run's room before its second call."""
+
+    name = "floods_fixture"
+
+    async def notices(self, point, run: RunView) -> Sequence[Notice]:
+        if point == "turn" and run.turns:
+            return (Notice(self.name, (), "Flood: ", "x" * 300_000),)
+        return ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ending", ["error", "cancelled", "halt", "out_of_room", "report"])
+async def test_an_answer_the_run_went_on_from_stays_its_answer_whatever_ends_it(fixture, ending):
+    """Review of de930eca: a run that went on past its answer and failed on its next
+    call had no answer at all, though the user saw it."""
+    f = fixture
+    await active(f)
+    toolbox = tools(f)
+    stop = asyncio.Event()
+    replies = [ModelTurn("Status: step-0 is next."), ModelTurn("unused")]
+    extra: list[TurnHook] = []
+    model: ScriptedModel = ScriptedModel(replies)
+    if ending == "error":
+        model = Fails(replies, ModelError("test-secret-failure-body"))
+    elif ending == "cancelled":
+        stop.set()
+        model = Fails(replies, asyncio.CancelledError())
+    elif ending == "halt":
+        extra.append(Halts())
+    elif ending == "out_of_room":
+        extra.append(Floods())
+    else:
+        extra.append(LastCall(at=2))
+    result = await run_task(
+        model,
+        toolbox,
+        "Work",
+        run_id="main-run",
+        stop=stop,
+        max_input_chars=200_000,
+        hooks=(*toolbox.turn_hooks(), *extra),
+    )
+    assert result.summaries["plans"]["went_on"] == 1
+    assert result.answer == "Status: step-0 is next."
+    assert (
+        result.stopped
+        == {
+            "error": "error",
+            "cancelled": "cancelled",
+            "halt": "budget",
+            "out_of_room": "answered",
+            "report": "run_budget",
+        }[ending]
+    )
+
+
+def tracked(*tracks):
+    """A plan whose step-<t> is on track <t>, and step-own on none."""
+    value = body(count=0)
+    value["tracks"] = tuple({"track_id": t, "title": f"Track {t}"} for t in tracks)
+    value["phases"] = (
+        {
+            "phase_id": "analysis",
+            "title": "Analysis",
+            "steps": tuple(
+                {
+                    "step_id": f"step-{t}",
+                    "title": f"Step {t}",
+                    "description": "Inspect and check",
+                    "evidence_standard": "Retain evidence",
+                    **({"track_id": t} if t != "own" else {}),
+                }
+                for t in tracks
+            ),
+        },
+    )
+    return value
+
+
+def delegated(f, track: str, n: int, *, returned: bool = False) -> None:
+    """A delegated run of the session on ``track``: running, or returned and awaiting
+    its parent's review."""
+    ended = ("returned", "answered", "2026-11-27T12:05:00+00:00", "awaiting")
+    with f.projects.control.write() as tx:
+        tx.sql.execute(
+            "INSERT INTO delegations (delegation_id, project_id, session_id, parent, run, "
+            "kind, brief, started_at, ended, stopped, ended_at, review) "
+            "VALUES (?, 'p', 's', 'main-run', ?, 'task', ?, ?, ?, ?, ?, ?)",
+            (
+                "dlg-" + f"{n:024x}",
+                f"child-{n}",
+                json.dumps({"track": {"track_id": track}}),
+                "2026-11-27T12:00:00+00:00",
+                *(ended if returned else (None, None, None, None)),
+            ),
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("returned", [False, True])
+async def test_steps_with_children_leave_the_closing_to_wait_for_them(fixture, returned):
+    """Review of de930eca: an answer while children ran (\"waiting for the subagent\")
+    was told to go on with the step a child was working on, and spent the state's
+    continuation; the closing is where a parent waits for its children."""
+    f = fixture
+    with_root(f)
+    receipt = f.core.publish(
+        f.adapter.authority, "plan", PlanBody.model_validate(tracked("a")), "Plan"
+    )
+    summary = f.core.summary(f.user)
+    f.core.set_status(
+        f.adapter.authority, "go", receipt.ref, summary.status_revision, 0, "active", "Begin"
+    )
+    delegated(f, "a", 1, returned=returned)
+    result, _, closings = await _run_bare(f, "main-run")
+    assert closings.closings == ["Status."]
+    assert "plans" not in result.summaries
+    assert not state_continued(f)
+
+
+@pytest.mark.asyncio
+async def test_the_notice_names_only_the_steps_left_to_the_run(fixture):
+    f = fixture
+    receipt = f.core.publish(
+        f.adapter.authority, "plan", PlanBody.model_validate(tracked("a", "own")), "Plan"
+    )
+    summary = f.core.summary(f.user)
+    f.core.set_status(
+        f.adapter.authority, "go", receipt.ref, summary.status_revision, 0, "active", "Begin"
+    )
+    delegated(f, "a", 1)
+    result, model, closings = await _run_bare(f, "main-run")
+    assert closings.closings == ["Ended."]
+    notice = plans_notice(model.requests[1][-1])
+    assert (notice["next_steps"], notice["with_children"]) == (["step-own"], ["step-a"])
+    assert result.summaries["plans"]["went_on"] == 1
+
+
+def recorded(f, path="results/table.csv", data=b"n,t\n1,2\n", *, session="s", op="op-1", kept=True):
+    """A file the platform recorded at ``path``, by a run of ``session``: with its bytes,
+    or only its hash and size."""
+    from sandbox_science.orchestrator.artifacts import ArtifactInventory
+
+    from .test_artifact_inventory import CONTEXT, SOURCE, record
+
+    inventory = ArtifactInventory(f.documents)
+    source = SOURCE.model_copy(
+        update={"context": CONTEXT.model_copy(update={"project_id": "p", "session_id": session})}
+    )
+    if kept:
+        return inventory, record(inventory, op, data, source=source, path=path).revision
+    reference, _ = inventory.record_metadata(
+        source, path, sha256=hashlib.sha256(data).hexdigest(), size=len(data),
+        media_type="text/csv", note="quota",
+    )  # fmt: skip
+    return inventory, reference
+
+
+@pytest.mark.asyncio
+async def test_one_progress_call_finishes_a_step_and_starts_the_next(fixture):
+    """Several steps in one call, and results that carry the next call's counters, so the
+    plan is worked to its finish without a plan_read (R7)."""
+    f = fixture
+    created, _ = await call(
+        f, "plan_create", operation_id="create", body=body(count=3), reason="Initial"
+    )
+    ref = created["receipt"]["ref"]
+    assert created["plan"]["status_revision"] == 1
+    activated, _ = await call(
+        f, "plan_activate", operation_id="activate", base=ref, reason="Begin",
+        expected_status_revision=1, expected_progress_cursor=0,
+    )  # fmt: skip
+    standing = activated["plan"]
+    assert standing["steps"] == {"pending": 3}
+    assert [s["step_cursor"] for s in standing["open_steps"]] == [0, 0, 0]
+    started, _ = await call(
+        f, "plan_progress", operation_id="start", base=ref,
+        expected_status_revision=standing["status_revision"],
+        step_id="step-0", expected_step_cursor=0, status="in_progress", note="Inspecting",
+    )  # fmt: skip
+    cursors = {s["step_id"]: s["step_cursor"] for s in started["plan"]["open_steps"]}
+    moved, record = await call(
+        f, "plan_progress", operation_id="move", base=ref,
+        expected_status_revision=started["plan"]["status_revision"],
+        steps=[
+            {"step_id": "step-0", "expected_step_cursor": cursors["step-0"],
+             "status": "completed", "note": "Derived"},
+            {"step_id": "step-1", "expected_step_cursor": cursors["step-1"],
+             "status": "in_progress", "note": "Checking"},
+        ],
+    )  # fmt: skip
+    assert record["plan_receipt"]["action"] == "progress"
+    assert moved["plan"]["steps"] == {"completed": 1, "in_progress": 1, "pending": 1}
+    assert [(s["step_id"], s["status"]) for s in moved["plan"]["open_steps"]] == [
+        ("step-1", "in_progress"),
+        ("step-2", "pending"),
+    ]
+    # One event for each step, so a notice to another run names each of them.
+    events = f.core.events(f.user, after=0, target=None, limit=16).items
+    assert [e.action for e in events[-2:]] == ["progress", "progress"]
+    # An exact retry of the several-step call is its receipt again.
+    again, _ = await call(
+        f, "plan_progress", operation_id="move", base=ref,
+        expected_status_revision=started["plan"]["status_revision"],
+        steps=[
+            {"step_id": "step-0", "expected_step_cursor": cursors["step-0"],
+             "status": "completed", "note": "Derived"},
+            {"step_id": "step-1", "expected_step_cursor": cursors["step-1"],
+             "status": "in_progress", "note": "Checking"},
+        ],
+    )  # fmt: skip
+    assert again["receipt"] == moved["receipt"]
+    assert again["historical_receipt"]
+    cursors = {s["step_id"]: s["step_cursor"] for s in moved["plan"]["open_steps"]}
+    ended, _ = await call(
+        f, "plan_progress", operation_id="end", base=ref,
+        expected_status_revision=moved["plan"]["status_revision"],
+        steps=[
+            {"step_id": "step-1", "expected_step_cursor": cursors["step-1"],
+             "status": "completed", "note": "Checked"},
+            {"step_id": "step-2", "expected_step_cursor": cursors["step-2"],
+             "status": "skipped", "note": "Not needed"},
+        ],
+    )  # fmt: skip
+    assert ended["plan"]["open_steps"] == []
+    finished, _ = await call(
+        f, "plan_finish", operation_id="finish", base=ref, reason="Done",
+        expected_status_revision=ended["plan"]["status_revision"],
+        expected_progress_cursor=ended["plan"]["progress_cursor"],
+        outcome={"status": "partially_achieved", "summary": "Two of three",
+                 "evidence": [], "remaining_work": ["Step 2"]},
+    )  # fmt: skip
+    assert finished["plan"]["status"] == "completed"
+    assert "open_steps" not in finished["plan"]
+
+
+@pytest.mark.asyncio
+async def test_a_refused_entry_refuses_the_whole_call_and_names_it(fixture):
+    f = fixture
+    ref, revision = await active(f)
+
+    def entry(step, cursor, status="completed"):
+        return {"step_id": step, "expected_step_cursor": cursor, "status": status, "note": "N"}
+
+    await call(f, "plan_revise", operation_id="wider", base=ref, body=body(count=3), reason="Wider")
+    ref = {**ref, "version": 2}
+    before = f.core.summary(f.user)
+    for steps, kind, named in (
+        ([entry("step-0", 0), entry("step-1", 5)], "conflict", "steps[1] (step-1): step progress"),
+        ([entry("step-0", 0), entry("step-9", 0)], "not_found", "steps[1] (step-9): step is"),
+        ([entry("step-0", 0), entry("step-0", 0)], "invalid_request", "steps[1] (step-0)"),
+    ):
+        with pytest.raises(DocumentError) as refused:
+            await call(
+                f, "plan_progress", operation_id=f"op-{len(named)}", base=ref,
+                expected_status_revision=revision, steps=steps,
+            )  # fmt: skip
+        assert refused.value.kind == kind
+        assert named in refused.value.message
+    # Nothing of a refused call is recorded, not even its first, valid, entry.
+    assert f.core.summary(f.user) == before
+    with pytest.raises(DocumentError, match="not both"):
+        await call(
+            f, "plan_progress", operation_id="both", base=ref, expected_status_revision=revision,
+            step_id="step-0", steps=[entry("step-1", 0)],
+        )  # fmt: skip
+
+
+@pytest.mark.asyncio
+async def test_evidence_by_path_pins_the_files_recorded_revision(fixture):
+    f = fixture
+    inventory, reference = recorded(f)
+    assert reference is not None
+    f.adapter.artifacts = inventory
+    ref, revision = await active(f)
+    args = {
+        "operation_id": "done", "base": ref, "expected_status_revision": revision,
+        "step_id": "step-0", "expected_step_cursor": 0, "status": "completed", "note": "Table",
+        "evidence": [{"path": "results/table.csv"}],
+    }  # fmt: skip
+    result, _ = await call(f, "plan_progress", **args)
+    (resolved,) = result["evidence_resolved"]
+    assert (resolved["path"], resolved["artifact_id"], resolved["revision"]) == (
+        "results/table.csv", reference.artifact_id, reference.revision,
+    )  # fmt: skip
+    assert resolved["sha256"] == reference.sha256
+    assert (resolved["written_by"]["session_id"], resolved["written_by"]["run_id"]) == ("s", "run1")
+    (step,) = f.core.current(f.user).steps
+    (claim,) = step.latest.evidence
+    assert (claim.kind, claim.reference_id, claim.revision, claim.sha256) == (
+        "artifact", reference.artifact_id, reference.revision, reference.sha256,
+    )  # fmt: skip
+    assert claim.written_by.session_id == "s"
+    # The review of R7's fix: an exact retry after the file changed is its first receipt,
+    # and says what the first call resolved.
+    recorded(f, data=b"n,t\n1,3\n", op="op-2")
+    again, _ = await call(f, "plan_progress", **args)
+    assert again["receipt"] == result["receipt"]
+    assert again["evidence_resolved"] == result["evidence_resolved"]
+    with pytest.raises(DocumentError) as refused:
+        await call(
+            f, "plan_progress", operation_id="missing", base=ref,
+            expected_status_revision=revision,
+            steps=[{"step_id": "step-0", "expected_step_cursor": 1, "status": "completed",
+                    "note": "Again", "evidence": [{"path": "results/none.csv"}]}],
+        )  # fmt: skip
+    assert refused.value.kind == "not_found"
+    assert refused.value.message.startswith("steps[0].evidence[0]: results/none.csv has no")
+    assert "publish" in refused.value.message
+    f.adapter.artifacts = None
+    with pytest.raises(DocumentError, match="not available in this run"):
+        await call(
+            f, "plan_progress", operation_id="unwired", base=ref,
+            expected_status_revision=revision, step_id="step-0", expected_step_cursor=1,
+            status="completed", note="Again", evidence=[{"path": "results/table.csv"}],
+        )  # fmt: skip
+
+
+@pytest.mark.asyncio
+async def test_evidence_by_path_pins_only_this_sessions_kept_revisions(fixture):
+    """The review of R7's fix: a revision without its bytes, a file of another session's
+    area, and a shared file another session last recorded are not pinned by path; an
+    agent cannot claim who recorded a revision."""
+    f = fixture
+    inventory, _ = recorded(f, "results/meta.csv", kept=False)
+    recorded(f, "notes.csv", session="other", op="op-o")
+    recorded(f, "shared/common.csv", session="other", op="op-sh")
+    f.adapter.artifacts = inventory
+    ref, revision = await active(f)
+
+    async def progress(evidence, op):
+        with pytest.raises(DocumentError) as refused:
+            await call(
+                f, "plan_progress", operation_id=op, base=ref, expected_status_revision=revision,
+                step_id="step-0", expected_step_cursor=0, status="completed", note="N",
+                evidence=[evidence],
+            )  # fmt: skip
+        return refused.value
+
+    kept = await progress({"path": "results/meta.csv"}, "meta")
+    assert "keeps no bytes" in kept.message
+    assert "publish" in kept.message
+    other = await progress({"path": "sessions/other/notes.csv"}, "other")
+    assert "another session's area" in other.message
+    shared = await progress({"path": "shared/common.csv"}, "shared")
+    assert "recorded by session other's run run1" in shared.message
+    assert "reference_id" in shared.message
+    forged = await progress(
+        {"project_id": "p", "kind": "artifact", "reference_id": "artifact-1", "revision": 1,
+         "sha256": "0" * 64,
+         "written_by": {"session_id": "s", "run_id": "run1",
+                        "recorded_at": "2026-11-27T00:00:00+00:00"}},
+        "forged",
+    )  # fmt: skip
+    assert "written_by is the platform's" in forged.message
+    assert f.core.current(f.user).steps[0].latest is None
+
+
+@pytest.mark.asyncio
+async def test_plan_read_is_compact_by_default_and_full_on_request(fixture):
+    f = fixture
+    ref, revision = await active(f)
+    compact, _ = await call(f, "plan_read")
+    assert set(compact) == {"plan", "goal", "steps", "detail"}
+    assert compact["plan"]["ref"] == ref
+    assert compact["plan"]["status_revision"] == revision
+    assert compact["steps"] == [
+        {"step_id": "step-0", "title": "Step 0", "status": "pending", "step_cursor": 0}
+    ]
+    full, _ = await call(f, "plan_read", detail="full")
+    assert full["version"]["body"]["goal"] == "Check the claim"
+    assert full["steps"][0]["step_sha256"]
+    # Either is the current read the fence needs.
+    await f.adapter.model_delivered()
+    assert not f.adapter.requires_read
+
+
+@pytest.mark.asyncio
+async def test_an_invalid_request_names_its_field_limit_and_size(fixture):
+    f = fixture
+    long = body()
+    long["phases"][0]["steps"][0]["title"] = "T" * 200
+    with pytest.raises(DocumentError) as refused:
+        await call(f, "plan_create", operation_id="create", body=long, reason="Initial")
+    message = refused.value.message
+    assert message.startswith("invalid plan_create request: body.phases.0.steps.0.title:")
+    assert "at most 128 characters (given 200)" in message
+    with pytest.raises(DocumentError, match=r"is 98,\d{3} bytes, over its budget of 98,304"):
+        await f.adapter.call(
+            "plan_create", '"' + "x" * MAX_REQUEST_BYTES + '"', call_id="c", model=None
+        )
+    wide = body(count=20)
+    for step in wide["phases"][0]["steps"]:
+        step["description"] = "d" * 4000
+    with pytest.raises(DocumentError, match=r"body is 8\d,\d{3} bytes .* over its limit of 65,536"):
+        await call(f, "plan_create", operation_id="wide", body=wide, reason="Initial")
+
+
+@pytest.mark.asyncio
+async def test_a_current_read_shows_what_others_changed_before_it_reads_the_plan(fixture):
+    """The review of R7's fix: a compact read that clears the reread fence shows each
+    step another actor changed in full, its description and its latest note with who
+    wrote it, and who changed what; steps nobody else changed stay compact."""
+    f = fixture
+    created, _ = await call(
+        f, "plan_create", operation_id="create", body=body(count=3), reason="Initial"
+    )
+    ref = created["receipt"]["ref"]
+    await call(
+        f, "plan_activate", operation_id="activate", base=ref, reason="Begin",
+        expected_status_revision=1, expected_progress_cursor=0,
+    )  # fmt: skip
+    plain, _ = await call(f, "plan_read")
+    assert "changed_by_others" not in plain
+    await f.adapter.model_delivered()
+    edited = body(count=3)
+    edited["phases"][0]["steps"][0]["description"] = "Use ONLY seed 42; never seed 7"
+    revised = f.core.revise(
+        f.user, "user-edit", PlanRef.model_validate(ref), PlanBody.model_validate(edited),
+        "Seed policy",
+    )  # fmt: skip
+    f.core.progress(
+        f.user, "user-pause", revised.ref, "step-1", 0, "blocked",
+        "Paused: budget exhausted, wait for me",
+    )  # fmt: skip
+    with pytest.raises(DocumentError, match="reread_required"):
+        await f.adapter.check_dispatch("effect")
+    read, _ = await call(f, "plan_read")
+    changed = read["changed_by_others"]
+    assert [s["step_id"] for s in changed["steps"]] == ["step-0", "step-1"]
+    first, second = changed["steps"]
+    assert first["description"] == "Use ONLY seed 42; never seed 7"
+    assert second["latest"]["note"] == "Paused: budget exhausted, wait for me"
+    assert second["latest"]["by"] == "the user"
+    assert any("Seed policy" in line for line in changed["changes"])
+    # Its delivery is the read the fence needs; the next read shows the plan plainly.
+    await f.adapter.model_delivered()
+    await f.adapter.check_dispatch("effect")
+    again, _ = await call(f, "plan_read")
+    assert "changed_by_others" not in again
+
+
+class Steered(ScriptedModel):
+    """A scripted model before whose first answer ``change`` changes the plan, as the user
+    would, and which notes at each later call whether an effect is refused while it is
+    called, before its answer reads what its notice showed."""
+
+    def __init__(self, f, turns, change) -> None:
+        super().__init__(turns)
+        self.f, self.change = f, change
+        self.fenced: list[bool] = []
+
+    async def complete(self, messages, tools):
+        if not self.requests:
+            self.change()
+        else:
+            try:
+                await self.f.adapter.check_dispatch("effect")
+            except DocumentError:
+                self.fenced.append(True)
+            else:
+                self.fenced.append(False)
+        return await super().complete(messages, tools)
+
+
+def payload_of(message, framing) -> dict[str, Any]:
+    content = message["content"]
+    assert content.startswith(framing.text)
+    return json.loads(content[len(framing.text) :])
+
+
+@pytest.mark.asyncio
+async def test_a_bare_reply_after_another_actors_change_has_no_went_on_notice_until_it_is_read(
+    fixture,
+):
+    """The merge of G1 and G3: a went-on notice counts as reading the plan, so it is never
+    the one that shows another actor's change. A bare reply after the user changed the plan
+    is held with the plan and the change in the held notice, and the fence stays until a
+    call that saw it returns; the next bare reply then goes on, its notice showing the plan
+    as the user left it."""
+    f = fixture
+    await active(f)
+    toolbox = tools(f)
+    closings = Closings()
+
+    def change():
+        f.core.revise(
+            f.user,
+            "user-edit",
+            f.core.summary(f.user).head,
+            PlanBody.model_validate(body(count=2)),
+            "Add a step",
+        )
+
+    model = Steered(
+        f, [ModelTurn("Status."), ModelTurn("Status again."), ModelTurn("Done.")], change
+    )
+    result = await run_task(
+        model, toolbox, "Work the plan", run_id="main-run", hooks=(*toolbox.turn_hooks(), closings)
+    )
+    assert (result.stopped, result.final_text) == ("answered", "Done.")
+    held = payload_of(model.requests[1][-1], PLANS_HELD)
+    assert held["answer_held"]
+    assert held["changed"].startswith("the user revised it to version 2 (added step-1")
+    assert held["steps"] == ["step-0 pending: Step 0", "step-1 pending: Step 1"]
+    # Refused while the held notice was unread, allowed once the call that saw it returned.
+    assert model.fenced == [True, False]
+    went_on = payload_of(model.requests[2][-1], PLANS_WENT_ON)
+    assert went_on["steps"] == held["steps"]
+    assert went_on["next_steps"] == ["step-0", "step-1"]
+    assert went_on["changed"].startswith("last change: the user revised it to version 2")
+    assert result.summaries["plans"]["went_on"] == 1
+    assert closings.closings == ["Done."]
+
+
+@pytest.mark.asyncio
+async def test_a_change_after_the_offer_to_go_on_leaves_the_fence_up(fixture):
+    """Another actor's change between the went-on offer and its claim: the run does not
+    go on at the offered state, and the change is still unread, so effects wait for the
+    plans notice."""
+    f = fixture
+    await active(f)
+    found = await f.adapter.going_on()
+    assert found is not None
+    assert found.pin is not None
+    f.core.revise(
+        f.user,
+        "user-edit",
+        f.core.summary(f.user).head,
+        PlanBody.model_validate(body(count=2)),
+        "Add a step",
+    )
+    assert not await f.adapter.went_on()
+    assert f.adapter.continued == []
+    with pytest.raises(DocumentError, match="reread_required"):
+        await f.adapter.check_dispatch("effect")
+    assert await f.adapter.going_on() is None
+    notice = await f.adapter.safe_point()
+    assert notice is not None
+    assert shown(notice)["changed"].startswith("the user revised it to version 2")
+
+
+def step(step_id, cursor, status, note, **more):
+    return {
+        "step_id": step_id,
+        "expected_step_cursor": cursor,
+        "status": status,
+        "note": note,
+        **more,
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_several_step_progress_gives_the_plan_another_continuation(fixture):
+    """The plan state the once-per-state bound keys on moves with a several-step progress
+    call as it does with a single one: the run goes on once before it, once after it, and
+    an answer at the same state after that has its closing."""
+    f = fixture
+    created, _ = await call(
+        f, "plan_create", operation_id="create", body=body(count=3), reason="Initial"
+    )
+    ref = created["receipt"]["ref"]
+    activated, _ = await call(
+        f, "plan_activate", operation_id="activate", base=ref, reason="Begin",
+        expected_status_revision=1, expected_progress_cursor=0,
+    )  # fmt: skip
+    standing = activated["plan"]
+    toolbox = tools(f)
+    closings = Closings()
+    progress = turn(
+        "plan_progress",
+        operation_id="move",
+        base=ref,
+        expected_status_revision=standing["status_revision"],
+        steps=[
+            step("step-0", 0, "completed", "Derived"),
+            step("step-1", 0, "in_progress", "Checking"),
+        ],
+    )
+    model = ScriptedModel(
+        [ModelTurn("First status."), progress, ModelTurn("Second status."), ModelTurn("End.")]
+    )
+    result = await run_task(
+        model, toolbox, "Work the plan", run_id="main-run", hooks=(*toolbox.turn_hooks(), closings)
+    )
+    assert (result.stopped, result.final_text) == ("answered", "End.")
+    assert closings.closings == ["End."]
+    summary = result.summaries["plans"]
+    assert summary["went_on"] == 2
+    first, second = (tuple(state) for state in summary["states"])
+    assert first != second
+    # Same plan, version and status revision; both steps' records in the progress cursor.
+    assert first[:3] == second[:3]
+    assert second[3] == first[3] + 2
+    assert plans_notice(model.requests[1][-1])["next_steps"] == ["step-0", "step-1", "step-2"]
+    after = plans_notice(model.requests[3][-1])
+    assert after["next_steps"] == ["step-1", "step-2"]
+    assert after["current"] == "in progress: step-1"
+    # The identity the bound shared with an answered root's continuation keys on moved too.
+    current = identity(_summary_at(f, second))
+    assert (
+        current
+        == json.dumps(second, separators=(",", ":"))
+        != json.dumps(first, separators=(",", ":"))
+    )
+    assert result.delivered["plans"] == {went_on_id(first), went_on_id(second)}
+
+
+def _summary_at(f, state):
+    """The current plan's summary, checked to be at ``state``."""
+    summary = f.core.summary(f.user)
+    assert summary is not None
+    assert (
+        summary.head.plan_id,
+        summary.head.version,
+        summary.status_revision,
+        summary.progress_cursor,
+        summary.event_cursor,
+    ) == state
+    return summary
+
+
+def _conforms(value, schema, defs) -> list[str]:
+    """Where ``value`` departs from the JSON schema ``schema``: the subset the plan tools'
+    schemas use (object properties, required, additionalProperties, arrays, anyOf, $ref,
+    enums and scalar types)."""
+    if "$ref" in schema:
+        return _conforms(value, defs[schema["$ref"].rsplit("/", 1)[-1]], defs)
+    if "anyOf" in schema:
+        if any(not _conforms(value, option, defs) for option in schema["anyOf"]):
+            return []
+        return [f"{value!r} matches no option"]
+    if "enum" in schema and value not in schema["enum"]:
+        return [f"{value!r} not in {schema['enum']}"]
+    if "const" in schema and value != schema["const"]:
+        return [f"{value!r} is not {schema['const']!r}"]
+    kind = schema.get("type")
+    if kind == "object":
+        if not isinstance(value, dict):
+            return [f"{value!r} is not an object"]
+        problems = [f"missing {key}" for key in schema.get("required", ()) if key not in value]
+        properties = schema.get("properties", {})
+        for key, item in value.items():
+            if key not in properties:
+                if schema.get("additionalProperties") is False:
+                    problems.append(f"unknown {key}")
+                continue
+            problems += [f"{key}: {p}" for p in _conforms(item, properties[key], defs)]
+        return problems
+    if kind == "array":
+        if not isinstance(value, list):
+            return [f"{value!r} is not an array"]
+        return [p for item in value for p in _conforms(item, schema.get("items", {}), defs)]
+    if kind == "null":
+        return [] if value is None else [f"{value!r} is not null"]
+    scalar = {"string": str, "integer": int, "boolean": bool}.get(kind or "")
+    if scalar is not None and not isinstance(value, scalar):
+        return [f"{value!r} is not {kind}"]
+    return []
+
+
+@pytest.mark.asyncio
+async def test_the_prompts_progress_call_is_one_the_tool_takes(fixture):
+    """The main prompt and the planning guidance word one plan_progress call: in the reply
+    whose call makes or reads the evidence, named by its path, finishing one step and
+    starting the next, with the counters the previous change's result gave. That call, as
+    the model would make it, fits the offered schema and is recorded."""
+    from sandbox_science.orchestrator.loop import SYSTEM_PROMPT
+
+    prompt = " ".join(SYSTEM_PROMPT.split())
+    assert "named by its path, finishing one step and starting the next in one plan_progress" in (
+        prompt
+    )
+    guidance = " ".join(GUIDANCE.split())
+    assert "Each plan change's result gives the counters and open steps the next change" in (
+        guidance
+    )
+    f = fixture
+    inventory, reference = recorded(f)
+    assert reference is not None
+    f.adapter.artifacts = inventory
+    created, _ = await call(
+        f, "plan_create", operation_id="create", body=body(count=2), reason="Initial"
+    )
+    activated, _ = await call(
+        f, "plan_activate", operation_id="activate", base=created["receipt"]["ref"],
+        reason="Begin", expected_status_revision=1, expected_progress_cursor=0,
+    )  # fmt: skip
+    standing = activated["plan"]
+    cursors = {s["step_id"]: s["step_cursor"] for s in standing["open_steps"]}
+    arguments = {
+        "operation_id": "table-done",
+        "base": standing["ref"],
+        "expected_status_revision": standing["status_revision"],
+        "steps": [
+            step(
+                "step-0",
+                cursors["step-0"],
+                "completed",
+                "The table reproduces",
+                evidence=[{"path": "results/table.csv"}],
+            ),
+            step("step-1", cursors["step-1"], "in_progress", "Checking the bound"),
+        ],
+        "purpose_note": "Record the table and start the bound",
+    }
+    (spec,) = (s for s in tools(f).specs if s.name == "plan_progress")
+    schema = spec.parameters
+    assert _conforms(arguments, schema, schema.get("$defs", {})) == []
+    del arguments["purpose_note"]  # the toolbox takes it before the plan tools see the call
+    result, _ = await call(f, "plan_progress", **arguments)
+    (resolved,) = result["evidence_resolved"]
+    assert (resolved["path"], resolved["artifact_id"]) == (
+        "results/table.csv",
+        reference.artifact_id,
+    )
+    assert result["plan"]["steps"] == {"completed": 1, "in_progress": 1}
+    assert [s["step_id"] for s in result["plan"]["open_steps"]] == ["step-1"]
+
+
+def _source(session="s"):
+    from .test_artifact_inventory import CONTEXT, SOURCE
+
+    return SOURCE.model_copy(
+        update={"context": CONTEXT.model_copy(update={"project_id": "p", "session_id": session})}
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["unkept", "other_session", "deleted"])
+async def test_an_exact_retry_is_its_receipt_whatever_became_of_its_paths(fixture, change):
+    """Round 3, A: a retry is looked up before any path is resolved again, so a file
+    that changed to something that cannot be pinned leaves the first receipt standing, for
+    one step, several steps and a finish."""
+    f = fixture
+    path = "shared/table.csv"
+    inventory, reference = recorded(f, path)
+    assert reference is not None
+    f.adapter.artifacts = inventory
+    ref, revision = await active(f)
+    one = {"operation_id": "one", "base": ref, "expected_status_revision": revision,
+           "step_id": "step-0", "expected_step_cursor": 0, "status": "completed",
+           "note": "Table", "evidence": [{"path": path}]}  # fmt: skip
+    first, _ = await call(f, "plan_progress", **one)
+    finish = {"operation_id": "finish", "base": ref, "expected_status_revision": revision,
+              "expected_progress_cursor": first["plan"]["progress_cursor"], "reason": "Done",
+              "outcome": {"status": "achieved", "summary": "Table", "evidence": [{"path": path}],
+                          "remaining_work": []}}  # fmt: skip
+    finished, _ = await call(f, "plan_finish", **finish)
+    if change == "unkept":
+        recorded(f, path, b"other", kept=False)
+    elif change == "other_session":
+        recorded(f, path, b"other", session="other", op="op-o")
+    else:
+        inventory.record_deletion(_source(), path)
+    again, _ = await call(f, "plan_progress", **one)
+    assert again["receipt"] == first["receipt"]
+    assert again["evidence_resolved"] == first["evidence_resolved"]
+    assert again["evidence_resolved"][0]["revision"] == reference.revision
+    done, _ = await call(f, "plan_finish", **finish)
+    assert done["receipt"] == finished["receipt"]
+    assert done["evidence_resolved"] == finished["evidence_resolved"]
+
+
+@pytest.mark.asyncio
+async def test_a_retry_of_several_steps_is_its_receipt_after_the_file_went(fixture):
+    f = fixture
+    inventory, _ = recorded(f)
+    f.adapter.artifacts = inventory
+    created, _ = await call(
+        f, "plan_create", operation_id="create", body=body(count=2), reason="Initial"
+    )
+    ref = created["receipt"]["ref"]
+    await call(
+        f, "plan_activate", operation_id="activate", base=ref, reason="Begin",
+        expected_status_revision=1, expected_progress_cursor=0,
+    )  # fmt: skip
+    steps = {"operation_id": "both", "base": ref, "expected_status_revision": 2,
+             "steps": [{"step_id": "step-0", "expected_step_cursor": 0, "status": "completed",
+                        "note": "A", "evidence": [{"path": "results/table.csv"}]},
+                       {"step_id": "step-1", "expected_step_cursor": 0, "status": "in_progress",
+                        "note": "B"}]}  # fmt: skip
+    first, _ = await call(f, "plan_progress", **steps)
+    inventory.record_deletion(_source(), "results/table.csv")
+    again, _ = await call(f, "plan_progress", **steps)
+    assert again["receipt"] == first["receipt"]
+    assert again["evidence_resolved"] == first["evidence_resolved"]
+
+
+@pytest.mark.asyncio
+async def test_only_the_platform_says_who_recorded_an_outcomes_evidence(fixture):
+    """Round 3, B: a finish's outcome may not name who recorded its evidence; its
+    artifact claims are checked against the inventory, and the platform names their
+    recorder, another session's too; the store refuses a recorder from any author."""
+    from sandbox_science.orchestrator.session_plans import PlanEvidence, PlanWriter
+
+    f = fixture
+    inventory, own = recorded(f)
+    _, theirs = recorded(f, "notes.csv", session="other", op="op-o")
+    assert own is not None
+    assert theirs is not None
+    f.adapter.artifacts = inventory
+    ref, revision = await active(f)
+    claimed = {"project_id": "p", "kind": "artifact", "reference_id": own.artifact_id,
+               "revision": own.revision, "sha256": own.sha256}  # fmt: skip
+    forged = {**claimed, "written_by": {"session_id": "s", "run_id": "run1",
+                                        "recorded_at": "2026-11-27T00:00:00+00:00"}}  # fmt: skip
+
+    def finishing(op, evidence, cursor=0):
+        return {"operation_id": op, "base": ref, "expected_status_revision": revision,
+                "expected_progress_cursor": cursor, "reason": "Done", "status": "abandoned",
+                "outcome": None} | ({"status": "completed", "outcome": {
+                    "status": "not_achieved", "summary": "S", "evidence": evidence,
+                    "remaining_work": ["All"]}} if evidence is not None else {})  # fmt: skip
+
+    for op, evidence, match in (
+        ("forged", [forged], "written_by is the platform's"),
+        ("missing", [{**claimed, "reference_id": "artifact-" + "0" * 24}], "revision"),
+        ("wrong", [{**claimed, "sha256": "0" * 64}], "has SHA-256"),
+    ):
+        with pytest.raises(DocumentError, match=match):
+            await call(f, "plan_finish", **finishing(op, evidence))
+    # The store refuses a recorder from an author whatever its route.
+    stated = PlanEvidence.model_validate_json(json.dumps(forged))
+    with pytest.raises(DocumentError, match="written_by is the platform's"):
+        f.core.set_status(
+            f.adapter.authority, "direct", PlanRef.model_validate(ref), revision, 0,
+            "completed", "Done",
+            outcome=GoalOutcome(status="not_achieved", summary="S", evidence=(stated,),
+                                remaining_work=("All",)),
+        )  # fmt: skip
+    with pytest.raises(DocumentError, match="written_by is the platform's"):
+        f.core.progress(
+            f.user, "user-direct", PlanRef.model_validate(ref), "step-0", 0, "completed", "N",
+            evidence=(stated,),
+        )  # fmt: skip
+    assert isinstance(stated.written_by, PlanWriter)
+    # Another session's revision is claimed by its ID, and named as theirs.
+    other = {**claimed, "reference_id": theirs.artifact_id, "revision": theirs.revision,
+             "sha256": theirs.sha256}  # fmt: skip
+    await call(
+        f, "plan_progress", operation_id="step", base=ref, expected_status_revision=revision,
+        step_id="step-0", expected_step_cursor=0, status="skipped", note="Not needed",
+    )  # fmt: skip
+    await call(f, "plan_finish", **finishing("theirs", [other], cursor=1))
+    (kept,) = f.core.current(f.user).head.outcome.evidence
+    assert (kept.written_by.session_id, kept.reference_id) == ("other", theirs.artifact_id)
+
+
+@pytest.mark.asyncio
+async def test_a_revision_of_the_plans_own_fields_is_shown_in_full(fixture):
+    """Round 3, D: another actor's revision that changes only the plan's outputs and
+    feasibility shows those fields as they now are, not only its reason."""
+    f = fixture
+    ref, _ = await active(f)
+    await read_and_deliver(f)
+    edited = body()
+    edited["feasibility"] = "Only seed 42 is feasible"
+    edited["outputs"] = (
+        {"title": "Table", "description": "Ranks by degree", "evidence_standard": "Exact"},
+    )
+    f.core.revise(
+        f.user, "fields", PlanRef.model_validate(ref), PlanBody.model_validate(edited), "Scope"
+    )
+    read, _ = await call(f, "plan_read")
+    changed = read["changed_by_others"]
+    assert changed["steps"] == []
+    assert changed["plan_fields"]["feasibility"] == "Only seed 42 is feasible"
+    assert changed["plan_fields"]["outputs"][0]["title"] == "Table"
+    assert "goal" not in changed["plan_fields"]
+
+
+@pytest.mark.asyncio
+async def test_changes_too_many_for_one_read_are_shown_in_parts_before_the_plan_is_read(
+    fixture,
+):
+    """Round 3, D: when others changed more steps than one read or notice can show, each
+    shows the next part in full, and the plan counts as read only once all were shown,
+    by reads and notices alike."""
+    f = fixture
+    created, _ = await call(
+        f, "plan_create", operation_id="create", body=body(count=60), reason="Initial"
+    )
+    ref = created["receipt"]["ref"]
+    await call(
+        f, "plan_activate", operation_id="activate", base=ref, reason="Begin",
+        expected_status_revision=1, expected_progress_cursor=0,
+    )  # fmt: skip
+    await read_and_deliver(f)
+    plan = PlanRef.model_validate(ref)
+    for i in range(60):
+        f.core.progress(f.user, f"pause-{i}", plan, f"step-{i}", 0, "blocked", f"{i} " + "n" * 3000)
+    seen: list[str] = []
+    notice = await f.adapter.safe_point()
+    part = notice.payload["changed_by_others"]
+    assert part["more"] > 0
+    assert part["steps"][0]["latest"]["note"].startswith("0 ")
+    assert notice.pin is None  # shown in part: its delivery reads nothing yet
+    seen += [s["step_id"] for s in part["steps"]]
+    await f.adapter.model_delivered()
+    while True:
+        read, _ = await call(f, "plan_read")
+        part = read["changed_by_others"]
+        seen += [s["step_id"] for s in part["steps"]]
+        await f.adapter.model_delivered()
+        if "more" not in part:
+            break
+        with pytest.raises(DocumentError, match="reread_required"):
+            await f.adapter.check_dispatch("effect")
+    assert sorted(seen) == sorted(f"step-{i}" for i in range(60))
+    assert len(seen) == len(set(seen))
+    await f.adapter.check_dispatch("effect")

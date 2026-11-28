@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Final, cast
 
 import pytest
 
@@ -113,7 +113,7 @@ def test_numbers_are_read_in_one_notation() -> None:
         assert numbers(written) == {"2^80"}, written
     assert numbers("1e24, 1.0E+24 and $10^{24}$, or 1e24.") == {"10^24"}
     assert numbers("1.2e-5 and $1.2 \\times 10^{-5}$ and 1.2·10^-5") == {"1.2e-5"}
-    assert numbers("80bit, AES-128, x₁, ١٢٣ and 0x50") == {"80", "128", "1", "123", "0x50"}
+    assert numbers("80bit, 128-bit, x₁, ١٢٣ and 0x50") == {"80", "128", "1", "123", "0x50"}
     assert unread("p = 17, 2^{80}") is None
     assert unread("the ① case") == "the ① case"
     # Low items of #457's re-check: other numerals, exponents that are no plain number,
@@ -122,6 +122,94 @@ def test_numbers_are_read_in_one_notation() -> None:
         assert unread(written) is not None, written
     assert numbers("1 000 003 and 1\u00a0000") == {"1000003", "1000"}
     assert unread("1 000 003, x^{n} and x^2") is None
+
+
+def test_numbers_in_names_and_standard_notations_are_not_measured_values() -> None:
+    """R10: the 16 of GF(16) is no measured value, nor are the numbers of a named
+    algorithm's parameter set, a standard, an ePrint report, a small place in a paper or a
+    date; a measured number beside them still is."""
+    for named in (
+        "GF(16)", "GF(2^8)", "GF(2⁸)", "F_16", "F_{2^8}", r"\mathbb{F}_{16}",
+        "SHA-256", "SHA3-256", "AES-128", "ML-KEM-768", "ML-DSA-65", "P-256", "Kyber512",
+        "X25519", "Ed448", "secp256k1", "M4RIE", "FIPS 203", "SP 800-38D", "RFC 8446",
+        "ePrint 2024/096", "Section 3", "Table 1", "Fig. 2", "Eq. (5)", "§4", "p. 12",
+        "line 43", "2026-11-27", "2026-11-27T08:49:33Z", "27 November 2026", "Nov 27, 2026",
+    ):  # fmt: skip
+        assert numbers(named) == set(), named
+        assert unread(named) is None, named
+    assert numbers("rank 16 over GF(16), Table 1 row 637") == {"16", "637"}
+    assert numbers("a 128-bit key for AES-128") == {"128"}
+    # What an observation shows counts whole: BKZ-60 backs a block size of 60, and a
+    # name's digits join no number beside it.
+    assert numbers("BKZ-60 ran out of time", named=True) == {"60"}
+    assert "256" in numbers("AES-128 256 keys were tried.", named=True)
+
+
+SMUGGLED: Final = (
+    ("The matrix has rank given in Table 1: 637.", "637"),
+    ("The rank is Rank637.", "637"),
+    ("Block size BKZ-60 suffices to recover the key.", "60"),
+    ("The Macaulay matrix has Size-4096 rows.", "4096"),
+    ("The rank, page 4096, exceeds the bound.", "4096"),
+    ("Sage reports line 25878 entries nonzero.", "25878"),
+    ("Kyber637 instance breaks.", "637"),
+    ("Over GF(637) the rank is full.", "637"),
+    ("N637 holds.", "637"),
+    ("Q-637 holds.", "637"),
+    ("Cost-637 holds.", "637"),
+    ("Time-128s holds.", "128"),
+    ("See line 4: 637.", "637"),
+    ("See pp. 12-637.", "637"),
+    ("See Section 3.2.637.", "3.2.637"),
+    ("See §637.", "637"),
+    ("Over F_637 it holds.", "637"),
+    ("Over Z_637 it holds.", "637"),
+    ("Measured 2637-11-27.", "2637"),
+    ("See ePrint 2637/637.", "637"),
+    ("Beullens Table 1 prints 673.", "673"),
+    # Round 3: a verb is no month, and a unit or count word after a standard's or a
+    # report's number makes it a value; a report's year and number are bounded.
+    ("An attacker may 2048 times retry.", "2048"),
+    ("RFC 4096 rows were filled.", "4096"),
+    ("ISO 4096 entries were filled.", "4096"),
+    ("IEEE 1024 bits were filled.", "1024"),
+    ("ePrint 2024/637 queries were made.", "637"),
+    ("See ePrint 2100/99999.", "99999"),
+)
+"""Measured values written inside a name or a place: each still needs backing."""
+
+
+def test_a_name_or_place_launders_no_measured_value(ledger: Ledger) -> None:
+    """The review of R10's fix: a value written as a name, after a place in a paper, or
+    as an implausible field, year or report is a value; an observed record whose only
+    anchor holds none of them is refused, naming it. The run's GF(16) proposal and F_16
+    in prose pass."""
+    said(ledger, result("The kernel answered.", call="call-u"))
+    observed = {**NEW["claim"], "basis": "observed", "fields": {"kind": "observation"},
+                "anchors": [{"call": "call-u"}]}  # fmt: skip
+    for n, (statement, number) in enumerate(SMUGGLED):
+        with pytest.raises(DocumentError, match="provenance_required") as error:
+            change(ledger, {**observed, "statement": statement}, op=f"s-{n}")
+        named = error.value.message.split(" observed, but ")[1].split(" in none")[0]
+        assert number in named.replace(" are", "").replace(" is", "").split(", "), statement
+    change(ledger, {**observed, "statement": "Over GF(16), and so over F_16, it holds."},
+           op="field")  # fmt: skip
+    change(ledger, {**observed, "statement": "In May 2026, RFC 8446 and FIPS 203 held."},
+           op="names")  # fmt: skip
+
+
+def test_a_claim_copied_from_its_observation_is_backed(ledger: Ledger) -> None:
+    """The review of R10's fix: a claim written as its observation shows it is backed,
+    though a name's digits stand beside a number there."""
+    for n, text in enumerate(
+        ("AES-128 256 keys were tried.", "ML-KEM-768 384 bytes were sent.",
+         "Over F_16 637 equations hold.", "Table 1 673 is printed.",
+         "Fig. 2 128 cores were used.")
+    ):  # fmt: skip
+        said(ledger, result(text, call=f"call-c{n}"))
+        change(ledger, {**NEW["claim"], "basis": "observed", "statement": text,
+                        "fields": {"kind": "observation"},
+                        "anchors": [{"call": f"call-c{n}"}]}, op=f"c-{n}")  # fmt: skip
 
 
 def test_an_agents_change_names_its_anchor_or_holds_evidence(ledger: Ledger) -> None:

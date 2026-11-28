@@ -34,13 +34,13 @@ from pydantic import JsonValue
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock
 
 from .aio import owned, threaded
-from .chat import SOURCE, session_lease
+from .chat import SOURCE, salvage_of, session_lease
 from .context.folding import FoldLifecycle
 from .context.history import Archive, Folder
 from .context.history.markers import Decided, current_decisions
 from .context.history.receipts import Receipts
 from .continuity.auto_continuation import AutoContinuation
-from .continuity.auto_recovery import AutoRecovery, mark_transient
+from .continuity.auto_recovery import AutoRecovery, interruption, mark_transient
 from .continuity.records import WorkRecords
 from .continuity.recovery import Recovery
 from .continuity.transient import Transient
@@ -447,6 +447,7 @@ class RunService:
                 "failure": record.failure,
                 "final_text": head_and_tail(record.final_text),
                 "record": run,
+                **salvage_of(record),
             }
         else:
             stopped = {
@@ -459,6 +460,15 @@ class RunService:
                 "final_text": None,
                 "record": None,
             }
+            lost = await threaded(interruption, self.stores.projects.control, project, session, run)
+            if lost is not None and stopped["stopped"] == "interrupted":
+                # Why the run was interrupted, as its environment claim saw it: a worker
+                # away past the outage window, which automatic recovery takes up once it
+                # answers (D100), or a claim the worker ended. A user's stop wins.
+                stopped["reason"] = lost.get("reason") or (
+                    "worker_unreachable" if lost.get("kind") == "worker_loss" else None
+                )
+                stopped["detail"] = lost.get("why")
         if hold:
             offered = await threaded(runs.offered_to, project, session, run)
             await threaded(runs.hold, project, session, offered)

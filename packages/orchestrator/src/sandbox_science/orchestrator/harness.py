@@ -65,6 +65,7 @@ from .context.history.limits import WorkingMemoryLimitError
 from .context.history.retention import fits
 from .context.history.snapshot import inline
 from .context.preparation import FoldLimits, HistoryScope, PreparedContext, prepare_context
+from .continuity.auto_recovery import mark_interrupted, mark_transient
 from .continuity.blueprints import Blueprint, Blueprints
 from .continuity.child_settlement import ChildSettlement
 from .continuity.hook import WorkHook
@@ -72,7 +73,8 @@ from .continuity.kernels import KernelJournal, LostKernels
 from .continuity.models import IntentModel, ModelIntents
 from .continuity.records import Ownership, WorkRecords, authority
 from .continuity.resources import ResourceRequests
-from .control import ControlError
+from .continuity.transient import classify
+from .control import ControlError, ControlStore
 from .control.errors import NOT_FOUND
 from .delegation import prompt as delegated_prompt
 from .delegation.child_inputs import InventoryContent
@@ -89,14 +91,14 @@ from .delegation.narrowing import Narrowing, of_brief
 from .delegation.outcome import Asked, Outcome, Target, asked_of, result_of
 from .delegation.records import DelegationRecords
 from .delegation.requests import ChildApproval, ChildRequests
-from .delegation.tracks import TrackTools, grant, stated_outputs
+from .delegation.tracks import TrackTools, grant, regrant, stated_outputs
 from .documents import DocumentError, DocumentStore, DocumentTool
 from .documents.tool import REQUESTS_TASK, WorkRequests
-from .environment_claim import environment_claim
+from .environment_claim import UNREACHABLE, ClaimLostError, environment_claim
 from .file_settings import ProjectFiles
 from .finalization import AttemptCompletion, AttemptFinalizer
 from .finalization import save as save
-from .hooks import Refusal, TurnHook
+from .hooks import Refusal, TurnHook, contribute
 from .jobs import JobTools, cancel_closed_jobs
 from .jobstate import JobState
 from .kernel_check import KernelCheck
@@ -146,6 +148,7 @@ from .projects import (
 from .question_tool import QuestionTool
 from .questions import Questions
 from .recording import FileRecorder, RecordedFiles
+from .repeated_notices import NoticesMayRepeat, repeated_after
 from .resource_hooks import Resources
 from .run_inputs import RecordInputs, RunInputs
 from .runstate import RunState
@@ -439,6 +442,11 @@ WITHHELD: Final = {"offered": False, "reason": "other_project"}
 deployment's connectors serve another project, which neither names."""
 
 
+NOT_OFFERED_CONNECTORS: Final = {"offered": False, "reason": "none"}
+"""What a run's record's ``summaries.connectors`` says when the run had no connector
+tools: the deployment has none, or none could be listed."""
+
+
 def withheld(mcp: McpAccess | None, project: str) -> bool:
     """Whether a run of ``project`` gets no connectors although the deployment has them:
     they serve another project. Its model is told so, and its records say why; a
@@ -567,6 +575,79 @@ async def admit(
         capabilities.kernel_reason,
         capabilities.job_profiles if "job_sandboxes" in capabilities.features else (),
     )
+
+
+class ClaimWatch:
+    """What a root's environment claim tells of the worker (``environment_claim``): that it
+    is away and until when the run waits for it, as the run's events say; and why the claim
+    was lost, which the run's ``stopped`` event says. Only a worker that did not answer
+    within the outage window, or a cause that is itself transient, marks the interruption
+    transient (D100), for automatic recovery to take up once the worker answers; a claim
+    the worker ended or refused leaves the tree to the user's Resume. A user's stop wins:
+    a run being stopped is marked neither way."""
+
+    def __init__(
+        self,
+        stores: Stores | None,
+        context: ExecutionContext,
+        name: str,
+        stop: asyncio.Event | None,
+        note: Callable[[str], None] | None = None,
+    ) -> None:
+        """``name`` is the run's, or a Resume's, which the interruption is recorded for;
+        ``note`` tells of an outage where there are no run events (a tree's Resume)."""
+        self.stores, self.context, self.name, self.stop = stores, context, name, stop
+        self.note = note
+        self.chat: RunChat | None = None
+        self.away: tuple[datetime, datetime | None] | None = None
+        """The outage the claim told of last, while it lasts."""
+        self._writes: set[asyncio.Task[None]] = set()
+
+    def attach(self, chat: RunChat | None) -> None:
+        """The run's events, once they can be written: an outage still on, and not told
+        yet, is told now."""
+        told, self.chat = self.chat is not None, chat
+        if self.away is not None and not told:
+            self.outage(*self.away)
+
+    def outage(self, since: datetime | None, until: datetime | None) -> None:
+        self.away = (since, until) if since is not None else None
+        if self.chat is None:
+            if self.note is not None:
+                self.note(
+                    f"the worker does not answer since {since.isoformat()}; waiting for it until "
+                    f"{until.isoformat() if until is not None else 'the window ends'}"
+                    if since is not None
+                    else "the worker answers again"
+                )
+            return
+        task = asyncio.get_running_loop().create_task(self.chat.worker_away(since, until))
+        self._writes.add(task)
+        task.add_done_callback(self._writes.discard)
+
+    async def join(self) -> None:
+        """Wait for the events ``outage`` began writing, at the run's end."""
+        if self._writes:
+            await asyncio.gather(*self._writes, return_exceptions=True)
+
+    def lost(self, reason: str, why: str, error: Exception) -> None:
+        if self.stores is None or (self.stop is not None and self.stop.is_set()):
+            return
+        context, name = self.context, self.name
+        control = self.stores.projects.control
+        kind = "worker_loss" if reason == UNREACHABLE else classify(error)
+        try:
+            if kind is not None:
+                mark_transient(
+                    control, context.project_id, context.session_id, name, kind,
+                    why=why, reason=reason,
+                )  # fmt: skip
+            else:
+                mark_interrupted(
+                    control, context.project_id, context.session_id, name, reason, why=why
+                )
+        except Exception:
+            _log.exception("the loss of run %s's environment claim was not recorded", name)
 
 
 @dataclass
@@ -888,7 +969,10 @@ class Harness:
         context = admitted.context
         role = self.role(admitted.request)
         model = self._reserved(
-            cached_for(role.model, context.project_id, context.session_id), role.alias
+            cached_for(
+                role.model, context.project_id, context.session_id, _cached_as(admitted.request)
+            ),
+            role.alias,
         )
         if self.stores is None or self.loop_runner is not run_task:
             return model
@@ -1034,6 +1118,17 @@ class Harness:
             async with AsyncExitStack() as stack:
                 stack.enter_context(profiles(admitted.request.model_profiles or {}))
                 with interruption.protect():
+                    watch = ClaimWatch(
+                        self.stores,
+                        admitted.context,
+                        run_name(admitted.started_at, admitted.run_id),
+                        stop,
+                    )
+                    # Its events tell of a worker away from the claim's first grant on: the
+                    # run's chat as admitted writes them until its view's is made.
+                    watch.attach(self.chat(admitted))
+                    # Its events are written before the run ends, after the claim's release.
+                    stack.push_async_callback(watch.join)
                     if (
                         admitted.stateful
                         and admitted.request.parent is None
@@ -1050,6 +1145,8 @@ class Harness:
                                     f"the project's policy changed to {revision}; "
                                     "this run continues under it"
                                 ),
+                                outage=watch.outage,
+                                lost=watch.lost,
                             )
                         )
                     if self.prepare_attempt is not None:
@@ -1064,6 +1161,7 @@ class Harness:
                         request = dataclasses.replace(admitted.request, history=view.messages)
                         admitted = dataclasses.replace(admitted, request=request)
                     chat = self.chat(admitted)
+                    watch.attach(chat)
                     if chat is not None and view is not None:
                         chat.shown = view.shown
                     delegations = await self._delegations(
@@ -1096,6 +1194,20 @@ class Harness:
                         if work is not None:
                             work.wake = child_wake
                     hooks = toolbox.turn_hooks()
+                    if (
+                        self.stores is not None
+                        and admitted.request.parent is None
+                        and (
+                            previous := await threaded(
+                                repeated_after,
+                                self.stores.projects.control,
+                                admitted.context.project_id,
+                                admitted.context.session_id,
+                            )
+                        )
+                    ):
+                        # Its first notice: the last run's notices may come again.
+                        hooks = (NoticesMayRepeat(previous), *hooks)
                     if work is not None:
                         owner = work.owner
                         for hook in hooks:
@@ -1235,6 +1347,9 @@ class Harness:
         except BaseException as error:
             if transcript is not None and user_cancelled(error, stop):
                 pass  # it came as the run closed: the run's own outcome stands
+            elif isinstance(error, ClaimLostError) and transcript is None:
+                # The claim cancelled the run's work to stop it: the loss is its end.
+                raise
             elif interruption.error is not None:
                 raise interruption.error from None
             elif isinstance(error, WorkingMemoryLimitError):
@@ -1246,7 +1361,9 @@ class Harness:
             else:
                 transcript.fail("cleanup")
         if withheld(self.mcp, admitted.context.project_id):
-            transcript.summaries["connectors"] = dict(WITHHELD)
+            contribute(transcript.summaries, "connectors", dict(WITHHELD))
+        else:
+            transcript.summaries.setdefault("connectors", dict(NOT_OFFERED_CONNECTORS))
         return Finished(
             admitted.run_id,
             admitted.context,
@@ -1297,7 +1414,12 @@ class Harness:
         def former(alias: str) -> ChatModel | None:
             if self.gateway is None or self.settings.skeleton_only:
                 return None
-            return cached_for(self.gateway.model(alias, role="fold").for_former(), project, session)
+            return cached_for(
+                self.gateway.model(alias, role="fold").for_former(),
+                project,
+                session,
+                _cached_as(request),
+            )
 
         name = run_name(admitted.started_at, admitted.run_id)
         return await prepare_context(
@@ -1392,9 +1514,13 @@ class Harness:
             role = self.role(request)
             if not isinstance(role.model, GatewayModel):
                 return None
-            own = cached_for(role.model, context.project_id, context.session_id)
+            own = cached_for(
+                role.model, context.project_id, context.session_id, _cached_as(request)
+            )
             return cast(GatewayModel, self._reserved(own, role.alias)).for_role("fold")
-        return self._reserved(cached_for(model, context.project_id, context.session_id), alias)
+        return self._reserved(
+            cached_for(model, context.project_id, context.session_id, _cached_as(request)), alias
+        )
 
     def _narrator(self, project: str, session: str, request: RunRequest) -> ChatModel | None:
         """The model that writes MAIN's folds' narratives: the setting's alias through
@@ -1458,13 +1584,15 @@ class Harness:
         ``outcome`` is the one its ``submit_result`` records into (``_outcome``)."""
         request = admitted.request
         if request.parent is not None and self.stores is not None:
+            track = await threaded(_granted_track, self.stores.projects.control, admitted)
             fence = await threaded(
                 ChildFence,
                 SessionPlans(self.stores.documents),
                 self.stores.projects,
                 admitted.context,
                 run_id=admitted.run_id,
-                granted=request.track[0] if request.track is not None else None,
+                granted=track[0] if track is not None else None,
+                track=track[1] if track is not None else None,
                 # It reads each connector tool's class as the host takes it at each call
                 # (D99, DA-7).
                 connectors=connectors.classed if connectors is not None else None,
@@ -1586,6 +1714,11 @@ class Harness:
             ),
             track_grant=(
                 functools.partial(_track_grant, SessionPlans(stores.documents), context)
+                if depth == 0
+                else None
+            ),
+            track_regrant=(
+                functools.partial(threaded, regrant, SessionPlans(stores.documents), context)
                 if depth == 0
                 else None
             ),
@@ -2307,6 +2440,8 @@ class Harness:
                 context,
                 run_id=run_id,
                 alias=alias,
+                clock=self.clock,
+                artifacts=inventory,
             )
             bundles.append(caps.plans(plans))
         # A main run asks the user and waits in the call; a delegated run that needs
@@ -2327,7 +2462,7 @@ class Harness:
         # executor.
         # A task on a track records its progress on that track's steps only (PD-9).
         tracks = None
-        if (track := admitted.request.track) is not None:
+        if (track := await threaded(_granted_track, stores.projects.control, admitted)) is not None:
             tracks = await threaded(
                 TrackTools,
                 SessionPlans(stores.documents),
@@ -2545,6 +2680,28 @@ async def _entry_made(ledger: Ledger, project: str, reference: str, work: frozen
         return any(record.record_id in work for record in page.records)
 
     return await threaded(look)
+
+
+def _granted_track(control: ControlStore, admitted: Admitted) -> tuple[PlanRef, str] | None:
+    """A task's plan version and track: the latest its track was granted again at when
+    its parent reopened it (``delegation_track_grants``), so that a resumed run keeps it,
+    or else its brief's. Call it in a thread."""
+    request = admitted.request
+    if request.track is None or request.delegation is None:
+        return request.track
+    context = admitted.context
+    stored = DelegationRecords(control).track_grant(
+        context.project_id, context.session_id, request.delegation
+    )
+    if stored is None or stored[2] != request.track[1]:
+        return request.track
+    return PlanRef(plan_id=stored[0], version=stored[1]), stored[2]
+
+
+def _cached_as(request: RunRequest) -> str | None:
+    """The delegation a run's calls share the prompt cache as, for a delegated run; a main
+    run's calls share the session's (CM-32)."""
+    return request.delegation if request.parent is not None else None
 
 
 async def _track_grant(plans: SessionPlans, context: ExecutionContext, track: str) -> PlanRef:

@@ -8,10 +8,17 @@ loop alone applies the delivery rules:
 - A notice's IDs count as delivered only after a model call that saw it returns.
 - The run's record is saved, naming each source's delivered IDs in
   ``RunRecord.delivered`` and its summary in ``RunRecord.summaries``, before any hook
-  acknowledges them. A hook that fails to acknowledge does not stop the others.
+  acknowledges them. A hook that fails to acknowledge does not stop the others. What a
+  hook contributes to the record is checked where it contributes it, never first at the
+  save: a notice whose source or IDs are not identifiers cannot be made (``Notice``), and
+  a summary that is not JSON under an identifier is refused (``contribute``).
 - At a closing answer, a hook gets another turn only while turns remain, and a
   response round only while response rounds remain, and either only with notices.
   Hooks check this too, before doing work for a turn that cannot come.
+- Before an answer with no tool call has its closing, a hook may offer to carry the run
+  past it to its next turn (``goes_on``), as an open plan does, and commits to the offer
+  only once the loop found room and no limit due for that turn (``went_on``): the answer
+  is then an ordinary message, never held, and no closing is asked.
 - At a limit, the run's last model call is its report round (``loop._report``): no hook
   offers notices before it but those it gives for that call (``report_notices``), after
   the report's own; it may call no tool (``tool_choice: none``), no tool it asks for all
@@ -26,6 +33,12 @@ hook is asked about a closing answer first, and again after every hook accepted 
 Leases are taken in hook order and released in reverse; each lease releases what it
 holds whatever happened to the others.
 
+A hook that fails at any of its points for a reason outside the agent's control, the
+worker unreachable or what it reads there gone (``unavailable``), never ends the run by
+itself (``guarded``): the point goes on as if the hook had nothing to say, the run's
+record names the gap (``summaries.hook_gaps``), and at a safe point the model is told
+what it means (``TurnHook.unread``). A closing in which such a hook fails still closes.
+
 A hook may also wrap each model call and each tool call (``wrap_model_call``,
 ``wrap_tool_call``), the first hook outermost, inside the loop's own wraps
 (``wraps.py``). Wraps run where the loop runs: a confined attempt's hooks are proxies
@@ -35,17 +48,29 @@ over a channel that carries none, so the host refuses a hook that overrides one
 
 from __future__ import annotations
 
+import copy
+import logging
+import re
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Final, Literal, Protocol, cast
+
+from pydantic import JsonValue, TypeAdapter, ValidationError
+
+from sandbox_science.contracts import ErrorKind, Identifier
+
+from .notices import HOOK_GAP, HOOK_GAP_ATTACHED
+from .worker_client import WorkerAPIError, WorkerProtocolError
 
 if TYPE_CHECKING:
     from .context.folding import ContextView
     from .model import Message, ModelTurn, ToolCall
     from .projects import ModelUsage, RunRecord
     from .tools import ToolOutcome
+
+_log = logging.getLogger(__name__)
 
 Point = Literal["start", "turn", "tool"]
 """``start``: once, before the first turn. ``turn``: before each model call.
@@ -75,6 +100,167 @@ decision's wait, measured from the start of ``halt``, plus a margin for the chec
 reads and the automatic decision, so that decision always answers first."""
 RESPONSE_ROUNDS: Final = 2
 """Closing answers a run may take back to respond to findings, whatever their source."""
+GAPS: Final = "hook_gaps"
+"""The notice source, and the run record's summary, of the points a hook could not read."""
+MAX_GAPS: Final = 50
+"""The most gaps a run's record names; the count goes on past it."""
+SALVAGED: Final = "record_salvaged"
+"""Where a record kept without what did not validate names what it left out; its
+``stopped`` event carries it too."""
+REFUSED: Final = "refused_contributions"
+"""Where a run's record names the summaries it refused (``contribute``)."""
+_IDENTIFIER: Final = TypeAdapter(Identifier)
+_JSON: Final = TypeAdapter(JsonValue)
+
+
+def identifier(value: str, what: str) -> str:
+    """``value``, which a run's record keeps as an ``Identifier``; a ``ValueError`` naming
+    ``what`` it is otherwise."""
+    try:
+        return _IDENTIFIER.validate_python(value)
+    except ValidationError:
+        raise ValueError(f"{what} {value!r} is not an identifier") from None
+
+
+def checked_ids(source: str, ids: Sequence[str]) -> tuple[str, ...]:
+    """A source's notice IDs, as a run's record keeps them under ``delivered``."""
+    identifier(source, "a notice source")
+    return tuple(identifier(item, f"a {source} notice ID") for item in ids)
+
+
+RECURSION: Final = "recursion_loop"
+"""The validation error of a value nested deeper than validation follows."""
+_GONE: Final = object()
+"""Marks what ``prune`` leaves out until it sweeps the value."""
+
+
+_TAGS: Final[dict[type, str]] = {dict: "dict", list: "list"}
+"""The union tags pydantic puts in an error's place before it goes into a JSON value's
+dictionary or list."""
+
+
+def _walk(value: object, loc: Sequence[str | int]) -> list[tuple[object, str | int]]:
+    """The containers and keys ``loc`` goes through in ``value``, against the value's own
+    types: a union's tag (``dict``, ``list``) is passed over only where it names the type
+    of the value it stands before and the step after it is that value's own, so that a key
+    named like a tag is still a key."""
+    steps = list(loc[:-1] if loc and loc[-1] == "[key]" else loc)
+    current: object = value
+    walked: list[tuple[object, str | int]] = []
+    i = 0
+    while i < len(steps):
+        step = steps[i]
+        following = steps[i + 1] if i + 1 < len(steps) else None
+        tag = _TAGS.get(type(current))
+        if step == tag and following is not None and _has(current, following):
+            i += 1  # the tag of the union this value is: the next step is the value's own
+            continue
+        if not _has(current, step):
+            break
+        walked.append((current, step))
+        current = (
+            cast(dict[str | int, object], current)[step]
+            if isinstance(current, dict)
+            else (cast(list[object], current)[cast(int, step)])
+        )
+        i += 1
+    return walked
+
+
+def _has(container: object, step: str | int) -> bool:
+    if isinstance(container, dict):
+        return step in container
+    if isinstance(container, list):
+        return isinstance(step, int) and 0 <= step < len(cast(list[object], container))
+    return False
+
+
+def mark_invalid(
+    value: object,
+    loc: Sequence[str | int],
+    *,
+    outermost: bool = False,
+    placeholder: object = None,
+) -> str | None:
+    """Mark for removal the innermost list element on ``loc``, a validation error's place
+    in ``value``, or, on a path with no list, its last dictionary entry: the path marked,
+    or ``None`` where the error has no element to remove. With ``outermost``, as for a
+    value nested past what validation follows, the outermost list element on the path is
+    marked instead. With ``placeholder``, nothing is removed: the invalid value itself, or
+    for a value nested too deep the entry of the outermost element that holds it, is
+    replaced by ``placeholder``, so that positions, and what pairs by them, stay."""
+    walked = _walk(value, loc)
+    if not walked:
+        return None
+    if placeholder is not None:
+        at = len(walked) - 1
+        if outermost:
+            lists = [n for n, (c, _) in enumerate(walked) if isinstance(c, list)]
+            at = min(lists[0] + 1, len(walked) - 1) if lists else at
+        chosen, fill = walked[: at + 1], placeholder
+    else:
+        lists = [n for n, (c, _) in enumerate(walked) if isinstance(c, list)]
+        at = (lists[0] if outermost else lists[-1]) if lists else len(walked) - 1
+        chosen, fill = walked[: at + 1], _GONE
+    container, key = chosen[-1]
+    if isinstance(container, list):
+        cast(list[object], container)[cast(int, key)] = fill
+    else:
+        cast(dict[str | int, object], container)[key] = fill
+    return ".".join(str(k) for _, k in chosen)
+
+
+def sweep_marked(value: object) -> object:
+    if isinstance(value, dict):
+        return {
+            k: sweep_marked(v)
+            for k, v in cast(dict[object, object], value).items()
+            if v is not _GONE
+        }
+    if isinstance(value, list):
+        return [sweep_marked(v) for v in cast(list[object], value) if v is not _GONE]
+    return value
+
+
+def prune(value: object, error: ValidationError) -> tuple[object, list[str]]:
+    """``value`` without exactly the elements ``error`` found invalid, each list element or
+    dictionary entry by its own place, never its neighbours; and those places. ``value``
+    is copied first."""
+    found = copy.deepcopy(value)
+    paths = [
+        p
+        for e in error.errors()
+        if (p := mark_invalid(found, e["loc"], outermost=e["type"] == RECURSION)) is not None
+    ]
+    return sweep_marked(found), paths
+
+
+def contribute(summaries: dict[str, Any], name: str, value: object) -> None:
+    """Keep a hook's summary in a run's ``summaries`` under its name: what of it is not
+    JSON is left out, element by element, logged, and named under ``REFUSED``, so that a
+    summary that cannot be kept never costs the run its record; one under a name that is
+    not an identifier is refused whole."""
+    try:
+        identifier(name, "a summary's name")
+    except ValueError as error:
+        _log.error("the %s summary is refused: %s", name[:128], error)
+        summaries.setdefault(REFUSED, {})[name[:128]] = str(error)[:300]
+        return
+    for _ in range(4):
+        try:
+            summaries[name] = _JSON.validate_python(value)
+            return
+        except ValidationError as error:
+            value, paths = prune(value, error)
+            _log.error("the %s summary is kept without %s", name, ", ".join(paths)[:300])
+            left = summaries.setdefault(REFUSED, {}).setdefault(name, [])
+            left.extend(paths[:50])
+            if not paths:
+                break
+        except RecursionError as error:
+            summaries.setdefault(REFUSED, {})[name] = str(error)[:300]
+            return
+    summaries.setdefault(REFUSED, {})[name] = "it could not be kept as JSON"
 
 
 @dataclass(frozen=True)
@@ -93,6 +279,10 @@ class Notice:
     framing: str
     payload: object
     user: bool = False
+
+    def __post_init__(self) -> None:
+        # Its IDs go into the run's record as delivered: one it cannot keep is refused here.
+        checked_ids(self.source, self.ids)
 
 
 @dataclass(frozen=True)
@@ -224,6 +414,10 @@ class RunView(Protocol):
 
     def delivered_ids(self, source: str) -> AbstractSet[str]: ...
 
+    def note_gap(self, gap: dict[str, str]) -> None:
+        """Keep, for the run's record, that a hook could not be read at a point."""
+        ...
+
 
 class TurnHook:
     """One subsystem's part in a run. Every method has a default that does nothing."""
@@ -231,6 +425,12 @@ class TurnHook:
     name: str = "hook"
     veto: bool = False
     """Asked about a closing answer before the others, and again once they accept it."""
+    environment_id: str | None = None
+    """The run's environment, which the hook reads: the worker's answer that it no longer
+    has it is outside the agent's control (``unavailable``)."""
+    unread: str = "its notices could not be read now; they come at a later point"
+    """What a run is told of this hook's failure at a point (``guarded``): what it means
+    for the run's work."""
 
     @property
     def holds_answers(self) -> bool:
@@ -308,6 +508,23 @@ class TurnHook:
         """After each tool call that ran, with the outcome the transcript keeps, in the
         reply's order whatever order its calls ended in."""
 
+    async def goes_on(self, run: RunView, answer: str) -> Sequence[Notice]:
+        """Before the closing of an answer with no tool call, once the model call that gave
+        it returned and before ``model_returned``: the notices that would carry the run on
+        to its next turn instead, when work this hook governs remains, as an active plan's
+        workable steps do (``plan_tools.Plans``). An offer only, which spends nothing: the
+        loop settles the run's room and limits, then asks ``went_on``. None to let the
+        closing decide."""
+        return ()
+
+    async def went_on(self, run: RunView, notices: Sequence[Notice]) -> bool:
+        """The loop takes this hook's offer from ``goes_on``, the run having room and no
+        limit due for its next turn: whether the hook commits to it, spending what bounds
+        it. Only then is the answer the user's to see at once, as a message, with no
+        closing asked, so no hook holds or reviews it; otherwise the answer has its
+        closing as any other. A hook that overrides ``goes_on`` overrides this too."""
+        return False
+
     async def closing(self, run: RunView, answer: str | None) -> Closing:
         return Closing()
 
@@ -327,6 +544,84 @@ class TurnHook:
 
     async def acknowledge(self, record: RunRecord) -> None:
         """After the record is saved: settle what it names as delivered."""
+
+
+ENVIRONMENT_GONE: Final = re.compile(r"^no environment '([^']+)'$")
+"""The worker's answer for an environment it does not have for the caller (W/app.py): for
+the run's own environment, one given up as its sandbox was deleted under the run. The
+worker gives the same text for another project's, a job sandbox's or another session's
+environment, so it counts only for the run's own (``unavailable``)."""
+
+
+def unavailable(error: BaseException, environment: str | None = None) -> bool:
+    """Whether a hook's failure is outside the agent's control, and so one the run goes on
+    past (``guarded``). Only these shapes are:
+
+    - a ``TimeoutError``: a read the worker did not answer in time;
+    - a ``WorkerAPIError`` of kind ``unavailable``: the worker unreachable, or answering
+      that it cannot serve now (a proxy's 502/503/504 before it among them);
+    - a ``WorkerAPIError`` of kind ``not_found`` that the worker answered over HTTP (it has
+      a status) naming ``environment``, the run's own, as one it no longer has
+      (``ENVIRONMENT_GONE``).
+
+    Any other error is the hook's own or the platform's integrity failing, which still
+    ends the run: a worker of another protocol version (releases are lockstep), an owner
+    or identity check the harness makes itself, a control-store read, a scope refusal
+    naming another environment."""
+    if isinstance(error, TimeoutError):
+        return True
+    if not isinstance(error, WorkerAPIError) or isinstance(error, WorkerProtocolError):
+        return False
+    if error.kind is ErrorKind.UNAVAILABLE:
+        return True
+    gone = ENVIRONMENT_GONE.match(error.message)
+    return (
+        error.kind is ErrorKind.NOT_FOUND
+        and error.status is not None
+        and environment is not None
+        and gone is not None
+        and gone[1] == environment
+    )
+
+
+def gap(hook: TurnHook, point: str, run: RunView, error: BaseException) -> Notice:
+    """Note in the run's record that ``hook`` could not be read at ``point``, and the
+    notice that tells the model so: at the ``tool`` point, under its key beside the
+    result."""
+    said = str(error)[:300] or type(error).__name__
+    _log.warning("the %s hook failed at %s, and the run goes on: %s", hook.name, point, said)
+    run.note_gap({"source": hook.name, "point": point, "error": said})
+    framing = HOOK_GAP_ATTACHED if point == "tool" else HOOK_GAP
+    return Notice(
+        GAPS,
+        (),
+        framing.text,
+        {"source": hook.name, "point": point, "error": said, "unread": hook.unread},
+    )
+
+
+async def guarded[T](hook: TurnHook, point: str, run: RunView, call: Awaitable[T], default: T) -> T:
+    """``call``, one of ``hook``'s methods at ``point``, or ``default`` when it fails for a
+    reason outside the agent's control (``unavailable``), its gap noted (``gap``); any
+    other failure is the hook's own fault, and is raised."""
+    try:
+        return await call
+    except Exception as error:
+        if not unavailable(error, hook.environment_id):
+            raise
+        gap(hook, point, run, error)
+        return default
+
+
+async def offered(hook: TurnHook, point: Point, run: RunView) -> tuple[Notice, ...]:
+    """``hook``'s notices at ``point``; when it fails for a reason outside the agent's
+    control, the notice that it could not be read (``gap``), and the point goes on."""
+    try:
+        return tuple(await hook.notices(point, run))
+    except Exception as error:
+        if not unavailable(error, hook.environment_id):
+            raise
+        return (gap(hook, point, run, error),)
 
 
 def overrides(hook: TurnHook, name: str) -> bool:

@@ -195,7 +195,16 @@ PAGE: Final = 200
 
 MessageState = Literal["queued", "delivered", "refused", "held"]
 EventKind = Literal[
-    "started", "user", "model", "assistant", "tool", "notice", "waiting", "stopped", "fold"
+    "started",
+    "user",
+    "model",
+    "assistant",
+    "tool",
+    "notice",
+    "waiting",
+    "stopped",
+    "fold",
+    "model_profile",
 ]
 
 

@@ -60,6 +60,10 @@ from .loop_harness import (
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
+from .test_consistency import store as store
+from .test_delegation import delegating as delegating
+from .test_delegation import started, submitted, wait
+from .test_delegation_tasks import DONE
 from .test_model_limits import Waits
 
 KEY = "test-secret-responses-gateway-key"
@@ -932,6 +936,34 @@ async def test_every_call_of_a_session_sends_the_sessions_cache_key(harness: Har
         wire(body)
 
 
+async def test_a_delegated_run_has_a_cache_key_of_its_own(delegating: Harness) -> None:
+    """R6: a delegated run, working while its parent does, calls under its delegation's
+    key; the session's main runs keep the session's, so a later main run reuses an
+    earlier one's prefix."""
+    options = ["--api", "main=responses"]
+    root = await delegating.run(
+        "root",
+        [Reply(calls=[call("delegate", task="Tabulate a^16 mod 17.")]), wait(), Reply("Done.")],
+        delegated=submitted(DONE, "Done."),
+        options=options,
+    )
+    await delegating.run("later", [Reply("Again.")], options=options)
+    (delegation_id,) = started(root)
+    keys = [json.loads(raw)["prompt_cache_key"] for raw in delegating.gateway.raw]
+    session, child = (
+        session_cache_key(PROJECT, SESSION),
+        session_cache_key(PROJECT, SESSION, delegation_id),
+    )
+    assert child != session
+    assert child.startswith("ss-")
+    assert len(child) == len(session)
+    # The child's two calls under its key, every main run's under the session's, the
+    # later run's last.
+    assert set(keys) == {session, child}
+    assert keys.count(child) == 2
+    assert keys[-1] == keys[0] == session
+
+
 def test_a_sessions_key_is_its_own_stable_and_short() -> None:
     key = session_cache_key("project", "session")
     assert key == session_cache_key("project", "session")
@@ -975,6 +1007,38 @@ async def test_a_model_made_for_a_session_sends_its_key_and_the_others_none(
     assert fake.bodies[-1]["tool_choice"] == "none"
     scripted = Scripted()
     assert cached_for(scripted, "p", "s") is scripted
+
+
+async def test_each_review_sends_a_cache_key_of_its_own(
+    fake: Fake, gpt: ResponsesModel, store: Any
+) -> None:
+    """CR-49: a review's calls each send the conversation the one before sent, and more,
+    so they share one ``prompt_cache_key``, the review's: the same for every call of the
+    review, different for another review and from the session's."""
+    from sandbox_science.orchestrator.consistency.runner import ReviewerRunner
+    from sandbox_science.orchestrator.model import review_cache_key
+
+    from .test_consistency import claim, dispatch
+
+    reviews, _, _ = store
+    claim(reviews)
+    first = dispatch(reviews, "checkpoint")
+    reviews.finish("p", "s", first, "owner", "passed", "Checked.")
+    claim(reviews, "The order is 8.", "m2")
+    second = dispatch(reviews, "checkpoint")
+    messages: list[Message] = [
+        {"role": "system", "content": SYSTEM},
+        {"role": "user", "content": TASK},
+    ]
+    for review in (first, first, second):
+        runner = ReviewerRunner(reviews, "p", "s", review, "owner", gpt)
+        assert runner.model is not None
+        fake.then(response(said("ok")))
+        await runner.model.complete(messages, TOOLS)
+    keys = [body["prompt_cache_key"] for body in fake.bodies]
+    assert keys[0] == keys[1] == review_cache_key("p", "s", first)
+    assert keys[2] == review_cache_key("p", "s", second) != keys[0]
+    assert session_cache_key("p", "s") not in keys
 
 
 class Scripted:

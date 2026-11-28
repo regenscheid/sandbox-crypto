@@ -194,7 +194,22 @@ export interface FinalReviewSummary {
   fixes_claimed?: number;
   reviewed_through?: number;
   feed_end?: number;
-  unreviewed?: { start: number; end: number }[];
+  /** The ranges left unreviewed, the first 16, each with its new items and why. */
+  unreviewed?: { start: number; end: number; items?: number; reasons?: string[] }[];
+  /** The session's new items by how the reviews read them: whole, in part, or with
+   * nothing to read; how many no review covered; how many predate recorded coverage.
+   * The position reviewed up to is no measure. */
+  items?: {
+    total: number;
+    reviewed: number;
+    read_in_part?: number;
+    not_read?: number;
+    unreviewed: number;
+    not_recorded: number;
+    working_files_deleted?: number;
+  };
+  /** Deleted working files the run's commands made, which had nothing to read. */
+  working_files_deleted?: number;
   unreviewed_ranges?: number;
   /** Positions up to here were reviewed before reviews recorded their coverage. */
   not_recorded_through?: number | null;

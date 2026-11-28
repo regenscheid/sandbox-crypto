@@ -374,6 +374,49 @@ describe("a session's chat, polled", () => {
 });
 
 describe('the transcript of a run', () => {
+  it('says when a run was interrupted for a reason, and when its record was salvaged', () => {
+    expect(
+      stoppedText({
+        stopped: 'interrupted',
+        reason: 'environment_claim_ended',
+        detail: 'its sandbox was replaced',
+      }),
+    ).toContain('Reason: environment claim ended: its sandbox was replaced.');
+    expect(
+      stoppedText({
+        stopped: 'answered',
+        record_salvaged: { left_out: ['delivered.jobs.1'] },
+      }),
+    ).toContain('kept without what did not validate (1 item)');
+    const minimal = stoppedText({
+      stopped: 'answered',
+      record_salvaged: { left_out: ['messages'], minimal: true, notices_may_repeat: true },
+    });
+    expect(minimal).toContain('Only a minimal record of the run could be kept');
+    expect(minimal).toContain('may come again');
+  });
+
+  it('says when the worker does not answer and when it answers again', () => {
+    expect(
+      chatEntries([
+        event(1, 'waiting', {
+          worker: 'unreachable',
+          since: '2026-11-27T20:07:48+00:00',
+          until: '2026-11-27T20:12:18+00:00',
+        }),
+        event(2, 'waiting', { worker: null }),
+      ]),
+    ).toEqual([
+      {
+        kind: 'note',
+        seq: 1,
+        text: 'The worker does not answer since 20:07:48 UTC; the run waits for it until 20:12:18 UTC, then stops and resumes once the worker is back.',
+        problem: true,
+      },
+      { kind: 'note', seq: 2, text: 'The worker answers again; the run goes on.', problem: false },
+    ]);
+  });
+
   it('shows the start and end of a parent waiting for delegated work', () => {
     expect(
       chatEntries([
@@ -403,6 +446,25 @@ describe('the transcript of a run', () => {
     expect(
       chatEntries([event(1, 'notice', { source: 'resources', ids: ['resource-1'], text: said })]),
     ).toEqual([{ kind: 'note', seq: 1, text: said, problem: false }]);
+  });
+
+  it('shows no notice recorded only to be counted, nor a model profile', () => {
+    const entries = chatEntries([
+      event(1, 'notice', { source: 'plans', ids: [], framing: 'sandbox-notice-plans-3' }),
+      event(2, 'notice', { source: 'review-counts', ids: [] }),
+      event(3, 'model_profile', { source: 'model_profile', kind: 'main' }),
+      event(4, 'notice', { source: 'jobs', ids: ['j1'] }),
+    ]);
+    expect(entries.map((entry) => entry.seq)).toEqual([4]);
+  });
+
+  it('shows the plans notice that carried the run past an answer', () => {
+    const said = 'The agent answered while the session plan has steps it can still work.';
+    const entries = chatEntries([
+      event(1, 'notice', { source: 'plans', ids: [], framing: 'sandbox-notice-plans-3' }),
+      event(2, 'notice', { source: 'plans', ids: ['plan-open-0123456789abcdef'], text: said }),
+    ]);
+    expect(entries).toEqual([{ kind: 'note', seq: 2, text: said, problem: false }]);
   });
 
   it('shows what each event says, as text', () => {

@@ -185,6 +185,10 @@ class ModelUsage(Contract):
     gateway_version: str | None = Field(default=None, max_length=128)
     """The gateway's version, as its ``x-litellm-version`` header named it
     (docs/specs/context-management.md, CM-39); null when it sent none."""
+    upstream: dict[str, str] | None = Field(default=None, max_length=8)
+    """Which upstream deployment served the call, as the gateway's headers named it
+    (``model.upstream_of``: its model ID, its region, and the fallbacks and retries it
+    tried); null when they said nothing of it."""
     thinking_replay: str | None = Field(default=None, max_length=300)
     """Whether the call sent Claude's thinking back: ``on``, or ``off:`` and why (CM-39);
     null for a client without thinking replay."""
@@ -203,6 +207,18 @@ class ModelUsage(Contract):
     """How long the call took, in milliseconds: by a monotonic clock where the call was
     made (a run's own calls), or else the control store's time from the call's intent to
     its observed usage (``continuity.models.observed``); null in older records."""
+    prepared_ms: int | None = Field(default=None, ge=0)
+    """The platform's own time before the call, in milliseconds, where the loop ran: from
+    the start of its turn, through the hooks before the call and the call's intent, to its
+    request (``loop._attempt``). A report round taken at a turn's start, at a limit, is
+    timed from that turn's start, its limit checks and report notices included; one the
+    runaway guard took after a turn's tool calls began no turn, and is null, as in older
+    records."""
+    recorded_ms: int | None = Field(default=None, ge=0)
+    """The platform's own time after the previous call, in milliseconds: from its answer
+    to the start of this call's turn, less the time its tool calls ran, which is their
+    results' notices, records and observers (``loop._run_task``); null for a run's first
+    call, for a report round the runaway guard took, and in older records."""
 
 
 def _summary(value: JsonValue | None) -> dict[str, JsonValue]:
@@ -846,29 +862,10 @@ class ProjectStore:
         return self.control.missing or not self.control.path.exists()
 
     def _project(self, db: sqlite3.Connection, project_id: str) -> ProjectRecord:
-        row = db.execute(
-            "SELECT project_id, profile, policy, default_environment_id, created_at, updated_at "
-            "FROM projects WHERE project_id = ?",
-            (project_id,),
-        ).fetchone()
-        if row is None:
+        found = stored_project(db, project_id)
+        if found is None:
             raise self._absent(project_id)
-        sessions = {
-            found[0]: dict(zip(_SESSION_COLUMNS, found, strict=True))
-            for found in db.execute(
-                "SELECT session_id, environment_id, dedicated, opened_at, closed_at, "
-                "kernel_notice_lifetime FROM sessions WHERE project_id = ? ORDER BY rowid",
-                (project_id,),
-            )
-        }
-        try:
-            return ProjectRecord.model_validate(
-                {**dict(zip(_PROJECT_COLUMNS, row, strict=True)), "sessions": sessions}
-            )
-        except ValidationError as exc:
-            raise ProjectError(
-                ErrorKind.INTERNAL, f"project record {project_id} is damaged: {str(exc)[:300]}"
-            ) from exc
+        return found
 
     @staticmethod
     def _put_session(
@@ -919,6 +916,34 @@ class ProjectStore:
             return SessionRecord.model_validate(fields)
         except ValidationError as exc:
             raise ProjectError(ErrorKind.INVALID_REQUEST, str(exc)[:500]) from exc
+
+
+def stored_project(db: sqlite3.Connection, project_id: str) -> ProjectRecord | None:
+    """A project's record as the control store keeps it, read in the caller's open
+    transaction; ``None`` when it has none. A damaged record raises ``ProjectError``."""
+    row = db.execute(
+        "SELECT project_id, profile, policy, default_environment_id, created_at, updated_at "
+        "FROM projects WHERE project_id = ?",
+        (project_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    sessions = {
+        found[0]: dict(zip(_SESSION_COLUMNS, found, strict=True))
+        for found in db.execute(
+            "SELECT session_id, environment_id, dedicated, opened_at, closed_at, "
+            "kernel_notice_lifetime FROM sessions WHERE project_id = ? ORDER BY rowid",
+            (project_id,),
+        )
+    }
+    try:
+        return ProjectRecord.model_validate(
+            {**dict(zip(_PROJECT_COLUMNS, row, strict=True)), "sessions": sessions}
+        )
+    except ValidationError as exc:
+        raise ProjectError(
+            ErrorKind.INTERNAL, f"project record {project_id} is damaged: {str(exc)[:300]}"
+        ) from exc
 
 
 def recorded(state_dir: Path, project_id: str) -> ProjectRecord:

@@ -387,6 +387,15 @@ class Settings(_Model):
     """Keep each project's ``shared/`` area in step across its environments (D79)."""
     document_catalog: CatalogLimits = Field(default_factory=CatalogLimits)
     """Durable catalog budgets; environment publication remains disabled."""
+    job_restarts: bool = True
+    """Start a lost background job that asked for ``restart`` again (job restarts). Off,
+    ``start_job`` with ``restart`` is refused, and a job's attempt that waits for its
+    environment ends ``lost`` when it would be dispatched, after a restart of the worker too."""
+    job_restarts_unisolated: bool = False
+    """On the local backend, allow ``restart`` for development: a lost attempt's process
+    that left its session and cleared its environment can outlive the daemon there, and run
+    beside the next attempt. Elsewhere the platform recycles the sandbox's VM, which ends
+    every process of a lost daemon."""
     kernel_idle_timeout: Annotated[float, Field(gt=0)] | None = None
     """Stop a kernel nobody has used for this many seconds; its session's next cell reports
     the lost state. Unset keeps kernels until they are closed, restarted or die."""

@@ -41,11 +41,13 @@ from pydantic import JsonValue
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ExecutionContext, wait_or_sleep
 
-from .aio import threaded
+from .aio import owned, threaded
+from .context.history.archive import body
 from .control import ControlError
 from .control.errors import CONFLICT
-from .hooks import Closing, Effect, Notice, Point, Refusal, RunView, TurnHook
-from .notices import PLATFORM_INPUT, REDELIVERED
+from .hooks import SALVAGED, Closing, Effect, Notice, Point, Refusal, RunView, TurnHook
+from .notices import PLANS, PLATFORM_INPUT, REDELIVERED, REVIEW_COUNTS, Framing
+from .plan_tools import Plans
 from .projects import ModelUsage, RunRecord
 from .purpose import purpose_of, without
 from .run_timing import TIMING_KEYS
@@ -189,12 +191,33 @@ class RunChat:
                 },
             )
 
+    async def worker_away(self, since: datetime | None, until: datetime | None) -> None:
+        """The worker stopped answering at ``since``, and the run waits for it until
+        ``until``; or it answers again (``None``)."""
+        if since is None:
+            await self.write("waiting", {"worker": None})
+        else:
+            await self.write(
+                "waiting",
+                {
+                    "worker": "unreachable",
+                    "since": since.isoformat(),
+                    "until": until.isoformat() if until is not None else None,
+                },
+            )
+
     async def waiting(self, wait: dict[str, object] | None) -> None:
         """A job wait began, or ended (``None``)."""
         if wait is None:
             await self.write("waiting", {"job_ids": None, "mode": None})
         else:
             await self.write("waiting", {"job_ids": wait["job_ids"], "mode": wait["mode"]})
+
+
+def salvage_of(record: RunRecord) -> dict[str, JsonValue]:
+    """What a ``stopped`` event says of a record kept without what did not validate."""
+    found = record.summaries.get(SALVAGED)
+    return {SALVAGED: found} if isinstance(found, dict) else {}
 
 
 async def _held(chat: RunChat) -> bool:
@@ -331,12 +354,22 @@ def _notice(message: ChatMessage, shown: Mapping[str, str]) -> Notice:
 
 HELD: Final = "The agent's answer is being reviewed; it is shown when the review ends."
 """The run's event for a closing answer kept from the user while its final review runs."""
+WENT_ON: Final = (
+    "The agent answered while the session plan has steps it can still work, so the run "
+    "goes on with them."
+)
+"""The run's event for a plans notice that carried the run past an answer
+(``plan_tools.Plans.goes_on``): the answer was a message, not the run's end."""
 HOLD_ENDED: Final = (
     "The review did not finish within the hold's limit; this is the agent's answer as it "
     "was before the review."
 )
 """The run's event before an answer ``hold``'s limit released while the agent answered
 its review's findings (CR-48)."""
+UNNAMED_NOTICES: Final[tuple[Framing, ...]] = (PLANS, REVIEW_COUNTS)
+"""The notices that name no IDs, the plan and the review counts, which the run's events
+record each time the run is given one, by their framing (``source`` its ID), so that
+they can be counted."""
 
 
 class EventLog(TurnHook):
@@ -398,6 +431,7 @@ class EventLog(TurnHook):
                 "failure": record.failure,
                 "final_text": record.final_text,
                 "record": self.chat.run,
+                **salvage_of(record),
             },
         )
 
@@ -449,6 +483,9 @@ class EventLog(TurnHook):
                 for message_id in new:
                     text = chat.texts.get(message_id, "")
                     await chat.write("user", {"message_id": message_id, "text": text})
+            elif source == Plans.name:
+                # The plan carried the run past an answer, which the user has seen already.
+                await chat.write("notice", {"source": source, "ids": new, "text": WENT_ON})
             else:
                 await chat.write("notice", {"source": source, "ids": new})
         if self.kept is not None and run is not None and not run.holding:
@@ -478,6 +515,17 @@ class EventLog(TurnHook):
                 return
             if message.get("role") == "assistant":
                 await self._reply(message, usage)
+            elif message.get("role") == "user":
+                content = message.get("content")
+                said = body(content) if isinstance(content, str) else ""
+                found = next(
+                    (framing for framing in UNNAMED_NOTICES if said.startswith(framing.text)),
+                    None,
+                )
+                if found is not None:
+                    await chat.write(
+                        "notice", {"source": found.id, "ids": [], "framing": found.version}
+                    )
             elif message.get("role") == "tool":
                 record: Mapping[str, Any] = tools[self.calls] if self.calls < len(tools) else {}
                 self.calls += 1
@@ -650,6 +698,10 @@ async def session_lease(
         ) from None
     finally:
         stopping.set()
-        with contextlib.suppress(Exception):
-            await renewing
-        await threaded(state.release, project, session, holder)
+        try:
+            # Owned: a holder cancelled as it leaves, as a stopping service cancels a run
+            # that is just ending, still waits for the renewal and releases the lease.
+            with contextlib.suppress(Exception):
+                await owned(renewing)
+        finally:
+            await threaded(state.release, project, session, holder)

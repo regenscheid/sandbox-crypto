@@ -386,3 +386,70 @@ def test_an_unsaved_runs_cost_is_its_started_roles(tmp_path: Path) -> None:
         assert state.model_costs("p", now + timedelta(hours=1)) == {}
     finally:
         projects.close()
+
+
+def test_a_store_from_before_model_profile_events_keeps_its_events_and_takes_them(
+    tmp_path: Path,
+) -> None:
+    """Version 93: the run events table is made again with ``model_profile`` among its
+    kinds (R13), its other rows, indexes and triggers as they were; an older model
+    profile row, a notice with that source, takes the new kind."""
+    path = store_path(tmp_path)
+
+    def attached(db: sqlite3.Connection) -> list[tuple[str, str]]:
+        return sorted(
+            db.execute(
+                "SELECT type,name FROM sqlite_master WHERE tbl_name='run_events' "
+                "AND type IN ('index','trigger')"
+            ).fetchall()
+        )
+
+    with at_version(before(migrations._model_profile_events)):
+        projects, state = store(tmp_path)
+        state.append("p", "s", "r", "started", {"run_id": "r"})
+        state.append("p", "s", "r", "notice", {"source": "model_profile", "kind": "main"})
+        state.append("p", "s", "r", "notice", {"source": "jobs", "ids": ["j1"]})
+        projects.close()
+        with sqlite3.connect(path) as db:
+            kept = attached(db)
+            views = db.execute("SELECT name FROM sqlite_master WHERE type='view'").fetchall()
+            with pytest.raises(sqlite3.IntegrityError):
+                db.execute(
+                    "INSERT INTO run_events VALUES ('p','s','r',4,'2026-11-27T00:00:00+00:00',"
+                    "'model_profile','{}')"
+                )
+    migrated = ProjectStore(tmp_path)
+    try:
+        state = RunState(migrated.control)
+        state.append("p", "s", "r", "model_profile", {"source": "model_profile", "kind": "main"})
+        assert [e.kind for e in state.events("p", "s", "r")] == [
+            "started",
+            "model_profile",
+            "notice",
+            "model_profile",
+        ]
+    finally:
+        migrated.close()
+    with sqlite3.connect(path) as db:
+        assert attached(db) == kept
+        assert db.execute("SELECT name FROM sqlite_master WHERE type='view'").fetchall() == views
+        # Its rows are still never changed.
+        with pytest.raises(sqlite3.DatabaseError):
+            db.execute("UPDATE run_events SET at='x'")
+
+
+def test_a_track_grant_is_written_once(tmp_path: Path) -> None:
+    """Version 94: a task's track grants are kept, the latest the one its runs take."""
+    path = store_path(tmp_path)
+    projects, _ = store(tmp_path)
+    projects.close()
+    with sqlite3.connect(path) as db:
+        assert db.execute("PRAGMA user_version").fetchone() == (migrations.VERSION,)
+        db.execute("PRAGMA foreign_keys=OFF")
+        db.execute("INSERT INTO delegation_track_grants VALUES ('dlg-1',1,'plan-1',2,'t','now')")
+        for statement in (
+            "UPDATE delegation_track_grants SET version=3",
+            "DELETE FROM delegation_track_grants",
+        ):
+            with pytest.raises(sqlite3.DatabaseError, match="written once"):
+                db.execute(statement)

@@ -246,7 +246,7 @@ export function parseRevisionReferences(value: string): [string, number][] {
  * A run's final review as one line (CR-48): how it ended, the open findings by severity,
  * whether the answer went out before it, and what is left unreviewed, by feed position:
  * "Final review: findings, after the answer; the agent answered its findings. Open: 1 fail.
- * Unreviewed: positions 1–40 (reviewed through 96 of 101)." Null for a record without one.
+ * Unreviewed: positions 1–40 (60 of 90 items reviewed)." Null for a record without one.
  */
 export function finalReviewLine(final: FinalReviewSummary | undefined): string | null {
   if (!final) return null;
@@ -271,11 +271,10 @@ export function finalReviewLine(final: FinalReviewSummary | undefined): string |
   else {
     const ranges = left.map((r) => (r.start === r.end ? `${r.start}` : `${r.start}–${r.end}`));
     const more = (final.unreviewed_ranges ?? left.length) - left.length;
+    const items = final.items;
     parts.push(
       `Unreviewed: positions ${ranges.join(', ')}${more > 0 ? ` and ${more} more ${more === 1 ? 'range' : 'ranges'}` : ''}` +
-        (final.feed_end !== undefined
-          ? ` (reviewed through ${final.reviewed_through ?? 0} of ${final.feed_end}).`
-          : '.'),
+        (items ? ` (${items.reviewed} of ${items.total} items reviewed whole).` : '.'),
     );
   }
   if (final.not_recorded_through)
@@ -288,6 +287,9 @@ const UNREVIEWED_REASONS: Record<string, string> = {
   final_budget: "the final review's budget left it out",
   backlog: 'a checkpoint skipped it to reach the newest work',
   deadline: 'a review was ended at its time limit',
+  final_inconclusive: 'the final review could not decide it',
+  dispatch_failed: 'a review of it could not start',
+  final_capped: "the final review's budget ended before it",
   answering_turn: "it is the work of the turn that answered the final review's findings",
   not_reached: 'no review has reached it yet',
 };
@@ -338,6 +340,24 @@ export function finalReviewEnd(
     const what = unread.path ?? UNREAD_KINDS[unread.kind] ?? `an item (${unread.kind})`;
     lines.push(`Not read: ${what}${unread.why ? `, ${unread.why}` : ''}.`);
   }
+  const items = final.items;
+  if (items && items.total > 0) {
+    const rest = [
+      [items.read_in_part ?? 0, 'read in part'],
+      [items.not_read ?? 0, 'with nothing to read'],
+      [items.unreviewed, 'not reviewed'],
+    ] as const;
+    const said = rest.filter(([n]) => n > 0).map(([n, words]) => `${n} ${words}`);
+    lines.push(
+      `Reviewed whole: ${items.reviewed} of ${items.total} items of the session's work` +
+        (said.length ? `; ${said.join(', ')}.` : '.'),
+    );
+  }
+  const working = final.working_files_deleted ?? 0;
+  if (working > 0)
+    lines.push(
+      `${working} working ${working === 1 ? 'file' : 'files'} the run made and deleted had nothing to read.`,
+    );
   const ranges = final.unreviewed_ranges ?? final.unreviewed?.length ?? 0;
   if (ranges > 0) {
     const why = Object.entries(final.unreviewed_reasons ?? {})

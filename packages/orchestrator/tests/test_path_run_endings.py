@@ -1,0 +1,1584 @@
+# SPDX-License-Identifier: MIT
+"""Every way a main run ends, walked end to end (the run-service spec RS-6 to RS-16 and
+the ``stopped`` event of its RS-14).
+
+``ENDINGS`` is the table: one row per stop reason a main run's code can assign, with
+what the specification says is observable once the run has ended. Each row is driven
+through the run service against the in-process worker and the scripted gateway of
+``loop_harness``, once with the loop in the service's own process (``direct``) and once
+with it in the confined runtime, whose hooks reach the host over the in-memory channel
+(``confined``). The test then reads what is left: the saved record, the ``stopped``
+event, the research work's state, the message queue, whether a report round was taken,
+what the service starts next without the user, and what the session's next run is given
+first. ``UNWRITTEN`` names the stop reasons no row drives yet, and why.
+
+A row's ``known`` names the checks the code fails today, each with the audit's
+identifier (the path audit of 2026-11-27: V-nn are its violations, I-n its invariants;
+"decision:" an open owner decision, asserted as the auditor recommends). Such a case is
+``xfail(strict=True, raises=KnownViolationError)``: it raises that only when exactly
+those checks fail, so any other failure is a plain failure, and it fails loudly the day
+the behaviour is fixed. The cross cases after the table walk the transitions the audit's violations
+name, in the same way.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+import os
+import re
+import signal
+import sys
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Mapping, Sequence
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any, Final, Literal, cast
+
+import pytest
+import pytest_asyncio
+from aiohttp.test_utils import TestServer
+from pydantic import JsonValue
+
+from sandbox_science.contracts import ErrorKind, new_id
+from sandbox_science.contracts.environment_claims import EnvironmentClaim, EnvironmentClaimResult
+from sandbox_science.contracts.restarts import RESTART_POLICY
+from sandbox_science.orchestrator import environment_claim
+from sandbox_science.orchestrator.chat import salvage_of
+from sandbox_science.orchestrator.confinement.host import HostLoops
+from sandbox_science.orchestrator.confinement.models import (
+    CallbackGateway,
+    CallbackModel,
+    RuntimeModels,
+)
+from sandbox_science.orchestrator.confinement.runtime_loop import RuntimeLoops
+from sandbox_science.orchestrator.confinement.transport import Capability, Channel, TransportError
+from sandbox_science.orchestrator.consistency.models import ReviewConfig
+from sandbox_science.orchestrator.context import agent
+from sandbox_science.orchestrator.context.history import body
+from sandbox_science.orchestrator.continuity.auto_recovery import interruption
+from sandbox_science.orchestrator.continuity.records import Work, WorkRecords
+from sandbox_science.orchestrator.continuity.resources import ResourceRequests
+from sandbox_science.orchestrator.finalization import PLACEHOLDER, record_and_acknowledge
+from sandbox_science.orchestrator.harness import Role
+from sandbox_science.orchestrator.hooks import REFUSED, SALVAGED, Notice, contribute
+from sandbox_science.orchestrator.jobstate import lost_notice_id, notice_job
+from sandbox_science.orchestrator.loop import MAX_TURNS, RUNAWAY, Transcript
+from sandbox_science.orchestrator.model import ChatModel, ModelGateway
+from sandbox_science.orchestrator.notices import (
+    FRAMINGS,
+    NOTICES_MAY_REPEAT,
+    REPORT,
+    SUPERVISOR,
+)
+from sandbox_science.orchestrator.plan_tools import went_on
+from sandbox_science.orchestrator.projects import ProjectError, ProjectStore, RunRecord
+from sandbox_science.orchestrator.questions import Questions
+from sandbox_science.orchestrator.repeated_notices import NoticesMayRepeat, repeated_after
+from sandbox_science.orchestrator.runstate import RunEvent
+from sandbox_science.orchestrator.service import RunService
+from sandbox_science.orchestrator.session_plans import SessionPlans
+from sandbox_science.orchestrator.tools import Toolbox
+from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
+from sandbox_science.testing import eventually
+from sandbox_science.worker import sandbox_processes
+from sandbox_science.worker.app import create_app
+from sandbox_science.worker.artifacts import Blobs
+from sandbox_science.worker.backends import LocalBackend
+from sandbox_science.worker.lifecycle import EnvironmentLifecycle
+from sandbox_science.worker.manager import ExecutionManager
+from sandbox_science.worker.settings import LocalBackendSettings
+from sandbox_science.worker.store import Store
+from sandbox_science.worker.timeouts import MANAGER_TIMEOUTS
+
+from .loop_harness import (
+    API_KEY,
+    POLICY,
+    PROJECT,
+    SESSION,
+    TOKEN,
+    USER_HEADER,
+    USER_PLANS,
+    Gateway,
+    Harness,
+    Lineage,
+    Reply,
+    Worker,
+    call,
+    start_job,
+)
+from .loop_harness import gateway as gateway
+from .loop_harness import harness as harness
+from .loop_harness import worker as worker
+from .test_run_service import Gate, runs, serving
+
+Json = dict[str, Any]
+Way = Literal["direct", "confined"]
+WAYS: Final[tuple[Way, ...]] = ("direct", "confined")
+Next = Literal["nothing", "recovery", "continuation", "chat"]
+Relay = Callable[[Capability, JsonValue], Awaitable[JsonValue]]
+Forge = Callable[[Capability, JsonValue, Relay], Awaitable[JsonValue]]
+TASK: Final = "Go on"
+"""The user's message that starts each case's run."""
+NEXT: Final = "Next."
+"""The user's next message, after the run ended."""
+NEW_ATTEMPT: Final = "new-attempt"
+"""How ``given`` names the notice that opens a Resume's attempt (``continuity.hook``)."""
+
+
+class KnownViolationError(Exception):
+    """The checks a case fails today, as the audit found them."""
+
+
+def verdict(found: Mapping[str, str | None], known: Mapping[str, str]) -> None:
+    """Fail plainly on a check that fails and is not known; raise ``KnownViolationError`` when the
+    known checks, and only those, fail; pass when every check holds, which a strict
+    ``xfail`` turns into a failure: the behaviour was fixed, and ``known`` is stale."""
+    unexpected = [failure for name, failure in found.items() if failure and name not in known]
+    assert not unexpected, unexpected
+    fixed = [name for name in known if not found.get(name)]
+    assert not fixed or len(fixed) == len(known), f"now holds, no longer known: {fixed}"
+    failing = [f"{known[name]} ({found[name]})" for name in known if found.get(name)]
+    if failing:
+        raise KnownViolationError("; ".join(failing))
+
+
+def expected_to_fail(known: Mapping[str, str]) -> list[pytest.MarkDecorator]:
+    if not known:
+        return []
+    reason = "; ".join(dict.fromkeys(known.values()))
+    return [pytest.mark.xfail(strict=True, raises=KnownViolationError, reason=reason)]
+
+
+# --- What a case drives ------------------------------------------------------------------
+
+
+@dataclass
+class Case:
+    """One case's run, as it is driven: the session's service and the gate a scripted
+    reply may wait at."""
+
+    harness: Harness
+    service: RunService
+    monkeypatch: pytest.MonkeyPatch
+    gate: Gate = field(default_factory=Gate)
+    claims: Claims | None = None
+
+    def work(self) -> Work:
+        """The research work of the run that holds the session."""
+        lease = self.service.runs.lease(PROJECT, SESSION)
+        assert lease is not None
+        works = WorkRecords(self.service.stores.projects.control)
+        found = works.for_run(PROJECT, SESSION, lease.run)
+        assert found is not None
+        return found
+
+
+Step = Callable[[Case], Coroutine[Any, Any, None]]
+
+BUDGET_REFUSAL: Final = json.dumps(
+    {"error": {"type": "budget_exceeded", "message": "Budget has been exceeded: 1.0 > 1.0"}}
+)
+"""LiteLLM's refusal of a call for its key's budget."""
+CONTEXT_REFUSAL: Final = json.dumps(
+    {"error": {"code": "context_length_exceeded", "message": "The input is too long."}}
+)
+"""An OpenAI-compatible refusal of a call for the model's context."""
+
+
+async def priced_earlier(case: Case) -> None:
+    """A project whose earlier run spent past its configured daily cost limit (RS-6a)."""
+    await case.harness.run("run-priced", [Reply("A priced answer.", cost="0.75")])
+    case.service.runs.set_cost_limit(PROJECT, 0.5)
+
+
+def activate_plan(harness: Harness) -> None:
+    """The user's plan for the session, active, with its one step still to work."""
+    harness.user_plan()
+    documents = harness.documents()
+    try:
+        plans = SessionPlans(documents)
+        current = plans.current(USER_PLANS)
+        assert current is not None
+        head = current.head
+        plans.set_status(
+            USER_PLANS,
+            "user-activates",
+            head.ref,
+            head.status_revision,
+            head.progress_cursor,
+            "active",
+            "USER steering",
+        )
+    finally:
+        documents.close()
+
+
+async def planned(case: Case) -> None:
+    activate_plan(case.harness)
+
+
+async def cancel_at_gate(case: Case) -> None:
+    """The user cancels while the run's model call waits at the gate (RS-11)."""
+    await asyncio.wait_for(case.gate.entered.wait(), 20)
+    lease = case.service.runs.lease(PROJECT, SESSION)
+    assert lease is not None
+    case.service.runs.cancel(PROJECT, SESSION, lease.run)
+    await case.service.maintenance_tick()  # the service reads the user's cancel
+    case.gate.release.set()
+
+
+async def shut_down_at_gate(case: Case) -> None:
+    """The service shuts down while the run's model call waits (RS-12)."""
+    await asyncio.wait_for(case.gate.entered.wait(), 20)
+    await case.service.close()
+    case.gate.release.set()
+
+
+async def bridge_lost_at_gate(case: Case) -> None:
+    """The runtime's connection is lost while the run's model call waits: the service
+    ends as for a shutdown, with the loss marked transient (D100)."""
+    case.service.lost = "bridge_loss"
+    await shut_down_at_gate(case)
+
+
+async def block_work(case: Case) -> None:
+    """An operator blocks the run's work while its model call is out (tree recovery)."""
+    work = case.work()
+    WorkRecords(case.service.stores.projects.control).block(
+        PROJECT, SESSION, work.work, "operator_block"
+    )
+
+
+async def stop_work(case: Case) -> None:
+    """The user stops the run's work from the research tree while its model call is out."""
+    work = case.work()
+    WorkRecords(case.service.stores.projects.control).stop(PROJECT, SESSION, work.work)
+
+
+async def lower_memory_ceiling(case: Case) -> None:
+    """The run's working state passes its ceiling at its next model call. The ceiling,
+    64 MiB, has no setting, so the one injection that patches a constant lowers it while
+    the model call is out (the fixture of ``test_confinement_loop`` patches the property
+    that checks it instead)."""
+    case.monkeypatch.setattr(agent, "VIEW_BYTES", 1)
+
+
+@dataclass
+class Claims:
+    """The worker's environment claims, as a managed environment answers them, through
+    the harness's worker client: the in-process worker's environments are unmanaged. While
+    ``away``, the worker does not answer, as while its Pod restarts."""
+
+    away: bool = False
+    replaced: bool = False
+    """Whether the environment has another sandbox now, which ends the claim."""
+    replace_at: int | None = None
+    """The call from which the environment has another sandbox."""
+    calls: int = 0
+    failed: int = 0
+
+    async def claim(self, request: EnvironmentClaim) -> EnvironmentClaimResult:
+        self.calls += 1
+        if self.away:
+            self.failed += 1
+            raise WorkerAPIError(ErrorKind.UNAVAILABLE, "cannot reach the worker: synthetic")
+        if not request.seconds:
+            return EnvironmentClaimResult(
+                environment_id=request.context.environment_id, state="released"
+            )
+        return EnvironmentClaimResult(
+            environment_id=request.context.environment_id,
+            state="held",
+            sandbox_id="ss-other"
+            if self.replaced or (self.replace_at is not None and self.calls >= self.replace_at)
+            else "ss-synthetic",
+            expires_at=datetime.now(UTC) + timedelta(seconds=request.seconds),
+        )
+
+
+WINDOW: Final = 3.0
+"""The outage window a case gives the run, in place of minutes (``OUTAGE_SECONDS``): long
+beside any stall of a loaded test machine's event loop, which the claim would otherwise
+take for a lapse (renewals stop for longer than the window and its renewal interval)."""
+
+
+async def managed_claims(case: Case) -> None:
+    """The session's environment is managed: its root holds a claim, renewed often, with
+    a short outage window (the claim's own module constants, the run's pace)."""
+    claims = Claims()
+    case.monkeypatch.setattr(environment_claim, "RENEW_SECONDS", WINDOW / 15)
+    case.monkeypatch.setattr(environment_claim, "OUTAGE_SECONDS", WINDOW)
+    case.monkeypatch.setattr(case.service.harness.client, "claim_environment", claims.claim)
+    case.claims = claims
+
+
+async def worker_away(case: Case) -> None:
+    """The worker stops answering while the run's model call is out, for longer than the
+    outage window: the claim gives up, and the run is interrupted, marked transient. The
+    worker answers again once the run has ended."""
+    assert case.claims is not None
+    case.claims.away = True
+    control = case.service.stores.projects.control
+    run = case.work().current
+    await eventually(lambda: interruption(control, PROJECT, SESSION, run) is not None, timeout=20)
+
+
+async def claim_replaced(case: Case) -> None:
+    """The environment's sandbox is replaced while the run's model call is out: the worker
+    ends the claim, which interrupts the run, and nothing marks it transient."""
+    assert case.claims is not None
+    case.claims.replaced = True
+    control = case.service.stores.projects.control
+    run = case.work().current
+    await eventually(lambda: interruption(control, PROJECT, SESSION, run) is not None, timeout=20)
+
+
+async def stop_while_worker_away(case: Case) -> None:
+    """The worker stops answering while the run's model call waits, and the user stops the
+    run inside the outage window: the user's stop wins. The worker answers again once the
+    run has ended."""
+    assert case.claims is not None
+    await asyncio.wait_for(case.gate.entered.wait(), 20)
+    case.claims.away = True
+    await eventually(lambda: case.claims is not None and case.claims.failed >= 2, timeout=20)
+    await cancel_at_gate(case)
+    await worker_back(case)
+
+
+async def worker_back(case: Case) -> None:
+    task = case.service.active[PROJECT, SESSION].task
+    assert task is not None
+    await eventually(task.done, timeout=20)
+    assert case.claims is not None
+    case.claims.away = False
+
+
+async def interrupted_reply(kind: Capability, value: JsonValue, runtime: Relay) -> JsonValue:
+    """A runtime that answers its attempt ``interrupted`` (V-18), after running it."""
+    reply = await runtime(kind, value)
+    if kind is Capability.RUN and isinstance(reply, dict):
+        return {**reply, "interrupted": True, "state": None}
+    return reply
+
+
+# --- The table -----------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Ending:
+    """One way a main run ends, and what the specification says is left of it."""
+
+    name: str
+    stopped: str
+    """The run's ``stopped``, in its record and its ``stopped`` event."""
+    script: Callable[[Case], Sequence[Reply]]
+    saved: bool = True
+    """Whether a run record is saved (RS-11: a cancelled run's is; RS-16: an interrupted
+    run has none)."""
+    answer: str | None = None
+    final_text: str | None = None
+    failure: str | None = None
+    reason: str | None = None
+    """The ``stopped`` event's ``reason``, for the endings that give one."""
+    owed: frozenset[str] = frozenset()
+    """The work the run leaves owed, which its ``stopped`` event names (I2): ``jobs``,
+    ``children``, ``messages``, ``questions``, ``plan``, ``findings``."""
+    report: bool = False
+    """Whether the run took a report round: every limit does (the owner's rule)."""
+    work: tuple[str, str | None] = ("completed", "answered")
+    """The research work's state and reason once the run ended."""
+    messages: str = "delivered"
+    """The state the run's message is left in."""
+    next: Next = "nothing"
+    """What the service starts next without the user."""
+    given: tuple[str, ...] = (TASK, NEXT)
+    """What the session's next run is given first (``Left.given``)."""
+    setup: Step | None = None
+    during: Step | None = None
+    max_turns: int = MAX_TURNS
+    runtime: Forge | None = None
+    """How the confined runtime answers the host, where a case forges its answers."""
+    known: Mapping[str, str] = field(default_factory=dict[str, str])
+    """Checks the code fails today, each with the audit's identifier, for both ways."""
+    confined_known: Mapping[str, str] = field(default_factory=dict[str, str])
+    """Further checks the confined arrangement fails today."""
+    ways: tuple[Way, ...] = WAYS
+
+    def known_in(self, way: Way) -> dict[str, str]:
+        return {**self.known, **(self.confined_known if way == "confined" else {})}
+
+
+LIMIT_REPORTS: Final = "V-04: this limit ends the run without a report round"
+HELD_UNSAID: Final = "I2, V-06: the stopped event does not name the message it leaves held"
+PLAN_UNSAID: Final = "I2: the stopped event does not name the active plan's workable steps"
+CONFINED_CANCEL: Final = (
+    "V-11: a confined cancel saves no record; the service writes the stop as for a lost run"
+)
+UNEXPLAINED: Final = "I2: the stopped event says neither why nothing starts next nor what to do"
+RESENT: Final = "V-08: a Resume sends the saved task again as a new user message"
+
+
+ENDINGS: Final[tuple[Ending, ...]] = (
+    Ending(
+        "answered",
+        "answered",
+        lambda case: [Reply("Done.")],
+        answer="Done.",
+        final_text="Done.",
+    ),
+    Ending(
+        "answered_with_plan_open",
+        "answered",
+        lambda case: [Reply("First."), Reply("Second.")],
+        setup=planned,
+        answer="Second.",
+        final_text="Second.",
+        owed=frozenset({"plan"}),
+        given=("digest", "plans", TASK, "plans-went-on", "plans", NEXT),
+        known={"owed": PLAN_UNSAID},
+    ),
+    Ending(
+        "turn_limit",
+        "turn_limit",
+        lambda case: [Reply(calls=[call("plan_read")])],
+        max_turns=1,
+        reason="check_in",
+        report=True,
+        work=("paused", "turn_limit"),
+        known={"report": LIMIT_REPORTS},
+    ),
+    Ending(
+        "runaway",
+        "runaway",
+        lambda case: [
+            *(Reply(calls=[call("no_such_tool")]) for _ in range(RUNAWAY)),
+            Reply("The report."),
+        ],
+        answer="The report.",
+        final_text="The report.",
+        reason="same_error",
+        report=True,
+        work=("paused", "runaway"),
+        given=(TASK, "error-streak", "report", NEXT),
+    ),
+    Ending(
+        "context_limit_overflow",
+        "context_limit",
+        lambda case: [Reply(status=400, error=CONTEXT_REFUSAL)],
+        reason="overflow",
+        report=True,
+        work=("paused", "context_limit"),
+        messages="held",
+        known={"report": LIMIT_REPORTS},
+    ),
+    Ending(
+        "gateway_budget",
+        "gateway_budget",
+        lambda case: [Reply(status=400, error=BUDGET_REFUSAL)],
+        report=True,
+        work=("paused", "gateway_budget"),
+        messages="held",
+        known={"report": LIMIT_REPORTS, "explained": UNEXPLAINED},
+    ),
+    Ending(
+        "gateway_budget_local",
+        "gateway_budget",
+        lambda case: [],  # the journal refuses the call before it is sent
+        setup=priced_earlier,
+        report=True,
+        work=("paused", "gateway_budget"),
+        messages="held",
+        given=(),  # the limit is still reached: the next run's call is refused too
+        known={"report": LIMIT_REPORTS, "explained": UNEXPLAINED},
+    ),
+    Ending(
+        "gateway_budget_after_going_on",
+        "gateway_budget",
+        lambda case: [Reply("First."), Reply(status=400, error=BUDGET_REFUSAL)],
+        setup=planned,
+        answer="First.",
+        report=True,
+        work=("paused", "gateway_budget"),
+        owed=frozenset({"plan"}),
+        given=("digest", "plans", TASK, "plans-went-on", "plans", NEXT),
+        known={
+            "record": "V-07: a halt after a go-on closes on the mid-plan status as the final text",
+            "event": "V-07: a halt after a go-on closes on the mid-plan status as the final text",
+            "report": LIMIT_REPORTS,
+            "owed": PLAN_UNSAID,
+            "explained": UNEXPLAINED,
+        },
+    ),
+    Ending(
+        "memory_limit",
+        "memory_limit",
+        lambda case: [
+            Reply(calls=[call("plan_read")], before=lambda: lower_memory_ceiling(case)),
+        ],
+        report=True,
+        work=("paused", "memory_limit"),
+        given=(),  # the ceiling stays lowered: the next run cannot call either
+        known={"report": LIMIT_REPORTS, "explained": UNEXPLAINED},
+    ),
+    Ending(
+        "error",
+        "error",
+        lambda case: [Reply(status=400, error="a malformed request")],
+        failure="model",
+        work=("paused", "error"),
+        messages="held",
+    ),
+    Ending(
+        "error_transient",
+        "error",
+        lambda case: [Reply(status=500)],
+        failure="model",
+        work=("paused", "error"),
+        messages="held",
+        next="recovery",
+        given=(TASK, NEW_ATTEMPT, "redelivered"),
+        known={"given": RESENT},
+    ),
+    Ending(
+        "cancelled",
+        "cancelled",
+        lambda case: [Reply("Never.", before=case.gate)],
+        during=cancel_at_gate,
+        work=("stopped", "cancelled"),
+        messages="held",
+        owed=frozenset({"messages"}),
+        given=(TASK, "redelivered", NEXT),
+        known={"owed": HELD_UNSAID},
+        confined_known={"record": CONFINED_CANCEL, "work": CONFINED_CANCEL},
+    ),
+    Ending(
+        "work_stopped",
+        "cancelled",
+        lambda case: [Reply(calls=[call("plan_read")], before=lambda: stop_work(case))],
+        work=("stopped", "user_stop"),
+    ),
+    Ending(
+        "recovery_blocked",
+        "recovery_blocked",
+        lambda case: [Reply(calls=[call("plan_read")], before=lambda: block_work(case))],
+        work=("blocked", "operator_block"),
+        known={
+            "work": "new: the attempt's finish turns the operator's block into a pause, "
+            "its reason lost (continuity/records.py:405-409)",
+            "explained": UNEXPLAINED,
+        },
+    ),
+    Ending(
+        "interrupted",
+        "interrupted",
+        lambda case: [Reply("Never.", before=case.gate)],
+        during=shut_down_at_gate,
+        saved=False,
+        work=("blocked", "interrupted"),
+        messages="held",
+        owed=frozenset({"messages"}),
+        known={"owed": HELD_UNSAID, "explained": UNEXPLAINED},
+    ),
+    Ending(
+        "interrupted_bridge_loss",
+        "interrupted",
+        lambda case: [Reply("Never.", before=case.gate)],
+        during=bridge_lost_at_gate,
+        saved=False,
+        work=("blocked", "interrupted"),
+        messages="held",
+        owed=frozenset({"messages"}),
+        next="recovery",
+        given=(TASK, NEW_ATTEMPT, "redelivered"),
+        known={"owed": HELD_UNSAID, "given": RESENT},
+    ),
+    Ending(
+        "interrupted_worker_away",
+        "interrupted",
+        lambda case: [Reply("Never.", before=lambda: worker_away(case))],
+        setup=managed_claims,
+        during=worker_back,
+        saved=False,
+        reason="worker_unreachable",
+        work=("blocked", "interrupted"),
+        messages="held",
+        owed=frozenset({"messages"}),
+        next="recovery",
+        given=(TASK, NEW_ATTEMPT, "redelivered"),
+        known={"owed": HELD_UNSAID, "given": RESENT},
+    ),
+    Ending(
+        "interrupted_claim_ended",
+        "interrupted",
+        lambda case: [Reply("Never.", before=lambda: claim_replaced(case))],
+        setup=managed_claims,
+        during=worker_back,
+        saved=False,
+        reason="environment_claim_ended",
+        work=("blocked", "interrupted"),
+        messages="held",
+        owed=frozenset({"messages"}),
+        known={"owed": HELD_UNSAID},
+    ),
+    Ending(
+        "cancelled_while_worker_away",
+        "cancelled",
+        lambda case: [Reply("Never.", before=case.gate)],
+        setup=managed_claims,
+        during=stop_while_worker_away,
+        work=("stopped", "cancelled"),
+        messages="held",
+        owed=frozenset({"messages"}),
+        given=(TASK, "redelivered", NEXT),
+        known={"owed": HELD_UNSAID},
+        confined_known={"record": CONFINED_CANCEL, "work": CONFINED_CANCEL},
+    ),
+    Ending(
+        "interrupted_by_its_runtime",
+        "interrupted",
+        lambda case: [Reply("Done.")],
+        runtime=interrupted_reply,
+        saved=False,
+        work=("blocked", "interrupted"),
+        ways=("confined",),
+        known={"event": "V-18: a runtime that answers interrupted leaves no stopped event"},
+    ),
+)
+
+UNWRITTEN: Final[Mapping[str, str]] = {
+    "answered_after_hold": "needs the reviewer and the hold mode of test_hold_round through "
+    "the run service; not built here",
+    "plan_unread": "the Plans retry stops the run only with no room in a folding run's view "
+    "(loop.py:624-626); no fixture brings a service run to its view's limit at a closing",
+    "context_limit_non_folding": "a main run with durable records always folds "
+    "(harness.py:1152); only a run without stores ends this way",
+    "context_limit_breaker_irreducible_start": "the fold engine's breaker and geometry stops "
+    "need a gateway whose limits make folds free too little; test_history_folds drives them "
+    "below the service",
+    "context_limit_research_state": "needs current ledger decisions too large for the view "
+    "(test_run_service's research-state test patches the folder)",
+    "resource_pause": "a root's no-progress pause needs the resource policy's soft caps and "
+    "progress samples (test_check_ins); not driven through the service here",
+    "resource_report": "a parent's checkpoint report applies to delegated runs only",
+    "resource_storage, resource_retention": "need worker storage figures past the policy's "
+    "caps; the in-process worker reports none",
+    "model_refused": "the scripted gateway answers no Messages-API refusal (stop_reason "
+    "refusal); test_model_refusals' fake is not wired to the run service",
+    "pins_changed": "needs an automatic Resume whose pinned inputs changed "
+    "(test_run_inputs); not driven through the service here",
+    "unfinished_children, child_outcome_unavailable": "need a delegation tree through the "
+    "run service whose child stops at a limit or loses its outcome; not built here",
+    "user_message": "never produced (V-03): the final review's message queue is not wired",
+    "budget, run_budget, resource_time, cost_limit": "never produced (V-09); see "
+    "test_the_listed_endings_are_the_ones_a_run_can_reach",
+    "wall_time": "a delegated run's ending (harness.py:1834)",
+}
+"""The stop reasons no row drives, and why: what the fixtures lack."""
+
+
+# --- The arrangements ------------------------------------------------------------------------
+
+
+@asynccontextmanager
+async def arrangement(
+    harness: Harness,
+    tmp_path: Path,
+    way: Way,
+    *,
+    max_turns: int = MAX_TURNS,
+    runtime_forge: Forge | None = None,
+) -> AsyncIterator[RunService]:
+    """The run service on the harness, its loop in its own process (``direct``) or in a
+    confined runtime whose hooks and tools reach the host over the in-memory channel, as
+    ``test_confinement_loop.confined`` wires them; ``runtime_forge`` answers the host in
+    the runtime's place."""
+    async with serving(harness, serve=False, max_turns=max_turns) as service:
+        if way == "direct":
+            yield service
+            return
+        models = ModelGateway(harness.gateway.url, API_KEY)
+
+        async def host_side(kind: Capability, value: JsonValue) -> JsonValue:
+            return await host.capability(kind, value)
+
+        async def runtime_side(kind: Capability, value: JsonValue) -> JsonValue:
+            if kind is Capability.RUN:
+                return await runtime.run(value)
+            if kind is Capability.CANCEL:
+                return await runtime.cancel(value)
+            if kind is Capability.MODEL:
+                return await vm_models.complete(value)
+            if kind is Capability.MODEL_INFO:
+                return await vm_models.info(value)
+            raise TransportError("denied", "fixture refused capability")
+
+        async def runtime_handle(kind: Capability, value: JsonValue) -> JsonValue:
+            if runtime_forge is None:
+                return await runtime_side(kind, value)
+            return await runtime_forge(kind, value, runtime_side)
+
+        host_channel = Channel(lambda text: vm_channel.receive(text), host_side)
+        vm_channel = Channel(lambda text: host_channel.receive(text), runtime_handle)
+        vm_models = RuntimeModels(models, frozenset({"main"}), vm_channel)
+        host = HostLoops(host_channel, frozenset({PROJECT}))
+        runtime = RuntimeLoops(vm_channel, models, tmp_path / "scratch")
+        runtime.scratch.mkdir()
+        service.harness.main = Role(CallbackModel(host_channel, "main", role="main"), "main")
+        service.harness.gateway = CallbackGateway(host_channel)
+
+        async def runner(
+            model: ChatModel, toolbox: Toolbox, task: str | None, **options: Any
+        ) -> Transcript:
+            return await host.run(model, toolbox, task, **options)
+
+        service.harness.loop_runner = runner
+        service.harness.prepare_attempt = lambda admitted: host.model_scope()
+        try:
+            yield service
+        finally:
+            await runtime.close()
+            await host_channel.close()
+            await vm_channel.close()
+            await models.close()
+
+
+# --- What is left of a run -------------------------------------------------------------------
+
+
+@dataclass
+class Left:
+    """What is observable once a run has ended."""
+
+    run: str
+    record: RunRecord | None
+    events: list[RunEvent]
+    work: Work | None
+    messages: dict[str, str]
+    reported: bool
+    next: Next
+    given: tuple[str, ...] = ()
+    """What the session's next run is given first: each user-role message of its first
+    model call, the user's own as their text, a notice as its framing's ID."""
+
+    @property
+    def stopped(self) -> dict[str, JsonValue] | None:
+        found = [e.data for e in self.events if e.kind == "stopped"]
+        assert len(found) <= 1, found
+        return found[0] if found else None
+
+
+def all_events(harness: Harness, run: str) -> list[RunEvent]:
+    found: list[RunEvent] = []
+    while page := runs(harness).events(PROJECT, SESSION, run, after=found[-1].seq if found else 0):
+        found.extend(page)
+    return found
+
+
+def saved(harness: Harness, run: str) -> RunRecord | None:
+    store = ProjectStore(harness.state)
+    try:
+        return store.run(PROJECT, SESSION, run)
+    except ProjectError:
+        return None
+    finally:
+        store.close()
+
+
+async def what_starts_next(service: RunService) -> Next:
+    """What the service would start next without the user: a queued Resume (automatic
+    recovery), the research supervisor's message (automatic continuation), or a chat
+    message that waits."""
+    # As the service's own looks do: an ended run's bookkeeping is let go and queued
+    # input reconciled, which holds what unfinished work was offered; automatic recovery
+    # and continuation are then asked.
+    await service.maintenance_tick()
+    chat = await service.waiting_work()
+    await service.auto_recovery_tick()
+    await service.auto_continuation_tick()
+    if WorkRecords(service.stores.projects.control).queued():
+        return "recovery"
+    queued = service.runs.messages(PROJECT, SESSION, state="queued")
+    if any(m.author == SUPERVISOR for m in queued):
+        return "continuation"
+    return "chat" if chat else "nothing"
+
+
+FRAMED: Final = {
+    **{framing.text: framing.id for framing in FRAMINGS},
+    "This is a new attempt continuing the same durable research work.": NEW_ATTEMPT,
+}
+
+
+def shown(message: Json) -> str:
+    """A user-role message as ``given`` names it."""
+    content = str(message.get("content"))
+    text = body(content)
+    if USER_HEADER.match(content):
+        return text
+    return next((name for prefix, name in FRAMED.items() if text.startswith(prefix)), text[:40])
+
+
+async def run_next(
+    case: Case, starts: Next, text: str = NEXT, script: Sequence[Reply] | None = None
+) -> tuple[str, ...]:
+    """The session's next run, as the user or the service starts it: the queued Resume
+    for automatic recovery, the supervisor's message for continuation, else the user's
+    next message; what its first model call is given."""
+    harness, service = case.harness, case.service
+    await service.maintenance_tick()  # the ended run's bookkeeping is let go
+    harness.gateway.requests.clear()
+    harness.gateway.script = list(script) if script is not None else [Reply("Next answer.")]
+    service.waiting_until.clear()  # the time a failed or budget-stopped session waits passes
+    branches: list[asyncio.Task[bool]] = []
+    request: str | None = None
+    if starts == "recovery":
+        ((_, _, request, _),) = WorkRecords(service.stores.projects.control).queued()
+        assert await service.start_selected(PROJECT, SESSION, request=request)
+    else:
+        if starts != "continuation":
+            service.runs.post(PROJECT, SESSION, "m-next", text, author="user")
+        assert await service.start_selected(PROJECT, SESSION)
+    task = service.active[PROJECT, SESSION].task
+    assert task is not None
+
+    async def ended() -> None:
+        # As the service's looks drive a Resume: each ready branch of its tree runs.
+        while not task.done() or any(not branch.done() for branch in branches):
+            if request is not None:
+                for work in await service.resume_next(PROJECT, SESSION, request):
+                    branches.append(
+                        asyncio.create_task(service.resume_branch(PROJECT, SESSION, request, work))
+                    )
+            await asyncio.sleep(0.02)
+
+    await asyncio.wait_for(ended(), 60)
+    if not harness.gateway.main:
+        return ()
+    return tuple(shown(m) for m in harness.gateway.main[0] if m.get("role") == "user")
+
+
+def reported(harness: Harness) -> bool:
+    """Whether any main model call was the report round's (RS-6f)."""
+    return any(
+        message.get("role") == "user" and REPORT.text in str(message.get("content"))
+        for request in harness.gateway.main
+        for message in request
+    )
+
+
+async def run_one(case: Case, script: Sequence[Reply], during: Step | None = None) -> str:
+    """One run of the session for the user's ``TASK``, ``during`` beside it; its name."""
+    harness, service = case.harness, case.service
+    harness.gateway.script = list(script)
+    harness.gateway.requests.clear()
+    service.runs.post(PROJECT, SESSION, "m-1", TASK, author="user")
+    assert await service.start_selected(PROJECT, SESSION)
+    active = service.active[PROJECT, SESSION]
+    assert active.task is not None
+    beside = asyncio.create_task(during(case)) if during is not None else None
+    with contextlib.suppress(asyncio.CancelledError):  # the service's shutdown ended it
+        await asyncio.wait_for(asyncio.shield(active.task), 60)
+    if beside is not None:
+        await asyncio.wait_for(beside, 20)
+    assert active.run is not None
+    assert not harness.gateway.script, "the run ended before its script did"
+    return active.run
+
+
+async def left_of(case: Case, run: str, *, then: bool = True) -> Left:
+    """What is left of ``run``; with ``then``, the session's next run is run too."""
+    harness, service = case.harness, case.service
+    starts = await what_starts_next(service)
+    works = WorkRecords(service.stores.projects.control)
+    left = Left(
+        run=run,
+        record=saved(harness, run),
+        events=all_events(harness, run),
+        work=works.for_run(PROJECT, SESSION, run),
+        messages={m.message_id: m.state for m in service.runs.messages(PROJECT, SESSION)},
+        reported=reported(harness),
+        next=starts,
+    )
+    if then:
+        left.given = await run_next(case, starts)
+    return left
+
+
+# --- The checks ------------------------------------------------------------------------------
+
+
+def owed_in(stopped: Mapping[str, JsonValue]) -> set[str]:
+    found = stopped.get("owed")
+    if isinstance(found, dict):
+        return {key for key, value in found.items() if value}
+    if isinstance(found, list):
+        return {str(item) for item in found}
+    return set()
+
+
+def checks(row: Ending, left: Left) -> dict[str, str | None]:
+    """Each check's failure, or ``None`` where it holds."""
+    found: dict[str, str | None] = {}
+    record = left.record
+
+    def expect(name: str, seen: object, wanted: object) -> None:
+        found[name] = None if seen == wanted else f"{name}: {seen!r} where {wanted!r}"
+
+    if row.saved:
+        expect(
+            "record",
+            None if record is None else (record.stopped, record.answer, record.final_text),
+            (row.stopped, row.answer, row.final_text),
+        )
+        if record is not None:
+            expect("failure", record.failure, row.failure)
+    else:
+        expect("record", record, None)
+    stopped = left.stopped
+    if stopped is None:
+        found["event"] = "event: no stopped event"
+    else:
+        expect(
+            "event",
+            (stopped.get("stopped"), stopped.get("reason"), stopped.get("final_text")),
+            (row.stopped, row.reason, row.final_text),
+        )
+        expect("owed", owed_in(stopped), set(row.owed))
+        if row.next == "nothing" and row.stopped not in ("answered", "cancelled"):
+            said = stopped.get("reason") or stopped.get("detail") or stopped.get("failure")
+            found["explained"] = None if said else "explained: the stopped event says nothing"
+    expect("report", left.reported, row.report)
+    expect("work", None if left.work is None else (left.work.state, left.work.reason), row.work)
+    expect("messages", left.messages.get("m-1"), row.messages)
+    expect("next", left.next, row.next)
+    expect("given", left.given, row.given)
+    return found
+
+
+def cases() -> list[Any]:
+    return [
+        pytest.param(row, way, id=f"{row.name}-{way}", marks=expected_to_fail(row.known_in(way)))
+        for row in ENDINGS
+        for way in row.ways
+    ]
+
+
+@pytest.mark.parametrize(("row", "way"), cases())
+async def test_a_main_run_ends(
+    harness: Harness, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, row: Ending, way: Way
+) -> None:
+    """Each row of ``ENDINGS``, driven to its end, leaves what the specification says."""
+    async with arrangement(
+        harness, tmp_path, way, max_turns=row.max_turns, runtime_forge=row.runtime
+    ) as service:
+        case = Case(harness, service, monkeypatch)
+        if row.setup is not None:
+            await row.setup(case)
+        run = await run_one(case, row.script(case), row.during)
+        left = await left_of(case, run)
+    verdict(checks(row, left), row.known_in(way))
+
+
+def test_the_table_names_each_ending_once() -> None:
+    """A way to end is either driven by a row or named in ``UNWRITTEN``, never both."""
+    names = [row.name for row in ENDINGS]
+    assert len(set(names)) == len(names)
+    assert not set(names) & set(UNWRITTEN)
+
+
+SPEC: Final = Path(__file__).parents[3] / "docs" / "specs" / "run-service.md"
+LISTED: Final = re.compile(r"\| `stopped` \| `stopped` \(([^)]*)\)")
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=KnownViolationError,
+    reason="V-09: the spec's list of endings names dead reasons and lacks reachable ones",
+)
+def test_the_listed_endings_are_the_ones_a_run_can_reach() -> None:
+    """The ``stopped`` event's reasons, as RS-14 lists them, are the reasons a main run
+    can end with: those the table drives and those it names as not driven yet, less the
+    ones never produced."""
+    found = LISTED.search(SPEC.read_text())
+    assert found is not None
+    listed = set(re.findall(r"`([a-z_]+)`", found[1]))
+    reachable = {row.stopped for row in ENDINGS} | {
+        "context_limit",
+        "plan_unread",
+        "resource_pause",
+        "resource_storage",
+        "resource_retention",
+        "model_refused",
+        "pins_changed",
+        "unfinished_children",
+        "child_outcome_unavailable",
+    }
+    if listed != reachable:
+        raise KnownViolationError(f"listed only: {sorted(listed - reachable)}; reached only: "
+                    f"{sorted(reachable - listed)}")  # fmt: skip
+
+
+# --- The cross cases the audit's violations name ----------------------------------------------
+
+
+# Direct only: a confined run waiting in ask_user never ends when the service shuts down
+# (its runtime's lease exit waits on the host's ask_user call, which nothing cancels),
+# and the arrangement's teardown then hangs with it; see the lane's report.
+@pytest.mark.parametrize("way", ["direct"])
+@pytest.mark.xfail(
+    strict=True,
+    raises=KnownViolationError,
+    reason="V-01: an interrupted run's question stays open after a new root replaces it",
+)
+async def test_a_message_after_an_interrupted_question_settles_it(
+    harness: Harness, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, way: Way
+) -> None:
+    """A run interrupted while it waits in ``ask_user`` leaves its question open, which
+    the user can answer into a Resume. A message the user writes instead starts a new
+    root (RS-12: fresh input is eligible independently); the replaced tree's question is
+    then settled, not left open for a run that no longer exists (I1, I7)."""
+    async with arrangement(harness, tmp_path, way) as service:
+        case = Case(harness, service, monkeypatch)
+        questions = Questions(service.stores.documents)
+
+        async def asked_then_shut_down(case: Case) -> None:
+            for _ in range(1000):
+                if questions.open(PROJECT, SESSION):
+                    break
+                await asyncio.sleep(0.02)
+            await case.service.close()
+
+        script = [Reply(calls=[call("ask_user", question="Which variant?")])]
+        await run_one(case, script, asked_then_shut_down)
+        assert [q.state for q in questions.open(PROJECT, SESSION)] == ["open"]
+        assert NEXT in await run_next(case, "nothing")
+        still = [q.question_id for q in questions.open(PROJECT, SESSION)]
+    verdict({"question": f"still open: {still}" if still else None}, {"question": "V-01"})
+
+
+@pytest.mark.parametrize(
+    "held",
+    [False, pytest.param(True, marks=expected_to_fail({"next": "V-02"}))],
+    ids=["nothing-held", "a-message-held"],
+)
+async def test_a_held_message_and_the_automatic_continuation(
+    harness: Harness, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, held: bool
+) -> None:
+    """An answered root whose session plan has workable steps it has not continued from
+    is continued by the research supervisor (auto-continuation). A message an earlier,
+    interrupted run left held belongs to that run's tree, which a later root replaced; it
+    does not block the continuation of every later root (V-02)."""
+    async with arrangement(harness, tmp_path, "direct") as service:
+        case = Case(harness, service, monkeypatch)
+        if held:
+            await run_one(case, [Reply("Never.", before=case.gate)], shut_down_at_gate)
+            assert {m.state for m in service.runs.messages(PROJECT, SESSION)} == {"held"}
+        else:
+            await run_one(case, [Reply("Done.")])
+        assert await run_next(case, "nothing") != ()
+        activate_plan(harness)  # after the answer: a plan state no run went on from
+        starts = await what_starts_next(service)
+    found = None if starts == "continuation" else f"next: {starts!r}"
+    verdict({"next": found}, {"next": "V-02"} if held else {})
+
+
+@pytest.mark.parametrize("way", WAYS)
+@pytest.mark.xfail(
+    strict=True,
+    raises=KnownViolationError,
+    reason="V-12: a message after a turn-limit pause leaves its check-in pending",
+)
+async def test_a_message_after_a_turn_limit_pause_settles_its_check_in(
+    harness: Harness, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, way: Way
+) -> None:
+    """A root paused at its turn limit asks the user to continue or stop (D102). A chat
+    message instead starts a new root; the paused tree's check-in is then settled, not
+    left asking about work the session replaced (I1, I5)."""
+    async with arrangement(harness, tmp_path, way, max_turns=1) as service:
+        case = Case(harness, service, monkeypatch)
+        await run_one(case, [Reply(calls=[call("plan_read")])])
+        control = service.stores.projects.control
+        (asked,) = ResourceRequests(control).page(PROJECT, SESSION).requests
+        assert asked.decision is None
+        assert not asked.superseded
+        await run_next(case, "nothing")
+        (after,) = [
+            r for r in ResourceRequests(control).page(PROJECT, SESSION).requests
+            if r.request_id == asked.request_id
+        ]  # fmt: skip
+    pending = after.decision is None and not after.superseded
+    verdict({"check_in": "still pending" if pending else None}, {"check_in": "V-12"})
+
+
+@pytest.mark.parametrize("way", WAYS)
+@pytest.mark.xfail(
+    strict=True,
+    raises=KnownViolationError,
+    reason="V-14: an answer the output limit cut a third time ends silently truncated",
+)
+async def test_an_answer_cut_past_its_continuations_says_so(
+    harness: Harness, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, way: Way
+) -> None:
+    """A run continues an answer the output limit cut at most twice (RS-6f); past that,
+    the text so far is the answer. The user is then told that it is incomplete: the
+    ``stopped`` event says the answer was cut (I8)."""
+    script = [Reply(part, finish="length") for part in ("Part one, ", "part two, ", "part")]
+    async with arrangement(harness, tmp_path, way) as service:
+        case = Case(harness, service, monkeypatch)
+        run = await run_one(case, script)
+        left = await left_of(case, run, then=False)
+    assert left.record is not None
+    assert left.record.final_text == "Part one, part two, part"
+    length = cast(dict[str, Any], left.record.summaries["length"])
+    assert (length["stops"], length["continued"]) == (3, 2)
+    stopped = left.stopped or {}
+    said = "output_limit" in json.dumps(stopped)
+    verdict({"cut": None if said else f"cut: {stopped}"}, {"cut": "V-14"})
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("way", WAYS)
+@pytest.mark.xfail(
+    strict=True,
+    raises=KnownViolationError,
+    reason="V-05: a run answers with its job running, says nothing of it, and nothing "
+    "starts when the job ends",
+)
+async def test_a_run_that_answers_with_a_job_running(
+    harness: Harness, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, way: Way
+) -> None:
+    """A run may answer while its background job runs (jobs outlive their run, D83). Its
+    ``stopped`` event names the job it leaves running (I2); and when the job ends, the
+    session is woken to read its result (the run-service spec's wake on a detached job's
+    end, approved and not built)."""
+    script = [Reply(calls=[start_job()]), Reply("A job is running.")]
+    async with arrangement(harness, tmp_path, way) as service:
+        case = Case(harness, service, monkeypatch)
+        run = await run_one(case, script)
+        left = await left_of(case, run, then=False)
+        await harness.end_job()
+        starts = await what_starts_next(service)
+    assert left.record is not None
+    assert (left.record.stopped, left.record.final_text) == ("answered", "A job is running.")
+    stopped = left.stopped or {}
+    verdict(
+        {
+            "owed": None if "jobs" in owed_in(stopped) else f"owed: {owed_in(stopped)}",
+            "wake": None if starts != "nothing" else "wake: nothing starts once the job ended",
+        },
+        {"owed": "I2, V-05", "wake": "V-05"},
+    )
+
+
+# --- A run that hears of a job's restart --------------------------------------------------
+
+
+@dataclass
+class RestartSite:
+    """The worker of a restart case: the local backend's sandbox daemon, whose environment
+    can be held stopped, so that a lost job's next attempt waits for the case to let it."""
+
+    root: Path
+    manager: ExecutionManager
+    stopped: bool = True
+    environment: str | None = None
+    """The session's environment, whose executor the case's end releases."""
+
+    def kill_daemon(self) -> None:
+        """Lose the environment's daemon, this case's own child found by its command line
+        under the case's directory, and the job's attempt with it."""
+        for pid in sandbox_processes.process_table():
+            try:
+                line = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+            except OSError:
+                continue
+            if any(b"daemon" in part for part in line) and str(self.root).encode() in b" ".join(
+                line
+            ):
+                os.kill(pid, signal.SIGKILL)
+
+
+@pytest_asyncio.fixture
+async def restart_site(tmp_path: Path) -> AsyncIterator[tuple[RestartSite, Worker]]:
+    root = tmp_path / "worker"
+    root.mkdir()
+    store = Store(root / "worker.sqlite3")
+    site: RestartSite | None = None
+    manager = ExecutionManager(
+        store,
+        LocalBackend(LocalBackendSettings(python=sys.executable, daemon=True), root),
+        Blobs(root / "artifacts"),
+        pool_id="test-pool",
+        max_artifact_size=1 << 20,
+        state_dir=root,
+        timeouts=replace(MANAGER_TIMEOUTS, restart_retry=0.05, restart_retry_max=0.2),
+        job_restarts_unisolated=True,  # the case's job leaves no process behind
+        lifecycle=EnvironmentLifecycle(
+            daemon_identity=lambda _environment: ("synthetic-sandbox", "synthetic-id"),
+            environment_stopped=lambda _environment: site is not None and site.stopped,
+        ),
+    )
+    site = RestartSite(root, manager, stopped=False)
+    await manager.start()
+    try:
+        async with TestServer(create_app(manager, TOKEN)) as server:
+            yield site, Worker(str(server.make_url("/")).rstrip("/"), Lineage())
+    finally:
+        site.stopped = False
+        if site.environment is not None:
+            await manager.release(site.environment)
+        await manager.close()
+        store.close()
+
+
+@pytest_asyncio.fixture
+async def restart_harness(
+    tmp_path: Path, restart_site: tuple[RestartSite, Worker], gateway: Gateway
+) -> Harness:
+    projects = ProjectStore(tmp_path / "state")
+    projects.create(PROJECT, "minimal", POLICY)
+    projects.open_session(PROJECT, SESSION, dedicated=False)
+    projects.close()
+    found = Harness(tmp_path, restart_site[1], gateway)
+    found.configure_reviews(ReviewConfig(enabled=False))
+    restart_site[0].environment = found.context().environment_id
+    return found
+
+
+RESUMABLE: Final = "touch started-$SANDBOX_JOB_ATTEMPT; sleep 60"
+"""A job whose first attempt runs until the case loses it."""
+
+
+def _job_of(messages: list[Json]) -> str:
+    for message in reversed(messages):
+        found = re.search(r'"job_id":\s*"(exe-[0-9a-f]+)"', str(message.get("content")))
+        if found:
+            return found[1]
+    raise AssertionError("no job was started")
+
+
+@pytest.mark.parametrize("way", WAYS)
+async def test_a_run_woken_by_a_restart_notice_keeps_its_record(
+    restart_harness: Harness,
+    restart_site: tuple[RestartSite, Worker],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    way: Way,
+) -> None:
+    """A run waits for its restartable job; the job's attempt is lost and the worker
+    starts it again (job restarts). The wait wakes with the loss, whose notice rides on its
+    result; the run answers and ends. Its whole record is kept, naming the notice as
+    delivered (RS-13), which is then acknowledged, and its ``stopped`` event is the
+    record's: a hook's notice never costs the run its record (D-G1)."""
+    harness, (site, _) = restart_harness, restart_site
+    workspace = site.root / "environments" / harness.context().environment_id
+    started = workspace / "project" / "sessions" / SESSION / "started-1"
+
+    async def lose() -> None:
+        await eventually(started.exists, timeout=20)
+        site.stopped = True  # the next attempt waits: nothing starts the environment
+        site.kill_daemon()
+
+    script = [
+        Reply(
+            calls=[
+                call(
+                    "start_job",
+                    script=RESUMABLE,
+                    purpose="a resumable sweep",
+                    expected_progress="a checkpoint a cell",
+                    restart=True,
+                )
+            ]
+        ),
+        Reply(calls_from=lambda seen: [call("wait_jobs", job_ids=[_job_of(seen)])], before=lose),
+        Reply("The sweep's attempt was lost; it starts again when the environment runs."),
+    ]
+    async with arrangement(harness, tmp_path, way) as service:
+        case = Case(harness, service, monkeypatch)
+        run = await run_one(case, script)
+        left = await left_of(case, run, then=False)
+        job = _job_of(harness.gateway.main[-1])
+        with service.stores.projects.control.read() as tx:
+            rows = tx.sql.execute("SELECT job FROM job_acknowledged WHERE project=?", (PROJECT,))
+            acknowledged = {str(row[0]) for row in rows}
+        site.stopped = False
+        async with WorkerClient(harness.worker.url, TOKEN) as client:
+            await client.cancel(job, project_id=PROJECT)
+    record = left.record
+    delivered = record.delivered.get("jobs", []) if record is not None else []
+    lost = [notice for notice in delivered if notice != job]
+    stopped = left.stopped or {}
+    verdict(
+        {
+            "record": None
+            if record is not None and record.stopped == "answered"
+            else f"record: {None if record is None else record.stopped}",
+            "delivered": None if len(lost) == 1 else f"delivered: {delivered}",
+            "acknowledged": None
+            if lost and set(lost) <= acknowledged
+            else f"acknowledged: {acknowledged}",
+            "event": None if stopped.get("stopped") == "answered" else f"event: {stopped}",
+            "work": None
+            if left.work is not None and left.work.state == "completed"
+            else f"work: {left.work}",
+        },
+        {},
+    )
+
+
+def test_every_notice_id_a_hook_can_produce_is_an_identifier() -> None:
+    """A run's record keeps each notice ID it delivered as an ``Identifier``
+    (``RunRecord.delivered``). A notice is checked as it is made, so no hook can hand out
+    one the record cannot keep; and each way a hook makes its IDs, walked over its range,
+    makes only identifiers (D-G1)."""
+    with pytest.raises(ValueError, match="not an identifier"):
+        Notice("jobs", ("exe-0123456789abcdef01234567#1",), "f", None)
+    with pytest.raises(ValueError, match="not an identifier"):
+        Notice("job notices", (), "f", None)
+    made: list[tuple[str, str]] = []
+    for _ in range(64):
+        job = new_id("exe")
+        made.append(("jobs", job))
+        made += [
+            ("jobs", lost_notice_id(job, attempt))
+            for attempt in range(1, RESTART_POLICY.max_attempts + 1)
+        ]
+        request = new_id("req")
+        made += [("resources", f"decision-{request}"), ("resources", f"progress-{request}")]
+        made.append(("math", f"{new_id('fnd')}-r{1 << 30}"))
+    made += [("plans", went_on((new_id("pln"), 1, 2, 3, 2**31)))]
+    for source, notice in made:
+        assert Notice(source, (notice,), "f", None).ids == (notice,)
+        if source == "jobs":
+            assert notice_job(notice) == notice.partition(".")[0]
+    RunRecord.model_validate(
+        {
+            "run_id": "run-1",
+            "context": {"project_id": PROJECT, "session_id": SESSION, "environment_id": "e"},
+            "task": TASK,
+            "started_at": "2026-11-27T12:00:00+00:00",
+            "ended_at": "2026-11-27T12:00:01+00:00",
+            "stopped": "answered",
+            "messages": [],
+            "tools": [],
+            "delivered": {source: [notice] for source, notice in made},
+        }
+    )
+
+
+USAGE: Final[Json] = {
+    "model": "scripted",
+    "input_tokens": 1,
+    "output_tokens": 1,
+    "characters": 1,
+}
+
+
+@dataclass(frozen=True)
+class Salvage:
+    """A record that does not validate whole, and what its save keeps of it."""
+
+    name: str
+    fields: Json
+    kept: Json
+    """Fields of the saved record, as their values."""
+    left_out: frozenset[str]
+    minimal: bool = False
+    repeat: bool = False
+    """Whether the next run is told its notices may come again."""
+
+
+SALVAGES: Final = (
+    Salvage(
+        "two_bad_ids",
+        {"delivered": {"jobs": ["a", "b#1", "c", "d#2", "e"], "bad source": ["x"]}},
+        {"delivered": {"jobs": ["a", "c", "e"]}},
+        frozenset({"delivered.jobs.1", "delivered.jobs.3", "delivered.bad source"}),
+        repeat=True,
+    ),
+    Salvage(
+        "one_bad_usage",
+        {"usage": [USAGE, {**USAGE, "bogus": 1}, USAGE]},
+        {"usage": 2},
+        frozenset({"usage.1"}),
+    ),
+    Salvage(
+        "one_bad_summary_element",
+        {"summaries": {"kept": 1, "mixed": {"items": [1, {"x": object()}, 3]}}},
+        {"kept": 1, "mixed": {"items": [1, 3]}},
+        frozenset({"summaries.mixed.items.1"}),
+    ),
+    Salvage(
+        "bad_messages",
+        {"messages": "not a list", "delivered": {"chat": ["m-1", "m#2"]}, "usage": [USAGE]},
+        {"messages": [], "delivered": {"chat": ["m-1"]}, "usage": 1},
+        frozenset({"messages", "delivered.chat.1"}),
+        minimal=True,
+        repeat=True,
+    ),
+    Salvage(
+        "bad_messages_and_deliveries",
+        {"messages": "not a list", "delivered": "not a mapping"},
+        {"messages": [], "delivered": {}},
+        frozenset({"messages", "delivered"}),
+        minimal=True,
+        repeat=True,
+    ),
+    Salvage(
+        "a_key_named_like_a_union_tag",
+        {"summaries": {"reviews": {"dict": 5, "x": [object()]}}},
+        {"reviews": {"dict": 5, "x": []}},
+        frozenset({"summaries.reviews.x.0"}),
+    ),
+    Salvage(
+        "a_bad_tool_call_in_a_message",
+        {
+            "messages": [
+                {"role": "assistant", "tool_calls": [{"id": "c1", "when": object()}]},
+                {"role": "tool", "tool_call_id": "c1", "content": "result"},
+            ],
+            "tools": [{"tool": "a"}, {"tool": "b", "bad": object()}, {"tool": "c"}],
+        },
+        {
+            "messages": [
+                {"role": "assistant", "tool_calls": [{"id": "c1", "when": PLACEHOLDER}]},
+                {"role": "tool", "tool_call_id": "c1", "content": "result"},
+            ],
+            "tools": [{"tool": "a"}, {"tool": "b", "bad": PLACEHOLDER}, {"tool": "c"}],
+        },
+        frozenset({"messages.0.tool_calls.0.when (replaced)", "tools.1.bad (replaced)"}),
+    ),
+)
+
+
+@pytest.mark.parametrize("case", [pytest.param(c, id=c.name) for c in SALVAGES])
+async def test_a_record_that_does_not_validate_is_kept_without_what_failed(
+    tmp_path: Path, case: Salvage
+) -> None:
+    """A save that still meets a record it cannot keep whole keeps it without exactly what
+    failed, each element by its own place, never its neighbours; where a field the record
+    cannot do without fails, the minimal record. It names what it left out, and the run
+    ends as it ended (D-G1): never no record and ``interrupted``."""
+    projects = ProjectStore(tmp_path / "state")
+    try:
+        projects.create(PROJECT, "minimal", POLICY)
+        projects.open_session(PROJECT, SESSION, dedicated=False)
+        environment = projects.get(PROJECT).sessions[SESSION].environment_id
+        fields: dict[str, object] = {
+            "run_id": "run-salvaged",
+            "context": {
+                "project_id": PROJECT,
+                "session_id": SESSION,
+                "environment_id": environment,
+            },
+            "task": TASK,
+            "started_at": "2026-11-27T12:00:00+00:00",
+            "ended_at": "2026-11-27T12:00:01+00:00",
+            "stopped": "answered",
+            "answer": "Done.",
+            "final_text": "Done.",
+            "messages": [],
+            "tools": [],
+            **case.fields,
+        }
+        errors: list[str] = []
+        completion = await record_and_acknowledge(
+            fields, 0, (), projects=projects, error=errors.append
+        )
+        assert completion.recorded, errors
+        assert completion.status == 0, errors
+        (entry,) = projects.runs(PROJECT, SESSION)
+        record = projects.run(PROJECT, SESSION, entry.name)
+    finally:
+        projects.close()
+    assert (record.stopped, record.answer, record.final_text) == ("answered", "Done.", "Done.")
+    for name, value in case.kept.items():
+        if name == "usage":
+            assert len(record.usage) == value, record.usage
+        elif name in ("delivered", "messages", "tools"):
+            assert getattr(record, name) == value
+        else:
+            assert record.summaries[name] == value
+    salvaged = cast(dict[str, Any], record.summaries[SALVAGED])
+    assert set(salvaged["left_out"]) == case.left_out, salvaged
+    assert salvaged.get("minimal", False) is case.minimal
+    assert salvaged.get("notices_may_repeat", False) is case.repeat
+    # Every reader sees it: the completion, the stopped event's fields, and the next run.
+    assert completion.salvaged == salvaged
+    assert salvage_of(record) == {SALVAGED: salvaged}
+    assert errors
+    assert "kept without" in errors[0]
+    store = ProjectStore(tmp_path / "state")
+    try:
+        previous = repeated_after(store.control, PROJECT, SESSION)
+    finally:
+        store.close()
+    assert previous == (entry.name if case.repeat else None)
+    if previous is not None:
+        hook = NoticesMayRepeat(previous)
+        run = Transcript(context=agent.AgentContext(messages=[]))
+        (told,) = await hook.notices("start", run)
+        assert told.framing == NOTICES_MAY_REPEAT.text
+        assert await hook.notices("start", run) == ()
+
+
+def test_a_summary_that_is_not_json_is_kept_without_what_is_not() -> None:
+    """A hook's summary is checked where it is contributed: what of it is not JSON is left
+    out element by element and named; a summary under a name that is not an identifier is
+    refused whole."""
+    summaries: dict[str, Any] = {}
+    contribute(summaries, "jobs", {"ok": [1, "two"]})
+    contribute(summaries, "mixed", {"items": [1, object(), 3], "when": object(), "fine": "x"})
+    contribute(summaries, "bad name", 1)
+    assert summaries["jobs"] == {"ok": [1, "two"]}
+    assert summaries["mixed"] == {"items": [1, 3], "fine": "x"}
+    assert set(summaries[REFUSED]["mixed"]) == {"items.1", "when"}
+    assert "bad name" in summaries[REFUSED]
+    assert "bad name" not in summaries
+
+
+@pytest.mark.parametrize("way", WAYS)
+async def test_a_resumed_tree_whose_sandbox_is_replaced_is_not_retried(
+    harness: Harness, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, way: Way
+) -> None:
+    """A root interrupted by a worker away past the window is resumed by automatic
+    recovery; the Resume's own claim then finds the environment's sandbox replaced. That
+    ends the Resume with its reason recorded, and is not a transient loss, so nothing
+    retries the tree: the user's Resume decides."""
+    async with arrangement(harness, tmp_path, way) as service:
+        case = Case(harness, service, monkeypatch)
+        await managed_claims(case)
+        run = await run_one(case, [Reply("Never.", before=lambda: worker_away(case))])
+        claims = case.claims
+        assert claims is not None
+        claims.away = False
+        assert await what_starts_next(service) == "recovery"
+        control = service.stores.projects.control
+
+        def ended() -> list[dict[str, str]]:
+            with control.read() as tx:
+                rows = tx.sql.execute(
+                    "SELECT detail FROM research_observations WHERE project=? AND session=? "
+                    "AND kind='interruption'",
+                    (PROJECT, SESSION),
+                ).fetchall()
+            return [cast(dict[str, str], json.loads(row[0])) for row in rows]
+
+        async def replaced() -> None:
+            await eventually(ended, timeout=20)
+
+        claims.replace_at = claims.calls + 2  # its first renewal finds another sandbox
+        with contextlib.suppress(Exception):
+            await run_next(case, "recovery", script=[Reply("Never.", before=replaced)])
+        ((found,),) = [ended()]
+        transient = interruption(control, PROJECT, SESSION, found["run"])
+        starts = await what_starts_next(service)
+    assert found["reason"] == "environment_claim_ended", found
+    assert transient is not None
+    assert "kind" not in transient, transient
+    assert run != found["run"]
+    assert starts != "recovery"

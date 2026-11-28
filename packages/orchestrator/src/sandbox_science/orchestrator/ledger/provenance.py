@@ -33,6 +33,7 @@ import sqlite3
 import unicodedata
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from datetime import date as datetime_date
 from pathlib import Path
 from typing import Any, Final
 
@@ -73,6 +74,175 @@ _NUMBER: Final = re.compile(
 _NAMES: Final = re.compile(r"\b(?:I|C|R|A|D|T|REF)-[0-9]+\b|msg-[0-9a-f]{16}|\b\w+-[0-9a-f]{24}\b")
 """Ledger handles and the platform's IDs, whose digits are names, not numbers."""
 _MESSAGE_ID: Final = re.compile(r"msg-[0-9a-f]{16}")
+_MONTHS: Final = {
+    name: number
+    for number, names in enumerate(
+        (
+            ("jan", "january"), ("feb", "february"), ("mar", "march"), ("apr", "april"),
+            ("may",), ("jun", "june"), ("jul", "july"), ("aug", "august"),
+            ("sep", "sept", "september"), ("oct", "october"), ("nov", "november"),
+            ("dec", "december"),
+        ),
+        1,
+    )
+    for name in names
+}  # fmt: skip
+_MONTH: Final = r"(?P<month>[A-Z][a-z]{2,8})\.?"
+"""A month's name as a date writes it, capitalised: "may" is a verb."""
+_COUNTED: Final = (
+    r"(?!\s+(?:rows?|columns?|entries|entry|bits?|bytes?|[KMGT]i?B|keys?|queries|query"
+    r"|samples?|equations?|variables?|cores?|threads?|seconds?|minutes?|hours?|days?|ms|s"
+    r"|rounds?|steps?|iterations?|times|operations?|ops|calls?|elements?|coefficients?"
+    r"|dimensions?|cycles?|signatures?|messages?|trials?|instances?|attempts?|nodes?"
+    r"|vectors?|matrices|monomials?|solutions?|users?|blocks?|items?|values?)\b)"
+)
+"""A number followed by a unit or a count word is a value, whatever precedes it."""
+MAX_FIELD: Final = 256
+"""The largest field order ``GF(q)`` or ``F_q`` names without its number needing backing:
+a prime power up to 256, a field a construction names (GF(2), GF(16), GF(256)), not a
+measured value; a larger one, such as GF(637), is backed like any other number."""
+MAX_FIELD_PRIME: Final = 256
+MAX_FIELD_DEGREE: Final = 128
+"""``GF(p^k)`` names a field without backing for a prime ``p`` up to 256 and ``k`` up to
+128: GF(2^8), GF(2^128)."""
+MAX_SECTION: Final = 99
+"""The largest section, table, figure, equation or theorem number that is a place in a
+paper rather than a value."""
+MAX_PAGE: Final = 300
+MAX_LINE: Final = 120
+"""The largest page and line numbers that are a place in a paper (a PDF's page and line,
+as ``pdf_pages`` numbers them) rather than a value."""
+YEARS: Final = (1970, 2100)
+"""The years a date or an ePrint report may name."""
+EPRINT_FIRST: Final = 1996
+"""The first year of ePrint reports; the last is next year."""
+
+_NAMED: Final = re.compile(
+    r"\b(?:SHA-(?:1|224|256|384|512)|SHA3-(?:224|256|384|512)|SHAKE-?(?:128|256)"
+    r"|AES-(?:128|192|256)|ML-KEM-(?:512|768|1024)|ML-DSA-(?:44|65|87)"
+    r"|Kyber-?(?:512|768|1024)|P-(?:256|384|521)|X25519|X448|Ed25519|Ed448"
+    r"|secp256[kr]1|M4RIE?)(?![\w-])"
+    r"|\b(?:FIPS\s+[0-9]{1,3}(?:-[0-9])?|SP\s+800-[0-9]{1,3}[A-Z]?(?:\s+Rev\.\s*[0-9])?"
+    r"|RFC\s+[0-9]{1,5}|ISO(?:/IEC)?\s+[0-9]{3,5}(?:-[0-9]{1,2}){0,2}(?::[0-9]{4})?"
+    r"|IEEE\s+(?:Std\s+)?[0-9]{3,4}(?:\.[0-9]{1,2})?(?:-[0-9]{4})?)(?![\w.-])" + _COUNTED
+)
+"""Named algorithms with their real parameter sets, and standards by their number in
+their family's form, unless a unit or count word follows it."""
+_FIELD: Final = re.compile(
+    r"\bGF\s*\(\s*(?P<q>[0-9]+)(?:\s*\^\s*\{?\s*(?P<k>[0-9]+)\s*\}?)?\s*\)"
+    r"|(?:\\mathbb\s*\{?\s*F\s*\}?|\bF)\s*_\s*(?:\{\s*(?P<bq>[0-9]+)"
+    r"(?:\s*\^\s*\{?\s*(?P<bk>[0-9]+)\s*\}?)?\s*\}|(?P<sq>[0-9]+)(?![0-9^]))"
+)
+_EPRINT: Final = re.compile(
+    r"(?i:\be-?print)(?:\s+(?i:archive|report))*[\s:,]*(?P<year>[0-9]{4})/[0-9]{3,4}(?![0-9])"
+    + _COUNTED
+)
+_ISO_DATE: Final = re.compile(
+    r"\b(?P<year>[0-9]{4})-(?P<m>[0-9]{2})-(?P<d>[0-9]{2})"
+    r"(?:[T ][0-2][0-9]:[0-5][0-9](?::[0-5][0-9](?:\.[0-9]+)?)?(?:Z|[+-][0-2][0-9]:?[0-5][0-9])?)?"
+    r"(?![0-9])"
+)
+_DAY_MONTH: Final = re.compile(
+    rf"\b(?P<d>[0-3]?[0-9])\s+{_MONTH}\s+(?P<year>[0-9]{{4}})\b" + _COUNTED
+)
+_MONTH_DAY: Final = re.compile(
+    rf"\b{_MONTH}\s+(?:(?P<d>[0-3]?[0-9]),?\s+)?(?P<year>[0-9]{{4}})\b" + _COUNTED
+)
+_PLACE: Final = re.compile(
+    r"(?i:(?P<section>\b(?:sections?|sec\.|tables?|tab\.|figures?|fig\.|algorithms?|alg\."
+    r"|theorems?|thm\.|lemmas?|propositions?|prop\.|corollary|cor\.|definitions?|def\."
+    r"|equations?|eqs?\.|appendix|chapters?|ch\.|remarks?|examples?)|§)"
+    r"|(?P<page>\bpages?|\bpp?\.)|(?P<line>\blines?))"
+    r"\s*\(?(?P<n>[0-9]+)\)?(?![0-9]|[.,][0-9])"
+)
+"""A place in a paper: the one integer directly after the word, never one after it."""
+SEPARATOR: Final = " ; "
+"""What a left-out name becomes: no digit grouping reads across it (``normal``)."""
+
+
+def _prime_power(q: int) -> bool:
+    if q < 2:
+        return False
+    p = next(d for d in range(2, q + 1) if q % d == 0)
+    while q % p == 0:
+        q //= p
+    return q == 1
+
+
+def _prime(p: int) -> bool:
+    return p >= 2 and all(p % d for d in range(2, int(p**0.5) + 1))
+
+
+def _date(year: str, month: int | None, day: str | None) -> bool:
+    if month is None or not YEARS[0] <= int(year) <= YEARS[1]:
+        return False
+    try:
+        datetime_date(int(year), month, int(day) if day else 1)
+    except ValueError:
+        return False
+    return True
+
+
+def _named(found: re.Match[str]) -> str:
+    return SEPARATOR
+
+
+def _field(found: re.Match[str]) -> str:
+    q = int(found["q"] or found["bq"] or found["sq"])
+    k = found["k"] or found["bk"]
+    if k is None:
+        fits = q <= MAX_FIELD and _prime_power(q)
+    else:
+        fits = q <= MAX_FIELD_PRIME and _prime(q) and 1 <= int(k) <= MAX_FIELD_DEGREE
+    return SEPARATOR if fits else found[0]
+
+
+def _eprint(found: re.Match[str]) -> str:
+    year = int(found["year"])
+    return SEPARATOR if EPRINT_FIRST <= year <= datetime_date.today().year + 1 else found[0]
+
+
+def _iso(found: re.Match[str]) -> str:
+    return SEPARATOR if _date(found["year"], int(found["m"]), found["d"]) else found[0]
+
+
+def _worded(found: re.Match[str]) -> str:
+    month = _MONTHS.get(found["month"].lower())
+    return SEPARATOR if _date(found["year"], month, found["d"]) else found[0]
+
+
+def _place(found: re.Match[str]) -> str:
+    limit = MAX_SECTION if found["section"] else MAX_PAGE if found["page"] else MAX_LINE
+    return SEPARATOR if 1 <= int(found["n"]) <= limit else found[0]
+
+
+_RULES: Final = (
+    (_NAMED, _named),
+    (_FIELD, _field),
+    (_EPRINT, _eprint),
+    (_ISO_DATE, _iso),
+    (_DAY_MONTH, _worded),
+    (_MONTH_DAY, _worded),
+    (_PLACE, _place),
+)
+"""Numbers inside a name or a standard notation, which are no measured value: a named
+algorithm with its parameter set (``SHA-256``, ``AES-128``) or a standard, a small field
+(``GF(16)``, ``F_16``), an ePrint report of a plausible year, a valid date, and a small
+section, table, page or line number. Any other name with digits (``BKZ-60``, ``Rank637``)
+holds a value, which needs backing."""
+
+
+def _notations(text: str) -> str:
+    for rule, keep in _RULES:
+        text = rule.sub(keep, text)
+    return text
+
+
+def _unnamed(text: str) -> str:
+    """``text`` without its handles, IDs and named notations, whose digits are names,
+    looked for as written and once its numbers are in one notation (``GF(2⁸)``)."""
+    text = _notations(_NAMES.sub(" ", text))
+    return _notations(normal(text))
 
 
 @dataclass(frozen=True)
@@ -132,17 +302,25 @@ def _scientific(mantissa: str, exponent: str) -> str:
     return f"10^{power}" if float(mantissa) == 1 else f"{mantissa}e{power}"
 
 
-def numbers(text: str) -> set[str]:
-    """The numbers ``text`` holds, normalized, leaving out ledger handles and IDs; digits
-    next to letters count (``80bit``, ``AES-128``)."""
-    return {n.lower() for n in _NUMBER.findall(normal(_NAMES.sub(" ", text)))}
+def numbers(text: str, *, named: bool = False) -> set[str]:
+    """The numbers ``text`` holds, normalized, leaving out ledger handles, IDs and the
+    numbers of names and standard notations (``_NOTATIONS``: ``GF(16)``, ``AES-128``,
+    ``Table 1``, a date); digits before letters count (``80bit``, ``128-bit``). With
+    ``named``, for what an observation shows, a name's numbers count too: a result
+    that says ``BKZ-60`` backs a block size of 60."""
+    found = {n.lower() for n in _NUMBER.findall(_unnamed(text))}
+    if named:
+        # Both readings: a name's digits as written, and the numbers beside a name,
+        # which the name's own digits must not join (``AES-128 256``).
+        found |= {n.lower() for n in _NUMBER.findall(normal(_NAMES.sub(" ", text)))}
+    return found
 
 
 def unread(text: str) -> str | None:
     """What of ``text`` holds a number ``numbers`` does not read, if anything, with what
     surrounds it: a power whose exponent is no plain number (``2^{80+1}``), or a digit or
     numeral left over (``①``, ``½``, ``Ⅷ``)."""
-    read = normal(_NAMES.sub(" ", text))
+    read = _unnamed(text)
     found = _EXPRESSION.search(read)
     if found is not None:
         return read[max(0, found.start() - 10) : found.end() + 10].strip()
@@ -354,11 +532,13 @@ def check(
                 f"{left!r}: write numbers in digits (2^80, 1.2e-5, 1000000), or record it "
                 "as interpreted"
             )
-    found = set[str]().union(*(numbers(text) for text in seen))
+    found = set[str]().union(*(numbers(text, named=True) for text in seen))
     missing = sorted(set[str]().union(*(numbers(text) for text in texts)) - found)
     if missing:
+        named = ", ".join(missing[:5])
+        more = f" and {len(missing) - 5} more" if len(missing) > 5 else ""
         raise refused(
-            f"{where} is observed, but {', '.join(missing[:5])} "
+            f"{where} is observed, but {named}{more} "
             f"{'is' if len(missing) == 1 else 'are'} in none of its observations: copy "
             "numbers from what was observed, or record it as interpreted. Every number it "
             "holds appears in a tool result or artifact it anchors on, or an artifact or "
@@ -445,6 +625,23 @@ def users_words(db: sqlite3.Connection, project: str, message: str) -> list[str]
             (project, session, json.dumps(named), json.dumps(sorted(PLATFORM_AUTHORS))),
         )
     ]
+
+
+def written_by(db: sqlite3.Connection, project: str, message: str) -> str | None:
+    """Who wrote an archive message of the conversation's input (``user`` or ``task``), by
+    the one rule of the user's words (``users_words``): ``user`` when it holds them;
+    ``agent`` for a delegated run's task, the brief its parent agent wrote; ``platform``
+    for any other, such as the stand-in task for comments or chat the platform wrote.
+    None for a message of another kind, or none at all."""
+    row = db.execute(
+        "SELECT kind,parent FROM archive_messages WHERE project=? AND message_id=?",
+        (project, message),
+    ).fetchone()
+    if row is None or row[0] not in ("user", "task"):
+        return None
+    if users_words(db, project, message):
+        return "user"
+    return "agent" if row[0] == "task" and row[1] is not None else "platform"
 
 
 def executed(

@@ -20,6 +20,8 @@ import socket
 import time
 from collections.abc import Generator, Iterable
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Final
 
 KILL_ROUNDS = 5
 OWNER = "SANDBOX_SCIENCE_OWNER"
@@ -365,3 +367,61 @@ def job_usage(owner: str, leader: Leader | None) -> tuple[float, int]:
         except (OSError, ValueError, IndexError):
             continue
     return ticks / os.sysconf("SC_CLK_TCK"), pages * os.sysconf("SC_PAGE_SIZE")
+
+
+JOB_SESSIONS: Final = "job-sessions"
+"""The file in the executor's state directory where it notes each job's session, by its
+leader's pid and start time, so that a new daemon can end what an old one's jobs left."""
+
+
+def note_job_session(state: Path, leader: Leader) -> None:
+    """Note a job's session, so that a later daemon ends it even if its processes dropped
+    their owner mark (job restarts: never two attempts at once)."""
+    with contextlib.suppress(OSError):
+        state.mkdir(parents=True, exist_ok=True)
+        with open(state / JOB_SESSIONS, "a", encoding="ascii") as handle:
+            handle.write(f"{leader[0]} {leader[1]}\n")
+
+
+def _noted(state: Path) -> list[Leader]:
+    try:
+        words = (state / JOB_SESSIONS).read_text(encoding="ascii", errors="replace").split()
+    except OSError:
+        return []
+    return [
+        (int(pid), int(start))
+        for pid, start in zip(words[0::2], words[1::2], strict=False)
+        if pid.isdigit() and start.isdigit()
+    ]
+
+
+def noted_job_sessions(state: Path) -> list[Process]:
+    """The live processes in the job sessions an earlier daemon noted: in the session of a
+    noted leader that still runs as the process noted, by its pid and start time. A
+    leader that has gone leaves its session's number to whatever takes the pid next, so
+    its session is not taken for the job's."""
+    table = process_table()
+    me = os.getpid()
+    sessions = {
+        pid
+        for pid, start in _noted(state)
+        if (head := table.get(pid)) is not None and head.start == start
+    }
+    return [info for info in table.values() if info.session in sessions and info.pid != me]
+
+
+def forget_job_session(state: Path, leader: Leader) -> None:
+    """Forget one job's noted session once its processes have been ended with it."""
+    kept = [noted for noted in _noted(state) if noted != leader]
+    with contextlib.suppress(OSError):
+        if not kept:
+            (state / JOB_SESSIONS).unlink(missing_ok=True)
+            return
+        temporary = state / (JOB_SESSIONS + ".new")
+        temporary.write_text("".join(f"{pid} {start}\n" for pid, start in kept), "ascii")
+        os.replace(temporary, state / JOB_SESSIONS)
+
+
+def forget_job_sessions(state: Path) -> None:
+    with contextlib.suppress(OSError):
+        (state / JOB_SESSIONS).unlink()

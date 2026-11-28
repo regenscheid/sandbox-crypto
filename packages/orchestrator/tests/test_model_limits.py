@@ -597,7 +597,8 @@ async def test_a_run_rides_out_a_rate_limit_and_records_its_usage(harness: Harne
     first, _, last = (len(messages) for messages in harness.gateway.main)
     # Each call's time is its own (test_run_timing): present, not compared.
     assert all(usage.duration_ms is not None and usage.started_at for usage in record.usage)
-    timing = {"characters", "started_at", "duration_ms"}
+    assert all(usage.prepared_ms is not None for usage in record.usage)
+    timing = {"characters", "started_at", "duration_ms", "prepared_ms", "recorded_ms"}
     assert [usage.model_dump(exclude=timing) for usage in record.usage] == [
         {
             "intent_id": None,  # the main response intent is journaled separately
@@ -609,6 +610,7 @@ async def test_a_run_rides_out_a_rate_limit_and_records_its_usage(harness: Harne
             "cost": None,
             "cost_source": None,  # the scripted gateway gives no prices either
             "gateway_version": GATEWAY_VERSION,  # each call's, as the run record keeps it
+            "upstream": None,  # the scripted gateway names no deployment
             "thinking_replay": None,  # chat completions sends no thinking back
             "retried": retried,
             "refusals": [],  # no call was declined (CM-42a)

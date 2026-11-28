@@ -20,13 +20,15 @@ import logging
 import re
 from collections.abc import Awaitable, Callable, Coroutine, Iterable
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 from sandbox_science.contracts import TERMINAL_STATES, Clock, ErrorKind
+from sandbox_science.contracts.restarts import LossCause
 
 from .channel import ExecutorChannel
 from .connections import Connection, EnvironmentConnections
 from .errors import WorkerError
+from .job_restarts import attempt_began
 from .lifecycle import EnvironmentLifecycle
 from .live import REQUEST, Live, time_limit
 from .publication import Publication
@@ -49,13 +51,20 @@ class _UnreachedError(Exception):
     """A recovery attempt that did not reach the daemon, with why, which is retried."""
 
 
+class Lose(Protocol):
+    """``Dispatcher.lose``, with why the attempt was lost, which decides whether a job
+    that asked for ``restart`` runs again (``RESTART_POLICY``)."""
+
+    def __call__(self, live: Live, what: str, cause: LossCause | None = None) -> None: ...
+
+
 @dataclass(frozen=True)
 class RecoveryHooks:
     """What recovery asks of the rest of the manager."""
 
     lives: Callable[[], Iterable[Live]]
     """The executions the manager has in memory."""
-    lose: Callable[[Live, str], None]
+    lose: Lose
     """End an execution whose outcome is unknown, because the named thing stopped."""
     spawn: Callable[[Coroutine[Any, Any, Any]], asyncio.Task[Any]]
     """Start a background task that the manager owns and cancels when it closes."""
@@ -182,12 +191,14 @@ class DaemonRecovery:
         saved = self.store.recovery(live.execution.execution_id)
         if saved is not None and (live.watchdog is None or live.watchdog.done()):
             request = REQUEST.validate_json(saved[0])
-            elapsed = max(
-                0.0,
-                (
-                    self.clock.now() - (live.execution.started_at or live.execution.submitted_at)
-                ).total_seconds(),
-            )
+            execution = live.execution
+            dispatched = None
+            if execution.job is not None and execution.job.attempts:
+                found = self.store.attempt_dispatch(execution.execution_id, execution.job.attempt)
+                dispatched = found[1] if found is not None else None
+            # A restarted job's later attempt counts its limit from its own dispatch.
+            began = attempt_began(execution, dispatched)
+            elapsed = max(0.0, (self.clock.now() - began).total_seconds())
             live.time_limit = live.time_limit or time_limit(request)
             live.watchdog = self.hooks.spawn(self.hooks.watch(live, time_limit(request) - elapsed))
 
@@ -199,7 +210,11 @@ class DaemonRecovery:
         if confirmed_loss is not None and await confirmed_loss(environment_id):
             self.usability.sandbox_stopped(environment_id)
             for live in self.unattached(environment_id):
-                self.hooks.lose(live, "the sandbox that was deleted, stopped or replaced")
+                self.hooks.lose(
+                    live,
+                    "the sandbox that was deleted, stopped or replaced",
+                    LossCause.SANDBOX_STOPPED,
+                )
             return True
         try:
             channel = (await self.hooks.connect(environment_id)).channel
@@ -217,7 +232,7 @@ class DaemonRecovery:
                     "cannot quiesce unknown daemon tasks; startup refused",
                 ) from exc
             for live in self.unattached(environment_id):
-                self.hooks.lose(live, "the sandbox executor incarnation")
+                self.hooks.lose(live, "the sandbox executor incarnation", LossCause.SAME_DAEMON)
             return True
         for live in self.unattached(environment_id):
             if live.execution.state in TERMINAL_STATES:
@@ -225,7 +240,12 @@ class DaemonRecovery:
             self._keep_watchdog(live)
             saved = self.store.recovery(live.execution.execution_id)
             if saved is None or channel.incarnation != saved[1]:
-                self.hooks.lose(live, "the sandbox executor incarnation")
+                # A new incarnation reaped the old one's processes as it started.
+                self.hooks.lose(
+                    live,
+                    "the sandbox executor incarnation",
+                    LossCause.NEW_DAEMON if saved is not None else None,
+                )
                 continue
             live.channel = channel
             live.dispatched = True
@@ -248,7 +268,11 @@ class DaemonRecovery:
                                     await asyncio.sleep(0.05)
                 except (WorkerError, TimeoutError):
                     await channel.shutdown()
-                    self.hooks.lose(live, "the executor that did not confirm recovery cancellation")
+                    self.hooks.lose(
+                        live,
+                        "the executor that did not confirm recovery cancellation",
+                        LossCause.CANCEL_UNCONFIRMED,
+                    )
                     continue
             try:
                 await self._replay(live, channel)
@@ -350,7 +374,11 @@ class DaemonRecovery:
             )
             if reply.get("found") is not True:
                 if live.execution.state not in TERMINAL_STATES:
-                    self.hooks.lose(live, "the executor with no retained execution record")
+                    self.hooks.lose(
+                        live,
+                        "the executor with no retained execution record",
+                        LossCause.RECORD_GONE,
+                    )
                 return
             if reply.get("more") is not True or live.execution.state in TERMINAL_STATES:
                 return
@@ -441,4 +469,4 @@ class DaemonRecovery:
                 and saved[1] == previous
                 and live.execution.state not in TERMINAL_STATES
             ):
-                self.hooks.lose(live, "the sandbox executor incarnation")
+                self.hooks.lose(live, "the sandbox executor incarnation", LossCause.NEW_DAEMON)

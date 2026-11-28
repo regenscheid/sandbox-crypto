@@ -57,6 +57,7 @@ from sandbox_science.contracts import (
     WriteFileRequest,
     WriteFileResult,
 )
+from sandbox_science.contracts.restarts import LossCause
 from sandbox_science.contracts.worker import (
     FEATURES,
     LANGUAGES,
@@ -118,7 +119,12 @@ class ExecutionManager:
         timeouts: ManagerTimeouts = MANAGER_TIMEOUTS,
         lifecycle: EnvironmentLifecycle = UNMANAGED,
         clock: Clock = SYSTEM_CLOCK,
+        job_restarts: bool = True,
+        job_restarts_unisolated: bool = False,
     ) -> None:
+        """``job_restarts`` is the worker setting: whether a lost job that asked for
+        ``restart`` is started again (``job_restarts``); ``job_restarts_unisolated`` allows
+        it on the local backend, where a lost attempt's processes may outlive its daemon."""
         for name, value in (
             ("capture_timeout", capture_timeout),
             ("capture_ack_timeout", capture_ack_timeout),
@@ -223,7 +229,7 @@ class ExecutionManager:
             self._publication,
             RecoveryHooks(
                 lives=self._journal.live.values,
-                lose=lambda live, what: self._dispatcher.lose(live, what),
+                lose=lambda live, what, cause=None: self._dispatcher.lose(live, what, cause),
                 spawn=self._spawn,
                 watch=lambda live, timeout: self._dispatcher.watch(live, timeout),
                 watch_cancel=lambda live: self._dispatcher.watch_cancel(live),
@@ -251,6 +257,9 @@ class ExecutionManager:
             shared=shared,
             lifecycle=lifecycle,
             sandboxes=lambda: self.job_sandboxes,
+            daemon=backend.daemon,
+            job_restarts=job_restarts,
+            contained=backend.name != "local" or job_restarts_unisolated,
         )
         self.job_sandboxes: JobSandboxes | None = None
         """Job sandboxes (D93), set when the worker is built with job profiles."""
@@ -371,7 +380,9 @@ class ExecutionManager:
 
     def environment_given_up(self, environment_id: str) -> None:
         """The worker gave up an environment whose sandbox went or was replaced: its job
-        sandboxes end as on its deletion, in the background."""
+        sandboxes end as on its deletion, in the background, and its lost jobs' next
+        attempts, which would resume from its workspace, end ``lost``."""
+        self._dispatcher.restarts.given_up(environment_id)
         if self.job_sandboxes is not None:
             self._spawn(self.end_job_sandboxes(environment_id))
 
@@ -419,7 +430,7 @@ class ExecutionManager:
                 self.backend.daemon and live.dispatched and saved is not None and bool(saved[1])
             ) or self._dispatcher.sandboxed(live.execution)
             if live.execution.state not in TERMINAL_STATES and not recoverable:
-                self._dispatcher.lose(live, "the worker")
+                self._dispatcher.lose(live, "the worker", LossCause.EXECUTOR_EXITED)
 
     # Bookkeeping.
 
@@ -495,7 +506,9 @@ class ExecutionManager:
         for live in list(self._journal.live.values()):
             if live.channel is channel and live.execution.state not in TERMINAL_STATES:
                 self._dispatcher.lose(
-                    live, "the worker" if self._usability.closing else "the executor"
+                    live,
+                    "the worker" if self._usability.closing else "the executor",
+                    LossCause.EXECUTOR_EXITED,
                 )
         self._connections.closed(environment_id, channel)
 

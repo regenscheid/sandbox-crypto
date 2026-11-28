@@ -158,6 +158,8 @@ export interface BackgroundJob {
   purpose: string;
   expected_progress: string;
   elapsed_seconds: number;
+  elapsed_total_seconds: number;
+  waiting_seconds: number;
   exit_code: number | null;
   error: string | null;
   stdout: string;
@@ -170,6 +172,9 @@ export interface BackgroundJob {
   memory_bytes: number | null;
   logs: JobLogs;
   worker_restart: string;
+  restart: boolean;
+  attempt: number;
+  attempts: JobAttemptView[];
   checkin: JobCheckin | null;
   sandbox?: JobSandboxView;
   manifest?: JobManifestView;
@@ -1577,6 +1582,26 @@ export interface InspectionRow {
   uninspected: number;
 }
 
+export interface JobAttemptFile {
+  path: string;
+  size: number;
+  sha256: string | null;
+}
+
+/** An earlier attempt of a restarted job, which the worker lost (job restarts). */
+export interface JobAttemptView {
+  attempt: number;
+  state: "lost";
+  reason: string;
+  started_at: string | null;
+  lost_at: string;
+  logs: JobLogs;
+  sent: boolean;
+  survived: JobAttemptFile[] | string;
+  survived_truncated: boolean;
+  survived_unattributed: string[];
+}
+
 export interface JobCancellation {
   job_id: string;
   state: string;
@@ -1972,11 +1997,14 @@ export interface ModelUsage {
   cost: number | null;
   cost_source: "gateway" | "model_info" | null;
   gateway_version: string | null;
+  upstream: Record<string, string> | null;
   thinking_replay: string | null;
   retried: string[];
   refusals: Refusal[];
   started_at: string | null;
   duration_ms: number | null;
+  prepared_ms: number | null;
+  recorded_ms: number | null;
 }
 
 /** What the event store's records say for the window. */
@@ -2131,6 +2159,7 @@ export interface PlanEvidence {
   revision: number | null;
   sha256: string | null;
   attempt_id: string | null;
+  written_by: PlanWriter | null;
 }
 
 export interface PlanHead {
@@ -2195,6 +2224,13 @@ export interface PlanVersion {
   body: PlanBody;
   author: PlanAuthority;
   reason: string;
+  recorded_at: string;
+}
+
+/** Who recorded the artifact revision evidence given by a workspace path names, as the inventory attributes it, set by the platform when it resolves the path. */
+export interface PlanWriter {
+  session_id: string;
+  run_id: string;
   recorded_at: string;
 }
 
@@ -2709,7 +2745,7 @@ export interface RunEntry {
 export interface RunEvent {
   seq: number;
   at: string;
-  kind: "started" | "user" | "model" | "assistant" | "tool" | "notice" | "waiting" | "stopped" | "fold";
+  kind: "started" | "user" | "model" | "assistant" | "tool" | "notice" | "waiting" | "stopped" | "fold" | "model_profile";
   data: Record<string, JsonValue>;
   pins: Record<string, JsonValue>[];
 }

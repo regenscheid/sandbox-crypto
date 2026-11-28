@@ -89,6 +89,7 @@ from .revisions import (
 )
 from .worker import (
     TERMINAL_STATES,
+    AttemptFile,
     Capabilities,
     CellRequest,
     EditFileRequest,
@@ -108,6 +109,7 @@ from .worker import (
     GrepRequest,
     GrepResult,
     IsolationEvidence,
+    JobAttempt,
     JobDetails,
     JobListing,
     JobProfileOffer,
@@ -158,6 +160,7 @@ __all__ = [
     "AdmissionResult",
     "AdmissionSummary",
     "ArtifactRef",
+    "AttemptFile",
     "Capabilities",
     "CatalogChange",
     "CatalogContentChunk",
@@ -197,6 +200,7 @@ __all__ = [
     "HostPort",
     "Identifier",
     "IsolationEvidence",
+    "JobAttempt",
     "JobDetails",
     "JobListing",
     "JobProfileOffer",

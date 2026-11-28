@@ -235,7 +235,14 @@ def test_a_proposal_that_its_basis_does_not_bear_out_is_refused(
     propose(
         memory, "seen", action="add", text=FACT, basis="observed", anchors=[{"message": message}]
     )
-    assert [p.basis for p in memory.proposals("p")] == ["user_quoted", "interpreted", "observed"]
+    # The 16 of GF(16) names a field, so an observation need not hold it (R10).
+    propose(
+        memory, "field", action="add", basis="observed", anchors=[{"message": message}],
+        text="Over GF(16) the NIST CSRC server rate-limits after 20 requests a minute.",
+    )  # fmt: skip
+    assert [p.basis for p in memory.proposals("p")] == [
+        "user_quoted", "interpreted", "observed", "observed",
+    ]  # fmt: skip
 
 
 def test_a_proposal_keeps_to_its_limits_and_the_user_is_not_an_agent(

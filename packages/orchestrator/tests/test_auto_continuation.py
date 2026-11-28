@@ -8,7 +8,10 @@ import json
 import pytest
 
 from sandbox_science.orchestrator.context.history import Archive, body
-from sandbox_science.orchestrator.continuity.auto_continuation import AutoContinuation
+from sandbox_science.orchestrator.continuity.auto_continuation import (
+    AutoContinuation,
+    claim_in_run,
+)
 from sandbox_science.orchestrator.continuity.records import WorkRecords
 from sandbox_science.orchestrator.documents import DocumentStore
 from sandbox_science.orchestrator.notices import PLATFORM_INPUT, SUPERVISOR
@@ -258,3 +261,38 @@ def test_a_plan_whose_every_open_step_is_blocked_waits_for_the_user(projects: Pr
     # Once a step can be worked again, the plan continues.
     update(plans, current.head.ref, cursor=1, status="in_progress", operation="unblock")
     assert supervisor.queue("p", "s", RUN) is not None
+
+
+def went_on(projects: ProjectStore, plans: SessionPlans) -> bool:
+    """A root run going on past an answer at the current plan state, as the plan hook
+    records it (``plan_tools.Plans.goes_on``)."""
+    summary = plans.summary(actor())
+    assert summary is not None
+    with projects.control.write() as tx:
+        return claim_in_run(tx.sql, "p", "s", summary, run="main-run", observed=1.0)
+
+
+def test_a_plan_state_the_run_went_on_from_queues_no_new_root(projects: ProjectStore):
+    """Baseline run 2, R1: a run that went on past an answer used its plan state's
+    continuation; a second answer at that state ends it, and no new root follows."""
+    supervisor, plans = setup(projects)
+    assert went_on(projects, plans)
+    assert not went_on(projects, plans)
+    assert supervisor.queue("p", "s", RUN) is None
+    assert RunState(projects.control).messages("p", "s") == []
+    # Progress is a new state, with its own continuation.
+    current = plans.current(actor())
+    assert current is not None
+    update(plans, current.head.ref, status="in_progress")
+    assert supervisor.queue("p", "s", RUN) is not None
+    assert not went_on(projects, plans)
+
+
+def test_a_session_without_its_root_work_keeps_no_record(projects: ProjectStore):
+    documents = DocumentStore(projects.control.path)
+    plans = SessionPlans(documents)
+    status(plans, made(plans).ref, "active")
+    assert went_on(projects, plans)
+    with projects.control.read() as tx:
+        rows = tx.sql.execute("SELECT count(*) FROM research_observations").fetchone()
+    assert rows == (0,)

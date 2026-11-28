@@ -64,6 +64,31 @@ def execution_projection(record: Json) -> tuple[Json, bool]:
             for k, v in payload["error"].items()
             if k in ("kind", "message")
         }
+    job = cast(Json, record.get("job") or {})
+    if job.get("attempts"):
+        # A restarted job is one execution: its earlier attempts were lost, and its result
+        # and written files are its last attempt's own (job restarts).
+        payload["attempt"] = job.get("attempt")
+        payload["lost_attempts"] = [
+            {
+                "attempt": attempt.get("attempt"),
+                "attempt_id": attempt.get("attempt_id"),
+                "started_at": attempt.get("started_at"),
+                "lost_at": attempt.get("lost_at"),
+                "reason": clipped(str(attempt.get("reason", "")), 512),
+                # What it wrote that the next attempt found, by its digest then.
+                "wrote": [
+                    {"path": clipped(str(file.get("path", "")), 256), "sha256": file.get("sha256")}
+                    for file in cast(list[Json], attempt.get("survived") or [])[:20]
+                    if not other_sessions_upload(session, str(file.get("path", "")))
+                ],
+                "wrote_known": attempt.get("survived") is not None,
+                "not_attributed": len(
+                    cast(list[object], attempt.get("survived_unattributed") or [])
+                ),
+            }
+            for attempt in cast(list[Json], job.get("attempts"))[:10]
+        ]
     payload["omitted_rich_outputs"] = len(result.get("outputs", []))
     payload["canonical_execution"] = record.get("execution_id")
     complete = complete and not (

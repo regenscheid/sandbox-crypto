@@ -24,6 +24,7 @@ from sandbox_science.orchestrator.model import (
     ModelError,
     ToolCall,
     ToolSpec,
+    cached_for,
 )
 from sandbox_science.orchestrator.model_profiles import ModelProfile
 from sandbox_science.orchestrator.purpose import PurposeError, offered_all, split, without
@@ -54,6 +55,13 @@ class Read(Contract):
     start: int = Field(default=0, ge=0, le=100000000, strict=True)
     count: int = Field(default=READ_CHARACTERS, ge=1, le=READ_CHARACTERS, strict=True)
     block: str | None = Field(default=None, pattern=r"^b[0-9]{1,9}$")
+
+
+class RequestRead(Contract):
+    entry: str | None = Field(default=None, min_length=1, max_length=64)
+    page: int = Field(default=0, ge=0, le=100000, strict=True)
+    start: int = Field(default=0, ge=0, le=100000000, strict=True)
+    count: int = Field(default=READ_CHARACTERS, ge=1, le=READ_CHARACTERS, strict=True)
 
 
 class Manifest(Contract):
@@ -143,6 +151,21 @@ SPECS = (
         ["evidence"],
     ),
     schema(
+        "review_request_read",
+        "Read whole one message the user wrote, or one answer of the user's with its "
+        "question and options, by the ID the request item names (message or answer_to), "
+        "in slices of characters as review_read; with no entry, list a page of the user's "
+        "messages and answers with their IDs, to read those the request item clipped, "
+        "summarised or grouped. Only the user's own; nothing else is read here.",
+        {
+            "entry": {"type": "string"},
+            "page": {"type": "integer"},
+            "start": {"type": "integer"},
+            "count": {"type": "integer"},
+        },
+        [],
+    ),
+    schema(
         "review_checked",
         "Record a claim you checked and found consistent, with evidence IDs.",
         {
@@ -219,7 +242,10 @@ class ReviewerRunner:
         images: ImageViewer | None = None,
     ) -> None:
         self.store, self.project, self.session = store, project, session
-        self.review, self.owner, self.model = review, owner, model
+        # The review's calls share a prompt cache of their own (CR-49): each sends the
+        # conversation the one before sent, and more.
+        self.review, self.owner = review, owner
+        self.model = None if model is None else cached_for(model, project, session, review=review)
         self.memory = memory
         """The project memory, given after the rubric (PM-6)."""
         self.images = images
@@ -288,6 +314,16 @@ class ReviewerRunner:
                         self.session,
                         self.review,
                         **read.model_dump(),
+                        owner=self.owner,
+                    )
+                elif call.name == "review_request_read":
+                    asked = RequestRead.model_validate(raw)
+                    result = await asyncio.to_thread(
+                        self.store.read_request,
+                        self.project,
+                        self.session,
+                        self.review,
+                        **asked.model_dump(),
                         owner=self.owner,
                     )
                 elif call.name == "review_checked":

@@ -67,6 +67,21 @@ export class JobCancels {
   }
 }
 
+/** How many of a restarted job's attempts the worker lost, and which attempt runs now. */
+export function attemptsText(job: BackgroundJob): string {
+  const lost = job.attempts.length;
+  const now = finishedStates.has(job.state) ? 'last attempt' : 'attempt';
+  return `Lost ${lost} time${lost === 1 ? '' : 's'}, restarted; ${now} ${job.attempt}`;
+}
+
+/** Why a lost job was not run again, in platform words. */
+export function lostText(job: BackgroundJob): string {
+  if (!job.restart) {
+    return 'The worker lost this job. It was not started with restart, so it was not run again.';
+  }
+  return `The worker lost this job ${job.attempts.length + 1} times and did not restart it again.`;
+}
+
 /** What a job sandbox's phase means to the user (JS-4); platform words, never agent text. */
 const PHASE_TEXT: Record<string, string> = {
   creating: 'creating: not placed yet',
