@@ -378,6 +378,11 @@ WOKEN: Final = (
     "next, then call wait_jobs again to go on waiting."
 )
 """What a wait an agent message or a child's end woke says to do."""
+JOBS_UNREAD: Final = (
+    "the worker does not answer now, as while it restarts; the jobs keep running: call "
+    "wait_jobs or job_status again to read them"
+)
+"""What a woken wait says of its jobs when the worker does not answer."""
 LOST_WAKE: Final = (
     "An attempt of a job was lost: its sandbox, executor or worker stopped while it ran. "
     "Its state and attempts say whether it is being started again (restart) or ended "
@@ -860,9 +865,19 @@ class JobTools:
         request = WaitRequest.model_validate(args)
         if len(set(request.job_ids)) != len(request.job_ids):
             raise WorkerAPIError(ErrorKind.INVALID_REQUEST, "wait job IDs must be distinct")
-        # Check ownership before creating a visible wait or consuming a message.
-        before = await self._statuses(request.job_ids)
-        lost = {status.execution.execution_id: _attempts(status) for status in before}
+        # Check ownership before creating a visible wait or consuming a message. A worker
+        # that does not answer now is waited for inside the wait, which a message ends.
+        try:
+            before = await asyncio.gather(*(self.owned(job) for job in request.job_ids))
+        except WorkerAPIError as error:
+            if error.kind is not ErrorKind.UNAVAILABLE:
+                raise
+            before = None
+        lost = (
+            {status.execution.execution_id: _attempts(status) for status in before}
+            if before is not None
+            else None
+        )
         waiting: dict[str, object] = {
             "run_id": self.run_id,
             "state": "waiting",
@@ -891,8 +906,13 @@ class JobTools:
                 if reason != "user_message":
                     value["next"] = WOKEN
                     # The jobs as they stand, which keep running.
-                    statuses = await asyncio.gather(*(self.owned(j) for j in request.job_ids))
-                    value["jobs"] = [summary(st, self.clock.now()) for st in statuses]
+                    try:
+                        statuses = await asyncio.gather(*(self.owned(j) for j in request.job_ids))
+                        value["jobs"] = [summary(st, self.clock.now()) for st in statuses]
+                    except WorkerAPIError as error:
+                        if error.kind is not ErrorKind.UNAVAILABLE:
+                            raise
+                        value["jobs_unread"] = JOBS_UNREAD
             # The ended executions are the record's, for the review (lab 41's B7), not
             # the model's: its answer has their summaries.
             executions = value.pop(_ENDED, [])
@@ -934,13 +954,17 @@ class JobTools:
             await self.on_wait(payload)
 
     async def _wait_loop(
-        self, request: WaitRequest, waiting: dict[str, object], lost: dict[str, int]
+        self, request: WaitRequest, waiting: dict[str, object], lost: dict[str, int] | None
     ) -> dict[str, object]:
         """Wait for the jobs' end, as ``mode`` asks; the loss of any job's attempt, whether
         it is restarted or ends lost, ends the wait with ``job_lost``; a worker that does
         not answer is waited for (``_statuses``)."""
         while True:
             statuses = await self._statuses(request.job_ids)
+            if lost is None:
+                # The worker did not answer as the wait began: its first answer is the
+                # wait's start, and an owner it does not confirm still ends the wait.
+                lost = {status.execution.execution_id: _attempts(status) for status in statuses}
             ended = [status for status in statuses if status.execution.state in TERMINAL_STATES]
             done = (request.mode == "first" and ended) or len(ended) == len(statuses)
             losses = [s for s in statuses if _attempts(s) > lost[s.execution.execution_id]]

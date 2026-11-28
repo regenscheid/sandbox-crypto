@@ -266,11 +266,15 @@ class Claims:
     ``away``, the worker does not answer, as while its Pod restarts."""
 
     away: bool = False
+    replaced: bool = False
+    """Whether the environment has another sandbox now, which ends the claim."""
     calls: int = 0
+    failed: int = 0
 
     async def claim(self, request: EnvironmentClaim) -> EnvironmentClaimResult:
         self.calls += 1
         if self.away:
+            self.failed += 1
             raise WorkerAPIError(ErrorKind.UNAVAILABLE, "cannot reach the worker: synthetic")
         if not request.seconds:
             return EnvironmentClaimResult(
@@ -279,7 +283,7 @@ class Claims:
         return EnvironmentClaimResult(
             environment_id=request.context.environment_id,
             state="held",
-            sandbox_id="ss-synthetic",
+            sandbox_id="ss-other" if self.replaced else "ss-synthetic",
             expires_at=datetime.now(UTC) + timedelta(seconds=request.seconds),
         )
 
@@ -309,6 +313,28 @@ async def worker_away(case: Case) -> None:
     control = case.service.stores.projects.control
     run = case.work().current
     await eventually(lambda: interruption(control, PROJECT, SESSION, run) is not None, timeout=20)
+
+
+async def claim_replaced(case: Case) -> None:
+    """The environment's sandbox is replaced while the run's model call is out: the worker
+    ends the claim, which interrupts the run, and nothing marks it transient."""
+    assert case.claims is not None
+    case.claims.replaced = True
+    control = case.service.stores.projects.control
+    run = case.work().current
+    await eventually(lambda: interruption(control, PROJECT, SESSION, run) is not None, timeout=20)
+
+
+async def stop_while_worker_away(case: Case) -> None:
+    """The worker stops answering while the run's model call waits, and the user stops the
+    run inside the outage window: the user's stop wins. The worker answers again once the
+    run has ended."""
+    assert case.claims is not None
+    await asyncio.wait_for(case.gate.entered.wait(), 20)
+    case.claims.away = True
+    await eventually(lambda: case.claims is not None and case.claims.failed >= 2, timeout=20)
+    await cancel_at_gate(case)
+    await worker_back(case)
 
 
 async def worker_back(case: Case) -> None:
@@ -572,6 +598,32 @@ ENDINGS: Final[tuple[Ending, ...]] = (
         next="recovery",
         given=(TASK, NEW_ATTEMPT, "redelivered"),
         known={"owed": HELD_UNSAID, "given": RESENT},
+    ),
+    Ending(
+        "interrupted_claim_ended",
+        "interrupted",
+        lambda case: [Reply("Never.", before=lambda: claim_replaced(case))],
+        setup=managed_claims,
+        during=worker_back,
+        saved=False,
+        reason="environment_claim_ended",
+        work=("blocked", "interrupted"),
+        messages="held",
+        owed=frozenset({"messages"}),
+        known={"owed": HELD_UNSAID},
+    ),
+    Ending(
+        "cancelled_while_worker_away",
+        "cancelled",
+        lambda case: [Reply("Never.", before=case.gate)],
+        setup=managed_claims,
+        during=stop_while_worker_away,
+        work=("stopped", "cancelled"),
+        messages="held",
+        owed=frozenset({"messages"}),
+        given=(TASK, "redelivered", NEXT),
+        known={"owed": HELD_UNSAID},
+        confined_known={"record": CONFINED_CANCEL, "work": CONFINED_CANCEL},
     ),
     Ending(
         "interrupted_by_its_runtime",
@@ -1305,12 +1357,63 @@ def test_every_notice_id_a_hook_can_produce_is_an_identifier() -> None:
     )
 
 
+USAGE: Final[Json] = {
+    "model": "scripted",
+    "input_tokens": 1,
+    "output_tokens": 1,
+    "characters": 1,
+}
+
+
+@dataclass(frozen=True)
+class Salvage:
+    """A record that does not validate whole, and what its save keeps of it."""
+
+    name: str
+    fields: Json
+    kept: Json
+    """Fields of the saved record, as their values."""
+    left_out: frozenset[str]
+    minimal: bool = False
+
+
+SALVAGES: Final = (
+    Salvage(
+        "two_bad_ids",
+        {"delivered": {"jobs": ["a", "b#1", "c", "d#2", "e"], "bad source": ["x"]}},
+        {"delivered": {"jobs": ["a", "c", "e"]}},
+        frozenset({"delivered.jobs.1", "delivered.jobs.3", "delivered.bad source"}),
+    ),
+    Salvage(
+        "one_bad_usage",
+        {"usage": [USAGE, {**USAGE, "bogus": 1}, USAGE]},
+        {"usage": 2},
+        frozenset({"usage.1"}),
+    ),
+    Salvage(
+        "one_bad_summary_element",
+        {"summaries": {"kept": 1, "mixed": {"items": [1, {"x": object()}, 3]}}},
+        {"kept": 1, "mixed": {"items": [1, 3]}},
+        frozenset({"summaries.mixed.items.1"}),
+    ),
+    Salvage(
+        "bad_messages",
+        {"messages": "not a list", "delivered": {"chat": ["m-1"]}},
+        {"messages": [], "delivered": {}},
+        frozenset({"messages"}),
+        minimal=True,
+    ),
+)
+
+
+@pytest.mark.parametrize("case", [pytest.param(c, id=c.name) for c in SALVAGES])
 async def test_a_record_that_does_not_validate_is_kept_without_what_failed(
-    tmp_path: Path,
+    tmp_path: Path, case: Salvage
 ) -> None:
-    """A save that still meets a record it cannot keep whole keeps it without what failed
-    (a delivered ID, a summary), naming what it left out, and the run ends as it ended
-    (D-G1): never no record and ``interrupted``."""
+    """A save that still meets a record it cannot keep whole keeps it without exactly what
+    failed, each element by its own place, never its neighbours; where a field the record
+    cannot do without fails, the minimal record. It names what it left out, and the run
+    ends as it ended (D-G1): never no record and ``interrupted``."""
     projects = ProjectStore(tmp_path / "state")
     try:
         projects.create(PROJECT, "minimal", POLICY)
@@ -1331,8 +1434,7 @@ async def test_a_record_that_does_not_validate_is_kept_without_what_failed(
             "final_text": "Done.",
             "messages": [],
             "tools": [],
-            "delivered": {"jobs": ["exe-1", "exe-1#1"], "bad source": ["x"]},
-            "summaries": {"kept": 1},
+            **case.fields,
         }
         errors: list[str] = []
         completion = await record_and_acknowledge(
@@ -1342,22 +1444,33 @@ async def test_a_record_that_does_not_validate_is_kept_without_what_failed(
         assert completion.status == 0, errors
         (entry,) = projects.runs(PROJECT, SESSION)
         record = projects.run(PROJECT, SESSION, entry.name)
-        assert (record.stopped, record.answer, record.final_text) == ("answered", "Done.", "Done.")
-        assert record.delivered == {"jobs": ["exe-1"]}
-        assert record.summaries["kept"] == 1
-        left_out = cast(dict[str, Any], record.summaries[SALVAGED])["left_out"]
-        assert set(left_out) == {"delivered.jobs[1]", "delivered.bad source"}
-        assert errors
-        assert "kept without" in errors[0]
     finally:
         projects.close()
+    assert (record.stopped, record.answer, record.final_text) == ("answered", "Done.", "Done.")
+    for name, value in case.kept.items():
+        if name == "usage":
+            assert len(record.usage) == value, record.usage
+        elif name in ("delivered", "messages"):
+            assert getattr(record, name) == value
+        else:
+            assert record.summaries[name] == value
+    salvaged = cast(dict[str, Any], record.summaries[SALVAGED])
+    assert set(salvaged["left_out"]) == case.left_out, salvaged
+    assert salvaged.get("minimal", False) is case.minimal
+    assert errors
+    assert "kept without" in errors[0]
 
 
-def test_a_summary_that_is_not_json_is_refused_where_it_is_contributed() -> None:
+def test_a_summary_that_is_not_json_is_kept_without_what_is_not() -> None:
+    """A hook's summary is checked where it is contributed: what of it is not JSON is left
+    out element by element and named; a summary under a name that is not an identifier is
+    refused whole."""
     summaries: dict[str, Any] = {}
     contribute(summaries, "jobs", {"ok": [1, "two"]})
-    contribute(summaries, "bad", {"when": object()})
+    contribute(summaries, "mixed", {"items": [1, object(), 3], "when": object(), "fine": "x"})
     contribute(summaries, "bad name", 1)
     assert summaries["jobs"] == {"ok": [1, "two"]}
-    assert set(summaries[REFUSED]) == {"bad", "bad name"}
-    assert "bad" not in summaries
+    assert summaries["mixed"] == {"items": [1, 3], "fine": "x"}
+    assert set(summaries[REFUSED]["mixed"]) == {"items.1", "when"}
+    assert "bad name" in summaries[REFUSED]
+    assert "bad name" not in summaries

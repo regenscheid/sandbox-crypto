@@ -458,11 +458,14 @@ while the worker's Pod restarts, is tried again with a growing wait for the outa
 claim, so the worker never releases what the run still waits to renew. Meanwhile the run's
 events say that the worker is unreachable and until when the run waits for it (a
 `waiting` event with `worker: unreachable`, `since` and `until`; `worker: null` once it
-answers). Past the window, or on an answer that ends the claim (its sandbox replaced,
-another refusal, a claim that lapsed unrenewed), the root stops: interrupted, marked a
-transient `worker_loss`, its `stopped` event giving `reason: worker_unreachable` and why,
-so that automatic recovery resumes it once the worker answers (D100), reconciling the
-call that was out. A crash leaves at most the unexpired claim.
+answers). The first grant, as a run starts, waits for the worker the same way. Past the window the
+root stops: interrupted, marked a transient `worker_loss`, its `stopped` event giving
+`reason: worker_unreachable` and why, so that automatic recovery resumes it once the
+worker answers (D100), reconciling the call that was out. A claim the worker ends or
+refuses (its sandbox replaced, a policy it does not follow) stops the root with
+`reason: environment_claim_ended`, and one left unrenewed past its length (a host's
+suspend) with `environment_claim_lapsed`; neither is transient unless its cause is, so
+they wait for the user's Resume. A user's stop meanwhile wins: the run ends `cancelled`. A crash leaves at most the unexpired claim.
 Release is scoped to the original holder/session and does not release another root's
 claim. Claims survive worker restart; suspension checks them again under the same
 environment lock immediately before stopping. Unmanaged backends explicitly report

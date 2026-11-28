@@ -460,10 +460,13 @@ class RunService:
                 "record": None,
             }
             lost = await threaded(interruption, self.stores.projects.control, project, session, run)
-            if lost is not None and lost.get("kind") == "worker_loss":
-                # The worker was away past the outage window: automatic recovery takes the
-                # run up once it answers (D100).
-                stopped["reason"] = "worker_unreachable"
+            if lost is not None and stopped["stopped"] == "interrupted":
+                # Why the run was interrupted, as its environment claim saw it: a worker
+                # away past the outage window, which automatic recovery takes up once it
+                # answers (D100), or a claim the worker ended. A user's stop wins.
+                stopped["reason"] = lost.get("reason") or (
+                    "worker_unreachable" if lost.get("kind") == "worker_loss" else None
+                )
                 stopped["detail"] = lost.get("why")
         if hold:
             offered = await threaded(runs.offered_to, project, session, run)

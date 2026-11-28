@@ -4,15 +4,17 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import sqlite3
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal, cast
 
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from sandbox_science.contracts import ErrorKind, ExecutionContext
 from sandbox_science.contracts.child_environments import is_child_environment
@@ -24,7 +26,7 @@ from .continuity.records import Work, WorkRecords, authority
 from .control import ControlError
 from .delegation.hook import ChildEnd
 from .documents import DocumentError, DocumentStore
-from .hooks import TurnHook
+from .hooks import RECURSION, TurnHook, mark_invalid, sweep_marked
 from .jobs import cancel_closed_jobs
 from .ledger import Ledger
 from .projects import ProjectError, ProjectStore, RunRecord, run_name
@@ -177,6 +179,7 @@ class AttemptFinalizer:
         return "released"
 
 
+_STARTED: Final = TypeAdapter(datetime)
 SALVAGE_ROUNDS: Final = 8
 """How many times a record that does not validate is pruned of what failed and checked
 again before none is kept (``salvaged``)."""
@@ -184,37 +187,57 @@ SALVAGED: Final = "record_salvaged"
 """Where a salvaged record names what it left out."""
 
 
+MINIMAL: Final = (
+    "run_id",
+    "role",
+    "parent",
+    "delegation",
+    "alias",
+    "context",
+    "task",
+    "started_at",
+    "ended_at",
+    "stopped",
+    "failure",
+    "answer",
+    "final_text",
+)
+"""What a minimal record keeps of a run whose record cannot be salvaged otherwise."""
+
+
 def salvaged(fields: dict[str, object], error: ValidationError) -> RunRecord | None:
-    """``fields`` as a record without what failed ``error``: a delivered ID, or a source or
-    summary, is left out (its notices are then given again, never consumed unsaid); any
-    other optional field is reset to its default. ``None`` when a field the record cannot
-    do without failed. ``summaries`` names what was left out."""
-    kept: dict[str, object] = dict(fields)
+    """``fields`` as a record without exactly what failed ``error``: each invalid element
+    left out by its own place, a delivered ID, a usage entry, a message, an element of a
+    summary (a delivered ID's notice is then given again, never consumed unsaid); an
+    optional field that failed whole reset to its default. When a field the record cannot
+    do without failed, the minimal record (``minimal``). ``summaries`` names what was left
+    out; ``None`` only when not even the minimal record validates."""
+    kept = copy.deepcopy(fields)
     dropped: list[str] = []
     for _ in range(SALVAGE_ROUNDS):
+        touched: set[str] = set()
         for problem in error.errors():
             loc = problem["loc"]
             name = str(loc[0]) if loc else ""
             field = RunRecord.model_fields.get(name)
-            if field is None or field.is_required():
-                return None
-            value = kept.get(name)
-            if name in ("delivered", "summaries") and isinstance(value, dict) and len(loc) > 1:
-                inner = dict(cast(dict[str, object], value))
-                key = str(loc[1])
-                found = inner.get(key)
-                index = loc[2] if len(loc) > 2 else None
-                if name == "delivered" and isinstance(index, int) and isinstance(found, list):
-                    items = cast(list[object], found)
-                    inner[key] = [v for i, v in enumerate(items) if i != index]
-                    dropped.append(f"{name}.{key}[{index}]")
-                else:
-                    inner.pop(key, None)
-                    dropped.append(f"{name}.{key}")
-                kept[name] = inner
+            if field is None:
+                kept.pop(name, None)
+                dropped.append(name)
+                continue
+            outermost = problem["type"] == RECURSION
+            if (
+                len(loc) > 1
+                and (path := mark_invalid(kept.get(name), loc[1:], outermost=outermost)) is not None
+            ):
+                touched.add(name)
+                dropped.append(f"{name}.{path}")
+            elif field.is_required():
+                return minimal(fields, [*dropped, name])
             else:
                 kept[name] = field.get_default(call_default_factory=True)
                 dropped.append(name)
+        for name in touched:
+            kept[name] = sweep_marked(kept[name])
         summaries = kept.get("summaries")
         summaries = dict(cast(dict[str, object], summaries)) if isinstance(summaries, dict) else {}
         candidate = {**kept, "summaries": {**summaries, SALVAGED: {"left_out": dropped[:100]}}}
@@ -222,6 +245,34 @@ def salvaged(fields: dict[str, object], error: ValidationError) -> RunRecord | N
             return RunRecord.model_validate(candidate)
         except ValidationError as again:
             error = again
+        except RecursionError:
+            break
+    return minimal(fields, dropped)
+
+
+def minimal(fields: dict[str, object], dropped: list[str]) -> RunRecord | None:
+    """The least record of a run: its identity, task and times, how it stopped and why it
+    failed, its answer and final text where they validate, and what was left out, with no
+    conversation, tools or deliveries (its notices are given again). ``None`` when its
+    identity, task, times or stop do not validate."""
+    kept = {name: fields[name] for name in MINIMAL if name in fields}
+    for _ in range(len(MINIMAL)):
+        candidate: dict[str, object] = {
+            **kept,
+            "messages": [],
+            "tools": [],
+            "summaries": {SALVAGED: {"left_out": dropped[:100], "minimal": True}},
+        }
+        try:
+            return RunRecord.model_validate(candidate)
+        except ValidationError as error:
+            failed = {str(e["loc"][0]) for e in error.errors() if e["loc"]}
+            optional = {n for n in failed if not RunRecord.model_fields[n].is_required()}
+            if failed - optional or not optional:
+                return None
+            for name in optional:
+                kept.pop(name, None)
+                dropped.append(name)
         except RecursionError:
             return None
     return None
@@ -262,17 +313,17 @@ async def record_and_acknowledge(
     """
     completion = RecordCompletion(status)
     owner = None
-    if projects is not None:
-        try:
-            candidate = RunRecord.model_validate(fields)
-            owner = await threaded(
-                WorkRecords(projects.control).owner,
-                candidate.context.project_id,
-                candidate.context.session_id,
-                run_name(candidate.started_at, candidate.run_id),
-            )
-        except (ValidationError, RecursionError):
-            pass  # _save preserves the invalid transcript and reports the exact error
+    identity = _identity(fields) if projects is not None else None
+    if projects is not None and identity is not None:
+        # From the run's identity alone, so that a record saved without what failed, or a
+        # minimal one, is fenced as a whole one is.
+        context, started, run_id = identity
+        owner = await threaded(
+            WorkRecords(projects.control).owner,
+            context.project_id,
+            context.session_id,
+            run_name(started, run_id),
+        )
     try:
         if owner is not None:
             with authority(owner):
@@ -300,6 +351,18 @@ async def record_and_acknowledge(
         error(f"the run's ownership or persistence failed: {exc}")
         completion.status = 1
         return completion
+
+
+def _identity(fields: dict[str, object]) -> tuple[ExecutionContext, datetime, str] | None:
+    """The run's context, start and ID as its record will name them; ``None`` when they
+    do not validate, and no record will be kept (``_save`` reports why)."""
+    try:
+        context = ExecutionContext.model_validate(fields.get("context"))
+        started = _STARTED.validate_python(fields.get("started_at"))
+        run_id = fields.get("run_id")
+    except (ValidationError, RecursionError):
+        return None
+    return (context, started, run_id) if isinstance(run_id, str) else None
 
 
 async def _save(

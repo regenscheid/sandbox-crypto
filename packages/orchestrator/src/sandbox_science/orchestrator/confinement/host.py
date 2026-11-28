@@ -1133,12 +1133,12 @@ class HostLoops:
             run.summaries.update(runtime_summaries(result.summaries))
             if toolbox.tool_mix is not None:
                 # The calls ran here, through this toolbox: its counts are the run's.
-                run.summaries["tool_mix"] = toolbox.tool_mix.summary()
+                contribute(run.summaries, "tool_mix", toolbox.tool_mix.summary())
             if toolbox.image_offer is not None:
-                run.summaries["view_image"] = toolbox.image_offer
+                contribute(run.summaries, "view_image", toolbox.image_offer)
             if toolbox.connectors is not None:
                 # Its connector calls went through this toolbox, which counted them.
-                run.summaries["connectors"] = toolbox.connectors.summary()
+                contribute(run.summaries, "connectors", toolbox.connectors.summary())
             # And it loaded the run's tool groups.
             record_groups(toolbox, run)
             for hook in hooks:

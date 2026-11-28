@@ -771,12 +771,14 @@ class WorkerClient:
         carries nothing at all for ``stream_timeout`` seconds counts as dropped. A dropped
         stream, or one the worker does not serve, is followed again by the execution's ID
         from the last event it gave, with a growing wait, for ``outage_seconds`` since it
-        last carried an event: a restarted worker reattaches its executions, so the
+        last carried anything, an event or a heartbeat; an answer ``unavailable``, such as a
+        proxy's 503 before a restarting worker, counts as a drop. A restarted worker
+        reattaches its executions, so the
         result reaches the caller as usual. Past that, the stream is lost.
         """
         failures = 0
         away: float | None = None
-        """When the stream last stopped carrying events, by the monotonic clock."""
+        """When the stream last stopped carrying anything, by the monotonic clock."""
 
         async def again(exc: Exception | None) -> None:
             nonlocal failures, away
@@ -811,6 +813,8 @@ class WorkerClient:
                     if response.status >= 400:
                         raise _error(await response.read(), response.status)
                     async for line in _lines(response.content, MAX_EVENT_BYTES):
+                        # The worker serves the stream: an outage, if there was one, is over.
+                        failures, away = 0, None
                         if not line.strip():
                             continue  # a heartbeat
                         try:
@@ -819,12 +823,18 @@ class WorkerClient:
                             raise WorkerAPIError(
                                 ErrorKind.INTERNAL, f"unexpected event from the worker: {exc}"
                             ) from exc
-                        failures, away = 0, None
                         after = event.seq
                         yield event
                         if isinstance(event, ResultEvent):
                             return
             except (TimeoutError, aiohttp.ClientError) as exc:
+                await again(exc)
+                continue
+            except WorkerAPIError as exc:
+                # A proxy's 502/503/504 before a restarting worker, or the worker's own
+                # ``unavailable``: followed again within the window, as a drop is.
+                if exc.kind is not ErrorKind.UNAVAILABLE or isinstance(exc, WorkerProtocolError):
+                    raise
                 await again(exc)
                 continue
             # The stream ended without a result: ask again from where it stopped.

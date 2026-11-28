@@ -1241,7 +1241,7 @@ def record_groups(toolbox: Toolbox, transcript: Transcript) -> None:
     summary = toolbox.groups_summary()
     if summary is None:
         return
-    transcript.summaries["tool_groups"] = summary
+    contribute(transcript.summaries, "tool_groups", summary)
     pins = transcript.context.prompt_provenance
     if pins is not None:
         transcript.context.prompt_provenance = pins.model_copy(
@@ -1462,7 +1462,7 @@ async def run_task(
                                 )
                             finally:
                                 if (taken := fallbacks.summary()) is not None:
-                                    transcript.summaries["model_fallback"] = taken
+                                    contribute(transcript.summaries, "model_fallback", taken)
                         if transcript.holding:
                             # The round ended without an answer of its own: the held
                             # one is the run's (CR-48).
@@ -1523,20 +1523,20 @@ async def run_task(
             if (summary := hook.summary()) is not None:
                 contribute(transcript.summaries, hook.name, summary)
         if toolbox.connectors is not None:
-            transcript.summaries["connectors"] = toolbox.connectors.summary()
+            contribute(transcript.summaries, "connectors", toolbox.connectors.summary())
         record_groups(toolbox, transcript)
         # Counted where the calls run: a confined run's host counts them (Kernels 13).
         mix: ToolMix | None = getattr(toolbox, "tool_mix", None)
         if mix is not None:
-            transcript.summaries["tool_mix"] = mix.summary()
+            contribute(transcript.summaries, "tool_mix", mix.summary())
         if toolbox.image_offer is not None:
-            transcript.summaries["view_image"] = toolbox.image_offer
+            contribute(transcript.summaries, "view_image", toolbox.image_offer)
         if toolbox.skills is not None:
             first = transcript.context.usage[0].model if transcript.context.usage else None
             if (started := toolbox.skills.summary(first)) is not None:
                 # Beside the discoveries the hook of that name keeps there.
                 found = cast(dict[str, Any], transcript.summaries.get("skills") or {})
-                transcript.summaries["skills"] = {**found, **started}
+                contribute(transcript.summaries, "skills", {**found, **started})
     except Exception:
         _log.exception("run %s failed during summary", run_id)
         transcript.fail("cleanup")

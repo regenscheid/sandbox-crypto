@@ -84,16 +84,22 @@ from sandbox_science.orchestrator.effects import UnknownEffectError
 from sandbox_science.orchestrator.environment_claim import environment_claim
 from sandbox_science.orchestrator.harness import Harness as Core
 from sandbox_science.orchestrator.harness import Role, Settings, Stores
-from sandbox_science.orchestrator.hooks import GAPS
+from sandbox_science.orchestrator.hooks import GAPS, Closing, RunView, TurnHook
+from sandbox_science.orchestrator.hooks import unavailable as hooks_unavailable
 from sandbox_science.orchestrator.jobs import JobTools, lost_notice
 from sandbox_science.orchestrator.jobstate import JobState
+from sandbox_science.orchestrator.loop import run_task
 from sandbox_science.orchestrator.model import Message, ModelTurn, ToolSpec
 from sandbox_science.orchestrator.notices import HOOK_GAP
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.service import RunService
 from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome
-from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
+from sandbox_science.orchestrator.worker_client import (
+    WorkerAPIError,
+    WorkerClient,
+    WorkerProtocolError,
+)
 from sandbox_science.testing import FakeClock, eventually, fake_worker_app
 from sandbox_science.testing.pdfs import make_pdf
 from sandbox_science.worker.app import create_app
@@ -106,7 +112,7 @@ from sandbox_science.worker.store import Store
 from .loop_harness import POLICY, PROJECT, SESSION, TOKEN, Harness, Lineage, Reply, Worker, call
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
-from .scripted import ToolCall
+from .scripted import ScriptedModel, ToolCall
 from .test_artifact_publication import CONTEXT as ARTIFACT_CONTEXT
 from .test_artifact_publication import TOKEN as ARTIFACT_TOKEN
 from .test_artifact_publication import worker_url as worker_url
@@ -557,6 +563,8 @@ async def worker(tmp_path: Path) -> AsyncIterator[FaultyWorker]:
         store.close()
 
 
+OUTAGE: Final = 100_000
+"""Requests an outage that only a lift ends fails."""
 RESTART_RESETS: Final = 20
 """Requests a worker restart fails before the worker answers again: more than the five
 reconnects the client once gave a stream, within its outage window."""
@@ -971,6 +979,73 @@ async def test_a_blip_at_a_hook_outside_a_call_does_not_end_the_run(
     )
 
 
+@dataclass(frozen=True)
+class Shape:
+    """A failure a hook may meet, and whether the run goes on past it (``hooks.guarded``):
+    only the worker unreachable, or its environment gone, are outside the agent's control."""
+
+    name: str
+    error: BaseException
+    goes_on: bool
+
+
+SHAPES: Final = (
+    Shape("timeout", TimeoutError(), True),
+    Shape("unreachable", WorkerAPIError(ErrorKind.UNAVAILABLE, "cannot reach the worker: x"), True),
+    Shape("proxy_503", WorkerAPIError(ErrorKind.UNAVAILABLE, "worker returned 503: x", 503), True),
+    Shape(
+        "environment_gone",
+        WorkerAPIError(ErrorKind.NOT_FOUND, "no environment 'p-child-0123'", 404),
+        True,
+    ),
+    # A control-store read the delegation hook gives as not found (O/delegation/hook.py,
+    # ``Delegations._read``): no worker answered it.
+    Shape("control_read", WorkerAPIError(ErrorKind.NOT_FOUND, "no delegation 'dlg-1'"), False),
+    # The job tools' own owner and identity checks (O/jobs.py, ``check_owner``, ``owned``).
+    Shape("owner_check", WorkerAPIError(ErrorKind.NOT_FOUND, "no such job in this session"), False),
+    Shape(
+        "identity_check",
+        WorkerAPIError(ErrorKind.INTERNAL, "worker returned a different job ID"),
+        False,
+    ),
+    Shape("other_not_found", WorkerAPIError(ErrorKind.NOT_FOUND, "no such job", 404), False),
+    Shape("conflict", WorkerAPIError(ErrorKind.CONFLICT, "refused", 409), False),
+    Shape("protocol", WorkerProtocolError(ErrorKind.UNSUPPORTED, "version mismatch"), False),
+    Shape("bug", ValueError("a hook's own bug"), False),
+)
+
+
+class ClosingFails(TurnHook):
+    """A hook whose closing meets one failure shape."""
+
+    name = "failing"
+
+    def __init__(self, error: BaseException) -> None:
+        self.error = error
+
+    async def closing(self, run: RunView, answer: str | None) -> Closing:
+        raise self.error
+
+
+@pytest.mark.parametrize("shape", [pytest.param(s, id=s.name) for s in SHAPES])
+async def test_a_hook_failure_ends_the_run_unless_it_is_outside_the_agents_control(
+    shape: Shape,
+) -> None:
+    """Each shape at a closing: the run goes on to its answer, the gap recorded, or it
+    fails as before, so that a gate such as ``child_outcome_unavailable`` or an integrity
+    check is never passed by default."""
+    assert hooks_unavailable(shape.error) is shape.goes_on
+    model = ScriptedModel.from_json([{"text": "Done."}])
+    toolbox = Toolbox(cast(WorkerClient, object()), JOB_CONTEXT)
+    run = await run_task(model, toolbox, "Go.", run_id="run-1", hooks=(ClosingFails(shape.error),))
+    if shape.goes_on:
+        assert (run.stopped, run.final_text) == ("answered", "Done.")
+        assert cast(Json, run.summaries[GAPS])["gaps"][0]["point"] == "closing"
+    else:
+        assert (run.stopped, run.failure) == ("error", "harness")
+        assert GAPS not in run.summaries
+
+
 class ClaimLost(Violation):
     """One failed renewal inside the worker's claim ended the root."""
 
@@ -1178,6 +1253,63 @@ async def test_a_waits_wake_at_a_jobs_end_shows_its_written_files(harness: Harne
     assert said["reason"] == "ended", said
     assert view["written_files"] == status["written_files"], (view, status)
     assert "out-1.txt" in view["written_files"], view
+
+
+@pytest.mark.parametrize("phase", ["as_it_begins", "while_it_waits"])
+@pytest.mark.parametrize("wake", ["user_message", "agent_message"])
+async def test_a_message_ends_a_wait_while_the_worker_is_away(
+    harness: Harness, phase: str, wake: str
+) -> None:
+    """A wait whose worker does not answer, from its start or from later, waits for it,
+    but a message ends the wait at once, as at any other time; a wake other than the
+    user's says the jobs could not be read and keep running."""
+    site = cast(FaultyWorker, harness.worker)
+    arrived, began = asyncio.Event(), asyncio.Event()
+
+    async def message() -> str:
+        await arrived.wait()
+        return wake
+
+    async def user() -> None:
+        await arrived.wait()
+
+    async def on_wait(payload: dict[str, object] | None) -> None:
+        if payload is not None:
+            began.set()
+
+    async with WorkerClient(site.url, TOKEN) as client:
+        tools = JobTools(
+            client,
+            harness.context(),
+            run_id="run-1",
+            poll_seconds=0.02,
+            on_wait=on_wait,
+            wake=user if wake == "user_message" else None,
+        )
+        if wake != "user_message":
+            tools.wakes = (message,)
+        text, _ = await tools.start(
+            {"script": "sleep 30", "purpose": "a job the row waits on", "expected_progress": "-"},
+            "op-away",
+        )
+        job = str(json.loads(text)["job_id"])
+        away = Rule("reset", ("GET /v1/jobs/",), times=OUTAGE)
+        if phase == "as_it_begins":
+            site.faults.arm(away)
+        waiting = asyncio.create_task(tools.wait({"job_ids": [job]}, "op-wait"))
+        await asyncio.wait_for(began.wait(), 20)
+        if phase == "while_it_waits":
+            site.faults.arm(away)
+            await eventually(lambda: len(away.met) >= 2)
+        arrived.set()
+        said = json.loads((await asyncio.wait_for(waiting, 20))[0])
+        site.faults.lift()
+        await client.cancel(job, project_id=PROJECT)
+    assert away.met, "the worker was never away"
+    assert said["reason"] == wake, said
+    if wake != "user_message":
+        assert "jobs" not in said, said
+        assert "keep running" in said["jobs_unread"], said
 
 
 class NotToldWhoCancelled(Violation):

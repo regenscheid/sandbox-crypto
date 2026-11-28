@@ -48,16 +48,18 @@ over a channel that carries none, so the host refuses a hook that overrides one
 
 from __future__ import annotations
 
+import copy
 import logging
+import re
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Final, Literal, Protocol, cast
 
 from pydantic import JsonValue, TypeAdapter, ValidationError
 
-from sandbox_science.contracts import Identifier
+from sandbox_science.contracts import ErrorKind, Identifier
 
 from .notices import HOOK_GAP, HOOK_GAP_ATTACHED
 from .worker_client import WorkerAPIError, WorkerProtocolError
@@ -123,17 +125,100 @@ def checked_ids(source: str, ids: Sequence[str]) -> tuple[str, ...]:
     return tuple(identifier(item, f"a {source} notice ID") for item in ids)
 
 
+RECURSION: Final = "recursion_loop"
+"""The validation error of a value nested deeper than validation follows."""
+_GONE: Final = object()
+"""Marks what ``prune`` leaves out until it sweeps the value."""
+
+
+def mark_invalid(value: object, loc: Sequence[str | int], *, outermost: bool = False) -> str | None:
+    """Mark for removal the innermost list element on ``loc``, a validation error's place
+    in ``value``, or, on a path with no list, its last dictionary entry: the path marked,
+    or ``None`` where the error has no element to remove. A union's type tags in ``loc``
+    (``dict``, ``list``) are passed over. With ``outermost``, as for a value nested past
+    what validation follows, the outermost list element on the path is marked instead."""
+    steps = list(loc[:-1] if loc and loc[-1] == "[key]" else loc)
+    current: object = value
+    path: list[str | int] = []
+    entry: tuple[dict[str | int, object], str | int, list[str | int]] | None = None
+    element: tuple[list[object], int, list[str | int]] | None = None
+    for step in steps:
+        if isinstance(current, dict) and step in current:
+            container = cast(dict[str | int, object], current)
+            entry = (container, step, [*path, step])
+            current = container[step]
+        elif isinstance(current, list) and isinstance(step, int):
+            items = cast(list[object], current)
+            if not 0 <= step < len(items):
+                break
+            if element is None or not outermost:
+                element = (items, step, [*path, step])
+            current = items[step]
+        else:
+            continue
+        path.append(step)
+    if element is not None:
+        items, index, path = element
+        items[index] = _GONE
+    elif entry is not None:
+        container, key, path = entry
+        container[key] = _GONE
+    else:
+        return None
+    return ".".join(str(step) for step in path)
+
+
+def sweep_marked(value: object) -> object:
+    if isinstance(value, dict):
+        return {
+            k: sweep_marked(v)
+            for k, v in cast(dict[object, object], value).items()
+            if v is not _GONE
+        }
+    if isinstance(value, list):
+        return [sweep_marked(v) for v in cast(list[object], value) if v is not _GONE]
+    return value
+
+
+def prune(value: object, error: ValidationError) -> tuple[object, list[str]]:
+    """``value`` without exactly the elements ``error`` found invalid, each list element or
+    dictionary entry by its own place, never its neighbours; and those places. ``value``
+    is copied first."""
+    found = copy.deepcopy(value)
+    paths = [
+        p
+        for e in error.errors()
+        if (p := mark_invalid(found, e["loc"], outermost=e["type"] == RECURSION)) is not None
+    ]
+    return sweep_marked(found), paths
+
+
 def contribute(summaries: dict[str, Any], name: str, value: object) -> None:
-    """Keep a hook's summary in a run's ``summaries`` under its name, or refuse it, logged,
-    and name it under ``REFUSED``: a summary that cannot be kept never costs the run its
-    record."""
+    """Keep a hook's summary in a run's ``summaries`` under its name: what of it is not
+    JSON is left out, element by element, logged, and named under ``REFUSED``, so that a
+    summary that cannot be kept never costs the run its record; one under a name that is
+    not an identifier is refused whole."""
     try:
         identifier(name, "a summary's name")
-        summaries[name] = _JSON.validate_python(value)
-    except (ValueError, RecursionError) as error:
-        _log.error("the %s summary is refused: %s", name, str(error)[:300])
-        refused = summaries.setdefault(REFUSED, {})
-        refused[name[:128]] = str(error)[:300]
+    except ValueError as error:
+        _log.error("the %s summary is refused: %s", name[:128], error)
+        summaries.setdefault(REFUSED, {})[name[:128]] = str(error)[:300]
+        return
+    for _ in range(4):
+        try:
+            summaries[name] = _JSON.validate_python(value)
+            return
+        except ValidationError as error:
+            value, paths = prune(value, error)
+            _log.error("the %s summary is kept without %s", name, ", ".join(paths)[:300])
+            left = summaries.setdefault(REFUSED, {}).setdefault(name, [])
+            left.extend(paths[:50])
+            if not paths:
+                break
+        except RecursionError as error:
+            summaries.setdefault(REFUSED, {})[name] = str(error)[:300]
+            return
+    summaries.setdefault(REFUSED, {})[name] = "it could not be kept as JSON"
 
 
 @dataclass(frozen=True)
@@ -416,13 +501,35 @@ class TurnHook:
         """After the record is saved: settle what it names as delivered."""
 
 
+ENVIRONMENT_GONE: Final = re.compile(r"no environment '[^']+'")
+"""The worker's answer for an environment it no longer has (W/app.py), as its sandbox
+was deleted under the run."""
+
+
 def unavailable(error: BaseException) -> bool:
-    """Whether a hook's failure is outside the agent's control: the worker unreachable,
-    or answering that what the hook reads is gone (an environment deleted under the run).
-    A worker of another protocol version is not: releases are lockstep."""
+    """Whether a hook's failure is outside the agent's control, and so one the run goes on
+    past (``guarded``). Only these shapes are:
+
+    - a ``TimeoutError``: a read the worker did not answer in time;
+    - a ``WorkerAPIError`` of kind ``unavailable``: the worker unreachable, or answering
+      that it cannot serve now (a proxy's 502/503/504 before it among them);
+    - a ``WorkerAPIError`` of kind ``not_found`` that the worker answered over HTTP (it has
+      a status) naming an environment it no longer has (``ENVIRONMENT_GONE``).
+
+    Any other error is the hook's own or the platform's integrity failing, which still
+    ends the run: a worker of another protocol version (releases are lockstep), an owner
+    or identity check the harness makes itself, a control-store read."""
+    if isinstance(error, TimeoutError):
+        return True
+    if not isinstance(error, WorkerAPIError) or isinstance(error, WorkerProtocolError):
+        return False
+    if error.kind is ErrorKind.UNAVAILABLE:
+        return True
     return (
-        isinstance(error, WorkerAPIError) and not isinstance(error, WorkerProtocolError)
-    ) or isinstance(error, TimeoutError)
+        error.kind is ErrorKind.NOT_FOUND
+        and error.status is not None
+        and ENVIRONMENT_GONE.search(error.message) is not None
+    )
 
 
 def gap(hook: TurnHook, point: str, run: RunView, error: BaseException) -> Notice:

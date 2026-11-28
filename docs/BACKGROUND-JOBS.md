@@ -254,7 +254,9 @@ says to wait again), or a message the user sends in the session's chat ends the 
 The result's view of a job that ended is its whole record's, as `job_status` gives it,
 its written files among it. A worker that does not answer while the wait reads its jobs,
 as while its Pod restarts, is waited for, the jobs going on, for the outage window
-(`WORKER_OUTAGE_SECONDS`, 270 s; [run service](specs/run-service.md)). An interruption
+(`WORKER_OUTAGE_SECONDS`, 270 s; [run service](specs/run-service.md)). A message ends such a
+wait at once, as at any other time; a wake other than the user's then says its jobs could
+not be read and keep running (`jobs_unread`). An interruption
 leaves the computations running. The message stays in the session's queue and
 reaches the model as the next user message, after the wait's result, so it is
 neither consumed nor repeated ([chat](WORKSPACE.md#chat)). As `wait_delegations` does, a

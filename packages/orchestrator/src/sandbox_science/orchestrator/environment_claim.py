@@ -41,6 +41,12 @@ OUTAGE_SECONDS: float = WORKER_OUTAGE_SECONDS
 """How long renewals are retried, from the last one that succeeded, before the root is
 interrupted (``WORKER_OUTAGE_SECONDS``)."""
 LOST: Final = "environment claim was lost"
+UNREACHABLE: Final = "worker_unreachable"
+"""A claim given up after the outage window: the worker did not answer."""
+ENDED: Final = "environment_claim_ended"
+"""A claim the worker ended or refused: its sandbox replaced, another refusal."""
+LAPSED: Final = "environment_claim_lapsed"
+"""A claim not renewed for longer than it lasts, as across a host's suspend."""
 RETRY_SECONDS: Final = 2.0
 """The first wait before a failed renewal is tried again; it doubles, up to
 ``RENEW_SECONDS``."""
@@ -74,20 +80,23 @@ async def environment_claim(
     follow: Callable[[], Awaitable[str | None]] | None = None,
     followed: Callable[[str], None] | None = None,
     outage: Callable[[datetime | None, datetime | None], None] | None = None,
-    lost: Callable[[str], None] | None = None,
+    lost: Callable[[str, str, Exception], None] | None = None,
 ) -> AsyncGenerator[None]:
     """Retain one root's environment through its entire live tree.
 
-    The client bounds each request's time. A renewal the worker does not answer, or
-    answers ``unavailable``, is tried again with a growing wait for ``OUTAGE_SECONDS``
-    from the last one that succeeded, as a worker Pod's restart takes minutes: ``outage``
+    The client bounds each request's time. The first grant, or a renewal, that the worker
+    does not answer, or answers ``unavailable``, is tried again with a growing wait for
+    ``OUTAGE_SECONDS`` from the last one that succeeded (or from the first try), as a
+    worker Pod's restart takes minutes: ``outage``
     hears when the worker stopped answering and when the run gives up waiting for it, and
     ``None`` once it answers again. Each renewal asks for ``MAX_CLAIM_SECONDS``, so the
     worker still holds the claim when the run gives up. Past the window, or on an answer
-    that ends the claim (its sandbox replaced, another refusal), the root is interrupted:
-    ``lost`` hears why first, so that the run's end says so and automatic recovery takes it
-    up once the worker answers. Cleanup joins the renewal before releasing, so it cannot
-    renew after release.
+    that ends the claim (its sandbox replaced, another refusal), or a claim that lapsed
+    unrenewed, the root is interrupted: ``lost`` hears first which of these it was
+    (``UNREACHABLE``, ``ENDED``, ``LAPSED``), why, and the error, so that the run's end
+    says so, and only a worker that was unreachable makes it a transient loss that
+    automatic recovery takes up once the worker answers. Cleanup joins the renewal before
+    releasing, so it cannot renew after release.
 
     A policy change during the run need not end it. When a renewal is refused because
     the environment's policy is no longer the claim's, ``follow`` reads the project's
@@ -97,7 +106,21 @@ async def environment_claim(
     refusal, or one the project's policy does not explain, still ends the root.
     """
     request = EnvironmentClaim(context=context, holder=holder, seconds=MAX_CLAIM_SECONDS)
-    initial, cancelled = await held(client.claim_environment(request))
+    begun, retry = clock.monotonic(), RETRY_SECONDS
+    while True:
+        try:
+            # Held through a cancel, so that a granted claim is always released.
+            initial, cancelled = await held(client.claim_environment(request))
+            break
+        except Exception as error:
+            # The first grant rides out an unreachable worker as renewals do; a Stop
+            # meanwhile ends the wait at once, with nothing granted.
+            waited = clock.monotonic() - begun
+            if not unreachable(error) or waited >= OUTAGE_SECONDS:
+                raise
+            _log.warning("environment claim failed; retrying: %s", error)
+            await clock.sleep(max(min(retry, OUTAGE_SECONDS - waited), 0.001))
+            retry = min(retry * 2, RENEW_SECONDS)
     if initial.environment_id != context.environment_id:
         raise WorkerAPIError(ErrorKind.UNAVAILABLE, "worker returned another environment's claim")
     if initial.state == "unmanaged":
@@ -130,12 +153,12 @@ async def environment_claim(
                 followed(current)
             return reply
 
-    def end(error: Exception, why: str) -> None:
+    def end(error: Exception, reason: str, why: str) -> None:
         if stopping.is_set():
             return
         failures.append(error)
         if lost is not None:
-            lost(why)
+            lost(reason, why, error)
         if owner is not None:
             owner.cancel()
 
@@ -148,8 +171,8 @@ async def environment_claim(
             since = max(clock.monotonic() - renewed, (clock.now() - wall).total_seconds())
             if since >= window + renew_every:
                 # The claim last granted has expired at the worker: what it kept may be gone.
-                lapsed = WorkerAPIError(ErrorKind.UNAVAILABLE, "environment claim renewal lapsed")
-                end(lapsed, "the environment claim lapsed before it was renewed")
+                lapsed = WorkerAPIError(ErrorKind.CONFLICT, "environment claim renewal lapsed")
+                end(lapsed, LAPSED, "the environment claim lapsed before it was renewed")
                 return
             try:
                 reply = await renew()
@@ -158,13 +181,17 @@ async def environment_claim(
                     or reply.sandbox_id != initial.sandbox_id
                     or reply.environment_id != context.environment_id
                 ):
-                    raise _EndedError(ErrorKind.UNAVAILABLE, "environment claim identity changed")
+                    raise _EndedError(ErrorKind.CONFLICT, "environment claim identity changed")
             except Exception as error:
                 if not unreachable(error):
-                    end(error, f"the environment claim ended: {str(error)[:200]}")
+                    end(error, ENDED, f"the environment claim ended: {str(error)[:200]}")
                     return
                 if since >= window:
-                    end(error, f"the worker did not answer for {window:g} s: {str(error)[:200]}")
+                    end(
+                        error,
+                        UNREACHABLE,
+                        f"the worker did not answer for {window:g} s: {str(error)[:200]}",
+                    )
                     return
                 if away is None:
                     away = clock.now()

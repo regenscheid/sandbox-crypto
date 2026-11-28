@@ -15,7 +15,12 @@ from sandbox_science.contracts.environment_claims import (
     EnvironmentClaim,
     EnvironmentClaimResult,
 )
-from sandbox_science.orchestrator.environment_claim import environment_claim
+from sandbox_science.orchestrator.environment_claim import (
+    ENDED,
+    LAPSED,
+    UNREACHABLE,
+    environment_claim,
+)
 from sandbox_science.orchestrator.worker_client import WorkerAPIError
 from sandbox_science.testing import FakeClock, eventually
 
@@ -74,9 +79,12 @@ async def test_loss_interrupts_the_root_instead_of_silently_losing_its_kernel(fa
     clock = FakeClock()
     client = Client(clock)
     entered, forever = asyncio.Event(), asyncio.Event()
+    lost: list[str] = []
 
     async def root() -> None:
-        async with environment_claim(client, CONTEXT, "root", clock=clock):
+        async with environment_claim(
+            client, CONTEXT, "root", clock=clock, lost=lambda reason, *_: lost.append(reason)
+        ):
             entered.set()
             await forever.wait()
 
@@ -97,9 +105,56 @@ async def test_loss_interrupts_the_root_instead_of_silently_losing_its_kernel(fa
         clock.advance(MAX_CLAIM_SECONDS if failure == "lapsed" else 30)
     with pytest.raises(WorkerAPIError, match="claim was lost"):
         await task
+    # Only a worker away past the window is told as unreachable, a transient loss.
+    assert lost == [{"unavailable": UNREACHABLE, "replacement": ENDED, "lapsed": LAPSED}[failure]]
     assert client.calls[-1].seconds == 0
     assert client.calls[-1].sandbox_id == "original"
     assert clock.sleepers == 0
+
+
+async def test_the_first_grant_rides_out_an_unreachable_worker() -> None:
+    """A run that starts while the worker restarts waits for it within the window."""
+    clock = FakeClock()
+    client = Client(clock)
+    client.broken = True
+    entered = asyncio.Event()
+
+    async def root() -> None:
+        async with environment_claim(client, CONTEXT, "root", clock=clock):
+            entered.set()
+
+    task = asyncio.create_task(root())
+    while clock.elapsed < 120:  # two minutes of a restarting worker
+        await eventually(lambda: clock.sleepers == 1)
+        clock.advance(10)
+    assert not entered.is_set()
+    client.broken = False
+    while not task.done():
+        await eventually(lambda: task.done() or clock.sleepers == 1)
+        if not task.done():
+            clock.advance(10)
+    await task
+    assert entered.is_set()
+    assert clock.elapsed < WORKER_OUTAGE_SECONDS
+
+
+async def test_a_first_grant_that_fails_past_the_window_never_enters_the_root() -> None:
+    clock = FakeClock()
+    client = Client(clock)
+    client.broken = True
+    task = asyncio.create_task(_enter(client, clock))
+    while not task.done():
+        await eventually(lambda: task.done() or clock.sleepers == 1)
+        if not task.done():
+            clock.advance(10)
+    with pytest.raises(OSError, match="unavailable"):
+        await task
+    assert clock.elapsed >= WORKER_OUTAGE_SECONDS
+
+
+async def _enter(client: Client, clock: FakeClock) -> None:
+    async with environment_claim(client, CONTEXT, "root", clock=clock):
+        raise AssertionError("a root must not start without its claim")
 
 
 async def test_stop_joins_an_inflight_renewal_before_release() -> None:
@@ -136,15 +191,6 @@ async def test_unmanaged_backend_reports_no_managed_idle_suspension() -> None:
     async with environment_claim(client, CONTEXT, "root", clock=clock):
         assert clock.sleepers == 0
     assert len(client.calls) == 1
-
-
-async def test_failed_initial_claim_never_enters_the_root() -> None:
-    clock = FakeClock()
-    client = Client(clock)
-    client.broken = True
-    with pytest.raises(OSError, match="worker unavailable"):
-        async with environment_claim(client, CONTEXT, "root", clock=clock):
-            raise AssertionError("a root must not start without its claim")
 
 
 class PolicyClient(Client):
@@ -227,7 +273,7 @@ async def test_an_outage_inside_the_window_is_ridden_out_and_said() -> None:
             "root",
             clock=clock,
             outage=lambda since, until: heard.append((since, until)),
-            lost=lost.append,
+            lost=lambda reason, *_: lost.append(reason),
         ):
             entered.set()
             await done.wait()

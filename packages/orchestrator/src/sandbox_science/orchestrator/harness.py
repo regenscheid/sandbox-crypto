@@ -65,7 +65,7 @@ from .context.history.limits import WorkingMemoryLimitError
 from .context.history.retention import fits
 from .context.history.snapshot import inline
 from .context.preparation import FoldLimits, HistoryScope, PreparedContext, prepare_context
-from .continuity.auto_recovery import mark_transient
+from .continuity.auto_recovery import mark_interrupted, mark_transient
 from .continuity.blueprints import Blueprint, Blueprints
 from .continuity.child_settlement import ChildSettlement
 from .continuity.hook import WorkHook
@@ -73,6 +73,7 @@ from .continuity.kernels import KernelJournal, LostKernels
 from .continuity.models import IntentModel, ModelIntents
 from .continuity.records import Ownership, WorkRecords, authority
 from .continuity.resources import ResourceRequests
+from .continuity.transient import classify
 from .control import ControlError, ControlStore
 from .control.errors import NOT_FOUND
 from .delegation import prompt as delegated_prompt
@@ -93,11 +94,11 @@ from .delegation.requests import ChildApproval, ChildRequests
 from .delegation.tracks import TrackTools, grant, regrant, stated_outputs
 from .documents import DocumentError, DocumentStore, DocumentTool
 from .documents.tool import REQUESTS_TASK, WorkRequests
-from .environment_claim import ClaimLostError, environment_claim
+from .environment_claim import UNREACHABLE, ClaimLostError, environment_claim
 from .file_settings import ProjectFiles
 from .finalization import AttemptCompletion, AttemptFinalizer
 from .finalization import save as save
-from .hooks import Refusal, TurnHook
+from .hooks import Refusal, TurnHook, contribute
 from .jobs import JobTools, cancel_closed_jobs
 from .jobstate import JobState
 from .kernel_check import KernelCheck
@@ -577,12 +578,17 @@ async def admit(
 
 class ClaimWatch:
     """What a root's environment claim tells of the worker (``environment_claim``): that it
-    is away and until when the run waits for it, as the run's events say, and why the
-    claim was lost, which marks the run's interruption transient (D100), for automatic
-    recovery to take up once the worker answers, and for its ``stopped`` event to say."""
+    is away and until when the run waits for it, as the run's events say; and why the claim
+    was lost, which the run's ``stopped`` event says. Only a worker that did not answer
+    within the outage window, or a cause that is itself transient, marks the interruption
+    transient (D100), for automatic recovery to take up once the worker answers; a claim
+    the worker ended or refused leaves the tree to the user's Resume. A user's stop wins:
+    a run being stopped is marked neither way."""
 
-    def __init__(self, stores: Stores | None, admitted: Admitted) -> None:
-        self.stores, self.admitted = stores, admitted
+    def __init__(
+        self, stores: Stores | None, admitted: Admitted, stop: asyncio.Event | None
+    ) -> None:
+        self.stores, self.admitted, self.stop = stores, admitted, stop
         self.chat: RunChat | None = None
         self._writes: set[asyncio.Task[None]] = set()
 
@@ -593,20 +599,28 @@ class ClaimWatch:
         self._writes.add(task)
         task.add_done_callback(self._writes.discard)
 
-    def lost(self, why: str) -> None:
-        if self.stores is None:
+    async def join(self) -> None:
+        """Wait for the events ``outage`` began writing, at the run's end."""
+        if self._writes:
+            await asyncio.gather(*self._writes, return_exceptions=True)
+
+    def lost(self, reason: str, why: str, error: Exception) -> None:
+        if self.stores is None or (self.stop is not None and self.stop.is_set()):
             return
         context, admitted = self.admitted.context, self.admitted
+        name = run_name(admitted.started_at, admitted.run_id)
+        control = self.stores.projects.control
+        kind = "worker_loss" if reason == UNREACHABLE else classify(error)
         try:
-            mark_transient(
-                self.stores.projects.control,
-                context.project_id,
-                context.session_id,
-                run_name(admitted.started_at, admitted.run_id),
-                "worker_loss",
-                clock=SYSTEM_CLOCK,
-                why=why,
-            )
+            if kind is not None:
+                mark_transient(
+                    control, context.project_id, context.session_id, name, kind,
+                    why=why, reason=reason,
+                )  # fmt: skip
+            else:
+                mark_interrupted(
+                    control, context.project_id, context.session_id, name, reason, why=why
+                )
         except Exception:
             _log.exception(
                 "the loss of run %s's environment claim was not recorded", admitted.run_id
@@ -1081,7 +1095,9 @@ class Harness:
             async with AsyncExitStack() as stack:
                 stack.enter_context(profiles(admitted.request.model_profiles or {}))
                 with interruption.protect():
-                    watch = ClaimWatch(self.stores, admitted)
+                    watch = ClaimWatch(self.stores, admitted, stop)
+                    # Its events are written before the run ends, after the claim's release.
+                    stack.push_async_callback(watch.join)
                     if (
                         admitted.stateful
                         and admitted.request.parent is None
@@ -1299,7 +1315,7 @@ class Harness:
             else:
                 transcript.fail("cleanup")
         if withheld(self.mcp, admitted.context.project_id):
-            transcript.summaries["connectors"] = dict(WITHHELD)
+            contribute(transcript.summaries, "connectors", dict(WITHHELD))
         else:
             transcript.summaries.setdefault("connectors", dict(NOT_OFFERED_CONNECTORS))
         return Finished(
