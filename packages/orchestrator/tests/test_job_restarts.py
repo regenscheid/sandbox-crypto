@@ -172,7 +172,7 @@ async def test_a_lost_attempt_is_noticed_once_with_its_restart(tmp_path: Path) -
     worker.records["exe-1"] = restarted()
     jobs = tools(worker, tmp_path)
     [notice] = await jobs.notices()
-    assert notice["notice_id"] == "exe-1#1"
+    assert notice["notice_id"] == "exe-1.lost-1"
     assert notice["job_id"] == "exe-1"
     assert notice["state"] == "queued"
     assert str(notice["restart"]) == RESTART_POLICY.restarting(2, 0)
@@ -184,9 +184,9 @@ async def test_a_lost_attempt_is_noticed_once_with_its_restart(tmp_path: Path) -
     assert await jobs.notices() == []
     # Unacknowledged, it comes again to the next run; acknowledged, never.
     again = tools(worker, tmp_path)
-    assert [n["notice_id"] for n in await again.notices()] == ["exe-1#1"]
+    assert [n["notice_id"] for n in await again.notices()] == ["exe-1.lost-1"]
     assert again.state is not None
-    again.state.acknowledge(CONTEXT, "saved-run", ["exe-1#1"])
+    again.state.acknowledge(CONTEXT, "saved-run", ["exe-1.lost-1"])
     assert await tools(worker, tmp_path).notices() == []
 
 
@@ -198,8 +198,8 @@ async def test_another_live_runs_lost_attempt_is_its_own(tmp_path: Path) -> None
     assert owner.state is not None
     owner.state.origin(CONTEXT, "exe-1", "run-owner")
     owner.state.heartbeat(CONTEXT, "run-owner")
-    assert owner.state.pending(CONTEXT, "run-1", ["exe-1#1"]) == []
-    assert owner.state.pending(CONTEXT, "run-owner", ["exe-1#1"]) == ["exe-1#1"]
+    assert owner.state.pending(CONTEXT, "run-1", ["exe-1.lost-1"]) == []
+    assert owner.state.pending(CONTEXT, "run-owner", ["exe-1.lost-1"]) == ["exe-1.lost-1"]
 
 
 @pytest.mark.asyncio

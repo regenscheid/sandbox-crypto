@@ -37,6 +37,10 @@ from sandbox_science.orchestrator.hooks import (
     MessageLog,
     Notice,
     TurnHook,
+    checked_ids,
+    contribute,
+    guarded,
+    offered,
     overrides,
     wraps_calls,
 )
@@ -445,7 +449,7 @@ class Prepared:
                 refusal = await hook.gate(request.effect)
                 return json_value(adapter(type(refusal)).dump_python(refusal, mode="json"))
             if kind is Capability.CONSUMPTION:
-                ids = tuple(await hook.consumption())
+                ids = checked_ids(hook.name, tuple(await hook.consumption()))
                 if self.shadow is not None:
                     self.shadow.identities(hook.name).update(ids)
                 return payload(Consumed(ids=ids))
@@ -456,7 +460,8 @@ class Prepared:
                 if request.point is None:
                     raise TransportError("invalid_request", "notices require a safe point")
                 try:
-                    result = await hook.notices(request.point, run)
+                    # One the worker could not answer is the notice that says so.
+                    result = await offered(hook, request.point, run)
                 except Exception:
                     _log.error(
                         "notice hook failed: slot=%d type=%s point=%s",
@@ -473,25 +478,29 @@ class Prepared:
                     adapter(tuple[Notice, ...]).dump_python(tuple(result), mode="json")
                 )
             if kind is Capability.TURN_LIMIT:
-                ceiling = await hook.turn_limit(run)
+                ceiling = await guarded(hook, "turn_limit", run, hook.turn_limit(run), None)
                 if ceiling is not None:
                     self.max_turns = ceiling
                 return ceiling
             if kind is Capability.HALT:
-                return await hook.halt(run)
+                return await guarded(hook, "halt", run, hook.halt(run), None)
             if kind is Capability.LAST_CALL:
-                limit = await hook.last_call(run)
+                limit = await guarded(hook, "last_call", run, hook.last_call(run), None)
                 if limit is not None:
                     self.limits.add(limit)
                 return limit
             if kind is Capability.REPORT_NOTICES:
                 if request.stopped is None:
                     raise TransportError("invalid_request", "report notices require the limit")
-                found = tuple(await hook.report_notices(run, request.stopped))
+                found = tuple(
+                    await guarded(
+                        hook, "report", run, hook.report_notices(run, request.stopped), ()
+                    )
+                )
                 self.notices.extend(found)  # admitted as the hook's, when the runtime adds them
                 return json_value(adapter(tuple[Notice, ...]).dump_python(found, mode="json"))
             if kind is Capability.MODEL_RETURNED:
-                await hook.model_returned(run)
+                await guarded(hook, "model_returned", run, hook.model_returned(run), None)
             elif kind is Capability.OBSERVE_TOOL:
                 if (
                     self.observation is None
@@ -504,7 +513,7 @@ class Prepared:
                     if isinstance(hook, KernelCheck)
                     else self.observed_tool[1].record
                 )
-                await hook.observe_tool(run, tool_record)
+                await guarded(hook, "observe_tool", run, hook.observe_tool(run, tool_record), None)
                 self.observed_slots.add(request.slot)
             elif kind in (Capability.GOES_ON, Capability.WENT_ON):
                 last = run.context.messages[-1] if run.context.messages else {}
@@ -520,19 +529,26 @@ class Prepared:
                     return True
                 if request.answer is None:
                     raise TransportError("invalid_request", "goes_on requires the answer")
-                found = tuple(await hook.goes_on(run, request.answer))
+                found = tuple(
+                    await guarded(hook, "goes_on", run, hook.goes_on(run, request.answer), ())
+                )
                 self.offers[request.slot] = found
                 return json_value(adapter(tuple[Notice, ...]).dump_python(found, mode="json"))
             elif kind is Capability.CLOSING:
-                closing = await hook.closing(run, request.answer)
+                # A closing whose hook could not be read still closes: its answer stands.
+                closing = await guarded(
+                    hook, "closing", run, hook.closing(run, request.answer), Closing()
+                )
                 self.notices.extend(closing.notices)
                 return json_value(adapter(Closing).dump_python(closing, mode="json"))
             elif kind is Capability.ACCEPT:
-                await hook.accept(run)
+                await guarded(hook, "accept", run, hook.accept(run), None)
             elif kind is Capability.FINISHING:
                 if request.stopped is None:
                     raise TransportError("invalid_request", "finishing requires stop reason")
-                return await hook.finishing(run, request.stopped)
+                return await guarded(
+                    hook, "finishing", run, hook.finishing(run, request.stopped), None
+                )
             else:
                 raise TransportError("denied", "capability is not available on an attempt")
             return None
@@ -1117,17 +1133,17 @@ class HostLoops:
             run.summaries.update(runtime_summaries(result.summaries))
             if toolbox.tool_mix is not None:
                 # The calls ran here, through this toolbox: its counts are the run's.
-                run.summaries["tool_mix"] = toolbox.tool_mix.summary()
+                contribute(run.summaries, "tool_mix", toolbox.tool_mix.summary())
             if toolbox.image_offer is not None:
-                run.summaries["view_image"] = toolbox.image_offer
+                contribute(run.summaries, "view_image", toolbox.image_offer)
             if toolbox.connectors is not None:
                 # Its connector calls went through this toolbox, which counted them.
-                run.summaries["connectors"] = toolbox.connectors.summary()
+                contribute(run.summaries, "connectors", toolbox.connectors.summary())
             # And it loaded the run's tool groups.
             record_groups(toolbox, run)
             for hook in hooks:
                 if (summary := hook.summary()) is not None:
-                    run.summaries[hook.name] = summary
+                    contribute(run.summaries, hook.name, summary)
             return run
         except asyncio.CancelledError:
             stop = options.get("stop")

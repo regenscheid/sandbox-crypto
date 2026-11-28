@@ -50,7 +50,7 @@ from sandbox_science.contracts import (
     StreamOutput,
     WriteFileRequest,
 )
-from sandbox_science.contracts.worker import Language
+from sandbox_science.contracts.worker import PROTOCOL_HEADER, PROTOCOL_VERSION, Language
 from sandbox_science.orchestrator import cli, worker_client
 from sandbox_science.orchestrator.context.history import body
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
@@ -338,7 +338,7 @@ async def test_a_record_that_cannot_be_kept_still_reaches_the_transcript(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     # A tool's JSON nested deeper than pydantic follows: the transcript is written all
-    # the same, and the failure to keep the record is reported, not raised.
+    # the same, and the record is kept without that tool record, which is reported.
     store = ProjectStore(tmp_path / "state")
     store.create("p1", "minimal", "sha256:" + "c" * 64)
     store.open_session("p1", "s1", dedicated=False)
@@ -360,11 +360,14 @@ async def test_a_record_that_cannot_be_kept_still_reaches_the_transcript(
     transcript = tmp_path / "t.json"
     errors: list[str] = []
     assert (
-        await save(fields, 0, (), projects=store, transcript=transcript, error=errors.append) == 1
+        await save(fields, 0, (), projects=store, transcript=transcript, error=errors.append) == 0
     )
-    assert "the run's record could not be kept" in errors[0]
+    assert "kept without what did not validate" in errors[0]
     assert json.loads(transcript.read_text())["final_text"] == "done"
-    assert store.runs("p1", "s1") == []
+    (entry,) = store.runs("p1", "s1")
+    kept = store.run("p1", "s1", entry.name)
+    assert (kept.stopped, kept.final_text, kept.tools) == ("answered", "done", [])
+    assert kept.summaries["record_salvaged"] == {"left_out": ["tools.0"]}
 
 
 async def test_with_a_state_dir_the_run_id_must_name_a_record(tmp_path: Path) -> None:
@@ -675,7 +678,11 @@ async def test_h2_heartbeats_keep_a_quiet_stream_open_and_silence_ends_it() -> N
     async with (
         TestServer(app) as server,
         WorkerClient(
-            str(server.make_url("")), TOKEN, stream_timeout=0.5, reconnect_delay=0.01
+            str(server.make_url("")),
+            TOKEN,
+            stream_timeout=0.5,
+            reconnect_delay=0.01,
+            outage_seconds=2.0,
         ) as client,
     ):
         assert [item.seq async for item in client.events("exe-1")] == [1]
@@ -685,7 +692,69 @@ async def test_h2_heartbeats_keep_a_quiet_stream_open_and_silence_ends_it() -> N
         with pytest.raises(WorkerAPIError) as raised:
             [item async for item in client.events("exe-2")]
         assert raised.value.kind is ErrorKind.UNAVAILABLE
-        assert loop.time() - started < 10
+        # Followed again for the outage window from its last event, then given up.
+        assert 2.0 <= loop.time() - started < 10
+
+
+async def test_h2_a_stream_that_carries_heartbeats_starts_its_outage_window_again() -> None:
+    """A quiet stream that dropped once, then served heartbeats for longer than the outage
+    window, and drops again: the second drop is a new outage, not the first one's tail."""
+    calls: list[int] = []
+
+    async def events(request: web.Request) -> web.StreamResponse:
+        calls.append(1)
+        response = web.StreamResponse()
+        await response.prepare(request)
+        if len(calls) == 2:
+            for _ in range(30):  # 3 s of heartbeats, past the 2 s window, then it ends
+                await response.write(b"\n")
+                await asyncio.sleep(0.1)
+        elif len(calls) == 3:
+            await response.write(_event(1, type="result", execution=EXECUTION))
+        await response.write_eof()  # call 1: ends at once, with nothing
+        return response
+
+    app = fake_worker_app()
+    app.router.add_get("/v1/executions/exe-1/events", events)
+    async with (
+        TestServer(app) as server,
+        WorkerClient(
+            str(server.make_url("")),
+            TOKEN,
+            stream_timeout=0.5,
+            reconnect_delay=0.01,
+            outage_seconds=2.0,
+        ) as client,
+    ):
+        assert [item.seq async for item in client.events("exe-1")] == [1]
+    assert len(calls) == 3
+
+
+async def test_h2_a_proxys_unavailable_answer_is_followed_again() -> None:
+    """A proxy in front of a restarting worker answers 503 without the worker's protocol
+    header: the stream is followed again within the outage window."""
+    calls: list[int] = []
+
+    async def events(request: web.Request) -> web.StreamResponse:
+        calls.append(1)
+        if len(calls) == 1:
+            return web.Response(status=503, text="no healthy upstream")
+        response = web.StreamResponse(headers={PROTOCOL_HEADER: str(PROTOCOL_VERSION)})
+        await response.prepare(request)
+        await response.write(_event(1, type="result", execution=EXECUTION))
+        await response.write_eof()
+        return response
+
+    app = web.Application()  # no protocol header of its own: a proxy's answer
+    app.router.add_get("/v1/executions/exe-1/events", events)
+    async with (
+        TestServer(app) as server,
+        WorkerClient(
+            str(server.make_url("")), TOKEN, reconnect_delay=0.01, outage_seconds=2.0
+        ) as client,
+    ):
+        assert [item.seq async for item in client.events("exe-1")] == [1]
+    assert len(calls) == 2
 
 
 async def test_h2_run_gives_up_when_no_result_comes() -> None:

@@ -4,13 +4,23 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import pytest
 
 from sandbox_science.contracts import ErrorKind, ExecutionContext
-from sandbox_science.contracts.environment_claims import EnvironmentClaim, EnvironmentClaimResult
-from sandbox_science.orchestrator.environment_claim import environment_claim
+from sandbox_science.contracts.environment_claims import (
+    MAX_CLAIM_SECONDS,
+    WORKER_OUTAGE_SECONDS,
+    EnvironmentClaim,
+    EnvironmentClaimResult,
+)
+from sandbox_science.orchestrator.environment_claim import (
+    ENDED,
+    LAPSED,
+    UNREACHABLE,
+    environment_claim,
+)
 from sandbox_science.orchestrator.worker_client import WorkerAPIError
 from sandbox_science.testing import FakeClock, eventually
 
@@ -69,9 +79,12 @@ async def test_loss_interrupts_the_root_instead_of_silently_losing_its_kernel(fa
     clock = FakeClock()
     client = Client(clock)
     entered, forever = asyncio.Event(), asyncio.Event()
+    lost: list[str] = []
 
     async def root() -> None:
-        async with environment_claim(client, CONTEXT, "root", clock=clock):
+        async with environment_claim(
+            client, CONTEXT, "root", clock=clock, lost=lambda reason, *_: lost.append(reason)
+        ):
             entered.set()
             await forever.wait()
 
@@ -81,12 +94,67 @@ async def test_loss_interrupts_the_root_instead_of_silently_losing_its_kernel(fa
     client.broken = failure == "unavailable"
     if failure == "replacement":
         client.sandbox = "new-sandbox"
-    clock.advance(120 if failure == "lapsed" else 30)
+    if failure == "unavailable":
+        # Retried, with a growing wait, until the outage window from the last renewal.
+        while not task.done():
+            await eventually(lambda: task.done() or clock.sleepers == 1)
+            if not task.done():
+                clock.advance(5)
+        assert clock.elapsed >= WORKER_OUTAGE_SECONDS
+    else:
+        clock.advance(MAX_CLAIM_SECONDS if failure == "lapsed" else 30)
     with pytest.raises(WorkerAPIError, match="claim was lost"):
         await task
+    # Only a worker away past the window is told as unreachable, a transient loss.
+    assert lost == [{"unavailable": UNREACHABLE, "replacement": ENDED, "lapsed": LAPSED}[failure]]
     assert client.calls[-1].seconds == 0
     assert client.calls[-1].sandbox_id == "original"
     assert clock.sleepers == 0
+
+
+async def test_the_first_grant_rides_out_an_unreachable_worker() -> None:
+    """A run that starts while the worker restarts waits for it within the window."""
+    clock = FakeClock()
+    client = Client(clock)
+    client.broken = True
+    entered = asyncio.Event()
+
+    async def root() -> None:
+        async with environment_claim(client, CONTEXT, "root", clock=clock):
+            entered.set()
+
+    task = asyncio.create_task(root())
+    while clock.elapsed < 120:  # two minutes of a restarting worker
+        await eventually(lambda: clock.sleepers == 1)
+        clock.advance(10)
+    assert not entered.is_set()
+    client.broken = False
+    while not task.done():
+        await eventually(lambda: task.done() or clock.sleepers == 1)
+        if not task.done():
+            clock.advance(10)
+    await task
+    assert entered.is_set()
+    assert clock.elapsed < WORKER_OUTAGE_SECONDS
+
+
+async def test_a_first_grant_that_fails_past_the_window_never_enters_the_root() -> None:
+    clock = FakeClock()
+    client = Client(clock)
+    client.broken = True
+    task = asyncio.create_task(_enter(client, clock))
+    while not task.done():
+        await eventually(lambda: task.done() or clock.sleepers == 1)
+        if not task.done():
+            clock.advance(10)
+    with pytest.raises(OSError, match="unavailable"):
+        await task
+    assert clock.elapsed >= WORKER_OUTAGE_SECONDS
+
+
+async def _enter(client: Client, clock: FakeClock) -> None:
+    async with environment_claim(client, CONTEXT, "root", clock=clock):
+        raise AssertionError("a root must not start without its claim")
 
 
 async def test_stop_joins_an_inflight_renewal_before_release() -> None:
@@ -113,7 +181,7 @@ async def test_stop_joins_an_inflight_renewal_before_release() -> None:
     client.free.set()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert [call.seconds for call in client.calls] == [120, 120, 0]
+    assert [call.seconds for call in client.calls] == [MAX_CLAIM_SECONDS, MAX_CLAIM_SECONDS, 0]
 
 
 async def test_unmanaged_backend_reports_no_managed_idle_suspension() -> None:
@@ -123,15 +191,6 @@ async def test_unmanaged_backend_reports_no_managed_idle_suspension() -> None:
     async with environment_claim(client, CONTEXT, "root", clock=clock):
         assert clock.sleepers == 0
     assert len(client.calls) == 1
-
-
-async def test_failed_initial_claim_never_enters_the_root() -> None:
-    clock = FakeClock()
-    client = Client(clock)
-    client.broken = True
-    with pytest.raises(OSError, match="worker unavailable"):
-        async with environment_claim(client, CONTEXT, "root", clock=clock):
-            raise AssertionError("a root must not start without its claim")
 
 
 class PolicyClient(Client):
@@ -195,3 +254,50 @@ async def test_a_policy_refusal_the_project_does_not_explain_ends_the_run() -> N
     clock.advance(30)
     with pytest.raises(WorkerAPIError, match="claim was lost"):
         await task
+
+
+async def test_an_outage_inside_the_window_is_ridden_out_and_said() -> None:
+    """A worker that stops answering, as one whose Pod restarts does, and answers again
+    within the outage window: the root goes on, each renewal asks for the longest claim,
+    and the run hears when the worker went away, until when it waits, and that it is back."""
+    clock = FakeClock()
+    client = Client(clock)
+    heard: list[tuple[object, object]] = []
+    lost: list[str] = []
+    entered, done = asyncio.Event(), asyncio.Event()
+
+    async def root() -> None:
+        async with environment_claim(
+            client,
+            CONTEXT,
+            "root",
+            clock=clock,
+            outage=lambda since, until: heard.append((since, until)),
+            lost=lambda reason, *_: lost.append(reason),
+        ):
+            entered.set()
+            await done.wait()
+
+    task = asyncio.create_task(root())
+    await entered.wait()
+    await eventually(lambda: clock.sleepers == 1)
+    client.broken = True
+    started = clock.now()
+    while clock.elapsed < 150:  # two and a half minutes away
+        await eventually(lambda: clock.sleepers == 1)
+        clock.advance(5)
+    await eventually(lambda: clock.sleepers == 1)
+    assert not task.done()
+    ((since, until),) = heard
+    assert isinstance(since, datetime)
+    assert isinstance(until, datetime)
+    assert since >= started
+    assert until == started + timedelta(seconds=WORKER_OUTAGE_SECONDS)
+    client.broken = False
+    clock.advance(30)
+    await eventually(lambda: len(heard) == 2)
+    assert heard[-1] == (None, None)
+    assert not lost
+    assert all(call.seconds == MAX_CLAIM_SECONDS for call in client.calls if call.seconds)
+    done.set()
+    await task

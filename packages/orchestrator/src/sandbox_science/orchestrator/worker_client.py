@@ -111,7 +111,11 @@ from sandbox_science.contracts.classifications import (
     ToolClasses,
     ToolClassQuery,
 )
-from sandbox_science.contracts.environment_claims import EnvironmentClaim, EnvironmentClaimResult
+from sandbox_science.contracts.environment_claims import (
+    WORKER_OUTAGE_SECONDS,
+    EnvironmentClaim,
+    EnvironmentClaimResult,
+)
 from sandbox_science.contracts.mcp_traffic import WorkerMcpTraffic
 from sandbox_science.contracts.monitor import MonitorWindow, WorkerMonitor
 from sandbox_science.contracts.permission_requests import (
@@ -151,8 +155,12 @@ _EVENT: Final = TypeAdapter[Event](Event)
 MAX_KERNEL_OBSERVATION_BYTES: Final = 1024 + 512 * MAX_SESSION_KERNELS
 """An observation holds up to ``MAX_SESSION_KERNELS`` kernels, its own and its runs'."""
 KERNEL_OBSERVATION_TIMEOUT: Final = 5.0
-RECONNECT_ATTEMPTS: Final = 5
 RECONNECT_DELAY: Final = 0.5
+"""The first wait before an event stream that dropped is followed again; it doubles."""
+RECONNECT_MAX_DELAY: Final = 10.0
+"""The longest wait between two tries at an event stream the worker does not serve."""
+_RESTARTING: Final = frozenset({502, 503, 504})
+"""Statuses a proxy answers for a worker that is not there, as while its Pod restarts."""
 CALL_TIMEOUT: Final = 600.0
 """Seconds a request may go without data from the worker before it is given up."""
 STREAM_TIMEOUT: Final = 4 * EVENT_HEARTBEAT_SECONDS
@@ -225,6 +233,8 @@ class WorkerClient:
         ca_file: Path | None = None,
         stream_timeout: float = STREAM_TIMEOUT,
         reconnect_delay: float = RECONNECT_DELAY,
+        max_reconnect_delay: float = RECONNECT_MAX_DELAY,
+        outage_seconds: float = WORKER_OUTAGE_SECONDS,
         result_grace: float = RESULT_GRACE,
         observation_timeout: float = KERNEL_OBSERVATION_TIMEOUT,
         transfer_timeout: float = TRANSFER_TIMEOUT,
@@ -236,6 +246,10 @@ class WorkerClient:
         self._tls = client_tls(ca_file) if ca_file is not None else None
         self.stream_timeout = stream_timeout
         self.reconnect_delay = reconnect_delay
+        self.max_reconnect_delay = max_reconnect_delay
+        self.outage_seconds = outage_seconds
+        """How long an event stream is followed again while the worker does not serve it
+        (``WORKER_OUTAGE_SECONDS``): a worker restart's minutes."""
         self.result_grace = result_grace
         self.observation_timeout = observation_timeout
         self.transfer_timeout = transfer_timeout
@@ -754,9 +768,33 @@ class WorkerClient:
         """Yield the execution's events after ``after``, reconnecting as needed.
 
         The worker sends an empty line while an execution is quiet; a stream that
-        carries nothing at all for ``stream_timeout`` seconds counts as dropped.
+        carries nothing at all for ``stream_timeout`` seconds counts as dropped. A dropped
+        stream, or one the worker does not serve, is followed again by the execution's ID
+        from the last event it gave, with a growing wait, for ``outage_seconds`` since it
+        last carried anything, an event or a heartbeat; an answer ``unavailable``, such as a
+        proxy's 503 before a restarting worker, counts as a drop. A restarted worker
+        reattaches its executions, so the
+        result reaches the caller as usual. Past that, the stream is lost.
         """
         failures = 0
+        away: float | None = None
+        """When the stream last stopped carrying anything, by the monotonic clock."""
+
+        async def again(exc: Exception | None) -> None:
+            nonlocal failures, away
+            failures += 1
+            away = self.clock.monotonic() if away is None else away
+            if self.clock.monotonic() - away >= self.outage_seconds:
+                raise WorkerAPIError(
+                    ErrorKind.UNAVAILABLE,
+                    f"lost the worker's event stream for {self.outage_seconds:g} s: "
+                    + (str(exc) if exc is not None else "it kept ending early"),
+                    uncertain=True,
+                ) from exc
+            _log.info("event stream dropped (%s); resuming after %d", exc, after)
+            delay = self.reconnect_delay * 2 ** min(failures - 1, 16)
+            await self.clock.sleep(min(delay, self.max_reconnect_delay))
+
         while True:
             try:
                 async with self._http().get(
@@ -768,9 +806,15 @@ class WorkerClient:
                     ),
                 ) as response:
                     await check_protocol(response)
+                    if response.status in _RESTARTING:
+                        raise aiohttp.ClientResponseError(
+                            response.request_info, (), status=response.status
+                        )
                     if response.status >= 400:
                         raise _error(await response.read(), response.status)
                     async for line in _lines(response.content, MAX_EVENT_BYTES):
+                        # The worker serves the stream: an outage, if there was one, is over.
+                        failures, away = 0, None
                         if not line.strip():
                             continue  # a heartbeat
                         try:
@@ -779,30 +823,22 @@ class WorkerClient:
                             raise WorkerAPIError(
                                 ErrorKind.INTERNAL, f"unexpected event from the worker: {exc}"
                             ) from exc
-                        failures = 0
                         after = event.seq
                         yield event
                         if isinstance(event, ResultEvent):
                             return
             except (TimeoutError, aiohttp.ClientError) as exc:
-                failures += 1
-                if failures > RECONNECT_ATTEMPTS:
-                    raise WorkerAPIError(
-                        ErrorKind.UNAVAILABLE,
-                        f"lost the worker's event stream: {exc}",
-                        uncertain=True,
-                    ) from exc
-                _log.info("event stream dropped (%s); resuming after %d", exc, after)
-                await self.clock.sleep(self.reconnect_delay * failures)
+                await again(exc)
+                continue
+            except WorkerAPIError as exc:
+                # A proxy's 502/503/504 before a restarting worker, or the worker's own
+                # ``unavailable``: followed again within the window, as a drop is.
+                if exc.kind is not ErrorKind.UNAVAILABLE or isinstance(exc, WorkerProtocolError):
+                    raise
+                await again(exc)
                 continue
             # The stream ended without a result: ask again from where it stopped.
-            failures += 1
-            if failures > RECONNECT_ATTEMPTS:
-                raise WorkerAPIError(
-                    ErrorKind.UNAVAILABLE,
-                    "the event stream kept ending early",
-                    uncertain=True,
-                )
+            await again(None)
 
     async def run(
         self,

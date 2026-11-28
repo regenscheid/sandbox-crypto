@@ -34,14 +34,21 @@ from .context.history.memory import RunMemory
 from .continuity.transient import classify
 from .delegation.outcome import SUBMIT
 from .hooks import (
+    GAPS,
+    MAX_GAPS,
     RESPONSE_ROUNDS,
     Appended,
+    Closing,
     MessageLog,
     ModelHandler,
     Notice,
     Point,
     ToolHandler,
     TurnHook,
+    checked_ids,
+    contribute,
+    guarded,
+    offered,
 )
 from .images import IMAGE
 from .kernel_check import KernelCheck
@@ -470,6 +477,12 @@ class Transcript:
     def delivered_ids(self, source: str) -> AbstractSet[str]:
         return self.delivered.get(source, frozenset())
 
+    def note_gap(self, gap: dict[str, str]) -> None:
+        found = self.summaries.setdefault(GAPS, {"count": 0, "gaps": []})
+        found["count"] += 1
+        if len(found["gaps"]) < MAX_GAPS:
+            found["gaps"].append(gap)
+
     def fail(self, phase: FailurePhase) -> None:
         """Keep the first failure classification without retaining exception data."""
         self.failure = self.failure or phase
@@ -502,21 +515,21 @@ async def _offer(transcript: Transcript, notices: Sequence[Notice]) -> None:
 
 async def _notices(hooks: Sequence[TurnHook], point: Point, transcript: Transcript) -> None:
     for hook in hooks:
-        await _offer(transcript, await hook.notices(point, transcript))
+        await _offer(transcript, await offered(hook, point, transcript))
 
 
 async def _consumption(hooks: Sequence[TurnHook], transcript: Transcript) -> None:
     for hook in hooks:
         ids = await hook.consumption()
         if ids:
-            transcript.identities(hook.name).update(ids)
+            transcript.identities(hook.name).update(checked_ids(hook.name, ids))
 
 
 async def _model_returned(hooks: Sequence[TurnHook], transcript: Transcript) -> None:
     for source, ids in transcript.offered.items():
         transcript.identities(source, delivered=True).update(ids)
     for hook in hooks:
-        await hook.model_returned(transcript)
+        await guarded(hook, "model_returned", transcript, hook.model_returned(transcript), None)
 
 
 async def _goes_on(
@@ -540,7 +553,11 @@ async def _goes_on(
     if not text.strip() or not transcript.has_room():
         return ()
     for hook in hooks:
-        if not (found := tuple(await hook.goes_on(transcript, text))):
+        if not (
+            found := tuple(
+                await guarded(hook, "goes_on", transcript, hook.goes_on(transcript, text), ())
+            )
+        ):
             continue
         await _turn_limit(hooks, transcript)
         if not transcript.has_room(found) or await _last_call(hooks, transcript) is not None:
@@ -592,7 +609,7 @@ async def _closing_hooks(
     transcript.withheld = False  # accepted: the answer is the user's to see now
     transcript.holding = False  # and a held one's round has its answer
     for hook in hooks:
-        await hook.accept(transcript)
+        await guarded(hook, "accept", transcript, hook.accept(transcript), None)
     for hook in vetoes:
         if (decision := await _ask(hook, transcript, answer)) in ("turn", "retry", "stop"):
             return decision != "stop"
@@ -616,7 +633,10 @@ async def _ask(hook: TurnHook, transcript: Transcript, answer: str | None) -> De
     for, in turns or in the conversation's length, is an accept, and its notices are not
     added: no model would see them. A retry the run has no room for stops it.
     """
-    closing = await hook.closing(transcript, answer)
+    # A closing whose hook could not be read still closes: its answer stands.
+    closing = await guarded(
+        hook, "closing", transcript, hook.closing(transcript, answer), Closing()
+    )
     match closing.action:
         case "stop":
             transcript.stopped = closing.stopped
@@ -661,7 +681,7 @@ async def _attach(
     found: list[Notice] = []
     for hook in hooks:
         try:
-            found.extend(await hook.notices("tool", transcript))
+            found.extend(await offered(hook, "tool", transcript))
         except Exception:
             _log.exception("the %s notices failed; they wait for a later safe point", hook.name)
     attach_notices(transcript, outcome, limit, found)
@@ -832,7 +852,11 @@ async def _run_batch(
 
 async def _turn_limit(hooks: Sequence[TurnHook], transcript: Transcript) -> None:
     for hook in hooks:
-        if (ceiling := await hook.turn_limit(transcript)) is not None:
+        if (
+            ceiling := await guarded(
+                hook, "turn_limit", transcript, hook.turn_limit(transcript), None
+            )
+        ) is not None:
             transcript.max_turns = ceiling
 
 
@@ -840,7 +864,9 @@ async def _halted(hooks: Sequence[TurnHook], transcript: Transcript) -> bool:
     """Whether a hook stops the run before its next model call, as a spent model budget
     does (run-service spec RS-6a)."""
     for hook in hooks:
-        if (reason := await hook.halt(transcript)) is not None:
+        if (
+            reason := await guarded(hook, "halt", transcript, hook.halt(transcript), None)
+        ) is not None:
             await _halt(hooks, transcript, reason)
             return True
     return False
@@ -925,7 +951,9 @@ async def _last_call(hooks: Sequence[TurnHook], transcript: Transcript) -> tuple
     detail: a hook's, such as a delegated run's tokens, or, for a run that does not fold,
     a conversation within ``REPORT_ROOM`` of its ``max_input_chars``."""
     for hook in hooks:
-        if (reason := await hook.last_call(transcript)) is not None:
+        if (
+            reason := await guarded(hook, "last_call", transcript, hook.last_call(transcript), None)
+        ) is not None:
             detail = (
                 "the parent requested a checkpoint report"
                 if reason == "resource_report"
@@ -977,7 +1005,9 @@ async def _report(
     notice = Notice(REPORT_SOURCE, (), REPORT.text, {"limit": reason, "detail": detail})
     notices = [notice]
     for hook in hooks:
-        notices.extend(await hook.report_notices(transcript, reason))
+        notices.extend(
+            await guarded(hook, "report", transcript, hook.report_notices(transcript, reason), ())
+        )
 
     def fits(offered: Sequence[Notice]) -> bool:
         added = len(dump([notice_message(n) for n in offered]))
@@ -1211,7 +1241,7 @@ def record_groups(toolbox: Toolbox, transcript: Transcript) -> None:
     summary = toolbox.groups_summary()
     if summary is None:
         return
-    transcript.summaries["tool_groups"] = summary
+    contribute(transcript.summaries, "tool_groups", summary)
     pins = transcript.context.prompt_provenance
     if pins is not None:
         transcript.context.prompt_provenance = pins.model_copy(
@@ -1259,8 +1289,9 @@ async def _result(
         archived_records.expose_current(index, record)
     try:
         for hook in hooks:
-            await hook.observe_tool(
-                transcript, record if isinstance(hook, KernelCheck) else outcome.record
+            observed = record if isinstance(hook, KernelCheck) else outcome.record
+            await guarded(
+                hook, "observe_tool", transcript, hook.observe_tool(transcript, observed), None
             )
         if on_tool is not None:
             await on_tool(call.name, without(call.arguments), outcome)
@@ -1431,7 +1462,7 @@ async def run_task(
                                 )
                             finally:
                                 if (taken := fallbacks.summary()) is not None:
-                                    transcript.summaries["model_fallback"] = taken
+                                    contribute(transcript.summaries, "model_fallback", taken)
                         if transcript.holding:
                             # The round ended without an answer of its own: the held
                             # one is the run's (CR-48).
@@ -1445,7 +1476,13 @@ async def run_task(
                         transcript.summaries["memory"] = {"blocked": str(error)}
                     for hook in hooks:
                         if (
-                            reason := await hook.finishing(transcript, transcript.stopped)
+                            reason := await guarded(
+                                hook,
+                                "finishing",
+                                transcript,
+                                hook.finishing(transcript, transcript.stopped),
+                                None,
+                            )
                         ) is not None:
                             transcript.stopped = reason
                             transcript.final_text = transcript.answer = None
@@ -1484,22 +1521,22 @@ async def run_task(
         # copied into the saved run, including cancelled and failed runs.
         for hook in active_hooks:
             if (summary := hook.summary()) is not None:
-                transcript.summaries[hook.name] = summary
+                contribute(transcript.summaries, hook.name, summary)
         if toolbox.connectors is not None:
-            transcript.summaries["connectors"] = toolbox.connectors.summary()
+            contribute(transcript.summaries, "connectors", toolbox.connectors.summary())
         record_groups(toolbox, transcript)
         # Counted where the calls run: a confined run's host counts them (Kernels 13).
         mix: ToolMix | None = getattr(toolbox, "tool_mix", None)
         if mix is not None:
-            transcript.summaries["tool_mix"] = mix.summary()
+            contribute(transcript.summaries, "tool_mix", mix.summary())
         if toolbox.image_offer is not None:
-            transcript.summaries["view_image"] = toolbox.image_offer
+            contribute(transcript.summaries, "view_image", toolbox.image_offer)
         if toolbox.skills is not None:
             first = transcript.context.usage[0].model if transcript.context.usage else None
             if (started := toolbox.skills.summary(first)) is not None:
                 # Beside the discoveries the hook of that name keeps there.
                 found = cast(dict[str, Any], transcript.summaries.get("skills") or {})
-                transcript.summaries["skills"] = {**found, **started}
+                contribute(transcript.summaries, "skills", {**found, **started})
     except Exception:
         _log.exception("run %s failed during summary", run_id)
         transcript.fail("cleanup")

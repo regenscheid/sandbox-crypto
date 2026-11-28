@@ -73,8 +73,11 @@ checkpoint interface. The worker then starts it again (`job_restarts.py`), up to
   allows it for development. It is refused too on the stdio transport, on an executor
   too old for restarts, and while `job_restarts = false`.
 - **The attempt.** The worker records the lost attempt in the job's record
-  (`JobDetails.attempts`: its number and attempt ID, when it started and was lost, what
-  stopped, its logs), gives the execution a new attempt ID and number, and queues it. The
+  (`JobDetails.attempts`: its number and attempt ID, when it started and was lost, why,
+  in the restart table's words for the cause (`RESTART_POLICY`) followed by what stopped,
+  its logs), gives the execution a new attempt ID and number, and queues it. A job that
+  ends before that attempt starts, as when its sandbox is deleted meanwhile, shows the
+  last attempt that ran as its `attempt`. The
   next attempt waits for the environment to be usable (no recovery, fence or recycle in
   the way), with a backoff from 5 s to 5 minutes, for up to a day from the loss
   (`ManagerTimeouts.restart_wait`); it then runs the request stored when the job was
@@ -246,8 +249,14 @@ on the cluster ([checklist](KUBERNETES-PREP.md#14-job-sandboxes-on-kata-qualific
 The same turn stays open while the harness reads worker status; the agent's
 model is never called to poll. Completion, timeout, a watcher attention note,
 the loss of an attempt of a job it waits on (`reason: job_lost`, whether the job is being
-restarted or ended `lost`; the other jobs keep running, and `next` says to wait again),
-or a message the user sends in the session's chat ends the wait. An interruption
+restarted or ended `lost`, the wait's other jobs ended or not; while others run, `next`
+says to wait again), or a message the user sends in the session's chat ends the wait.
+The result's view of a job that ended is its whole record's, as `job_status` gives it,
+its written files among it. A worker that does not answer while the wait reads its jobs,
+as while its Pod restarts, is waited for, the jobs going on, for the outage window
+(`WORKER_OUTAGE_SECONDS`, 270 s; [run service](specs/run-service.md)). A message ends such a
+wait at once, as at any other time; a wake other than the user's then says its jobs could
+not be read and keep running (`jobs_unread`). An interruption
 leaves the computations running. The message stays in the session's queue and
 reaches the model as the next user message, after the wait's result, so it is
 neither consumed nor repeated ([chat](WORKSPACE.md#chat)). As `wait_delegations` does, a
@@ -329,7 +338,7 @@ states the outcome, exit code, elapsed time and output tail. A job that ended `l
 says whether it was restarted and why not (`restart`), and, since nothing listed what its
 last attempt left, which files may be its (`survived`: those changed since it started, if
 its workspace survived). A restarted job's lost attempt has a notice of its own while the
-job goes on, `<ID>#<attempt>` in the delivered and acknowledged notices, with what was
+job goes on, `<ID>.lost-<attempt>` (an identifier, as a run record keeps notice IDs) in the delivered and acknowledged notices, with what was
 lost, the attempt that follows and the lost attempt's logs. After a tool call,
 the notices ride on its result; a long result keeps its head and tail. Fetch failures
 do not mark any undelivered notice seen. Notices a successful model call saw enter the run's

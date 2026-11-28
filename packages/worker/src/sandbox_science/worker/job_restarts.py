@@ -217,14 +217,16 @@ class JobRestarts:
             return True
         token = SOURCE_EVENT.set(None)  # the queued state is no executor event's
         try:
-            self._next_attempt(live, what)
+            self._next_attempt(live, what, cause)
         finally:
             SOURCE_EVENT.reset(token)
         self.spawn(self.start(live))
         return True
 
-    def _next_attempt(self, live: Live, what: str) -> None:
-        """Record the lost attempt and queue the job's next one, in one stored change."""
+    def _next_attempt(self, live: Live, what: str, cause: LossCause | None) -> None:
+        """Record the lost attempt and queue the job's next one, in one stored change. Its
+        reason is the restart table's for ``cause`` (``RESTART_POLICY``), the one source
+        of that wording, then what stopped."""
         execution = live.execution
         job = execution.job
         if job is None:  # checked by ``take``
@@ -236,13 +238,16 @@ class JobRestarts:
         self.journal.activity.ended(live)
         live.lost_window = self.journal.activity.window(live) if live.dispatched else None
         live.ended_at = 0.0
+        reason = f"{what} stopped during this attempt"
+        if cause is not None:
+            reason = f"{RESTART_POLICY.loss(cause).happened}: {reason}"
         lost = JobAttempt(
             attempt=job.attempt,
             attempt_id=execution.attempt_id,
             sent=self.sent(live),
             started_at=execution.started_at,
             lost_at=now,
-            reason=f"{what} stopped during this attempt"[:1024],
+            reason=reason[:1024],
             stdout_path=job.stdout_path,
             stderr_path=job.stderr_path,
         )

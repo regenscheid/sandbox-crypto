@@ -12,6 +12,13 @@ from .model import Contract, Identifier
 
 CLAIM_SECONDS: Final = 120
 MAX_CLAIM_SECONDS: Final = 300
+CLAIM_RENEW_SECONDS: Final = 30
+"""How often a root renews its claim; it asks for ``MAX_CLAIM_SECONDS`` each time."""
+WORKER_OUTAGE_SECONDS: Final = MAX_CLAIM_SECONDS - CLAIM_RENEW_SECONDS
+"""How long a run waits for a worker that does not answer, its claim renewals and an
+execution's event stream retrying, before it stops as a transient failure: longer than a
+worker Pod's restart, and short enough that the worker still holds the claim last renewed
+when the run gives up, so that it never releases what the run is still waiting to renew."""
 MAX_ENVIRONMENT_CLAIMS: Final = 32
 ClaimHolder = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$")]
 """A run record's timestamp and separator plus its at-most-128-character run ID."""

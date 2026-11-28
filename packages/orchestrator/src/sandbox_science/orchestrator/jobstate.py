@@ -14,7 +14,7 @@ import re
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
+from typing import Final, cast
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ExecutionContext
 
@@ -28,6 +28,21 @@ from .watcher_prompt import (
 )
 
 LEASE_SECONDS = 30
+LOST: Final = ".lost-"
+"""What joins a job's ID and an attempt's number in the notice of that attempt's loss."""
+
+
+def lost_notice_id(job: str, attempt: int) -> str:
+    """The notice ID of the loss of a restarted job's attempt, ``<job ID>.lost-<attempt>``:
+    an ``Identifier``, as a run record's ``delivered`` keeps each notice ID."""
+    return f"{job}{LOST}{attempt}"
+
+
+def notice_job(notice: str) -> str:
+    """The job a notice ID is of: a completion's ID is the job's own, a lost attempt's
+    names it before ``LOST``."""
+    job, found, attempt = notice.rpartition(LOST)
+    return job if found and attempt.isdecimal() else notice
 
 
 class JobState:
@@ -93,8 +108,8 @@ class JobState:
 
     def pending(self, context: ExecutionContext, run: str, jobs: Sequence[str]) -> list[str]:
         """Unacknowledged notices owned by this run, or whose owner has ended: a job's
-        completion, by its ID, or the loss of a restarted job's attempt, ``<ID>#<attempt>``,
-        which the job's origin owns."""
+        completion, by its ID, or the loss of a restarted job's attempt
+        (``lost_notice_id``), which the job's origin owns."""
         with self.control.read() as tx:
             db = tx.sql
             key = context.project_id, context.session_id
@@ -121,10 +136,7 @@ class JobState:
             job
             for job in jobs
             if job not in ack
-            and (
-                owned.get(job.split("#", 1)[0]) == run
-                or owned.get(job.split("#", 1)[0]) not in active
-            )
+            and (owned.get(notice_job(job)) == run or owned.get(notice_job(job)) not in active)
         ]
 
     def acknowledge(self, context: ExecutionContext, run: str, jobs: Sequence[str]) -> None:
