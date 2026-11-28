@@ -41,7 +41,7 @@ from pydantic import JsonValue
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ExecutionContext, wait_or_sleep
 
-from .aio import threaded
+from .aio import owned, threaded
 from .context.history.archive import body
 from .control import ControlError
 from .control.errors import CONFLICT
@@ -691,6 +691,10 @@ async def session_lease(
         ) from None
     finally:
         stopping.set()
-        with contextlib.suppress(Exception):
-            await renewing
-        await threaded(state.release, project, session, holder)
+        try:
+            # Owned: a holder cancelled as it leaves, as a stopping service cancels a run
+            # that is just ending, still waits for the renewal and releases the lease.
+            with contextlib.suppress(Exception):
+                await owned(renewing)
+        finally:
+            await threaded(state.release, project, session, holder)
