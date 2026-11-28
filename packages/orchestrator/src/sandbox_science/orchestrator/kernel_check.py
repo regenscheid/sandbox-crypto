@@ -46,6 +46,7 @@ class KernelCheck(TurnHook):
         keep: Callable[[], Awaitable[set[str]]] | None = None,
     ) -> None:
         self.client, self.context = client, context
+        self.environment_id = context.environment_id
         self.run = run
         """The kernels the run's cells use: the session's (``None``) or a delegated run's
         own; it is told only about those."""

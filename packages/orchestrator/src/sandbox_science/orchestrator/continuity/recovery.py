@@ -22,7 +22,12 @@ from sandbox_science.orchestrator.control.errors import CONFLICT, NOT_FOUND
 from sandbox_science.orchestrator.delegation.environments import continue_in
 from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords
 from sandbox_science.orchestrator.environment_claim import environment_claim
-from sandbox_science.orchestrator.harness import Admitted, RunRequest, tier_in_effect
+from sandbox_science.orchestrator.harness import (
+    Admitted,
+    ClaimWatch,
+    RunRequest,
+    tier_in_effect,
+)
 from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.projects import run_id_of, run_name
 from sandbox_science.orchestrator.run_inputs import RunInputs
@@ -152,12 +157,17 @@ class Recovery:
                 # Claims deliberately cannot wake a suspended VM. Prepare the existing
                 # environment first, as ordinary admission does before retaining it.
                 await self.harness.client.capabilities(owned_context.environment_id)
+                # A claim the worker ended is the Resume's interruption, not a transient
+                # loss; a worker away past the window is (``ClaimWatch``).
+                watch = ClaimWatch(self.stores, owned_context, name, stop, note=sink.note)
                 await resources.enter_async_context(
                     environment_claim(
                         self.harness.client,
                         owned_context,
                         name,
                         clock=self.harness.clock,
+                        outage=watch.outage,
+                        lost=watch.lost,
                         follow=self.harness.project_policy(self.project),
                         followed=lambda revision: sink.note(
                             f"the project's policy changed to {revision}; "

@@ -19,6 +19,7 @@ from sandbox_science.orchestrator.environment_claim import (
     ENDED,
     LAPSED,
     UNREACHABLE,
+    ClaimLostError,
     environment_claim,
 )
 from sandbox_science.orchestrator.worker_client import WorkerAPIError
@@ -147,7 +148,7 @@ async def test_a_first_grant_that_fails_past_the_window_never_enters_the_root() 
         await eventually(lambda: task.done() or clock.sleepers == 1)
         if not task.done():
             clock.advance(10)
-    with pytest.raises(OSError, match="unavailable"):
+    with pytest.raises(ClaimLostError, match="worker_unreachable"):
         await task
     assert clock.elapsed >= WORKER_OUTAGE_SECONDS
 
@@ -301,3 +302,94 @@ async def test_an_outage_inside_the_window_is_ridden_out_and_said() -> None:
     assert all(call.seconds == MAX_CLAIM_SECONDS for call in client.calls if call.seconds)
     done.set()
     await task
+
+
+async def test_a_stop_during_the_first_grants_failing_request_is_not_lost() -> None:
+    """A Stop while the first grant's request is out, which then fails as a restarting
+    worker's does, ends the root at once, cancelled, not after the outage window."""
+    out = asyncio.Event()
+    calls = 0
+
+    class Away:
+        async def claim_environment(self, request: EnvironmentClaim) -> EnvironmentClaimResult:
+            nonlocal calls
+            calls += 1
+            out.set()
+            await asyncio.sleep(0.2)
+            raise WorkerAPIError(ErrorKind.UNAVAILABLE, "cannot reach the worker")
+
+    async def root() -> None:
+        async with environment_claim(Away(), CONTEXT, "root"):
+            pass
+
+    task = asyncio.create_task(root())
+    await out.wait()
+    task.cancel()
+    done, _ = await asyncio.wait({task}, timeout=3)
+    assert done, f"the stop was swallowed: still retrying after {calls} grant requests"
+    assert task.cancelled()
+
+
+async def test_the_first_grants_outage_is_told_and_its_end_is_a_worker_loss() -> None:
+    """The first grant's wait is told as a renewal's is, and when it runs out the root
+    hears it as a worker that did not answer: transient, not a plain worker error."""
+    clock = FakeClock()
+    client = Client(clock)
+    client.broken = True
+    heard: list[tuple[object, object]] = []
+    lost: list[str] = []
+
+    async def root() -> None:
+        async with environment_claim(
+            client,
+            CONTEXT,
+            "root",
+            clock=clock,
+            outage=lambda since, until: heard.append((since, until)),
+            lost=lambda reason, *_: lost.append(reason),
+        ):
+            raise AssertionError("a root must not start without its claim")
+
+    task = asyncio.create_task(root())
+    while not task.done():
+        await eventually(lambda: task.done() or clock.sleepers == 1)
+        if not task.done():
+            clock.advance(10)
+    with pytest.raises(ClaimLostError) as raised:
+        await task
+    assert raised.value.kind is ErrorKind.UNAVAILABLE
+    assert raised.value.reason == UNREACHABLE
+    assert lost == [UNREACHABLE]
+    ((since, until),) = heard
+    assert isinstance(since, datetime)
+    assert until == since + timedelta(seconds=WORKER_OUTAGE_SECONDS)
+
+
+@pytest.mark.parametrize(
+    ("failure", "kind"),
+    [("unavailable", ErrorKind.UNAVAILABLE), ("replacement", ErrorKind.CONFLICT)],
+)
+async def test_a_lost_claims_error_has_its_causes_kind(failure: str, kind: ErrorKind) -> None:
+    """One place decides the lost claim's kind: transient only for an unreachable worker."""
+    clock = FakeClock()
+    client = Client(clock)
+    entered = asyncio.Event()
+
+    async def root() -> None:
+        async with environment_claim(client, CONTEXT, "root", clock=clock):
+            entered.set()
+            await asyncio.Event().wait()
+
+    task = asyncio.create_task(root())
+    await entered.wait()
+    await eventually(lambda: clock.sleepers == 1)
+    client.broken = failure == "unavailable"
+    if failure == "replacement":
+        client.sandbox = "new-sandbox"
+    while not task.done():
+        await eventually(lambda: task.done() or clock.sleepers == 1)
+        if not task.done():
+            clock.advance(10)
+    with pytest.raises(ClaimLostError) as raised:
+        await task
+    assert raised.value.kind is kind

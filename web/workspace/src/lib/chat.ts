@@ -516,7 +516,26 @@ export function stoppedText(data: Record<string, unknown>): string {
   if (stopped === 'runaway' && detail) said += ` It saw ${visible(detail)}.`;
   // What the model declined, as the API named it (context management, CM-42a).
   if (stopped === 'model_refused' && detail) said += ` It said: ${visible(detail)}.`;
+  // Why a root was interrupted, as its environment claim saw it.
+  if (stopped === 'interrupted' && reason) {
+    said += ` Reason: ${visible(reason.replaceAll('_', ' '))}${detail ? `: ${visible(detail)}` : ''}.`;
+  }
+  said += salvagedText(data['record_salvaged']);
   return failure ? `${said} Failure: ${visible(failure)}.` : said;
+}
+
+/** What a stopped event says of a record kept without what did not validate (RS-13). */
+function salvagedText(value: unknown): string {
+  if (typeof value !== 'object' || value === null) return '';
+  const found = value as Record<string, unknown>;
+  const left = list(found['left_out']).map(String);
+  let said =
+    found['minimal'] === true
+      ? ' Only a minimal record of the run could be kept: its conversation and tool records are not in it.'
+      : ` The run's record was kept without what did not validate (${left.length} item${left.length === 1 ? '' : 's'}).`;
+  if (found['notices_may_repeat'] === true)
+    said += ' Notices it was given may come again to the next run.';
+  return said;
 }
 
 /** A fold of the run's view (context management, CM-46), or an overview of folds, with

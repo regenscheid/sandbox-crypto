@@ -25,7 +25,7 @@ from sandbox_science.contracts.environment_claims import (
     EnvironmentClaimResult,
 )
 
-from .aio import held, owned
+from .aio import held, owned, stop_requested
 from .worker_client import WorkerAPIError
 
 _log = logging.getLogger(__name__)
@@ -63,7 +63,20 @@ def unreachable(error: BaseException) -> bool:
 
 class ClaimLostError(WorkerAPIError):
     """A root's environment claim was lost, which interrupted it: what ends the root, rather
-    than the cancellation that stopped its work."""
+    than the cancellation that stopped its work (``claim_lost``)."""
+
+    reason: str = ""
+    """Which end it was: ``UNREACHABLE``, ``ENDED`` or ``LAPSED``."""
+
+
+def claim_lost(reason: str) -> ClaimLostError:
+    """The error a lost claim ends its root with, of the kind its cause has: ``unavailable``
+    for a worker that did not answer (``UNREACHABLE``), which is transient, ``conflict`` for
+    a claim the worker ended or that lapsed, which is not."""
+    kind = ErrorKind.UNAVAILABLE if reason == UNREACHABLE else ErrorKind.CONFLICT
+    error = ClaimLostError(kind, f"{LOST} ({reason})")
+    error.reason = reason
+    return error
 
 
 class _EndedError(WorkerAPIError):
@@ -106,21 +119,34 @@ async def environment_claim(
     refusal, or one the project's policy does not explain, still ends the root.
     """
     request = EnvironmentClaim(context=context, holder=holder, seconds=MAX_CLAIM_SECONDS)
-    begun, retry = clock.monotonic(), RETRY_SECONDS
+    begun, wall, retry = clock.monotonic(), clock.now(), RETRY_SECONDS
+    away = False
     while True:
         try:
             # Held through a cancel, so that a granted claim is always released.
             initial, cancelled = await held(client.claim_environment(request))
             break
         except Exception as error:
-            # The first grant rides out an unreachable worker as renewals do; a Stop
-            # meanwhile ends the wait at once, with nothing granted.
+            # The first grant rides out an unreachable worker as renewals do, told as they
+            # tell it; a Stop meanwhile ends the wait at once, with nothing granted.
+            stop_requested()
             waited = clock.monotonic() - begun
-            if not unreachable(error) or waited >= OUTAGE_SECONDS:
+            if not unreachable(error):
                 raise
-            _log.warning("environment claim failed; retrying: %s", error)
+            if waited >= OUTAGE_SECONDS:
+                why = f"the worker did not answer for {OUTAGE_SECONDS:g} s: {str(error)[:200]}"
+                if lost is not None:
+                    lost(UNREACHABLE, why, error)
+                raise claim_lost(UNREACHABLE) from error
+            if not away:
+                away = True
+                _log.warning("environment claim failed; retrying: %s", error)
+                if outage is not None:
+                    outage(wall, wall + timedelta(seconds=OUTAGE_SECONDS))
             await clock.sleep(max(min(retry, OUTAGE_SECONDS - waited), 0.001))
             retry = min(retry * 2, RENEW_SECONDS)
+    if away and outage is not None:
+        outage(None, None)
     if initial.environment_id != context.environment_id:
         raise WorkerAPIError(ErrorKind.UNAVAILABLE, "worker returned another environment's claim")
     if initial.state == "unmanaged":
@@ -132,7 +158,7 @@ async def environment_claim(
         raise WorkerAPIError(ErrorKind.UNAVAILABLE, "worker did not retain the environment")
     request = request.model_copy(update={"sandbox_id": initial.sandbox_id})
     stopping = asyncio.Event()
-    failures: list[Exception] = []
+    failures: list[tuple[Exception, str]] = []
     owner = asyncio.current_task()
     renew_every, window = RENEW_SECONDS, OUTAGE_SECONDS
 
@@ -156,7 +182,7 @@ async def environment_claim(
     def end(error: Exception, reason: str, why: str) -> None:
         if stopping.is_set():
             return
-        failures.append(error)
+        failures.append((error, reason))
         if lost is not None:
             lost(reason, why, error)
         if owner is not None:
@@ -228,11 +254,11 @@ async def environment_claim(
         if failures:
             if owner is not None and owner.cancelling():
                 owner.uncancel()  # the root ended before the claim's cancel reached it
-            raise ClaimLostError(ErrorKind.UNAVAILABLE, LOST) from failures[0]
+            raise claim_lost(failures[0][1]) from failures[0][0]
     except asyncio.CancelledError:
         if failures and owner is not None:
             owner.uncancel()
-            raise ClaimLostError(ErrorKind.UNAVAILABLE, LOST) from failures[0]
+            raise claim_lost(failures[0][1]) from failures[0][0]
         raise
     finally:
         await owned(release())

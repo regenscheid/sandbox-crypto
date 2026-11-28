@@ -45,7 +45,7 @@ from .aio import owned, threaded
 from .context.history.archive import body
 from .control import ControlError
 from .control.errors import CONFLICT
-from .hooks import Closing, Effect, Notice, Point, Refusal, RunView, TurnHook
+from .hooks import SALVAGED, Closing, Effect, Notice, Point, Refusal, RunView, TurnHook
 from .notices import PLANS, PLATFORM_INPUT, REDELIVERED, REVIEW_COUNTS, Framing
 from .plan_tools import Plans
 from .projects import ModelUsage, RunRecord
@@ -212,6 +212,12 @@ class RunChat:
             await self.write("waiting", {"job_ids": None, "mode": None})
         else:
             await self.write("waiting", {"job_ids": wait["job_ids"], "mode": wait["mode"]})
+
+
+def salvage_of(record: RunRecord) -> dict[str, JsonValue]:
+    """What a ``stopped`` event says of a record kept without what did not validate."""
+    found = record.summaries.get(SALVAGED)
+    return {SALVAGED: found} if isinstance(found, dict) else {}
 
 
 async def _held(chat: RunChat) -> bool:
@@ -425,6 +431,7 @@ class EventLog(TurnHook):
                 "failure": record.failure,
                 "final_text": record.final_text,
                 "record": self.chat.run,
+                **salvage_of(record),
             },
         )
 

@@ -55,6 +55,7 @@ from sandbox_science.orchestrator import cli, worker_client
 from sandbox_science.orchestrator.context.history import body
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.orchestrator.effects import UnknownEffectError
+from sandbox_science.orchestrator.finalization import PLACEHOLDER
 from sandbox_science.orchestrator.harness import (
     describe_isolation,
     kernel_note,
@@ -338,7 +339,7 @@ async def test_a_record_that_cannot_be_kept_still_reaches_the_transcript(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     # A tool's JSON nested deeper than pydantic follows: the transcript is written all
-    # the same, and the record is kept without that tool record, which is reported.
+    # the same, and the record is kept with that value replaced, which is reported.
     store = ProjectStore(tmp_path / "state")
     store.create("p1", "minimal", "sha256:" + "c" * 64)
     store.open_session("p1", "s1", dedicated=False)
@@ -366,8 +367,10 @@ async def test_a_record_that_cannot_be_kept_still_reaches_the_transcript(
     assert json.loads(transcript.read_text())["final_text"] == "done"
     (entry,) = store.runs("p1", "s1")
     kept = store.run("p1", "s1", entry.name)
-    assert (kept.stopped, kept.final_text, kept.tools) == ("answered", "done", [])
-    assert kept.summaries["record_salvaged"] == {"left_out": ["tools.0"]}
+    # The tool record keeps its place, its too-deep value replaced.
+    assert (kept.stopped, kept.final_text) == ("answered", "done")
+    assert kept.tools == [{"tool": "pdf_info", "arguments": "{}", "pdf": PLACEHOLDER}]
+    assert kept.summaries["record_salvaged"] == {"left_out": ["tools.0.pdf (replaced)"]}
 
 
 async def test_with_a_state_dir_the_run_id_must_name_a_record(tmp_path: Path) -> None:
@@ -755,6 +758,37 @@ async def test_h2_a_proxys_unavailable_answer_is_followed_again() -> None:
     ):
         assert [item.seq async for item in client.events("exe-1")] == [1]
     assert len(calls) == 2
+
+
+async def test_h2_a_stop_while_the_stream_is_followed_again_ends_it_at_once() -> None:
+    """A stream the worker does not serve is followed again for the outage window; a stop
+    meanwhile, during a request or a wait between them, ends it at once."""
+    calls: list[int] = []
+
+    async def events(request: web.Request) -> web.Response:
+        calls.append(1)
+        await asyncio.sleep(0.2)
+        return web.Response(status=503, text="no healthy upstream")
+
+    app = web.Application()
+    app.router.add_get("/v1/executions/exe-1/events", events)
+    async with (
+        TestServer(app) as server,
+        WorkerClient(
+            str(server.make_url("")), TOKEN, reconnect_delay=0.01, outage_seconds=60.0
+        ) as client,
+    ):
+
+        async def follow() -> None:
+            async for _ in client.events("exe-1"):
+                pass
+
+        task = asyncio.create_task(follow())
+        await eventually(lambda: len(calls) >= 2)
+        task.cancel()
+        done, _ = await asyncio.wait({task}, timeout=3)
+    assert done, f"the stop was swallowed after {len(calls)} tries"
+    assert task.cancelled()
 
 
 async def test_h2_run_gives_up_when_no_result_comes() -> None:

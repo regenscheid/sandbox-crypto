@@ -465,7 +465,9 @@ worker answers (D100), reconciling the call that was out. A claim the worker end
 refuses (its sandbox replaced, a policy it does not follow) stops the root with
 `reason: environment_claim_ended`, and one left unrenewed past its length (a host's
 suspend) with `environment_claim_lapsed`; neither is transient unless its cause is, so
-they wait for the user's Resume. A user's stop meanwhile wins: the run ends `cancelled`. A crash leaves at most the unexpired claim.
+they wait for the user's Resume. A user's stop meanwhile wins: the run ends `cancelled`. A tree's Resume holds its claim the same way, its interruption recorded for the Resume
+by the same causes, so that a Resume whose sandbox was replaced is not retried by itself.
+A Stop during any of these waits ends it at once. A crash leaves at most the unexpired claim.
 Release is scoped to the original holder/session and does not release another root's
 claim. Claims survive worker restart; suspension checks them again under the same
 environment lock immediately before stopping. Unmanaged backends explicitly report
