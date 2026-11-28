@@ -1115,9 +1115,13 @@ class JobNotices(TurnHook):
 
     def __init__(self, jobs: JobTools, *, max_chars: int) -> None:
         self.jobs = jobs
-        self.environment_id = jobs.context.environment_id
         self.max_chars = max_chars
         """The bound for the notices that ride on one tool result."""
+
+    @property
+    def environment_id(self) -> str | None:  # pyright: ignore[reportIncompatibleVariableOverride]
+        """The run's environment, which the job tools read (``hooks.unavailable``)."""
+        return self.jobs.context.environment_id
 
     def lease(self) -> AbstractAsyncContextManager[None]:
         return self.jobs.active()
